@@ -189,7 +189,7 @@ Contributions are welcome! Please feel free to submit pull requests, report bugs
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the GPL v3 License - see the LICENSE file for details.
 
 ## 🙏 Acknowledgments
 
