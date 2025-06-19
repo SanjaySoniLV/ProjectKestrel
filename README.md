@@ -12,6 +12,20 @@ Are you a bird photographer? Do you take hundreds or thousands of bird photos, o
 
 After Kestrel is done scanning, run the visualizer tool to instantly discover your favorite photos. As you drag your mouse across your photos, you'll see a zoom-in crop on the bird, so you can focus on evaluating the bird's pose or actions, rather than painstakingly finding images with slightly better sharpness.
 
+## Gallery
+
+Kestrel sorts all of your bird photos into scenes.
+![alt text](image.png)
+
+Simply double-click on a scene to view all your photos, sorted by quality! Find a pose you like? Double-click to open in darktable.
+![alt text](image-1.png)
+
+Kestrel has sorted your photos from sharp to blurry. No more time painstakingly reviewing each bird!
+![alt text](image-2.png)
+
+You can even search by bird species! (Note: Species detection is experimental and may be incorrect.)
+![alt text](image-3.png)
+
 ## 🌟 Features
 
 - **🔍 Automatic Bird Detection**: Kestrel will find exactly where the bird is in your photo
