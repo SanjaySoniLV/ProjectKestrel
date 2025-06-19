@@ -3,7 +3,7 @@
 An AI-powered bird photography analysis and curation system that automatically detects, classifies, and evaluates bird images from RAW photography collections.
 
 ![Python](https://img.shields.io/badge/python-3.12+-blue.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
+![License](https://img.shields.io/badge/license-GPLv3-green.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)
 
 ## At a Glance
@@ -186,6 +186,9 @@ The `.kestrel` folder will require an additional 1MB of disk space for every ~10
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit pull requests, report bugs, or suggest features.
+
+## ❓ Contact Me
+Direct questions or comments to [support@projectkestrel.org](mailto:support@projectkestrel.org)
 
 ## 📄 License
 
