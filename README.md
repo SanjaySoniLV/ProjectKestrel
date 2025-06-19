@@ -50,7 +50,7 @@ To install ImageMagick, visit their [download page](https://imagemagick.org/scri
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/sirspongelord/ProjectKestrel.git
+git clone https://github.com/SanjaySoniLV/ProjectKestrel.git
 cd ProjectKestrel
 ```
 
