@@ -31,6 +31,23 @@ jobs:
         run: |
           brew install imagemagick
 
+      - name: Homebrew smoke test (CR3 decode)
+        shell: bash
+        run: |
+          set -e
+          CR3_FILE="$(ls -1 test_imgs/*.CR3 2>/dev/null | head -n 1 || true)"
+          if [ -z "${CR3_FILE}" ]; then
+            echo "No CR3 files found under test_imgs/; skipping Homebrew smoke test."
+            exit 0
+          fi
+          echo "Homebrew magick: $(which magick)"
+          echo "Homebrew magick version:"
+          magick -version
+          OUT_JPG="/tmp/ci_brew_smoke.jpg"
+          echo "Converting ${CR3_FILE} -> ${OUT_JPG}"
+          magick "${CR3_FILE}" "${OUT_JPG}"
+          echo "Homebrew smoke test OK: $(ls -lh "${OUT_JPG}")"
+
       - name: Stage ImageMagick for packaging
         shell: bash
         run: |
