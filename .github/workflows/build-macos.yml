@@ -29,7 +29,7 @@ jobs:
       - name: Install ImageMagick (Homebrew)
         shell: bash
         run: |
-          brew install imagemagick
+          brew install imagemagick darktable
 
       - name: Homebrew smoke test (CR3 decode)
         shell: bash
@@ -56,6 +56,13 @@ jobs:
           mkdir -p "${STAGING_DIR}"
 
           FORMULAS=$(brew deps --include-build imagemagick)
+          FORMULAS+=$'\n'
+          FORMULAS+=$(brew deps --include-build darktable)
+          FORMULAS+=$'\n'
+          FORMULAS+="imagemagick"
+          FORMULAS+=$'\n'
+          FORMULAS+="darktable"
+          FORMULAS=$(printf "%s\n" ${FORMULAS} | sort -u)
           for formula in ${FORMULAS}; do
             echo "Staging Homebrew dependency: ${formula}"
             PREFIX="$(brew --prefix "${formula}")"
@@ -65,10 +72,6 @@ jobs:
               echo "Skipping missing prefix: ${PREFIX}"
             fi
           done
-
-          echo "Staging ImageMagick"
-          IM_PREFIX="$(brew --prefix imagemagick)"
-          rsync -a "${IM_PREFIX}/" "${STAGING_DIR}/"
 
       - name: Run macOS headless build
         shell: bash
