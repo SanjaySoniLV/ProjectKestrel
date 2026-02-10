@@ -3,6 +3,7 @@ import os
 import shutil
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -64,16 +65,23 @@ def main():
                 print("No supported image files found.")
                 return
             print(f"Smoke test: importing wand for {os.path.basename(image_path)}")
+            print(f"MAGICK_HOME={os.environ.get('MAGICK_HOME')}")
+            print(f"MAGICK_CONFIGURE_PATH={os.environ.get('MAGICK_CONFIGURE_PATH')}")
+            print(f"MAGICK_CODER_MODULE_PATH={os.environ.get('MAGICK_CODER_MODULE_PATH')}")
             try:
                 from wand.image import Image as WandImage
             except Exception as exc:
-                raise RuntimeError(f"Smoke test failed to import wand: {exc}") from exc
+                print("Smoke test failed to import wand.")
+                traceback.print_exc()
+                raise
 
             try:
                 with WandImage(filename=image_path) as img:
                     _ = img.width
             except Exception as exc:
-                raise RuntimeError(f"Smoke test Wand read failed: {exc}") from exc
+                print("Smoke test Wand read failed.")
+                traceback.print_exc()
+                raise
 
             print("Smoke test: wand read ok")
             pipeline = AnalysisPipeline(use_gpu=args.use_gpu)
