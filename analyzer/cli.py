@@ -81,6 +81,16 @@ def main():
             magick_bin = os.path.join(magick_home, "bin", "magick") if magick_home else None
             magick_cmd = magick_bin if magick_bin and os.path.exists(magick_bin) else "magick"
             print(f"Smoke test magick command: {magick_cmd}")
+            magick_coders = os.environ.get("MAGICK_CODER_MODULE_PATH")
+            if magick_coders and os.path.isdir(magick_coders):
+                try:
+                    coders_list = sorted(os.listdir(magick_coders))
+                    print(f"Smoke test coders dir entries: {len(coders_list)}")
+                    print("Smoke test coders dir sample:")
+                    for name in coders_list[:20]:
+                        print(name)
+                except Exception as exc:
+                    print(f"Smoke test coders dir error: {exc}")
             try:
                 result = subprocess.run(
                     [magick_cmd, "-list", "format"],
@@ -98,6 +108,42 @@ def main():
                     print(result.stderr.strip())
             except Exception as exc:
                 print(f"Smoke test magick -list format failed: {exc}")
+
+            try:
+                result = subprocess.run(
+                    [magick_cmd, "-list", "delegate"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                print(f"Smoke test magick -list delegate exit={result.returncode}")
+                if result.stdout:
+                    print("Smoke test magick -list delegate (first 40 lines):")
+                    for line in result.stdout.splitlines()[:40]:
+                        print(line)
+                if result.stderr:
+                    print("Smoke test magick -list delegate (stderr):")
+                    print(result.stderr.strip())
+            except Exception as exc:
+                print(f"Smoke test magick -list delegate failed: {exc}")
+
+            try:
+                result = subprocess.run(
+                    [magick_cmd, "-list", "configure"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                print(f"Smoke test magick -list configure exit={result.returncode}")
+                if result.stdout:
+                    print("Smoke test magick -list configure (first 40 lines):")
+                    for line in result.stdout.splitlines()[:40]:
+                        print(line)
+                if result.stderr:
+                    print("Smoke test magick -list configure (stderr):")
+                    print(result.stderr.strip())
+            except Exception as exc:
+                print(f"Smoke test magick -list configure failed: {exc}")
             try:
                 from wand.image import Image as WandImage
             except Exception as exc:
