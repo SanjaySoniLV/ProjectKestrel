@@ -8,21 +8,37 @@ from PyInstaller.utils.hooks import collect_all
 from PyInstaller.utils.hooks import collect_system_data_files
 
 datas = [('models', 'models'), ('gui_app.py', '.'), ('gui_helpers.py', '.'), ('cli.py', '.'), ('VERSION.txt', '.'), ('kestrel_analyzer', 'kestrel_analyzer')]
+
+
+def _condense_datas(items):
+    condensed = []
+    for item in items:
+        if isinstance(item, tuple):
+            if len(item) >= 2:
+                condensed.append((item[0], item[1]))
+        elif hasattr(item, 'toc'):
+            try:
+                toc_items = item.toc
+            except Exception:
+                continue
+            for entry in toc_items:
+                if len(entry) >= 2:
+                    condensed.append((entry[0], entry[1]))
+    return condensed
+
+
 if os.path.isdir('ImageMagick/ImageMagick-7.0.10'):
-    datas += collect_system_data_files('ImageMagick/ImageMagick-7.0.10')
+    try:
+        tree_items = Tree('ImageMagick/ImageMagick-7.0.10', prefix='ImageMagick/ImageMagick-7.0.10')
+        datas += _condense_datas(tree_items)
+    except Exception as exc:
+        print(f"Tree bundling failed: {exc}")
+        datas += collect_system_data_files('ImageMagick/ImageMagick-7.0.10')
 binaries = []
 hiddenimports = []
 binaries += collect_dynamic_libs('torch')
 binaries += collect_dynamic_libs('onnxruntime')
 binaries += collect_dynamic_libs('tensorflow')
-
-if sys.platform == 'darwin':
-    # Avoid libomp symbol conflicts by excluding Torch's libomp.dylib.
-    binaries = [
-        entry
-        for entry in binaries
-        if not (entry[0].endswith('libomp.dylib') and 'torch' in entry[1])
-    ]
 
 
 a = Analysis(

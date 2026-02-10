@@ -4,7 +4,7 @@ import shutil
 import sys
 import tempfile
 import traceback
-import subprocess
+import ctypes
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -76,10 +76,6 @@ def main():
                 except Exception as size_exc:
                     print(f"Smoke test image size error: {size_exc}")
 
-            magick_home = os.environ.get("MAGICK_HOME")
-            magick_bin = os.path.join(magick_home, "bin", "magick") if magick_home else None
-            magick_cmd = magick_bin if magick_bin and os.path.exists(magick_bin) else "magick"
-            print(f"Smoke test magick command: {magick_cmd}")
             magick_coders = os.environ.get("MAGICK_CODER_MODULE_PATH")
             if magick_coders and os.path.isdir(magick_coders):
                 try:
@@ -91,65 +87,40 @@ def main():
                 except Exception as exc:
                     print(f"Smoke test coders dir error: {exc}")
             try:
-                result = subprocess.run(
-                    [magick_cmd, "-list", "format"],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                )
-                print(f"Smoke test magick -list format exit={result.returncode}")
-                if result.stdout:
-                    print("Smoke test magick -list format (first 40 lines):")
-                    for line in result.stdout.splitlines()[:40]:
-                        print(line)
-                if result.stderr:
-                    print("Smoke test magick -list format (stderr):")
-                    print(result.stderr.strip())
-            except Exception as exc:
-                print(f"Smoke test magick -list format failed: {exc}")
-
-            try:
-                result = subprocess.run(
-                    [magick_cmd, "-list", "delegate"],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                )
-                print(f"Smoke test magick -list delegate exit={result.returncode}")
-                if result.stdout:
-                    print("Smoke test magick -list delegate (first 40 lines):")
-                    for line in result.stdout.splitlines()[:40]:
-                        print(line)
-                if result.stderr:
-                    print("Smoke test magick -list delegate (stderr):")
-                    print(result.stderr.strip())
-            except Exception as exc:
-                print(f"Smoke test magick -list delegate failed: {exc}")
-
-            try:
-                result = subprocess.run(
-                    [magick_cmd, "-list", "configure"],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                )
-                print(f"Smoke test magick -list configure exit={result.returncode}")
-                if result.stdout:
-                    print("Smoke test magick -list configure (first 40 lines):")
-                    for line in result.stdout.splitlines()[:40]:
-                        print(line)
-                if result.stderr:
-                    print("Smoke test magick -list configure (stderr):")
-                    print(result.stderr.strip())
-            except Exception as exc:
-                print(f"Smoke test magick -list configure failed: {exc}")
-            try:
                 from wand.image import Image as WandImage
+                from wand import version as wand_version
             except Exception as exc:
                 print("Smoke test failed to import wand.")
                 traceback.print_exc()
                 print(f"Smoke test wand import error: {exc}")
                 raise
+
+            try:
+                print(f"Wand version: {wand_version.VERSION}")
+                print(f"Magick version: {wand_version.MAGICK_VERSION}")
+                print(f"Magick version number: {wand_version.MAGICK_VERSION_NUMBER}")
+                print(f"Magick quantum depth: {wand_version.QUANTUM_DEPTH}")
+            except Exception as exc:
+                print(f"Smoke test wand version error: {exc}")
+
+            try:
+                from wand.api import library
+                count = ctypes.c_size_t()
+                library.MagickQueryFormats.restype = ctypes.POINTER(ctypes.c_char_p)
+                library.MagickQueryFormats.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.c_size_t)]
+                library.MagickRelinquishMemory.argtypes = [ctypes.c_void_p]
+                formats_ptr = library.MagickQueryFormats(b"*", ctypes.byref(count))
+                formats = [
+                    formats_ptr[i].decode("utf-8", errors="ignore")
+                    for i in range(count.value)
+                ]
+                library.MagickRelinquishMemory(formats_ptr)
+                print(f"Wand supported formats: {len(formats)}")
+                print("Wand formats sample:")
+                for name in sorted(formats)[:40]:
+                    print(name)
+            except Exception as exc:
+                print(f"Smoke test formats error: {exc}")
 
             try:
                 with WandImage(filename=image_path) as img:
