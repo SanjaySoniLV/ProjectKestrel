@@ -143,6 +143,7 @@ elif sys.platform == 'darwin' and getattr(sys, 'frozen', False):
     _debug(f"LIBOMP_PATH={libomp_path}")
 
     if os.path.isdir(magick_home):
+        os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
         os.environ.setdefault('MAGICK_HOME', magick_home)
         if magick_etc:
             os.environ.setdefault('MAGICK_CONFIGURE_PATH', magick_etc)
