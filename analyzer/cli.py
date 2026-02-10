@@ -8,7 +8,6 @@ import subprocess
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from kestrel_analyzer.pipeline import AnalysisPipeline
 from kestrel_analyzer.logging_utils import get_log_path, log_event, log_exception
 from kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS
 
@@ -162,6 +161,7 @@ def main():
                 raise
 
             print("Smoke test: wand read ok")
+            from kestrel_analyzer.pipeline import AnalysisPipeline
             pipeline = AnalysisPipeline(use_gpu=args.use_gpu)
 
             def on_status(msg):
@@ -183,6 +183,7 @@ def main():
             print()
             print(f"Smoke test ok: {os.path.basename(image_path)}")
             return
+        from kestrel_analyzer.pipeline import AnalysisPipeline
         pipeline = AnalysisPipeline(use_gpu=args.use_gpu)
 
         def on_status(msg):

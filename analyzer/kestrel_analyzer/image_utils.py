@@ -1,9 +1,9 @@
 import numpy as np
-from wand.image import Image as WandImage
 
 
 def read_image(path: str):
     try:
+        from wand.image import Image as WandImage
         with WandImage(filename=path) as img:
             if img.orientation == "left_bottom":
                 img.rotate(270)

@@ -27,11 +27,9 @@ jobs:
       - name: Install ImageMagick (Homebrew)
         shell: bash
         run: |
-          echo "Homebrew info: imagemagick"
-          brew info imagemagick
           echo "Homebrew info: imagemagick-full"
           brew info imagemagick-full
-          brew install imagemagick imagemagick-full
+          brew install imagemagick-full
 
       - name: Homebrew smoke test (CR3 decode)
         shell: bash
@@ -65,11 +63,7 @@ jobs:
           rm -rf "${STAGING_DIR}"
           mkdir -p "${STAGING_DIR}"
 
-          FORMULAS=$(brew deps --include-build imagemagick)
-          FORMULAS+=$'\n'
-          FORMULAS+=$(brew deps --include-build imagemagick-full)
-          FORMULAS+=$'\n'
-          FORMULAS+="imagemagick"
+          FORMULAS=$(brew deps --include-build imagemagick-full)
           FORMULAS+=$'\n'
           FORMULAS+="imagemagick-full"
           FORMULAS=$(printf "%s\n" ${FORMULAS} | sort -u)
@@ -106,6 +100,17 @@ jobs:
 
           APP_PATH=$(ls -d release/**/kestrel_analyzer.app | head -n 1)
           "${APP_PATH}/Contents/MacOS/kestrel_analyzer" --cli "${TEST_DIR}" --no-gpu --smoke
+
+      - name: Otool diagnostics (bundled ImageMagick)
+        shell: bash
+        run: |
+          APP_PATH=$(ls -d release/**/kestrel_analyzer.app | head -n 1)
+          CONTENTS_DIR="${APP_PATH}/Contents"
+          echo "Contents: ${CONTENTS_DIR}"
+          find "${CONTENTS_DIR}" -name "libMagickWand*.dylib" -o -name "libMagickCore*.dylib" | while read -r dylib; do
+            echo "otool -L ${dylib}"
+            otool -L "${dylib}"
+          done
 
       - name: Upload macOS installer
         uses: actions/upload-artifact@v4
