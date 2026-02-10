@@ -38,11 +38,15 @@ jobs:
           rm -rf "${STAGING_DIR}"
           mkdir -p "${STAGING_DIR}"
 
-          FORMULAS=$(brew deps --include-build --include-optional imagemagick)
+          FORMULAS=$(brew deps --include-build imagemagick)
           for formula in ${FORMULAS}; do
             echo "Staging Homebrew dependency: ${formula}"
             PREFIX="$(brew --prefix "${formula}")"
-            rsync -a "${PREFIX}/" "${STAGING_DIR}/"
+            if [[ -d "${PREFIX}" ]]; then
+              rsync -a "${PREFIX}/" "${STAGING_DIR}/"
+            else
+              echo "Skipping missing prefix: ${PREFIX}"
+            fi
           done
 
           echo "Staging ImageMagick"
