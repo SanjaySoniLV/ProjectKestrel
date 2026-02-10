@@ -4,6 +4,7 @@ import shutil
 import sys
 import tempfile
 import traceback
+import subprocess
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -75,6 +76,28 @@ def main():
                     print(f"Smoke test image size: {os.path.getsize(image_path)} bytes")
                 except Exception as size_exc:
                     print(f"Smoke test image size error: {size_exc}")
+
+            magick_home = os.environ.get("MAGICK_HOME")
+            magick_bin = os.path.join(magick_home, "bin", "magick") if magick_home else None
+            magick_cmd = magick_bin if magick_bin and os.path.exists(magick_bin) else "magick"
+            print(f"Smoke test magick command: {magick_cmd}")
+            try:
+                result = subprocess.run(
+                    [magick_cmd, "-list", "format"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                print(f"Smoke test magick -list format exit={result.returncode}")
+                if result.stdout:
+                    print("Smoke test magick -list format (first 40 lines):")
+                    for line in result.stdout.splitlines()[:40]:
+                        print(line)
+                if result.stderr:
+                    print("Smoke test magick -list format (stderr):")
+                    print(result.stderr.strip())
+            except Exception as exc:
+                print(f"Smoke test magick -list format failed: {exc}")
             try:
                 from wand.image import Image as WandImage
             except Exception as exc:

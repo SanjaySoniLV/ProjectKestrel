@@ -42,6 +42,21 @@ def _first_existing_dir(base_path: str, candidates: list[str]) -> str | None:
     return None
 
 
+def _find_coders_dir(base_path: str) -> str | None:
+    candidates = []
+    for root, dirs, _files in os.walk(base_path):
+        for name in dirs:
+            if name == "coders" and "modules-" in root:
+                candidates.append(os.path.join(root, name))
+        # Keep the search shallow to avoid heavy walks.
+        depth = root[len(base_path) :].count(os.sep)
+        if depth > 4:
+            dirs[:] = []
+    if candidates:
+        return sorted(candidates)[0]
+    return None
+
+
 if sys.platform == 'win32' and getattr(sys, 'frozen', False):
     base_path = sys._MEIPASS
     _debug(f"frozen=True platform=win32 base_path={base_path}")
@@ -85,7 +100,10 @@ elif sys.platform == 'darwin' and getattr(sys, 'frozen', False):
     if magick_lib:
         magick_coders = _first_existing_dir(magick_lib, [
             os.path.join('ImageMagick-7.0.10', 'modules-Q16HDRI', 'coders'),
+            os.path.join('ImageMagick-7.0.10', 'modules-Q16', 'coders'),
         ])
+    if not magick_coders:
+        magick_coders = _find_coders_dir(magick_home)
 
     _debug(f"MAGICK_HOME={magick_home}")
     _debug(f"MAGICK_BIN={magick_bin}")
