@@ -102,8 +102,11 @@ elif sys.platform == 'darwin' and getattr(sys, 'frozen', False):
     base_path = sys._MEIPASS
     _debug(f"frozen=True platform=darwin base_path={base_path}")
     _dump_tree(base_path, max_depth=2)
-    # Flattened layout: ImageMagick directories live directly under MEIPASS.
-    magick_home = base_path
+    # Prefer a nested ImageMagick root if present; fall back to MEIPASS.
+    magick_home = _first_existing_dir(base_path, [
+        os.path.join('ImageMagick', 'ImageMagick-7.0.10'),
+        'ImageMagick-7.0.10',
+    ]) or base_path
     magick_bin = _first_existing_dir(magick_home, [
         'bin',
         os.path.join('ImageMagick-7.0.10', 'bin'),
