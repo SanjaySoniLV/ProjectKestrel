@@ -16,6 +16,14 @@ binaries += collect_dynamic_libs('torch')
 binaries += collect_dynamic_libs('onnxruntime')
 binaries += collect_dynamic_libs('tensorflow')
 
+if sys.platform == 'darwin':
+    # Avoid libomp symbol conflicts by excluding Torch's libomp.dylib.
+    binaries = [
+        entry
+        for entry in binaries
+        if not (entry[0].endswith('libomp.dylib') and 'torch' in entry[1])
+    ]
+
 
 a = Analysis(
     ['main.py'],
