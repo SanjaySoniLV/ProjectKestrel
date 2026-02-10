@@ -68,11 +68,19 @@ def main():
             print(f"MAGICK_HOME={os.environ.get('MAGICK_HOME')}")
             print(f"MAGICK_CONFIGURE_PATH={os.environ.get('MAGICK_CONFIGURE_PATH')}")
             print(f"MAGICK_CODER_MODULE_PATH={os.environ.get('MAGICK_CODER_MODULE_PATH')}")
+            print(f"Smoke test image path: {image_path}")
+            print(f"Smoke test image exists: {os.path.exists(image_path)}")
+            if os.path.exists(image_path):
+                try:
+                    print(f"Smoke test image size: {os.path.getsize(image_path)} bytes")
+                except Exception as size_exc:
+                    print(f"Smoke test image size error: {size_exc}")
             try:
                 from wand.image import Image as WandImage
             except Exception as exc:
                 print("Smoke test failed to import wand.")
                 traceback.print_exc()
+                print(f"Smoke test wand import error: {exc}")
                 raise
 
             try:
@@ -81,6 +89,7 @@ def main():
             except Exception as exc:
                 print("Smoke test Wand read failed.")
                 traceback.print_exc()
+                print(f"Smoke test wand read error: {exc}")
                 raise
 
             print("Smoke test: wand read ok")
