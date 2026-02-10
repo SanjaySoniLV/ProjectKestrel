@@ -29,7 +29,7 @@ jobs:
       - name: Install ImageMagick (Homebrew)
         shell: bash
         run: |
-          brew install imagemagick darktable
+          brew install imagemagick-full
 
       - name: Homebrew smoke test (CR3 decode)
         shell: bash
@@ -44,6 +44,8 @@ jobs:
           echo "Homebrew magick version:"
           magick -version
           OUT_JPG="/tmp/ci_brew_smoke.jpg"
+          echo "Probing ${CR3_FILE} with identify"
+          magick identify -verbose "${CR3_FILE}" | head -n 60
           echo "Converting ${CR3_FILE} -> ${OUT_JPG}"
           magick "${CR3_FILE}" "${OUT_JPG}"
           echo "Homebrew smoke test OK: $(ls -lh "${OUT_JPG}")"
@@ -55,13 +57,9 @@ jobs:
           rm -rf "${STAGING_DIR}"
           mkdir -p "${STAGING_DIR}"
 
-          FORMULAS=$(brew deps --include-build imagemagick)
+          FORMULAS=$(brew deps --include-build imagemagick-full)
           FORMULAS+=$'\n'
-          FORMULAS+=$(brew deps --include-build darktable)
-          FORMULAS+=$'\n'
-          FORMULAS+="imagemagick"
-          FORMULAS+=$'\n'
-          FORMULAS+="darktable"
+          FORMULAS+="imagemagick-full"
           FORMULAS=$(printf "%s\n" ${FORMULAS} | sort -u)
           for formula in ${FORMULAS}; do
             echo "Staging Homebrew dependency: ${formula}"
