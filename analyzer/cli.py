@@ -63,6 +63,19 @@ def main():
             if not image_path:
                 print("No supported image files found.")
                 return
+            print(f"Smoke test: importing wand for {os.path.basename(image_path)}")
+            try:
+                from wand.image import Image as WandImage
+            except Exception as exc:
+                raise RuntimeError(f"Smoke test failed to import wand: {exc}") from exc
+
+            try:
+                with WandImage(filename=image_path) as img:
+                    _ = img.width
+            except Exception as exc:
+                raise RuntimeError(f"Smoke test Wand read failed: {exc}") from exc
+
+            print("Smoke test: wand read ok")
             pipeline = AnalysisPipeline(use_gpu=args.use_gpu)
 
             def on_status(msg):
