@@ -31,6 +31,24 @@ jobs:
           brew info imagemagick-full
           brew install imagemagick-full
 
+      - name: Local Python smoke test (wand)
+        shell: bash
+        run: |
+          set -e
+          source .venv2/bin/activate
+          CR3_FILE="$(ls -1 test_imgs/*.CR3 2>/dev/null | head -n 1 || true)"
+          if [ -z "${CR3_FILE}" ]; then
+            echo "No CR3 files found under test_imgs/; skipping local smoke test."
+            exit 0
+          fi
+          IM_PREFIX="$(brew --prefix imagemagick-full)"
+          export MAGICK_HOME="${IM_PREFIX}"
+          export MAGICK_CONFIGURE_PATH="${IM_PREFIX}/etc/ImageMagick-7"
+          export MAGICK_CODER_MODULE_PATH="${IM_PREFIX}/lib/ImageMagick/modules-Q16HDRI/coders"
+          export DYLD_FALLBACK_LIBRARY_PATH="${IM_PREFIX}/lib"
+          export DYLD_LIBRARY_PATH="${IM_PREFIX}/lib"
+          python analyzer/cli.py --smoke test_imgs --no-gpu
+
       - name: Homebrew smoke test (CR3 decode)
         shell: bash
         run: |
@@ -83,6 +101,17 @@ jobs:
           chmod +x packaging/build_installer_headless.sh
           ./packaging/build_installer_headless.sh
 
+      - name: Otool diagnostics (bundled ImageMagick)
+        shell: bash
+        run: |
+          APP_PATH=$(ls -d release/**/kestrel_analyzer.app | head -n 1)
+          CONTENTS_DIR="${APP_PATH}/Contents"
+          echo "Contents: ${CONTENTS_DIR}"
+          find "${CONTENTS_DIR}" -name "libMagickWand*.dylib" -o -name "libMagickCore*.dylib" | while read -r dylib; do
+            echo "otool -L ${dylib}"
+            otool -L "${dylib}"
+          done
+
       - name: Smoke test bundled analyzer (CLI)
         shell: bash
         run: |
@@ -100,17 +129,6 @@ jobs:
 
           APP_PATH=$(ls -d release/**/kestrel_analyzer.app | head -n 1)
           "${APP_PATH}/Contents/MacOS/kestrel_analyzer" --cli "${TEST_DIR}" --no-gpu --smoke
-
-      - name: Otool diagnostics (bundled ImageMagick)
-        shell: bash
-        run: |
-          APP_PATH=$(ls -d release/**/kestrel_analyzer.app | head -n 1)
-          CONTENTS_DIR="${APP_PATH}/Contents"
-          echo "Contents: ${CONTENTS_DIR}"
-          find "${CONTENTS_DIR}" -name "libMagickWand*.dylib" -o -name "libMagickCore*.dylib" | while read -r dylib; do
-            echo "otool -L ${dylib}"
-            otool -L "${dylib}"
-          done
 
       - name: Upload macOS installer
         uses: actions/upload-artifact@v4

@@ -103,6 +103,15 @@ def main():
             except Exception as exc:
                 print(f"Smoke test wand version error: {exc}")
 
+            magickwand_path = os.environ.get("MAGICKWAND_LIBRARY")
+            if magickwand_path:
+                try:
+                    ctypes.CDLL(magickwand_path)
+                    print(f"Smoke test CDLL ok: {magickwand_path}")
+                except Exception as exc:
+                    print(f"Smoke test CDLL failed: {magickwand_path}")
+                    print(f"Smoke test CDLL error: {exc}")
+
             try:
                 from wand.api import library
                 count = ctypes.c_size_t()
