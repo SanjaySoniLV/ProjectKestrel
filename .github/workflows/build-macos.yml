@@ -29,7 +29,11 @@ jobs:
       - name: Install ImageMagick (Homebrew)
         shell: bash
         run: |
-          brew install imagemagick-full
+          echo "Homebrew info: imagemagick"
+          brew info imagemagick
+          echo "Homebrew info: imagemagick-full"
+          brew info imagemagick-full
+          brew install imagemagick imagemagick-full
 
       - name: Homebrew smoke test (CR3 decode)
         shell: bash
@@ -63,7 +67,11 @@ jobs:
           rm -rf "${STAGING_DIR}"
           mkdir -p "${STAGING_DIR}"
 
-          FORMULAS=$(brew deps --include-build imagemagick-full)
+          FORMULAS=$(brew deps --include-build imagemagick)
+          FORMULAS+=$'\n'
+          FORMULAS+=$(brew deps --include-build imagemagick-full)
+          FORMULAS+=$'\n'
+          FORMULAS+="imagemagick"
           FORMULAS+=$'\n'
           FORMULAS+="imagemagick-full"
           FORMULAS=$(printf "%s\n" ${FORMULAS} | sort -u)
