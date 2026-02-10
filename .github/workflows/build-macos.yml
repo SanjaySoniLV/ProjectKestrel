@@ -34,10 +34,19 @@ jobs:
       - name: Stage ImageMagick for packaging
         shell: bash
         run: |
-          IM_PREFIX="$(brew --prefix imagemagick)"
           STAGING_DIR="analyzer/ImageMagick/ImageMagick-7.0.10"
           rm -rf "${STAGING_DIR}"
           mkdir -p "${STAGING_DIR}"
+
+          FORMULAS=$(brew deps --include-build --include-optional imagemagick)
+          for formula in ${FORMULAS}; do
+            echo "Staging Homebrew dependency: ${formula}"
+            PREFIX="$(brew --prefix "${formula}")"
+            rsync -a "${PREFIX}/" "${STAGING_DIR}/"
+          done
+
+          echo "Staging ImageMagick"
+          IM_PREFIX="$(brew --prefix imagemagick)"
           rsync -a "${IM_PREFIX}/" "${STAGING_DIR}/"
 
       - name: Run macOS headless build
@@ -45,6 +54,24 @@ jobs:
         run: |
           chmod +x packaging/build_installer_headless.sh
           ./packaging/build_installer_headless.sh
+
+      - name: Smoke test bundled analyzer (CLI)
+        shell: bash
+        run: |
+          TEST_DIR="$(pwd)/ci_smoke"
+          mkdir -p "${TEST_DIR}"
+          COPIED_COUNT=0
+          for src in test_imgs/*.CR3 test_imgs/*.cr3; do
+            if [[ -f "${src}" ]]; then
+              echo "Copying test image: ${src}"
+              cp "${src}" "${TEST_DIR}/"
+              COPIED_COUNT=$((COPIED_COUNT + 1))
+            fi
+          done
+          echo "Copied ${COPIED_COUNT} CR3 images to ${TEST_DIR}"
+
+          APP_PATH=$(ls -d release/**/kestrel_analyzer.app | head -n 1)
+          "${APP_PATH}/Contents/MacOS/kestrel_analyzer" --cli "${TEST_DIR}" --no-gpu --smoke
 
       - name: Upload macOS installer
         uses: actions/upload-artifact@v4

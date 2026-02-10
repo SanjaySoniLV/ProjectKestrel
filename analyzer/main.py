@@ -12,10 +12,7 @@ if platform.system() == "Windows": # REQUIRED to prevent pytorch dll load errors
     except Exception:
         pass
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
-
-def _create_splash(app: QApplication) -> QWidget:
+def _create_splash(app):
     splash = QWidget()
     splash.setWindowTitle("Kestrel Analyzer")
     splash.setFixedSize(420, 160)
@@ -35,13 +32,26 @@ def _create_splash(app: QApplication) -> QWidget:
     app.processEvents()
     return splash
 
-def _set_splash_text(app: QApplication, splash: QWidget, text: str) -> None:
+def _set_splash_text(app, splash, text: str) -> None:
     label = splash.findChild(QLabel, "splashStatus")
     if label:
         label.setText(text)
         app.processEvents()
 
+
+def _run_cli() -> None:
+    from cli import main
+    main()
+
 if __name__ == "__main__":
+    if "--cli" in sys.argv:
+        sys.argv = [arg for arg in sys.argv if arg != "--cli"]
+        _run_cli()
+        raise SystemExit(0)
+
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
+
     app = QApplication(sys.argv)
     splash = _create_splash(app)
 
