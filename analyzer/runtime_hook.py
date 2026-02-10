@@ -65,6 +65,21 @@ def _find_first_lib(lib_dir: str, pattern: str) -> str | None:
     return matches[0] if matches else None
 
 
+def _find_libomp(base_path: str, lib_dir: str | None) -> str | None:
+    if lib_dir:
+        candidate = os.path.join(lib_dir, "libomp.dylib")
+        if os.path.exists(candidate):
+            return candidate
+    # Fall back to a shallow search under the bundle root.
+    for root, dirs, files in os.walk(base_path):
+        if "libomp.dylib" in files:
+            return os.path.join(root, "libomp.dylib")
+        depth = root[len(base_path) :].count(os.sep)
+        if depth > 4:
+            dirs[:] = []
+    return None
+
+
 if sys.platform == 'win32' and getattr(sys, 'frozen', False):
     base_path = sys._MEIPASS
     _debug(f"frozen=True platform=win32 base_path={base_path}")
@@ -124,6 +139,9 @@ elif sys.platform == 'darwin' and getattr(sys, 'frozen', False):
     _debug(f"MAGICKWAND_LIBRARY={magick_wand}")
     _debug(f"MAGICKCORE_LIBRARY={magick_core}")
 
+    libomp_path = _find_libomp(magick_home, magick_lib)
+    _debug(f"LIBOMP_PATH={libomp_path}")
+
     if os.path.isdir(magick_home):
         os.environ.setdefault('MAGICK_HOME', magick_home)
         if magick_etc:
@@ -135,6 +153,12 @@ elif sys.platform == 'darwin' and getattr(sys, 'frozen', False):
         if magick_lib:
             _prepend_env_path('DYLD_FALLBACK_LIBRARY_PATH', magick_lib)
             _prepend_env_path('DYLD_LIBRARY_PATH', magick_lib)
+        if libomp_path:
+            try:
+                ctypes.CDLL(libomp_path, mode=ctypes.RTLD_GLOBAL)
+                _debug("libomp preloaded")
+            except Exception as exc:
+                _debug(f"libomp preload failed: {exc}")
         if magick_wand:
             os.environ.setdefault('MAGICKWAND_LIBRARY', magick_wand)
         if magick_core:
