@@ -1,6 +1,7 @@
 import os
 import sys
 import ctypes
+import glob
 
 
 def _prepend_env_path(var_name: str, path: str) -> None:
@@ -57,6 +58,13 @@ def _find_coders_dir(base_path: str) -> str | None:
     return None
 
 
+def _find_first_lib(lib_dir: str, pattern: str) -> str | None:
+    if not lib_dir or not os.path.isdir(lib_dir):
+        return None
+    matches = sorted(glob.glob(os.path.join(lib_dir, pattern)))
+    return matches[0] if matches else None
+
+
 if sys.platform == 'win32' and getattr(sys, 'frozen', False):
     base_path = sys._MEIPASS
     _debug(f"frozen=True platform=win32 base_path={base_path}")
@@ -111,6 +119,11 @@ elif sys.platform == 'darwin' and getattr(sys, 'frozen', False):
     _debug(f"MAGICK_ETC={magick_etc}")
     _debug(f"MAGICK_CODERS={magick_coders}")
 
+    magick_wand = _find_first_lib(magick_lib, "libMagickWand-*.dylib")
+    magick_core = _find_first_lib(magick_lib, "libMagickCore-*.dylib")
+    _debug(f"MAGICKWAND_LIBRARY={magick_wand}")
+    _debug(f"MAGICKCORE_LIBRARY={magick_core}")
+
     if os.path.isdir(magick_home):
         os.environ.setdefault('MAGICK_HOME', magick_home)
         if magick_etc:
@@ -122,3 +135,7 @@ elif sys.platform == 'darwin' and getattr(sys, 'frozen', False):
         if magick_lib:
             _prepend_env_path('DYLD_FALLBACK_LIBRARY_PATH', magick_lib)
             _prepend_env_path('DYLD_LIBRARY_PATH', magick_lib)
+        if magick_wand:
+            os.environ.setdefault('MAGICKWAND_LIBRARY', magick_wand)
+        if magick_core:
+            os.environ.setdefault('MAGICKCORE_LIBRARY', magick_core)
