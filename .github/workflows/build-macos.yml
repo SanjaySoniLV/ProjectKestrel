@@ -40,14 +40,20 @@ jobs:
             echo "No CR3 files found under test_imgs/; skipping Homebrew smoke test."
             exit 0
           fi
-          echo "Homebrew magick: $(which magick)"
+          FULL_PREFIX="$(brew --prefix imagemagick-full)"
+          FULL_MAGICK="${FULL_PREFIX}/bin/magick"
+          if [ ! -x "${FULL_MAGICK}" ]; then
+            echo "imagemagick-full magick not found at ${FULL_MAGICK}"
+            exit 1
+          fi
+          echo "Homebrew magick (full): ${FULL_MAGICK}"
           echo "Homebrew magick version:"
-          magick -version
+          "${FULL_MAGICK}" -version
           OUT_JPG="/tmp/ci_brew_smoke.jpg"
           echo "Probing ${CR3_FILE} with identify"
-          magick identify -verbose "${CR3_FILE}" | head -n 60
+          "${FULL_MAGICK}" identify -verbose "${CR3_FILE}" | head -n 60
           echo "Converting ${CR3_FILE} -> ${OUT_JPG}"
-          magick "${CR3_FILE}" "${OUT_JPG}"
+          "${FULL_MAGICK}" "${CR3_FILE}" "${OUT_JPG}"
           echo "Homebrew smoke test OK: $(ls -lh "${OUT_JPG}")"
 
       - name: Stage ImageMagick for packaging
