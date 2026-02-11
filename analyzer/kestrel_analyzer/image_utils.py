@@ -24,6 +24,16 @@ def _find_magick_binary():
             print(f"_find_magick_binary: Checking frozen candidate: {candidate}", flush=True)
             if os.path.exists(candidate):
                 print(f"_find_magick_binary: File exists, checking if executable", flush=True)
+                # Print detailed file info
+                try:
+                    import stat
+                    st = os.stat(candidate)
+                    mode = st.st_mode
+                    print(f"_find_magick_binary: File mode: {oct(stat.S_IMODE(mode))}", flush=True)
+                    print(f"_find_magick_binary: Is executable: {os.access(candidate, os.X_OK)}", flush=True)
+                except Exception as stat_exc:
+                    print(f"_find_magick_binary: Could not stat file: {stat_exc}", flush=True)
+                
                 if os.access(candidate, os.X_OK):
                     print(f"Found magick binary at: {candidate}", flush=True)
                     return candidate

@@ -59,9 +59,8 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name='kestrel_analyzer',
     icon='../assets/logo.ico',
     debug=False,
@@ -78,8 +77,18 @@ exe = EXE(
     entitlements_file=None,
 )
 
-app = BUNDLE(
+coll = COLLECT(
     exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='kestrel_analyzer',
+)
+
+app = BUNDLE(
+    coll,
     name='kestrel_analyzer.app',
     icon='../assets/logo.ico',
     bundle_identifier='org.ProjectKestrel.Analyzer',
