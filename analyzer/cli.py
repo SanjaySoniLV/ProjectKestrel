@@ -20,7 +20,7 @@ def parse_args():
     parser.add_argument(
         "--smoke",
         action="store_true",
-        help="Load a single image via Wand and exit (skips model loading)",
+        help="Load a single image via direct MagickWand calls and exit (skips model loading)",
     )
     parser.set_defaults(use_gpu=True)
     return parser.parse_args()

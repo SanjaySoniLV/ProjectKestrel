@@ -135,5 +135,8 @@ def read_image(path: str):
             lib.MagickWandTerminus()
             
     except Exception as e:
-        # Log the error if needed, but return None to match original behavior
+        # Print verbose exception info for diagnostics
+        import traceback
+        print(f"Error in read_image({path}): {e}", flush=True)
+        traceback.print_exc()
         return None
