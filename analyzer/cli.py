@@ -62,55 +62,55 @@ def main():
             )
             image_path = _find_first_image(args.folder)
             if not image_path:
-                print("No supported image files found.")
+                print("No supported image files found.", flush=True)
                 return
-            print(f"Smoke test: importing wand for {os.path.basename(image_path)}")
-            print(f"MAGICK_HOME={os.environ.get('MAGICK_HOME')}")
-            print(f"MAGICK_CONFIGURE_PATH={os.environ.get('MAGICK_CONFIGURE_PATH')}")
-            print(f"MAGICK_CODER_MODULE_PATH={os.environ.get('MAGICK_CODER_MODULE_PATH')}")
-            print(f"Smoke test image path: {image_path}")
-            print(f"Smoke test image exists: {os.path.exists(image_path)}")
+            print(f"Smoke test: importing wand for {os.path.basename(image_path)}", flush=True)
+            print(f"MAGICK_HOME={os.environ.get('MAGICK_HOME')}", flush=True)
+            print(f"MAGICK_CONFIGURE_PATH={os.environ.get('MAGICK_CONFIGURE_PATH')}", flush=True)
+            print(f"MAGICK_CODER_MODULE_PATH={os.environ.get('MAGICK_CODER_MODULE_PATH')}", flush=True)
+            print(f"Smoke test image path: {image_path}", flush=True)
+            print(f"Smoke test image exists: {os.path.exists(image_path)}", flush=True)
             if os.path.exists(image_path):
                 try:
-                    print(f"Smoke test image size: {os.path.getsize(image_path)} bytes")
+                    print(f"Smoke test image size: {os.path.getsize(image_path)} bytes", flush=True)
                 except Exception as size_exc:
-                    print(f"Smoke test image size error: {size_exc}")
+                    print(f"Smoke test image size error: {size_exc}", flush=True)
 
             magick_coders = os.environ.get("MAGICK_CODER_MODULE_PATH")
             if magick_coders and os.path.isdir(magick_coders):
                 try:
                     coders_list = sorted(os.listdir(magick_coders))
-                    print(f"Smoke test coders dir entries: {len(coders_list)}")
-                    print("Smoke test coders dir sample:")
+                    print(f"Smoke test coders dir entries: {len(coders_list)}", flush=True)
+                    print("Smoke test coders dir sample:", flush=True)
                     for name in coders_list[:20]:
-                        print(name)
+                        print(name, flush=True)
                 except Exception as exc:
-                    print(f"Smoke test coders dir error: {exc}")
+                    print(f"Smoke test coders dir error: {exc}", flush=True)
             try:
                 from wand.image import Image as WandImage
                 from wand import version as wand_version
             except Exception as exc:
-                print("Smoke test failed to import wand.")
+                print("Smoke test failed to import wand.", flush=True)
                 traceback.print_exc()
-                print(f"Smoke test wand import error: {exc}")
+                print(f"Smoke test wand import error: {exc}", flush=True)
                 raise
 
             try:
-                print(f"Wand version: {wand_version.VERSION}")
-                print(f"Magick version: {wand_version.MAGICK_VERSION}")
-                print(f"Magick version number: {wand_version.MAGICK_VERSION_NUMBER}")
-                print(f"Magick quantum depth: {wand_version.QUANTUM_DEPTH}")
+                print(f"Wand version: {wand_version.VERSION}", flush=True)
+                print(f"Magick version: {wand_version.MAGICK_VERSION}", flush=True)
+                print(f"Magick version number: {wand_version.MAGICK_VERSION_NUMBER}", flush=True)
+                print(f"Magick quantum depth: {wand_version.QUANTUM_DEPTH}", flush=True)
             except Exception as exc:
-                print(f"Smoke test wand version error: {exc}")
+                print(f"Smoke test wand version error: {exc}", flush=True)
 
             magickwand_path = os.environ.get("MAGICKWAND_LIBRARY")
             if magickwand_path:
                 try:
                     ctypes.CDLL(magickwand_path)
-                    print(f"Smoke test CDLL ok: {magickwand_path}")
+                    print(f"Smoke test CDLL ok: {magickwand_path}", flush=True)
                 except Exception as exc:
-                    print(f"Smoke test CDLL failed: {magickwand_path}")
-                    print(f"Smoke test CDLL error: {exc}")
+                    print(f"Smoke test CDLL failed: {magickwand_path}", flush=True)
+                    print(f"Smoke test CDLL error: {exc}", flush=True)
 
             try:
                 from wand.api import library
@@ -124,23 +124,23 @@ def main():
                     for i in range(count.value)
                 ]
                 library.MagickRelinquishMemory(formats_ptr)
-                print(f"Wand supported formats: {len(formats)}")
-                print("Wand formats sample:")
+                print(f"Wand supported formats: {len(formats)}", flush=True)
+                print("Wand formats sample:", flush=True)
                 for name in sorted(formats)[:40]:
-                    print(name)
+                    print(name, flush=True)
             except Exception as exc:
-                print(f"Smoke test formats error: {exc}")
+                print(f"Smoke test formats error: {exc}", flush=True)
 
             try:
                 with WandImage(filename=image_path) as img:
                     _ = img.width
             except Exception as exc:
-                print("Smoke test Wand read failed.")
+                print("Smoke test Wand read failed.", flush=True)
                 traceback.print_exc()
-                print(f"Smoke test wand read error: {exc}")
+                print(f"Smoke test wand read error: {exc}", flush=True)
                 raise
 
-            print("Smoke test: wand read ok")
+            print("Smoke test: wand read ok", flush=True)
             from kestrel_analyzer.pipeline import AnalysisPipeline
             pipeline = AnalysisPipeline(use_gpu=args.use_gpu)
 
@@ -160,8 +160,8 @@ def main():
                     },
                     analyzer_name="cli_smoke",
                 )
-            print()
-            print(f"Smoke test ok: {os.path.basename(image_path)}")
+            print(flush=True)
+            print(f"Smoke test ok: {os.path.basename(image_path)}", flush=True)
             return
         from kestrel_analyzer.pipeline import AnalysisPipeline
         pipeline = AnalysisPipeline(use_gpu=args.use_gpu)

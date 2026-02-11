@@ -49,6 +49,7 @@ jobs:
           export DYLD_LIBRARY_PATH="${IM_PREFIX}/lib"
           export KMP_DUPLICATE_LIB_OK=TRUE
           export PYTHONFAULTHANDLER=1
+          export PYTHONUNBUFFERED=1
           python -X faulthandler analyzer/cli.py --smoke test_imgs --no-gpu
 
       - name: Homebrew smoke test (CR3 decode)
