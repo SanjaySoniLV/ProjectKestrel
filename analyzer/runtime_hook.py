@@ -112,6 +112,18 @@ elif sys.platform == 'darwin' and getattr(sys, 'frozen', False):
         os.path.join('ImageMagick-7.0.10', 'bin'),
         os.path.join('ImageMagick', 'ImageMagick-7.0.10', 'bin'),
     ])
+    # Make all ImageMagick binaries executable if they exist
+    if magick_bin and os.path.isdir(magick_bin):
+        try:
+            import stat
+            for filename in os.listdir(magick_bin):
+                filepath = os.path.join(magick_bin, filename)
+                if os.path.isfile(filepath):
+                    current_mode = os.stat(filepath).st_mode
+                    os.chmod(filepath, current_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            _debug(f"Made binaries in {magick_bin} executable")
+        except Exception as exc:
+            _debug(f"Failed to make binaries executable: {exc}")
     magick_lib = _first_existing_dir(magick_home, [
         'lib',
         os.path.join('ImageMagick-7.0.10', 'lib'),

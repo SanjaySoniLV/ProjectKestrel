@@ -6,33 +6,97 @@ import numpy as np
 
 def _find_magick_binary():
     """Find the ImageMagick 'magick' binary."""
-    # Check MAGICK_HOME first
+    print(f"_find_magick_binary: Starting search...", flush=True)
+    
+    # In frozen builds, check sys._MEIPASS first
+    if getattr(sys, 'frozen', False):
+        meipass = sys._MEIPASS
+        print(f"_find_magick_binary: Frozen build detected, MEIPASS={meipass}", flush=True)
+        
+        # Check various possible locations within the frozen bundle
+        frozen_candidates = [
+            os.path.join(meipass, "ImageMagick", "ImageMagick-7.0.10", "bin", "magick"),
+            os.path.join(meipass, "ImageMagick-7.0.10", "bin", "magick"),
+            os.path.join(meipass, "bin", "magick"),
+        ]
+        
+        for candidate in frozen_candidates:
+            print(f"_find_magick_binary: Checking frozen candidate: {candidate}", flush=True)
+            if os.path.exists(candidate):
+                print(f"_find_magick_binary: File exists, checking if executable", flush=True)
+                if os.access(candidate, os.X_OK):
+                    print(f"Found magick binary at: {candidate}", flush=True)
+                    return candidate
+                else:
+                    print(f"_find_magick_binary: File exists but not executable", flush=True)
+            else:
+                print(f"_find_magick_binary: File does not exist", flush=True)
+    
+    # Check MAGICK_HOME (set by runtime_hook.py in frozen builds)
     magick_home = os.environ.get("MAGICK_HOME")
     if magick_home:
-        magick_path = os.path.join(magick_home, "bin", "magick")
-        if os.path.isfile(magick_path) and os.access(magick_path, os.X_OK):
-            print(f"Found magick binary at: {magick_path}", flush=True)
-            return magick_path
+        print(f"_find_magick_binary: MAGICK_HOME={magick_home}", flush=True)
+        
+        # Debug: Print directory tree of MAGICK_HOME
+        if os.path.isdir(magick_home):
+            print(f"_find_magick_binary: Directory tree of MAGICK_HOME:", flush=True)
+            try:
+                for root, dirs, files in os.walk(magick_home):
+                    level = root.replace(magick_home, '').count(os.sep)
+                    indent = ' ' * 2 * level
+                    print(f"{indent}{os.path.basename(root)}/", flush=True)
+                    subindent = ' ' * 2 * (level + 1)
+                    for file in sorted(files)[:20]:  # Limit files per directory
+                        print(f"{subindent}{file}", flush=True)
+                    if len(files) > 20:
+                        print(f"{subindent}... and {len(files) - 20} more files", flush=True)
+                    # Limit depth to avoid too much output
+                    if level >= 3:
+                        dirs[:] = []
+            except Exception as tree_exc:
+                print(f"_find_magick_binary: Error printing tree: {tree_exc}", flush=True)
+        
+        # Try common locations within MAGICK_HOME
+        candidates = [
+            os.path.join(magick_home, "bin", "magick"),
+            os.path.join(magick_home, "ImageMagick-7.0.10", "bin", "magick"),
+            os.path.join(magick_home, "ImageMagick", "ImageMagick-7.0.10", "bin", "magick"),
+        ]
+        for magick_path in candidates:
+            print(f"_find_magick_binary: Checking MAGICK_HOME candidate: {magick_path}", flush=True)
+            if os.path.exists(magick_path):
+                print(f"_find_magick_binary: File exists, checking if executable", flush=True)
+                if os.access(magick_path, os.X_OK):
+                    print(f"Found magick binary at: {magick_path}", flush=True)
+                    return magick_path
+                else:
+                    print(f"_find_magick_binary: File exists but not executable", flush=True)
+            else:
+                print(f"_find_magick_binary: File does not exist", flush=True)
     
-    # Try to find in PATH
+    # Try to find in PATH (works for both frozen and non-frozen)
     import shutil
+    print(f"_find_magick_binary: Searching in PATH", flush=True)
     magick_path = shutil.which("magick")
     if magick_path:
         print(f"Found magick binary in PATH: {magick_path}", flush=True)
         return magick_path
     
-    # Common installation paths
+    # Common installation paths for non-frozen builds
     common_paths = [
         "/usr/local/bin/magick",
         "/opt/homebrew/bin/magick",
         "/usr/bin/magick",
     ]
     
+    print(f"_find_magick_binary: Checking common paths", flush=True)
     for path in common_paths:
+        print(f"_find_magick_binary: Checking common path: {path}", flush=True)
         if os.path.isfile(path) and os.access(path, os.X_OK):
             print(f"Found magick binary at: {path}", flush=True)
             return path
     
+    print(f"_find_magick_binary: Failed to find magick binary anywhere", flush=True)
     raise RuntimeError("Could not find ImageMagick 'magick' binary")
 
 
