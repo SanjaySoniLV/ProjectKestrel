@@ -7,7 +7,7 @@ onnxruntime==1.23.2
 numpy==2.1.3
 
 # Computer Vision
-opencv-python-headless==4.5.5.64
+opencv-python
 pillow==11.3.0
 
 # Data Processing
