@@ -34,35 +34,19 @@ if compat.is_win:
     # can be found there in the PyPI version)
     binaries += hookutils.collect_dynamic_libs('cv2')
 
-# macOS/Linux: Collect binaries explicitly to avoid recursion errors
-# This addresses PyInstaller recursion issues with cv2 on macOS
+# macOS/Linux: Collect binaries (opencv-python-headless doesn't need Qt bundling)
 if not compat.is_win:
     print("=" * 80, flush=True)
-    print("CUSTOM CV2 HOOK: Starting cv2 binary collection for macOS/Linux", flush=True)
+    print("CUSTOM CV2 HOOK: Collecting cv2 binaries for macOS/Linux (headless version)", flush=True)
     print("=" * 80, flush=True)
     
-    # Collect binaries - standard location
+    # Single collection pass to avoid duplicates that cause recursion errors
     binaries += hookutils.collect_dynamic_libs('cv2')
-    print(f"CUSTOM CV2 HOOK: Standard collect_dynamic_libs found {len(binaries)} binaries", flush=True)
+    print(f"CUSTOM CV2 HOOK: Collected {len(binaries)} binaries", flush=True)
     for binary in binaries[:5]:
         print(f"CUSTOM CV2 HOOK:   - {binary}", flush=True)
     if len(binaries) > 5:
         print(f"CUSTOM CV2 HOOK:   ... and {len(binaries) - 5} more", flush=True)
-    
-    # Try to collect from python-3.x subdirectory with specific patterns
-    print("CUSTOM CV2 HOOK: Attempting to collect from python-3.x subdirectory...", flush=True)
-    try:
-        extra_binaries = hookutils.collect_dynamic_libs('cv2', search_patterns=['cv2*.so', 'cv2*.pyd', 'cv2*.dylib'])
-        print(f"CUSTOM CV2 HOOK: Pattern-based collection found {len(extra_binaries)} binaries", flush=True)
-        for binary in extra_binaries[:5]:
-            print(f"CUSTOM CV2 HOOK:   - {binary}", flush=True)
-        if len(extra_binaries) > 5:
-            print(f"CUSTOM CV2 HOOK:   ... and {len(extra_binaries) - 5} more", flush=True)
-        binaries += extra_binaries
-    except Exception as e:
-        print(f"CUSTOM CV2 HOOK: Error collecting extra binaries: {e}", flush=True)
-    
-    print(f"CUSTOM CV2 HOOK: Total binaries collected: {len(binaries)}", flush=True)
     print("=" * 80, flush=True)
 
 # Collect auxiliary sub-packages, such as `cv2.gapi`, `cv2.mat_wrapper`, `cv2.misc`, and `cv2.utils`. This also
@@ -184,24 +168,19 @@ if config_file:
 # (e.g., __init__.py) is handled gracefully due to PyInstaller's uniqueness constraints on collected files.
 module_collection_mode = 'py'
 
-# In linux PyPI opencv-python wheels, the cv2 extension is linked against Qt, and the wheel bundles a basic subset of Qt
-# shared libraries, plugins, and font files. This is not the case on other OSes (presumably native UI APIs are used by
-# OpenCV HighGUI module), nor in the headless PyPI wheels (opencv-python-headless).
-# The bundled Qt shared libraries should be picked up automatically due to binary dependency analysis, but we need to
-# collect plugins and font files from the `qt` subdirectory.
-if compat.is_linux:
-    pkg_path = pathlib.Path(hookutils.get_module_file_attribute('cv2')).parent
-    # Collect .ttf files fron fonts directory.
-    # NOTE: since we are using glob, we can skip checks for (sub)directories' existence.
-    qt_fonts_dir = pkg_path / 'qt' / 'fonts'
-    datas += [
-        (str(font_file), str(font_file.parent.relative_to(pkg_path.parent)))
-        for font_file in qt_fonts_dir.rglob('*.ttf')
-    ]
-    # Collect .so files from plugins directory.
-    qt_plugins_dir = pkg_path / 'qt' / 'plugins'
-    binaries += [
-        (str(plugin_file), str(plugin_file.parent.relative_to(pkg_path.parent)))
-        for plugin_file in qt_plugins_dir.rglob('*.so')
-    ]
+# Note: opencv-python-headless does not bundle Qt libraries, fonts, or plugins.
+# If you switch back to opencv-python (non-headless), uncomment the Linux Qt collection below:
+#
+# if compat.is_linux:
+#     pkg_path = pathlib.Path(hookutils.get_module_file_attribute('cv2')).parent
+#     qt_fonts_dir = pkg_path / 'qt' / 'fonts'
+#     datas += [
+#         (str(font_file), str(font_file.parent.relative_to(pkg_path.parent)))
+#         for font_file in qt_fonts_dir.rglob('*.ttf')
+#     ]
+#     qt_plugins_dir = pkg_path / 'qt' / 'plugins'
+#     binaries += [
+#         (str(plugin_file), str(plugin_file.parent.relative_to(pkg_path.parent)))
+#         for plugin_file in qt_plugins_dir.rglob('*.so')
+#     ]
 

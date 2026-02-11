@@ -1,6 +1,14 @@
 import sys
 import os
 import platform
+
+# Import cv2 early to initialize sys.path before other libraries
+# This prevents path manipulation conflicts with PyInstaller
+try:
+    import cv2
+except ImportError:
+    pass  # cv2 will be imported later by actual usage modules
+
 if platform.system() == "Windows": # REQUIRED to prevent pytorch dll load errors caused by importing pyqt before torch
     import ctypes
     from importlib.util import find_spec

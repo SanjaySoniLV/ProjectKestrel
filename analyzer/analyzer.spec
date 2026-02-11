@@ -34,8 +34,17 @@ if os.path.isdir('ImageMagick/ImageMagick-7.0.10'):
     except Exception as exc:
         print(f"Tree bundling failed: {exc}")
         datas += collect_system_data_files('ImageMagick/ImageMagick-7.0.10')
+
+# Collect cv2 comprehensively to avoid recursion errors
+print("Collecting all cv2 components...")
+cv2_datas, cv2_binaries, cv2_hiddenimports = collect_all('cv2')
+print(f"cv2: {len(cv2_datas)} datas, {len(cv2_binaries)} binaries, {len(cv2_hiddenimports)} hidden imports")
+
 binaries = []
 hiddenimports = []
+datas += cv2_datas
+binaries += cv2_binaries
+hiddenimports += cv2_hiddenimports
 binaries += collect_dynamic_libs('torch')
 binaries += collect_dynamic_libs('onnxruntime')
 binaries += collect_dynamic_libs('tensorflow')
@@ -47,7 +56,7 @@ a = Analysis(
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=['hooks'],
+    hookspath=[],  # Using community hooks only (custom hook-cv2.py disabled)
     hooksconfig={},
     runtime_hooks=['runtime_hook.py'],
     excludes=[],
