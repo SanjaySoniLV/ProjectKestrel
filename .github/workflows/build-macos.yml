@@ -47,7 +47,9 @@ jobs:
           export MAGICK_CODER_MODULE_PATH="${IM_PREFIX}/lib/ImageMagick/modules-Q16HDRI/coders"
           export DYLD_FALLBACK_LIBRARY_PATH="${IM_PREFIX}/lib"
           export DYLD_LIBRARY_PATH="${IM_PREFIX}/lib"
-          python analyzer/cli.py --smoke test_imgs --no-gpu
+          export KMP_DUPLICATE_LIB_OK=TRUE
+          export PYTHONFAULTHANDLER=1
+          python -X faulthandler analyzer/cli.py --smoke test_imgs --no-gpu
 
       - name: Homebrew smoke test (CR3 decode)
         shell: bash
