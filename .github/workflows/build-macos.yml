@@ -31,28 +31,6 @@ jobs:
           brew info imagemagick-full
           brew install imagemagick-full
 
-      - name: Local Python smoke test (direct MagickWand)
-        shell: bash
-        run: |
-          set -e
-          source .venv2/bin/activate
-          CR3_FILE="$(ls -1 test_imgs/*.CR3 2>/dev/null | head -n 1 || true)"
-          if [ -z "${CR3_FILE}" ]; then
-            echo "No CR3 files found under test_imgs/; skipping local smoke test."
-            exit 0
-          fi
-          IM_PREFIX="$(brew --prefix imagemagick-full)"
-          export MAGICK_HOME="${IM_PREFIX}"
-          export MAGICK_CONFIGURE_PATH="${IM_PREFIX}/etc/ImageMagick-7"
-          export MAGICK_CODER_MODULE_PATH="${IM_PREFIX}/lib/ImageMagick/modules-Q16HDRI/coders"
-          export DYLD_FALLBACK_LIBRARY_PATH="${IM_PREFIX}/lib"
-          export DYLD_LIBRARY_PATH="${IM_PREFIX}/lib"
-          export KMP_DUPLICATE_LIB_OK=TRUE
-          export PYTHONFAULTHANDLER=1
-          export PYTHONUNBUFFERED=1
-          echo "Running smoke test with direct MagickWand ctypes calls..."
-          python -X faulthandler analyzer/cli.py --smoke test_imgs --no-gpu
-
       - name: Homebrew smoke test (CR3 decode)
         shell: bash
         run: |
@@ -77,6 +55,28 @@ jobs:
           echo "Converting ${CR3_FILE} -> ${OUT_JPG}"
           "${FULL_MAGICK}" "${CR3_FILE}" "${OUT_JPG}"
           echo "Homebrew smoke test OK: $(ls -lh "${OUT_JPG}")"
+
+      - name: Local Python smoke test (direct MagickWand)
+        shell: bash
+        run: |
+          set -e
+          source .venv2/bin/activate
+          CR3_FILE="$(ls -1 test_imgs/*.CR3 2>/dev/null | head -n 1 || true)"
+          if [ -z "${CR3_FILE}" ]; then
+            echo "No CR3 files found under test_imgs/; skipping local smoke test."
+            exit 0
+          fi
+          IM_PREFIX="$(brew --prefix imagemagick-full)"
+          export MAGICK_HOME="${IM_PREFIX}"
+          export MAGICK_CONFIGURE_PATH="${IM_PREFIX}/etc/ImageMagick-7"
+          export MAGICK_CODER_MODULE_PATH="${IM_PREFIX}/lib/ImageMagick/modules-Q16HDRI/coders"
+          export DYLD_FALLBACK_LIBRARY_PATH="${IM_PREFIX}/lib"
+          export DYLD_LIBRARY_PATH="${IM_PREFIX}/lib"
+          export KMP_DUPLICATE_LIB_OK=TRUE
+          export PYTHONFAULTHANDLER=1
+          export PYTHONUNBUFFERED=1
+          echo "Running smoke test with direct MagickWand ctypes calls..."
+          python -X faulthandler analyzer/cli.py --smoke test_imgs --no-gpu
 
       - name: Stage ImageMagick for packaging
         shell: bash

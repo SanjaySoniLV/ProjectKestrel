@@ -13,6 +13,51 @@ def _get_magickwand_library():
     else:
         mode = ctypes.DEFAULT_MODE
     
+    # Pre-load MagickCore first on Unix to ensure all symbols are available
+    # This is critical because MagickWand depends on MagickCore
+    if sys.platform != "win32":
+        magick_home = os.environ.get("MAGICK_HOME")
+        core_libs = []
+        
+        if sys.platform == "darwin":  # macOS
+            core_libs = [
+                "libMagickCore-7.Q16HDRI.dylib",
+                "libMagickCore-7.dylib",
+                "libMagickCore.dylib"
+            ]
+        else:  # Linux
+            core_libs = [
+                "libMagickCore-7.Q16HDRI.so",
+                "libMagickCore-7.so",
+                "libMagickCore.so"
+            ]
+        
+        # Try to load MagickCore first
+        core_loaded = False
+        for core_lib in core_libs:
+            try:
+                if magick_home:
+                    # Try with full path first
+                    core_path = os.path.join(magick_home, "lib", core_lib)
+                    if os.path.exists(core_path):
+                        print(f"Pre-loading MagickCore: {core_path}", flush=True)
+                        ctypes.CDLL(core_path, mode=mode)
+                        core_loaded = True
+                        break
+                # Try just the library name
+                print(f"Pre-loading MagickCore: {core_lib}", flush=True)
+                ctypes.CDLL(core_lib, mode=mode)
+                core_loaded = True
+                break
+            except OSError as e:
+                print(f"Failed to pre-load {core_lib}: {e}", flush=True)
+                continue
+        
+        if core_loaded:
+            print(f"MagickCore pre-loaded successfully", flush=True)
+        else:
+            print(f"Warning: Could not pre-load MagickCore", flush=True)
+    
     # Try to get the library path from environment variable
     magickwand_path = os.environ.get("MAGICKWAND_LIBRARY")
     
