@@ -9,42 +9,24 @@ from PyInstaller.utils.hooks import collect_system_data_files
 
 datas = [('models', 'models'), ('gui_app.py', '.'), ('gui_helpers.py', '.'), ('cli.py', '.'), ('VERSION.txt', '.'), ('kestrel_analyzer', 'kestrel_analyzer')]
 
-
-def _condense_datas(items):
-    condensed = []
-    for item in items:
-        if isinstance(item, tuple):
-            if len(item) >= 2:
-                condensed.append((item[0], item[1]))
-        elif hasattr(item, 'toc'):
-            try:
-                toc_items = item.toc
-            except Exception:
-                continue
-            for entry in toc_items:
-                if len(entry) >= 2:
-                    condensed.append((entry[0], entry[1]))
-    return condensed
-
-
-if os.path.isdir('ImageMagick/ImageMagick-7.0.10'):
-    try:
-        tree_items = Tree('ImageMagick/ImageMagick-7.0.10', prefix='ImageMagick/ImageMagick-7.0.10')
-        datas += _condense_datas(tree_items)
-    except Exception as exc:
-        print(f"Tree bundling failed: {exc}")
-        datas += collect_system_data_files('ImageMagick/ImageMagick-7.0.10')
-
 # Collect cv2 comprehensively to avoid recursion errors
 print("Collecting all cv2 components...")
 cv2_datas, cv2_binaries, cv2_hiddenimports = collect_all('cv2')
 print(f"cv2: {len(cv2_datas)} datas, {len(cv2_binaries)} binaries, {len(cv2_hiddenimports)} hidden imports")
+
+# Collect rawpy comprehensively for RAW image processing
+print("Collecting all rawpy components...")
+rawpy_datas, rawpy_binaries, rawpy_hiddenimports = collect_all('rawpy')
+print(f"rawpy: {len(rawpy_datas)} datas, {len(rawpy_binaries)} binaries, {len(rawpy_hiddenimports)} hidden imports")
 
 binaries = []
 hiddenimports = []
 datas += cv2_datas
 binaries += cv2_binaries
 hiddenimports += cv2_hiddenimports
+datas += rawpy_datas
+binaries += rawpy_binaries
+hiddenimports += rawpy_hiddenimports
 binaries += collect_dynamic_libs('torch')
 binaries += collect_dynamic_libs('onnxruntime')
 binaries += collect_dynamic_libs('tensorflow')

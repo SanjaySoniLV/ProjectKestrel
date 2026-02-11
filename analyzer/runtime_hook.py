@@ -4,16 +4,6 @@ import ctypes
 import glob
 
 
-def _prepend_env_path(var_name: str, path: str) -> None:
-    if not path:
-        return
-    current = os.environ.get(var_name, '')
-    if current:
-        os.environ[var_name] = path + os.pathsep + current
-    else:
-        os.environ[var_name] = path
-
-
 def _debug(msg: str) -> None:
     print(f"[runtime_hook] {msg}")
 
@@ -35,46 +25,12 @@ def _dump_tree(root: str, max_depth: int = 2) -> None:
             _debug(f"{indent}  {name}")
 
 
-def _first_existing_dir(base_path: str, candidates: list[str]) -> str | None:
-    for rel in candidates:
-        path = os.path.join(base_path, rel)
-        if os.path.isdir(path):
-            return path
-    return None
-
-
-def _find_coders_dir(base_path: str) -> str | None:
-    candidates = []
-    for root, dirs, _files in os.walk(base_path):
-        for name in dirs:
-            if name == "coders" and "modules-" in root:
-                candidates.append(os.path.join(root, name))
-        # Keep the search shallow to avoid heavy walks.
-        depth = root[len(base_path) :].count(os.sep)
-        if depth > 4:
-            dirs[:] = []
-    if candidates:
-        return sorted(candidates)[0]
-    return None
-
-
-def _find_first_lib(lib_dir: str, pattern: str) -> str | None:
-    if not lib_dir or not os.path.isdir(lib_dir):
-        return None
-    matches = sorted(glob.glob(os.path.join(lib_dir, pattern)))
-    return matches[0] if matches else None
-
-
-def _find_libomp(base_path: str, lib_dir: str | None) -> str | None:
-    if lib_dir:
-        candidate = os.path.join(lib_dir, "libomp.dylib")
-        if os.path.exists(candidate):
-            return candidate
-    # Fall back to a shallow search under the bundle root.
+def _find_libomp(base_path: str) -> str | None:
+    # Search for libomp.dylib under the bundle root
     for root, dirs, files in os.walk(base_path):
         if "libomp.dylib" in files:
             return os.path.join(root, "libomp.dylib")
-        depth = root[len(base_path) :].count(os.sep)
+        depth = root[len(base_path):].count(os.sep)
         if depth > 4:
             dirs[:] = []
     return None
@@ -87,7 +43,10 @@ if sys.platform == 'win32' and getattr(sys, 'frozen', False):
 
     # Add base path to DLL search
     os.add_dll_directory(base_path)
-    _prepend_env_path('PATH', base_path)
+    
+    # Prepend to PATH
+    path_env = os.environ.get('PATH', '')
+    os.environ['PATH'] = base_path + os.pathsep + path_env
 
     # Preload MSVC runtime
     msvc_dlls = ['msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll']
@@ -102,68 +61,16 @@ elif sys.platform == 'darwin' and getattr(sys, 'frozen', False):
     base_path = sys._MEIPASS
     _debug(f"frozen=True platform=darwin base_path={base_path}")
     _dump_tree(base_path, max_depth=2)
-    # Prefer a nested ImageMagick root if present; fall back to MEIPASS.
-    magick_home = _first_existing_dir(base_path, [
-        os.path.join('ImageMagick', 'ImageMagick-7.0.10'),
-        'ImageMagick-7.0.10',
-    ]) or base_path
-    magick_bin = _first_existing_dir(magick_home, [
-        'bin',
-        os.path.join('ImageMagick-7.0.10', 'bin'),
-        os.path.join('ImageMagick', 'ImageMagick-7.0.10', 'bin'),
-    ])
-    magick_lib = _first_existing_dir(magick_home, [
-        'lib',
-        os.path.join('ImageMagick-7.0.10', 'lib'),
-        os.path.join('ImageMagick', 'ImageMagick-7.0.10', 'lib'),
-    ])
-    magick_etc = _first_existing_dir(magick_home, [
-        os.path.join('etc', 'ImageMagick-7'),
-        os.path.join('ImageMagick-7.0.10', 'etc', 'ImageMagick-7'),
-        os.path.join('ImageMagick', 'ImageMagick-7.0.10', 'etc', 'ImageMagick-7'),
-    ])
-    magick_coders = None
-    if magick_lib:
-        magick_coders = _first_existing_dir(magick_lib, [
-            os.path.join('ImageMagick-7.0.10', 'modules-Q16HDRI', 'coders'),
-            os.path.join('ImageMagick-7.0.10', 'modules-Q16', 'coders'),
-        ])
-    if not magick_coders:
-        magick_coders = _find_coders_dir(magick_home)
-
-    _debug(f"MAGICK_HOME={magick_home}")
-    _debug(f"MAGICK_BIN={magick_bin}")
-    _debug(f"MAGICK_LIB={magick_lib}")
-    _debug(f"MAGICK_ETC={magick_etc}")
-    _debug(f"MAGICK_CODERS={magick_coders}")
-
-    magick_wand = _find_first_lib(magick_lib, "libMagickWand-*.dylib")
-    magick_core = _find_first_lib(magick_lib, "libMagickCore-*.dylib")
-    _debug(f"MAGICKWAND_LIBRARY={magick_wand}")
-    _debug(f"MAGICKCORE_LIBRARY={magick_core}")
-
-    libomp_path = _find_libomp(magick_home, magick_lib)
-    _debug(f"LIBOMP_PATH={libomp_path}")
-
-    if os.path.isdir(magick_home):
-        os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
-        os.environ.setdefault('MAGICK_HOME', magick_home)
-        if magick_etc:
-            os.environ.setdefault('MAGICK_CONFIGURE_PATH', magick_etc)
-        if magick_coders:
-            os.environ.setdefault('MAGICK_CODER_MODULE_PATH', magick_coders)
-        if magick_bin:
-            _prepend_env_path('PATH', magick_bin)
-        if magick_lib:
-            _prepend_env_path('DYLD_FALLBACK_LIBRARY_PATH', magick_lib)
-            _prepend_env_path('DYLD_LIBRARY_PATH', magick_lib)
-        if libomp_path:
-            try:
-                ctypes.CDLL(libomp_path, mode=ctypes.RTLD_GLOBAL)
-                _debug("libomp preloaded")
-            except Exception as exc:
-                _debug(f"libomp preload failed: {exc}")
-        if magick_wand:
-            os.environ.setdefault('MAGICKWAND_LIBRARY', magick_wand)
-        if magick_core:
-            os.environ.setdefault('MAGICKCORE_LIBRARY', magick_core)
+    
+    # macOS-specific setup (no ImageMagick needed - using rawpy for RAW files)
+    os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
+    
+    # Find and preload libomp if present (needed by some ML libraries)
+    libomp_path = _find_libomp(base_path)
+    if libomp_path:
+        _debug(f"LIBOMP_PATH={libomp_path}")
+        try:
+            ctypes.CDLL(libomp_path, mode=ctypes.RTLD_GLOBAL)
+            _debug("libomp preloaded")
+        except Exception as exc:
+            _debug(f"libomp preload failed: {exc}")

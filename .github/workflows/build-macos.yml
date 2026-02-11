@@ -24,90 +24,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-macos.txt
 
-      - name: Install ImageMagick (Homebrew)
-        shell: bash
-        run: |
-          echo "Homebrew info: imagemagick-full"
-          brew info imagemagick-full
-          brew install imagemagick-full
-
-      - name: Homebrew smoke test (CR3 decode)
-        shell: bash
-        run: |
-          set -e
-          CR3_FILE="$(ls -1 test_imgs/*.CR3 2>/dev/null | head -n 1 || true)"
-          if [ -z "${CR3_FILE}" ]; then
-            echo "No CR3 files found under test_imgs/; skipping Homebrew smoke test."
-            exit 0
-          fi
-          FULL_PREFIX="$(brew --prefix imagemagick-full)"
-          FULL_MAGICK="${FULL_PREFIX}/bin/magick"
-          if [ ! -x "${FULL_MAGICK}" ]; then
-            echo "imagemagick-full magick not found at ${FULL_MAGICK}"
-            exit 1
-          fi
-          echo "Homebrew magick (full): ${FULL_MAGICK}"
-          echo "Homebrew magick version:"
-          "${FULL_MAGICK}" -version
-          OUT_JPG="/tmp/ci_brew_smoke.jpg"
-          echo "Probing ${CR3_FILE} with identify"
-          "${FULL_MAGICK}" identify -verbose "${CR3_FILE}" | head -n 60
-          echo "Converting ${CR3_FILE} -> ${OUT_JPG}"
-          "${FULL_MAGICK}" "${CR3_FILE}" "${OUT_JPG}"
-          if [ ! -f "${OUT_JPG}" ]; then
-            echo "ERROR: Output file ${OUT_JPG} was not created"
-            exit 1
-          fi
-          OUT_SIZE=$(stat -f%z "${OUT_JPG}" 2>/dev/null || stat -c%s "${OUT_JPG}" 2>/dev/null)
-          echo "Homebrew smoke test OK: ${OUT_JPG} created, size=${OUT_SIZE} bytes"
-          if [ "${OUT_SIZE}" -lt 1000 ]; then
-            echo "ERROR: Output file is too small (${OUT_SIZE} bytes)"
-            exit 1
-          fi
-          echo "Output file verified: $(ls -lh "${OUT_JPG}")"
-
-      - name: Local Python smoke test (direct MagickWand)
+      - name: Python smoke test (pre-build)
         shell: bash
         run: |
           set -e
           source .venv2/bin/activate
-          CR3_FILE="$(ls -1 test_imgs/*.CR3 2>/dev/null | head -n 1 || true)"
-          if [ -z "${CR3_FILE}" ]; then
-            echo "No CR3 files found under test_imgs/; skipping local smoke test."
-            exit 0
-          fi
-          IM_PREFIX="$(brew --prefix imagemagick-full)"
-          export MAGICK_HOME="${IM_PREFIX}"
-          export MAGICK_CONFIGURE_PATH="${IM_PREFIX}/etc/ImageMagick-7"
-          export MAGICK_CODER_MODULE_PATH="${IM_PREFIX}/lib/ImageMagick/modules-Q16HDRI/coders"
-          export DYLD_FALLBACK_LIBRARY_PATH="${IM_PREFIX}/lib"
-          export DYLD_LIBRARY_PATH="${IM_PREFIX}/lib"
-          export KMP_DUPLICATE_LIB_OK=TRUE
-          export PYTHONFAULTHANDLER=1
-          export PYTHONUNBUFFERED=1
-          echo "Running smoke test with direct MagickWand ctypes calls..."
-          python -X faulthandler analyzer/cli.py --smoke test_imgs --no-gpu
-
-      - name: Stage ImageMagick for packaging
-        shell: bash
-        run: |
-          STAGING_DIR="analyzer/ImageMagick/ImageMagick-7.0.10"
-          rm -rf "${STAGING_DIR}"
-          mkdir -p "${STAGING_DIR}"
-
-          FORMULAS=$(brew deps --include-build imagemagick-full)
-          FORMULAS+=$'\n'
-          FORMULAS+="imagemagick-full"
-          FORMULAS=$(printf "%s\n" ${FORMULAS} | sort -u)
-          for formula in ${FORMULAS}; do
-            echo "Staging Homebrew dependency: ${formula}"
-            PREFIX="$(brew --prefix "${formula}")"
-            if [[ -d "${PREFIX}" ]]; then
-              rsync -a "${PREFIX}/" "${STAGING_DIR}/"
-            else
-              echo "Skipping missing prefix: ${PREFIX}"
-            fi
-          done
+          echo "Running Python smoke test to verify rawpy and image_utils work..."
+          python analyzer/cli.py --smoke test_imgs --no-gpu
+          echo "Python smoke test PASSED - rawpy is working correctly"
 
       - name: Build macOS apps with PyInstaller
         shell: bash
