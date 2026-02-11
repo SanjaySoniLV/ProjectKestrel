@@ -1,7 +1,7 @@
 # Custom PyInstaller hook for cv2 to fix collection of binaries from python-3.x subdirectory
 # Based on: https://github.com/pyinstaller/pyinstaller-hooks-contrib/issues/issues
 
-from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules, get_module_file_attribute
+from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules, collect_data_files, get_module_file_attribute
 import os
 import sys
 
@@ -13,6 +13,14 @@ print("=" * 80, flush=True)
 hiddenimports = collect_submodules('cv2')
 print(f"CUSTOM CV2 HOOK: Collected {len(hiddenimports)} hidden imports", flush=True)
 print(f"CUSTOM CV2 HOOK: Hidden imports: {hiddenimports[:10]}...", flush=True)
+
+# Collect data files (includes config.py and other necessary files)
+datas = collect_data_files('cv2')
+print(f"CUSTOM CV2 HOOK: Collected {len(datas)} data files", flush=True)
+for data in datas[:10]:
+    print(f"CUSTOM CV2 HOOK:   DATA: {data}", flush=True)
+if len(datas) > 10:
+    print(f"CUSTOM CV2 HOOK:   ... and {len(datas) - 10} more data files", flush=True)
 
 # Collect binaries - standard location
 binaries = collect_dynamic_libs('cv2')
@@ -87,8 +95,7 @@ except Exception as e:
     traceback.print_exc()
 
 print(f"CUSTOM CV2 HOOK: Final binary count: {len(binaries)}", flush=True)
+print(f"CUSTOM CV2 HOOK: Final data file count: {len(datas)}", flush=True)
 print("=" * 80, flush=True)
 print("CUSTOM CV2 HOOK: Finished cv2 hook execution", flush=True)
 print("=" * 80, flush=True)
-
-datas = []
