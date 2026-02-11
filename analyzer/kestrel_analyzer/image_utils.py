@@ -8,7 +8,8 @@ def _get_magickwand_library():
     """Load the MagickWand library using ctypes."""
     # On Unix systems, we need RTLD_GLOBAL so MagickWand can find MagickCore symbols
     if sys.platform != "win32":
-        mode = ctypes.RTLD_GLOBAL | ctypes.RTLD_NOW
+        # RTLD flags are in os module, not ctypes
+        mode = os.RTLD_GLOBAL | os.RTLD_NOW
     else:
         mode = ctypes.DEFAULT_MODE
     
