@@ -54,7 +54,17 @@ jobs:
           "${FULL_MAGICK}" identify -verbose "${CR3_FILE}" | head -n 60
           echo "Converting ${CR3_FILE} -> ${OUT_JPG}"
           "${FULL_MAGICK}" "${CR3_FILE}" "${OUT_JPG}"
-          echo "Homebrew smoke test OK: $(ls -lh "${OUT_JPG}")"
+          if [ ! -f "${OUT_JPG}" ]; then
+            echo "ERROR: Output file ${OUT_JPG} was not created"
+            exit 1
+          fi
+          OUT_SIZE=$(stat -f%z "${OUT_JPG}" 2>/dev/null || stat -c%s "${OUT_JPG}" 2>/dev/null)
+          echo "Homebrew smoke test OK: ${OUT_JPG} created, size=${OUT_SIZE} bytes"
+          if [ "${OUT_SIZE}" -lt 1000 ]; then
+            echo "ERROR: Output file is too small (${OUT_SIZE} bytes)"
+            exit 1
+          fi
+          echo "Output file verified: $(ls -lh "${OUT_JPG}")"
 
       - name: Local Python smoke test (direct MagickWand)
         shell: bash

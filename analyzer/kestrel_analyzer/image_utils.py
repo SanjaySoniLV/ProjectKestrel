@@ -1,236 +1,109 @@
-import ctypes
 import os
 import sys
+import subprocess
 import numpy as np
 
 
-def _get_magickwand_library():
-    """Load the MagickWand library using ctypes."""
-    # On Unix systems, we need RTLD_GLOBAL so MagickWand can find MagickCore symbols
-    if sys.platform != "win32":
-        # RTLD flags are in os module, not ctypes
-        mode = os.RTLD_GLOBAL | os.RTLD_NOW
-    else:
-        mode = ctypes.DEFAULT_MODE
+def _find_magick_binary():
+    """Find the ImageMagick 'magick' binary."""
+    # Check MAGICK_HOME first
+    magick_home = os.environ.get("MAGICK_HOME")
+    if magick_home:
+        magick_path = os.path.join(magick_home, "bin", "magick")
+        if os.path.isfile(magick_path) and os.access(magick_path, os.X_OK):
+            print(f"Found magick binary at: {magick_path}", flush=True)
+            return magick_path
     
-    # Pre-load MagickCore first on Unix to ensure all symbols are available
-    # This is critical because MagickWand depends on MagickCore
-    if sys.platform != "win32":
-        magick_home = os.environ.get("MAGICK_HOME")
-        core_libs = []
-        
-        if sys.platform == "darwin":  # macOS
-            core_libs = [
-                "libMagickCore-7.Q16HDRI.dylib",
-                "libMagickCore-7.dylib",
-                "libMagickCore.dylib"
-            ]
-        else:  # Linux
-            core_libs = [
-                "libMagickCore-7.Q16HDRI.so",
-                "libMagickCore-7.so",
-                "libMagickCore.so"
-            ]
-        
-        # Try to load MagickCore first
-        core_loaded = False
-        for core_lib in core_libs:
-            try:
-                if magick_home:
-                    # Try with full path first
-                    core_path = os.path.join(magick_home, "lib", core_lib)
-                    if os.path.exists(core_path):
-                        print(f"Pre-loading MagickCore: {core_path}", flush=True)
-                        ctypes.CDLL(core_path, mode=mode)
-                        core_loaded = True
-                        break
-                # Try just the library name
-                print(f"Pre-loading MagickCore: {core_lib}", flush=True)
-                ctypes.CDLL(core_lib, mode=mode)
-                core_loaded = True
-                break
-            except OSError as e:
-                print(f"Failed to pre-load {core_lib}: {e}", flush=True)
-                continue
-        
-        if core_loaded:
-            print(f"MagickCore pre-loaded successfully", flush=True)
-        else:
-            print(f"Warning: Could not pre-load MagickCore", flush=True)
+    # Try to find in PATH
+    import shutil
+    magick_path = shutil.which("magick")
+    if magick_path:
+        print(f"Found magick binary in PATH: {magick_path}", flush=True)
+        return magick_path
     
-    # Try to get the library path from environment variable
-    magickwand_path = os.environ.get("MAGICKWAND_LIBRARY")
+    # Common installation paths
+    common_paths = [
+        "/usr/local/bin/magick",
+        "/opt/homebrew/bin/magick",
+        "/usr/bin/magick",
+    ]
     
-    if magickwand_path and os.path.exists(magickwand_path):
-        print(f"Loading MagickWand from MAGICKWAND_LIBRARY: {magickwand_path}", flush=True)
-        return ctypes.CDLL(magickwand_path, mode=mode)
+    for path in common_paths:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            print(f"Found magick binary at: {path}", flush=True)
+            return path
     
-    # Try common library names
-    library_names = []
-    if sys.platform == "darwin":  # macOS
-        library_names = [
-            "libMagickWand-7.Q16HDRI.dylib",
-            "libMagickWand-7.dylib",
-            "libMagickWand.dylib"
-        ]
-    elif sys.platform == "win32":  # Windows
-        library_names = [
-            "CORE_RL_MagickWand_.dll",
-            "libMagickWand-7.Q16HDRI.dll"
-        ]
-    else:  # Linux
-        library_names = [
-            "libMagickWand-7.Q16HDRI.so",
-            "libMagickWand-7.so",
-            "libMagickWand.so"
-        ]
-    
-    for lib_name in library_names:
-        try:
-            print(f"Trying to load MagickWand library: {lib_name}", flush=True)
-            lib = ctypes.CDLL(lib_name, mode=mode)
-            print(f"Successfully loaded: {lib_name}", flush=True)
-            return lib
-        except OSError as e:
-            print(f"Failed to load {lib_name}: {e}", flush=True)
-            continue
-    
-    raise RuntimeError("Could not load MagickWand library")
+    raise RuntimeError("Could not find ImageMagick 'magick' binary")
 
 
 def read_image(path: str):
     """
-    Read an image using direct ctypes calls to MagickWand library.
+    Read an image using ImageMagick CLI via subprocess.
     Returns a numpy array or None on failure.
     """
     try:
-        print(f"read_image: Loading MagickWand library...", flush=True)
-        lib = _get_magickwand_library()
-        print(f"read_image: Library loaded successfully", flush=True)
+        print(f"read_image: Finding magick binary...", flush=True)
+        magick_bin = _find_magick_binary()
+        print(f"read_image: Using magick binary: {magick_bin}", flush=True)
         
-        # Define MagickWand API functions
-        print(f"read_image: Setting up function signatures...", flush=True)
+        # First, get the image dimensions after auto-orient
+        print(f"read_image: Getting image dimensions for {path}", flush=True)
+        result = subprocess.run(
+            [magick_bin, path, "-auto-orient", "-format", "%w %h", "info:"],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
         
-        lib.MagickWandGenesis.argtypes = []
-        lib.MagickWandGenesis.restype = None
-        
-        lib.NewMagickWand.argtypes = []
-        lib.NewMagickWand.restype = ctypes.c_void_p
-        
-        lib.MagickReadImage.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
-        lib.MagickReadImage.restype = ctypes.c_int
-        
-        lib.MagickGetImageWidth.argtypes = [ctypes.c_void_p]
-        lib.MagickGetImageWidth.restype = ctypes.c_size_t
-        
-        lib.MagickGetImageHeight.argtypes = [ctypes.c_void_p]
-        lib.MagickGetImageHeight.restype = ctypes.c_size_t
-        
-        lib.MagickAutoOrientImage.argtypes = [ctypes.c_void_p]
-        lib.MagickAutoOrientImage.restype = ctypes.c_int
-        
-        lib.MagickExportImagePixels.argtypes = [
-            ctypes.c_void_p,  # wand
-            ctypes.c_ssize_t,  # x
-            ctypes.c_ssize_t,  # y
-            ctypes.c_size_t,   # columns
-            ctypes.c_size_t,   # rows
-            ctypes.c_char_p,   # map
-            ctypes.c_int,      # storage type (CharPixel=1, ShortPixel=2, IntegerPixel=3, etc.)
-            ctypes.c_void_p    # pixels
-        ]
-        lib.MagickExportImagePixels.restype = ctypes.c_int
-        
-        lib.DestroyMagickWand.argtypes = [ctypes.c_void_p]
-        lib.DestroyMagickWand.restype = ctypes.c_void_p
-        
-        lib.MagickWandTerminus.argtypes = []
-        lib.MagickWandTerminus.restype = None
-        
-        # Error handling functions
-        lib.MagickGetException.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
-        lib.MagickGetException.restype = ctypes.c_char_p
-        
-        lib.MagickRelinquishMemory.argtypes = [ctypes.c_void_p]
-        lib.MagickRelinquishMemory.restype = ctypes.c_void_p
-        
-        print(f"read_image: Calling MagickWandGenesis...", flush=True)
-        # Initialize MagickWand environment
-        lib.MagickWandGenesis()
-        print(f"read_image: MagickWandGenesis completed", flush=True)
-        
-        print(f"read_image: Creating new wand...", flush=True)
-        # Create a new wand
-        wand = lib.NewMagickWand()
-        if not wand:
-            print(f"read_image: NewMagickWand returned NULL", flush=True)
+        if result.returncode != 0:
+            print(f"read_image: Failed to get dimensions. stderr: {result.stderr}", flush=True)
             return None
-        print(f"read_image: Wand created: {hex(wand)}", flush=True)
+        
+        dims = result.stdout.strip().split()
+        if len(dims) != 2:
+            print(f"read_image: Invalid dimension output: {result.stdout}", flush=True)
+            return None
         
         try:
-            # Read the image
-            path_bytes = path.encode('utf-8')
-            print(f"read_image: About to call MagickReadImage with path: {path}", flush=True)
-            print(f"read_image: path_bytes = {path_bytes}", flush=True)
-            print(f"read_image: wand = {hex(wand)}", flush=True)
-            
-            status = lib.MagickReadImage(wand, path_bytes)
-            print(f"read_image: MagickReadImage returned status: {status}", flush=True)
-            
-            if not status:
-                # Get error message
-                severity = ctypes.c_int()
-                error_msg_ptr = lib.MagickGetException(wand, ctypes.byref(severity))
-                if error_msg_ptr:
-                    error_msg = error_msg_ptr.decode('utf-8', errors='ignore')
-                    lib.MagickRelinquishMemory(error_msg_ptr)
-                    print(f"read_image: MagickReadImage failed with error: {error_msg}", flush=True)
-                else:
-                    print(f"read_image: MagickReadImage failed (no error message)", flush=True)
-                return None
-            
-            print(f"read_image: Image read successfully, applying auto-orient...", flush=True)
-            # Auto-orient the image (handles EXIF orientation)
-            lib.MagickAutoOrientImage(wand)
-            
-            print(f"read_image: Getting image dimensions...", flush=True)
-            # Get image dimensions
-            width = lib.MagickGetImageWidth(wand)
-            height = lib.MagickGetImageHeight(wand)
-            print(f"read_image: Image dimensions: {width}x{height}", flush=True)
-            
-            if width == 0 or height == 0:
-                print(f"read_image: Invalid dimensions", flush=True)
-                return None
-            
-            print(f"read_image: Exporting pixels to numpy array...", flush=True)
-            # Export pixels as RGB (CharPixel = 1 for unsigned char)
-            pixel_data = np.zeros((height, width, 3), dtype=np.uint8)
-            status = lib.MagickExportImagePixels(
-                wand,
-                0,  # x
-                0,  # y
-                width,
-                height,
-                b"RGB",  # map
-                1,  # CharPixel
-                pixel_data.ctypes.data_as(ctypes.c_void_p)
-            )
-            
-            if not status:
-                print(f"read_image: MagickExportImagePixels failed", flush=True)
-                return None
-            
-            print(f"read_image: Successfully exported pixels", flush=True)
-            return pixel_data
-            
-        finally:
-            # Clean up
-            print(f"read_image: Cleaning up wand...", flush=True)
-            lib.DestroyMagickWand(wand)
-            lib.MagickWandTerminus()
-            print(f"read_image: Cleanup complete", flush=True)
-            
+            width = int(dims[0])
+            height = int(dims[1])
+        except ValueError:
+            print(f"read_image: Could not parse dimensions: {dims}", flush=True)
+            return None
+        
+        print(f"read_image: Image dimensions: {width}x{height}", flush=True)
+        
+        if width == 0 or height == 0:
+            print(f"read_image: Invalid dimensions", flush=True)
+            return None
+        
+        # Now get the raw RGB pixel data
+        print(f"read_image: Reading RGB pixel data...", flush=True)
+        result = subprocess.run(
+            [magick_bin, path, "-auto-orient", "-depth", "8", "RGB:-"],
+            capture_output=True,
+            timeout=60
+        )
+        
+        if result.returncode != 0:
+            print(f"read_image: Failed to read pixel data. stderr: {result.stderr.decode('utf-8', errors='ignore')}", flush=True)
+            return None
+        
+        # Convert raw bytes to numpy array
+        expected_size = width * height * 3
+        if len(result.stdout) != expected_size:
+            print(f"read_image: Unexpected data size. Expected {expected_size}, got {len(result.stdout)}", flush=True)
+            return None
+        
+        pixel_data = np.frombuffer(result.stdout, dtype=np.uint8)
+        pixel_data = pixel_data.reshape((height, width, 3))
+        
+        print(f"read_image: Successfully read image, shape={pixel_data.shape}", flush=True)
+        return pixel_data
+        
+    except subprocess.TimeoutExpired:
+        print(f"read_image: Timeout reading {path}", flush=True)
+        return None
     except Exception as e:
         # Print verbose exception info for diagnostics
         import traceback
