@@ -115,17 +115,6 @@ jobs:
           chmod +x packaging/build_installer_headless.sh
           ./packaging/build_installer_headless.sh
 
-      - name: Otool diagnostics (bundled ImageMagick)
-        shell: bash
-        run: |
-          APP_PATH=$(ls -d release/**/kestrel_analyzer.app | head -n 1)
-          CONTENTS_DIR="${APP_PATH}/Contents"
-          echo "Contents: ${CONTENTS_DIR}"
-          find "${CONTENTS_DIR}" -name "libMagickWand*.dylib" -o -name "libMagickCore*.dylib" | while read -r dylib; do
-            echo "otool -L ${dylib}"
-            otool -L "${dylib}"
-          done
-
       - name: Smoke test bundled analyzer (CLI)
         shell: bash
         run: |
