@@ -109,11 +109,11 @@ jobs:
             fi
           done
 
-      - name: Run macOS headless build
+      - name: Build macOS apps with PyInstaller
         shell: bash
         run: |
-          chmod +x packaging/build_installer_headless.sh
-          ./packaging/build_installer_headless.sh
+          chmod +x packaging/build_apps_only.sh
+          ./packaging/build_apps_only.sh
 
       - name: Smoke test bundled analyzer (CLI)
         shell: bash
@@ -132,6 +132,12 @@ jobs:
 
           APP_PATH=$(ls -d release/**/kestrel_analyzer.app | head -n 1)
           "${APP_PATH}/Contents/MacOS/kestrel_analyzer" --cli "${TEST_DIR}" --no-gpu --smoke
+
+      - name: Create macOS installer (.pkg)
+        shell: bash
+        run: |
+          chmod +x packaging/build_pkg_only.sh
+          ./packaging/build_pkg_only.sh
 
       - name: Upload macOS installer
         uses: actions/upload-artifact@v4
