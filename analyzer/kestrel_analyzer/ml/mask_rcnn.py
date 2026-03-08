@@ -48,7 +48,7 @@ class MaskRCNNWrapper:
         # Warm up GPU with a small dummy tensor
         if self.device.type != "cpu":
             try:
-                dummy = torch.randn(1, 3, 64, 64, device=self.device)
+                dummy = torch.randn(3, 64, 64, device=self.device)
                 with torch.no_grad():
                     self.model([dummy])
                 logger.info("Mask R-CNN GPU warm-up complete")
