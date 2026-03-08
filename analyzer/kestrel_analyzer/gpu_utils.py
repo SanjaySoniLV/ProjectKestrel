@@ -1,7 +1,8 @@
-"""GPU detection and device management for CUDA (NVIDIA) and ROCm (AMD)."""
+"""GPU detection and device management for CUDA, ROCm, and DirectML."""
 
 import logging
 import os
+import sys
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
@@ -13,6 +14,7 @@ class GPUBackend(Enum):
     CPU = "cpu"
     CUDA = "cuda"
     ROCM = "rocm"
+    DIRECTML = "directml"
 
 
 @dataclass
@@ -52,6 +54,19 @@ def detect_gpu() -> Optional[GPUInfo]:
     except Exception as e:
         logger.debug("CUDA detection failed: %s", e)
 
+    # Try DirectML (Windows — supports AMD, NVIDIA, and Intel GPUs)
+    try:
+        import torch_directml
+        if torch_directml.is_available():
+            device_name = torch_directml.device_name(0)
+            # DirectML doesn't expose memory info directly
+            logger.info("GPU detected via DirectML: %s", device_name)
+            return GPUInfo(backend=GPUBackend.DIRECTML, device_name=device_name, memory_mb=0)
+    except ImportError:
+        logger.debug("torch-directml not installed")
+    except Exception as e:
+        logger.debug("DirectML detection failed: %s", e)
+
     logger.info("No GPU detected, using CPU")
     return None
 
@@ -68,8 +83,16 @@ def get_torch_device(use_gpu: bool):
         return torch.device("cpu")
 
     gpu = detect_gpu()
-    if gpu and gpu.backend in (GPUBackend.CUDA, GPUBackend.ROCM):
+    if gpu is None:
+        return torch.device("cpu")
+
+    if gpu.backend in (GPUBackend.CUDA, GPUBackend.ROCM):
         return torch.device("cuda")
+
+    if gpu.backend == GPUBackend.DIRECTML:
+        import torch_directml
+        return torch_directml.device(0)
+
     return torch.device("cpu")
 
 
@@ -130,9 +153,11 @@ def get_gpu_summary(use_gpu: bool) -> str:
 
     gpu = detect_gpu()
     if gpu is None:
-        return (
-            "No GPU detected, using CPU. "
-            "For AMD GPUs, install the ROCm build: "
-            "pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2.4"
-        )
-    return f"{gpu.backend.value.upper()}: {gpu.device_name} ({gpu.memory_mb} MB)"
+        if sys.platform == "win32":
+            hint = "pip install torch-directml onnxruntime-directml"
+        else:
+            hint = "pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2.4"
+        return f"No GPU detected, using CPU. To enable GPU: {hint}"
+
+    mem_info = f" ({gpu.memory_mb} MB)" if gpu.memory_mb > 0 else ""
+    return f"{gpu.backend.value.upper()}: {gpu.device_name}{mem_info}"
