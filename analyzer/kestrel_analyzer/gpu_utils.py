@@ -51,9 +51,14 @@ def detect_gpu() -> Optional[GPUInfo]:
     return None
 
 
-def get_torch_device(use_gpu: bool) -> "torch.device":
+def get_torch_device(use_gpu: bool):
     """Return the best available torch device."""
-    import torch
+    try:
+        import torch
+    except ImportError:
+        logger.warning("PyTorch not installed, cannot determine device")
+        return None
+
     if not use_gpu:
         return torch.device("cpu")
 
