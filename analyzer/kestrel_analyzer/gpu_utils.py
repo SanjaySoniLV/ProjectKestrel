@@ -57,15 +57,19 @@ def detect_gpu() -> Optional[GPUInfo]:
     # Try DirectML (Windows — supports AMD, NVIDIA, and Intel GPUs)
     try:
         import torch_directml
-        if torch_directml.is_available():
+        dml_available = torch_directml.is_available()
+        dml_count = torch_directml.device_count()
+        logger.info("DirectML: available=%s, device_count=%d", dml_available, dml_count)
+        if dml_count > 0:
             device_name = torch_directml.device_name(0)
-            # DirectML doesn't expose memory info directly
             logger.info("GPU detected via DirectML: %s", device_name)
             return GPUInfo(backend=GPUBackend.DIRECTML, device_name=device_name, memory_mb=0)
+        else:
+            logger.warning("DirectML: available=%s but device_count=%d", dml_available, dml_count)
     except ImportError:
         logger.debug("torch-directml not installed")
     except Exception as e:
-        logger.debug("DirectML detection failed: %s", e)
+        logger.warning("DirectML detection failed: %s", e)
 
     logger.info("No GPU detected, using CPU")
     return None

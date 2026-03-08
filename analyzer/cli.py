@@ -1,4 +1,5 @@
 import argparse
+import logging
 import os
 import shutil
 import sys
@@ -46,6 +47,7 @@ def _find_first_image(folder: str) -> str | None:
 
 
 def main():
+    logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")
     log_path = get_log_path(None)
     try:
         args = parse_args()
