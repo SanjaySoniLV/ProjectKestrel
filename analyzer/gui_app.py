@@ -402,7 +402,10 @@ class KestrelGUI(QWidget):
             if idx < len(results):
                 rating = results[idx].get("rating", 0)
                 stars = self._format_stars(rating)
-                self.crop_cards[idx]["rating"].setText(f"Rating: {stars}")
+                detail = results[idx].get("detail_score", -1)
+                sharpness = results[idx].get("sharpness_score", -1)
+                detail_text = f" | Detail: {detail:.2f} Sharpness: {sharpness:.2f}" if detail >= 0 else ""
+                self.crop_cards[idx]["rating"].setText(f"Rating: {stars}{detail_text}")
             else:
                 self.crop_cards[idx]["rating"].setText("Rating: -")
 

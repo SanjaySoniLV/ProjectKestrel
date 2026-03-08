@@ -1,5 +1,5 @@
+import logging
 import os
-import time
 import warnings
 from typing import Callable, Dict, Optional
 
@@ -18,22 +18,19 @@ from .config import (
     KESTREL_DIR_NAME,
 )
 from .database import load_database, save_database
-print("Importing read_image from image_utils...")
-from .image_utils import read_image
-print("read_image imported successfully.")
+from .image_utils import read_image, extract_exif_metadata, normalise_exposure
 from .ratings import quality_to_rating
-print("Importing compute_image_similarity_akaze from similarity...")
 from .similarity import compute_image_similarity_akaze
+from .detail_analysis import analyse_detail
+from .metadata_writer import write_xmp_sidecar
+from .gpu_utils import get_gpu_summary
 from .logging_utils import get_log_path, log_event, log_exception, log_warning
-print("Utility functions imported successfully.")
 
-print("Importing ML models... Starting with MaskRCNNWrapper...")
 from .ml.mask_rcnn import MaskRCNNWrapper
-print("MaskRCNNWrapper imported successfully. Now importing BirdSpeciesClassifier...")
 from .ml.bird_species import BirdSpeciesClassifier
-print("BirdSpeciesClassifier imported successfully. Now importing QualityClassifier...")
 from .ml.quality import QualityClassifier
-print("QualityClassifier imported successfully. All ML models imported.")
+
+logger = logging.getLogger(__name__)
 
 
 class AnalysisPipeline:
@@ -72,18 +69,21 @@ class AnalysisPipeline:
     def load_models(self, status_cb: Optional[Callable[[str], None]] = None) -> None:
         if self.mask_rcnn and self.species_clf and self.quality_clf:
             return
+
+        gpu_info = get_gpu_summary(self.use_gpu)
         if status_cb:
-            status_cb("Loading models... This may take a while on first run.")
-        self.mask_rcnn = MaskRCNNWrapper()
+            status_cb(f"Loading models ({gpu_info})...")
+
+        self.mask_rcnn = MaskRCNNWrapper(use_gpu=self.use_gpu)
         self.species_clf = BirdSpeciesClassifier(
             str(SPECIESCLASSIFIER_PATH),
             str(SPECIESCLASSIFIER_LABELS),
             self.use_gpu,
             models_dir=str(MODELS_DIR),
         )
-        self.quality_clf = QualityClassifier(str(QUALITYCLASSIFIER_PATH))
+        self.quality_clf = QualityClassifier(str(QUALITYCLASSIFIER_PATH), use_gpu=self.use_gpu)
         if status_cb:
-            status_cb("Models loaded. Processing started.")
+            status_cb(f"Models loaded ({gpu_info}). Processing started.")
 
     def process_folder(
         self,
@@ -162,6 +162,7 @@ class AnalysisPipeline:
                     "analyzer": analyzer_name,
                     "folder": folder,
                     "file_count": len(files),
+                    "gpu": get_gpu_summary(self.use_gpu),
                 },
             )
 
@@ -205,14 +206,12 @@ class AnalysisPipeline:
             scene_count = database["scene_count"].max() if not database.empty else 0
 
             for idx, raw_file in enumerate(new_files, start=1):
-                # Pause: wait until resume or until cancel_event is set.
                 if pause_event is not None:
                     while not pause_event.is_set():
                         if cancel_event is not None and cancel_event.is_set():
                             if status_cb:
                                 status_cb('Cancelled')
                             return
-                        # Wait with timeout to be interruptible
                         pause_event.wait(timeout=0.5)
                 if cancel_event is not None and cancel_event.is_set():
                     if status_cb:
@@ -239,6 +238,9 @@ class AnalysisPipeline:
                     "secondary_species_scores": [],
                     "secondary_family_list": [],
                     "secondary_family_scores": [],
+                    "detail_score": -1.0,
+                    "sharpness_score": -1.0,
+                    "camera_model": "",
                 }
 
                 image_path = None
@@ -249,6 +251,11 @@ class AnalysisPipeline:
                     img = read_image(image_path)
                     if img is None:
                         raise RuntimeError("Image read returned None")
+
+                    # Extract EXIF metadata (camera model, lens, ISO, etc.)
+                    stage_ctx["stage"] = "extract_metadata"
+                    exif_meta = extract_exif_metadata(image_path)
+                    entry["camera_model"] = exif_meta.camera_model
 
                     stage_ctx["stage"] = "compute_similarity"
                     similarity = compute_image_similarity_akaze(previous_image, img)
@@ -274,17 +281,22 @@ class AnalysisPipeline:
                         cv2.cvtColor(img_small, cv2.COLOR_RGB2BGR),
                         [cv2.IMWRITE_JPEG_QUALITY, 70],
                     )
-                    # Store relative path for cross-platform compatibility
                     export_path_rel = os.path.relpath(export_path, folder)
                     entry.update({"export_path": export_path_rel})
                     if thumbnail_cb:
                         thumbnail_cb({"filename": raw_file, "thumbnail": img_small, "export_path": export_path_rel})
 
                     stage_ctx["stage"] = "mask_rcnn_prediction"
-                    # MaskRCNN inference can take many seconds. Pause semantics are
-                    # handled at the start of each image loop so we do not check
-                    # repeatedly inside the image processing path.
                     masks, pred_boxes, pred_class, pred_score = self.mask_rcnn.get_prediction(img)
+
+                    # Filter overlapping detections to reduce false positives
+                    if masks is not None and len(masks) > 0:
+                        masks, pred_boxes, pred_class, pred_score = (
+                            MaskRCNNWrapper.filter_overlapping_detections(
+                                masks, pred_boxes, pred_class, pred_score
+                            )
+                        )
+
                     if masks is None or len(masks) == 0:
                         if detection_cb:
                             detection_cb(
@@ -309,12 +321,17 @@ class AnalysisPipeline:
                             cv2.cvtColor(img_small, cv2.COLOR_RGB2BGR),
                             [cv2.IMWRITE_JPEG_QUALITY, 85],
                         )
-                        # Store relative path for cross-platform compatibility
                         crop_path_rel = os.path.relpath(crop_path, folder)
                         entry.update({"crop_path": crop_path_rel})
                         stage_ctx["stage"] = "save_database"
                         database = pd.concat([database, pd.DataFrame([entry])], ignore_index=True)
                         save_database(database, db_path)
+                        # Write XMP sidecar (0 rating for no detection)
+                        write_xmp_sidecar(
+                            image_path,
+                            rating=0,
+                            camera_model=exif_meta.camera_model,
+                        )
                         if image_cb:
                             image_cb(entry)
                         if progress_cb:
@@ -340,23 +357,29 @@ class AnalysisPipeline:
                         quality_crop, quality_mask = self.mask_rcnn.get_square_crop(
                             masks[primary_mask_i], img, resize=True
                         )
-                        quality_score = self.quality_clf.classify(quality_crop, quality_mask)
+                        # Normalise exposure for backlit subjects
+                        quality_crop_norm = normalise_exposure(quality_crop, quality_mask)
+                        quality_score = self.quality_clf.classify(quality_crop_norm, quality_mask)
+
+                        # Detail analysis
+                        detail = analyse_detail(quality_crop, quality_mask)
+                        rating = quality_to_rating(quality_score, detail.sharpness_score, detail.detail_score)
                         return {
                             "species": pred_class[primary_mask_i],
                             "species_confidence": float(pred_score[primary_mask_i]),
                             "family": "N/A",
                             "family_confidence": 0.0,
                             "quality": quality_score,
-                            "rating": quality_to_rating(quality_score),
+                            "rating": rating,
                             "quality_crop": quality_crop,
+                            "detail_score": detail.detail_score,
+                            "sharpness_score": detail.sharpness_score,
                         }
 
                     def process_bird_items(indices):
                         stage_ctx["stage"] = "process_bird"
                         items = []
                         for i in indices:
-                            # Process per-crop results. Pause is checked at the
-                            # top of the image loop so we avoid pausing mid-image.
                             species_crop = self.mask_rcnn.get_species_crop(pred_boxes[i], img)
                             quality_crop, quality_mask = self.mask_rcnn.get_square_crop(masks[i], img, resize=True)
                             items.append(
@@ -405,16 +428,34 @@ class AnalysisPipeline:
                                 item["species_confidence"] = float(pred_score[i])
                                 item["family"] = "N/A"
                                 item["family_confidence"] = 0.0
+
                             stage_ctx["stage"] = "quality_score"
-                            quality_score = self.quality_clf.classify(item["quality_crop"], item["quality_mask"])
+                            # Normalise exposure for backlit subjects
+                            crop_norm = normalise_exposure(item["quality_crop"], item["quality_mask"])
+                            quality_score = self.quality_clf.classify(crop_norm, item["quality_mask"])
                             item["quality"] = quality_score
-                            item["rating"] = quality_to_rating(quality_score)
+
+                            # Detail and sharpness analysis
+                            stage_ctx["stage"] = "detail_analysis"
+                            detail = analyse_detail(item["quality_crop"], item["quality_mask"])
+                            item["detail_score"] = detail.detail_score
+                            item["sharpness_score"] = detail.sharpness_score
+                            item["rating"] = quality_to_rating(
+                                quality_score, detail.sharpness_score, detail.detail_score
+                            )
+
                         if quality_cb:
                             quality_cb(
                                 {
                                     "filename": raw_file,
                                     "results": [
-                                        {"quality": i["quality"], "rating": i["rating"]} for i in items
+                                        {
+                                            "quality": i["quality"],
+                                            "rating": i["rating"],
+                                            "detail_score": i["detail_score"],
+                                            "sharpness_score": i["sharpness_score"],
+                                        }
+                                        for i in items
                                     ],
                                 }
                             )
@@ -446,10 +487,14 @@ class AnalysisPipeline:
                                 "quality": i["quality"],
                                 "rating": i["rating"],
                                 "quality_crop": i["quality_crop"],
+                                "detail_score": i["detail_score"],
+                                "sharpness_score": i["sharpness_score"],
                             }
                             for i in bird_items
                         ]
-                        primary_bird = max(bird_data, key=lambda x: x["quality"])
+                        # Use highest-confidence detection as primary (not highest quality)
+                        # to avoid false positives from background objects scoring higher
+                        primary_bird = max(bird_data, key=lambda x: x["species_confidence"])
                         entry.update(
                             {
                                 "species": primary_bird["species"],
@@ -458,6 +503,8 @@ class AnalysisPipeline:
                                 "family_confidence": primary_bird["family_confidence"],
                                 "quality": primary_bird["quality"],
                                 "rating": primary_bird["rating"],
+                                "detail_score": primary_bird["detail_score"],
+                                "sharpness_score": primary_bird["sharpness_score"],
                             }
                         )
                         all_species = np.array([b["species"] for b in bird_data])
@@ -489,7 +536,12 @@ class AnalysisPipeline:
                                 quality_cb(
                                     {
                                         "filename": raw_file,
-                                        "results": [{"quality": result["quality"], "rating": result["rating"]}],
+                                        "results": [{
+                                            "quality": result["quality"],
+                                            "rating": result["rating"],
+                                            "detail_score": result["detail_score"],
+                                            "sharpness_score": result["sharpness_score"],
+                                        }],
                                     }
                                 )
                             if species_cb:
@@ -514,6 +566,8 @@ class AnalysisPipeline:
                                     "family_confidence": result["family_confidence"],
                                     "quality": result["quality"],
                                     "rating": result["rating"],
+                                    "detail_score": result["detail_score"],
+                                    "sharpness_score": result["sharpness_score"],
                                 }
                             )
                             crop_img = result["quality_crop"]
@@ -533,9 +587,21 @@ class AnalysisPipeline:
                         cv2.cvtColor(crop_img, cv2.COLOR_RGB2BGR),
                         [cv2.IMWRITE_JPEG_QUALITY, 85],
                     )
-                    # Store relative path for cross-platform compatibility
                     crop_path_rel = os.path.relpath(crop_path, folder)
                     entry.update({"crop_path": crop_path_rel})
+
+                    # Write XMP sidecar file for Lightroom
+                    stage_ctx["stage"] = "write_xmp"
+                    write_xmp_sidecar(
+                        image_path,
+                        rating=entry["rating"],
+                        species=entry["species"],
+                        family=entry["family"],
+                        quality_score=entry["quality"],
+                        detail_score=entry.get("detail_score", -1.0),
+                        sharpness_score=entry.get("sharpness_score", -1.0),
+                        camera_model=exif_meta.camera_model,
+                    )
 
                     stage_ctx["stage"] = "save_database"
                     database = pd.concat([database, pd.DataFrame([entry])], ignore_index=True)
@@ -545,9 +611,12 @@ class AnalysisPipeline:
                         image_cb(entry)
 
                     if status_cb:
+                        detail_info = ""
+                        if entry.get("detail_score", -1) >= 0:
+                            detail_info = f" D={entry['detail_score']:.3f} S={entry['sharpness_score']:.3f}"
                         status_cb(
                             f"Processed {raw_file}: {entry['species']} Q={entry['quality']:.3f} "
-                            f"R={entry['rating']} ({idx + processed_count}/{total})"
+                            f"R={entry['rating']}{detail_info} ({idx + processed_count}/{total})"
                         )
                 except Exception as e:
                     log_exception(
@@ -570,32 +639,9 @@ class AnalysisPipeline:
                     entry["similar"] = False
                     database = pd.concat([database, pd.DataFrame([entry])], ignore_index=True)
                     save_database(database, db_path)
-                    time.sleep(2)
 
                 if progress_cb:
                     progress_cb(idx + processed_count, total)
-
-                # Explicitly clear large temporary variables after each image
-                # so that pausing between images doesn't retain large buffers.
-                try:
-                    try: del masks
-                    except Exception: pass
-                    try: del pred_boxes
-                    except Exception: pass
-                    try: del pred_class
-                    except Exception: pass
-                    try: del pred_score
-                    except Exception: pass
-                    try: del img
-                    except Exception: pass
-                    try: del crop_img
-                    except Exception: pass
-                    try: del items
-                    except Exception: pass
-                    try: del bird_items
-                    except Exception: pass
-                except Exception:
-                    pass
 
         except Exception as e:
             log_exception(

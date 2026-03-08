@@ -1,4 +1,4 @@
-import time
+import logging
 from pathlib import Path
 
 import cv2
@@ -8,10 +8,13 @@ import torchvision.models.detection as detection_models
 import torchvision.transforms as T
 
 from ..config import MASK_RCNN_WEIGHTS_PATH
+from ..gpu_utils import get_torch_device
+
+logger = logging.getLogger(__name__)
 
 
 class MaskRCNNWrapper:
-    def __init__(self):
+    def __init__(self, use_gpu: bool = False):
         self.COCO_INSTANCE_CATEGORY_NAMES = [
             "__background__", "person", "bicycle", "car", "motorcycle", "airplane", "bus",
             "train", "truck", "boat", "traffic light", "fire hydrant", "N/A", "stop sign",
@@ -33,38 +36,49 @@ class MaskRCNNWrapper:
                 "The weights file should be bundled with the application."
             )
 
+        self.device = get_torch_device(use_gpu)
+        logger.info("Mask R-CNN using device: %s", self.device)
+
         self.model = detection_models.maskrcnn_resnet50_fpn_v2(weights=None)
         state_dict = torch.load(weights_path, map_location="cpu", weights_only=True)
         self.model.load_state_dict(state_dict)
+        self.model.to(self.device)
         self.model.eval()
 
-    def get_prediction(self, image_data, threshold=0.5):
-        for attempt in range(3):
+        # Warm up GPU with a small dummy tensor
+        if self.device.type != "cpu":
             try:
-                transform = T.Compose([T.ToTensor()])
-                img = transform(image_data)
+                dummy = torch.randn(1, 3, 64, 64, device=self.device)
                 with torch.no_grad():
-                    pred = self.model([img])
-                pred_score = list(pred[0]["scores"].detach().numpy())
-                if (np.array(pred_score) > threshold).sum() == 0:
-                    return None, None, None, None
-                pred_t = [pred_score.index(x) for x in pred_score if x > threshold][-1]
-                masks = (pred[0]["masks"] > 0.5).squeeze().detach().cpu().numpy()
-                if len(masks.shape) == 2:
-                    masks = np.expand_dims(masks, axis=0)
-                pred_class = [self.COCO_INSTANCE_CATEGORY_NAMES[i] for i in list(pred[0]["labels"].numpy())]
-                pred_boxes = [[(i[0], i[1]), (i[2], i[3])] for i in list(pred[0]["boxes"].detach().numpy())]
-                masks = masks[: pred_t + 1]
-                pred_boxes = pred_boxes[: pred_t + 1]
-                pred_class = pred_class[: pred_t + 1]
-                return masks, pred_boxes, pred_class, pred_score[: pred_t + 1]
+                    self.model([dummy])
+                logger.info("Mask R-CNN GPU warm-up complete")
             except Exception as e:
-                if attempt < 2:
-                    print(f"Prediction attempt {attempt + 1} failed: {e}. Retrying...")
-                    time.sleep(0.1)
-                else:
-                    print("Error occurred while getting prediction after 3 attempts:", e)
-        return [], [], [], []
+                logger.warning("GPU warm-up failed, falling back to CPU: %s", e)
+                self.device = torch.device("cpu")
+                self.model.to(self.device)
+
+    def get_prediction(self, image_data, threshold=0.5):
+        try:
+            transform = T.Compose([T.ToTensor()])
+            img = transform(image_data).to(self.device)
+            with torch.no_grad():
+                pred = self.model([img])
+            pred_score = pred[0]["scores"].detach().cpu().numpy().tolist()
+            if not any(s > threshold for s in pred_score):
+                return None, None, None, None
+            pred_t = max(i for i, s in enumerate(pred_score) if s > threshold)
+            masks = (pred[0]["masks"] > 0.5).squeeze(1).detach().cpu().numpy()
+            if len(masks.shape) == 2:
+                masks = np.expand_dims(masks, axis=0)
+            pred_class = [self.COCO_INSTANCE_CATEGORY_NAMES[i] for i in pred[0]["labels"].cpu().numpy()]
+            pred_boxes = [[(i[0], i[1]), (i[2], i[3])] for i in pred[0]["boxes"].detach().cpu().numpy()]
+            masks = masks[: pred_t + 1]
+            pred_boxes = pred_boxes[: pred_t + 1]
+            pred_class = pred_class[: pred_t + 1]
+            return masks, pred_boxes, pred_class, pred_score[: pred_t + 1]
+        except Exception as e:
+            logger.error("Mask R-CNN prediction failed: %s", e)
+            return [], [], [], []
 
     @staticmethod
     def _center_of_mass(mask):
@@ -136,3 +150,37 @@ class MaskRCNNWrapper:
         xmax = int(box[1][0])
         ymax = int(box[1][1])
         return img[ymin:ymax, xmin:xmax]
+
+    @staticmethod
+    def filter_overlapping_detections(masks, pred_boxes, pred_class, pred_score, iou_threshold=0.5):
+        """Remove lower-confidence detections that overlap significantly with higher-confidence ones."""
+        if masks is None or len(masks) == 0:
+            return masks, pred_boxes, pred_class, pred_score
+
+        n = len(pred_score)
+        keep = [True] * n
+        # Sort indices by score descending
+        sorted_indices = sorted(range(n), key=lambda i: pred_score[i], reverse=True)
+
+        for i_idx, i in enumerate(sorted_indices):
+            if not keep[i]:
+                continue
+            for j in sorted_indices[i_idx + 1:]:
+                if not keep[j]:
+                    continue
+                # Compute mask IoU
+                intersection = np.logical_and(masks[i], masks[j]).sum()
+                union = np.logical_or(masks[i], masks[j]).sum()
+                if union > 0 and intersection / union > iou_threshold:
+                    keep[j] = False
+
+        indices = [i for i in range(n) if keep[i]]
+        if not indices:
+            return masks, pred_boxes, pred_class, pred_score
+
+        return (
+            masks[indices],
+            [pred_boxes[i] for i in indices],
+            [pred_class[i] for i in indices],
+            [pred_score[i] for i in indices],
+        )

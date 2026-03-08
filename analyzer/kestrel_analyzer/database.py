@@ -27,6 +27,9 @@ BASE_COLUMNS = [
     "secondary_species_scores",
     "secondary_family_list",
     "secondary_family_scores",
+    "detail_score",
+    "sharpness_score",
+    "camera_model",
 ]
 
 REQUIRED_COLUMNS = [
@@ -34,6 +37,9 @@ REQUIRED_COLUMNS = [
     "family_confidence",
     "secondary_family_list",
     "secondary_family_scores",
+    "detail_score",
+    "sharpness_score",
+    "camera_model",
 ]
 
 
@@ -78,8 +84,12 @@ def ensure_columns(database: pd.DataFrame) -> pd.DataFrame:
                 database[col] = [[] for _ in range(len(database))]
             elif col.endswith("_scores"):
                 database[col] = [[] for _ in range(len(database))]
+            elif col == "camera_model":
+                database[col] = ""
+            elif "family" in col and not col.endswith("_score"):
+                database[col] = "Unknown" if "confidence" not in col else 0.0
             else:
-                database[col] = "Unknown" if "family" in col else 0.0
+                database[col] = -1.0
     return database
 
 

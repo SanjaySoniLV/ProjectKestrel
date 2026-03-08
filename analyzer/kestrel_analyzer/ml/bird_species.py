@@ -1,9 +1,14 @@
+import logging
 from pathlib import Path
+
 import cv2
 import numpy as np
 import pandas as pd
 
 from ..config import MODELS_DIR
+from ..gpu_utils import get_onnx_providers
+
+logger = logging.getLogger(__name__)
 
 
 class BirdSpeciesClassifier:
@@ -17,11 +22,15 @@ class BirdSpeciesClassifier:
             ) from e
         with open(labels_path, "r") as f:
             self.labels = np.array([l.strip() for l in f.readlines()])
-        providers = ["DmlExecutionProvider", "CPUExecutionProvider"] if use_gpu else ["CPUExecutionProvider"]
+
+        providers = get_onnx_providers(use_gpu)
+        logger.info("ONNX providers: %s", providers)
         try:
             self.session = ort.InferenceSession(model_path, providers=providers)
+            active = self.session.get_providers()
+            logger.info("ONNX active providers: %s", active)
         except Exception as e:
-            print(f"Warning: Failed to load ONNX model with specified providers: {e}")
+            logger.warning("Failed to load ONNX model with GPU providers: %s", e)
             self.session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
 
         try:
@@ -29,7 +38,7 @@ class BirdSpeciesClassifier:
             df_sf = pd.read_csv(base_dir / "labels_scispecies.csv")
             df_disp = pd.read_csv(base_dir / "scispecies_dispname.csv")
         except Exception as e:
-            print(f"Failed to load family mapping CSVs: {e}")
+            logger.warning("Failed to load family mapping CSVs: %s", e)
             self.family_matrix = np.zeros((0, len(self.labels)), dtype=np.float32)
             self.family_display_names = []
             return

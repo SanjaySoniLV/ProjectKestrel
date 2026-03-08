@@ -14,8 +14,8 @@ from kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS
 def parse_args():
     parser = argparse.ArgumentParser(description="Kestrel Analyzer CLI")
     parser.add_argument("folder", help="Folder with RAW/JPEG images")
-    parser.add_argument("--gpu", dest="use_gpu", action="store_true", help="Use GPU (DirectML) for ONNX")
-    parser.add_argument("--no-gpu", dest="use_gpu", action="store_false", help="Force CPU for ONNX")
+    parser.add_argument("--gpu", dest="use_gpu", action="store_true", help="Use GPU (CUDA/ROCm/DirectML) for inference")
+    parser.add_argument("--no-gpu", dest="use_gpu", action="store_false", help="Force CPU for all inference")
     parser.add_argument(
         "--smoke",
         action="store_true",
@@ -76,6 +76,10 @@ def main():
             else:
                 print("Smoke test FAILED: read_image returned None", flush=True)
             return
+        from kestrel_analyzer.gpu_utils import get_gpu_summary
+        gpu_info = get_gpu_summary(args.use_gpu)
+        print(f"GPU: {gpu_info}", flush=True)
+
         pipeline = AnalysisPipeline(use_gpu=args.use_gpu)
 
         def on_status(msg):
@@ -91,6 +95,7 @@ def main():
                 "event": "cli_start",
                 "folder": args.folder,
                 "use_gpu": args.use_gpu,
+                "gpu": gpu_info,
             },
         )
 

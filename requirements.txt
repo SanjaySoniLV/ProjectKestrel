@@ -25,3 +25,9 @@ pywebview==6.1
 # installer
 pyinstaller==6.18.0
 msvc-runtime==14.44.35112
+
+# GPU Support (install the appropriate variant for your hardware):
+# NVIDIA CUDA:  pip install onnxruntime-gpu torch torchvision --index-url https://download.pytorch.org/whl/cu121
+# AMD ROCm:     pip install onnxruntime-rocm torch torchvision --index-url https://download.pytorch.org/whl/rocm6.0
+# Windows GPU:  pip install onnxruntime-directml (already included via onnxruntime)
+# CPU only:     No additional packages needed (default)
