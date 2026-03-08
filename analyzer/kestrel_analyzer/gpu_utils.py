@@ -23,10 +23,27 @@ class GPUInfo:
 
 
 def detect_gpu() -> Optional[GPUInfo]:
-    """Detect available GPU, preferring CUDA then ROCm, returning None if CPU-only."""
-    # Try CUDA (NVIDIA) first
+    """Detect available GPU, checking ROCm before CUDA since ROCm uses CUDA API."""
     try:
         import torch
+    except ImportError:
+        logger.info("PyTorch not installed, using CPU")
+        return None
+
+    # Check ROCm (AMD) first — ROCm PyTorch exposes devices via torch.cuda API,
+    # so we must check for ROCm before assuming NVIDIA CUDA.
+    try:
+        is_rocm = hasattr(torch.version, "hip") and torch.version.hip is not None
+        if is_rocm and torch.cuda.is_available():
+            device_name = torch.cuda.get_device_name(0)
+            memory_mb = torch.cuda.get_device_properties(0).total_mem // (1024 * 1024)
+            logger.info("AMD GPU detected via ROCm: %s (%d MB)", device_name, memory_mb)
+            return GPUInfo(backend=GPUBackend.ROCM, device_name=device_name, memory_mb=memory_mb)
+    except Exception as e:
+        logger.debug("ROCm detection failed: %s", e)
+
+    # Try CUDA (NVIDIA)
+    try:
         if torch.cuda.is_available():
             device_name = torch.cuda.get_device_name(0)
             memory_mb = torch.cuda.get_device_properties(0).total_mem // (1024 * 1024)
@@ -34,18 +51,6 @@ def detect_gpu() -> Optional[GPUInfo]:
             return GPUInfo(backend=GPUBackend.CUDA, device_name=device_name, memory_mb=memory_mb)
     except Exception as e:
         logger.debug("CUDA detection failed: %s", e)
-
-    # Try ROCm (AMD)
-    try:
-        import torch
-        if hasattr(torch, "hip") or (hasattr(torch.version, "hip") and torch.version.hip is not None):
-            if torch.cuda.is_available():  # ROCm uses the CUDA API in PyTorch
-                device_name = torch.cuda.get_device_name(0)
-                memory_mb = torch.cuda.get_device_properties(0).total_mem // (1024 * 1024)
-                logger.info("AMD GPU detected via ROCm: %s (%d MB)", device_name, memory_mb)
-                return GPUInfo(backend=GPUBackend.ROCM, device_name=device_name, memory_mb=memory_mb)
-    except Exception as e:
-        logger.debug("ROCm detection failed: %s", e)
 
     logger.info("No GPU detected, using CPU")
     return None
@@ -125,5 +130,9 @@ def get_gpu_summary(use_gpu: bool) -> str:
 
     gpu = detect_gpu()
     if gpu is None:
-        return "No GPU detected, using CPU"
+        return (
+            "No GPU detected, using CPU. "
+            "For AMD GPUs, install the ROCm build: "
+            "pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2.4"
+        )
     return f"{gpu.backend.value.upper()}: {gpu.device_name} ({gpu.memory_mb} MB)"
