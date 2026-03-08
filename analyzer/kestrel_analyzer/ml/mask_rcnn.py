@@ -83,6 +83,9 @@ class MaskRCNNWrapper:
     @staticmethod
     def _center_of_mass(mask):
         y, x = np.where(mask > 0)
+        if len(x) == 0:
+            # Empty mask — return center of image
+            return (mask.shape[1] // 2, mask.shape[0] // 2)
         return (int(np.mean(x)), int(np.mean(y)))
 
     @staticmethod
@@ -108,7 +111,10 @@ class MaskRCNNWrapper:
             x_max2 = min(mask.shape[1], x_max)
             y_min2 = max(0, y_min)
             y_max2 = min(mask.shape[0], y_max)
-            return np.sum(mask[y_min2:y_max2, x_min2:x_max2]) / np.sum(mask)
+            total = np.sum(mask)
+            if total == 0:
+                return 1.0
+            return np.sum(mask[y_min2:y_max2, x_min2:x_max2]) / total
 
         S = self._fsolve(lambda S: fraction_inside(center, S) - 0.8, 10, 3000)
         S = int(S * 1 / 0.5)
