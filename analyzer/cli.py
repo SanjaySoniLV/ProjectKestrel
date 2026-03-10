@@ -51,6 +51,17 @@ def main():
     log_path = get_log_path(None)
     try:
         args = parse_args()
+        # Strip trailing quotes/spaces that Windows shell escaping can leave behind
+        # e.g. "G:\path\" --gpu  -> the \" escapes the quote, merging --gpu into the path
+        args.folder = args.folder.rstrip('" ').rstrip("' ")
+        if not os.path.isdir(args.folder):
+            print(
+                f"Error: folder not found: {args.folder}\n"
+                "Hint: on Windows, avoid trailing backslashes in quoted paths\n"
+                '  e.g. use "G:\\Photos\\Folder" not "G:\\Photos\\Folder\\"',
+                file=sys.stderr,
+            )
+            sys.exit(1)
         log_path = get_log_path(args.folder)
         if args.smoke:
             log_event(
