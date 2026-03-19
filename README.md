@@ -136,18 +136,23 @@ Kestrel's quality scoring model is trained on RAW images, and may not work as we
 - Nikon: `.nef`
 - Sony: `.arw`
 - Adobe: `.dng`
-- Olympus: `.orf`
+- Olympus/OM System: `.orf`
 - Fuji: `.raf`
 - Panasonic: `.rw2`
 - Pentax: `.pef`
-- Samsung: `.sr2`
+- Samsung: `.sr2`, `.srw`
 - Sigma: `.x3f`
 
 > Note: If this list does not support your camera's RAW file, please reach out via the email below. It is easy to add new RAW file formats thanks to the rawpy library.
 
 **Standard Formats** (fallback):
-- JPEG: `.jpg`, `.jpeg`
+- JPEG: `.jpg`, `.jpeg`, `.jpe`, `.jfif`
 - PNG: `.png`
+- TIFF: `.tif`, `.tiff`
+- WebP: `.webp`
+- BMP: `.bmp`
+
+> Note: Folders containing a mix of RAW+JPEG pairs and standalone JPEG shots are fully supported — Kestrel will process the RAW file for paired shots and the JPEG for JPEG-only shots.
 
 ## 🔧 Configuration
 

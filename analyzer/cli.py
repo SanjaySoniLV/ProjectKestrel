@@ -26,23 +26,16 @@ def parse_args():
 
 
 def _find_first_image(folder: str) -> str | None:
-    files = [
-        f
-        for f in os.listdir(folder)
-        if os.path.isfile(os.path.join(folder, f))
-        and os.path.splitext(f)[1].lower() in RAW_EXTENSIONS
-    ]
-    if not files:
-        files = [
-            f
-            for f in os.listdir(folder)
-            if os.path.isfile(os.path.join(folder, f))
-            and os.path.splitext(f)[1].lower() in JPEG_EXTENSIONS
-        ]
-    files.sort()
-    if not files:
+    raw_ext_set = {e.lower() for e in RAW_EXTENSIONS}
+    jpeg_ext_set = {e.lower() for e in JPEG_EXTENSIONS}
+    all_files = [f for f in os.listdir(folder) if os.path.isfile(os.path.join(folder, f))]
+    raw_files = sorted(f for f in all_files if os.path.splitext(f)[1].lower() in raw_ext_set)
+    if raw_files:
+        return os.path.join(folder, raw_files[0])
+    jpeg_files = sorted(f for f in all_files if os.path.splitext(f)[1].lower() in jpeg_ext_set)
+    if not jpeg_files:
         return None
-    return os.path.join(folder, files[0])
+    return os.path.join(folder, jpeg_files[0])
 
 
 def main():

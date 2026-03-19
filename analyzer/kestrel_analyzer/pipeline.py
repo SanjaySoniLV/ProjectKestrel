@@ -285,19 +285,24 @@ class AnalysisPipeline:
 
         try:
             stage_ctx["stage"] = "list_files"
-            files = [
+            raw_ext_set = {e.lower() for e in RAW_EXTENSIONS}
+            jpeg_ext_set = {e.lower() for e in JPEG_EXTENSIONS}
+            all_folder_files = [
                 f
                 for f in os.listdir(folder)
                 if os.path.isfile(os.path.join(folder, f))
-                and os.path.splitext(f)[1].lower() in RAW_EXTENSIONS
             ]
-            if not files:
-                files = [
-                    f
-                    for f in os.listdir(folder)
-                    if os.path.isfile(os.path.join(folder, f))
-                    and os.path.splitext(f)[1].lower() in JPEG_EXTENSIONS
-                ]
+            raw_files = [f for f in all_folder_files if os.path.splitext(f)[1].lower() in raw_ext_set]
+            jpeg_files = [f for f in all_folder_files if os.path.splitext(f)[1].lower() in jpeg_ext_set]
+            if raw_files:
+                # Include RAW files plus JPEG files that have no corresponding RAW counterpart.
+                # This handles mixed folders where some shots were taken in RAW+JPEG mode
+                # and others in JPEG-only mode, ensuring all shots are captured.
+                raw_bases = {os.path.splitext(f)[0].lower() for f in raw_files}
+                jpeg_only = [f for f in jpeg_files if os.path.splitext(f)[0].lower() not in raw_bases]
+                files = raw_files + jpeg_only
+            else:
+                files = jpeg_files
             files.sort()
             if not files:
                 if status_cb:

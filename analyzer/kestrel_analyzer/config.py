@@ -15,8 +15,8 @@ WILDLIFE_CATEGORIES = [
     "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "bird"
 ]
 
-RAW_EXTENSIONS = [".cr2", ".cr3", ".nef", ".arw", ".dng", ".orf", ".rw2", ".pef", ".sr2"]
-JPEG_EXTENSIONS = [".jpg", ".jpeg", ".png", '.tiff', '.tif']
+RAW_EXTENSIONS = [".cr2", ".cr3", ".nef", ".arw", ".dng", ".orf", ".rw2", ".pef", ".sr2", ".raf", ".x3f", ".srw"]
+JPEG_EXTENSIONS = [".jpg", ".jpeg", ".jpe", ".jfif", ".png", ".tiff", ".tif", ".webp", ".bmp"]
 
 DATABASE_NAME = "kestrel_database.csv"
 METADATA_FILENAME = "kestrel_metadata.json"

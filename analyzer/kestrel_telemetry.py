@@ -459,8 +459,9 @@ def collect_folder_stats(item_path: str, files_this_session: int, total_files: i
                 from analyzer.kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS
             except ImportError:
                 print("Failed to import analyzer.kestrel_analyzer.config — using hardcoded extensions")
-                RAW_EXTENSIONS = {'.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf', '.rw2', '.raf'}
-                JPEG_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.tiff', '.tif', '.bmp', '.webp'}
+                # Keep these lists in sync with kestrel_analyzer/config.py (the source of truth).
+                RAW_EXTENSIONS = {'.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf', '.rw2', '.raf', '.pef', '.sr2', '.x3f', '.srw'}
+                JPEG_EXTENSIONS = {'.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.tiff', '.tif', '.bmp', '.webp'}
         
         file_sizes_kb: List[float] = []
         file_formats: Dict[str, int] = {}

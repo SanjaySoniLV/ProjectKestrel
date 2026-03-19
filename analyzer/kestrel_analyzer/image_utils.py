@@ -4,6 +4,11 @@ import numpy as np
 import rawpy
 from PIL import Image
 
+from .config import RAW_EXTENSIONS as _RAW_EXTENSIONS
+
+# Normalised set used for O(1) extension look-ups
+_RAW_EXT_SET = {ext.lower() for ext in _RAW_EXTENSIONS}
+
 
 def read_image(path: str):
     """
@@ -17,7 +22,7 @@ def read_image(path: str):
         ext = os.path.splitext(path)[1].lower()
         
         # RAW formats supported by rawpy
-        raw_extensions = {'.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.srw'}
+        raw_extensions = _RAW_EXT_SET
         
         if ext in raw_extensions:
             # Use rawpy for RAW files
@@ -75,7 +80,7 @@ def read_image_for_pipeline(path: str):
     try:
         print(f"read_image_for_pipeline: Reading {path}", flush=True)
         ext = os.path.splitext(path)[1].lower()
-        raw_extensions = {'.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.srw'}
+        raw_extensions = _RAW_EXT_SET
 
         if ext in raw_extensions:
             print(f"read_image_for_pipeline: Detected RAW file, keeping rawpy object open", flush=True)

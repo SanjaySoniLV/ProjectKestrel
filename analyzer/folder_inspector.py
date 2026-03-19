@@ -18,23 +18,35 @@ try:
     from kestrel_analyzer.database import load_database
 except Exception:
     # If kestrel_analyzer isn't available, fall back to reasonable defaults.
-    RAW_EXTENSIONS = ['.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf', '.raf', '.rw2', '.pef', '.sr2', '.x3f']
-    JPEG_EXTENSIONS = ['.jpg', '.jpeg', '.png']
+    # Keep these lists in sync with kestrel_analyzer/config.py (the source of truth).
+    RAW_EXTENSIONS = ['.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf', '.raf', '.rw2', '.pef', '.sr2', '.x3f', '.srw']
+    JPEG_EXTENSIONS = ['.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.tiff', '.tif', '.webp', '.bmp']
     KESTREL_DIR_NAME = '.kestrel'
     DATABASE_NAME = 'kestrel_database.csv'
 
 
 def _list_images_in_folder(folder: str) -> list:
     try:
-        files = [
+        all_files = [
             f for f in os.listdir(folder)
-            if os.path.isfile(os.path.join(folder, f)) and os.path.splitext(f)[1].lower() in RAW_EXTENSIONS
+            if os.path.isfile(os.path.join(folder, f))
         ]
-        if not files:
-            files = [
-                f for f in os.listdir(folder)
-                if os.path.isfile(os.path.join(folder, f)) and os.path.splitext(f)[1].lower() in JPEG_EXTENSIONS
-            ]
+        raw_ext_set = {e.lower() for e in RAW_EXTENSIONS}
+        jpeg_ext_set = {e.lower() for e in JPEG_EXTENSIONS}
+
+        raw_files = [f for f in all_files if os.path.splitext(f)[1].lower() in raw_ext_set]
+        jpeg_files = [f for f in all_files if os.path.splitext(f)[1].lower() in jpeg_ext_set]
+
+        if raw_files:
+            # Include RAW files plus any JPEG files that have no corresponding RAW counterpart.
+            # This handles mixed folders where some shots were taken in RAW+JPEG mode
+            # and others in JPEG-only mode, ensuring all shots are captured.
+            raw_bases = {os.path.splitext(f)[0].lower() for f in raw_files}
+            jpeg_only = [f for f in jpeg_files if os.path.splitext(f)[0].lower() not in raw_bases]
+            files = raw_files + jpeg_only
+        else:
+            files = jpeg_files
+
         files.sort()
         return files
     except Exception:

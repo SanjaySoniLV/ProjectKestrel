@@ -50,8 +50,10 @@ class Api:
     # Extension → MIME type map used by read_image_file (avoids mimetypes.guess_type overhead)
     _MIME_MAP: dict = {
         '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+        '.jpe': 'image/jpeg', '.jfif': 'image/jpeg',
         '.png': 'image/png',  '.gif': 'image/gif',
         '.webp': 'image/webp',
+        '.bmp': 'image/bmp',
         '.tif': 'image/tiff', '.tiff': 'image/tiff',
     }
 
@@ -1412,7 +1414,15 @@ class Api:
             if not os.path.exists(full_path):
                 return {'success': False, 'error': f'File not found: {filename}'}
 
-            raw_extensions = {'.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.srw'}
+            try:
+                from kestrel_analyzer.config import RAW_EXTENSIONS as _cfg_raw_ext
+            except ImportError:
+                try:
+                    from analyzer.kestrel_analyzer.config import RAW_EXTENSIONS as _cfg_raw_ext
+                except ImportError:
+                    # Final fallback — keep in sync with kestrel_analyzer/config.py
+                    _cfg_raw_ext = ['.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf', '.rw2', '.pef', '.sr2', '.raf', '.x3f', '.srw']
+            raw_extensions = {ext.lower() for ext in _cfg_raw_ext}
             ext = os.path.splitext(filename)[1].lower()
 
             if ext not in raw_extensions:
