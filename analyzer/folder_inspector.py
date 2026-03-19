@@ -13,9 +13,15 @@ try:
 except Exception:
     pd = None
 
+# Import extension lists and directory constants independently from the heavier
+# database utility so that a failure in kestrel_analyzer.database does NOT
+# silently discard the already-correct constants from kestrel_analyzer.config.
+# (Previously both imports shared one try/except; if load_database failed the
+# except block would overwrite RAW_EXTENSIONS/JPEG_EXTENSIONS with an older
+# hardcoded fallback, causing folders for Fuji (.raf) and Sigma (.x3f) cameras
+# to appear greyed-out in the Analyze Folders dialog.)
 try:
     from kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS, KESTREL_DIR_NAME, DATABASE_NAME
-    from kestrel_analyzer.database import load_database
 except Exception:
     # If kestrel_analyzer isn't available, fall back to reasonable defaults.
     # Keep these lists in sync with kestrel_analyzer/config.py (the source of truth).
@@ -23,6 +29,11 @@ except Exception:
     JPEG_EXTENSIONS = ['.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.tiff', '.tif', '.webp', '.bmp']
     KESTREL_DIR_NAME = '.kestrel'
     DATABASE_NAME = 'kestrel_database.csv'
+
+try:
+    from kestrel_analyzer.database import load_database
+except Exception:
+    load_database = None  # type: ignore[assignment]
 
 
 def _list_images_in_folder(folder: str) -> list:
@@ -39,8 +50,9 @@ def _list_images_in_folder(folder: str) -> list:
 
         if raw_files:
             # Include RAW files plus any JPEG files that have no corresponding RAW counterpart.
-            # This handles mixed folders where some shots were taken in RAW+JPEG mode
-            # and others in JPEG-only mode, ensuring all shots are captured.
+            # This ensures JPEG-only shots in a mixed RAW+JPEG folder are not silently
+            # dropped from analysis (they would still appear in the folder count, but
+            # only their paired RAW file would previously be sent to the pipeline).
             raw_bases = {os.path.splitext(f)[0].lower() for f in raw_files}
             jpeg_only = [f for f in jpeg_files if os.path.splitext(f)[0].lower() not in raw_bases]
             files = raw_files + jpeg_only
@@ -94,18 +106,20 @@ def inspect_folder(path: str) -> Dict[str, int | str | bool]:
                 except Exception:
                     # Fall back to load_database if available
                     try:
-                        db, _ = load_database(kestrel_dir, analyzer_name='visualizer-inspector')
-                        if not db.empty and 'filename' in db.columns:
-                            processed_set = set(db['filename'].values)
-                            processed = sum(1 for f in files if f in processed_set)
+                        if load_database is not None:
+                            db, _ = load_database(kestrel_dir, analyzer_name='visualizer-inspector')
+                            if not db.empty and 'filename' in db.columns:
+                                processed_set = set(db['filename'].values)
+                                processed = sum(1 for f in files if f in processed_set)
                     except Exception:
                         processed = 0
             else:
                 try:
-                    db, _ = load_database(kestrel_dir, analyzer_name='visualizer-inspector')
-                    if not db.empty and 'filename' in db.columns:
-                        processed_set = set(db['filename'].values)
-                        processed = sum(1 for f in files if f in processed_set)
+                    if load_database is not None:
+                        db, _ = load_database(kestrel_dir, analyzer_name='visualizer-inspector')
+                        if not db.empty and 'filename' in db.columns:
+                            processed_set = set(db['filename'].values)
+                            processed = sum(1 for f in files if f in processed_set)
                 except Exception:
                     processed = 0
             result['processed'] = int(processed)

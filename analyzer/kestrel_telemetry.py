@@ -460,6 +460,7 @@ def collect_folder_stats(item_path: str, files_this_session: int, total_files: i
             except ImportError:
                 print("Failed to import analyzer.kestrel_analyzer.config — using hardcoded extensions")
                 # Keep these lists in sync with kestrel_analyzer/config.py (the source of truth).
+                # Sets are used here (vs lists in config.py) for O(1) membership testing.
                 RAW_EXTENSIONS = {'.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf', '.rw2', '.raf', '.pef', '.sr2', '.x3f', '.srw'}
                 JPEG_EXTENSIONS = {'.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.tiff', '.tif', '.bmp', '.webp'}
         

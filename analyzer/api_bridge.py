@@ -1414,6 +1414,9 @@ class Api:
             if not os.path.exists(full_path):
                 return {'success': False, 'error': f'File not found: {filename}'}
 
+            # api_bridge runs in two deployment contexts (direct and as a subpackage
+            # of analyzer/), so we try both import paths before falling back to a
+            # hardcoded list. The hardcoded list must stay in sync with config.py.
             try:
                 from kestrel_analyzer.config import RAW_EXTENSIONS as _cfg_raw_ext
             except ImportError:

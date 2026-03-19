@@ -296,8 +296,10 @@ class AnalysisPipeline:
             jpeg_files = [f for f in all_folder_files if os.path.splitext(f)[1].lower() in jpeg_ext_set]
             if raw_files:
                 # Include RAW files plus JPEG files that have no corresponding RAW counterpart.
-                # This handles mixed folders where some shots were taken in RAW+JPEG mode
-                # and others in JPEG-only mode, ensuring all shots are captured.
+                # This ensures JPEG-only shots in a mixed RAW+JPEG folder are not silently
+                # dropped from pipeline analysis (the folder itself would not be greyed out —
+                # the RAW files ensure a non-zero count — but standalone JPEG shots would be
+                # missed without this logic).
                 raw_bases = {os.path.splitext(f)[0].lower() for f in raw_files}
                 jpeg_only = [f for f in jpeg_files if os.path.splitext(f)[0].lower() not in raw_bases]
                 files = raw_files + jpeg_only
