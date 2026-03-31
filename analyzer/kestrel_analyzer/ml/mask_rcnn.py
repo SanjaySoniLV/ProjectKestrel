@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 import torch
 import torchvision.models.detection as detection_models
-import torchvision.transforms as T
+import torchvision.transforms.v2 as T
 
 from ..config import MASK_RCNN_WEIGHTS_PATH
 
@@ -50,7 +50,7 @@ class MaskRCNNWrapper:
         mask_threshold = max(0.5, min(0.95, float(mask_threshold)))
         for attempt in range(3):
             try:
-                transform = T.Compose([T.ToTensor()])
+                transform = T.Compose([T.ToImage(), T.ToDtype(torch.float32, scale=True)])
                 img = transform(image_data)
                 with torch.no_grad():
                     pred = self.model([img])
