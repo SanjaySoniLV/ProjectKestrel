@@ -468,13 +468,22 @@ class Handler(SimpleHTTPRequestHandler):
 
 def parse_args():
     ap = argparse.ArgumentParser(description='Serve Project Kestrel visualizer with local desktop bridge.')
+    ap.add_argument('--cli', action='store_true', help='Run headless analyzer CLI (forward remaining args to cli.py)')
     ap.add_argument('--port', type=int, default=8765, help='Port to listen on (default 8765)')
     ap.add_argument('--root', default='', help='Default root folder for RAW originals (client can override unless KESTREL_ALLOWED_ROOT set)')
-    return ap.parse_args()
+    args, extra = ap.parse_known_args()
+    if extra and not args.cli:
+        ap.error(f"unrecognized arguments: {' '.join(extra)}")
+    return args, extra
 
 
 def main():
-    args = parse_args()
+    args, cli_extra_args = parse_args()
+    if args.cli:
+        from cli import main as cli_main
+        sys.argv = [sys.argv[0]] + cli_extra_args
+        cli_main()
+        return
     runtime_log_path = _enable_runtime_log_capture()
     if runtime_log_path:
         log('Runtime log capture enabled:', runtime_log_path)
