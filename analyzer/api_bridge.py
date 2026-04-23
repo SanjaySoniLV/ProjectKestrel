@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import webbrowser
+from types import ModuleType
 
 from settings_utils import load_persisted_settings, save_persisted_settings, log
 from queue_manager import _queue_manager
@@ -62,7 +63,7 @@ except ImportError:
 
 # pywebview availability
 WEBVIEW_IMPORT_SUCCESS = False
-webview = None
+webview: ModuleType | None = None
 try:
     import webview  # type: ignore
     WEBVIEW_IMPORT_SUCCESS = True

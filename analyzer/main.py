@@ -45,6 +45,7 @@ if __name__ == "__main__":
 
     _set_splash_text(app, splash, "Loading ONNX Runtime…")
     import onnxruntime
+    # Surface detected providers during startup to make backend/runtime debugging easier.
     _set_splash_text(app, splash, f"ONNX providers: {', '.join(onnxruntime.get_available_providers())}")
 
     _set_splash_text(app, splash, "Starting UI…")
