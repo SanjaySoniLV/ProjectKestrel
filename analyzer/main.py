@@ -45,7 +45,8 @@ if __name__ == "__main__":
 
     _set_splash_text(app, splash, "Loading ONNX Runtime…")
     import onnxruntime
-    _ = onnxruntime.get_available_providers()
+    available_providers = onnxruntime.get_available_providers()
+    _set_splash_text(app, splash, f"ONNX providers: {', '.join(available_providers)}")
 
     _set_splash_text(app, splash, "Starting UI…")
 

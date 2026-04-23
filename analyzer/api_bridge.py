@@ -64,8 +64,7 @@ except ImportError:
 WEBVIEW_IMPORT_SUCCESS = False
 webview = None
 try:
-    import webview as _webview  # type: ignore
-    webview = _webview
+    import webview  # type: ignore
     WEBVIEW_IMPORT_SUCCESS = True
 except Exception:
     pass
