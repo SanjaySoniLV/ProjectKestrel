@@ -1746,7 +1746,7 @@ class Api:
                 height=900,
             )
             self._culling_window = win
-            log(f'[culling] Culling window created successfully')
+            log('[culling] Culling window created successfully')
             return {'success': True}
         except Exception as e:
             log(f'open_culling_window error: {e}')
