@@ -137,7 +137,7 @@ def launch(path: str, editor: str):
                 log(f'Custom editor launch failed ({custom_exe}): {e}, falling back to system default')
         else:
             if raw_custom:
-                log(f'[security] customEditorPath failed validation; falling back to system default.')
+                log('[security] customEditorPath failed validation; falling back to system default.')
         editor = 'system'
 
     # Editor name -> (Windows exe candidates, macOS app name, Linux commands)

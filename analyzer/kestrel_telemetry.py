@@ -17,7 +17,6 @@ import hashlib
 import json
 import os
 import platform
-import sys
 import threading
 import traceback
 import uuid

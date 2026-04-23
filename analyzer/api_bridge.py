@@ -62,8 +62,10 @@ except ImportError:
 
 # pywebview availability
 WEBVIEW_IMPORT_SUCCESS = False
+webview = None
 try:
-    import webview  # type: ignore  # noqa: F401
+    import webview as _webview  # type: ignore
+    webview = _webview
     WEBVIEW_IMPORT_SUCCESS = True
 except Exception:
     pass
@@ -1726,18 +1728,17 @@ class Api:
             if err:
                 return {'success': False, 'error': err}
 
-            import webview as _wv
             folder_name = os.path.basename(root_real) if root_real else 'Unknown'
             port = self._server_port or 8765
             from urllib.parse import quote
             culling_url = f'http://{HOST}:{port}/culling.html?root={quote(root_real, safe="")}'
             
             methods = [m for m in dir(self) if not m.startswith('_') and callable(getattr(self, m))]
-            log(f'[culling] Creating window with Api instance')
+            log('[culling] Creating window with Api instance')
             log(f'[culling] Available public methods (first 10): {methods[:10]}')
             log(f'[culling] read_kestrel_csv available: {"read_kestrel_csv" in methods}')
             
-            win = _wv.create_window(
+            win = webview.create_window(
                 f'Culling Assistant \u2014 {folder_name}',
                 culling_url,
                 js_api=self,
@@ -2183,9 +2184,8 @@ class Api:
         try:
             if not WEBVIEW_IMPORT_SUCCESS:
                 return {'success': False, 'error': 'pywebview not available'}
-            import webview as _wv
-            if _wv.windows and len(_wv.windows) > 0:
-                main_win = _wv.windows[0]
+            if webview.windows and len(webview.windows) > 0:
+                main_win = webview.windows[0]
                 main_win.evaluate_js('if(window.reloadCurrentFolders) window.reloadCurrentFolders();')
                 return {'success': True}
             return {'success': False, 'error': 'No main window found'}

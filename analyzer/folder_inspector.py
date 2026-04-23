@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import os
 from typing import Dict, List
-import math
 try:
     import pandas as pd  # pandas is fast for reading CSVs
 except Exception:

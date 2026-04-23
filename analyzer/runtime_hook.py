@@ -1,7 +1,6 @@
 import os
 import sys
 import ctypes
-import glob
 
 
 def _debug(msg: str) -> None:
