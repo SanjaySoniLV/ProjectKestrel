@@ -1720,7 +1720,7 @@ class Api:
     def open_culling_window(self, root_path: str):
         """Open a new pywebview window for the Culling Assistant."""
         try:
-            if not WEBVIEW_IMPORT_SUCCESS:
+            if not WEBVIEW_IMPORT_SUCCESS or webview is None:
                 return {'success': False, 'error': 'pywebview not available'}
 
             root_real, err = self._validate_root_dir(root_path, context='open_culling_window', require_exists=True)
@@ -2181,7 +2181,7 @@ class Api:
     def notify_main_window_refresh(self):
         """Tell the main visualizer window to reload its data."""
         try:
-            if not WEBVIEW_IMPORT_SUCCESS:
+            if not WEBVIEW_IMPORT_SUCCESS or webview is None:
                 return {'success': False, 'error': 'pywebview not available'}
             if webview.windows and len(webview.windows) > 0:
                 main_win = webview.windows[0]
