@@ -90,6 +90,10 @@
 
     let hasPywebviewApi = !!(window.pywebview && window.pywebview.api);
 
+    // Perch authentication
+    const PERCH_ORIGIN = 'https://perch.projectkestrel.org';
+    let _perchToken = null;
+
     // ── Global error handlers ─────────────────────────────────────────────────
     // Catch unhandled synchronous exceptions and unhandled promise rejections.
     // Forward them to the Python log via report_js_error so they appear in the
@@ -331,6 +335,42 @@
     let _renderScenesVersion = 0;
     // Version counter so loadMultipleFolders can be cancelled mid-flight
     let _loadFoldersVersion = 0;
+
+    // Perch Authentication Handler
+    async function initPerchAuth() {
+      const accountBtn = el('#accountBtn');
+      if (!accountBtn) return;
+
+      // Check for a stored, unexpired token on startup
+      if (hasPywebviewApi && window.pywebview?.api?.get_perch_token) {
+        try {
+          const result = await window.pywebview.api.get_perch_token();
+          if (result?.token) {
+            _perchToken = result.token;
+            accountBtn.classList.add('signed-in');
+          }
+        } catch (e) {
+          console.warn('Failed to get Perch token on startup:', e);
+        }
+      }
+
+      accountBtn.addEventListener('click', () => {
+        const signInUrl = `${PERCH_ORIGIN}/desktop-signin.html`;
+        if (hasPywebviewApi && window.pywebview?.api?.open_perch_sign_in) {
+          window.pywebview.api.open_perch_sign_in(signInUrl);
+        } else {
+          // Fallback: open web sign-in in browser
+          window.open(`${PERCH_ORIGIN}/signin.html`, '_blank');
+        }
+      });
+    }
+
+    // Called by Python after store_perch_token completes
+    window.onPerchSignIn = (token) => {
+      _perchToken = token;
+      const accountBtn = el('#accountBtn');
+      if (accountBtn) accountBtn.classList.add('signed-in');
+    };
 
     function loadVersionBadge() {
       if (!versionBadge) return;
@@ -7570,6 +7610,7 @@
 
     // Init
     loadVersionBadge();
+    initPerchAuth();
     setStatus('Open your photo folder (the one that contains .kestrel) or select kestrel_database.csv');
     hydrateSettingsFromServer();
 

@@ -92,6 +92,45 @@
       letter-spacing: .2px;
     }
 
+    #accountBtn {
+      width: 28px;
+      height: 28px;
+      border-radius: 7px;
+      border: 1px solid var(--card-border);
+      background: var(--chip);
+      color: var(--text);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: background 0.15s, border-color 0.15s;
+    }
+
+    #accountBtn:hover {
+      background: rgba(74, 163, 255, 0.15);
+      border-color: var(--brand);
+      color: var(--brand);
+    }
+
+    #accountBtn.signed-in {
+      border-color: var(--brand);
+      background: rgba(74, 163, 255, 0.08);
+    }
+
+    #accountBtn svg {
+      stroke: var(--text);
+      flex-shrink: 0;
+    }
+
+    #accountBtn:hover svg {
+      stroke: var(--brand);
+    }
+
+    #accountBtn.signed-in svg {
+      stroke: var(--brand);
+    }
+
     .toolbar {
       display: flex;
       flex-direction: column;

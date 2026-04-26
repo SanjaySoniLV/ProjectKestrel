@@ -32,9 +32,17 @@
   <div class="app-body">
   <header>
     <div class="wrap">
-      <h1>
-        <img src="logo.png" alt="Project Kestrel" style="height:32px; vertical-align:middle; margin-right:8px;" />
-        <span style="vertical-align:middle;">Project Kestrel</span>
+      <h1 style="display:flex;align-items:center;justify-content:space-between;margin:0 0 8px;">
+        <span style="display:flex;align-items:center;gap:8px;">
+          <img src="logo.png" alt="Project Kestrel" style="height:32px;" />
+          <span>Project Kestrel</span>
+        </span>
+        <button id="accountBtn" title="Perch Account" aria-label="Perch Account" style="padding:0;background:transparent;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+            <circle cx="12" cy="7" r="4"></circle>
+          </svg>
+        </button>
       </h1>
       <div class="toolbar">
         <div class="toolbar-row actions">

@@ -14,6 +14,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import webbrowser
 
 from settings_utils import load_persisted_settings, save_persisted_settings, log
@@ -67,6 +68,40 @@ try:
     WEBVIEW_IMPORT_SUCCESS = True
 except Exception:
     pass
+
+# ── Perch authentication helpers ──────────────────────────────────────────────
+_KEYRING_SERVICE = 'ProjectKestrel'
+_KEYRING_KEY     = 'perch_auth'
+
+def _get_perch_auth_fallback_path() -> str:
+    """Plaintext fallback path when no keyring backend is available."""
+    from settings_utils import _get_user_data_dir
+    return os.path.join(_get_user_data_dir(), 'perch_auth.json')
+
+def _keyring_load() -> dict | None:
+    """Read Perch auth from OS keychain; fall back to plaintext file."""
+    try:
+        import keyring
+        raw = keyring.get_password(_KEYRING_SERVICE, _KEYRING_KEY)
+        return json.loads(raw) if raw else None
+    except Exception:
+        try:
+            with open(_get_perch_auth_fallback_path(), 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+def _keyring_save(data: dict) -> None:
+    """Write Perch auth to OS keychain; fall back to plaintext file."""
+    try:
+        import keyring
+        keyring.set_password(_KEYRING_SERVICE, _KEYRING_KEY, json.dumps(data))
+    except Exception:
+        path = _get_perch_auth_fallback_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(data, f)
+# ──────────────────────────────────────────────────────────────────────────────
 
 # Metadata writing utilities
 try:
@@ -1725,6 +1760,7 @@ class Api:
 
     _main_window = None
     _culling_window = None
+    _sign_in_window = None
     _server_port = None
 
     def open_culling_window(self, root_path: str):
@@ -1762,6 +1798,66 @@ class Api:
             log(f'open_culling_window error: {e}')
             import traceback
             log(f'[culling] Traceback: {traceback.format_exc()}')
+            return {'success': False, 'error': str(e)}
+
+    def get_perch_token(self):
+        """Return stored Perch JWT if present and not near expiry, else token=None."""
+        try:
+            data = _keyring_load()
+            if not data:
+                return {'success': True, 'token': None}
+            token  = data.get('token')
+            expiry = data.get('expiry', 0)
+            if not token or time.time() > (expiry - 300):  # 5-min buffer
+                return {'success': True, 'token': None}
+            return {'success': True, 'token': token, 'expiry': expiry}
+        except Exception as e:
+            print(f'[API] get_perch_token() -> Error: {e}', flush=True)
+            return {'success': True, 'token': None}
+
+    def store_perch_token(self, token, expiry):
+        """Persist Perch JWT to OS keychain. Called from desktop-signin.html via pywebview."""
+        try:
+            _keyring_save({'token': str(token), 'expiry': float(expiry)})
+            # Notify main window
+            if self._main_window:
+                safe_token = json.dumps(str(token))
+                self._main_window.evaluate_js(
+                    f'window.onPerchSignIn && window.onPerchSignIn({safe_token})'
+                )
+            # Close sign-in window
+            if self._sign_in_window:
+                self._sign_in_window.destroy()
+                self._sign_in_window = None
+            return {'success': True}
+        except Exception as e:
+            print(f'[API] store_perch_token() -> Error: {e}', flush=True)
+            return {'success': False, 'error': str(e)}
+
+    def open_perch_sign_in(self, url):
+        """Open a pywebview window for desktop Perch sign-in."""
+        try:
+            if not WEBVIEW_IMPORT_SUCCESS:
+                return {'success': False, 'error': 'pywebview not available'}
+            import webview as _wv
+            if self._sign_in_window:
+                try:
+                    self._sign_in_window.destroy()
+                except Exception:
+                    pass
+                self._sign_in_window = None
+            win = _wv.create_window(
+                'Sign In to Perch',
+                url,
+                js_api=self,   # same Api instance — store_perch_token is accessible
+                width=520,
+                height=700,
+                resizable=False,
+            )
+            self._sign_in_window = win
+            return {'success': True}
+        except Exception as e:
+            print(f'[API] open_perch_sign_in() -> Error: {e}', flush=True)
             return {'success': False, 'error': str(e)}
 
     def _find_sidecar_file(self, root_path: str, filename: str, ext: str = '.xmp'):
