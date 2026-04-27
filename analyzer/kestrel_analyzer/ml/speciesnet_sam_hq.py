@@ -307,6 +307,10 @@ class OnnxClassifier:
         crop_resized = crop.resize((self.IMG_SIZE, self.IMG_SIZE), Image.BILINEAR)
         return np.array(crop_resized, dtype=np.uint8)  # (480, 480, 3) HWC uint8
 
+    def preprocess_many(self, img_pil: Image.Image, bboxes: list) -> list[np.ndarray]:
+        """Batch-friendly preprocess: one uint8 480x480 crop per bbox."""
+        return [self.preprocess(img_pil, bboxes=[b]) for b in bboxes]
+
     def predict(self, filepath: str, preprocessed: np.ndarray) -> dict:
         """
         Run ONNX inference and return classifications in SpeciesNet format.
@@ -326,6 +330,36 @@ class OnnxClassifier:
                 "scores":  [float(scores[i]) for i in order],
             }
         }
+
+    def predict_many(self, filepaths: list[str], preprocessed_list: list[np.ndarray]) -> list[dict]:
+        """
+        Run one ONNX forward pass for many preprocessed crops.
+
+        Returns one SpeciesNet-format classification dict per input crop:
+            {"classifications": {"classes": [...], "scores": [...]} }
+        """
+        if not preprocessed_list:
+            return []
+        if len(filepaths) != len(preprocessed_list):
+            raise ValueError("filepaths and preprocessed_list lengths must match")
+
+        inp = np.stack(preprocessed_list, axis=0).astype(np.float32) / 255.0  # (N,480,480,3)
+        logits_batch = self._session.run(None, {"input": inp})[0]             # (N, N_classes)
+
+        results: list[dict] = []
+        for logits in logits_batch:
+            exp = np.exp(logits - logits.max())
+            scores = exp / exp.sum()
+            order = np.argsort(scores)[::-1]
+            results.append(
+                {
+                    "classifications": {
+                        "classes": [self._labels[i] for i in order],
+                        "scores": [float(scores[i]) for i in order],
+                    }
+                }
+            )
+        return results
 
 
 class OnnxMDv5Detector:
@@ -807,10 +841,93 @@ class OnnxSamPredictor:
         providers = gpu_providers() if use_gpu else ["CPUExecutionProvider"]
         self._enc_session = ort.InferenceSession(str(enc_path), providers=providers)
         self._dec_session = ort.InferenceSession(str(dec_path), providers=providers)
+        self._decoder_input_shapes = {
+            inp.name: inp.shape for inp in self._dec_session.get_inputs()
+        }
+        self._decoder_requires_padded_im_size = "padded_im_size" in self._decoder_input_shapes
+        self._supports_prompt_batching = self._detect_prompt_batch_support()
+        self._batch_unsupported_logged = False
         _provs = self._enc_session.get_providers()
         self.device = "ONNX/GPU" if is_gpu_active(_provs) else "ONNX/CPU"
         _active = _provs[0] if _provs else "unknown"
         print(f"[OnnxSamPredictor] Loaded encoder+decoder  Active provider: {_active}  all providers: {_provs}")
+        print(f"[OnnxSamPredictor] Prompt batching support: {self._supports_prompt_batching}")
+        print(f"[OnnxSamPredictor] Decoder requires padded_im_size: {self._decoder_requires_padded_im_size}")
+        print(f"[OnnxSamPredictor] Encoder fixed input HW: {self._encoder_fixed_hw()}")
+
+    def _detect_prompt_batch_support(self) -> bool:
+        """
+        Infer whether decoder graph supports prompt batching (N > 1) by checking
+        input tensor batch dimensions. If any prompt-related input has a fixed
+        first dimension of 1, treat batching as unsupported.
+        """
+        try:
+            inputs = {inp.name: inp.shape for inp in self._dec_session.get_inputs()}
+        except Exception:
+            return False
+
+        def _first_dim(name: str):
+            shape = inputs.get(name)
+            if not shape or len(shape) == 0:
+                return None
+            return shape[0]
+
+        for name in ("point_coords", "point_labels", "mask_input", "has_mask_input", "orig_im_size"):
+            d0 = _first_dim(name)
+            if isinstance(d0, int) and d0 == 1:
+                return False
+        return True
+
+    def _decoder_input_rank(self, name: str) -> int:
+        shape = self._decoder_input_shapes.get(name)
+        return len(shape) if shape is not None else 0
+
+    def _build_decoder_inputs(
+        self,
+        image_embeddings: np.ndarray,
+        interm_embeddings: np.ndarray,
+        point_coords: np.ndarray,
+        point_labels: np.ndarray,
+        batch: int,
+        resized_hw: tuple[int, int],
+        original_hw: tuple[int, int],
+    ) -> dict[str, np.ndarray]:
+        orig_h, orig_w = original_hw
+        resized_h, resized_w = resized_hw
+
+        feed: dict[str, np.ndarray] = {
+            "image_embeddings": image_embeddings,
+            "interm_embeddings": interm_embeddings,
+            "point_coords": point_coords.astype(np.float32),
+            "point_labels": point_labels.astype(np.float32),
+            "mask_input": np.zeros((batch, 1, 256, 256), dtype=np.float32),
+        }
+
+        # Old exports often accept (G,), newer exports require (G,1).
+        has_mask_rank = self._decoder_input_rank("has_mask_input")
+        if has_mask_rank == 2:
+            feed["has_mask_input"] = np.zeros((batch, 1), dtype=np.float32)
+        else:
+            feed["has_mask_input"] = np.zeros((batch,), dtype=np.float32)
+
+        # Old exports often accept (2,), newer exports require (G,2).
+        orig_rank = self._decoder_input_rank("orig_im_size")
+        if orig_rank == 1:
+            feed["orig_im_size"] = np.array([orig_h, orig_w], dtype=np.float32)
+        else:
+            feed["orig_im_size"] = np.tile(
+                np.array([[orig_h, orig_w]], dtype=np.float32),
+                (batch, 1),
+            )
+
+        # New decoder export requires resized (pre-pad) H,W for each prompt group.
+        if self._decoder_requires_padded_im_size:
+            feed["padded_im_size"] = np.tile(
+                np.array([[resized_h, resized_w]], dtype=np.float32),
+                (batch, 1),
+            )
+
+        return feed
 
     @staticmethod
     def _resize_longest_side(image: np.ndarray, target: int) -> np.ndarray:
@@ -818,6 +935,20 @@ class OnnxSamPredictor:
         scale = target / max(h, w)
         new_h, new_w = int(round(h * scale)), int(round(w * scale))
         return cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
+    def _encoder_fixed_hw(self) -> tuple[int, int] | None:
+        """Return fixed encoder (H, W) if the ONNX input shape is static, else None."""
+        try:
+            shape = self._enc_session.get_inputs()[0].shape
+        except Exception:
+            return None
+        if not shape or len(shape) != 4:
+            return None
+        h = shape[2]
+        w = shape[3]
+        if isinstance(h, int) and isinstance(w, int):
+            return (h, w)
+        return None
 
     def encode(self, img_np: np.ndarray) -> tuple:
         """
@@ -834,14 +965,23 @@ class OnnxSamPredictor:
             (image_embeddings, interm_embeddings, resized_hw, original_hw)
         """
         orig_h, orig_w = img_np.shape[:2]
-        resized = self._resize_longest_side(img_np, self._IMG_SIZE)
-        resized_h, resized_w = resized.shape[:2]
-
-        img = resized.astype(np.float32)
-        pad_h = self._IMG_SIZE - resized_h
-        pad_w = self._IMG_SIZE - resized_w
-        img = np.pad(img, ((0, pad_h), (0, pad_w), (0, 0)))  # HxWx3
-        img = img.transpose(2, 0, 1)[np.newaxis]             # [1, 3, 1024, 1024]
+        fixed_hw = self._encoder_fixed_hw()
+        if fixed_hw is not None:
+            # New exports may pin encoder input to a fixed non-square size.
+            # Feed exactly what the graph declares.
+            fixed_h, fixed_w = fixed_hw
+            resized = cv2.resize(img_np, (fixed_w, fixed_h), interpolation=cv2.INTER_LINEAR)
+            resized_h, resized_w = resized.shape[:2]
+            img = resized.astype(np.float32)
+            img = img.transpose(2, 0, 1)[np.newaxis]  # [1, 3, H_fixed, W_fixed]
+        else:
+            resized = self._resize_longest_side(img_np, self._IMG_SIZE)
+            resized_h, resized_w = resized.shape[:2]
+            img = resized.astype(np.float32)
+            pad_h = self._IMG_SIZE - resized_h
+            pad_w = self._IMG_SIZE - resized_w
+            img = np.pad(img, ((0, pad_h), (0, pad_w), (0, 0)))  # HxWx3
+            img = img.transpose(2, 0, 1)[np.newaxis]             # [1, 3, 1024, 1024]
 
         image_embeddings, interm_embeddings = self._enc_session.run(None, {"input_image": img})
         return image_embeddings, interm_embeddings, (resized_h, resized_w), (orig_h, orig_w)
@@ -877,22 +1017,81 @@ class OnnxSamPredictor:
 
         point_coords = box_pts[np.newaxis]                        # (1, 2, 2)
         point_labels = np.array([[2.0, 3.0]], dtype=np.float32)   # TL=2, BR=3
-        mask_input   = np.zeros((1, 1, 256, 256), dtype=np.float32)
-        has_mask     = np.array([0.0], dtype=np.float32)
-        orig_im_size = np.array([orig_h, orig_w], dtype=np.float32)  # H, W
-
-        masks_out, iou_out, _ = self._dec_session.run(None, {
-            "image_embeddings":  image_embeddings,
-            "interm_embeddings": interm_embeddings,
-            "point_coords":      point_coords,
-            "point_labels":      point_labels,
-            "mask_input":        mask_input,
-            "has_mask_input":    has_mask,
-            "orig_im_size":      orig_im_size,
-        })
+        feed = self._build_decoder_inputs(
+            image_embeddings=image_embeddings,
+            interm_embeddings=interm_embeddings,
+            point_coords=point_coords,
+            point_labels=point_labels,
+            batch=1,
+            resized_hw=resized_hw,
+            original_hw=original_hw,
+        )
+        masks_out, iou_out, _ = self._dec_session.run(None, feed)
         mask = masks_out[0, 0] > 0.0
         iou  = float(iou_out[0, 0])
         return mask, iou
+
+    def decode_boxes(
+        self,
+        image_embeddings: np.ndarray,
+        interm_embeddings: np.ndarray,
+        boxes_xyxy: list[tuple[int, int, int, int]],
+        resized_hw: tuple,
+        original_hw: tuple,
+    ) -> list[tuple[np.ndarray, float]]:
+        """
+        Batch decode multiple bounding-box prompts to masks for one image.
+
+        Returns:
+            List of (mask bool HxW at original resolution, iou float), one per box.
+        """
+        if not boxes_xyxy:
+            return []
+        if len(boxes_xyxy) == 1:
+            return [self.decode_box(image_embeddings, interm_embeddings, boxes_xyxy[0], resized_hw, original_hw)]
+        if not self._supports_prompt_batching:
+            if not self._batch_unsupported_logged:
+                print(
+                    "[SAM-HQ] decoder ONNX export has fixed batch=1 on prompt inputs; "
+                    "using per-box decode path."
+                )
+                self._batch_unsupported_logged = True
+            return [
+                self.decode_box(image_embeddings, interm_embeddings, box_xyxy, resized_hw, original_hw)
+                for box_xyxy in boxes_xyxy
+            ]
+
+        orig_h, orig_w = original_hw
+        resized_h, resized_w = resized_hw
+        batch = len(boxes_xyxy)
+
+        box_pts = np.zeros((batch, 2, 2), dtype=np.float32)
+        for i, (x1, y1, x2, y2) in enumerate(boxes_xyxy):
+            box_pts[i, 0, 0] = x1 * resized_w / orig_w
+            box_pts[i, 0, 1] = y1 * resized_h / orig_h
+            box_pts[i, 1, 0] = x2 * resized_w / orig_w
+            box_pts[i, 1, 1] = y2 * resized_h / orig_h
+
+        point_coords = box_pts
+        point_labels = np.tile(np.array([[2.0, 3.0]], dtype=np.float32), (batch, 1))
+        # Decoder repeats one image embedding across prompt groups internally.
+        feed = self._build_decoder_inputs(
+            image_embeddings=image_embeddings,
+            interm_embeddings=interm_embeddings,
+            point_coords=point_coords,
+            point_labels=point_labels,
+            batch=batch,
+            resized_hw=resized_hw,
+            original_hw=original_hw,
+        )
+        masks_out, iou_out, _ = self._dec_session.run(None, feed)
+
+        results: list[tuple[np.ndarray, float]] = []
+        for i in range(batch):
+            mask = masks_out[i, 0] > 0.0
+            iou = float(iou_out[i, 0])
+            results.append((mask, iou))
+        return results
 
 
 class SpeciesNetSAMHQWrapper:
@@ -1064,20 +1263,60 @@ class SpeciesNetSAMHQWrapper:
 
         bird_rows: list[dict[str, Any]] = []
         wildlife_rows: list[dict[str, Any]] = []
+        sam_decode_candidates: list[dict[str, Any]] = []
+        planned_bird_count = 0
+        planned_wildlife_count = 0
 
         if self.predictor is None:
             return [], [], [], []
 
         # Encode once — all detections on this image share the same embeddings
         image_embeddings, interm_embeddings, resized_hw, original_hw = self.predictor.encode(image_data)
+        print(
+            f"[SAM-HQ] encoder: image={os.path.basename(fp)} mode=single-per-image "
+            f"detections={len(animal_dets)}"
+        )
+
+        # Batch classifier preprocess + ONNX inference for all detections in this image.
+        classifier_preds_by_idx: dict[int, dict[str, Any]] = {}
+        if animal_dets:
+            md_bboxes = [det.get("bbox", [0.0, 0.0, 0.0, 0.0]) for det in animal_dets]
+            bbox_objs = [BBox(*md_bbox) for md_bbox in md_bboxes]
+            preprocessed_many = self.classifier.preprocess_many(img_pil, bbox_objs)
+            filepaths_many = [f"{fp}#det{i}" for i in range(len(animal_dets))]
+            print(
+                f"[SpeciesNet] batch classifier: image={os.path.basename(fp)} "
+                f"batch_size={len(preprocessed_many)}"
+            )
+            cls_preds_many = self.classifier.predict_many(filepaths_many, preprocessed_many)
+            print(
+                f"[SpeciesNet] batch classifier complete: image={os.path.basename(fp)} "
+                f"predictions={len(cls_preds_many)}"
+            )
+            for i, cls_pred in enumerate(cls_preds_many):
+                classifier_preds_by_idx[i] = cls_pred
+
+        # Batch classifier preprocess + ONNX inference for all detections in this image.
+        classifier_preds_by_idx: dict[int, dict[str, Any]] = {}
+        if animal_dets:
+            md_bboxes = [det.get("bbox", [0.0, 0.0, 0.0, 0.0]) for det in animal_dets]
+            bbox_objs = [BBox(*md_bbox) for md_bbox in md_bboxes]
+            preprocessed_many = self.classifier.preprocess_many(img_pil, bbox_objs)
+            filepaths_many = [f"{fp}#det{i}" for i in range(len(animal_dets))]
+            cls_preds_many = self.classifier.predict_many(filepaths_many, preprocessed_many)
+            for i, cls_pred in enumerate(cls_preds_many):
+                classifier_preds_by_idx[i] = cls_pred
 
         for det_idx, det in enumerate(animal_dets):
             md_bbox = det.get("bbox", [0.0, 0.0, 0.0, 0.0])
             label = str(det.get("label", "animal"))
             conf = float(det.get("conf", 0.0))
 
-            cls_input = self.classifier.preprocess(img_pil, bboxes=[BBox(*md_bbox)])
-            cls_pred = self.classifier.predict(fp, cls_input)
+            cls_pred = classifier_preds_by_idx.get(det_idx)
+            if cls_pred is None:
+                # Defensive fallback (should not happen): preserve old single-item path.
+                cls_input = self.classifier.preprocess(img_pil, bboxes=[BBox(*md_bbox)])
+                cls_pred = self.classifier.predict(fp, cls_input)
             cls_info = cls_pred.get("classifications", {})
 
             fp_det = f"{fp}#det{det_idx}"
@@ -1165,27 +1404,96 @@ class SpeciesNetSAMHQWrapper:
 
             x1, y1, x2, y2 = _md_bbox_to_pixel_box(md_bbox, w, h)
             xi1, yi1, xi2, yi2 = _clip_xyxy(x1, y1, x2, y2, w, h)
-
-            try:
-                mask, _iou = self.predictor.decode_box(
-                    image_embeddings, interm_embeddings,
-                    (xi1, yi1, xi2, yi2), resized_hw, original_hw,
-                )
-            except Exception as e:
-                print("[SAM-HQ] mask failed:", e)
-                continue
-
-            row = {
-                "mask": mask,
-                "pred_boxes": _pixel_box_to_pipeline_box(x1, y1, x2, y2),
-                "pred_class": pred_label if route == "wildlife" else "bird",
-                "pred_score": pred_score,
-                "detector_confidence": conf,
-            }
-            if route == "bird":
-                bird_rows.append(row)
+            resolved_class = pred_label if route == "wildlife" else "bird"
+            if resolved_class == "bird":
+                if planned_bird_count >= self.max_bird_crops:
+                    print(
+                        f"[SpeciesNet] det {det_idx}  SKIPPED — bird crop cap reached "
+                        f"({self.max_bird_crops}) before SAM decode"
+                    )
+                    continue
+                planned_bird_count += 1
             else:
-                wildlife_rows.append(row)
+                if planned_wildlife_count >= self.max_bird_crops:
+                    print(
+                        f"[SpeciesNet] det {det_idx}  SKIPPED — wildlife crop cap reached "
+                        f"({self.max_bird_crops}) before SAM decode"
+                    )
+                    continue
+                planned_wildlife_count += 1
+            sam_decode_candidates.append(
+                {
+                    "prompt_box": (xi1, yi1, xi2, yi2),
+                    "pred_boxes": _pixel_box_to_pipeline_box(x1, y1, x2, y2),
+                    "pred_class": resolved_class,
+                    "pred_score": pred_score,
+                    "detector_confidence": conf,
+                }
+            )
+
+        if sam_decode_candidates:
+            sam_results: list[tuple[np.ndarray, float]] = []
+            try:
+                if getattr(self.predictor, "_supports_prompt_batching", False):
+                    print(
+                        f"[SAM-HQ] batch decode: image={os.path.basename(fp)} "
+                        f"batch_size={len(sam_decode_candidates)}"
+                    )
+                else:
+                    print(
+                        f"[SAM-HQ] decode: image={os.path.basename(fp)} "
+                        f"boxes={len(sam_decode_candidates)} mode=per-box(fixed-batch-model)"
+                    )
+                sam_results = self.predictor.decode_boxes(
+                    image_embeddings,
+                    interm_embeddings,
+                    [c["prompt_box"] for c in sam_decode_candidates],
+                    resized_hw,
+                    original_hw,
+                )
+                if getattr(self.predictor, "_supports_prompt_batching", False):
+                    print(
+                        f"[SAM-HQ] batch decode complete: image={os.path.basename(fp)} "
+                        f"decoded={len(sam_results)}"
+                    )
+                else:
+                    print(
+                        f"[SAM-HQ] decode complete: image={os.path.basename(fp)} "
+                        f"decoded={len(sam_results)} mode=per-box(fixed-batch-model)"
+                    )
+            except Exception as e:
+                print(f"[SAM-HQ] batch decode failed, falling back to per-box decode: {e}")
+                sam_results = []
+                for c in sam_decode_candidates:
+                    try:
+                        sam_results.append(
+                            self.predictor.decode_box(
+                                image_embeddings,
+                                interm_embeddings,
+                                c["prompt_box"],
+                                resized_hw,
+                                original_hw,
+                            )
+                        )
+                    except Exception as e2:
+                        print(f"[SAM-HQ] mask failed for one box: {e2}")
+                        sam_results.append((None, 0.0))
+
+            for candidate, sam_out in zip(sam_decode_candidates, sam_results):
+                mask = sam_out[0]
+                if mask is None:
+                    continue
+                row = {
+                    "mask": mask,
+                    "pred_boxes": candidate["pred_boxes"],
+                    "pred_class": candidate["pred_class"],
+                    "pred_score": candidate["pred_score"],
+                    "detector_confidence": candidate["detector_confidence"],
+                }
+                if candidate["pred_class"] == "bird":
+                    bird_rows.append(row)
+                else:
+                    wildlife_rows.append(row)
 
         if len(bird_rows) > self.max_bird_crops:
             print(
