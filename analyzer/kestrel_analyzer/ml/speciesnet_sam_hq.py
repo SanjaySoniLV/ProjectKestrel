@@ -1294,6 +1294,17 @@ class SpeciesNetSAMHQWrapper:
             for i, cls_pred in enumerate(cls_preds_many):
                 classifier_preds_by_idx[i] = cls_pred
 
+        # Batch classifier preprocess + ONNX inference for all detections in this image.
+        classifier_preds_by_idx: dict[int, dict[str, Any]] = {}
+        if animal_dets:
+            md_bboxes = [det.get("bbox", [0.0, 0.0, 0.0, 0.0]) for det in animal_dets]
+            bbox_objs = [BBox(*md_bbox) for md_bbox in md_bboxes]
+            preprocessed_many = self.classifier.preprocess_many(img_pil, bbox_objs)
+            filepaths_many = [f"{fp}#det{i}" for i in range(len(animal_dets))]
+            cls_preds_many = self.classifier.predict_many(filepaths_many, preprocessed_many)
+            for i, cls_pred in enumerate(cls_preds_many):
+                classifier_preds_by_idx[i] = cls_pred
+
         for det_idx, det in enumerate(animal_dets):
             md_bbox = det.get("bbox", [0.0, 0.0, 0.0, 0.0])
             label = str(det.get("label", "animal"))
