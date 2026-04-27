@@ -1887,6 +1887,13 @@
           cullingBtn.addEventListener('click', (ev) => { ev.stopPropagation(); openCullingAssistant(fd.folderPath); });
           rightActions.appendChild(cullingBtn);
 
+          const perchBtn = document.createElement('button');
+          perchBtn.className = 'action-btn share-perch-btn';
+          perchBtn.innerHTML = '<i>🪶</i> Share with Perch';
+          perchBtn.title = 'Create an Unfinished Perch on the web with this folder\u2019s Kestrel analysis (export and crop images)';
+          perchBtn.addEventListener('click', (ev) => { ev.stopPropagation(); shareWithPerchFolder(fd.folderPath); });
+          rightActions.appendChild(perchBtn);
+
           hdr.appendChild(rightActions);
 
           bodyEl = document.createElement('div');
@@ -8012,6 +8019,36 @@
       } catch (e) {
         console.error('openCullingAssistant error', e);
         showToast('Error opening Culling Assistant', 4000);
+      }
+    }
+
+    async function shareWithPerchFolder(rootPath) {
+      if (!window.pywebview?.api) {
+        showToast('Share with Perch requires desktop mode', 4000);
+        return;
+      }
+      if (dirty) {
+        const userChoice = await showCullingAssistantPrompt();
+        if (userChoice === 'cancel') return;
+        if (userChoice === 'save') await saveCsv();
+      }
+      try {
+        showToast('Uploading to Perch (this can take a while)…', 8000);
+        const res = await window.pywebview.api.share_with_perch(rootPath);
+        if (res && res.success) {
+          if (res.url) {
+            showToast('Opening your Perch in the browser…', 4000);
+          } else {
+            showToast('Perch created. ' + (res.perch_id || 'Open Perch to finish.'), 5000);
+          }
+        } else if (res && (res.error === 'not_signed_in' || res.needSignIn)) {
+          showToast('Sign in to Perch first (use the account button in the title bar).', 7000);
+        } else {
+          showToast('Perch: ' + (res && res.error ? res.error : 'Unknown error'), 8000);
+        }
+      } catch (e) {
+        console.error('shareWithPerchFolder', e);
+        showToast('Share with Perch failed', 5000);
       }
     }
     

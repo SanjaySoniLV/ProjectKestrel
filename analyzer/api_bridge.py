@@ -1834,6 +1834,65 @@ class Api:
             print(f'[API] store_perch_token() -> Error: {e}', flush=True)
             return {'success': False, 'error': str(e)}
 
+    def get_perch_api_base(self) -> str:
+        """Base URL of the Perch API Worker (no trailing slash)."""
+        return os.environ.get("PERCH_API_BASE", "http://127.0.0.1:8787").rstrip("/")
+
+    def share_with_perch(self, root_path: str) -> dict:
+        """Upload the current session's .kestrel data and assets to a new draft Perch; open the edit URL.
+
+        The API lives in the **Perch Worker** repo. Uses `PERCH_API_BASE` (default
+        `http://127.0.0.1:8787` for local `wrangler dev`) and a stored Perch Clerk JWT.
+        In production, set `PERCH_API_BASE` to your deployed Worker origin.
+        For local dev without Clerk, set `PERCH_DEV_USER_ID` and enable dev auth in the Worker.
+        """
+        try:
+            from perch_uploader import PerchKestrelUploader
+        except ImportError:  # pragma: no cover
+            try:
+                from analyzer.perch_uploader import PerchKestrelUploader
+            except ImportError as e:  # pragma: no cover
+                log(f"share_with_perch: import PerchKestrelUploader failed: {e}")
+                return {"success": False, "error": "Perch uploader module not available"}
+        data = _keyring_load()
+        token = (data or {}).get("token")
+        dev_user = os.environ.get("PERCH_DEV_USER_ID")
+        if not token and not dev_user:
+            return {
+                "success": False,
+                "error": "not_signed_in",
+                "needSignIn": True,
+            }
+        root_real, err = self._validate_root_dir(
+            root_path, context="share_with_perch", require_exists=True
+        )
+        if err:
+            return {"success": False, "error": err}
+        api_base = self.get_perch_api_base()
+        try:
+            uploader = PerchKestrelUploader(
+                api_base, str(token) if token else None, dev_user=dev_user
+            )
+            out = uploader.run(str(root_real))
+            url = out.get("url")
+            if url:
+                try:
+                    webbrowser.open(str(url), new=2, autoraise=True)
+                except Exception as ex:  # pragma: no cover
+                    log(f"share_with_perch: webbrowser.open failed: {ex}")
+            return {
+                "success": True,
+                "perch_id": out.get("perch_id"),
+                "url": url,
+                "scene_count": out.get("scene_count"),
+            }
+        except Exception as e:
+            log(f"share_with_perch: {e}")
+            import traceback
+
+            log(traceback.format_exc())
+            return {"success": False, "error": str(e)}
+
     def open_perch_sign_in(self, url):
         """Open a pywebview window for desktop Perch sign-in."""
         try:
