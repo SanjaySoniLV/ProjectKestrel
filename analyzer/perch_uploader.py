@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -189,21 +190,37 @@ class PerchKestrelUploader:
         perch_id = str(data["id"])
         base_url = str(data.get("url", ""))
 
-        for ru in rows:
+        upload_tasks = []
+        for idx, ru in enumerate(rows):
             if ru.export_path:
                 try:
                     ep = _join_under_session(session_root, ru.export_path)
                 except ValueError as e:
                     raise FileNotFoundError(str(e)) from e
                 if ep.is_file():
-                    ru.export_asset_id = self._post_file(perch_id, ep, "export", ru)
+                    upload_tasks.append((idx, "export", ep, ru))
             if ru.crop_path:
                 try:
                     cp = _join_under_session(session_root, ru.crop_path)
                 except ValueError as e:
                     raise FileNotFoundError(str(e)) from e
                 if cp.is_file():
-                    ru.crop_asset_id = self._post_file(perch_id, cp, "crop", ru)
+                    upload_tasks.append((idx, "crop", cp, ru))
+
+        MAX_PARALLEL = 4
+        with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as executor:
+            futures = {}
+            for idx, kind, path, ru in upload_tasks:
+                f = executor.submit(self._post_file, perch_id, path, kind, ru)
+                futures[f] = (idx, kind, ru)
+
+            for fut in as_completed(futures):
+                idx, kind, ru = futures[fut]
+                asset_id = fut.result()
+                if kind == "export":
+                    ru.export_asset_id = asset_id
+                else:
+                    ru.crop_asset_id = asset_id
 
         manifest = self._build_manifest(rows, scenedata)
         m = self.s.post(
