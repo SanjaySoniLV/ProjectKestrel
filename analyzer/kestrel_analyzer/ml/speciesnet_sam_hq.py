@@ -307,6 +307,10 @@ class OnnxClassifier:
         crop_resized = crop.resize((self.IMG_SIZE, self.IMG_SIZE), Image.BILINEAR)
         return np.array(crop_resized, dtype=np.uint8)  # (480, 480, 3) HWC uint8
 
+    def preprocess_many(self, img_pil: Image.Image, bboxes: list) -> list[np.ndarray]:
+        """Batch-friendly preprocess: one uint8 480x480 crop per bbox."""
+        return [self.preprocess(img_pil, bboxes=[b]) for b in bboxes]
+
     def predict(self, filepath: str, preprocessed: np.ndarray) -> dict:
         """
         Run ONNX inference and return classifications in SpeciesNet format.
@@ -326,6 +330,36 @@ class OnnxClassifier:
                 "scores":  [float(scores[i]) for i in order],
             }
         }
+
+    def predict_many(self, filepaths: list[str], preprocessed_list: list[np.ndarray]) -> list[dict]:
+        """
+        Run one ONNX forward pass for many preprocessed crops.
+
+        Returns one SpeciesNet-format classification dict per input crop:
+            {"classifications": {"classes": [...], "scores": [...]} }
+        """
+        if not preprocessed_list:
+            return []
+        if len(filepaths) != len(preprocessed_list):
+            raise ValueError("filepaths and preprocessed_list lengths must match")
+
+        inp = np.stack(preprocessed_list, axis=0).astype(np.float32) / 255.0  # (N,480,480,3)
+        logits_batch = self._session.run(None, {"input": inp})[0]             # (N, N_classes)
+
+        results: list[dict] = []
+        for logits in logits_batch:
+            exp = np.exp(logits - logits.max())
+            scores = exp / exp.sum()
+            order = np.argsort(scores)[::-1]
+            results.append(
+                {
+                    "classifications": {
+                        "classes": [self._labels[i] for i in order],
+                        "scores": [float(scores[i]) for i in order],
+                    }
+                }
+            )
+        return results
 
 
 class OnnxMDv5Detector:
@@ -1071,13 +1105,27 @@ class SpeciesNetSAMHQWrapper:
         # Encode once — all detections on this image share the same embeddings
         image_embeddings, interm_embeddings, resized_hw, original_hw = self.predictor.encode(image_data)
 
+        # Batch classifier preprocess + ONNX inference for all detections in this image.
+        classifier_preds_by_idx: dict[int, dict[str, Any]] = {}
+        if animal_dets:
+            md_bboxes = [det.get("bbox", [0.0, 0.0, 0.0, 0.0]) for det in animal_dets]
+            bbox_objs = [BBox(*md_bbox) for md_bbox in md_bboxes]
+            preprocessed_many = self.classifier.preprocess_many(img_pil, bbox_objs)
+            filepaths_many = [f"{fp}#det{i}" for i in range(len(animal_dets))]
+            cls_preds_many = self.classifier.predict_many(filepaths_many, preprocessed_many)
+            for i, cls_pred in enumerate(cls_preds_many):
+                classifier_preds_by_idx[i] = cls_pred
+
         for det_idx, det in enumerate(animal_dets):
             md_bbox = det.get("bbox", [0.0, 0.0, 0.0, 0.0])
             label = str(det.get("label", "animal"))
             conf = float(det.get("conf", 0.0))
 
-            cls_input = self.classifier.preprocess(img_pil, bboxes=[BBox(*md_bbox)])
-            cls_pred = self.classifier.predict(fp, cls_input)
+            cls_pred = classifier_preds_by_idx.get(det_idx)
+            if cls_pred is None:
+                # Defensive fallback (should not happen): preserve old single-item path.
+                cls_input = self.classifier.preprocess(img_pil, bboxes=[BBox(*md_bbox)])
+                cls_pred = self.classifier.predict(fp, cls_input)
             cls_info = cls_pred.get("classifications", {})
 
             fp_det = f"{fp}#det{det_idx}"
