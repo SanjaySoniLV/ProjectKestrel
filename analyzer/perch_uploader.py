@@ -3,6 +3,27 @@ Upload a Kestrel-analyzed session to Perch (Cloudflare Worker + R2 + D1).
 
 The HTTP API is implemented in the **Perch Worker** repository (not in ProjectKestrel).
 Call from the desktop app with a Clerk JWT. See `PerchKestrelUploader.run`.
+
+For each CSV row, multipart asset POST includes species/quality and row-level **exposure**
+fields (`exposure_correction`, `exposure_subject_stops`, `exposure_meter_scale`,
+`exposure_pipeline`) plus the full **`crops_json`** array from the database when an export
+is uploaded, or on the crop asset alone when no export file exists for that row (so
+metadata is not lost). Only one crop **file** per row is uploaded (`crop_path`); other
+crops may appear inside `crops_json` for future multi-crop support.
+
+This uploader uses create perch, assets, manifest only. The worker also exposes social
+and lifecycle routes for apps/UI (same ``Authorization: Bearer`` for mutations):
+
+- ``GET /v1/me`` — current user's public profile blob.
+- ``POST``/``DELETE /v1/assets/{assetId}/like``
+- ``GET /v1/public/assets/{assetId}/likes`` and ``.../comments`` (optional Bearer for
+  ``likedByMe``).
+- ``POST``/``DELETE /v1/assets/{assetId}/comments`` (and comment-id delete).
+- ``PUT /v1/perches/{id}/favorites`` with ``{"sceneIds": [...]}`` (owner).
+- ``POST /v1/perches/{id}/unpublish`` and ``DELETE /v1/perches/{id}`` (owner).
+
+Perch GET JSON (public slug and owner GET) includes ``owner``, ``photographerFavorites``,
+and per-export ``likeCount`` where implemented.
 """
 from __future__ import annotations
 
@@ -78,6 +99,11 @@ class _RowUpload:
     capture_time_ms: Optional[int]
     scene_name: str
     secondary_json: str
+    crops_json: str
+    exposure_correction: Optional[float]
+    exposure_subject_stops: Optional[float]
+    exposure_meter_scale: Optional[float]
+    exposure_pipeline: Optional[str]
     export_asset_id: Optional[str] = None
     crop_asset_id: Optional[str] = None
 
@@ -183,6 +209,11 @@ class PerchKestrelUploader:
                     if "scene_name" in df.columns
                     else "",
                     secondary_json=json.dumps(sec_obj, default=str),
+                    crops_json=_normalize_crops_json_cell(row, df),
+                    exposure_correction=_opt_float_csv(row, "exposure_correction"),
+                    exposure_subject_stops=_opt_float_csv(row, "exposure_subject_stops"),
+                    exposure_meter_scale=_opt_float_csv(row, "exposure_meter_scale"),
+                    exposure_pipeline=_opt_str_csv(row, "exposure_pipeline"),
                 )
             )
 
@@ -196,7 +227,7 @@ class PerchKestrelUploader:
         perch_id = str(data["id"])
         base_url = str(data.get("url", ""))
 
-        upload_tasks = []
+        will_export: set[int] = set()
         for idx, ru in enumerate(rows):
             if ru.export_path:
                 try:
@@ -204,21 +235,41 @@ class PerchKestrelUploader:
                 except ValueError as e:
                     raise FileNotFoundError(str(e)) from e
                 if ep.is_file():
-                    upload_tasks.append((idx, "export", ep, ru))
+                    will_export.add(idx)
+
+        upload_tasks: List[tuple[int, str, Path, _RowUpload, str]] = []
+        for idx, ru in enumerate(rows):
+            crops_full = ru.crops_json if ru.crops_json else "[]"
+            if ru.export_path:
+                try:
+                    ep = _join_under_session(session_root, ru.export_path)
+                except ValueError as e:
+                    raise FileNotFoundError(str(e)) from e
+                if ep.is_file():
+                    upload_tasks.append((idx, "export", ep, ru, crops_full))
             if ru.crop_path:
                 try:
                     cp = _join_under_session(session_root, ru.crop_path)
                 except ValueError as e:
                     raise FileNotFoundError(str(e)) from e
                 if cp.is_file():
-                    upload_tasks.append((idx, "crop", cp, ru))
+                    crops_body = crops_full if idx not in will_export else ""
+                    upload_tasks.append((idx, "crop", cp, ru, crops_body))
 
         MAX_PARALLEL = 4
         with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as executor:
             futures = {}
-            for idx, kind, path, ru in upload_tasks:
+            for idx, kind, path, ru, crops_body in upload_tasks:
                 thread_session = self._new_session()
-                f = executor.submit(self._post_file_with_session, thread_session, perch_id, path, kind, ru)
+                f = executor.submit(
+                    self._post_file_with_session,
+                    thread_session,
+                    perch_id,
+                    path,
+                    kind,
+                    ru,
+                    crops_body,
+                )
                 futures[f] = (idx, kind, ru)
 
             for fut in as_completed(futures):
@@ -244,12 +295,18 @@ class PerchKestrelUploader:
         }
 
     def _post_file(
-        self, perch_id: str, path: Path, kind: str, ru: _RowUpload
+        self, perch_id: str, path: Path, kind: str, ru: _RowUpload, crops_json_body: str
     ) -> str:
-        return self._post_file_with_session(self.s, perch_id, path, kind, ru)
+        return self._post_file_with_session(self.s, perch_id, path, kind, ru, crops_json_body)
 
     def _post_file_with_session(
-        self, session: requests.Session, perch_id: str, path: Path, kind: str, ru: _RowUpload
+        self,
+        session: requests.Session,
+        perch_id: str,
+        path: Path,
+        kind: str,
+        ru: _RowUpload,
+        crops_json_body: str,
     ) -> str:
         with open(path, "rb") as f:
             data = f.read()
@@ -273,8 +330,18 @@ class PerchKestrelUploader:
             if ru.family_confidence is not None
             else "",
             "capture_time": str(ru.capture_time_ms) if ru.capture_time_ms is not None else "",
-            "crops_json": "",
+            "crops_json": crops_json_body,
             "secondary_json": ru.secondary_json,
+            "exposure_correction": str(ru.exposure_correction)
+            if ru.exposure_correction is not None
+            else "",
+            "exposure_subject_stops": str(ru.exposure_subject_stops)
+            if ru.exposure_subject_stops is not None
+            else "",
+            "exposure_meter_scale": str(ru.exposure_meter_scale)
+            if ru.exposure_meter_scale is not None
+            else "",
+            "exposure_pipeline": ru.exposure_pipeline or "",
         }
         r = session.post(
             self._url(f"/v1/perches/{perch_id}/assets"),
@@ -338,6 +405,45 @@ class PerchKestrelUploader:
                 }
             )
         return {"scenes": scenes_out}
+
+
+def _normalize_crops_json_cell(row: Any, df: Any) -> str:
+    """Return compact JSON array/object string for Worker; \"[]\" if missing or invalid."""
+    if "crops_json" not in df.columns:
+        return "[]"
+    raw = row.get("crops_json")
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+        return "[]"
+    s = str(raw).strip()
+    if not s or s.lower() == "nan":
+        return "[]"
+    try:
+        parsed = json.loads(s)
+        return json.dumps(parsed, default=str, separators=(",", ":"))
+    except json.JSONDecodeError:
+        return "[]"
+
+
+def _opt_float_csv(row: Any, col: str) -> Optional[float]:
+    if col not in row.index:
+        return None
+    v = row.get(col)
+    if v is None or (isinstance(v, float) and pd.isna(v)) or v == "":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _opt_str_csv(row: Any, col: str) -> Optional[str]:
+    if col not in row.index:
+        return None
+    v = row.get(col)
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return None
+    out = str(v).strip()
+    return out if out else None
 
 
 def _parse_capture(row: Any, df: Any) -> Optional[int]:
