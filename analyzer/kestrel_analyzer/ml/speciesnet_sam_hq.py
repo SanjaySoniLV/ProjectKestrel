@@ -1264,6 +1264,8 @@ class SpeciesNetSAMHQWrapper:
         bird_rows: list[dict[str, Any]] = []
         wildlife_rows: list[dict[str, Any]] = []
         sam_decode_candidates: list[dict[str, Any]] = []
+        planned_bird_count = 0
+        planned_wildlife_count = 0
 
         if self.predictor is None:
             return [], [], [], []
@@ -1402,11 +1404,28 @@ class SpeciesNetSAMHQWrapper:
 
             x1, y1, x2, y2 = _md_bbox_to_pixel_box(md_bbox, w, h)
             xi1, yi1, xi2, yi2 = _clip_xyxy(x1, y1, x2, y2, w, h)
+            resolved_class = pred_label if route == "wildlife" else "bird"
+            if resolved_class == "bird":
+                if planned_bird_count >= self.max_bird_crops:
+                    print(
+                        f"[SpeciesNet] det {det_idx}  SKIPPED — bird crop cap reached "
+                        f"({self.max_bird_crops}) before SAM decode"
+                    )
+                    continue
+                planned_bird_count += 1
+            else:
+                if planned_wildlife_count >= self.max_bird_crops:
+                    print(
+                        f"[SpeciesNet] det {det_idx}  SKIPPED — wildlife crop cap reached "
+                        f"({self.max_bird_crops}) before SAM decode"
+                    )
+                    continue
+                planned_wildlife_count += 1
             sam_decode_candidates.append(
                 {
                     "prompt_box": (xi1, yi1, xi2, yi2),
                     "pred_boxes": _pixel_box_to_pipeline_box(x1, y1, x2, y2),
-                    "pred_class": pred_label if route == "wildlife" else "bird",
+                    "pred_class": resolved_class,
                     "pred_score": pred_score,
                     "detector_confidence": conf,
                 }
