@@ -8042,7 +8042,10 @@
             showToast('Perch created. ' + (res.perch_id || 'Open Perch to finish.'), 5000);
           }
         } else if (res && (res.error === 'not_signed_in' || res.needSignIn)) {
-          showToast('Sign in to Perch first (use the account button in the title bar).', 7000);
+          const msg = res.error === 'perch_token_expired'
+            ? 'Perch sign-in expired. Open the account button in the title bar and sign in again, then try Share with Perch.'
+            : 'Sign in to Perch first (use the account button in the title bar).';
+          showToast(msg, 8000);
         } else {
           showToast('Perch: ' + (res && res.error ? res.error : 'Unknown error'), 8000);
         }

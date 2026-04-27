@@ -31,6 +31,23 @@ def _find_kestrel_dir(session_path: str | os.PathLike[str]) -> Path:
     raise FileNotFoundError(f"No .kestrel directory under {p}")
 
 
+def _raise_for_status(r: requests.Response) -> None:
+    """Like Response.raise_for_status but include JSON `error` body (Worker auth errors)."""
+    if r.ok:
+        return
+    detail = ""
+    try:
+        j = r.json()
+        if isinstance(j, dict) and j.get("error") is not None:
+            detail = f" — {j.get('error')}"
+    except Exception:
+        pass
+    if not detail and r.text:
+        detail = f" — {r.text[:800]}"
+    msg = f"{r.status_code} Client Error: {r.reason} for url: {r.url}{detail}"
+    raise requests.HTTPError(msg, response=r)
+
+
 def _norm_rel(path_str: str) -> str:
     return (path_str or "").replace("\\", "/").strip()
 
@@ -78,9 +95,10 @@ class PerchKestrelUploader:
         du = dev_user or os.environ.get("PERCH_DEV_USER_ID")
         if du:
             self.s.headers["x-dev-user-id"] = str(du)
-        if jwt_token:
-            self.s.headers["Authorization"] = f"Bearer {jwt_token}"
-        if not du and not jwt_token:
+        t = str(jwt_token).strip() if jwt_token else ""
+        if t:
+            self.s.headers["Authorization"] = f"Bearer {t}"
+        if not du and not t:
             raise ValueError("Need Clerk JWT or PERCH_DEV_USER_ID for local Worker dev auth")
 
     def _url(self, path: str) -> str:
@@ -166,7 +184,7 @@ class PerchKestrelUploader:
             json={"title": title or session_root.name},
             timeout=self.timeout,
         )
-        res.raise_for_status()
+        _raise_for_status(res)
         data = res.json()
         perch_id = str(data["id"])
         base_url = str(data.get("url", ""))
@@ -193,7 +211,7 @@ class PerchKestrelUploader:
             json=manifest,
             timeout=self.timeout,
         )
-        m.raise_for_status()
+        _raise_for_status(m)
 
         return {
             "perch_id": perch_id,
@@ -235,7 +253,7 @@ class PerchKestrelUploader:
             files={"file": (name, data, ct)},
             timeout=self.timeout,
         )
-        r.raise_for_status()
+        _raise_for_status(r)
         j = r.json()
         return str(j["id"])
 

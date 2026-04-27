@@ -79,17 +79,24 @@ def _get_perch_auth_fallback_path() -> str:
     return os.path.join(_get_user_data_dir(), 'perch_auth.json')
 
 def _keyring_load() -> dict | None:
-    """Read Perch auth from OS keychain; fall back to plaintext file."""
+    """Read Perch auth from OS keychain; fall back to plaintext file.
+
+    If the key is missing from the keychain (get_password returns None), we must
+    still read the file fallback — otherwise a token stored only in
+    ``perch_auth.json`` (when keyring save failed) is never loaded after restart.
+    """
     try:
         import keyring
         raw = keyring.get_password(_KEYRING_SERVICE, _KEYRING_KEY)
-        return json.loads(raw) if raw else None
+        if raw:
+            return json.loads(raw)
     except Exception:
-        try:
-            with open(_get_perch_auth_fallback_path(), 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception:
-            return None
+        pass
+    try:
+        with open(_get_perch_auth_fallback_path(), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
 
 def _keyring_save(data: dict) -> None:
     """Write Perch auth to OS keychain; fall back to plaintext file."""
@@ -101,6 +108,74 @@ def _keyring_save(data: dict) -> None:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(data, f)
+
+
+def _perch_normalize_expiry_seconds(expiry: float | int) -> float:
+    """JWT exp is seconds since epoch. Some callers accidentally pass ms."""
+    e = float(expiry)
+    if e > 1e12:  # e.g. 1730000000000
+        e = e / 1000.0
+    return e
+
+
+def _perch_debug_jwt_enabled() -> bool:
+    return os.environ.get("PERCH_DEBUG_JWT", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _perch_debug_log_token(where: str, token: str | None) -> None:
+    """Log non-secret JWT metadata (iss, aud, exp) and a short token fingerprint."""
+    if not _perch_debug_jwt_enabled():
+        return
+    if not token:
+        log(f"[Perch debug] {where}: (no token)")
+        return
+    t = str(token).strip()
+    parts = t.split(".")
+    payload: dict = {}
+    if len(parts) >= 2:
+        try:
+            seg = parts[1] + "=" * (-len(parts[1]) % 4)
+            payload = json.loads(base64.urlsafe_b64decode(seg))
+        except Exception as ex:  # pragma: no cover
+            payload = {"_decode_error": str(ex)}
+    head = t[:24] if len(t) > 24 else t
+    tail = t[-16:] if len(t) > 16 else ""
+    log(
+        f"[Perch debug] {where}: len={len(t)} fingerprint={head!r}…{tail!r} "
+        f"iss={payload.get('iss')!r} aud={payload.get('aud')!r} "
+        f"exp={payload.get('exp')} sub={payload.get('sub')!r}"
+    )
+
+
+def _perch_jwt_exp_unverified(token: str) -> float | None:
+    """Return JWT `exp` (seconds since epoch) from the payload without verifying the signature."""
+    t = str(token).strip()
+    parts = t.split(".")
+    if len(parts) < 2:
+        return None
+    try:
+        seg = parts[1] + "=" * (-len(parts[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(seg))
+        e = payload.get("exp")
+        if e is None:
+            return None
+        return float(e)
+    except Exception:  # pragma: no cover
+        return None
+
+
+def _perch_jwt_seconds_until_exp(token: str) -> float | None:
+    """Seconds from now until JWT exp (unverified), or None if not decodable / no exp."""
+    exp = _perch_jwt_exp_unverified(token)
+    if exp is None:
+        return None
+    return float(exp) - time.time()
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 
 # Metadata writing utilities
@@ -1805,20 +1880,57 @@ class Api:
         try:
             data = _keyring_load()
             if not data:
-                return {'success': True, 'token': None}
-            token  = data.get('token')
-            expiry = data.get('expiry', 0)
-            if not token or time.time() > (expiry - 300):  # 5-min buffer
-                return {'success': True, 'token': None}
-            return {'success': True, 'token': token, 'expiry': expiry}
+                _perch_debug_log_token("get_perch_token: keyring empty", None)
+                return {"success": True, "token": None}
+            token = data.get("token")
+            if not token:
+                return {"success": True, "token": None}
+            ttl = _perch_jwt_seconds_until_exp(str(token))
+            if ttl is not None:
+                if ttl < 300:  # 5-min buffer (match prior keyring behaviour)
+                    _perch_debug_log_token(
+                        "get_perch_token: JWT exp within 5min (rejected)", token
+                    )
+                    if _perch_debug_jwt_enabled():
+                        log(f"[Perch debug] get_perch_token: ttl_sec={ttl:.0f}")
+                    return {"success": True, "token": None}
+            else:
+                expiry_raw = data.get("expiry", 0)
+                try:
+                    exp = _perch_normalize_expiry_seconds(expiry_raw) if expiry_raw else 0.0
+                except (TypeError, ValueError):
+                    exp = 0.0
+                if time.time() > (exp - 300):
+                    _perch_debug_log_token(
+                        "get_perch_token: could not decode JWT; stored exp past buffer",
+                        token,
+                    )
+                    return {"success": True, "token": None}
+            exp_out = _perch_jwt_exp_unverified(str(token))
+            if exp_out is None:
+                try:
+                    exp_out = _perch_normalize_expiry_seconds(data.get("expiry", 0))
+                except (TypeError, ValueError):
+                    exp_out = 0.0
+            _perch_debug_log_token("get_perch_token: returning token", token)
+            return {"success": True, "token": token, "expiry": exp_out}
         except Exception as e:
-            print(f'[API] get_perch_token() -> Error: {e}', flush=True)
-            return {'success': True, 'token': None}
+            print(f"[API] get_perch_token() -> Error: {e}", flush=True)
+            return {"success": True, "token": None}
 
     def store_perch_token(self, token, expiry):
         """Persist Perch JWT to OS keychain. Called from desktop-signin.html via pywebview."""
         try:
-            _keyring_save({'token': str(token), 'expiry': float(expiry)})
+            try:
+                exp = _perch_normalize_expiry_seconds(
+                    float(expiry) if expiry is not None else 0.0
+                )
+            except (TypeError, ValueError):
+                exp = 0.0
+            _keyring_save({"token": str(token), "expiry": exp})
+            _perch_debug_log_token("store_perch_token: saved", str(token) if token else None)
+            if _perch_debug_jwt_enabled():
+                log(f"[Perch debug] store_perch_token: exp_stored={exp!r} (from arg {expiry!r})")
             # Notify main window
             if self._main_window:
                 safe_token = json.dumps(str(token))
@@ -1836,15 +1948,17 @@ class Api:
 
     def get_perch_api_base(self) -> str:
         """Base URL of the Perch API Worker (no trailing slash)."""
-        return os.environ.get("PERCH_API_BASE", "http://127.0.0.1:8787").rstrip("/")
+        return os.environ.get(
+            "PERCH_API_BASE", "https://perchapi.projectkestrel.org"
+        ).rstrip("/")
 
     def share_with_perch(self, root_path: str) -> dict:
         """Upload the current session's .kestrel data and assets to a new draft Perch; open the edit URL.
 
         The API lives in the **Perch Worker** repo. Uses `PERCH_API_BASE` (default
-        `http://127.0.0.1:8787` for local `wrangler dev`) and a stored Perch Clerk JWT.
-        In production, set `PERCH_API_BASE` to your deployed Worker origin.
-        For local dev without Clerk, set `PERCH_DEV_USER_ID` and enable dev auth in the Worker.
+        production `https://perchapi.projectkestrel.org`) and a stored Perch Clerk JWT.
+        For local `wrangler dev`, set `PERCH_API_BASE=http://127.0.0.1:8787`.
+        For local dev without Clerk, set `PERCH_DEV_USER_ID` and enable `PERCH_DEV_AUTH` on the Worker.
         """
         try:
             from perch_uploader import PerchKestrelUploader
@@ -1863,12 +1977,26 @@ class Api:
                 "error": "not_signed_in",
                 "needSignIn": True,
             }
+        if token and not dev_user:
+            ttl = _perch_jwt_seconds_until_exp(str(token))
+            if ttl is None or ttl < 90:
+                if _perch_debug_jwt_enabled() and ttl is not None:
+                    log(
+                        f"[Perch debug] share_with_perch: reject upload, "
+                        f"seconds_until_exp={ttl:.1f} (need >= 90)"
+                    )
+                return {
+                    "success": False,
+                    "error": "perch_token_expired",
+                    "needSignIn": True,
+                }
         root_real, err = self._validate_root_dir(
             root_path, context="share_with_perch", require_exists=True
         )
         if err:
             return {"success": False, "error": err}
         api_base = self.get_perch_api_base()
+        _perch_debug_log_token("share_with_perch: about to call API", str(token) if token else None)
         try:
             uploader = PerchKestrelUploader(
                 api_base, str(token) if token else None, dev_user=dev_user
