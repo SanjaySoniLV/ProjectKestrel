@@ -92,15 +92,21 @@ class PerchKestrelUploader:
     ) -> None:
         self.api_base = api_base.rstrip("/")
         self.timeout = timeout
-        self.s = requests.Session()
+        self._auth_headers: dict = {}
         du = dev_user or os.environ.get("PERCH_DEV_USER_ID")
         if du:
-            self.s.headers["x-dev-user-id"] = str(du)
+            self._auth_headers["x-dev-user-id"] = str(du)
         t = str(jwt_token).strip() if jwt_token else ""
         if t:
-            self.s.headers["Authorization"] = f"Bearer {t}"
+            self._auth_headers["Authorization"] = f"Bearer {t}"
         if not du and not t:
             raise ValueError("Need Clerk JWT or PERCH_DEV_USER_ID for local Worker dev auth")
+        self.s = self._new_session()
+
+    def _new_session(self) -> requests.Session:
+        s = requests.Session()
+        s.headers.update(self._auth_headers)
+        return s
 
     def _url(self, path: str) -> str:
         return f"{self.api_base}{path}"
@@ -211,7 +217,8 @@ class PerchKestrelUploader:
         with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as executor:
             futures = {}
             for idx, kind, path, ru in upload_tasks:
-                f = executor.submit(self._post_file, perch_id, path, kind, ru)
+                thread_session = self._new_session()
+                f = executor.submit(self._post_file_with_session, thread_session, perch_id, path, kind, ru)
                 futures[f] = (idx, kind, ru)
 
             for fut in as_completed(futures):
@@ -239,6 +246,11 @@ class PerchKestrelUploader:
     def _post_file(
         self, perch_id: str, path: Path, kind: str, ru: _RowUpload
     ) -> str:
+        return self._post_file_with_session(self.s, perch_id, path, kind, ru)
+
+    def _post_file_with_session(
+        self, session: requests.Session, perch_id: str, path: Path, kind: str, ru: _RowUpload
+    ) -> str:
         with open(path, "rb") as f:
             data = f.read()
         name = path.name
@@ -264,7 +276,7 @@ class PerchKestrelUploader:
             "crops_json": "",
             "secondary_json": ru.secondary_json,
         }
-        r = self.s.post(
+        r = session.post(
             self._url(f"/v1/perches/{perch_id}/assets"),
             data=form_data,
             files={"file": (name, data, ct)},
