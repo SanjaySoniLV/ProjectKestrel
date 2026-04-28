@@ -256,29 +256,27 @@ class PerchKestrelUploader:
                     crops_body = crops_full if idx not in will_export else ""
                     upload_tasks.append((idx, "crop", cp, ru, crops_body))
 
-        MAX_PARALLEL = 4
-        with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as executor:
-            futures = {}
-            for idx, kind, path, ru, crops_body in upload_tasks:
-                thread_session = self._new_session()
-                f = executor.submit(
-                    self._post_file_with_session,
-                    thread_session,
-                    perch_id,
-                    path,
-                    kind,
-                    ru,
-                    crops_body,
-                )
-                futures[f] = (idx, kind, ru)
+        # One authenticated call: insert all D1 rows + get presigned PUT URLs
+        presigned = self._batch_presign(perch_id, upload_tasks)
 
+        # Record asset IDs (Worker already wrote D1 rows)
+        _task_lookup: dict = {(t[0], t[1]): t[3] for t in upload_tasks}
+        for idx, kind, path, asset_id, upload_url, content_type in presigned:
+            ru = _task_lookup[(idx, kind)]
+            if kind == "export":
+                ru.export_asset_id = asset_id
+            else:
+                ru.crop_asset_id = asset_id
+
+        # Parallel direct-to-R2 PUT — no Worker, no auth header
+        MAX_PARALLEL = 8
+        with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as executor:
+            futures = {
+                executor.submit(self._upload_direct, upload_url, path, content_type): (idx, kind)
+                for idx, kind, path, asset_id, upload_url, content_type in presigned
+            }
             for fut in as_completed(futures):
-                idx, kind, ru = futures[fut]
-                asset_id = fut.result()
-                if kind == "export":
-                    ru.export_asset_id = asset_id
-                else:
-                    ru.crop_asset_id = asset_id
+                fut.result()
 
         manifest = self._build_manifest(rows, scenedata)
         m = self.s.post(
@@ -293,6 +291,74 @@ class PerchKestrelUploader:
             "url": base_url,
             "scene_count": len(manifest.get("scenes", [])),
         }
+
+    def _batch_presign(
+        self,
+        perch_id: str,
+        upload_tasks: List[tuple],
+    ) -> List[tuple]:
+        """POST all asset metadata in one authenticated call; returns presigned PUT URLs.
+
+        Returns list of (idx, kind, path, asset_id, upload_url, content_type).
+        The Worker inserts all D1 rows atomically via batch().
+        """
+        assets_payload = []
+        task_meta: List[tuple] = []  # (idx, kind, path, content_type)
+
+        for idx, kind, path, ru, crops_body in upload_tasks:
+            name = path.name
+            el = name.lower()
+            if el.endswith(".png"):
+                ct = "image/png"
+            elif el.endswith(".webp"):
+                ct = "image/webp"
+            else:
+                ct = "image/jpeg"
+            assets_payload.append({
+                "kind": kind,
+                "filename": name,
+                "contentType": ct,
+                "quality": ru.quality,
+                "species": ru.species,
+                "speciesConfidence": ru.species_confidence,
+                "family": ru.family,
+                "familyConfidence": ru.family_confidence,
+                "captureTimeMs": ru.capture_time_ms,
+                "cropsJson": crops_body if crops_body else None,
+                "secondaryJson": ru.secondary_json if ru.secondary_json else None,
+                "exposureCorrection": ru.exposure_correction,
+                "exposureSubjectStops": ru.exposure_subject_stops,
+                "exposureMeterScale": ru.exposure_meter_scale,
+                "exposurePipeline": ru.exposure_pipeline,
+            })
+            task_meta.append((idx, kind, path, ct))
+
+        r = self.s.post(
+            self._url(f"/v1/perches/{perch_id}/assets/presign"),
+            json={"assets": assets_payload},
+            timeout=self.timeout,
+        )
+        _raise_for_status(r)
+        resp = r.json()
+
+        results = []
+        for i, item in enumerate(resp["assets"]):
+            idx, kind, path, ct = task_meta[i]
+            results.append((idx, kind, path, item["assetId"], item["uploadUrl"], ct))
+        return results
+
+    def _upload_direct(self, upload_url: str, path: "Path", content_type: str) -> None:
+        """PUT file bytes directly to a presigned R2 URL — no auth header needed."""
+        with open(path, "rb") as fh:
+            data = fh.read()
+        s = requests.Session()
+        r = s.put(
+            upload_url,
+            data=data,
+            headers={"Content-Type": content_type},
+            timeout=self.timeout,
+        )
+        _raise_for_status(r)
 
     def _post_file(
         self, perch_id: str, path: Path, kind: str, ru: _RowUpload, crops_json_body: str
