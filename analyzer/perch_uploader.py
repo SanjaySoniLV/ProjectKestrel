@@ -30,8 +30,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -90,7 +91,7 @@ class _RowUpload:
     filename: str
     scene_count: str
     export_path: Optional[str]
-    crop_path: Optional[str]
+    crop_paths: List[str]
     quality: Optional[float]
     species: Optional[str]
     species_confidence: Optional[float]
@@ -104,8 +105,9 @@ class _RowUpload:
     exposure_subject_stops: Optional[float]
     exposure_meter_scale: Optional[float]
     exposure_pipeline: Optional[str]
+    group_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     export_asset_id: Optional[str] = None
-    crop_asset_id: Optional[str] = None
+    crop_asset_ids: List[str] = field(default_factory=list)
 
 
 class PerchKestrelUploader:
@@ -177,6 +179,17 @@ class PerchKestrelUploader:
                 "secondary_family_list": row.get("secondary_family_list"),
                 "secondary_family_scores": row.get("secondary_family_scores"),
             }
+            # Collect all crop paths: crop_path_0, crop_path_1, ... then fall back to crop_path
+            _crop_paths: List[str] = []
+            _i = 0
+            while f"crop_path_{_i}" in df.columns:
+                _v = row.get(f"crop_path_{_i}")
+                if _v is not None and pd.notna(_v):
+                    _crop_paths.append(str(_v))
+                _i += 1
+            if not _crop_paths and "crop_path" in df.columns and pd.notna(row.get("crop_path")):
+                _crop_paths.append(str(row["crop_path"]))
+
             rows.append(
                 _RowUpload(
                     filename=str(row.get("filename", "")),
@@ -184,9 +197,7 @@ class PerchKestrelUploader:
                     export_path=str(row["export_path"])
                     if "export_path" in df.columns and pd.notna(row.get("export_path"))
                     else None,
-                    crop_path=str(row["crop_path"])
-                    if "crop_path" in df.columns and pd.notna(row.get("crop_path"))
-                    else None,
+                    crop_paths=_crop_paths,
                     quality=float(row["quality"])
                     if "quality" in df.columns and pd.notna(row.get("quality"))
                     else None,
@@ -237,7 +248,9 @@ class PerchKestrelUploader:
                 if ep.is_file():
                     will_export.add(idx)
 
-        upload_tasks: List[tuple[int, str, Path, _RowUpload, str]] = []
+        # Resolve file paths for every asset that exists on disk.
+        # file_map: (row_idx, kind, crop_idx) -> (Path, crops_body)
+        file_map: Dict[tuple, tuple] = {}
         for idx, ru in enumerate(rows):
             crops_full = ru.crops_json if ru.crops_json else "[]"
             if ru.export_path:
@@ -246,106 +259,207 @@ class PerchKestrelUploader:
                 except ValueError as e:
                     raise FileNotFoundError(str(e)) from e
                 if ep.is_file():
-                    upload_tasks.append((idx, "export", ep, ru, crops_full))
-            if ru.crop_path:
+                    file_map[(idx, "export", 0)] = (ep, crops_full)
+            for ci, cp_rel in enumerate(ru.crop_paths):
                 try:
-                    cp = _join_under_session(session_root, ru.crop_path)
+                    cp = _join_under_session(session_root, cp_rel)
                 except ValueError as e:
                     raise FileNotFoundError(str(e)) from e
                 if cp.is_file():
                     crops_body = crops_full if idx not in will_export else ""
-                    upload_tasks.append((idx, "crop", cp, ru, crops_body))
+                    file_map[(idx, "crop", ci)] = (cp, crops_body)
 
-        # One authenticated call: insert all D1 rows + get presigned PUT URLs
-        presigned = self._batch_presign(perch_id, upload_tasks)
+        # Build scene-structured presign payload.
+        # Worker creates scenes + assets in D1 atomically; no manifest POST needed.
+        scene_payload, ordered_keys = self._build_scene_presign_payload(
+            rows, scenedata, file_map
+        )
 
-        # Record asset IDs (Worker already wrote D1 rows)
-        _task_lookup: dict = {(t[0], t[1]): t[3] for t in upload_tasks}
-        for idx, kind, path, asset_id, upload_url, content_type in presigned:
-            ru = _task_lookup[(idx, kind)]
-            if kind == "export":
-                ru.export_asset_id = asset_id
-            else:
-                ru.crop_asset_id = asset_id
+        # Presign all assets — chunked by scene to stay within per-request limits.
+        # Returns [(file_key, upload_url), ...] in the same order as ordered_keys.
+        presign_results = self._presign_scenes(perch_id, scene_payload, ordered_keys)
 
-        # Parallel direct-to-R2 PUT — no Worker, no auth header
-        MAX_PARALLEL = 8
+        # Pair each result with its local path and content type from file_map.
+        upload_items = [
+            (file_key, file_map[file_key][0], upload_url, self._content_type(file_map[file_key][0]))
+            for file_key, upload_url in presign_results
+        ]
+
+        # Upload all files directly to R2 in parallel
+        total = len(upload_items)
+        print(f"[perch] Starting upload of {total} files to R2...")
+        completed_count = 0
+        lock = __import__("threading").Lock()
+
+        def _do_upload(item: tuple) -> None:
+            nonlocal completed_count
+            file_key, path, upload_url, content_type = item
+            self._upload_direct(upload_url, path, content_type)
+            with lock:
+                completed_count += 1
+                print(f"[perch] {completed_count}/{total} uploaded — {path.name}")
+
+        MAX_PARALLEL = 24
         with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as executor:
-            futures = {
-                executor.submit(self._upload_direct, upload_url, path, content_type): (idx, kind)
-                for idx, kind, path, asset_id, upload_url, content_type in presigned
-            }
+            futures = [executor.submit(_do_upload, item) for item in upload_items]
             for fut in as_completed(futures):
                 fut.result()
 
-        manifest = self._build_manifest(rows, scenedata)
-        m = self.s.post(
-            self._url(f"/v1/perches/{perch_id}/manifest"),
-            json=manifest,
-            timeout=self.timeout,
-        )
-        _raise_for_status(m)
-
+        print(f"[perch] All {total} files uploaded.")
+        scene_count = len(scene_payload)
         return {
             "perch_id": perch_id,
             "url": base_url,
-            "scene_count": len(manifest.get("scenes", [])),
+            "scene_count": scene_count,
         }
 
-    def _batch_presign(
+    # Max scenes per presign request — keeps individual HTTP payloads bounded.
+    _PRESIGN_SCENE_CHUNK = 50
+
+    @staticmethod
+    def _content_type(path: Path) -> str:
+        el = path.name.lower()
+        if el.endswith(".png"):
+            return "image/png"
+        if el.endswith(".webp"):
+            return "image/webp"
+        return "image/jpeg"
+
+    def _build_scene_presign_payload(
+        self,
+        rows: List["_RowUpload"],
+        scenedata: Dict[str, Any],
+        file_map: Dict[tuple, tuple],
+    ) -> tuple:
+        """Group rows into scenes and build the JSON payload for the presign endpoint.
+
+        Returns (scene_payload, ordered_keys) where ordered_keys is the flat list of
+        (row_idx, kind, crop_idx) in the same order assets appear in the payload —
+        used to match returned uploadUrls back to local file paths.
+        """
+        by_scene: Dict[str, List[tuple]] = {}  # scene_id -> [(idx, ru)]
+        for idx, ru in enumerate(rows):
+            by_scene.setdefault(ru.scene_count, []).append((idx, ru))
+
+        scene_ids = sorted(by_scene.keys(), key=lambda s: (int(s) if s.isdigit() else 0, s))
+
+        scene_payload = []
+        ordered_keys: List[tuple] = []  # (row_idx, kind, crop_idx)
+
+        for sort_i, sc in enumerate(scene_ids):
+            srows = by_scene[sc]
+            srows.sort(
+                key=lambda x: (x[1].quality is not None, x[1].quality or 0.0),
+                reverse=True,
+            )
+
+            cap: Optional[int] = None
+            max_q: Optional[float] = None
+            for _, ru in srows:
+                if ru.capture_time_ms is not None:
+                    if cap is None or ru.capture_time_ms < cap:
+                        cap = ru.capture_time_ms
+                if ru.quality is not None:
+                    max_q = ru.quality if max_q is None else max(max_q, ru.quality)
+
+            title = srows[0][1].scene_name.strip() if srows[0][1].scene_name else f"Scene {sc}"
+            sd = (scenedata.get("scenes") or {}).get(str(sc), {})
+            if isinstance(sd, dict) and (sd.get("name") or "").strip():
+                title = str(sd["name"]).strip()
+
+            assets_payload = []
+            sort_in_scene = 0
+            for idx, ru in srows:
+                # Export
+                if (idx, "export", 0) in file_map:
+                    path, crops_body = file_map[(idx, "export", 0)]
+                    assets_payload.append({
+                        "kind": "export",
+                        "filename": path.name,
+                        "contentType": self._content_type(path),
+                        "sortInScene": sort_in_scene,
+                        "quality": ru.quality,
+                        "species": ru.species,
+                        "speciesConfidence": ru.species_confidence,
+                        "family": ru.family,
+                        "familyConfidence": ru.family_confidence,
+                        "captureTimeMs": ru.capture_time_ms,
+                        "cropsJson": crops_body or None,
+                        "secondaryJson": ru.secondary_json or None,
+                        "exposureCorrection": ru.exposure_correction,
+                        "exposureSubjectStops": ru.exposure_subject_stops,
+                        "exposureMeterScale": ru.exposure_meter_scale,
+                        "exposurePipeline": ru.exposure_pipeline,
+                    })
+                    ordered_keys.append((idx, "export", 0))
+                # Crops
+                ci = 0
+                while (idx, "crop", ci) in file_map:
+                    path, crops_body = file_map[(idx, "crop", ci)]
+                    assets_payload.append({
+                        "kind": "crop",
+                        "filename": path.name,
+                        "contentType": self._content_type(path),
+                        "sortInScene": sort_in_scene + 1000 + ci,
+                        "quality": ru.quality,
+                        "species": ru.species,
+                        "speciesConfidence": ru.species_confidence,
+                        "family": ru.family,
+                        "familyConfidence": ru.family_confidence,
+                        "captureTimeMs": ru.capture_time_ms,
+                        "cropsJson": crops_body or None,
+                        "secondaryJson": ru.secondary_json or None,
+                        "exposureCorrection": ru.exposure_correction,
+                        "exposureSubjectStops": ru.exposure_subject_stops,
+                        "exposureMeterScale": ru.exposure_meter_scale,
+                        "exposurePipeline": ru.exposure_pipeline,
+                    })
+                    ordered_keys.append((idx, "crop", ci))
+                    ci += 1
+                sort_in_scene += 1
+
+            if assets_payload:
+                scene_payload.append({
+                    "kestrelSceneId": sc,
+                    "title": title,
+                    "sortIndex": sort_i,
+                    "captureTimeMs": cap,
+                    "maxQuality": max_q,
+                    "assets": assets_payload,
+                })
+
+        return scene_payload, ordered_keys
+
+    def _presign_scenes(
         self,
         perch_id: str,
-        upload_tasks: List[tuple],
+        scene_payload: List[Dict[str, Any]],
+        ordered_keys: List[tuple],
     ) -> List[tuple]:
-        """POST all asset metadata in one authenticated call; returns presigned PUT URLs.
+        """POST scene payload in chunks; returns (file_key, path, upload_url, content_type)."""
+        # We need paths alongside ordered_keys — but they live in file_map which we
+        # don't carry here. Return (file_key, upload_url) and let caller pair paths.
+        # Actually, build a flat ordered list of (file_key, upload_url, content_type).
+        upload_urls: List[tuple] = []
+        key_offset = 0
 
-        Returns list of (idx, kind, path, asset_id, upload_url, content_type).
-        The Worker inserts all D1 rows atomically via batch().
-        """
-        assets_payload = []
-        task_meta: List[tuple] = []  # (idx, kind, path, content_type)
+        for i in range(0, len(scene_payload), self._PRESIGN_SCENE_CHUNK):
+            chunk = scene_payload[i : i + self._PRESIGN_SCENE_CHUNK]
+            chunk_asset_count = sum(len(s["assets"]) for s in chunk)
 
-        for idx, kind, path, ru, crops_body in upload_tasks:
-            name = path.name
-            el = name.lower()
-            if el.endswith(".png"):
-                ct = "image/png"
-            elif el.endswith(".webp"):
-                ct = "image/webp"
-            else:
-                ct = "image/jpeg"
-            assets_payload.append({
-                "kind": kind,
-                "filename": name,
-                "contentType": ct,
-                "quality": ru.quality,
-                "species": ru.species,
-                "speciesConfidence": ru.species_confidence,
-                "family": ru.family,
-                "familyConfidence": ru.family_confidence,
-                "captureTimeMs": ru.capture_time_ms,
-                "cropsJson": crops_body if crops_body else None,
-                "secondaryJson": ru.secondary_json if ru.secondary_json else None,
-                "exposureCorrection": ru.exposure_correction,
-                "exposureSubjectStops": ru.exposure_subject_stops,
-                "exposureMeterScale": ru.exposure_meter_scale,
-                "exposurePipeline": ru.exposure_pipeline,
-            })
-            task_meta.append((idx, kind, path, ct))
+            r = self.s.post(
+                self._url(f"/v1/perches/{perch_id}/assets/presign"),
+                json={"scenes": chunk},
+                timeout=self.timeout,
+            )
+            _raise_for_status(r)
+            resp = r.json()
 
-        r = self.s.post(
-            self._url(f"/v1/perches/{perch_id}/assets/presign"),
-            json={"assets": assets_payload},
-            timeout=self.timeout,
-        )
-        _raise_for_status(r)
-        resp = r.json()
+            for j, item in enumerate(resp["assets"]):
+                upload_urls.append((ordered_keys[key_offset + j], item["uploadUrl"]))
+            key_offset += chunk_asset_count
 
-        results = []
-        for i, item in enumerate(resp["assets"]):
-            idx, kind, path, ct = task_meta[i]
-            results.append((idx, kind, path, item["assetId"], item["uploadUrl"], ct))
-        return results
+        return upload_urls
 
     def _upload_direct(self, upload_url: str, path: "Path", content_type: str) -> None:
         """PUT file bytes directly to a presigned R2 URL — no auth header needed."""
@@ -456,7 +570,7 @@ class PerchKestrelUploader:
                         "filename": x.filename,
                         "quality": x.quality,
                         "exportAssetId": x.export_asset_id,
-                        "cropAssetId": x.crop_asset_id,
+                        "cropAssetIds": [aid for aid in x.crop_asset_ids if aid],
                         "sortIndex": j,
                     }
                 )
