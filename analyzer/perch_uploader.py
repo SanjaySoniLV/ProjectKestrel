@@ -299,7 +299,7 @@ class PerchKestrelUploader:
                 completed_count += 1
                 print(f"[perch] {completed_count}/{total} uploaded — {path.name}")
 
-        MAX_PARALLEL = 24
+        MAX_PARALLEL = 48
         with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as executor:
             futures = [executor.submit(_do_upload, item) for item in upload_items]
             for fut in as_completed(futures):
@@ -370,6 +370,7 @@ class PerchKestrelUploader:
             assets_payload = []
             sort_in_scene = 0
             for idx, ru in srows:
+                export_sort_in_scene = sort_in_scene
                 # Export
                 if (idx, "export", 0) in file_map:
                     path, crops_body = file_map[(idx, "export", 0)]
@@ -377,7 +378,7 @@ class PerchKestrelUploader:
                         "kind": "export",
                         "filename": path.name,
                         "contentType": self._content_type(path),
-                        "sortInScene": sort_in_scene,
+                        "sortInScene": export_sort_in_scene,
                         "quality": ru.quality,
                         "species": ru.species,
                         "speciesConfidence": ru.species_confidence,
@@ -400,7 +401,8 @@ class PerchKestrelUploader:
                         "kind": "crop",
                         "filename": path.name,
                         "contentType": self._content_type(path),
-                        "sortInScene": sort_in_scene + 1000 + ci,
+                        "sortInScene": export_sort_in_scene + 1000 + ci,
+                        "parentSortInScene": export_sort_in_scene,
                         "quality": ru.quality,
                         "species": ru.species,
                         "speciesConfidence": ru.species_confidence,
