@@ -92,6 +92,7 @@ class _RowUpload:
     scene_count: str
     export_path: Optional[str]
     crop_paths: List[str]
+    crop_data: List[dict]  # per-crop metadata from crops_json, parallel to crop_paths
     quality: Optional[float]
     species: Optional[str]
     species_confidence: Optional[float]
@@ -179,16 +180,33 @@ class PerchKestrelUploader:
                 "secondary_family_list": row.get("secondary_family_list"),
                 "secondary_family_scores": row.get("secondary_family_scores"),
             }
-            # Collect all crop paths: crop_path_0, crop_path_1, ... then fall back to crop_path
+            # Parse crops_json to get all crops with per-crop metadata (primary source).
+            _crops_json_str = _normalize_crops_json_cell(row, df)
             _crop_paths: List[str] = []
-            _i = 0
-            while f"crop_path_{_i}" in df.columns:
-                _v = row.get(f"crop_path_{_i}")
-                if _v is not None and pd.notna(_v):
-                    _crop_paths.append(str(_v))
-                _i += 1
-            if not _crop_paths and "crop_path" in df.columns and pd.notna(row.get("crop_path")):
-                _crop_paths.append(str(row["crop_path"]))
+            _crop_data: List[dict] = []
+            try:
+                _parsed_crops = json.loads(_crops_json_str) if _crops_json_str and _crops_json_str != "[]" else []
+                if isinstance(_parsed_crops, list):
+                    for _c in _parsed_crops:
+                        _cp = _c.get("crop_path") if isinstance(_c, dict) else None
+                        if _cp and str(_cp).strip():
+                            _crop_paths.append(str(_cp))
+                            _crop_data.append(_c)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+            # Fallback: legacy crop_path_0/crop_path_1 columns or single crop_path column.
+            if not _crop_paths:
+                _i = 0
+                while f"crop_path_{_i}" in df.columns:
+                    _v = row.get(f"crop_path_{_i}")
+                    if _v is not None and pd.notna(_v):
+                        _crop_paths.append(str(_v))
+                        _crop_data.append({})
+                    _i += 1
+                if not _crop_paths and "crop_path" in df.columns and pd.notna(row.get("crop_path")):
+                    _crop_paths.append(str(row["crop_path"]))
+                    _crop_data.append({})
 
             rows.append(
                 _RowUpload(
@@ -198,6 +216,7 @@ class PerchKestrelUploader:
                     if "export_path" in df.columns and pd.notna(row.get("export_path"))
                     else None,
                     crop_paths=_crop_paths,
+                    crop_data=_crop_data,
                     quality=float(row["quality"])
                     if "quality" in df.columns and pd.notna(row.get("quality"))
                     else None,
@@ -220,7 +239,7 @@ class PerchKestrelUploader:
                     if "scene_name" in df.columns
                     else "",
                     secondary_json=json.dumps(sec_obj, default=str),
-                    crops_json=_normalize_crops_json_cell(row, df),
+                    crops_json=_crops_json_str,
                     exposure_correction=_opt_float_csv(row, "exposure_correction"),
                     exposure_subject_stops=_opt_float_csv(row, "exposure_subject_stops"),
                     exposure_meter_scale=_opt_float_csv(row, "exposure_meter_scale"),
@@ -393,28 +412,29 @@ class PerchKestrelUploader:
                         "exposurePipeline": ru.exposure_pipeline,
                     })
                     ordered_keys.append((idx, "export", 0))
-                # Crops
+                # Crops — use per-crop metadata from crops_json when available
                 ci = 0
                 while (idx, "crop", ci) in file_map:
                     path, crops_body = file_map[(idx, "crop", ci)]
+                    cd = ru.crop_data[ci] if ci < len(ru.crop_data) else {}
                     assets_payload.append({
                         "kind": "crop",
                         "filename": path.name,
                         "contentType": self._content_type(path),
                         "sortInScene": export_sort_in_scene + 1000 + ci,
                         "parentSortInScene": export_sort_in_scene,
-                        "quality": ru.quality,
-                        "species": ru.species,
-                        "speciesConfidence": ru.species_confidence,
-                        "family": ru.family,
-                        "familyConfidence": ru.family_confidence,
+                        "quality": cd.get("quality", ru.quality),
+                        "species": cd.get("species", ru.species),
+                        "speciesConfidence": cd.get("species_confidence", ru.species_confidence),
+                        "family": cd.get("family", ru.family),
+                        "familyConfidence": cd.get("family_confidence", ru.family_confidence),
                         "captureTimeMs": ru.capture_time_ms,
                         "cropsJson": crops_body or None,
                         "secondaryJson": ru.secondary_json or None,
-                        "exposureCorrection": ru.exposure_correction,
-                        "exposureSubjectStops": ru.exposure_subject_stops,
-                        "exposureMeterScale": ru.exposure_meter_scale,
-                        "exposurePipeline": ru.exposure_pipeline,
+                        "exposureCorrection": cd.get("exposure_correction", ru.exposure_correction),
+                        "exposureSubjectStops": cd.get("exposure_subject_stops", ru.exposure_subject_stops),
+                        "exposureMeterScale": cd.get("exposure_meter_scale", ru.exposure_meter_scale),
+                        "exposurePipeline": cd.get("exposure_pipeline", ru.exposure_pipeline),
                     })
                     ordered_keys.append((idx, "crop", ci))
                     ci += 1
