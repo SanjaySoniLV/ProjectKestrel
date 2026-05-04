@@ -182,6 +182,7 @@ class QueueManager:
         self._max_bird_crops = 10
         self._parallel_prefetch = 3
         self._detector_name = _DEFAULT_DETECTOR_NAME
+        self._retry_errored = False
 
     def _collect_restore_paths_locked(self) -> list:
         restore_statuses = {'pending', 'running', 'cancelled'}
@@ -355,6 +356,7 @@ class QueueManager:
         mask_threshold: float = 0.5,
         max_bird_crops: int = 10,
         parallel_prefetch: int = 3,
+        retry_errored: bool = False,
     ) -> dict:
         if not _PIPELINE_AVAILABLE:
             return {'success': False, 'error': f'Analyzer unavailable: {_pipeline_import_error}'}
@@ -409,6 +411,7 @@ class QueueManager:
             except (TypeError, ValueError):
                 parallel_prefetch_num = 3
             self._parallel_prefetch = max(1, min(5, parallel_prefetch_num))
+            self._retry_errored = bool(retry_errored)
             self._thread = threading.Thread(target=self._run, daemon=True, name='kestrel-queue')
             self._thread.start()
         self._persist_recovery_state()
@@ -647,6 +650,7 @@ class QueueManager:
                     mask_threshold=self._mask_threshold,
                     max_bird_crops=self._max_bird_crops,
                     parallel_prefetch=self._parallel_prefetch,
+                    retry_errored=self._retry_errored,
                 )
                 with self._lock:
                     if self._cancel_event.is_set():

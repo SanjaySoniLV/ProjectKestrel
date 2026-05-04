@@ -53,6 +53,7 @@ except ImportError:
     except ImportError:
         load_persisted_settings = None
 from .ml.speciesnet_sam_hq import SpeciesNetSAMHQWrapper
+from .ml.provider_coordinator import ResilienceConfig
 from .ml.bird_species import BirdSpeciesClassifier
 from .ml.quality import QualityClassifier
 
@@ -363,10 +364,18 @@ class AnalysisPipeline:
                 f"Loading models (detector={self.detector_name})... This may take a while on first run."
             )
         if not mask_ready_for_cap:
+            resilience_cfg = None
+            if callable(load_persisted_settings):
+                try:
+                    resilience_cfg = ResilienceConfig.from_settings(load_persisted_settings() or {})
+                except Exception:
+                    resilience_cfg = None
             self.sn_sam = SpeciesNetSAMHQWrapper(
                 max_bird_crops=max_bird_crops,
                 use_gpu=self.use_gpu,
                 detector_name=self.detector_name,
+                status_cb=status_cb,
+                resilience_cfg=resilience_cfg,
             )
         if not self.species_clf:
             self.species_clf = BirdSpeciesClassifier(
@@ -397,6 +406,7 @@ class AnalysisPipeline:
         mask_threshold: float = 0.5,
         max_bird_crops: int = 5,
         parallel_prefetch: int = 3,
+        retry_errored: bool = False,
     ) -> None:
         callbacks = callbacks or {}
         status_cb = callbacks.get("on_status")
@@ -533,8 +543,36 @@ class AnalysisPipeline:
             stage_ctx["stage"] = "load_database"
             database, db_path = load_database(kestrel_dir, analyzer_name, log_path=self._log_path)
 
+            # When retrying errored images, capture each errored row's previously-
+            # computed values BEFORE dropping it. Many errors hit during detection
+            # or later, after similarity / capture_time / orientation are already
+            # filled in — the retry can reuse those instead of recomputing AKAZE
+            # against the wrong neighbor (the rolling ``previous_image`` would be
+            # the last surviving DB row, not the alphabetical predecessor).
+            errored_rows_by_filename: Dict[str, dict] = {}
+            if retry_errored and not database.empty and "species" in database.columns:
+                errored_mask = database["species"].astype(str) == "Error"
+                errored_count = int(errored_mask.sum())
+                if errored_count > 0:
+                    if status_cb:
+                        status_cb(f"Including {errored_count} previously errored image(s) for retry.")
+                    for _, row in database.loc[errored_mask].iterrows():
+                        try:
+                            errored_rows_by_filename[str(row["filename"])] = row.to_dict()
+                        except Exception:
+                            continue
+                    # Drop errored rows so the pipeline's later concat doesn't
+                    # produce duplicate (filename, species=Error) rows. The
+                    # retried images will append fresh rows below.
+                    database = database.loc[~errored_mask].copy()
+                    save_database(database, db_path)
+
             processed_set = set(database["filename"].values)
             new_files = [f for f in files if f not in processed_set]
+            # Index of every file in the sorted ``files`` list, so retry
+            # iterations can look up each errored image's alphabetical
+            # predecessor in O(1) for the previous_image reset path.
+            files_idx: Dict[str, int] = {f: i for i, f in enumerate(files)}
             processed_count = len(files) - len(new_files)
             total = len(files)
             if progress_cb:
@@ -649,65 +687,125 @@ class AnalysisPipeline:
                     entry["capture_time"] = ct.isoformat() if ct is not None else ""
 
                     stage_ctx["stage"] = "compute_similarity"
-                    timestamp_similar = None
-                    try:
-                        timestamp_similar = compute_similarity_timestamp(
-                            previous_image_path, image_path,
-                            threshold_seconds=scene_time_threshold
-                        ) if previous_image_path else None
-                    except Exception as e:
-                        log_warning(
-                            self._log_path,
-                            f"Timestamp similarity check failed: {e}",
-                            stage=stage_ctx["stage"],
-                            context={"file": raw_file, "folder": folder},
-                        )
 
-                    orientation_changed = (
-                        previous_orientation is not None
-                        and current_orientation != "unknown"
-                        and previous_orientation != "unknown"
-                        and current_orientation != previous_orientation
+                    preserved_row = errored_rows_by_filename.get(raw_file)
+
+                    def _coerce_float(v, default):
+                        try:
+                            f = float(v)
+                            return f if f == f else default  # NaN check
+                        except (TypeError, ValueError):
+                            return default
+
+                    preserved_feat_sim = _coerce_float(preserved_row.get("feature_similarity"), -1.0) if preserved_row else -1.0
+                    preserved_was_similar = bool(preserved_row.get("similar", False)) if preserved_row else False
+                    preserved_sim_valid = bool(
+                        preserved_row is not None
+                        and (preserved_feat_sim >= 0.0 or preserved_was_similar)
                     )
 
-                    if orientation_changed:
-                        scene_count += 1
+                    if preserved_sim_valid:
+                        # Reuse similarity from the prior (errored) attempt. The
+                        # previous_image AKAZE was originally computed against is
+                        # gone, but the saved values are still authoritative —
+                        # the source images haven't changed.
+                        preserved_scene = int(_coerce_float(preserved_row.get("scene_count"), scene_count))
                         entry.update(
                             {
-                                "feature_similarity": -1.0,
-                                "feature_confidence": -1.0,
-                                "color_similarity": -1.0,
-                                "color_confidence": -1.0,
-                                "scene_count": scene_count,
-                                "similar": False,
+                                "feature_similarity": preserved_feat_sim,
+                                "feature_confidence": _coerce_float(preserved_row.get("feature_confidence"), -1.0),
+                                "color_similarity": _coerce_float(preserved_row.get("color_similarity"), -1.0),
+                                "color_confidence": _coerce_float(preserved_row.get("color_confidence"), -1.0),
+                                "scene_count": preserved_scene,
+                                "similar": preserved_was_similar,
                             }
                         )
-                    elif timestamp_similar is True:
-                        # Images captured within the same second — treat as similar, skip AKAZE
-                        entry.update(
-                            {
-                                "feature_similarity": -1.0,
-                                "feature_confidence": -1.0,
-                                "color_similarity": -1.0,
-                                "color_confidence": -1.0,
-                                "scene_count": scene_count,
-                                "similar": True,
-                            }
-                        )
+                        # Keep the running scene counter monotonic so subsequent
+                        # genuinely-new scenes get unique IDs.
+                        scene_count = max(scene_count, preserved_scene)
                     else:
-                        similarity = compute_image_similarity_akaze(previous_image, img)
-                        if not similarity["similar"]:
-                            scene_count += 1
-                        entry.update(
-                            {
-                                "feature_similarity": similarity["feature_similarity"],
-                                "feature_confidence": similarity["feature_confidence"],
-                                "color_similarity": similarity["color_similarity"],
-                                "color_confidence": similarity["color_confidence"],
-                                "scene_count": scene_count,
-                                "similar": similarity["similar"],
-                            }
+                        # No usable preserved values. If this is a retry image,
+                        # reset previous_image to its alphabetical predecessor
+                        # so AKAZE compares against the right neighbor instead
+                        # of whatever rolled in from the last DB row.
+                        if preserved_row is not None:
+                            prev_idx = files_idx.get(raw_file, -1) - 1
+                            if prev_idx >= 0:
+                                pred_filename = files[prev_idx]
+                                pred_path = os.path.join(folder, pred_filename)
+                                if os.path.exists(pred_path):
+                                    try:
+                                        pred_img = read_image(pred_path)
+                                    except Exception:
+                                        pred_img = None
+                                    if pred_img is not None:
+                                        previous_image = pred_img
+                                        previous_image_path = pred_path
+                                        previous_orientation = self._get_image_orientation(pred_img)
+                            else:
+                                previous_image = None
+                                previous_image_path = None
+                                previous_orientation = None
+
+                        timestamp_similar = None
+                        try:
+                            timestamp_similar = compute_similarity_timestamp(
+                                previous_image_path, image_path,
+                                threshold_seconds=scene_time_threshold
+                            ) if previous_image_path else None
+                        except Exception as e:
+                            log_warning(
+                                self._log_path,
+                                f"Timestamp similarity check failed: {e}",
+                                stage=stage_ctx["stage"],
+                                context={"file": raw_file, "folder": folder},
+                            )
+
+                        orientation_changed = (
+                            previous_orientation is not None
+                            and current_orientation != "unknown"
+                            and previous_orientation != "unknown"
+                            and current_orientation != previous_orientation
                         )
+
+                        if orientation_changed:
+                            scene_count += 1
+                            entry.update(
+                                {
+                                    "feature_similarity": -1.0,
+                                    "feature_confidence": -1.0,
+                                    "color_similarity": -1.0,
+                                    "color_confidence": -1.0,
+                                    "scene_count": scene_count,
+                                    "similar": False,
+                                }
+                            )
+                        elif timestamp_similar is True:
+                            # Images captured within the same second — treat as similar, skip AKAZE
+                            entry.update(
+                                {
+                                    "feature_similarity": -1.0,
+                                    "feature_confidence": -1.0,
+                                    "color_similarity": -1.0,
+                                    "color_confidence": -1.0,
+                                    "scene_count": scene_count,
+                                    "similar": True,
+                                }
+                            )
+                        else:
+                            similarity = compute_image_similarity_akaze(previous_image, img)
+                            if not similarity["similar"]:
+                                scene_count += 1
+                            entry.update(
+                                {
+                                    "feature_similarity": similarity["feature_similarity"],
+                                    "feature_confidence": similarity["feature_confidence"],
+                                    "color_similarity": similarity["color_similarity"],
+                                    "color_confidence": similarity["color_confidence"],
+                                    "scene_count": scene_count,
+                                    "similar": similarity["similar"],
+                                }
+                            )
                     # Hold the previous image by reference, not by copy. The next
                     # iteration rebinds ``img`` to a fresh decoded array, so the
                     # old array stays alive for AKAZE via this reference. The

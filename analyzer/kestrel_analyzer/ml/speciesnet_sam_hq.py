@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import gc
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import cv2
 import numpy as np
@@ -17,7 +18,13 @@ from ..config import (
     SAM_ENC_ONNX_PATH,
     SPECIESNET_MODEL_DIR,
 )
-from . import gpu_providers, is_gpu_active
+from . import is_gpu_active
+from .provider_coordinator import (
+    FailureAction,
+    ProviderCoordinator,
+    ResilienceConfig,
+)
+from .resilient_session import ResilientOnnxSession
 from .speciesnet_taxonomy import (
     bird_vs_wildlife_classifier_scores,
     is_ambiguous_generic_taxonomy,
@@ -270,11 +277,8 @@ class OnnxClassifier:
 
     IMG_SIZE = 480
 
-    def __init__(self, onnx_path: Path, labels_path: Path, use_gpu: bool = False):
-        import onnxruntime as ort
-
-        providers = gpu_providers() if use_gpu else ["CPUExecutionProvider"]
-        self._session = ort.InferenceSession(str(onnx_path), providers=providers)
+    def __init__(self, onnx_path: Path, labels_path: Path, coord: ProviderCoordinator):
+        self._session = ResilientOnnxSession("classifier", onnx_path, coord)
         self.providers_used = self._session.get_providers()
         with open(labels_path) as f:
             self._labels = [line.strip() for line in f]
@@ -383,17 +387,14 @@ class OnnxMDv5Detector:
     _NMS_IOU = 0.5
     _PRE_NMS_LIMIT = 4000
 
-    def __init__(self, onnx_path: Path, use_gpu: bool = False) -> None:
-        import onnxruntime as ort
-
+    def __init__(self, onnx_path: Path, coord: ProviderCoordinator) -> None:
         onnx_path = Path(onnx_path)
         if not onnx_path.is_file():
             raise FileNotFoundError(
                 f"MDv5a weights not found: {onnx_path}\n"
                 "Place mdv5a.onnx (and mdv5a.onnx.data) under models/speciesnet/."
             )
-        providers = gpu_providers() if use_gpu else ["CPUExecutionProvider"]
-        self._session = ort.InferenceSession(str(onnx_path), providers=providers)
+        self._session = ResilientOnnxSession("detector", onnx_path, coord)
         _provs = self._session.get_providers()
         self.device = "ONNX/GPU" if is_gpu_active(_provs) else "ONNX/CPU"
         print(f"[OnnxMDv5Detector] Loaded {onnx_path.name}  providers={_provs}")
@@ -547,9 +548,7 @@ class OnnxMDv6Detector:
 
     _LABEL_MAP: dict[int, str] = {0: "animal", 1: "person", 2: "vehicle"}
 
-    def __init__(self, onnx_path: Path, use_gpu: bool = False) -> None:
-        import onnxruntime as ort
-
+    def __init__(self, onnx_path: Path, coord: ProviderCoordinator) -> None:
         onnx_path = Path(onnx_path)
         if not onnx_path.is_file():
             raise FileNotFoundError(
@@ -557,8 +556,7 @@ class OnnxMDv6Detector:
                 "Place mdv6-apa-rtdetr-c.onnx (and mdv6-apa-rtdetr-c.onnx.data) "
                 "under models/speciesnet/."
             )
-        providers = gpu_providers() if use_gpu else ["CPUExecutionProvider"]
-        self._session = ort.InferenceSession(str(onnx_path), providers=providers)
+        self._session = ResilientOnnxSession("detector", onnx_path, coord)
         _provs = self._session.get_providers()
         self.device = "ONNX/GPU" if is_gpu_active(_provs) else "ONNX/CPU"
         _active = _provs[0] if _provs else "unknown"
@@ -624,9 +622,7 @@ class OnnxMDv6MitYoloV9Detector:
     _PRE_NMS_LIMIT = 4000
     _PAD_COLOR = (114, 114, 114)
 
-    def __init__(self, onnx_path: Path, use_gpu: bool = False) -> None:
-        import onnxruntime as ort
-
+    def __init__(self, onnx_path: Path, coord: ProviderCoordinator) -> None:
         onnx_path = Path(onnx_path)
         if not onnx_path.is_file():
             raise FileNotFoundError(
@@ -634,8 +630,7 @@ class OnnxMDv6MitYoloV9Detector:
                 "Place mdv6-mit-yolov9-*.onnx (and .onnx.data) under models/speciesnet/."
             )
 
-        providers = gpu_providers() if use_gpu else ["CPUExecutionProvider"]
-        self._session = ort.InferenceSession(str(onnx_path), providers=providers)
+        self._session = ResilientOnnxSession("detector", onnx_path, coord)
 
         inputs = self._session.get_inputs()
         outputs = self._session.get_outputs()
@@ -835,12 +830,9 @@ class OnnxSamPredictor:
 
     _IMG_SIZE = 1024
 
-    def __init__(self, enc_path: Path, dec_path: Path, use_gpu: bool = False) -> None:
-        import onnxruntime as ort
-
-        providers = gpu_providers() if use_gpu else ["CPUExecutionProvider"]
-        self._enc_session = ort.InferenceSession(str(enc_path), providers=providers)
-        self._dec_session = ort.InferenceSession(str(dec_path), providers=providers)
+    def __init__(self, enc_path: Path, dec_path: Path, coord: ProviderCoordinator) -> None:
+        self._enc_session = ResilientOnnxSession("sam_enc", enc_path, coord)
+        self._dec_session = ResilientOnnxSession("sam_dec", dec_path, coord)
         self._decoder_input_shapes = {
             inp.name: inp.shape for inp in self._dec_session.get_inputs()
         }
@@ -1102,6 +1094,9 @@ class SpeciesNetSAMHQWrapper:
         max_bird_crops: int = _DEFAULT_MAX_BIRD_CROPS,
         use_gpu: bool = True,
         detector_name: str = DEFAULT_DETECTOR_NAME,
+        *,
+        status_cb: Optional[Callable[[str], None]] = None,
+        resilience_cfg: Optional[ResilienceConfig] = None,
     ):
         self.max_bird_crops = _coerce_max_bird_crops(max_bird_crops)
         self.use_gpu = bool(use_gpu)
@@ -1111,6 +1106,13 @@ class SpeciesNetSAMHQWrapper:
         self.classifier: Optional[OnnxClassifier] = None
         self.ensemble = None
         self.model_name: Optional[str] = None
+        self._status_cb = status_cb
+        self._coord = ProviderCoordinator(
+            user_gpu_enabled=self.use_gpu,
+            cfg=resilience_cfg or ResilienceConfig(),
+            status_cb=status_cb,
+        )
+        self._coord.register_recreate_callback(self.recreate_sessions)
 
     def _ensure_speciesnet(self) -> None:
         from ._speciesnet_ensemble import LocalSpeciesNetEnsemble as SpeciesNetEnsemble
@@ -1119,14 +1121,14 @@ class SpeciesNetSAMHQWrapper:
             self.model_name = _speciesnet_bundle_model_name()
             detector_path = _resolve_detector_onnx_path(self.detector_name)
             if self.detector_name in _MDV5A_DETECTOR_NAMES:
-                self.detector = OnnxMDv5Detector(detector_path, use_gpu=self.use_gpu)
+                self.detector = OnnxMDv5Detector(detector_path, self._coord)
             elif self.detector_name in _YOLOV9_DETECTOR_NAMES:
-                self.detector = OnnxMDv6MitYoloV9Detector(detector_path, use_gpu=self.use_gpu)
+                self.detector = OnnxMDv6MitYoloV9Detector(detector_path, self._coord)
             else:
-                self.detector = OnnxMDv6Detector(detector_path, use_gpu=self.use_gpu)
+                self.detector = OnnxMDv6Detector(detector_path, self._coord)
             onnx_path   = SPECIESNET_MODEL_DIR / "speciesNet_v4.0.1a.onnx"
             labels_path = SPECIESNET_MODEL_DIR / "always_crop_99710272_22x8_v12_epoch_00148.labels.20251208.txt"
-            self.classifier = OnnxClassifier(onnx_path, labels_path, use_gpu=self.use_gpu)
+            self.classifier = OnnxClassifier(onnx_path, labels_path, self._coord)
             print(f"[SpeciesNetSAMHQ] Detector model    : {self.detector_name} ({detector_path.name})")
             print(f"[SpeciesNetSAMHQ] Detector          : {self.detector.device}")
             print(f"[SpeciesNetSAMHQ] Classifier        : ONNX  providers={self.classifier.providers_used}")
@@ -1151,24 +1153,45 @@ class SpeciesNetSAMHQWrapper:
                 f"SAM-HQ decoder ONNX not found at: {SAM_DEC_ONNX_PATH}\n"
                 "Place sam_hq_vit_tiny_decoder.onnx under models/speciesnet/."
             )
-        # Prefer SAM-HQ on GPU (DirectML on Windows, CoreML on macOS) when enabled;
-        # fallback to CPU only if GPU session initialization fails.
         try:
-            self.predictor = OnnxSamPredictor(
-                SAM_ENC_ONNX_PATH,
-                SAM_DEC_ONNX_PATH,
-                use_gpu=self.use_gpu,
-            )
+            self.predictor = OnnxSamPredictor(SAM_ENC_ONNX_PATH, SAM_DEC_ONNX_PATH, self._coord)
         except Exception as e:
-            if not self.use_gpu:
+            # If init failed on GPU, demote and try once on CPU. This preserves
+            # the behavior of the old SAM-only fallback for any device that
+            # can build a CPU session even when GPU init throws.
+            if self._coord.on_run_failure(e) == FailureAction.RECREATE_AND_RETRY:
+                print(f"[SpeciesNetSAMHQ] SAM-HQ GPU init failed, falling back to CPU: {e}")
+                self.predictor = OnnxSamPredictor(SAM_ENC_ONNX_PATH, SAM_DEC_ONNX_PATH, self._coord)
+            else:
                 raise
-            print(f"[SpeciesNetSAMHQ] SAM-HQ GPU init failed, falling back to CPU: {e}")
-            self.predictor = OnnxSamPredictor(
-                SAM_ENC_ONNX_PATH,
-                SAM_DEC_ONNX_PATH,
-                use_gpu=False,
-            )
         print(f"[SpeciesNetSAMHQ] SAM-HQ            : {self.predictor.device}")
+
+    def recreate_sessions(self, target_use_gpu: bool) -> None:
+        """Tear down all loaded ONNX sessions and rebuild them on the coordinator's
+        current provider. Called by ``ProviderCoordinator`` when demoting GPU→CPU
+        or promoting CPU→GPU. The caller must have already transitioned the
+        coordinator's state, since fresh sessions consult ``providers_for(...)``.
+
+        Idempotent for unloaded slots: if a slot was ``None`` before, it stays
+        ``None`` (we never force-load SAM-HQ on a CPU promotion-failure path).
+        """
+        had_detector = self.detector is not None
+        had_classifier = self.classifier is not None
+        had_predictor = self.predictor is not None
+
+        self.use_gpu = bool(target_use_gpu)
+
+        # Drop sessions in this order — predictor first so its enc+dec release
+        # device memory before the classifier/detector destructors run.
+        self.predictor = None
+        self.classifier = None
+        self.detector = None
+        gc.collect()
+
+        if had_detector or had_classifier:
+            self._ensure_speciesnet()
+        if had_predictor:
+            self._ensure_sam()
 
     def _run_ensemble_for_item(
         self,
@@ -1196,17 +1219,62 @@ class SpeciesNetSAMHQWrapper:
         threshold: float = 0.75,
         mask_threshold: float = 0.5,
     ):
-        """Run SpeciesNet + SAM-HQ.
+        """Run SpeciesNet + SAM-HQ with provider-resilience retry.
 
-        Args:
-            image_data: RGB uint8 image.
-            image_path: Path passed to SpeciesNet (must exist on disk).
-            wildlife_enabled: When False, non-aves animals are omitted.
-            threshold: MegaDetector minimum confidence for an ``animal`` detection.
-            mask_threshold: Unused (legacy Mask R-CNN pixel threshold); retained for API compatibility.
+        On a known "session is now corpse" error (DML device-removed, CoreML
+        cold-start path loss, etc.) the coordinator demotes GPU→CPU, the
+        wrapper rebuilds every loaded session on the new provider, and the
+        same image is retried once. Any other exception propagates immediately
+        so the pipeline's per-image catcher marks it errored as before.
+        """
+        # Between-image promotion attempt: if we've been on CPU for long enough,
+        # try GPU again before this image. Failure here just stays on CPU; the
+        # actual inference still happens below.
+        if self._coord.should_try_promote():
+            self._coord.attempt_promotion()
 
-        Returns:
-            (masks, pred_boxes, pred_class, pred_score) — detection/mask contract used by the pipeline.
+        last_exc: Optional[BaseException] = None
+        for attempt in range(self._coord.cfg.max_attempts_per_image):
+            try:
+                result = self._get_prediction_inner(
+                    image_data,
+                    image_path,
+                    wildlife_enabled=wildlife_enabled,
+                    threshold=threshold,
+                    mask_threshold=mask_threshold,
+                )
+                self._coord.on_run_success()
+                return result
+            except Exception as e:
+                last_exc = e
+                if attempt + 1 >= self._coord.cfg.max_attempts_per_image:
+                    raise
+                action = self._coord.on_run_failure(e)
+                if action != FailureAction.RECREATE_AND_RETRY:
+                    raise
+                try:
+                    self.recreate_sessions(target_use_gpu=False)
+                except Exception:
+                    # Rebuild itself failed — there's nothing more we can do
+                    # here. Surface the original inference error.
+                    raise last_exc
+                # Loop and retry on CPU.
+        # Defensive: max_attempts_per_image must be >= 1.
+        if last_exc is not None:
+            raise last_exc
+        return [], [], [], []
+
+    def _get_prediction_inner(
+        self,
+        image_data: np.ndarray,
+        image_path: str | Path,
+        *,
+        wildlife_enabled: bool = True,
+        threshold: float = 0.75,
+        mask_threshold: float = 0.5,
+    ):
+        """Body of ``get_prediction``. Single attempt, no retry — the resilience
+        loop in ``get_prediction`` is the only caller in production code.
         """
         _ = mask_threshold  # SAM-HQ path does not use Mask R-CNN mask pixel threshold; UI keeps knob for compatibility.
 

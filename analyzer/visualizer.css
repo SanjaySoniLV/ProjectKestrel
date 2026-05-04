@@ -2392,6 +2392,20 @@
       font-style: italic;
     }
 
+    /* Errored-images styling: light-red tint + left border. Composes with
+       analyzed-partial / analyzed-full so the row still picks up its primary
+       color via the .tree-label rules. */
+    .tree-node-row.has-errored-images,
+    .adlg-node-row.has-errored-images {
+      background: rgba(231, 76, 60, 0.08);
+      border-left: 3px solid var(--bad);
+      padding-left: 6px;
+    }
+    .tree-node-row.has-errored-images .tree-count,
+    .adlg-node-row.has-errored-images .tree-count {
+      color: var(--bad);
+    }
+
     /* In-progress analysis styling (subtle purple indicator with text) */
     .tree-node-row.in-progress {
       background: rgba(179, 153, 204, 0.08);

@@ -709,6 +709,7 @@
         &nbsp;<span style="color:var(--ok);font-style:italic;">●</span>&thinsp;<i>outdated version</i>
         &nbsp;<span style="color:#b36bff;">●</span>&thinsp;in progress
         &nbsp;<span style="color:var(--brand);">●</span>&thinsp;not started
+        &nbsp;<span style="color:var(--bad);">●</span>&thinsp;has errors
         &nbsp;<span style="color:#555;font-size:11px;">● faded = no photos</span></p>
       <div class="analyze-dlg-split">
         <!-- Left panel: folder tree -->
@@ -745,6 +746,13 @@
               <div class="adlg-toggle-text">
                 <span class="adlg-toggle-label">Use GPU when available</span>
                 <span class="adlg-toggle-hint muted">Accelerates detection and classification via DirectML (Windows) or CoreML (macOS).</span>
+              </div>
+            </label>
+            <label class="adlg-toggle-row" id="analyzeRetryErroredLabel">
+              <input id="adlgRetryErrored" type="checkbox" checked />
+              <div class="adlg-toggle-text">
+                <span class="adlg-toggle-label">Re-attempt errored images</span>
+                <span class="adlg-toggle-hint muted">For any selected folder that contains images previously marked as errored, drop those rows and re-run analysis on them. Reuses similarity values that were already computed before the error; otherwise compares against the alphabetically-prior image. Other already-analyzed images are not touched.</span>
               </div>
             </label>
             <div class="adlg-setting-row">

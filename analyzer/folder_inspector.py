@@ -44,9 +44,20 @@ def _list_images_in_folder(folder: str) -> list:
 def inspect_folder(path: str) -> Dict[str, int | str | bool]:
     """Return a small summary about a folder.
 
-    Returns keys: 'root' (abs path), 'has_kestrel' (bool), 'total' (int), 'processed' (int), 'db_path' (str)
+    Returns keys: 'root' (abs path), 'has_kestrel' (bool), 'total' (int),
+    'processed' (int), 'errored' (int — rows where species == 'Error'),
+    'db_path' (str). 'processed' counts every CSV row (including errored ones)
+    so existing analyzed-full/partial UI math is unchanged; 'errored' is the
+    new field for the errored-folder UX.
     """
-    result = {'root': '', 'has_kestrel': False, 'total': 0, 'processed': 0, 'db_path': ''}
+    result = {
+        'root': '',
+        'has_kestrel': False,
+        'total': 0,
+        'processed': 0,
+        'errored': 0,
+        'db_path': '',
+    }
     if not path:
         return result
     p = path.strip()
@@ -65,6 +76,7 @@ def inspect_folder(path: str) -> Dict[str, int | str | bool]:
     files = _list_images_in_folder(root)
     total = len(files)
     result['total'] = total
+    files_set = set(files)
 
     kestrel_dir = os.path.join(root, KESTREL_DIR_NAME)
     db_path = os.path.join(kestrel_dir, DATABASE_NAME)
@@ -72,34 +84,52 @@ def inspect_folder(path: str) -> Dict[str, int | str | bool]:
     if os.path.isfile(db_path):
         result['has_kestrel'] = True
         try:
-            # Fast-path: use pandas to read only the filename column if available
             processed = 0
+            errored = 0
             if pd is not None:
                 try:
-                    df = pd.read_csv(db_path, usecols=['filename'])
-                    processed_set = set(df['filename'].astype(str).values)
-                    processed = sum(1 for f in files if f in processed_set)
+                    df = pd.read_csv(db_path, usecols=['filename', 'species'])
+                    df['filename'] = df['filename'].astype(str)
+                    df = df[df['filename'].isin(files_set)]
+                    processed = int(len(df))
+                    if 'species' in df.columns:
+                        errored = int((df['species'].astype(str) == 'Error').sum())
                 except Exception:
-                    # Fall back to load_database if available
+                    # Fall back to filename-only read or load_database
                     try:
-                        db, _ = load_database(kestrel_dir, analyzer_name='visualizer-inspector')
-                        if not db.empty and 'filename' in db.columns:
-                            processed_set = set(db['filename'].values)
-                            processed = sum(1 for f in files if f in processed_set)
+                        df = pd.read_csv(db_path, usecols=['filename'])
+                        processed_set = set(df['filename'].astype(str).values)
+                        processed = sum(1 for f in files if f in processed_set)
                     except Exception:
-                        processed = 0
+                        try:
+                            db, _ = load_database(kestrel_dir, analyzer_name='visualizer-inspector')
+                            if not db.empty and 'filename' in db.columns:
+                                processed_set = set(db['filename'].values)
+                                processed = sum(1 for f in files if f in processed_set)
+                                if 'species' in db.columns:
+                                    errored = int(
+                                        ((db['filename'].isin(files_set)) & (db['species'].astype(str) == 'Error')).sum()
+                                    )
+                        except Exception:
+                            processed = 0
             else:
                 try:
                     db, _ = load_database(kestrel_dir, analyzer_name='visualizer-inspector')
                     if not db.empty and 'filename' in db.columns:
                         processed_set = set(db['filename'].values)
                         processed = sum(1 for f in files if f in processed_set)
+                        if 'species' in db.columns:
+                            errored = int(
+                                ((db['filename'].isin(files_set)) & (db['species'].astype(str) == 'Error')).sum()
+                            )
                 except Exception:
                     processed = 0
             result['processed'] = int(processed)
+            result['errored'] = int(errored)
         except Exception:
             # Fail silently; the visualizer should still work without DB details
             result['processed'] = 0
+            result['errored'] = 0
     return result
 
 
