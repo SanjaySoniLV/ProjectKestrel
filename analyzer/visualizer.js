@@ -5340,7 +5340,8 @@
           for (const row of related) {
             const span = row.querySelector('.tree-count');
             row.classList.remove('analyzed-full', 'analyzed-partial', 'analyzed-none',
-                                 'no-photos', 'no-photos-deep', 'no-photos-shallow', 'version-outdated');
+                                 'no-photos', 'no-photos-deep', 'no-photos-shallow', 'version-outdated',
+                                 'has-errored-images');
             row.title = '';
             if (span) { span.title = ''; span.textContent = ''; }
 
@@ -5348,11 +5349,18 @@
 
             const totalImgs = info.total;
             const processedImgs = info.processed;
+            const erroredImgs = info.errored || 0;
 
             if (totalImgs > 0) {
-              if (span) span.textContent = ` ${processedImgs}/${totalImgs}`;
-              if (processedImgs >= totalImgs) {
-                row.classList.add('analyzed-full');          // green: finished
+              const countText = erroredImgs > 0
+                ? ` ${processedImgs}/${totalImgs} (${erroredImgs} errored)`
+                : ` ${processedImgs}/${totalImgs}`;
+              if (span) span.textContent = countText;
+              if (erroredImgs > 0) {
+                row.classList.add('has-errored-images');
+              }
+              if (processedImgs >= totalImgs && erroredImgs === 0) {
+                row.classList.add('analyzed-full');          // green: finished, no errors
                 // Check if analyzed on an outdated version
                 const origPath = normToOriginal.get(np) || np;
                 const nodeVer = findNodeVersion(folderTreeRootNode, origPath);
@@ -5361,9 +5369,12 @@
                   row.title = `Analyzed on Kestrel v${nodeVer} (current: v${_appVersion}). Consider re-analyzing.`;
                 }
               } else if (processedImgs > 0) {
-                row.classList.add('analyzed-partial');       // purple: started not finished
+                row.classList.add('analyzed-partial');       // purple: started not finished, OR has errors
               } else {
                 row.classList.add('analyzed-none');          // blue: has images, not started
+              }
+              if (erroredImgs > 0) {
+                row.title = `${erroredImgs} image(s) errored during the previous analysis. Tick "Re-attempt errored images" before queuing to retry just those.`;
               }
             } else {
               // This folder has 0 images — determine deep vs shallow fading
@@ -5844,11 +5855,11 @@
     const CONF_LOW = 0.30;
 
     /** Call the backend queue API (desktop pywebview mode only). */
-    async function apiStartQueue(paths, useGpu = true, wildlifeEnabled = true) {
+    async function apiStartQueue(paths, useGpu = true, wildlifeEnabled = true, retryErrored = false) {
       if (!window.pywebview?.api?.start_analysis_queue) {
         throw new Error('Desktop API unavailable: start_analysis_queue');
       }
-      return window.pywebview.api.start_analysis_queue(JSON.stringify(paths), useGpu, wildlifeEnabled);
+      return window.pywebview.api.start_analysis_queue(JSON.stringify(paths), useGpu, wildlifeEnabled, retryErrored);
     }
 
     async function apiQueueControl(action) {
@@ -7655,6 +7666,7 @@
         if (paths.length === 0) return;
         const useGpu = document.getElementById('analyzeUseGpu')?.checked ?? true;
         const wildlifeEnabled = document.getElementById('analyzeWildlife')?.checked ?? false;
+        const retryErrored = document.getElementById('adlgRetryErrored')?.checked ?? true;
 
         // Check for outdated-version folders not already confirmed for re-analysis
         const outdatedPaths = [];
@@ -7750,7 +7762,7 @@
         try {
           // Show loading overlay while analyzer imports models (lazy-load)
           showLoadingAnalyzer();
-          const result = await apiStartQueue(paths, useGpu, wildlifeEnabled);
+          const result = await apiStartQueue(paths, useGpu, wildlifeEnabled, retryErrored);
           if (result && result.success) {
             queuedFolderPaths.clear();
             _dlgSelected.clear();

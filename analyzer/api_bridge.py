@@ -1549,8 +1549,13 @@ class Api:
     #  Analysis Queue API (called from JavaScript in pywebview mode)       #
     # ------------------------------------------------------------------ #
 
-    def start_analysis_queue(self, paths, use_gpu=True, wildlife_enabled=True):
-        """Enqueue folders for analysis. ``paths`` may be a JSON string or list."""
+    def start_analysis_queue(self, paths, use_gpu=True, wildlife_enabled=True, retry_errored=False):
+        """Enqueue folders for analysis. ``paths`` may be a JSON string or list.
+
+        ``retry_errored`` (bool): when True, drop rows previously marked
+        ``species == "Error"`` from each folder's CSV before reprocessing, so
+        those images get re-analyzed instead of being skipped as already-done.
+        """
         try:
             if isinstance(paths, str):
                 paths = json.loads(paths)
@@ -1617,7 +1622,8 @@ class Api:
                                           mask_threshold=mask_threshold,
                                           max_bird_crops=max_bird_crops,
                                           parallel_prefetch=parallel_prefetch,
-                                          detector_name=detector_name)
+                                          detector_name=detector_name,
+                                          retry_errored=bool(retry_errored))
         except Exception as e:
             print(f'[API] start_analysis_queue() -> Error: {e}', flush=True)
             return {'success': False, 'error': str(e)}

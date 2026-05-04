@@ -391,6 +391,11 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     _set_int('max_bird_crops', default=10, min_value=1, max_value=20)
     _set_int('parallel_prefetch', default=3, min_value=1, max_value=5)
     _set_bool('exposure_corrected_thumbs', default=True)
+    # ONNX provider resilience (auto GPU↔CPU fallback). Advanced/triage knobs;
+    # not exposed in the UI. ``gpu_resilience_enabled=False`` reverts to the
+    # pre-resilience behavior (single GPU session, no recovery).
+    _set_bool('gpu_resilience_enabled', default=True)
+    _set_bool('gpu_aggressive_recreate', default=False)
     if 'wildlife_model_mode' in data:
         out['wildlife_model_mode'] = _coerce_enum(
             data.get('wildlife_model_mode'),
