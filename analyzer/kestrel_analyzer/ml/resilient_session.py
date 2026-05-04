@@ -43,6 +43,10 @@ class ResilientOnnxSession:
         self._coord = coord
         self._session: Any = None
         self._build()
+        # Register with the coordinator so a single recreate_all() call walks
+        # every ONNX session in the run — wrapper sessions AND classifier
+        # sessions owned by pipeline.py.
+        coord._register_session(self)
 
     def _build(self) -> None:
         import onnxruntime as ort  # imported lazily so test environments without ORT can import this module

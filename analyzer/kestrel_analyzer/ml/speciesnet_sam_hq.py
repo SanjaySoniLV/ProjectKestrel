@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import gc
 import os
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -1114,6 +1113,10 @@ class SpeciesNetSAMHQWrapper:
         )
         self._coord.register_recreate_callback(self.recreate_sessions)
 
+    @property
+    def coord(self) -> ProviderCoordinator:
+        return self._coord
+
     def _ensure_speciesnet(self) -> None:
         from ._speciesnet_ensemble import LocalSpeciesNetEnsemble as SpeciesNetEnsemble
 
@@ -1167,31 +1170,29 @@ class SpeciesNetSAMHQWrapper:
         print(f"[SpeciesNetSAMHQ] SAM-HQ            : {self.predictor.device}")
 
     def recreate_sessions(self, target_use_gpu: bool) -> None:
-        """Tear down all loaded ONNX sessions and rebuild them on the coordinator's
-        current provider. Called by ``ProviderCoordinator`` when demoting GPU→CPU
-        or promoting CPU→GPU. The caller must have already transitioned the
-        coordinator's state, since fresh sessions consult ``providers_for(...)``.
+        """Rebuild every ONNX session registered with the coordinator on its
+        current provider. Called by ``ProviderCoordinator`` when demoting
+        GPU→CPU or promoting CPU→GPU. Coordinator state must already reflect
+        the target provider before this is called, since each session's
+        ``_rebuild`` consults ``providers_for(...)``.
 
-        Idempotent for unloaded slots: if a slot was ``None`` before, it stays
-        ``None`` (we never force-load SAM-HQ on a CPU promotion-failure path).
+        Walks the coordinator's session registry, which covers BOTH the
+        wrapper's detector/classifier/SAM sessions AND any pipeline-owned
+        sessions (BirdSpeciesClassifier, QualityClassifier) — they all share
+        the same coord. This avoids the partial-recovery failure mode where
+        the wrapper's sessions migrate to CPU but a separately-owned session
+        stays on the dead provider, throwing on every subsequent image.
         """
-        had_detector = self.detector is not None
-        had_classifier = self.classifier is not None
-        had_predictor = self.predictor is not None
-
         self.use_gpu = bool(target_use_gpu)
+        self._coord.recreate_all()
 
-        # Drop sessions in this order — predictor first so its enc+dec release
-        # device memory before the classifier/detector destructors run.
-        self.predictor = None
-        self.classifier = None
-        self.detector = None
-        gc.collect()
-
-        if had_detector or had_classifier:
-            self._ensure_speciesnet()
-        if had_predictor:
-            self._ensure_sam()
+    def update_status_cb(self, status_cb: Optional[Callable[[str], None]]) -> None:
+        """Rebind the coordinator's status callback when a wrapper is reused
+        across folders so notifications target the active folder, not the
+        first folder that constructed the wrapper.
+        """
+        self._status_cb = status_cb
+        self._coord.update_status_cb(status_cb)
 
     def _run_ensemble_for_item(
         self,
