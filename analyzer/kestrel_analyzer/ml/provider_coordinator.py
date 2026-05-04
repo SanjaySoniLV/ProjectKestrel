@@ -26,12 +26,16 @@ sequentially. If parallel-image processing is ever introduced, add a lock around
 
 from __future__ import annotations
 
+import gc
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 from . import gpu_providers
+
+if TYPE_CHECKING:
+    from .resilient_session import ResilientOnnxSession
 
 
 class ProviderState(Enum):
@@ -136,6 +140,13 @@ class ProviderCoordinator:
         self._current_promote_threshold = self.cfg.initial_promote_threshold
         self._demotions = 0
         self._recreate_cb: Optional[_RecreateFn] = None
+        # All ResilientOnnxSession instances built against this coord. The
+        # coordinator walks this list to recreate sessions on demote/promote,
+        # so that ALL pipeline sessions (wrapper detector/classifier/SAM AND
+        # the separately-owned BirdSpeciesClassifier / QualityClassifier) move
+        # together. If only some sessions migrate, the dead-provider sessions
+        # error every subsequent image and the run looks "stuck on error".
+        self._sessions: list["ResilientOnnxSession"] = []
 
     # ---- public read-only ----
 
@@ -159,6 +170,25 @@ class ProviderCoordinator:
 
     def register_recreate_callback(self, fn: _RecreateFn) -> None:
         self._recreate_cb = fn
+
+    def update_status_cb(self, status_cb: Optional[_StatusFn]) -> None:
+        """Rebind the status callback. Called when a wrapper is reused across
+        analysis runs so notifications target the active folder, not the one
+        whose ``status_cb`` closure was captured at first construction.
+        """
+        self._status_cb = status_cb
+
+    def _register_session(self, sess: "ResilientOnnxSession") -> None:
+        self._sessions.append(sess)
+
+    def recreate_all(self) -> None:
+        """Rebuild every registered session against the coordinator's current
+        provider list. Called after a state transition (demote or promote).
+        Safe to call when no sessions are registered (no-op).
+        """
+        for sess in list(self._sessions):
+            sess._rebuild()
+        gc.collect()
 
     def providers_for(self, kind: str) -> list[str]:
         """Return the ONNX providers list for a fresh session of the given kind.

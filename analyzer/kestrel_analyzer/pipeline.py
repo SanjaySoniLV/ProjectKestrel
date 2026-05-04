@@ -358,6 +358,14 @@ class AnalysisPipeline:
             and str(getattr(self.sn_sam, "detector_name", DEFAULT_DETECTOR_NAME)) == self.detector_name
         )
         if mask_ready_for_cap and self.species_clf and self.quality_clf:
+            # Wrapper is being reused — repoint its status_cb at the active
+            # folder so coord notifications (e.g., "Switched to CPU after GPU
+            # error") land on this folder's queue item, not whichever folder
+            # first constructed the wrapper.
+            try:
+                self.sn_sam.update_status_cb(status_cb)
+            except Exception:
+                pass
             return
         if status_cb:
             status_cb(
@@ -377,18 +385,30 @@ class AnalysisPipeline:
                 status_cb=status_cb,
                 resilience_cfg=resilience_cfg,
             )
+            # The new wrapper has a fresh coord. Any existing species/quality
+            # classifiers were registered with the OLD coord, so drop them and
+            # rebuild below — otherwise their sessions wouldn't migrate when
+            # the new coord recreates.
+            self.species_clf = None
+            self.quality_clf = None
+        # Share the wrapper's coordinator with the species/quality classifiers
+        # so demote/promote rebuilds every session in the run together. Without
+        # this, a DML/CoreML failure recovers the wrapper but leaves these two
+        # sessions on the dead provider — every later image errors at the
+        # species step and the run looks "stuck on error".
+        coord = self.sn_sam.coord
         if not self.species_clf:
             self.species_clf = BirdSpeciesClassifier(
                 str(SPECIESCLASSIFIER_PATH),
                 str(SPECIESCLASSIFIER_LABELS),
-                self.use_gpu,
+                coord,
                 models_dir=str(MODELS_DIR),
             )
         if not self.quality_clf:
             self.quality_clf = QualityClassifier(
                 str(QUALITYCLASSIFIER_PATH),
                 normalization_data_path=str(QUALITY_NORMALIZATION_DATA_PATH),
-                use_gpu=self.use_gpu,
+                coord=coord,
             )
         if status_cb:
             status_cb("Models loaded. Processing started.")
