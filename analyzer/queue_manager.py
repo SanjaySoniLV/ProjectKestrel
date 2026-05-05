@@ -176,6 +176,7 @@ class QueueManager:
         self._pipeline = None
         self._use_gpu = True
         self._wildlife_enabled = True
+        self._species_detection_enabled = True
         self._detection_threshold = 0.25
         self._scene_time_threshold = 1.0
         self._mask_threshold = 0.5
@@ -207,6 +208,7 @@ class QueueManager:
             'options': {
                 'use_gpu': bool(self._use_gpu),
                 'wildlife_enabled': bool(self._wildlife_enabled),
+                'species_detection_enabled': bool(self._species_detection_enabled),
                 'detector_name': str(self._detector_name),
                 'detection_threshold': float(self._detection_threshold),
                 'scene_time_threshold': float(self._scene_time_threshold),
@@ -301,6 +303,7 @@ class QueueManager:
             restore_paths,
             use_gpu=bool(options.get('use_gpu', True)),
             wildlife_enabled=bool(options.get('wildlife_enabled', True)),
+            species_detection_enabled=bool(options.get('species_detection_enabled', True)),
             detector_name=_coerce_detector_name(options.get('detector_name', _DEFAULT_DETECTOR_NAME)),
             detection_threshold=_safe_float(options.get('detection_threshold', 0.25), 0.25),
             scene_time_threshold=_safe_float(options.get('scene_time_threshold', 1.0), 1.0),
@@ -350,6 +353,7 @@ class QueueManager:
         paths: list,
         use_gpu: bool = True,
         wildlife_enabled: bool = True,
+        species_detection_enabled: bool = True,
         detector_name: str = _DEFAULT_DETECTOR_NAME,
         detection_threshold: float = 0.25,
         scene_time_threshold: float = 1.0,
@@ -397,6 +401,7 @@ class QueueManager:
             self._pause_event.set()
             self._use_gpu = use_gpu
             self._wildlife_enabled = wildlife_enabled
+            self._species_detection_enabled = bool(species_detection_enabled)
             self._detection_threshold = float(detection_threshold)
             self._scene_time_threshold = float(scene_time_threshold)
             self._mask_threshold = float(mask_threshold)
@@ -645,6 +650,7 @@ class QueueManager:
                     },
                     analyzer_name='visualizer-queue',
                     wildlife_enabled=self._wildlife_enabled,
+                    species_detection_enabled=self._species_detection_enabled,
                     detection_threshold=self._detection_threshold,
                     scene_time_threshold=self._scene_time_threshold,
                     mask_threshold=self._mask_threshold,

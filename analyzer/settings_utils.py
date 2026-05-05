@@ -243,6 +243,7 @@ def _sanitize_queue_recovery_state(value: Any) -> dict | None:
     state['options'] = {
         'use_gpu': _coerce_bool(opts.get('use_gpu', True), default=True),
         'wildlife_enabled': _coerce_bool(opts.get('wildlife_enabled', True), default=True),
+        'species_detection_enabled': _coerce_bool(opts.get('species_detection_enabled', True), default=True),
         'detector_name': _coerce_enum(
             opts.get('detector_name', 'mdv5a'),
             _ALLOWED_QUEUE_DETECTOR_NAMES,

@@ -779,6 +779,52 @@ class Api:
             except Exception:
                 return {'success': True, 'version': 'unknown'}
 
+    def get_species_family_map(self):
+        """Return a {species_display_name: family_display_name} mapping for the
+        bird species classifier's North American taxonomy.
+
+        Joins ``labels_scispecies.csv`` (Species → Scientific Family) with
+        ``scispecies_dispname.csv`` (Scientific Family → Display Name) and
+        caches the result on the bridge instance. Used by the frontend to
+        auto-link species/family chips and populate species autocomplete.
+        """
+        cached = getattr(self, '_species_family_map_cache', None)
+        if cached is not None:
+            return cached
+        try:
+            import csv
+            try:
+                from kestrel_analyzer.config import MODELS_DIR as _models_dir
+            except ImportError:
+                from analyzer.kestrel_analyzer.config import MODELS_DIR as _models_dir
+            base = str(_models_dir)
+            species_to_scifam: dict[str, str] = {}
+            with open(os.path.join(base, 'labels_scispecies.csv'), 'r', encoding='utf-8-sig', newline='') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    sp = (row.get('Species') or '').strip()
+                    fam = (row.get('Scientific Family') or '').strip()
+                    if sp and fam:
+                        species_to_scifam[sp] = fam
+            scifam_to_display: dict[str, str] = {}
+            with open(os.path.join(base, 'scispecies_dispname.csv'), 'r', encoding='utf-8-sig', newline='') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    sci = (row.get('Scientific Family') or '').strip()
+                    disp = (row.get('Display Name') or '').strip()
+                    if sci and disp:
+                        scifam_to_display[sci] = disp
+            mapping: dict[str, str] = {}
+            for sp, sci in species_to_scifam.items():
+                disp = scifam_to_display.get(sci, sci)
+                mapping[sp] = disp
+            result = {'success': True, 'map': mapping}
+        except Exception as e:
+            print(f'[API] get_species_family_map() -> Error: {e}', flush=True)
+            result = {'success': False, 'error': str(e), 'map': {}}
+        self._species_family_map_cache = result
+        return result
+
     def fetch_remote_version(self):
         """Fetch version.json from projectkestrel.org to bypass CORS in JS."""
         try:
@@ -1042,7 +1088,7 @@ class Api:
             csv_path = os.path.join(kestrel_dir, 'kestrel_database.csv')
             if not os.path.exists(csv_path):
                 return {'success': False, 'error': f'CSV not found: {csv_path}'}
-            with open(csv_path, 'w', encoding='utf-8', newline='') as f:
+            with open(csv_path, 'w', encoding='utf-8-sig', newline='') as f:
                 f.write(csv_content)
             return {'success': True, 'path': csv_path}
         except Exception as e:
@@ -1549,12 +1595,16 @@ class Api:
     #  Analysis Queue API (called from JavaScript in pywebview mode)       #
     # ------------------------------------------------------------------ #
 
-    def start_analysis_queue(self, paths, use_gpu=True, wildlife_enabled=True, retry_errored=False):
+    def start_analysis_queue(self, paths, use_gpu=True, wildlife_enabled=True, retry_errored=False, species_detection_enabled=True):
         """Enqueue folders for analysis. ``paths`` may be a JSON string or list.
 
         ``retry_errored`` (bool): when True, drop rows previously marked
         ``species == "Error"`` from each folder's CSV before reprocessing, so
         those images get re-analyzed instead of being skipped as already-done.
+
+        ``species_detection_enabled`` (bool): when False, the bird species
+        classifier is skipped and species/family fields are recorded as
+        ``Unknown``. Detection, quality scoring, and culling still run.
         """
         try:
             if isinstance(paths, str):
@@ -1617,6 +1667,7 @@ class Api:
             parallel_prefetch = max(1, min(5, parallel_prefetch))
             return _queue_manager.enqueue(validated_paths, use_gpu=bool(use_gpu),
                                           wildlife_enabled=bool(wildlife_enabled),
+                                          species_detection_enabled=bool(species_detection_enabled),
                                           detection_threshold=detection_threshold,
                                           scene_time_threshold=scene_time_threshold,
                                           mask_threshold=mask_threshold,
