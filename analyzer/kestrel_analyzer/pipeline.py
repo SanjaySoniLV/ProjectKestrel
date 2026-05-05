@@ -421,6 +421,7 @@ class AnalysisPipeline:
         callbacks: Optional[Dict[str, Callable]] = None,
         analyzer_name: str = "pipeline",
         wildlife_enabled: bool = True,
+        species_detection_enabled: bool = True,
         detection_threshold: float = 0.25,
         scene_time_threshold: float = 1.0,
         mask_threshold: float = 0.5,
@@ -1053,27 +1054,33 @@ class AnalysisPipeline:
                         for item in items:
                             i = item["index"]
                             if pred_class[i] == "bird":
-                                species_result = self.species_clf.classify(item["species_crop"])
-                                item["species"] = (
-                                    species_result["top_species_labels"][0]
-                                    if len(species_result["top_species_labels"])
-                                    else "Unknown"
-                                )
-                                item["species_confidence"] = (
-                                    float(species_result["top_species_scores"][0])
-                                    if len(species_result["top_species_scores"])
-                                    else 0.0
-                                )
-                                item["family"] = (
-                                    species_result["top_family_labels"][0]
-                                    if len(species_result["top_family_labels"])
-                                    else "Unknown"
-                                )
-                                item["family_confidence"] = (
-                                    float(species_result["top_family_scores"][0])
-                                    if len(species_result["top_family_scores"])
-                                    else 0.0
-                                )
+                                if species_detection_enabled:
+                                    species_result = self.species_clf.classify(item["species_crop"])
+                                    item["species"] = (
+                                        species_result["top_species_labels"][0]
+                                        if len(species_result["top_species_labels"])
+                                        else "Unknown"
+                                    )
+                                    item["species_confidence"] = (
+                                        float(species_result["top_species_scores"][0])
+                                        if len(species_result["top_species_scores"])
+                                        else 0.0
+                                    )
+                                    item["family"] = (
+                                        species_result["top_family_labels"][0]
+                                        if len(species_result["top_family_labels"])
+                                        else "Unknown"
+                                    )
+                                    item["family_confidence"] = (
+                                        float(species_result["top_family_scores"][0])
+                                        if len(species_result["top_family_scores"])
+                                        else 0.0
+                                    )
+                                else:
+                                    item["species"] = "Unknown"
+                                    item["species_confidence"] = 0.0
+                                    item["family"] = "Unknown"
+                                    item["family_confidence"] = 0.0
                             else:
                                 item["species"] = pred_class[i]
                                 item["species_confidence"] = float(pred_score[i])
@@ -1411,6 +1418,7 @@ class AnalysisPipeline:
                             "detector_name": str(getattr(self, "detector_name", "") or ""),
                             "use_gpu": bool(getattr(self, "use_gpu", False)),
                             "wildlife_enabled": bool(wildlife_enabled),
+                            "species_detection_enabled": bool(species_detection_enabled),
                             "detection_threshold": float(detection_threshold),
                             "scene_time_threshold": float(scene_time_threshold),
                             "mask_threshold": float(mask_threshold),

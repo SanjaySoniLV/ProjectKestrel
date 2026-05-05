@@ -797,6 +797,47 @@
     }
     .chip-commit-btn:hover { background: #56afff; }
 
+    /* Custom species combobox dropdown.
+       Uses position: fixed (instead of absolute relative to .chip-input-wrap)
+       to escape the overflow-x: auto clipping on .scene-topbar-tags. The
+       coordinates are set in JS via getBoundingClientRect on the input. */
+    .chip-input-wrap--species { position: relative; }
+    .chip-input-dropdown {
+      position: fixed;
+      background: #1a2a44;
+      border: 1px solid var(--brand);
+      border-radius: 8px;
+      z-index: 9999;
+      min-width: 240px;
+      max-width: 360px;
+      max-height: 280px;
+      overflow-y: auto;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+      font-size: 12px;
+      padding: 4px 0;
+    }
+    .chip-combo-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 5px 10px;
+      cursor: pointer;
+      color: #fff;
+      white-space: nowrap;
+    }
+    .chip-combo-item--active,
+    .chip-combo-item:hover {
+      background: rgba(86, 175, 255, 0.28);
+    }
+    .chip-combo-name { font-weight: 500; }
+    .chip-combo-family {
+      color: #9ab;
+      font-size: 11px;
+      font-style: italic;
+      flex-shrink: 0;
+    }
+
     /* Reviewed tags golden styling */
     .reviewed-tags .chip {
       background: rgba(245, 197, 66, 0.15);
