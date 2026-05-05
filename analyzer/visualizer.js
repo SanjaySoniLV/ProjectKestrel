@@ -341,16 +341,80 @@
       const accountBtn = el('#accountBtn');
       if (!accountBtn) return;
 
-      // Check for a stored, unexpired token on startup
-      if (hasPywebviewApi && window.pywebview?.api?.get_perch_token) {
+      // Wait for the pywebview JS↔Py bridge to be ready before doing any API
+      // call. Without this, on cold starts `hasPywebviewApi` is still false
+      // at the moment initPerchAuth() runs (the IIFE that flips it to true
+      // is racing with us), so every API check below silently no-ops.
+      try {
+        if (!hasPywebviewApi) {
+          await waitForPywebview();
+        }
+      } catch (_) { /* fall through and try anyway */ }
+
+      // Token validity drives the indicator. The /v1/me call only ENRICHES
+      // with the user's handle — if it fails (network blip, transient 401),
+      // we still want the indicator on so the user knows their token is good.
+      let signedIn = false;
+      let expired = false;          // token stored but past exp
+      let handle = null;
+      let displayName = null;
+
+      if (window.pywebview?.api?.get_perch_token) {
         try {
           const result = await window.pywebview.api.get_perch_token();
           if (result?.token) {
             _perchToken = result.token;
-            accountBtn.classList.add('signed-in');
+            signedIn = true;
           }
         } catch (e) {
           console.warn('Failed to get Perch token on startup:', e);
+        }
+      }
+
+      // Only fetch the handle if we already know the token is good. Failure
+      // here doesn't roll back the signed-in state — we just don't show the
+      // handle. If the worker explicitly says the token is expired, that
+      // overrides the local-only check.
+      if (signedIn && window.pywebview?.api?.get_perch_account) {
+        try {
+          const accountRes = await window.pywebview.api.get_perch_account();
+          if (accountRes?.success && accountRes.account) {
+            const a = accountRes.account;
+            handle = a.username || a.userId || null;
+            displayName = a.displayName || a.display_name || a.first_name || null;
+          } else if (accountRes?.error === 'perch_token_expired') {
+            expired = true;
+            signedIn = false;
+          }
+        } catch (e) {
+          console.warn('Failed to get Perch account info:', e);
+        }
+      }
+
+      const labelEl = el('#accountBtnLabel');
+      if (signedIn) {
+        accountBtn.classList.add('signed-in');
+        accountBtn.classList.remove('session-expired');
+        const label = handle ? `@${handle}` : (displayName || 'Signed in');
+        accountBtn.title = `Perch — Signed in as ${label}`;
+        accountBtn.setAttribute('aria-label', `Perch account: signed in as ${label}`);
+        if (labelEl) {
+          labelEl.textContent = label;
+          labelEl.classList.remove('hidden');
+        }
+      } else if (expired) {
+        accountBtn.classList.remove('signed-in');
+        accountBtn.classList.add('session-expired');
+        accountBtn.title = 'Perch — Session expired, click to sign in again';
+        accountBtn.setAttribute('aria-label', 'Perch account: session expired, click to sign in again');
+        if (labelEl) {
+          labelEl.textContent = 'Sign in';
+          labelEl.classList.remove('hidden');
+        }
+      } else {
+        if (labelEl) {
+          labelEl.textContent = '';
+          labelEl.classList.add('hidden');
         }
       }
 
@@ -366,10 +430,35 @@
     }
 
     // Called by Python after store_perch_token completes
-    window.onPerchSignIn = (token) => {
+    window.onPerchSignIn = async (token) => {
       _perchToken = token;
       const accountBtn = el('#accountBtn');
-      if (accountBtn) accountBtn.classList.add('signed-in');
+      const labelEl = el('#accountBtnLabel');
+      if (accountBtn) {
+        accountBtn.classList.add('signed-in');
+        accountBtn.classList.remove('session-expired');
+      }
+      if (labelEl) {
+        labelEl.textContent = 'Signed in';
+        labelEl.classList.remove('hidden');
+      }
+      // Fetch account info so the handle shows up on the button without
+      // requiring a Kestrel restart. The cache was just cleared in
+      // store_perch_token, so this hits the network and gets fresh data.
+      try {
+        if (window.pywebview?.api?.get_perch_account) {
+          const accountRes = await window.pywebview.api.get_perch_account();
+          if (accountRes?.success && accountRes.account && accountBtn) {
+            const a = accountRes.account;
+            const handle = a.username || null;
+            const displayName = a.displayName || a.display_name || a.first_name || null;
+            const label = handle ? `@${handle}` : (displayName || 'Signed in');
+            accountBtn.title = `Perch — Signed in as ${label}`;
+            accountBtn.setAttribute('aria-label', `Perch account: signed in as ${label}`);
+            if (labelEl) labelEl.textContent = label;
+          }
+        }
+      } catch (e) { /* ignore — indicator is on regardless */ }
     };
 
     function loadVersionBadge() {
@@ -8022,9 +8111,632 @@
       }
     }
 
+    // ── Share-with-Perch dialog + progress card ────────────────────────
+    // State scoped to the currently-open dialog. Refreshed on each open.
+    const _perchDlgState = {
+      rootPath: null,
+      preflight: null,        // full response from Api.preflight_perch_upload
+      deselected: new Set(),  // sceneIds the user has unchecked
+    };
+    // Job state for the in-flight upload (only one allowed at a time).
+    let _perchActiveJobId = null;
+    let _perchActivePollTimer = null;
+
+    function formatPerchBytes(n) {
+      const x = Number(n) || 0;
+      if (x <= 0) return '0 KB';
+      if (x < 1024) return x + ' B';
+      if (x < 1024 * 1024) return (x / 1024).toFixed(1) + ' KB';
+      if (x < 1024 * 1024 * 1024) return (x / (1024 * 1024)).toFixed(1) + ' MB';
+      return (x / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+    }
+
+    function _perchFormatTimestamp(ms) {
+      if (!Number.isFinite(ms)) return '';
+      try {
+        return new Date(ms).toLocaleString(undefined, {
+          month: 'short', day: 'numeric',
+          hour: 'numeric', minute: '2-digit',
+        });
+      } catch { return ''; }
+    }
+
+    function _perchSelectedTotals() {
+      const pre = _perchDlgState.preflight;
+      if (!pre) return { scenes: 0, photos: 0, exports: 0, crops: 0, files: 0, bytes: 0 };
+      let scenes = 0, photos = 0, exp = 0, crops = 0, bytes = 0;
+      for (const s of pre.scenes || []) {
+        if (_perchDlgState.deselected.has(String(s.sceneId))) continue;
+        scenes++;
+        photos += Number(s.imageCount || 0);
+        exp += Number(s.exportCount || 0);
+        crops += Number(s.cropCount || 0);
+        bytes += Number(s.totalBytes || 0);
+      }
+      return { scenes, photos, exports: exp, crops, files: exp + crops, bytes };
+    }
+
+    function _perchUpdateDialogTotals() {
+      const t = _perchSelectedTotals();
+      const elScenes = document.getElementById('perchStatScenes');
+      const elPhotos = document.getElementById('perchStatPhotos');
+      const elBytes = document.getElementById('perchStatBytes');
+      const elSub = document.getElementById('perchStatSub');
+      const elSubmit = document.getElementById('perchUploadSubmitBtn');
+      if (elScenes) elScenes.textContent = t.scenes.toLocaleString();
+      if (elPhotos) elPhotos.textContent = t.photos.toLocaleString();
+      if (elBytes) elBytes.textContent = formatPerchBytes(t.bytes);
+      if (elSub) elSub.textContent =
+        `${t.exports.toLocaleString()} exports + ${t.crops.toLocaleString()} crops · ${t.files.toLocaleString()} files`;
+      if (elSubmit) {
+        const label = t.photos > 0 ? `📤 Upload ${t.photos.toLocaleString()} photo${t.photos === 1 ? '' : 's'}` : '📤 Upload';
+        elSubmit.textContent = label;
+        elSubmit.disabled = (t.photos === 0);
+      }
+    }
+
+    function _perchRenderSceneList() {
+      const list = document.getElementById('perchSceneList');
+      if (!list) return;
+      list.innerHTML = '';
+      const pre = _perchDlgState.preflight;
+      if (!pre || !pre.scenes || pre.scenes.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'perch-scene-empty';
+        empty.textContent = 'No scenes found in this folder.';
+        list.appendChild(empty);
+        return;
+      }
+      const rootPath = _perchDlgState.rootPath;
+      for (const s of pre.scenes) {
+        const sid = String(s.sceneId);
+        const cbId = `perch-scene-cb-${sid.replace(/[^a-z0-9_-]/gi, '_')}`;
+
+        const row = document.createElement('div');
+        row.className = 'perch-scene-row';
+        row.dataset.sceneId = sid;
+
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.id = cbId;
+        cb.className = 'perch-scene-cb';
+        cb.checked = !_perchDlgState.deselected.has(sid);
+        cb.addEventListener('change', () => {
+          if (cb.checked) _perchDlgState.deselected.delete(sid);
+          else _perchDlgState.deselected.add(sid);
+          _perchUpdateDialogTotals();
+        });
+
+        // Thumbnail — click expands an inline preview below the row.
+        const thumbBtn = document.createElement('button');
+        thumbBtn.type = 'button';
+        thumbBtn.className = 'perch-scene-thumb';
+        thumbBtn.title = 'Click to preview this scene';
+        const thumbImg = document.createElement('img');
+        thumbImg.alt = '';
+        thumbImg.loading = 'lazy';
+        thumbBtn.appendChild(thumbImg);
+
+        const main = document.createElement('label');
+        main.htmlFor = cbId;
+        main.className = 'perch-scene-main';
+        const title = document.createElement('div');
+        title.className = 'perch-scene-title';
+        title.textContent = s.title || `Scene ${sid}`;
+        main.appendChild(title);
+        const stamp = _perchFormatTimestamp(s.captureTimeMs);
+        if (stamp) {
+          const meta = document.createElement('div');
+          meta.className = 'perch-scene-meta';
+          meta.textContent = stamp;
+          main.appendChild(meta);
+        }
+
+        const right = document.createElement('label');
+        right.htmlFor = cbId;
+        right.className = 'perch-scene-right';
+        const photos = document.createElement('div');
+        photos.className = 'perch-scene-photos';
+        photos.textContent = `${Number(s.imageCount || 0).toLocaleString()} photo${s.imageCount === 1 ? '' : 's'}`;
+        const size = document.createElement('div');
+        size.className = 'perch-scene-size';
+        size.textContent = formatPerchBytes(s.totalBytes);
+        right.appendChild(photos);
+        right.appendChild(size);
+
+        const expand = document.createElement('button');
+        expand.type = 'button';
+        expand.className = 'perch-scene-expand';
+        expand.title = 'Preview scene';
+        expand.textContent = '▾';
+
+        row.appendChild(cb);
+        row.appendChild(thumbBtn);
+        row.appendChild(main);
+        row.appendChild(right);
+        row.appendChild(expand);
+
+        // Inline preview pane (hidden until thumbnail/expand clicked).
+        const preview = document.createElement('div');
+        preview.className = 'perch-scene-preview hidden';
+        preview.dataset.sceneId = sid;
+        const previewImg = document.createElement('img');
+        previewImg.className = 'perch-scene-preview-img';
+        previewImg.alt = '';
+        preview.appendChild(previewImg);
+
+        const togglePreview = async () => {
+          const wasHidden = preview.classList.contains('hidden');
+          preview.classList.toggle('hidden');
+          row.classList.toggle('is-expanded', wasHidden);
+          expand.textContent = wasHidden ? '▴' : '▾';
+          // Lazy-load the larger image on first expand.
+          if (wasHidden && !previewImg.src && s.thumbnailPath && rootPath) {
+            try {
+              const url = await getBlobUrlForPath(s.thumbnailPath, rootPath);
+              if (url) previewImg.src = url;
+            } catch {}
+          }
+        };
+        thumbBtn.addEventListener('click', (e) => { e.preventDefault(); togglePreview(); });
+        expand.addEventListener('click', (e) => { e.preventDefault(); togglePreview(); });
+
+        list.appendChild(row);
+        list.appendChild(preview);
+
+        // Lazy-load the small thumbnail image immediately (cheap, lazy-decoded).
+        if (s.thumbnailPath && rootPath) {
+          getBlobUrlForPath(s.thumbnailPath, rootPath).then(url => {
+            if (url) thumbImg.src = url;
+            else thumbBtn.classList.add('no-image');
+          }).catch(() => thumbBtn.classList.add('no-image'));
+        } else {
+          thumbBtn.classList.add('no-image');
+        }
+      }
+    }
+
+    async function _perchLoadAccountAndUsage() {
+      const elName = document.getElementById('perchAccountName');
+      const elMeta = document.getElementById('perchAccountMeta');
+      const elAvatar = document.getElementById('perchAccountAvatar');
+      const elUsage = document.getElementById('perchUsageRow');
+      try {
+        const res = await window.pywebview.api.get_perch_account();
+        if (res && res.success && res.account) {
+          const acc = res.account;
+          const display = acc.displayName || acc.display_name || acc.first_name || acc.username || 'Signed in';
+          const handle = acc.username ? '@' + acc.username : (acc.email || acc.user_id || '');
+          if (elName) elName.textContent = display;
+          if (elMeta) elMeta.textContent = handle;
+          if (elAvatar) elAvatar.textContent = (display.trim()[0] || '?').toUpperCase();
+        } else if (elName) {
+          elName.textContent = 'Signed in';
+        }
+      } catch { if (elName) elName.textContent = 'Signed in'; }
+      try {
+        const res = await window.pywebview.api.get_perch_usage();
+        if (res && res.success && res.usage) {
+          const u = res.usage;
+          const photos = Number(u.totalImages || 0);
+          const bytes = Number(u.totalBytes || 0);
+          if (elUsage) elUsage.textContent = `Currently using ${formatPerchBytes(bytes)} across ${photos.toLocaleString()} photo${photos === 1 ? '' : 's'}.`;
+        } else if (elUsage) {
+          elUsage.textContent = '';
+        }
+      } catch { if (elUsage) elUsage.textContent = ''; }
+    }
+
+    function _perchClosePerchDialog() {
+      const dlg = document.getElementById('perchUploadDlg');
+      if (dlg && dlg.open) {
+        try { dlg.close(); } catch {}
+      }
+    }
+
+    function _perchSetButtonsDisabled(disabled) {
+      const buttons = document.querySelectorAll('.share-perch-btn');
+      buttons.forEach(b => {
+        b.disabled = !!disabled;
+        b.title = disabled
+          ? 'A Perch upload is already running'
+          : 'Create an Unfinished Perch on the web with this folder’s Kestrel analysis (export and crop images)';
+      });
+    }
+
+    function _perchEnsureUploadsPanel() {
+      const panel = document.getElementById('perchUploadsPanel');
+      if (panel) panel.classList.remove('hidden');
+      _perchRepositionUploadsPanel();
+      return panel;
+    }
+
+    /**
+     * Position the Perch uploads panel above the analysis queue when both
+     * are visible. Right-aligned with the queue panel; bottom = (20 + queue
+     * panel height + 12) when queue is on screen, otherwise bottom = 20px.
+     */
+    function _perchRepositionUploadsPanel() {
+      const panel = document.getElementById('perchUploadsPanel');
+      if (!panel || panel.classList.contains('hidden')) return;
+      const queue = document.getElementById('queuePanel');
+      if (queue && !queue.classList.contains('hidden')) {
+        const h = queue.getBoundingClientRect().height;
+        if (h > 0) {
+          panel.style.bottom = (20 + h + 12) + 'px';
+          return;
+        }
+      }
+      panel.style.bottom = '20px';
+    }
+
+    function _perchInstallPanelObservers() {
+      if (_perchInstallPanelObservers._done) return;
+      _perchInstallPanelObservers._done = true;
+      const queue = document.getElementById('queuePanel');
+      if (!queue) return;
+      // Watch for size changes (queue items added/removed, body collapsed).
+      try {
+        const ro = new ResizeObserver(() => _perchRepositionUploadsPanel());
+        ro.observe(queue);
+      } catch {}
+      // Watch for the .hidden class flipping on the queue panel.
+      try {
+        const mo = new MutationObserver(() => _perchRepositionUploadsPanel());
+        mo.observe(queue, { attributes: true, attributeFilter: ['class'] });
+      } catch {}
+      window.addEventListener('resize', _perchRepositionUploadsPanel);
+    }
+
+    function _perchUploadCardHtml() {
+      return `
+        <div class="perch-upload-card-header">
+          <span class="perch-upload-card-title">Uploading to Perch</span>
+          <span class="perch-upload-card-status" data-role="status">Starting…</span>
+          <button type="button" class="perch-upload-card-cancel" data-role="cancel" title="Cancel">✕</button>
+        </div>
+        <div class="perch-upload-card-body" data-role="body">
+          <div class="perch-upload-card-progress"><div class="perch-upload-card-progress-fill" data-role="fill" style="width:0%"></div></div>
+          <div class="perch-upload-card-current" data-role="current">Preparing files…</div>
+        </div>
+      `;
+    }
+
+    function _perchRenderUploadCard(jobId) {
+      const panel = _perchEnsureUploadsPanel();
+      if (!panel) return null;
+      const body = document.getElementById('perchUploadsBody');
+      if (!body) return null;
+      // Replace the body — only one upload card at a time (concurrency-gated).
+      body.innerHTML = '';
+      const card = document.createElement('div');
+      card.className = 'perch-upload-card running';
+      card.dataset.jobId = jobId;
+      card.innerHTML = _perchUploadCardHtml();
+      body.appendChild(card);
+      const cancelBtn = card.querySelector('[data-role="cancel"]');
+      if (cancelBtn) {
+        cancelBtn.addEventListener('click', async () => {
+          cancelBtn.disabled = true;
+          try { await window.pywebview.api.cancel_share(jobId); } catch {}
+        });
+      }
+      const badge = document.getElementById('perchUploadsBadge');
+      if (badge) { badge.textContent = 'Uploading'; badge.className = 'perch-uploads-badge'; }
+      return card;
+    }
+
+    function _perchUpdateUploadCard(card, prog) {
+      if (!card || !prog) return;
+      const status = card.querySelector('[data-role="status"]');
+      const fill = card.querySelector('[data-role="fill"]');
+      const current = card.querySelector('[data-role="current"]');
+      const phase = prog.phase;
+      if (phase === 'creating_perch') {
+        if (status) status.textContent = 'Creating perch…';
+        if (current) current.textContent = 'Reserving a draft perch on the server.';
+      } else if (phase === 'presigning') {
+        if (status) status.textContent = `Presigning ${prog.current || 0}/${prog.total || 0}`;
+        if (current) current.textContent = 'Allocating upload slots…';
+      } else if (phase === 'uploading') {
+        const uploaded = Number(prog.uploaded || 0);
+        const total = Number(prog.total || 0);
+        const pct = total > 0 ? Math.round((uploaded / total) * 100) : 0;
+        if (status) status.textContent = `${pct}% · ${uploaded}/${total}`;
+        if (fill) fill.style.width = pct + '%';
+        if (current) current.textContent = prog.filename ? `Uploading ${prog.filename}` : 'Uploading…';
+      }
+    }
+
+    function _perchSwapToDoneState(card, prog) {
+      if (!card) return;
+      const url = prog && prog.perch_url;
+      card.className = 'perch-upload-card is-done';
+      card.innerHTML = `
+        <div class="perch-upload-card-header">
+          <span class="perch-upload-card-title">✓ Uploaded to Perch</span>
+          <button type="button" class="perch-upload-card-dismiss" data-role="dismiss" title="Dismiss">✕</button>
+        </div>
+        <div class="perch-upload-card-body">
+          <div class="perch-upload-card-success">Your perch is ready.</div>
+          ${url ? `<button type="button" class="perch-upload-card-cta" data-role="open">Open in browser →</button>` : ''}
+        </div>
+      `;
+      const open = card.querySelector('[data-role="open"]');
+      if (open && url) {
+        open.addEventListener('click', () => {
+          try { window.pywebview.api.open_perch_url(url); } catch {}
+        });
+      }
+      const dismiss = card.querySelector('[data-role="dismiss"]');
+      if (dismiss) dismiss.addEventListener('click', () => _perchDismissCard(card));
+      const badge = document.getElementById('perchUploadsBadge');
+      if (badge) { badge.textContent = 'Done'; badge.className = 'perch-uploads-badge done'; }
+    }
+
+    function _perchSwapToCanceledState(card, prog) {
+      if (!card) return;
+      const url = prog && prog.perch_url;
+      card.className = 'perch-upload-card is-canceled';
+      const uploaded = Number(prog && prog.uploaded || 0);
+      const total = Number(prog && prog.total || 0);
+      card.innerHTML = `
+        <div class="perch-upload-card-header">
+          <span class="perch-upload-card-title">Upload canceled</span>
+          <button type="button" class="perch-upload-card-dismiss" data-role="dismiss" title="Dismiss">✕</button>
+        </div>
+        <div class="perch-upload-card-body">
+          <div class="perch-upload-card-warn">Stopped after uploading ${uploaded.toLocaleString()} of ${total.toLocaleString()} files. The partial perch is still using your storage.</div>
+          ${url ? `<button type="button" class="perch-upload-card-cta warn" data-role="open">Delete this Perch to clear your usage →</button>` : ''}
+        </div>
+      `;
+      const open = card.querySelector('[data-role="open"]');
+      if (open && url) {
+        open.addEventListener('click', () => {
+          try { window.pywebview.api.open_perch_url(url); } catch {}
+        });
+      }
+      const dismiss = card.querySelector('[data-role="dismiss"]');
+      if (dismiss) dismiss.addEventListener('click', () => _perchDismissCard(card));
+      const badge = document.getElementById('perchUploadsBadge');
+      if (badge) { badge.textContent = 'Canceled'; badge.className = 'perch-uploads-badge canceled'; }
+    }
+
+    function _perchSwapToErrorState(card, prog, rootPath) {
+      if (!card) return;
+      const msg = (prog && prog.message) || 'Unknown error';
+      card.className = 'perch-upload-card is-error';
+      card.innerHTML = `
+        <div class="perch-upload-card-header">
+          <span class="perch-upload-card-title">Upload failed</span>
+          <button type="button" class="perch-upload-card-dismiss" data-role="dismiss" title="Dismiss">✕</button>
+        </div>
+        <div class="perch-upload-card-body">
+          <div class="perch-upload-card-err">${String(msg).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}</div>
+          <button type="button" class="perch-upload-card-cta" data-role="retry">Retry</button>
+        </div>
+      `;
+      const retry = card.querySelector('[data-role="retry"]');
+      if (retry && rootPath) {
+        retry.addEventListener('click', () => {
+          _perchDismissCard(card);
+          shareWithPerchFolder(rootPath);
+        });
+      }
+      const dismiss = card.querySelector('[data-role="dismiss"]');
+      if (dismiss) dismiss.addEventListener('click', () => _perchDismissCard(card));
+      const badge = document.getElementById('perchUploadsBadge');
+      if (badge) { badge.textContent = 'Error'; badge.className = 'perch-uploads-badge error'; }
+    }
+
+    function _perchDismissCard(card) {
+      if (card && card.parentNode) card.parentNode.removeChild(card);
+      const body = document.getElementById('perchUploadsBody');
+      const panel = document.getElementById('perchUploadsPanel');
+      if (body && panel && body.children.length === 0) panel.classList.add('hidden');
+    }
+
+    async function _perchPollProgress(jobId, card, rootPath) {
+      let res;
+      try {
+        res = await window.pywebview.api.get_share_progress(jobId);
+      } catch (e) {
+        return;
+      }
+      if (!res || !res.success) return;
+      const prog = res.progress || {};
+      const phase = prog.phase;
+      if (phase === 'done') {
+        _perchSwapToDoneState(card, prog);
+        _perchActiveJobId = null;
+        if (_perchActivePollTimer) { clearInterval(_perchActivePollTimer); _perchActivePollTimer = null; }
+        _perchSetButtonsDisabled(false);
+      } else if (phase === 'canceled') {
+        _perchSwapToCanceledState(card, prog);
+        _perchActiveJobId = null;
+        if (_perchActivePollTimer) { clearInterval(_perchActivePollTimer); _perchActivePollTimer = null; }
+        _perchSetButtonsDisabled(false);
+      } else if (phase === 'error') {
+        _perchSwapToErrorState(card, prog, rootPath);
+        _perchActiveJobId = null;
+        if (_perchActivePollTimer) { clearInterval(_perchActivePollTimer); _perchActivePollTimer = null; }
+        _perchSetButtonsDisabled(false);
+      } else {
+        _perchUpdateUploadCard(card, prog);
+      }
+    }
+
+    async function kickShareJob(rootPath, excludedSceneIds) {
+      let res;
+      try {
+        res = await window.pywebview.api.share_with_perch(rootPath, excludedSceneIds || []);
+      } catch (e) {
+        showToast('Failed to start upload: ' + e.message, 6000);
+        return;
+      }
+      if (!res || !res.success) {
+        if (res && res.error === 'already_running') {
+          showToast('A Perch upload is already running.', 5000);
+        } else if (res && (res.error === 'not_signed_in' || res.needSignIn)) {
+          showToast('Sign in to Perch first (use the account button).', 6000);
+        } else {
+          showToast('Perch: ' + ((res && res.error) || 'Unknown error'), 6000);
+        }
+        return;
+      }
+      const jobId = String(res.job_id);
+      _perchActiveJobId = jobId;
+      _perchSetButtonsDisabled(true);
+      const card = _perchRenderUploadCard(jobId);
+      // Initial poll fast for snappy first-frame, then slow down.
+      let interval = 500;
+      _perchActivePollTimer = setInterval(() => {
+        _perchPollProgress(jobId, card, rootPath);
+      }, interval);
+      // Bump the interval after 5 seconds — big uploads don't need 2Hz forever.
+      setTimeout(() => {
+        if (_perchActivePollTimer) {
+          clearInterval(_perchActivePollTimer);
+          _perchActivePollTimer = setInterval(() => {
+            _perchPollProgress(jobId, card, rootPath);
+          }, 1000);
+        }
+      }, 5000);
+    }
+
+    async function _perchOpenDialog(rootPath) {
+      const dlg = document.getElementById('perchUploadDlg');
+      if (!dlg) {
+        showToast('Perch dialog not available', 4000);
+        return;
+      }
+      _perchDlgState.rootPath = rootPath;
+      _perchDlgState.preflight = null;
+      _perchDlgState.deselected = new Set();
+      // Show a starting state; preflight populates real numbers.
+      const loading = document.getElementById('perchDlgLoading');
+      const signedOut = document.getElementById('perchDlgSignedOut');
+      const signedIn = document.getElementById('perchDlgSignedIn');
+      const submit = document.getElementById('perchUploadSubmitBtn');
+      const sigIn = document.getElementById('perchUploadSignInBtn');
+      const ready = document.getElementById('perchDlgReadyLine');
+      if (loading) loading.classList.remove('hidden');
+      if (signedOut) signedOut.classList.add('hidden');
+      if (signedIn) signedIn.classList.add('hidden');
+      if (submit) { submit.classList.add('hidden'); submit.disabled = true; }
+      if (sigIn) sigIn.classList.add('hidden');
+      if (ready) ready.textContent = '';
+      try { dlg.showModal(); } catch { return; }
+
+      let preflight;
+      try {
+        preflight = await window.pywebview.api.preflight_perch_upload(rootPath);
+      } catch (e) {
+        if (loading) loading.classList.add('hidden');
+        if (signedOut) signedOut.classList.remove('hidden');
+        if (ready) ready.textContent = 'Could not inspect folder: ' + (e && e.message ? e.message : String(e));
+        return;
+      }
+      if (loading) loading.classList.add('hidden');
+      if (!preflight || !preflight.ok) {
+        showToast('Perch: ' + ((preflight && preflight.error) || 'Could not inspect folder'), 6000);
+        try { dlg.close(); } catch {}
+        return;
+      }
+      _perchDlgState.preflight = preflight;
+      if (preflight.signedIn) {
+        if (signedIn) signedIn.classList.remove('hidden');
+        if (submit) submit.classList.remove('hidden');
+        _perchRenderSceneList();
+        _perchUpdateDialogTotals();
+        _perchLoadAccountAndUsage();
+      } else {
+        if (signedOut) signedOut.classList.remove('hidden');
+        if (sigIn) sigIn.classList.remove('hidden');
+        if (ready) {
+          const photos = Number(preflight.imageCount || 0);
+          const scenes = Number(preflight.sceneCount || 0);
+          if (photos > 0) {
+            ready.textContent = `Ready to share: ${scenes.toLocaleString()} scene${scenes === 1 ? '' : 's'}, ${photos.toLocaleString()} photo${photos === 1 ? '' : 's'}, ${formatPerchBytes(preflight.totalBytes)}.`;
+          }
+        }
+      }
+    }
+
+    function _perchWirePerchDialogOnce() {
+      if (_perchWirePerchDialogOnce._done) return;
+      _perchWirePerchDialogOnce._done = true;
+      const dlg = document.getElementById('perchUploadDlg');
+      if (!dlg) return;
+      const cancelBtn = document.getElementById('perchUploadCancelBtn');
+      const closeBtn = document.getElementById('perchUploadDlgClose');
+      const submit = document.getElementById('perchUploadSubmitBtn');
+      const sigIn = document.getElementById('perchUploadSignInBtn');
+      const cullBtn = document.getElementById('perchOpenCullingBtn');
+      const selAll = document.getElementById('perchSelectAllBtn');
+      const deselAll = document.getElementById('perchDeselectAllBtn');
+      if (cancelBtn) cancelBtn.addEventListener('click', () => _perchClosePerchDialog());
+      if (closeBtn) closeBtn.addEventListener('click', () => _perchClosePerchDialog());
+      if (submit) submit.addEventListener('click', () => {
+        const root = _perchDlgState.rootPath;
+        const excluded = [..._perchDlgState.deselected];
+        _perchClosePerchDialog();
+        kickShareJob(root, excluded);
+      });
+      if (sigIn) sigIn.addEventListener('click', async () => {
+        try {
+          const signInUrl = `${PERCH_ORIGIN}/desktop-signin.html`;
+          await window.pywebview.api.open_perch_sign_in(signInUrl);
+        } catch {}
+        _perchClosePerchDialog();
+      });
+      if (cullBtn) cullBtn.addEventListener('click', () => {
+        const root = _perchDlgState.rootPath;
+        _perchClosePerchDialog();
+        if (root) openCullingAssistant(root);
+      });
+      const adjBtn = document.getElementById('perchAdjustTimeBtn');
+      if (adjBtn) adjBtn.addEventListener('click', () => {
+        const root = _perchDlgState.rootPath;
+        _perchClosePerchDialog();
+        if (root) showAdjustCaptureTimeDialog(root);
+      });
+      if (selAll) selAll.addEventListener('click', (e) => {
+        e.preventDefault();
+        _perchDlgState.deselected.clear();
+        _perchRenderSceneList();
+        _perchUpdateDialogTotals();
+      });
+      if (deselAll) deselAll.addEventListener('click', (e) => {
+        e.preventDefault();
+        const pre = _perchDlgState.preflight;
+        if (pre) {
+          for (const s of pre.scenes || []) _perchDlgState.deselected.add(String(s.sceneId));
+        }
+        _perchRenderSceneList();
+        _perchUpdateDialogTotals();
+      });
+      // Uploads-panel collapse toggle
+      const panelHeader = document.getElementById('perchUploadsHeader');
+      const panel = document.getElementById('perchUploadsPanel');
+      if (panelHeader && panel) {
+        panelHeader.addEventListener('click', () => {
+          panel.classList.toggle('collapsed');
+          const t = document.getElementById('perchUploadsToggle');
+          if (t) t.classList.toggle('open');
+          _perchRepositionUploadsPanel();
+        });
+      }
+      _perchInstallPanelObservers();
+    }
+
     async function shareWithPerchFolder(rootPath) {
       if (!window.pywebview?.api) {
         showToast('Share with Perch requires desktop mode', 4000);
+        return;
+      }
+      if (_perchActiveJobId) {
+        showToast('A Perch upload is already running.', 4000);
         return;
       }
       if (dirty) {
@@ -8032,27 +8744,8 @@
         if (userChoice === 'cancel') return;
         if (userChoice === 'save') await saveCsv();
       }
-      try {
-        showToast('Uploading to Perch (this can take a while)…', 8000);
-        const res = await window.pywebview.api.share_with_perch(rootPath);
-        if (res && res.success) {
-          if (res.url) {
-            showToast('Opening your Perch in the browser…', 4000);
-          } else {
-            showToast('Perch created. ' + (res.perch_id || 'Open Perch to finish.'), 5000);
-          }
-        } else if (res && (res.error === 'not_signed_in' || res.needSignIn)) {
-          const msg = res.error === 'perch_token_expired'
-            ? 'Perch sign-in expired. Open the account button in the title bar and sign in again, then try Share with Perch.'
-            : 'Sign in to Perch first (use the account button in the title bar).';
-          showToast(msg, 8000);
-        } else {
-          showToast('Perch: ' + (res && res.error ? res.error : 'Unknown error'), 8000);
-        }
-      } catch (e) {
-        console.error('shareWithPerchFolder', e);
-        showToast('Share with Perch failed', 5000);
-      }
+      _perchWirePerchDialogOnce();
+      _perchOpenDialog(rootPath);
     }
     
     // Custom dialog prompt for Culling Assistant save decision

@@ -300,6 +300,14 @@ class Api:
         self._has_unsaved_changes: bool = False
         self._cache_cleanup_roots: set[str] = set()
         self._culling_companion_extensions: tuple[str, ...] = _CULLING_COMPANION_EXTENSIONS
+        # Async share-with-perch state (job_id -> {progress, cancel_event, thread})
+        self._share_jobs: dict = {}
+        self._share_jobs_lock = None
+        self._active_share_job: str | None = None
+        self._perch_account_cache: dict | None = None
+        self._perch_account_cache_at: float = 0.0
+        self._perch_usage_cache: dict | None = None
+        self._perch_usage_cache_at: float = 0.0
 
     def notify_dirty(self, is_dirty: bool) -> dict:
         """Called from JS whenever the dirty flag changes."""
@@ -1931,6 +1939,13 @@ class Api:
             _perch_debug_log_token("store_perch_token: saved", str(token) if token else None)
             if _perch_debug_jwt_enabled():
                 log(f"[Perch debug] store_perch_token: exp_stored={exp!r} (from arg {expiry!r})")
+            # Invalidate per-instance caches — they're keyed on the previous
+            # (possibly expired) token and would otherwise pin the UI to a
+            # stale "not signed in" state for up to 5 minutes after re-auth.
+            self._perch_account_cache = None
+            self._perch_account_cache_at = 0.0
+            self._perch_usage_cache = None
+            self._perch_usage_cache_at = 0.0
             # Notify main window
             if self._main_window:
                 safe_token = json.dumps(str(token))
@@ -1952,73 +1967,315 @@ class Api:
             "PERCH_API_BASE", "https://perchapi.projectkestrel.org"
         ).rstrip("/")
 
-    def share_with_perch(self, root_path: str) -> dict:
-        """Upload the current session's .kestrel data and assets to a new draft Perch; open the edit URL.
+    # ─── Perch upload — preflight, async share, progress, cancel ─────────
+    # Per-instance share-job state lives on `self._share_jobs`, initialized in
+    # __init__. Access is guarded by a lazy-allocated lock since pywebview
+    # method handlers run on a thread distinct from the upload worker pool.
 
-        The API lives in the **Perch Worker** repo. Uses `PERCH_API_BASE` (default
-        production `https://perchapi.projectkestrel.org`) and a stored Perch Clerk JWT.
-        For local `wrangler dev`, set `PERCH_API_BASE=http://127.0.0.1:8787`.
-        For local dev without Clerk, set `PERCH_DEV_USER_ID` and enable `PERCH_DEV_AUTH` on the Worker.
+    def _ensure_share_lock(self) -> "threading.Lock":
+        import threading as _t
+        if self._share_jobs_lock is None:
+            self._share_jobs_lock = _t.Lock()
+        return self._share_jobs_lock
+
+    def _check_perch_token(self) -> tuple[str | None, str | None, dict | None]:
+        """Return (token, dev_user, error_dict-if-not-signed-in-or-stale).
+
+        On a usable token: error_dict is None.
+        On no token: error_dict has `needSignIn: True`.
+        """
+        data = _keyring_load()
+        token = (data or {}).get("token")
+        dev_user = os.environ.get("PERCH_DEV_USER_ID")
+        if not token and not dev_user:
+            return None, None, {"success": False, "error": "not_signed_in", "needSignIn": True}
+        if token and not dev_user:
+            ttl = _perch_jwt_seconds_until_exp(str(token))
+            if ttl is None or ttl < 90:
+                return None, None, {
+                    "success": False,
+                    "error": "perch_token_expired",
+                    "needSignIn": True,
+                }
+        return (str(token) if token else None), dev_user, None
+
+    def preflight_perch_upload(self, root_path: str) -> dict:
+        """Compute scene/photo/byte counts for a folder before uploading.
+
+        Local-only (no auth needed). Returns aggregate totals plus a per-scene
+        breakdown so the JS layer can render a checkbox-per-scene selector.
+        Also reports `signedIn` so the dialog can fork between the explainer
+        body and the upload-preview body.
         """
         try:
             from perch_uploader import PerchKestrelUploader
         except ImportError:  # pragma: no cover
             try:
                 from analyzer.perch_uploader import PerchKestrelUploader
-            except ImportError as e:  # pragma: no cover
-                log(f"share_with_perch: import PerchKestrelUploader failed: {e}")
-                return {"success": False, "error": "Perch uploader module not available"}
+            except ImportError as e:
+                return {"ok": False, "error": f"uploader import failed: {e}"}
+
+        root_real, err = self._validate_root_dir(
+            root_path, context="preflight_perch_upload", require_exists=True
+        )
+        if err:
+            return {"ok": False, "error": err}
+
+        # Token check is non-fatal here — preflight runs even when signed out.
         data = _keyring_load()
         token = (data or {}).get("token")
         dev_user = os.environ.get("PERCH_DEV_USER_ID")
-        if not token and not dev_user:
-            return {
-                "success": False,
-                "error": "not_signed_in",
-                "needSignIn": True,
-            }
-        if token and not dev_user:
+        signed_in = bool(dev_user)
+        token_stale = False
+        if not signed_in and token:
             ttl = _perch_jwt_seconds_until_exp(str(token))
             if ttl is None or ttl < 90:
-                if _perch_debug_jwt_enabled() and ttl is not None:
-                    log(
-                        f"[Perch debug] share_with_perch: reject upload, "
-                        f"seconds_until_exp={ttl:.1f} (need >= 90)"
-                    )
-                return {
-                    "success": False,
-                    "error": "perch_token_expired",
-                    "needSignIn": True,
-                }
-        root_real, err = self._validate_root_dir(
-            root_path, context="share_with_perch", require_exists=True
-        )
-        if err:
-            return {"success": False, "error": err}
-        api_base = self.get_perch_api_base()
-        _perch_debug_log_token("share_with_perch: about to call API", str(token) if token else None)
+                token_stale = True
+            else:
+                signed_in = True
+
         try:
             uploader = PerchKestrelUploader(
-                api_base, str(token) if token else None, dev_user=dev_user
+                self.get_perch_api_base(),
+                str(token) if token else None,
+                dev_user=dev_user,
             )
-            out = uploader.run(str(root_real))
-            url = out.get("url")
-            if url:
-                try:
-                    webbrowser.open(str(url), new=2, autoraise=True)
-                except Exception as ex:  # pragma: no cover
-                    log(f"share_with_perch: webbrowser.open failed: {ex}")
-            return {
-                "success": True,
-                "perch_id": out.get("perch_id"),
-                "url": url,
-                "scene_count": out.get("scene_count"),
-            }
+        except ValueError:
+            # No usable auth at all — preflight still works (no network call),
+            # so we pass a placeholder dev_user just to satisfy the constructor.
+            # This placeholder never reaches the worker because preflight() is
+            # local-only.
+            try:
+                uploader = PerchKestrelUploader(
+                    self.get_perch_api_base(), None, dev_user="preflight-no-auth"
+                )
+            except Exception as e:
+                return {"ok": False, "error": str(e)}
+        try:
+            pre = uploader.preflight(root_real)
         except Exception as e:
-            log(f"share_with_perch: {e}")
-            import traceback
+            log(f"preflight_perch_upload: {e}")
+            return {"ok": False, "error": str(e)}
 
-            log(traceback.format_exc())
+        return {
+            "ok": True,
+            "signedIn": signed_in,
+            "tokenStale": token_stale,
+            "sceneCount": pre.scene_count,
+            "imageCount": pre.image_count,
+            "exportCount": pre.export_count,
+            "cropCount": pre.crop_count,
+            "totalBytes": pre.total_bytes,
+            "fileCount": pre.file_count,
+            "scenes": [
+                {
+                    "sceneId": s.scene_id,
+                    "title": s.title,
+                    "captureTimeMs": s.capture_time_ms,
+                    "imageCount": s.image_count,
+                    "exportCount": s.export_count,
+                    "cropCount": s.crop_count,
+                    "totalBytes": s.total_bytes,
+                    "topQuality": s.top_quality,
+                    "thumbnailPath": s.thumbnail_rel,
+                }
+                for s in pre.scenes
+            ],
+        }
+
+    def get_perch_account(self) -> dict:
+        """GET /v1/me — caller's Clerk profile. 5-min in-process cache.
+
+        Only successful responses are cached — failures are NOT cached, so a
+        recoverable error (transient network blip, token-just-refreshed) is
+        retried on the next call instead of getting stuck for 5 minutes.
+        """
+        now = time.time()
+        if (
+            self._perch_account_cache is not None
+            and self._perch_account_cache.get("success")
+            and (now - self._perch_account_cache_at) < 300
+        ):
+            return self._perch_account_cache
+        token, dev_user, err = self._check_perch_token()
+        if err:
+            return err
+        try:
+            import requests as _req
+            headers: dict = {}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            if dev_user:
+                headers["x-dev-user-id"] = str(dev_user)
+            r = _req.get(
+                f"{self.get_perch_api_base()}/v1/me",
+                headers=headers,
+                timeout=15,
+            )
+            if not r.ok:
+                return {"success": False, "error": f"HTTP {r.status_code}"}
+            body = r.json()
+            out = {"success": True, "account": body}
+            self._perch_account_cache = out
+            self._perch_account_cache_at = now
+            return out
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def get_perch_usage(self) -> dict:
+        """GET /v1/me/usage — totalImages, totalAssets, totalBytes. 5-min cache."""
+        now = time.time()
+        if (
+            self._perch_usage_cache is not None
+            and (now - self._perch_usage_cache_at) < 300
+        ):
+            return self._perch_usage_cache
+        token, dev_user, err = self._check_perch_token()
+        if err:
+            return err
+        try:
+            import requests as _req
+            headers: dict = {}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            if dev_user:
+                headers["x-dev-user-id"] = str(dev_user)
+            r = _req.get(
+                f"{self.get_perch_api_base()}/v1/me/usage",
+                headers=headers,
+                timeout=15,
+            )
+            if not r.ok:
+                return {"success": False, "error": f"HTTP {r.status_code}"}
+            body = r.json()
+            out = {"success": True, "usage": body}
+            self._perch_usage_cache = out
+            self._perch_usage_cache_at = now
+            return out
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def share_with_perch(self, root_path: str, excluded_scene_ids=None) -> dict:
+        """Kick off an async upload. Returns immediately with `{job_id}`.
+
+        JS polls `get_share_progress(job_id)` for live state. The browser is NOT
+        opened automatically — the user clicks an "Open in browser" button on
+        the success card so the auto-redirect-during-work pattern is gone.
+        """
+        try:
+            from perch_uploader import PerchKestrelUploader
+        except ImportError:
+            try:
+                from analyzer.perch_uploader import PerchKestrelUploader
+            except ImportError as e:
+                return {"success": False, "error": f"uploader import failed: {e}"}
+
+        token, dev_user, err = self._check_perch_token()
+        if err:
+            return err
+
+        root_real, verr = self._validate_root_dir(
+            root_path, context="share_with_perch", require_exists=True
+        )
+        if verr:
+            return {"success": False, "error": verr}
+
+        lock = self._ensure_share_lock()
+        with lock:
+            if self._active_share_job is not None:
+                return {
+                    "success": False,
+                    "error": "already_running",
+                    "active_job_id": self._active_share_job,
+                }
+            import threading as _t
+            import uuid as _uuid
+            job_id = str(_uuid.uuid4())
+            cancel_event = _t.Event()
+            job_state = {
+                "progress": {"phase": "starting"},
+                "cancel_event": cancel_event,
+                "thread": None,
+            }
+            self._share_jobs[job_id] = job_state
+            self._active_share_job = job_id
+
+        excluded = list(excluded_scene_ids or [])
+
+        def _on_progress(payload: dict) -> None:
+            with lock:
+                if job_id in self._share_jobs:
+                    self._share_jobs[job_id]["progress"] = dict(payload)
+
+        def _runner() -> None:
+            try:
+                uploader = PerchKestrelUploader(
+                    self.get_perch_api_base(),
+                    str(token) if token else None,
+                    dev_user=dev_user,
+                )
+                uploader.run(
+                    str(root_real),
+                    excluded_scene_ids=excluded,
+                    progress_callback=_on_progress,
+                    cancel_event=cancel_event,
+                )
+            except Exception as e:
+                log(f"share_with_perch: {e}")
+                import traceback as _tb
+                log(_tb.format_exc())
+                _on_progress({"phase": "error", "message": str(e)})
+            finally:
+                with lock:
+                    if self._active_share_job == job_id:
+                        self._active_share_job = None
+                # Invalidate usage cache so the next dialog open shows fresh numbers.
+                self._perch_usage_cache = None
+                self._perch_usage_cache_at = 0.0
+
+        import threading as _t
+        thread = _t.Thread(target=_runner, name=f"PerchUpload-{job_id[:8]}", daemon=True)
+        with lock:
+            self._share_jobs[job_id]["thread"] = thread
+        thread.start()
+
+        return {"success": True, "job_id": job_id}
+
+    def get_share_progress(self, job_id: str) -> dict:
+        """Return the latest progress event for an in-flight or recent share job."""
+        lock = self._ensure_share_lock()
+        with lock:
+            entry = self._share_jobs.get(str(job_id))
+            if entry is None:
+                return {"success": False, "error": "not_found"}
+            return {"success": True, "progress": dict(entry.get("progress") or {})}
+
+    def cancel_share(self, job_id: str) -> dict:
+        """Request cancellation of an in-flight share job. Idempotent."""
+        lock = self._ensure_share_lock()
+        with lock:
+            entry = self._share_jobs.get(str(job_id))
+            if entry is None:
+                return {"success": False, "error": "not_found"}
+            ev = entry.get("cancel_event")
+        if ev is not None:
+            try:
+                ev.set()
+            except Exception:
+                pass
+        return {"success": True}
+
+    def open_perch_url(self, url: str) -> dict:
+        """Open an arbitrary URL in the user's default browser."""
+        try:
+            if not isinstance(url, str) or not url.strip():
+                return {"success": False, "error": "missing url"}
+            u = url.strip()
+            if not (u.startswith("http://") or u.startswith("https://")):
+                return {"success": False, "error": "invalid url scheme"}
+            webbrowser.open(u, new=2, autoraise=True)
+            return {"success": True}
+        except Exception as e:
             return {"success": False, "error": str(e)}
 
     def open_perch_sign_in(self, url):

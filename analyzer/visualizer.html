@@ -37,11 +37,12 @@
           <img src="logo.png" alt="Project Kestrel" style="height:32px;" />
           <span>Project Kestrel</span>
         </span>
-        <button id="accountBtn" title="Perch Account" aria-label="Perch Account" style="padding:0;background:transparent;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <button id="accountBtn" title="Perch Account" aria-label="Perch Account">
+          <svg class="account-btn-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
             <circle cx="12" cy="7" r="4"></circle>
           </svg>
+          <span id="accountBtnLabel" class="account-btn-label hidden"></span>
         </button>
       </h1>
       <div class="toolbar">
@@ -230,6 +231,16 @@
         <button id="queueLiveBtn" title="See live analysis details">👁 Live</button>
       </div>
     </div>
+
+    <!-- Perch Uploads floating panel — sibling of the analysis queue -->
+    <div id="perchUploadsPanel" class="perch-uploads-panel hidden" role="region" aria-label="Perch Uploads">
+      <div class="perch-uploads-header" id="perchUploadsHeader" title="Click to expand / collapse">
+        <span class="perch-uploads-title">🪶 Perch Uploads</span>
+        <span class="perch-uploads-badge" id="perchUploadsBadge">Uploading</span>
+        <span class="perch-uploads-toggle open" id="perchUploadsToggle">▲</span>
+      </div>
+      <div class="perch-uploads-body" id="perchUploadsBody"></div>
+    </div>
   </main>
   </div><!-- /.app-body -->
 
@@ -417,6 +428,98 @@
       <div class="tut-chooser-foot">
         <button type="button" class="tut-chooser-cancel" id="tutChooseCancel">Cancel</button>
       </div>
+    </div>
+  </dialog>
+
+  <!-- Share with Perch — pre-upload dialog -->
+  <dialog id="perchUploadDlg" class="dlg-settings perch-upload-dlg" aria-labelledby="perchUploadDlgTitle">
+    <div class="settings-body perch-upload-dlg-body">
+      <div class="perch-upload-dlg-header">
+        <h3 id="perchUploadDlgTitle" style="margin:0;font-size:16px">🪶 Share with Perch</h3>
+        <button type="button" class="perch-upload-dlg-close" id="perchUploadDlgClose" title="Close">✕</button>
+      </div>
+
+      <!-- ── Loading state: shown immediately, replaced after preflight ── -->
+      <div id="perchDlgLoading" class="perch-dlg-loading">
+        <div class="perch-dlg-loading-spinner"></div>
+        <div class="perch-dlg-loading-text">Inspecting folder…</div>
+      </div>
+
+      <!-- ── Signed-out body: explainer ─────────────────────────────── -->
+      <div id="perchDlgSignedOut" class="hidden">
+        <p class="perch-explainer-lead">Perch is the hosted home for your Kestrel-curated bird outings.</p>
+        <p class="perch-explainer-sub">Publish a perch from this folder and share a link with friends, family, or co-photographers — no Kestrel install required on their end.</p>
+        <ul class="perch-explainer-list">
+          <li><b>Merged timelines</b> — combine your outing with co-photographers' perches into one shared view.</li>
+          <li><b>Quality-sorted scenes</b> — Kestrel's ranking carries through; the best photo of each scene leads.</li>
+          <li><b>Likes, comments, favorites</b> — viewers can react and you can curate picks.</li>
+        </ul>
+        <p class="perch-explainer-ready" id="perchDlgReadyLine"></p>
+      </div>
+
+      <!-- ── Signed-in body: upload preview ─────────────────────────── -->
+      <div id="perchDlgSignedIn" class="hidden">
+        <div class="perch-stat-block" id="perchStatBlock">
+          <div class="perch-stat">
+            <div class="perch-stat-num" id="perchStatScenes">—</div>
+            <div class="perch-stat-label">Scenes</div>
+          </div>
+          <div class="perch-stat">
+            <div class="perch-stat-num" id="perchStatPhotos">—</div>
+            <div class="perch-stat-label">Photos</div>
+          </div>
+          <div class="perch-stat">
+            <div class="perch-stat-num" id="perchStatBytes">—</div>
+            <div class="perch-stat-label">Size</div>
+          </div>
+        </div>
+        <div class="perch-stat-sub" id="perchStatSub">— exports + — crops · — files</div>
+
+        <div class="perch-account-row" id="perchAccountRow">
+          <div class="perch-account-avatar" id="perchAccountAvatar">·</div>
+          <div class="perch-account-info">
+            <div class="perch-account-name" id="perchAccountName">Loading account…</div>
+            <div class="perch-account-meta" id="perchAccountMeta">—</div>
+          </div>
+        </div>
+        <div class="perch-usage-row" id="perchUsageRow">Loading usage…</div>
+
+        <div class="perch-tip">
+          <div class="perch-tip-icon">💡</div>
+          <div class="perch-tip-body">
+            <div class="perch-tip-title">Want to share a tighter set?</div>
+            <div class="perch-tip-text">Run the Culling Assistant first to remove rejects — fewer photos means a faster upload and less storage used.</div>
+          </div>
+          <button type="button" class="perch-tip-btn" id="perchOpenCullingBtn">Open Culling Assistant</button>
+        </div>
+
+        <div class="perch-time-warn">
+          <div class="perch-time-warn-icon">⏱</div>
+          <div class="perch-time-warn-body">
+            <div class="perch-time-warn-title">Verify capture times before uploading</div>
+            <div class="perch-time-warn-text">Capture timestamps drive scene order on Perch. If your camera clock was wrong (e.g. wrong time zone), fix it now — re-uploading later costs storage.</div>
+          </div>
+          <button type="button" class="perch-time-warn-btn" id="perchAdjustTimeBtn">Adjust Capture Time</button>
+        </div>
+
+        <details class="perch-scenes-details" id="perchScenesDetails" open>
+          <summary class="perch-scenes-summary">
+            <span>Scenes</span>
+            <span class="perch-scenes-actions">
+              <a href="#" id="perchSelectAllBtn">Select all</a>
+              <span class="perch-scenes-sep">·</span>
+              <a href="#" id="perchDeselectAllBtn">Deselect all</a>
+            </span>
+          </summary>
+          <div class="perch-scene-list" id="perchSceneList"></div>
+        </details>
+      </div>
+    </div>
+
+    <div class="settings-footer perch-upload-footer">
+      <button type="button" id="perchUploadCancelBtn">Cancel</button>
+      <button type="button" id="perchUploadSignInBtn" class="perch-cta hidden">Sign in to Perch</button>
+      <button type="button" id="perchUploadSubmitBtn" class="perch-cta hidden" disabled>📤 Upload</button>
     </div>
   </dialog>
 

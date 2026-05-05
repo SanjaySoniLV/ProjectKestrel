@@ -30,11 +30,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 import requests
 
@@ -87,6 +88,32 @@ def _join_under_session(session_root: Path, rel: str) -> Path:
 
 
 @dataclass
+class PerchPreflightScene:
+    """Per-scene summary used by the pre-upload UI to render a checkbox list."""
+    scene_id: str
+    title: str
+    capture_time_ms: Optional[int]
+    image_count: int
+    export_count: int
+    crop_count: int
+    total_bytes: int
+    top_quality: Optional[float]
+    thumbnail_rel: Optional[str] = None  # session-relative export path of the highest-quality export, for UI preview
+
+
+@dataclass
+class PerchPreflight:
+    """Aggregate totals + per-scene breakdown for one folder, no network calls."""
+    scene_count: int
+    image_count: int
+    export_count: int
+    crop_count: int
+    total_bytes: int
+    file_count: int
+    scenes: List[PerchPreflightScene]
+
+
+@dataclass
 class _RowUpload:
     filename: str
     scene_count: str
@@ -131,6 +158,13 @@ class PerchKestrelUploader:
         if not du and not t:
             raise ValueError("Need Clerk JWT or PERCH_DEV_USER_ID for local Worker dev auth")
         self.s = self._new_session()
+        # Cached preflight state — lets `run()` skip the CSV parse if preflight()
+        # already ran for the same session_path.
+        self._preflighted_root: Optional[Path] = None
+        self._cached_rows: List[_RowUpload] = []
+        self._cached_file_map: Dict[tuple, tuple] = {}
+        self._cached_scenedata: Dict[str, Any] = {}
+        self._cached_preflight: Optional[PerchPreflight] = None
 
     def _new_session(self) -> requests.Session:
         s = requests.Session()
@@ -140,11 +174,14 @@ class PerchKestrelUploader:
     def _url(self, path: str) -> str:
         return f"{self.api_base}{path}"
 
-    def run(
-        self,
-        session_path: str | os.PathLike[str],
-        title: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    # ─── Preflight (no network) ─────────────────────────────────────────
+
+    def preflight(self, session_path: str | os.PathLike[str]) -> PerchPreflight:
+        """Parse the session's CSV/scenedata, resolve file paths, sum byte sizes.
+
+        No network calls. Caches state on `self` so a subsequent `run()` against
+        the same session can skip the work.
+        """
         session_root = Path(session_path).resolve()
         kestrel = _find_kestrel_dir(session_root)
         meta_path = kestrel / "kestrel_metadata.json"
@@ -247,16 +284,6 @@ class PerchKestrelUploader:
                 )
             )
 
-        res = self.s.post(
-            self._url("/v1/perches"),
-            json={"title": title or session_root.name},
-            timeout=self.timeout,
-        )
-        _raise_for_status(res)
-        data = res.json()
-        perch_id = str(data["id"])
-        base_url = str(data.get("url", ""))
-
         will_export: set[int] = set()
         for idx, ru in enumerate(rows):
             if ru.export_path:
@@ -267,7 +294,6 @@ class PerchKestrelUploader:
                 if ep.is_file():
                     will_export.add(idx)
 
-        # Resolve file paths for every asset that exists on disk.
         # file_map: (row_idx, kind, crop_idx) -> (Path, crops_body)
         file_map: Dict[tuple, tuple] = {}
         for idx, ru in enumerate(rows):
@@ -288,52 +314,270 @@ class PerchKestrelUploader:
                     crops_body = crops_full if idx not in will_export else ""
                     file_map[(idx, "crop", ci)] = (cp, crops_body)
 
-        # Build scene-structured presign payload.
-        # Worker creates scenes + assets in D1 atomically; no manifest POST needed.
+        # Per-scene aggregation — group file_map entries by their row's scene_id.
+        per_scene: Dict[str, Dict[str, Any]] = {}
+        for (idx, kind, _ci), (path, _body) in file_map.items():
+            ru = rows[idx]
+            sid = ru.scene_count
+            bucket = per_scene.setdefault(
+                sid,
+                {
+                    "scene_id": sid,
+                    "title_candidates": [],     # keep raw scene_name strings; pick first non-empty after sort
+                    "capture_time_ms": None,
+                    "image_count": 0,
+                    "export_count": 0,
+                    "crop_count": 0,
+                    "total_bytes": 0,
+                    "top_quality": None,
+                    "row_indices": set(),       # for image_count via export rows
+                    "thumbnail_rel": None,      # rel path of highest-quality export
+                    "thumbnail_quality": None,  # tracks current best quality
+                },
+            )
+            try:
+                size = path.stat().st_size
+            except OSError:
+                size = 0
+            bucket["total_bytes"] += int(size)
+            if kind == "export":
+                bucket["export_count"] += 1
+                # Track the best (highest-quality) export rel path for the UI thumbnail.
+                cur_thumb_q = bucket["thumbnail_quality"]
+                if bucket["thumbnail_rel"] is None:
+                    bucket["thumbnail_rel"] = ru.export_path
+                    bucket["thumbnail_quality"] = ru.quality
+                elif ru.quality is not None and (cur_thumb_q is None or ru.quality > cur_thumb_q):
+                    bucket["thumbnail_rel"] = ru.export_path
+                    bucket["thumbnail_quality"] = ru.quality
+            else:
+                bucket["crop_count"] += 1
+            bucket["row_indices"].add(idx)
+            if ru.scene_name:
+                bucket["title_candidates"].append(ru.scene_name.strip())
+            if ru.capture_time_ms is not None:
+                cur = bucket["capture_time_ms"]
+                if cur is None or ru.capture_time_ms < cur:
+                    bucket["capture_time_ms"] = ru.capture_time_ms
+            if ru.quality is not None:
+                cur_q = bucket["top_quality"]
+                bucket["top_quality"] = ru.quality if cur_q is None else max(cur_q, ru.quality)
+
+        scenes: List[PerchPreflightScene] = []
+        for sid, b in per_scene.items():
+            sd = (scenedata.get("scenes") or {}).get(str(sid), {})
+            title = ""
+            if isinstance(sd, dict) and (sd.get("name") or "").strip():
+                title = str(sd["name"]).strip()
+            if not title:
+                for cand in b["title_candidates"]:
+                    if cand:
+                        title = cand
+                        break
+            if not title:
+                title = f"Scene {sid}"
+            # image_count = export count when exports exist; otherwise distinct row count
+            image_count = b["export_count"] if b["export_count"] > 0 else len(b["row_indices"])
+            scenes.append(
+                PerchPreflightScene(
+                    scene_id=str(sid),
+                    title=title,
+                    capture_time_ms=b["capture_time_ms"],
+                    image_count=image_count,
+                    export_count=b["export_count"],
+                    crop_count=b["crop_count"],
+                    total_bytes=b["total_bytes"],
+                    top_quality=b["top_quality"],
+                    thumbnail_rel=b["thumbnail_rel"],
+                )
+            )
+        # Chronological order; scenes without timestamps sort last.
+        scenes.sort(
+            key=lambda s: (
+                0 if s.capture_time_ms is not None else 1,
+                s.capture_time_ms or 0,
+                int(s.scene_id) if s.scene_id.isdigit() else 0,
+            )
+        )
+
+        total_bytes = sum(s.total_bytes for s in scenes)
+        export_count = sum(s.export_count for s in scenes)
+        crop_count = sum(s.crop_count for s in scenes)
+        image_count = sum(s.image_count for s in scenes)
+
+        preflight = PerchPreflight(
+            scene_count=len(scenes),
+            image_count=image_count,
+            export_count=export_count,
+            crop_count=crop_count,
+            total_bytes=total_bytes,
+            file_count=len(file_map),
+            scenes=scenes,
+        )
+
+        # Cache for run().
+        self._preflighted_root = session_root
+        self._cached_rows = rows
+        self._cached_file_map = file_map
+        self._cached_scenedata = scenedata
+        self._cached_preflight = preflight
+        return preflight
+
+    # ─── Upload (network) ───────────────────────────────────────────────
+
+    def run(
+        self,
+        session_path: str | os.PathLike[str],
+        title: Optional[str] = None,
+        excluded_scene_ids: Iterable[str] = (),
+        progress_callback: Optional[Callable[[dict], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> Dict[str, Any]:
+        session_root = Path(session_path).resolve()
+
+        def emit(payload: dict) -> None:
+            if progress_callback is None:
+                return
+            try:
+                progress_callback(payload)
+            except Exception:
+                pass  # never let UI errors break the upload
+
+        # Reuse cached preflight if it matches; otherwise run preflight now.
+        if self._preflighted_root != session_root or self._cached_preflight is None:
+            self.preflight(session_root)
+        rows = self._cached_rows
+        file_map = self._cached_file_map
+        scenedata = self._cached_scenedata
+
+        excluded = {str(s) for s in (excluded_scene_ids or ())}
+
+        if excluded:
+            keep_indices = {
+                idx for idx, ru in enumerate(rows) if str(ru.scene_count) not in excluded
+            }
+            rows = [ru for idx, ru in enumerate(rows) if idx in keep_indices]
+            # Rebuild file_map with the new row indices (re-derive index by identity).
+            old_to_new: Dict[int, int] = {}
+            old_idx = 0
+            new_idx = 0
+            for kept_idx in sorted(keep_indices):
+                old_to_new[kept_idx] = new_idx
+                new_idx += 1
+                old_idx = kept_idx
+            del old_idx
+            new_file_map: Dict[tuple, tuple] = {}
+            for (oi, kind, ci), val in file_map.items():
+                if oi in old_to_new:
+                    new_file_map[(old_to_new[oi], kind, ci)] = val
+            file_map = new_file_map
+
+        if not rows or not file_map:
+            raise RuntimeError("No assets selected for upload")
+
+        emit({"phase": "creating_perch"})
+        res = self.s.post(
+            self._url("/v1/perches"),
+            json={"title": title or session_root.name},
+            timeout=self.timeout,
+        )
+        _raise_for_status(res)
+        data = res.json()
+        perch_id = str(data["id"])
+        base_url = str(data.get("url", ""))
+
+        # Build scene-structured presign payload from the (possibly filtered) rows + file_map.
         scene_payload, ordered_keys = self._build_scene_presign_payload(
             rows, scenedata, file_map
         )
 
-        # Presign all assets — chunked by scene to stay within per-request limits.
-        # Returns [(file_key, upload_url), ...] in the same order as ordered_keys.
-        presign_results = self._presign_scenes(perch_id, scene_payload, ordered_keys)
+        # Presign in chunks; emit per-chunk progress.
+        presign_results = self._presign_scenes(
+            perch_id, scene_payload, ordered_keys, on_chunk=lambda cur, tot: emit(
+                {"phase": "presigning", "current": cur, "total": tot}
+            )
+        )
 
-        # Pair each result with its local path and content type from file_map.
         upload_items = [
             (file_key, file_map[file_key][0], upload_url, self._content_type(file_map[file_key][0]))
             for file_key, upload_url in presign_results
         ]
 
-        # Upload all files directly to R2 in parallel
         total = len(upload_items)
         print(f"[perch] Starting upload of {total} files to R2...")
         completed_count = 0
-        lock = __import__("threading").Lock()
+        lock = threading.Lock()
+        canceled = False
 
-        def _do_upload(item: tuple) -> None:
+        def _do_upload(item: tuple) -> Optional[str]:
             nonlocal completed_count
             file_key, path, upload_url, content_type = item
+            if cancel_event is not None and cancel_event.is_set():
+                return None
             self._upload_direct(upload_url, path, content_type)
             with lock:
                 completed_count += 1
-                print(f"[perch] {completed_count}/{total} uploaded — {path.name}")
+                fname = path.name
+                print(f"[perch] {completed_count}/{total} uploaded — {fname}")
+            emit({
+                "phase": "uploading",
+                "uploaded": completed_count,
+                "total": total,
+                "filename": fname,
+            })
+            return fname
 
         MAX_PARALLEL = 48
         with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as executor:
             futures = [executor.submit(_do_upload, item) for item in upload_items]
             for fut in as_completed(futures):
-                fut.result()
+                if cancel_event is not None and cancel_event.is_set() and not canceled:
+                    # Cancel any not-yet-started futures; in-flight PUTs finish.
+                    for pending in futures:
+                        pending.cancel()
+                    canceled = True
+                try:
+                    fut.result()
+                except CancelledError:
+                    pass
+                except Exception:
+                    # Surface upload errors to the caller, but emit error event first.
+                    if not canceled:
+                        raise
+
+        if canceled:
+            print(f"[perch] Upload canceled at {completed_count}/{total} files.")
+            emit({
+                "phase": "canceled",
+                "perch_url": base_url,
+                "perch_id": perch_id,
+                "uploaded": completed_count,
+                "total": total,
+            })
+            return {
+                "perch_id": perch_id,
+                "url": base_url,
+                "scene_count": len(scene_payload),
+                "canceled": True,
+                "uploaded": completed_count,
+                "total": total,
+            }
 
         print(f"[perch] All {total} files uploaded.")
         scene_count = len(scene_payload)
+        emit({"phase": "done", "perch_url": base_url, "perch_id": perch_id})
         return {
             "perch_id": perch_id,
             "url": base_url,
             "scene_count": scene_count,
         }
 
-    # Max scenes per presign request — keeps individual HTTP payloads bounded.
-    _PRESIGN_SCENE_CHUNK = 50
+    # Max scenes per presign request. The worker generates one HMAC-SHA256 per
+    # asset (export + each crop), so wall-clock CPU per request scales with
+    # `chunk * avg_assets_per_scene`. Kept conservative because Cloudflare's
+    # per-isolate CPU budget tightens after sustained heavy use, and a single
+    # presign call that times out forces the user to start over.
+    _PRESIGN_SCENE_CHUNK = 15
 
     @staticmethod
     def _content_type(path: Path) -> str:
@@ -393,6 +637,10 @@ class PerchKestrelUploader:
                 # Export
                 if (idx, "export", 0) in file_map:
                     path, crops_body = file_map[(idx, "export", 0)]
+                    try:
+                        byte_len = path.stat().st_size
+                    except OSError:
+                        byte_len = 0
                     assets_payload.append({
                         "kind": "export",
                         "filename": path.name,
@@ -410,6 +658,7 @@ class PerchKestrelUploader:
                         "exposureSubjectStops": ru.exposure_subject_stops,
                         "exposureMeterScale": ru.exposure_meter_scale,
                         "exposurePipeline": ru.exposure_pipeline,
+                        "byteLength": int(byte_len),
                     })
                     ordered_keys.append((idx, "export", 0))
                 # Crops — use per-crop metadata from crops_json when available
@@ -417,6 +666,10 @@ class PerchKestrelUploader:
                 while (idx, "crop", ci) in file_map:
                     path, crops_body = file_map[(idx, "crop", ci)]
                     cd = ru.crop_data[ci] if ci < len(ru.crop_data) else {}
+                    try:
+                        byte_len = path.stat().st_size
+                    except OSError:
+                        byte_len = 0
                     assets_payload.append({
                         "kind": "crop",
                         "filename": path.name,
@@ -435,6 +688,7 @@ class PerchKestrelUploader:
                         "exposureSubjectStops": cd.get("exposure_subject_stops", ru.exposure_subject_stops),
                         "exposureMeterScale": cd.get("exposure_meter_scale", ru.exposure_meter_scale),
                         "exposurePipeline": cd.get("exposure_pipeline", ru.exposure_pipeline),
+                        "byteLength": int(byte_len),
                     })
                     ordered_keys.append((idx, "crop", ci))
                     ci += 1
@@ -457,24 +711,62 @@ class PerchKestrelUploader:
         perch_id: str,
         scene_payload: List[Dict[str, Any]],
         ordered_keys: List[tuple],
+        on_chunk: Optional[Callable[[int, int], None]] = None,
     ) -> List[tuple]:
-        """POST scene payload in chunks; returns (file_key, path, upload_url, content_type)."""
-        # We need paths alongside ordered_keys — but they live in file_map which we
-        # don't carry here. Return (file_key, upload_url) and let caller pair paths.
-        # Actually, build a flat ordered list of (file_key, upload_url, content_type).
+        """POST scene payload in chunks; returns (file_key, upload_url) pairs in order.
+
+        Retries on 503 / 429 with exponential backoff. Cloudflare's per-isolate
+        CPU budget can tighten after sustained heavy use; a brief pause is
+        usually enough to clear it without forcing the user to restart the
+        whole upload.
+        """
+        import time as _time
         upload_urls: List[tuple] = []
         key_offset = 0
+        total_chunks = max(1, (len(scene_payload) + self._PRESIGN_SCENE_CHUNK - 1) // self._PRESIGN_SCENE_CHUNK)
 
+        chunk_idx = 0
         for i in range(0, len(scene_payload), self._PRESIGN_SCENE_CHUNK):
+            chunk_idx += 1
             chunk = scene_payload[i : i + self._PRESIGN_SCENE_CHUNK]
             chunk_asset_count = sum(len(s["assets"]) for s in chunk)
 
-            r = self.s.post(
-                self._url(f"/v1/perches/{perch_id}/assets/presign"),
-                json={"scenes": chunk},
-                timeout=self.timeout,
-            )
-            _raise_for_status(r)
+            if on_chunk is not None:
+                try:
+                    on_chunk(chunk_idx, total_chunks)
+                except Exception:
+                    pass
+
+            # Retry up to 4 times on transient throttle (503/429), with backoff.
+            backoff_s = 5
+            attempts = 4
+            r = None
+            for attempt in range(1, attempts + 1):
+                r = self.s.post(
+                    self._url(f"/v1/perches/{perch_id}/assets/presign"),
+                    json={"scenes": chunk},
+                    timeout=self.timeout,
+                )
+                if r.status_code not in (503, 429):
+                    break
+                if attempt >= attempts:
+                    break
+                # Honor server-provided Retry-After if present, else exponential.
+                wait = backoff_s
+                ra = r.headers.get("Retry-After")
+                if ra:
+                    try:
+                        wait = max(wait, int(float(ra)))
+                    except (TypeError, ValueError):
+                        pass
+                print(
+                    f"[perch] presign chunk {chunk_idx}/{total_chunks} got "
+                    f"HTTP {r.status_code}; retrying in {wait}s (attempt {attempt}/{attempts})"
+                )
+                _time.sleep(wait)
+                backoff_s = min(backoff_s * 2, 60)
+
+            _raise_for_status(r)  # raise the final non-retried response
             resp = r.json()
 
             for j, item in enumerate(resp["assets"]):

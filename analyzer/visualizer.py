@@ -745,7 +745,10 @@ def main():
         except Exception:
             pass  # older pywebview versions may not support this event
 
-        webview.start()
+        # Debug mode is gated by env var so it's a one-line flip without code edits.
+        # Set KESTREL_WEBVIEW_DEBUG=1 to enable right-click → Inspect.
+        _debug = os.environ.get("KESTREL_WEBVIEW_DEBUG", "").strip().lower() in ("1", "true", "yes")
+        webview.start(debug=_debug)
     finally:
         try:
             if api is not None and hasattr(api, 'cleanup_tracked_culling_caches'):
