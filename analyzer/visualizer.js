@@ -2006,12 +2006,29 @@
             handlePerchPillUnlink(fd.folderPath, perchPill);
           });
           rightActions.appendChild(perchPill);
+
+          // Phase 3: "Sync to Perch" button — only visible alongside the
+          // Published pill, greyed out when local state hash matches the
+          // saved hash (i.e. nothing to sync).
+          const perchSyncBtn = document.createElement('button');
+          perchSyncBtn.type = 'button';
+          perchSyncBtn.className = 'folder-perch-sync hidden';
+          perchSyncBtn.dataset.folderPath = fd.folderPath;
+          perchSyncBtn.innerHTML = '<span class="folder-perch-sync-icon">🔄</span><span class="folder-perch-sync-label">Sync</span>';
+          perchSyncBtn.title = 'Push local edits (species/family/scene names, rejections) to this perch';
+          perchSyncBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            handlePerchSyncClick(fd.folderPath, perchSyncBtn);
+          });
+          rightActions.appendChild(perchSyncBtn);
+
           // Async-populate from disk; show only if the file exists.
           (async () => {
             try {
               const res = await window.pywebview?.api?.read_perch_link?.(fd.folderPath);
               if (res && res.present && res.link) {
                 applyPerchLinkToPill(perchPill, res.link);
+                applyPerchLinkToSyncBtn(perchSyncBtn, res.link, fd.folderPath);
               }
             } catch {}
           })();
@@ -9370,6 +9387,9 @@
         const res = await window.pywebview.api.delete_perch_link(folderPath);
         if (res && res.success) {
           pillEl.classList.add('hidden');
+          // Hide the sibling Sync button too — they share the same lifecycle.
+          document.querySelectorAll(`.folder-perch-sync[data-folder-path="${cssEscape(folderPath)}"]`)
+            .forEach(el => el.classList.add('hidden'));
           showToast('Perch link removed for this folder.', 3000);
         } else {
           showToast('Could not unlink: ' + (res?.error || 'unknown error'), 5000);
@@ -9377,6 +9397,361 @@
       } catch (e) {
         showToast('Could not unlink: ' + (e?.message || String(e)), 5000);
       }
+    }
+
+    /** Show the Sync button (mirrors the pill's lifecycle) and grey it out
+     *  when the saved state hash matches the current local state — i.e. the
+     *  user hasn't edited anything since last upload/sync. */
+    function applyPerchLinkToSyncBtn(btnEl, link, folderPath) {
+      if (!btnEl || !link) return;
+      btnEl.dataset.perchId = String(link.perch_id || '');
+      btnEl.dataset.perchUrl = String(link.perch_url || '');
+      btnEl.classList.remove('hidden');
+      // Re-check current state hash. The saved hash is only updated on a
+      // successful upload (Phase 1) or a successful sync (Phase 3 runner).
+      (async () => {
+        try {
+          const cur = await window.pywebview?.api?.compute_state_hash?.(folderPath);
+          const savedHash = link.state_hash_at_upload || null;
+          if (cur && cur.success && savedHash && cur.hash === savedHash) {
+            btnEl.classList.add('is-clean');
+            btnEl.title = 'Up to date — no local edits to sync';
+          } else {
+            btnEl.classList.remove('is-clean');
+            btnEl.title = 'Push local edits (species/family/scene names, rejections) to this perch';
+          }
+        } catch { /* leave button enabled if we can't compute the hash */ }
+      })();
+    }
+
+    /** Click handler for the Sync button on a folder card. Verifies the
+     *  perch is still alive, then opens the diff-preview modal. */
+    async function handlePerchSyncClick(folderPath, btnEl) {
+      if (!window.pywebview?.api) {
+        showToast('Sync to Perch requires desktop mode', 4000);
+        return;
+      }
+      if (_perchActiveJobId) {
+        showToast('A Perch upload or sync is already running.', 4000);
+        return;
+      }
+      // Save unsaved CSV edits first (otherwise we'd diff against in-memory
+      // state the bridge can't see).
+      if (dirty) {
+        const userChoice = await showCullingAssistantPrompt();
+        if (userChoice === 'cancel') return;
+        if (userChoice === 'save') await saveCsv();
+      }
+      // Stale-link gate (Phase 3e). On 'deleted' the bridge already cleared
+      // the link file; flip the UI back to its un-published state.
+      let verify;
+      try { verify = await window.pywebview.api.verify_perch_link(folderPath); }
+      catch (e) { showToast('Could not verify Perch link: ' + (e?.message || String(e)), 5000); return; }
+      const status = verify?.status;
+      if (status === 'deleted') {
+        document.querySelectorAll(`.folder-perch-pill[data-folder-path="${cssEscape(folderPath)}"]`)
+          .forEach(el => el.classList.add('hidden'));
+        document.querySelectorAll(`.folder-perch-sync[data-folder-path="${cssEscape(folderPath)}"]`)
+          .forEach(el => el.classList.add('hidden'));
+        showToast('This perch no longer exists on Perch — the folder has been unlinked.', 5500);
+        return;
+      }
+      if (status === 'unauthorized') {
+        showToast('Sign in to Perch first (account button at top-right).', 5000);
+        return;
+      }
+      if (status === 'forbidden') {
+        showToast('This perch is owned by a different Perch account.', 6000);
+        return;
+      }
+      if (status === 'unreachable') {
+        showToast('Couldn’t reach Perch. Try again later.', 5000);
+        return;
+      }
+      if (status === 'missing') {
+        // Race — pill clicked but link is gone. Hide the controls.
+        btnEl?.classList?.add('hidden');
+        return;
+      }
+      // 'alive' → fetch the diff and open the modal.
+      _perchWireSyncDialogOnce();
+      _perchOpenSyncDialog(folderPath);
+    }
+
+    // ── Sync diff dialog ────────────────────────────────────────────────
+    const _perchSyncDlgState = {
+      rootPath: null,
+      diff: null,
+    };
+
+    function _perchWireSyncDialogOnce() {
+      if (_perchWireSyncDialogOnce._done) return;
+      _perchWireSyncDialogOnce._done = true;
+      const closeBtn = document.getElementById('perchSyncDlgClose');
+      const cancelBtn = document.getElementById('perchSyncDlgCancelBtn');
+      const submitBtn = document.getElementById('perchSyncDlgSubmitBtn');
+      if (closeBtn) closeBtn.addEventListener('click', _perchCloseSyncDialog);
+      if (cancelBtn) cancelBtn.addEventListener('click', _perchCloseSyncDialog);
+      if (submitBtn) submitBtn.addEventListener('click', () => {
+        const root = _perchSyncDlgState.rootPath;
+        _perchCloseSyncDialog();
+        if (root) kickSyncJob(root);
+      });
+    }
+
+    function _perchCloseSyncDialog() {
+      const dlg = document.getElementById('perchSyncDlg');
+      if (dlg && dlg.open) { try { dlg.close(); } catch {} }
+    }
+
+    async function _perchOpenSyncDialog(rootPath) {
+      const dlg = document.getElementById('perchSyncDlg');
+      if (!dlg) { showToast('Sync dialog not available', 4000); return; }
+      _perchSyncDlgState.rootPath = rootPath;
+      _perchSyncDlgState.diff = null;
+      const loading = document.getElementById('perchSyncDlgLoading');
+      const body = document.getElementById('perchSyncDlgBody');
+      const submit = document.getElementById('perchSyncDlgSubmitBtn');
+      if (loading) loading.classList.remove('hidden');
+      if (body) body.classList.add('hidden');
+      if (submit) { submit.disabled = true; submit.textContent = 'Syncing…'; }
+      try { dlg.showModal(); } catch { return; }
+
+      let res;
+      try { res = await window.pywebview.api.compute_sync_diff(rootPath); }
+      catch (e) {
+        if (loading) loading.classList.add('hidden');
+        showToast('Could not compute diff: ' + (e?.message || String(e)), 6000);
+        try { dlg.close(); } catch {}
+        return;
+      }
+      if (loading) loading.classList.add('hidden');
+      if (!res || !res.success) {
+        if (res?.error === 'perch_deleted') {
+          // The bridge already cleared the local link.
+          document.querySelectorAll(`.folder-perch-pill[data-folder-path="${cssEscape(rootPath)}"], .folder-perch-sync[data-folder-path="${cssEscape(rootPath)}"]`)
+            .forEach(el => el.classList.add('hidden'));
+          showToast('This perch no longer exists on Perch — the folder has been unlinked.', 5500);
+        } else {
+          showToast('Sync diff failed: ' + (res?.error || 'unknown'), 6000);
+        }
+        try { dlg.close(); } catch {}
+        return;
+      }
+      _perchSyncDlgState.diff = res.diff;
+      _perchRenderSyncDiff(res.diff);
+      if (body) body.classList.remove('hidden');
+      if (submit) {
+        submit.disabled = false;
+        submit.textContent = 'Sync now';
+      }
+    }
+
+    function _perchRenderSyncDiff(diff) {
+      const el = document.getElementById('perchSyncDlgBody');
+      if (!el) return;
+      el.innerHTML = '';
+      const t = diff.totals || {};
+      const total = Number(t.deletions || 0) + Number(t.field_updates || 0) + Number(t.scene_title_updates || 0);
+
+      // Header: 3 big numbers (Updates / Deletions / Scene renames)
+      const stats = document.createElement('div');
+      stats.className = 'perch-sync-stats';
+      stats.innerHTML = `
+        <div class="perch-sync-stat"><div class="perch-sync-stat-num">${(t.field_updates || 0).toLocaleString()}</div><div class="perch-sync-stat-label">Field updates</div></div>
+        <div class="perch-sync-stat"><div class="perch-sync-stat-num">${(t.deletions || 0).toLocaleString()}</div><div class="perch-sync-stat-label">Deletions</div></div>
+        <div class="perch-sync-stat"><div class="perch-sync-stat-num">${(t.scene_title_updates || 0).toLocaleString()}</div><div class="perch-sync-stat-label">Scene renames</div></div>
+      `;
+      el.appendChild(stats);
+
+      const sub = document.createElement('div');
+      sub.className = 'perch-sync-sub';
+      sub.textContent = total === 0
+        ? 'Nothing to sync — local state matches Perch.'
+        : `${total.toLocaleString()} change${total === 1 ? '' : 's'} ready to push.`;
+      el.appendChild(sub);
+
+      if (Number(t.additions || 0) > 0) {
+        const addNote = document.createElement('div');
+        addNote.className = 'perch-sync-note warn';
+        addNote.textContent = `${(t.additions || 0).toLocaleString()} new photo${t.additions === 1 ? '' : 's'} found locally that aren’t on Perch yet. Sync v1 doesn’t upload new photos — re-publish the folder to add them.`;
+        el.appendChild(addNote);
+      }
+
+      // Detail sections — collapsed by default, scrollable.
+      const mkSection = (title, items, fmt) => {
+        if (!items || items.length === 0) return;
+        const det = document.createElement('details');
+        det.className = 'perch-sync-section';
+        const sum = document.createElement('summary');
+        sum.textContent = `${title} (${items.length.toLocaleString()})`;
+        det.appendChild(sum);
+        const list = document.createElement('div');
+        list.className = 'perch-sync-list';
+        for (const it of items) {
+          const row = document.createElement('div');
+          row.className = 'perch-sync-list-row';
+          row.textContent = fmt(it);
+          list.appendChild(row);
+        }
+        det.appendChild(list);
+        el.appendChild(det);
+      };
+      mkSection('Field updates', diff.field_updates, (u) => {
+        const fields = Object.keys(u.changes || {}).join(', ');
+        return `${u.filename} — ${fields}`;
+      });
+      mkSection('Deletions (rejected photos)', diff.deletions, (d) => `${d.filename} (${d.kind})`);
+      mkSection('Scene renames', diff.scene_title_updates, (s) =>
+        `Scene ${s.kestrel_scene_id}: "${s.old_title || '(unnamed)'}" → "${s.new_title}"`);
+    }
+
+    async function kickSyncJob(rootPath) {
+      let res;
+      try { res = await window.pywebview.api.sync_to_perch(rootPath); }
+      catch (e) { showToast('Could not start sync: ' + (e?.message || String(e)), 6000); return; }
+      if (!res || !res.success) {
+        if (res?.error === 'already_running') {
+          showToast('A Perch upload or sync is already running.', 5000);
+        } else if (res?.error === 'perch_deleted') {
+          document.querySelectorAll(`.folder-perch-pill[data-folder-path="${cssEscape(rootPath)}"], .folder-perch-sync[data-folder-path="${cssEscape(rootPath)}"]`)
+            .forEach(el => el.classList.add('hidden'));
+          showToast('This perch no longer exists on Perch — the folder has been unlinked.', 5500);
+        } else {
+          showToast('Sync failed: ' + (res?.error || 'unknown'), 6000);
+        }
+        return;
+      }
+      const jobId = String(res.job_id);
+      _perchActiveJobId = jobId;
+      _perchSetButtonsDisabled(true);
+      const card = _perchRenderSyncCard(jobId);
+      _perchActivePollTimer = setInterval(() => {
+        _perchPollSyncProgress(jobId, card, rootPath);
+      }, 500);
+      setTimeout(() => {
+        if (_perchActivePollTimer) {
+          clearInterval(_perchActivePollTimer);
+          _perchActivePollTimer = setInterval(() => {
+            _perchPollSyncProgress(jobId, card, rootPath);
+          }, 1000);
+        }
+      }, 5000);
+    }
+
+    function _perchRenderSyncCard(jobId) {
+      const panel = _perchEnsureUploadsPanel();
+      if (!panel) return null;
+      const body = document.getElementById('perchUploadsBody');
+      if (!body) return null;
+      body.innerHTML = '';
+      const card = document.createElement('div');
+      card.className = 'perch-upload-card running is-sync';
+      card.dataset.jobId = jobId;
+      card.innerHTML = `
+        <div class="perch-upload-card-header">
+          <span class="perch-upload-card-title">Syncing to Perch</span>
+          <span class="perch-upload-card-status" data-role="status">Starting…</span>
+        </div>
+        <div class="perch-upload-card-body" data-role="body">
+          <div class="perch-upload-card-progress"><div class="perch-upload-card-progress-fill" data-role="fill" style="width:0%"></div></div>
+          <div class="perch-upload-card-current" data-role="current">Computing diff…</div>
+        </div>
+      `;
+      body.appendChild(card);
+      const badge = document.getElementById('perchUploadsBadge');
+      if (badge) { badge.textContent = 'Syncing'; badge.className = 'perch-uploads-badge'; }
+      return card;
+    }
+
+    async function _perchPollSyncProgress(jobId, card, rootPath) {
+      let res;
+      try { res = await window.pywebview.api.get_share_progress(jobId); } catch { return; }
+      if (!res || !res.success) return;
+      const prog = res.progress || {};
+      const phase = prog.phase;
+      const status = card?.querySelector('[data-role="status"]');
+      const fill = card?.querySelector('[data-role="fill"]');
+      const current = card?.querySelector('[data-role="current"]');
+      if (phase === 'fetching_state') {
+        if (status) status.textContent = 'Fetching server state…';
+        if (current) current.textContent = 'Asking Perch what it has.';
+      } else if (phase === 'computing_diff') {
+        if (status) status.textContent = `Computing diff (${prog.total || 0} changes)`;
+      } else if (phase === 'applying') {
+        const cur = Number(prog.current || 0);
+        const tot = Number(prog.total || 0);
+        const pct = tot > 0 ? Math.round((cur / tot) * 100) : 0;
+        if (status) status.textContent = `${pct}% · ${cur}/${tot}`;
+        if (fill) fill.style.width = pct + '%';
+        if (current) current.textContent = prog.label
+          ? `${prog.action || 'update'}: ${prog.label}`
+          : 'Applying changes…';
+      } else if (phase === 'done') {
+        _perchSwapToSyncDoneState(card, prog);
+        _perchActiveJobId = null;
+        if (_perchActivePollTimer) { clearInterval(_perchActivePollTimer); _perchActivePollTimer = null; }
+        _perchSetButtonsDisabled(false);
+        // Refresh the Sync button state hash on the matching folder card.
+        document.querySelectorAll(`.folder-perch-sync[data-folder-path="${cssEscape(rootPath)}"]`)
+          .forEach(async (btn) => {
+            try {
+              const linkRes = await window.pywebview.api.read_perch_link(rootPath);
+              if (linkRes && linkRes.present && linkRes.link) {
+                applyPerchLinkToSyncBtn(btn, linkRes.link, rootPath);
+              }
+            } catch {}
+          });
+      } else if (phase === 'error') {
+        _perchSwapToSyncErrorState(card, prog, rootPath);
+        _perchActiveJobId = null;
+        if (_perchActivePollTimer) { clearInterval(_perchActivePollTimer); _perchActivePollTimer = null; }
+        _perchSetButtonsDisabled(false);
+      }
+    }
+
+    function _perchSwapToSyncDoneState(card, prog) {
+      if (!card) return;
+      card.className = 'perch-upload-card is-done is-sync';
+      const applied = Number(prog.applied || 0);
+      const total = Number(prog.total || 0);
+      const errs = Array.isArray(prog.errors) ? prog.errors.length : 0;
+      const additions = Number(prog.additions_skipped || 0);
+      let summary = `Applied ${applied.toLocaleString()} of ${total.toLocaleString()} change${total === 1 ? '' : 's'}.`;
+      if (errs > 0) summary += ` ${errs} failed.`;
+      if (additions > 0) summary += ` ${additions} addition${additions === 1 ? '' : 's'} skipped (re-publish to upload).`;
+      card.innerHTML = `
+        <div class="perch-upload-card-header">
+          <span class="perch-upload-card-title">✓ Sync complete</span>
+          <button type="button" class="perch-upload-card-dismiss" data-role="dismiss" title="Dismiss">✕</button>
+        </div>
+        <div class="perch-upload-card-body">
+          <div class="perch-upload-card-success">${summary}</div>
+        </div>
+      `;
+      const dismiss = card.querySelector('[data-role="dismiss"]');
+      if (dismiss) dismiss.addEventListener('click', () => _perchDismissCard(card));
+      const badge = document.getElementById('perchUploadsBadge');
+      if (badge) { badge.textContent = 'Synced'; badge.className = 'perch-uploads-badge done'; }
+    }
+
+    function _perchSwapToSyncErrorState(card, prog, rootPath) {
+      if (!card) return;
+      const msg = (prog && prog.message) || 'Unknown error';
+      card.className = 'perch-upload-card is-error is-sync';
+      card.innerHTML = `
+        <div class="perch-upload-card-header">
+          <span class="perch-upload-card-title">Sync failed</span>
+          <button type="button" class="perch-upload-card-dismiss" data-role="dismiss" title="Dismiss">✕</button>
+        </div>
+        <div class="perch-upload-card-body">
+          <div class="perch-upload-card-err">${String(msg).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}</div>
+        </div>
+      `;
+      const dismiss = card.querySelector('[data-role="dismiss"]');
+      if (dismiss) dismiss.addEventListener('click', () => _perchDismissCard(card));
+      const badge = document.getElementById('perchUploadsBadge');
+      if (badge) { badge.textContent = 'Error'; badge.className = 'perch-uploads-badge error'; }
     }
 
     async function shareWithPerchFolder(rootPath) {

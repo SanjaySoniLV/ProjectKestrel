@@ -2696,6 +2696,179 @@ class Api:
 
         return {"success": True, "removed": True, "perch_id": perch_id, "worker_error": worker_error}
 
+    # ─── Sync (Phase 3) ────────────────────────────────────────────────
+
+    def compute_state_hash(self, folder_path: str) -> dict:
+        """Hash kestrel_database.csv + kestrel_scenedata.json. JS uses this to
+        decide whether the Sync button should be greyed out (clean) or not."""
+        root_real, err = self._validate_root_dir(folder_path, context="compute_state_hash", require_exists=True)
+        if err:
+            return {"success": False, "error": err}
+        h = self._hash_kestrel_state(str(root_real))
+        return {"success": True, "hash": h}
+
+    def compute_sync_diff(self, folder_path: str) -> dict:
+        """Read-only preview for the Sync modal. Returns the diff between the
+        local folder and the server perch without applying anything.
+
+        Errors surface with the same shape as ``share_with_perch`` failures
+        so the JS layer can branch on `error: 'perch_deleted'` etc.
+        """
+        try:
+            from perch_uploader import PerchKestrelUploader, _PerchDeleted
+        except ImportError:
+            try:
+                from analyzer.perch_uploader import PerchKestrelUploader, _PerchDeleted
+            except ImportError as e:
+                return {"success": False, "error": f"uploader import failed: {e}"}
+
+        token, dev_user, terr = self._check_perch_token()
+        if terr:
+            return terr
+
+        root_real, verr = self._validate_root_dir(
+            folder_path, context="compute_sync_diff", require_exists=True
+        )
+        if verr:
+            return {"success": False, "error": verr}
+
+        try:
+            uploader = PerchKestrelUploader(
+                self.get_perch_api_base(),
+                str(token) if token else None,
+                dev_user=dev_user,
+            )
+            diff = uploader.compute_sync_diff(str(root_real))
+        except _PerchDeleted as e:
+            # Server says the perch is gone — clear local state so the folder
+            # card flips back to its un-published affordance.
+            try:
+                self._perch_link_path(str(root_real)).unlink()
+            except OSError:
+                pass
+            try:
+                self._perch_manifest_path(str(root_real)).unlink()
+            except OSError:
+                pass
+            return {"success": False, "error": "perch_deleted", "perch_id": e.perch_id}
+        except FileNotFoundError as e:
+            return {"success": False, "error": str(e)}
+        except Exception as e:
+            log(f"compute_sync_diff: {e}")
+            return {"success": False, "error": str(e)}
+
+        return {"success": True, "diff": diff}
+
+    def sync_to_perch(self, folder_path: str) -> dict:
+        """Kick off an async sync job. Returns immediately with `{job_id}`.
+        JS polls via the same ``get_share_progress`` infrastructure used for
+        uploads, so the in-flight Perch-uploads card pattern is reused.
+        """
+        try:
+            from perch_uploader import PerchKestrelUploader, _PerchDeleted
+        except ImportError:
+            try:
+                from analyzer.perch_uploader import PerchKestrelUploader, _PerchDeleted
+            except ImportError as e:
+                return {"success": False, "error": f"uploader import failed: {e}"}
+
+        token, dev_user, terr = self._check_perch_token()
+        if terr:
+            return terr
+
+        root_real, verr = self._validate_root_dir(
+            folder_path, context="sync_to_perch", require_exists=True
+        )
+        if verr:
+            return {"success": False, "error": verr}
+
+        lock = self._ensure_share_lock()
+        with lock:
+            if self._active_share_job is not None:
+                return {
+                    "success": False,
+                    "error": "already_running",
+                    "active_job_id": self._active_share_job,
+                }
+            import threading as _t
+            import uuid as _uuid
+            job_id = str(_uuid.uuid4())
+            cancel_event = _t.Event()
+            self._share_jobs[job_id] = {
+                "progress": {"phase": "starting", "kind": "sync"},
+                "cancel_event": cancel_event,
+                "thread": None,
+            }
+            self._active_share_job = job_id
+
+        def _on_progress(payload: dict) -> None:
+            with lock:
+                if job_id in self._share_jobs:
+                    p = dict(payload)
+                    p["kind"] = "sync"  # tag the job kind so JS can branch
+                    self._share_jobs[job_id]["progress"] = p
+
+        def _runner() -> None:
+            try:
+                uploader = PerchKestrelUploader(
+                    self.get_perch_api_base(),
+                    str(token) if token else None,
+                    dev_user=dev_user,
+                )
+                result = uploader.sync_to_perch(
+                    str(root_real),
+                    progress_callback=_on_progress,
+                    cancel_event=cancel_event,
+                )
+                # On a successful (full or partial) sync, refresh the link's
+                # state hash so the Sync button greys out "Up to date" until
+                # the next local edit.
+                if result and result.get("ok") and not result.get("canceled"):
+                    try:
+                        link_path = self._perch_link_path(str(root_real))
+                        if link_path.is_file():
+                            with open(link_path, "r", encoding="utf-8") as f:
+                                import json as _json
+                                link = _json.load(f)
+                            link["state_hash_at_upload"] = self._hash_kestrel_state(str(root_real))
+                            link["last_synced_at_ms"] = int(time.time() * 1000)
+                            tmp = link_path.with_suffix(".json.tmp")
+                            with open(tmp, "w", encoding="utf-8") as f:
+                                _json.dump(link, f, indent=2)
+                            os.replace(tmp, link_path)
+                    except Exception as up_err:
+                        log(f"sync_to_perch: link update failed: {up_err}")
+            except _PerchDeleted as e:
+                try:
+                    self._perch_link_path(str(root_real)).unlink()
+                except OSError:
+                    pass
+                try:
+                    self._perch_manifest_path(str(root_real)).unlink()
+                except OSError:
+                    pass
+                _on_progress({"phase": "error", "message": "perch_deleted", "perch_id": e.perch_id})
+            except Exception as e:
+                log(f"sync_to_perch: {e}")
+                import traceback as _tb
+                log(_tb.format_exc())
+                _on_progress({"phase": "error", "message": str(e)})
+            finally:
+                with lock:
+                    if self._active_share_job == job_id:
+                        self._active_share_job = None
+                # Sync may have changed asset metadata — invalidate caches.
+                self._perch_usage_cache = None
+                self._perch_usage_cache_at = 0.0
+
+        import threading as _t
+        thread = _t.Thread(target=_runner, name=f"PerchSync-{job_id[:8]}", daemon=True)
+        with lock:
+            self._share_jobs[job_id]["thread"] = thread
+        thread.start()
+
+        return {"success": True, "job_id": job_id}
+
     def open_perch_sign_in(self, url):
         """Open a pywebview window for desktop Perch sign-in."""
         try:

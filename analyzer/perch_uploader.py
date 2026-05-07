@@ -80,6 +80,16 @@ def _norm_rel(path_str: str) -> str:
     return (path_str or "").replace("\\", "/").strip()
 
 
+class _PerchDeleted(Exception):
+    """Raised by sync helpers when the server returns 404 for the linked perch.
+    Caller is responsible for cleaning up perch_link.json + manifest. The
+    bridge layer translates this to a `perch_deleted` job error and the JS
+    layer surfaces a "this perch was deleted" toast + Re-publish CTA."""
+    def __init__(self, perch_id: str):
+        super().__init__(f"perch {perch_id} not found on server")
+        self.perch_id = perch_id
+
+
 def _join_under_session(session_root: Path, rel: str) -> Path:
     rel = _norm_rel(rel)
     if not rel or rel == ".":
@@ -854,6 +864,401 @@ class PerchKestrelUploader:
             "url": base_url,
             "scene_count": scene_count,
             "idempotency_key": idemp_key,
+        }
+
+    # ─── Sync (Phase 3) ─────────────────────────────────────────────────
+
+    # Tolerance for "did this float change?" — quality + exposure values are
+    # lossy through CSV round-trip; treat tiny diffs as no-op so we don't spam
+    # PATCHes on every Sync click.
+    _FLOAT_DRIFT_EPS = 1e-4
+
+    @staticmethod
+    def _floats_equal(a: Optional[float], b: Optional[float]) -> bool:
+        if a is None and b is None:
+            return True
+        if a is None or b is None:
+            return False
+        try:
+            return abs(float(a) - float(b)) <= PerchKestrelUploader._FLOAT_DRIFT_EPS
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _strs_equal(a: Optional[str], b: Optional[str]) -> bool:
+        # Treat None and "" as equivalent — server normalizes empty to NULL.
+        sa = (a or "").strip()
+        sb = (b or "").strip()
+        return sa == sb
+
+    @staticmethod
+    def _ints_equal(a: Optional[int], b: Optional[int]) -> bool:
+        if a is None and b is None:
+            return True
+        if a is None or b is None:
+            return False
+        return int(a) == int(b)
+
+    def _build_sync_inputs(
+        self, session_path: str | os.PathLike[str]
+    ) -> tuple[Path, Dict[str, Any], Dict[str, Any], Dict[tuple, tuple], List["_RowUpload"], Dict[str, Any]]:
+        """Read perch_link.json, run preflight (skip_rejected=False), GET the
+        flat asset list. Returns the pieces compute_sync_diff/sync need."""
+        session_root = Path(session_path).resolve()
+        link_path = session_root / ".kestrel" / "perch_link.json"
+        if not link_path.is_file():
+            raise FileNotFoundError("This folder isn't linked to a perch yet — upload it first.")
+        with open(link_path, "r", encoding="utf-8") as f:
+            link = json.load(f)
+        perch_id = str(link.get("perch_id") or "").strip()
+        if not perch_id:
+            raise RuntimeError("perch_link.json has no perch_id")
+
+        # Re-run preflight WITH rejected rows so we can mark them deleted server-side.
+        self.preflight(session_root, skip_rejected=False)
+
+        # Server flat list — asks for everything we need to diff.
+        r = self.s.get(self._url(f"/v1/perches/{perch_id}/assets"), timeout=self.timeout)
+        if r.status_code == 404:
+            # Caller (compute_sync_diff / sync_to_perch) handles the cleanup.
+            raise _PerchDeleted(perch_id)
+        _raise_for_status(r)
+        body = r.json()
+
+        # Index server assets by client_asset_id. Anything without a
+        # clientAssetId is a legacy upload — we can't safely diff it because we
+        # don't have a stable key, so we just leave it untouched.
+        server_assets = body.get("assets") or []
+        server_by_cid: Dict[str, Dict[str, Any]] = {}
+        for a in server_assets:
+            cid = a.get("clientAssetId")
+            if isinstance(cid, str) and cid:
+                server_by_cid[cid] = a
+
+        # Map kestrelSceneId → (server scene_id, server scene title) for title diff.
+        scene_titles_by_kid: Dict[str, Dict[str, Any]] = {}
+        for a in server_assets:
+            kid = a.get("kestrelSceneId")
+            if not kid:
+                continue
+            scene_titles_by_kid.setdefault(
+                str(kid),
+                {"server_scene_id": a.get("sceneId"), "server_title": a.get("sceneTitle")},
+            )
+
+        return (
+            session_root,
+            link,
+            {"server_by_cid": server_by_cid, "scene_titles_by_kid": scene_titles_by_kid, "raw": body},
+            self._cached_file_map or {},
+            self._cached_rows or [],
+            self._cached_scenedata or {"scenes": {}},
+        )
+
+    def compute_sync_diff(self, session_path: str | os.PathLike[str]) -> Dict[str, Any]:
+        """Read-only — returns what would change without applying anything.
+
+        The returned shape feeds the diff-preview modal. ``additions`` is
+        reported but NOT applied by ``sync_to_perch`` in v1 (would require a
+        new presign+upload flow); the modal surfaces them so the user knows
+        they need a fresh re-upload to add them.
+        """
+        session_root, link, server, file_map, rows, scenedata = self._build_sync_inputs(session_path)
+        server_by_cid: Dict[str, Dict[str, Any]] = server["server_by_cid"]
+        scene_titles_by_kid: Dict[str, Dict[str, Any]] = server["scene_titles_by_kid"]
+
+        # Build a kestrel_scene_id → local title map (mirrors the logic in
+        # _build_scene_presign_payload: prefer scenedata.scenes[sid].name, else
+        # the row's scene_name, else "Scene N").
+        scenes_meta = (scenedata or {}).get("scenes") or {}
+        local_title_by_kid: Dict[str, str] = {}
+        for ru in rows:
+            kid = str(ru.scene_count)
+            if kid in local_title_by_kid:
+                continue
+            sd = scenes_meta.get(kid, {}) if isinstance(scenes_meta, dict) else {}
+            title = ""
+            if isinstance(sd, dict) and (sd.get("name") or "").strip():
+                title = str(sd["name"]).strip()
+            elif (ru.scene_name or "").strip():
+                title = ru.scene_name.strip()
+            if title:
+                local_title_by_kid[kid] = title
+
+        additions: List[Dict[str, Any]] = []
+        deletions: List[Dict[str, Any]] = []
+        field_updates: List[Dict[str, Any]] = []
+        scene_title_updates: List[Dict[str, Any]] = []
+
+        # Track which client_asset_ids the local state covers, so we can spot
+        # server_only rows (currently ignored in v1 — surfaced in report only).
+        local_cids: set = set()
+
+        # Build a per-row "is this row rejected" flag. The reject filter in
+        # preflight() drops rejected rows when skip_rejected=True; here we ran
+        # with skip_rejected=False, so rejected rows are present and we use
+        # the row's own .culled-equivalent flag if available. _RowUpload
+        # doesn't carry culled directly — re-check the cached rows attribute.
+        rejected_cids: set = set()
+
+        # Re-derive culled from the dataframe cache by re-reading the CSV row
+        # is too expensive; instead, _build_sync_inputs ran preflight with
+        # skip_rejected=False, so every row is in self._cached_rows. We need
+        # to know which ones the user marked culled. Add a quick re-read here.
+        rejected_filenames: set = self._read_culled_filenames(session_root)
+
+        for idx, ru in enumerate(rows):
+            row_is_rejected = ru.filename in rejected_filenames
+            kid = str(ru.scene_count)
+
+            # Build (kind, crop_idx) entries that have a file_map entry.
+            entries: List[tuple] = []
+            if (idx, "export", 0) in file_map:
+                entries.append(("export", 0))
+            ci = 0
+            while (idx, "crop", ci) in file_map:
+                entries.append(("crop", ci))
+                ci += 1
+
+            for kind, crop_idx in entries:
+                path = file_map[(idx, kind, crop_idx)][0]
+                cid = _make_client_asset_id(path.name, kind, crop_idx, kid, path)
+                local_cids.add(cid)
+                server_row = server_by_cid.get(cid)
+
+                if server_row is None:
+                    if not row_is_rejected:
+                        additions.append({
+                            "client_asset_id": cid,
+                            "kind": kind,
+                            "filename": path.name,
+                            "scene_count": kid,
+                        })
+                    # rejected + missing on server → nothing to do
+                    continue
+
+                if row_is_rejected and server_row.get("status") != "deleted":
+                    deletions.append({
+                        "server_asset_id": server_row.get("assetId"),
+                        "client_asset_id": cid,
+                        "filename": path.name,
+                        "kind": kind,
+                    })
+                    continue
+
+                # Compare per-asset metadata fields.
+                changes: Dict[str, Any] = {}
+                # species / family — strings
+                if not self._strs_equal(server_row.get("species"), ru.species):
+                    changes["species"] = ru.species or None
+                if not self._strs_equal(server_row.get("family"), ru.family):
+                    changes["family"] = ru.family or None
+                # quality, capture time
+                if not self._floats_equal(server_row.get("quality"), ru.quality):
+                    changes["quality"] = ru.quality
+                if not self._ints_equal(server_row.get("captureTimeMs"), ru.capture_time_ms):
+                    changes["captureTimeMs"] = ru.capture_time_ms
+                # secondary_json — string compare (already JSON-encoded both sides)
+                if not self._strs_equal(server_row.get("secondaryJson") or server_row.get("secondary_json"), ru.secondary_json):
+                    changes["secondaryJson"] = ru.secondary_json or None
+                # exposure_* — numeric, all skipped because they're ML-derived
+                # (not user-edited). Add later if a use-case shows up.
+
+                if changes:
+                    field_updates.append({
+                        "server_asset_id": server_row.get("assetId"),
+                        "client_asset_id": cid,
+                        "filename": path.name,
+                        "kind": kind,
+                        "changes": changes,
+                    })
+
+        # Scene-title diffs. Only PATCH a scene the server actually has.
+        for kid, server_scene in scene_titles_by_kid.items():
+            new_title = local_title_by_kid.get(kid, "")
+            old_title = (server_scene.get("server_title") or "")
+            if new_title and not self._strs_equal(old_title, new_title):
+                scene_title_updates.append({
+                    "server_scene_id": server_scene.get("server_scene_id"),
+                    "kestrel_scene_id": kid,
+                    "old_title": old_title or None,
+                    "new_title": new_title,
+                })
+
+        return {
+            "perch_id": str(link.get("perch_id") or ""),
+            "perch_url": str(link.get("perch_url") or ""),
+            "title": str(link.get("title") or ""),
+            "additions": additions,
+            "deletions": deletions,
+            "field_updates": field_updates,
+            "scene_title_updates": scene_title_updates,
+            "totals": {
+                "additions": len(additions),
+                "deletions": len(deletions),
+                "field_updates": len(field_updates),
+                "scene_title_updates": len(scene_title_updates),
+                "local_assets": len(local_cids),
+                "server_assets": len(server_by_cid),
+            },
+        }
+
+    @staticmethod
+    def _read_culled_filenames(session_root: Path) -> set:
+        """Re-read the CSV's culled column to flag rejected rows. Cheap; the
+        CSV was already loaded by preflight, but pandas doesn't keep it on the
+        uploader instance. Re-reads only the filename + culled columns."""
+        kestrel = _find_kestrel_dir(session_root)
+        meta_path = kestrel / "kestrel_metadata.json"
+        csv_name = "kestrel_database.csv"
+        if meta_path.is_file():
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                csv_name = str(meta.get("database_file") or csv_name)
+            except OSError:
+                pass
+        csv_path = kestrel / csv_name
+        if not csv_path.is_file() or pd is None:
+            return set()
+        try:
+            df = pd.read_csv(csv_path, usecols=lambda c: c in ("filename", "culled"))
+        except (ValueError, OSError):
+            return set()
+        if "culled" not in df.columns or "filename" not in df.columns:
+            return set()
+        rejected: set = set()
+        for _, row in df.iterrows():
+            v = row.get("culled")
+            if v is None or pd.isna(v):
+                continue
+            if str(v).strip().lower() in ("true", "reject", "1", "yes"):
+                rejected.add(str(row.get("filename") or ""))
+        return rejected
+
+    def sync_to_perch(
+        self,
+        session_path: str | os.PathLike[str],
+        progress_callback: Optional[Callable[[dict], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> Dict[str, Any]:
+        """Apply the diff returned by compute_sync_diff. PATCHes are sent
+        sequentially — D1's write throughput is the bottleneck and parallel
+        writes would just queue up server-side. ``additions`` are reported
+        but NOT applied in v1 (would need a fresh presign + upload pass).
+        """
+        def emit(payload: dict) -> None:
+            if progress_callback is None:
+                return
+            try:
+                progress_callback(payload)
+            except Exception:
+                pass
+
+        emit({"phase": "fetching_state"})
+        try:
+            diff = self.compute_sync_diff(session_path)
+        except _PerchDeleted as pd_err:
+            emit({"phase": "error", "message": "perch_deleted", "perch_id": pd_err.perch_id})
+            return {"ok": False, "error": "perch_deleted", "perch_id": pd_err.perch_id}
+        except Exception as e:
+            emit({"phase": "error", "message": str(e)})
+            raise
+
+        perch_id = diff["perch_id"]
+        deletions = diff["deletions"]
+        field_updates = diff["field_updates"]
+        scene_title_updates = diff["scene_title_updates"]
+        additions = diff["additions"]
+
+        total_actions = len(deletions) + len(field_updates) + len(scene_title_updates)
+        emit({"phase": "computing_diff", "total": total_actions})
+
+        applied = 0
+        errors: List[str] = []
+
+        def _apply(kind: str, fn: Callable[[], requests.Response], label: str) -> bool:
+            nonlocal applied
+            if cancel_event is not None and cancel_event.is_set():
+                return False
+            try:
+                resp = fn()
+                if not resp.ok:
+                    errors.append(f"{kind} {label}: HTTP {resp.status_code}")
+                    return False
+            except Exception as e:
+                errors.append(f"{kind} {label}: {e}")
+                return False
+            applied += 1
+            emit({
+                "phase": "applying",
+                "current": applied,
+                "total": total_actions,
+                "action": kind,
+                "label": label,
+            })
+            return True
+
+        # 1) Deletions first — they free server storage before we PATCH others.
+        for d in deletions:
+            aid = d["server_asset_id"]
+            if not aid:
+                continue
+            _apply(
+                "delete",
+                lambda aid=aid: self.s.patch(
+                    self._url(f"/v1/perches/{perch_id}/assets/{aid}"),
+                    json={"status": "deleted"},
+                    timeout=self.timeout,
+                ),
+                d.get("filename") or "",
+            )
+
+        # 2) Per-asset metadata field updates.
+        for u in field_updates:
+            aid = u["server_asset_id"]
+            if not aid:
+                continue
+            _apply(
+                "update",
+                lambda aid=aid, body=u["changes"]: self.s.patch(
+                    self._url(f"/v1/perches/{perch_id}/assets/{aid}"),
+                    json=body,
+                    timeout=self.timeout,
+                ),
+                u.get("filename") or "",
+            )
+
+        # 3) Scene title PATCHes.
+        for s in scene_title_updates:
+            sid = s["server_scene_id"]
+            if not sid:
+                continue
+            _apply(
+                "scene-title",
+                lambda sid=sid, title=s["new_title"]: self.s.patch(
+                    self._url(f"/v1/perches/{perch_id}/scenes/{sid}"),
+                    json={"title": title},
+                    timeout=self.timeout,
+                ),
+                s.get("new_title") or "",
+            )
+
+        canceled = bool(cancel_event and cancel_event.is_set())
+        emit({
+            "phase": "canceled" if canceled else "done",
+            "applied": applied,
+            "total": total_actions,
+            "errors": errors,
+            "additions_skipped": len(additions),
+        })
+        return {
+            "ok": True,
+            "applied": applied,
+            "total": total_actions,
+            "errors": errors,
+            "additions_skipped": len(additions),
+            "canceled": canceled,
         }
 
     # Max scenes per presign request. The worker generates one HMAC-SHA256 per

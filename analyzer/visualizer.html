@@ -560,6 +560,25 @@
     </div>
   </dialog>
 
+  <!-- Phase 3: Sync to Perch — diff preview dialog -->
+  <dialog id="perchSyncDlg" class="dlg-settings perch-upload-dlg" aria-labelledby="perchSyncDlgTitle">
+    <div class="settings-body perch-upload-dlg-body">
+      <div class="perch-upload-dlg-header">
+        <h3 id="perchSyncDlgTitle" style="margin:0;font-size:16px">🔄 Sync to Perch</h3>
+        <button type="button" class="perch-upload-dlg-close" id="perchSyncDlgClose" title="Close">✕</button>
+      </div>
+      <div id="perchSyncDlgLoading" class="perch-dlg-loading">
+        <div class="perch-dlg-loading-spinner"></div>
+        <div class="perch-dlg-loading-text">Computing diff against Perch…</div>
+      </div>
+      <div id="perchSyncDlgBody" class="hidden"></div>
+    </div>
+    <div class="settings-footer perch-upload-footer">
+      <button type="button" id="perchSyncDlgCancelBtn">Cancel</button>
+      <button type="button" id="perchSyncDlgSubmitBtn" class="perch-cta" disabled>Sync now</button>
+    </div>
+  </dialog>
+
   <!-- Settings dialog -->
   <dialog id="settingsDlg" class="dlg-settings">
     <div class="settings-body">

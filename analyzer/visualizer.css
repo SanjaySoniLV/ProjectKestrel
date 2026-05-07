@@ -2226,6 +2226,128 @@
       letter-spacing: 0.2px;
     }
 
+    /* Sync button — sibling of the Published pill, shown only when a perch
+       link exists. `.is-clean` greys it out when local state matches the
+       saved hash (nothing to sync). */
+    .folder-perch-sync {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      background: rgba(74, 163, 255, .08);
+      border: 1px solid rgba(74, 163, 255, .25);
+      color: #4aa3ff;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 11.5px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background .15s, border-color .15s, color .15s, opacity .15s;
+      user-select: none;
+    }
+    .folder-perch-sync.hidden {
+      display: none !important;
+    }
+    .folder-perch-sync:hover {
+      background: rgba(74, 163, 255, .18);
+      border-color: rgba(74, 163, 255, .45);
+      color: #6db4ff;
+    }
+    .folder-perch-sync.is-clean {
+      opacity: .55;
+      color: var(--muted, #8a9099);
+      border-color: #2a3040;
+      background: rgba(255, 255, 255, .02);
+    }
+    .folder-perch-sync.is-clean:hover {
+      opacity: .85;
+    }
+    .folder-perch-sync-icon {
+      font-size: 12px;
+      line-height: 1;
+    }
+
+    /* Sync diff modal */
+    .perch-sync-stats {
+      display: flex;
+      gap: 12px;
+      padding: 6px 0 4px;
+    }
+    .perch-sync-stat {
+      flex: 1;
+      text-align: center;
+      padding: 12px 6px;
+      background: rgba(74, 163, 255, .06);
+      border: 1px solid #1d2230;
+      border-radius: 10px;
+    }
+    .perch-sync-stat-num {
+      font-size: 22px;
+      font-weight: 700;
+      color: #e8f0f8;
+      font-variant-numeric: tabular-nums;
+    }
+    .perch-sync-stat-label {
+      font-size: 11px;
+      color: var(--muted, #8a9099);
+      margin-top: 2px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .perch-sync-sub {
+      font-size: 12.5px;
+      color: var(--muted, #8a9099);
+      padding: 8px 2px 4px;
+    }
+    .perch-sync-note {
+      padding: 10px 12px;
+      border-radius: 8px;
+      font-size: 11.5px;
+      line-height: 1.5;
+      margin-top: 6px;
+    }
+    .perch-sync-note.warn {
+      background: rgba(243, 156, 18, .08);
+      border: 1px solid rgba(243, 156, 18, .25);
+      color: #d6a03a;
+    }
+    .perch-sync-section {
+      margin-top: 8px;
+      border: 1px solid #1d2230;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, .015);
+    }
+    .perch-sync-section summary {
+      cursor: pointer;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #e8f0f8;
+      list-style: none;
+    }
+    .perch-sync-section summary::-webkit-details-marker { display: none; }
+    .perch-sync-section[open] summary {
+      border-bottom: 1px solid #1d2230;
+    }
+    .perch-sync-list {
+      max-height: 220px;
+      overflow-y: auto;
+      padding: 4px 8px 8px;
+    }
+    .perch-sync-list-row {
+      font-size: 11.5px;
+      color: #c8d0dc;
+      padding: 4px 6px;
+      border-radius: 4px;
+      font-family: ui-monospace, "Cascadia Mono", Menlo, monospace;
+    }
+    .perch-sync-list-row:hover {
+      background: rgba(74, 163, 255, .06);
+    }
+    .perch-upload-card.is-sync .perch-upload-card-progress-fill {
+      /* Slightly different tint for sync vs. upload to reinforce the distinction. */
+      background: linear-gradient(90deg, #4aa3ff 0%, #6db4ff 100%);
+    }
+
 
     /* Thumbnail badges (quality & image count) */
     .thumb .badge {
