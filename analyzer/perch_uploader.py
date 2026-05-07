@@ -1399,10 +1399,12 @@ class PerchKestrelUploader:
                     "assets": assets_payload,
                 }
                 # Forward user-finalized scene tags from the manual review UI.
-                # Only sent when finalized=True to avoid clobbering ML-derived
-                # per-asset species/family with empty review state.
+                # The finalized flag is sent independently of array contents so
+                # the website can distinguish "reviewed but empty" (suppress ML
+                # fallback) from "never reviewed" (fall back to ML as before).
                 user_tags = sd.get("user_tags") if isinstance(sd, dict) else None
                 if isinstance(user_tags, dict) and user_tags.get("finalized") is True:
+                    entry["userTagsFinalized"] = True
                     sp = [str(x).strip() for x in (user_tags.get("species") or []) if str(x).strip()]
                     fa = [str(x).strip() for x in (user_tags.get("families") or []) if str(x).strip()]
                     if sp:
