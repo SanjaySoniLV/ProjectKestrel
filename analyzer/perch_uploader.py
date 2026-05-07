@@ -788,17 +788,59 @@ class PerchKestrelUploader:
         return upload_urls
 
     def _upload_direct(self, upload_url: str, path: "Path", content_type: str) -> None:
-        """PUT file bytes directly to a presigned R2 URL — no auth header needed."""
+        """PUT file bytes directly to a presigned R2 URL — no auth header needed.
+
+        R2 occasionally returns transient 500 InternalError (and 502/503/504)
+        under load even on otherwise-valid PUTs. The presigned URL is good for
+        an hour, so retry with exponential backoff. 4xx is not retried — those
+        are permanent (expired sig, bad content type, etc.).
+        """
+        import time as _time
         with open(path, "rb") as fh:
             data = fh.read()
         s = requests.Session()
-        r = s.put(
-            upload_url,
-            data=data,
-            headers={"Content-Type": content_type},
-            timeout=self.timeout,
-        )
-        _raise_for_status(r)
+        attempts = 4
+        backoff_s = 2.0
+        last_exc: Optional[BaseException] = None
+        for attempt in range(1, attempts + 1):
+            try:
+                r = s.put(
+                    upload_url,
+                    data=data,
+                    headers={"Content-Type": content_type},
+                    timeout=self.timeout,
+                )
+            except (requests.ConnectionError, requests.Timeout) as e:
+                last_exc = e
+                if attempt >= attempts:
+                    raise
+                print(
+                    f"[perch] PUT {path.name} network error: {e}; "
+                    f"retrying in {backoff_s:.1f}s (attempt {attempt}/{attempts})"
+                )
+                _time.sleep(backoff_s)
+                backoff_s = min(backoff_s * 2, 30.0)
+                continue
+            if r.status_code < 500 or attempt >= attempts:
+                _raise_for_status(r)
+                return
+            wait = backoff_s
+            ra = r.headers.get("Retry-After")
+            if ra:
+                try:
+                    wait = max(wait, float(ra))
+                except (TypeError, ValueError):
+                    pass
+            print(
+                f"[perch] PUT {path.name} got HTTP {r.status_code}; "
+                f"retrying in {wait:.1f}s (attempt {attempt}/{attempts})"
+            )
+            _time.sleep(wait)
+            backoff_s = min(backoff_s * 2, 30.0)
+        # Loop only exits via return or raise above; this is unreachable but
+        # keeps mypy/pylint happy if the loop body changes.
+        if last_exc is not None:
+            raise last_exc
 
     def _post_file(
         self, perch_id: str, path: Path, kind: str, ru: _RowUpload, crops_json_body: str
