@@ -2193,6 +2193,39 @@
       font-size: 14px;
     }
 
+    /* Folder-card "Published" pill — shown when .kestrel/perch_link.json exists.
+       Sits to the right of "Share with Perch" so the relationship is obvious. */
+    .folder-perch-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      background: rgba(74, 163, 255, .12);
+      border: 1px solid rgba(74, 163, 255, .35);
+      color: #4aa3ff;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 11.5px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background .15s, border-color .15s, color .15s;
+      user-select: none;
+    }
+    .folder-perch-pill.hidden {
+      display: none !important;
+    }
+    .folder-perch-pill:hover {
+      background: rgba(74, 163, 255, .22);
+      border-color: rgba(74, 163, 255, .55);
+      color: #6db4ff;
+    }
+    .folder-perch-pill-icon {
+      font-size: 13px;
+      line-height: 1;
+    }
+    .folder-perch-pill-label {
+      letter-spacing: 0.2px;
+    }
+
 
     /* Thumbnail badges (quality & image count) */
     .thumb .badge {
@@ -4493,6 +4526,67 @@
       color: #e8f0f8;
     }
 
+    /* Already-published banner — sits above the loading spinner; shown when
+       verify_perch_link returns "alive" so the user can choose between
+       opening the existing perch or starting a fresh upload. */
+    .perch-already-published {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 14px;
+      background: rgba(74, 163, 255, .10);
+      border: 1px solid rgba(74, 163, 255, .30);
+      border-radius: 10px;
+      margin-bottom: 12px;
+    }
+    .perch-already-published.hidden { display: none !important; }
+    .perch-already-published-icon {
+      font-size: 22px;
+      flex-shrink: 0;
+    }
+    .perch-already-published-body {
+      flex: 1;
+      min-width: 0;
+    }
+    .perch-already-published-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: #e8f0f8;
+      margin-bottom: 2px;
+    }
+    .perch-already-published-text {
+      font-size: 12px;
+      color: var(--muted, #8a9099);
+    }
+    .perch-already-published-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .perch-cta-secondary {
+      font-size: 11.5px;
+      padding: 5px 10px;
+      border: 1px solid rgba(74, 163, 255, .35);
+      background: rgba(74, 163, 255, .14);
+      color: #4aa3ff;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background .15s;
+      white-space: nowrap;
+    }
+    .perch-cta-secondary:hover {
+      background: rgba(74, 163, 255, .26);
+    }
+    .perch-cta-secondary.perch-cta-warn {
+      border-color: rgba(243, 156, 18, .35);
+      background: rgba(243, 156, 18, .12);
+      color: #f39c12;
+    }
+    .perch-cta-secondary.perch-cta-warn:hover {
+      background: rgba(243, 156, 18, .22);
+    }
+
     /* Loading state */
     .perch-dlg-loading {
       display: flex;
@@ -4653,6 +4747,38 @@
     }
     .perch-tip-btn:hover {
       background: rgba(245, 197, 66, .22);
+    }
+
+    /* Skip-rejected toggle — sits between the Culling Assistant tip and the
+       capture-time warning. Defaults checked. */
+    .perch-reject-toggle {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      background: rgba(255, 255, 255, .02);
+      border: 1px solid #1d2230;
+      border-radius: 8px;
+      margin-top: 8px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .perch-reject-toggle:hover {
+      background: rgba(74, 163, 255, .05);
+    }
+    .perch-reject-toggle input[type="checkbox"] {
+      flex-shrink: 0;
+      cursor: pointer;
+    }
+    .perch-reject-toggle-label {
+      font-size: 12.5px;
+      color: #e8f0f8;
+    }
+    .perch-reject-toggle-hint {
+      font-size: 11.5px;
+      color: var(--muted, #8a9099);
+      margin-left: auto;
+      font-variant-numeric: tabular-nums;
     }
 
     /* Capture-time accuracy warning — blue/info-tinted, sits below the tip */

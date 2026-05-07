@@ -444,6 +444,19 @@
         <button type="button" class="perch-upload-dlg-close" id="perchUploadDlgClose" title="Close">✕</button>
       </div>
 
+      <!-- Already-published banner — shown only when verify_perch_link returns "alive". -->
+      <div id="perchAlreadyPublishedBanner" class="perch-already-published hidden">
+        <div class="perch-already-published-icon">🪶</div>
+        <div class="perch-already-published-body">
+          <div class="perch-already-published-title">This folder is already published</div>
+          <div class="perch-already-published-text" id="perchAlreadyPublishedSubtitle">Already on Perch.</div>
+        </div>
+        <div class="perch-already-published-actions">
+          <button type="button" class="perch-cta-secondary" id="perchAlreadyPublishedOpenBtn">Open existing →</button>
+          <button type="button" class="perch-cta-secondary perch-cta-warn" id="perchAlreadyPublishedNewBtn">Create a new perch</button>
+        </div>
+      </div>
+
       <!-- ── Loading state: shown immediately, replaced after preflight ── -->
       <div id="perchDlgLoading" class="perch-dlg-loading">
         <div class="perch-dlg-loading-spinner"></div>
@@ -497,6 +510,12 @@
           </div>
           <button type="button" class="perch-tip-btn" id="perchOpenCullingBtn">Open Culling Assistant</button>
         </div>
+
+        <label class="perch-reject-toggle" id="perchRejectToggleRow">
+          <input type="checkbox" id="perchRejectToggleCb" checked>
+          <span class="perch-reject-toggle-label" id="perchRejectToggleLabel">Skip rejected photos</span>
+          <span class="perch-reject-toggle-hint" id="perchRejectToggleHint"></span>
+        </label>
 
         <div class="perch-time-warn">
           <div class="perch-time-warn-icon">⏱</div>

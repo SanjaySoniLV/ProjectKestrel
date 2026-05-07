@@ -1985,6 +1985,37 @@
           perchBtn.addEventListener('click', (ev) => { ev.stopPropagation(); shareWithPerchFolder(fd.folderPath); });
           rightActions.appendChild(perchBtn);
 
+          // "Published" pill \u2014 only shown if .kestrel/perch_link.json exists.
+          // Click opens the perch URL (after stale-link verification, see 1d).
+          // Right-click \u2192 Unlink (local-only).
+          const perchPill = document.createElement('button');
+          perchPill.type = 'button';
+          perchPill.className = 'folder-perch-pill hidden';
+          perchPill.dataset.folderPath = fd.folderPath;
+          perchPill.innerHTML = '<span class="folder-perch-pill-icon"></span><span class="folder-perch-pill-label">Published</span>';
+          const _pillIcon = perchPill.querySelector('.folder-perch-pill-icon');
+          if (_pillIcon) _pillIcon.textContent = '\u{1FAB6}'; // feather emoji
+          perchPill.title = 'Folder published to Perch \u2014 click to open in browser';
+          perchPill.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            handlePerchPillClick(fd.folderPath, perchPill);
+          });
+          perchPill.addEventListener('contextmenu', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            handlePerchPillUnlink(fd.folderPath, perchPill);
+          });
+          rightActions.appendChild(perchPill);
+          // Async-populate from disk; show only if the file exists.
+          (async () => {
+            try {
+              const res = await window.pywebview?.api?.read_perch_link?.(fd.folderPath);
+              if (res && res.present && res.link) {
+                applyPerchLinkToPill(perchPill, res.link);
+              }
+            } catch {}
+          })();
+
           hdr.appendChild(rightActions);
 
           bodyEl = document.createElement('div');
@@ -8460,6 +8491,7 @@
       rootPath: null,
       preflight: null,        // full response from Api.preflight_perch_upload
       deselected: new Set(),  // sceneIds the user has unchecked
+      skipRejected: true,     // tracks the "Skip rejected photos" checkbox
     };
     // Job state for the in-flight upload (only one allowed at a time).
     let _perchActiveJobId = null;
@@ -8909,10 +8941,14 @@
       }
     }
 
-    async function kickShareJob(rootPath, excludedSceneIds) {
+    async function kickShareJob(rootPath, excludedSceneIds, skipRejected) {
       let res;
       try {
-        res = await window.pywebview.api.share_with_perch(rootPath, excludedSceneIds || []);
+        res = await window.pywebview.api.share_with_perch(
+          rootPath,
+          excludedSceneIds || [],
+          skipRejected !== false,
+        );
       } catch (e) {
         showToast('Failed to start upload: ' + e.message, 6000);
         return;
@@ -8947,7 +8983,56 @@
       }, 5000);
     }
 
-    async function _perchOpenDialog(rootPath) {
+    function _perchUpdateRejectToggleHint() {
+      const hint = document.getElementById('perchRejectToggleHint');
+      const label = document.getElementById('perchRejectToggleLabel');
+      if (!hint || !label) return;
+      const pre = _perchDlgState.preflight;
+      if (!pre) { hint.textContent = ''; return; }
+      // The preflight payload reports how many rows the *current* skip_rejected
+      // setting omitted. When the toggle is ON we got the skipped count back.
+      // When OFF, rejectedSkipped is 0 — so we'd need to know the actual count
+      // some other way. Cheap solution: stash the last "ON" count and reuse.
+      if (_perchDlgState.skipRejected) {
+        const n = Number(pre.rejectedSkipped || 0);
+        _perchDlgState._lastSkipCount = n;
+        hint.textContent = n > 0
+          ? `(${n.toLocaleString()} rejected photo${n === 1 ? '' : 's'} will be skipped)`
+          : '(none rejected)';
+      } else {
+        const n = Number(_perchDlgState._lastSkipCount || pre.rejectedSkipped || 0);
+        hint.textContent = n > 0
+          ? `(${n.toLocaleString()} rejected photo${n === 1 ? '' : 's'} will be uploaded)`
+          : '';
+      }
+    }
+
+    async function _perchOnRejectToggleChange() {
+      const cb = document.getElementById('perchRejectToggleCb');
+      if (!cb) return;
+      _perchDlgState.skipRejected = !!cb.checked;
+      const rootPath = _perchDlgState.rootPath;
+      if (!rootPath) return;
+      // Re-run preflight with the new flag — totals + scene list update.
+      let pre;
+      try {
+        pre = await window.pywebview.api.preflight_perch_upload(rootPath, _perchDlgState.skipRejected);
+      } catch {
+        return;
+      }
+      if (!pre || !pre.ok) return;
+      _perchDlgState.preflight = pre;
+      // Drop deselected entries that no longer exist in the new scene list.
+      const liveIds = new Set((pre.scenes || []).map(s => String(s.sceneId)));
+      for (const sid of [..._perchDlgState.deselected]) {
+        if (!liveIds.has(sid)) _perchDlgState.deselected.delete(sid);
+      }
+      _perchRenderSceneList();
+      _perchUpdateRejectToggleHint();
+      _perchUpdateDialogTotals();
+    }
+
+    async function _perchOpenDialog(rootPath, verifyResult) {
       const dlg = document.getElementById('perchUploadDlg');
       if (!dlg) {
         showToast('Perch dialog not available', 4000);
@@ -8956,6 +9041,28 @@
       _perchDlgState.rootPath = rootPath;
       _perchDlgState.preflight = null;
       _perchDlgState.deselected = new Set();
+      _perchDlgState.skipRejected = true;  // dialog opens with skip-rejected ON
+      // Already-published banner: shown only for "alive" — the user picks
+      // between opening the existing perch and starting a fresh upload.
+      const banner = document.getElementById('perchAlreadyPublishedBanner');
+      const bannerSub = document.getElementById('perchAlreadyPublishedSubtitle');
+      if (banner) banner.classList.add('hidden');
+      if (verifyResult && verifyResult.status === 'alive' && verifyResult.link) {
+        const link = verifyResult.link;
+        if (banner) {
+          if (bannerSub) {
+            const t = link.title ? `"${link.title}"` : 'this folder';
+            const ms = Number(link.uploaded_at_ms || 0);
+            const rel = ms > 0 ? _perchRelativeDate(ms) : '';
+            bannerSub.textContent = rel
+              ? `${t} was uploaded ${rel}.`
+              : `${t} is already on Perch.`;
+          }
+          banner.dataset.perchUrl = String(link.perch_url || '');
+          banner.dataset.folderPath = rootPath;
+          banner.classList.remove('hidden');
+        }
+      }
       // Show a starting state; preflight populates real numbers.
       const loading = document.getElementById('perchDlgLoading');
       const signedOut = document.getElementById('perchDlgSignedOut');
@@ -8963,6 +9070,8 @@
       const submit = document.getElementById('perchUploadSubmitBtn');
       const sigIn = document.getElementById('perchUploadSignInBtn');
       const ready = document.getElementById('perchDlgReadyLine');
+      const rejectCb = document.getElementById('perchRejectToggleCb');
+      if (rejectCb) rejectCb.checked = true;
       if (loading) loading.classList.remove('hidden');
       if (signedOut) signedOut.classList.add('hidden');
       if (signedIn) signedIn.classList.add('hidden');
@@ -8973,7 +9082,7 @@
 
       let preflight;
       try {
-        preflight = await window.pywebview.api.preflight_perch_upload(rootPath);
+        preflight = await window.pywebview.api.preflight_perch_upload(rootPath, true);
       } catch (e) {
         if (loading) loading.classList.add('hidden');
         if (signedOut) signedOut.classList.remove('hidden');
@@ -8991,6 +9100,7 @@
         if (signedIn) signedIn.classList.remove('hidden');
         if (submit) submit.classList.remove('hidden');
         _perchRenderSceneList();
+        _perchUpdateRejectToggleHint();
         _perchUpdateDialogTotals();
         _perchLoadAccountAndUsage();
       } else {
@@ -9023,8 +9133,31 @@
       if (submit) submit.addEventListener('click', () => {
         const root = _perchDlgState.rootPath;
         const excluded = [..._perchDlgState.deselected];
+        const skipRejected = !!_perchDlgState.skipRejected;
         _perchClosePerchDialog();
-        kickShareJob(root, excluded);
+        kickShareJob(root, excluded, skipRejected);
+      });
+      const rejectCb = document.getElementById('perchRejectToggleCb');
+      if (rejectCb) rejectCb.addEventListener('change', _perchOnRejectToggleChange);
+      // Already-published banner buttons.
+      const alreadyOpen = document.getElementById('perchAlreadyPublishedOpenBtn');
+      const alreadyNew = document.getElementById('perchAlreadyPublishedNewBtn');
+      if (alreadyOpen) alreadyOpen.addEventListener('click', async () => {
+        const banner = document.getElementById('perchAlreadyPublishedBanner');
+        const url = banner?.dataset?.perchUrl;
+        if (url) { try { await window.pywebview.api.open_perch_url(url); } catch {} }
+        _perchClosePerchDialog();
+      });
+      if (alreadyNew) alreadyNew.addEventListener('click', async () => {
+        const banner = document.getElementById('perchAlreadyPublishedBanner');
+        const folderPath = banner?.dataset?.folderPath || _perchDlgState.rootPath;
+        // Clear the local link so the new upload writes a fresh perch_link.json.
+        try { await window.pywebview.api.delete_perch_link(folderPath); } catch {}
+        // Hide the matching folder-card pill.
+        document.querySelectorAll(`.folder-perch-pill[data-folder-path="${cssEscape(folderPath)}"]`)
+          .forEach(el => el.classList.add('hidden'));
+        // Hide the banner; let the rest of the dialog continue normally.
+        if (banner) banner.classList.add('hidden');
       });
       if (sigIn) sigIn.addEventListener('click', async () => {
         try {
@@ -9073,6 +9206,90 @@
       _perchInstallPanelObservers();
     }
 
+    /** Apply a parsed perch_link.json to a folder-card pill: show it,
+     *  populate dataset, refresh hover title with relative date + asset count. */
+    function applyPerchLinkToPill(pillEl, link) {
+      if (!pillEl || !link) return;
+      pillEl.dataset.perchUrl = String(link.perch_url || '');
+      pillEl.dataset.perchId = String(link.perch_id || '');
+      pillEl.dataset.title = String(link.title || '');
+      pillEl.classList.remove('hidden');
+      // Hover title: "Published 3 days ago as "Falconry trip" — 387 photos"
+      const ms = Number(link.uploaded_at_ms || 0);
+      const rel = ms > 0 ? _perchRelativeDate(ms) : '';
+      const count = Number(link.image_count || link.asset_count || 0);
+      const photoStr = count > 0 ? ` — ${count.toLocaleString()} photo${count === 1 ? '' : 's'}` : '';
+      const titleStr = link.title ? ` as "${link.title}"` : '';
+      pillEl.title = `Published${rel ? ' ' + rel : ''}${titleStr}${photoStr}\n(Click: open in browser · Right-click: unlink)`;
+    }
+
+    function _perchRelativeDate(ms) {
+      const now = Date.now();
+      const diff = Math.max(0, now - Number(ms));
+      const day = 24 * 60 * 60 * 1000;
+      if (diff < 60 * 1000) return 'just now';
+      if (diff < 60 * 60 * 1000) return Math.floor(diff / 60000) + ' min ago';
+      if (diff < day) return Math.floor(diff / 3600000) + 'h ago';
+      if (diff < 30 * day) return Math.floor(diff / day) + 'd ago';
+      try { return new Date(Number(ms)).toLocaleDateString(); } catch { return ''; }
+    }
+
+    /** Click the Published pill: verify the link is still valid, then open URL.
+     *  On a definite 404 the helper has already cleared the local file — we
+     *  hide the pill and toast. On 401/403/network we leave the link alone
+     *  but warn the user. */
+    async function handlePerchPillClick(folderPath, pillEl) {
+      let res;
+      try { res = await window.pywebview.api.verify_perch_link(folderPath); }
+      catch (e) {
+        showToast('Could not verify Perch link: ' + (e?.message || String(e)), 5000);
+        return;
+      }
+      const status = res?.status;
+      if (status === 'alive') {
+        const url = pillEl?.dataset?.perchUrl || res?.link?.perch_url;
+        if (url) { try { await window.pywebview.api.open_perch_url(url); } catch {} }
+        return;
+      }
+      if (status === 'deleted') {
+        pillEl?.classList?.add('hidden');
+        showToast('This perch was deleted on Perch — the folder has been unlinked.', 5500);
+        return;
+      }
+      if (status === 'unauthorized') {
+        showToast('Sign in to Perch first (use the account button at top-right).', 5000);
+        return;
+      }
+      if (status === 'forbidden') {
+        showToast('This perch is owned by a different Perch account. Right-click the pill to unlink locally.', 6000);
+        return;
+      }
+      if (status === 'unreachable') {
+        showToast('Couldn’t reach Perch. Check your connection and try again.', 5000);
+        return;
+      }
+      // status === 'missing' — the pill should not have been visible. Hide it.
+      pillEl?.classList?.add('hidden');
+    }
+
+    /** Right-click the Published pill: confirm and remove the local link
+     *  (does NOT touch the Worker — the perch on the server is untouched). */
+    async function handlePerchPillUnlink(folderPath, pillEl) {
+      const ok = window.confirm('Remove this folder’s Perch link locally?\n\nThe perch on perch.projectkestrel.org will NOT be deleted — to remove it from the web, delete it there.');
+      if (!ok) return;
+      try {
+        const res = await window.pywebview.api.delete_perch_link(folderPath);
+        if (res && res.success) {
+          pillEl.classList.add('hidden');
+          showToast('Perch link removed for this folder.', 3000);
+        } else {
+          showToast('Could not unlink: ' + (res?.error || 'unknown error'), 5000);
+        }
+      } catch (e) {
+        showToast('Could not unlink: ' + (e?.message || String(e)), 5000);
+      }
+    }
+
     async function shareWithPerchFolder(rootPath) {
       if (!window.pywebview?.api) {
         showToast('Share with Perch requires desktop mode', 4000);
@@ -9088,7 +9305,36 @@
         if (userChoice === 'save') await saveCsv();
       }
       _perchWirePerchDialogOnce();
-      _perchOpenDialog(rootPath);
+
+      // Stale-link gate: if perch_link.json exists, verify the perch is still
+      // alive on the server BEFORE opening the dialog. The dialog gets a banner
+      // that lets the user open the existing perch or start a fresh upload.
+      let verify = null;
+      try { verify = await window.pywebview.api.verify_perch_link(rootPath); } catch {}
+      const status = verify?.status;
+      if (status === 'unauthorized') {
+        showToast('Sign in to Perch first (use the account button at top-right).', 5000);
+        return;
+      }
+      if (status === 'forbidden') {
+        showToast('This folder was published from a different Perch account. Right-click the Published pill to unlink locally.', 7000);
+        return;
+      }
+      if (status === 'deleted') {
+        showToast('The previously linked Perch was deleted — proceeding with a fresh upload.', 5500);
+        // Hide the pill on the matching folder card if rendered.
+        document.querySelectorAll(`.folder-perch-pill[data-folder-path="${cssEscape(rootPath)}"]`)
+          .forEach(el => el.classList.add('hidden'));
+      }
+      // For 'alive' — open the dialog, then show the banner via _perchOpenDialog.
+      // For 'missing'/'unreachable'/null — open dialog as normal.
+      _perchOpenDialog(rootPath, verify);
+    }
+
+    /** Minimal CSS-attribute-value escape — avoids needing a polyfill for
+     *  CSS.escape on older webviews. We only use it for paths in selectors. */
+    function cssEscape(s) {
+      return String(s || '').replace(/(["\\\]\[])/g, '\\$1');
     }
     
     // Custom dialog prompt for Culling Assistant save decision

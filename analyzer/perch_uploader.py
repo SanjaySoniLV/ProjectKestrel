@@ -111,6 +111,7 @@ class PerchPreflight:
     total_bytes: int
     file_count: int
     scenes: List[PerchPreflightScene]
+    rejected_skipped: int = 0  # number of CSV rows omitted because culled is True
 
 
 @dataclass
@@ -165,6 +166,7 @@ class PerchKestrelUploader:
         self._cached_file_map: Dict[tuple, tuple] = {}
         self._cached_scenedata: Dict[str, Any] = {}
         self._cached_preflight: Optional[PerchPreflight] = None
+        self._cached_skip_rejected: Optional[bool] = None
 
     def _new_session(self) -> requests.Session:
         s = requests.Session()
@@ -176,11 +178,19 @@ class PerchKestrelUploader:
 
     # ─── Preflight (no network) ─────────────────────────────────────────
 
-    def preflight(self, session_path: str | os.PathLike[str]) -> PerchPreflight:
+    def preflight(
+        self,
+        session_path: str | os.PathLike[str],
+        skip_rejected: bool = True,
+    ) -> PerchPreflight:
         """Parse the session's CSV/scenedata, resolve file paths, sum byte sizes.
 
         No network calls. Caches state on `self` so a subsequent `run()` against
         the same session can skip the work.
+
+        ``skip_rejected``: when True, rows with ``culled`` == truthy are dropped
+        before any aggregation runs. The dropped count is returned as
+        ``PerchPreflight.rejected_skipped`` so the UI can surface it.
         """
         session_root = Path(session_path).resolve()
         kestrel = _find_kestrel_dir(session_root)
@@ -204,7 +214,15 @@ class PerchKestrelUploader:
             raise RuntimeError("pandas is required for PerchKestrelUploader")
         df = pd.read_csv(csv_path)
         rows: List[_RowUpload] = []
+        rejected_skipped = 0
         for _, row in df.iterrows():
+            if skip_rejected and "culled" in df.columns:
+                culled_val = row.get("culled")
+                if culled_val is not None and pd.notna(culled_val):
+                    cv = str(culled_val).strip().lower()
+                    if cv in ("true", "reject", "1", "yes"):
+                        rejected_skipped += 1
+                        continue
             sc_val = row.get("scene_count", 0) if "scene_count" in df.columns else 0
             try:
                 sc = str(int(float(sc_val)))
@@ -413,6 +431,7 @@ class PerchKestrelUploader:
             total_bytes=total_bytes,
             file_count=len(file_map),
             scenes=scenes,
+            rejected_skipped=rejected_skipped,
         )
 
         # Cache for run().
@@ -420,6 +439,7 @@ class PerchKestrelUploader:
         self._cached_rows = rows
         self._cached_file_map = file_map
         self._cached_scenedata = scenedata
+        self._cached_skip_rejected = skip_rejected
         self._cached_preflight = preflight
         return preflight
 
@@ -432,6 +452,7 @@ class PerchKestrelUploader:
         excluded_scene_ids: Iterable[str] = (),
         progress_callback: Optional[Callable[[dict], None]] = None,
         cancel_event: Optional[threading.Event] = None,
+        skip_rejected: bool = True,
     ) -> Dict[str, Any]:
         session_root = Path(session_path).resolve()
 
@@ -444,8 +465,15 @@ class PerchKestrelUploader:
                 pass  # never let UI errors break the upload
 
         # Reuse cached preflight if it matches; otherwise run preflight now.
-        if self._preflighted_root != session_root or self._cached_preflight is None:
-            self.preflight(session_root)
+        # Note: cached preflight is only reused if its skip_rejected matches —
+        # we re-run preflight if the caller flipped the flag between calls.
+        cached_skip = getattr(self, "_cached_skip_rejected", None)
+        if (
+            self._preflighted_root != session_root
+            or self._cached_preflight is None
+            or cached_skip != skip_rejected
+        ):
+            self.preflight(session_root, skip_rejected=skip_rejected)
         rows = self._cached_rows
         file_map = self._cached_file_map
         scenedata = self._cached_scenedata

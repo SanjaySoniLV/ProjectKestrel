@@ -2056,13 +2056,17 @@ class Api:
                 }
         return (str(token) if token else None), dev_user, None
 
-    def preflight_perch_upload(self, root_path: str) -> dict:
+    def preflight_perch_upload(self, root_path: str, skip_rejected: bool = True) -> dict:
         """Compute scene/photo/byte counts for a folder before uploading.
 
         Local-only (no auth needed). Returns aggregate totals plus a per-scene
         breakdown so the JS layer can render a checkbox-per-scene selector.
         Also reports `signedIn` so the dialog can fork between the explainer
         body and the upload-preview body.
+
+        ``skip_rejected``: when True (default), CSV rows with ``culled``
+        truthy are dropped from preflight totals. The number dropped is
+        returned as ``rejectedSkipped`` so the dialog can show the count.
         """
         try:
             from perch_uploader import PerchKestrelUploader
@@ -2109,7 +2113,7 @@ class Api:
             except Exception as e:
                 return {"ok": False, "error": str(e)}
         try:
-            pre = uploader.preflight(root_real)
+            pre = uploader.preflight(root_real, skip_rejected=bool(skip_rejected))
         except Exception as e:
             log(f"preflight_perch_upload: {e}")
             return {"ok": False, "error": str(e)}
@@ -2124,6 +2128,8 @@ class Api:
             "cropCount": pre.crop_count,
             "totalBytes": pre.total_bytes,
             "fileCount": pre.file_count,
+            "rejectedSkipped": pre.rejected_skipped,
+            "skipRejectedUsed": bool(skip_rejected),
             "scenes": [
                 {
                     "sceneId": s.scene_id,
@@ -2212,12 +2218,21 @@ class Api:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def share_with_perch(self, root_path: str, excluded_scene_ids=None) -> dict:
+    def share_with_perch(
+        self,
+        root_path: str,
+        excluded_scene_ids=None,
+        skip_rejected: bool = True,
+    ) -> dict:
         """Kick off an async upload. Returns immediately with `{job_id}`.
 
         JS polls `get_share_progress(job_id)` for live state. The browser is NOT
         opened automatically — the user clicks an "Open in browser" button on
         the success card so the auto-redirect-during-work pattern is gone.
+
+        ``skip_rejected``: when True (default), CSV rows marked culled are
+        omitted from the upload. The dialog defaults this to True; the user
+        can uncheck "Skip rejected photos" in the dialog to override.
         """
         try:
             from perch_uploader import PerchKestrelUploader
@@ -2271,12 +2286,27 @@ class Api:
                     str(token) if token else None,
                     dev_user=dev_user,
                 )
-                uploader.run(
+                result = uploader.run(
                     str(root_real),
                     excluded_scene_ids=excluded,
                     progress_callback=_on_progress,
                     cancel_event=cancel_event,
+                    skip_rejected=bool(skip_rejected),
                 )
+                # Persist `.kestrel/perch_link.json` only on a fully-successful
+                # upload. On cancel, the partial perch lives on the server and
+                # the user must clear it via the canceled-state UI; we don't
+                # want a stale "Published" badge claiming success.
+                if result and not result.get("canceled"):
+                    try:
+                        self._write_perch_link(
+                            str(root_real),
+                            result,
+                            skip_rejected=bool(skip_rejected),
+                            preflight=getattr(uploader, "_cached_preflight", None),
+                        )
+                    except Exception as link_err:
+                        log(f"share_with_perch: perch_link.json write failed: {link_err}")
             except Exception as e:
                 log(f"share_with_perch: {e}")
                 import traceback as _tb
@@ -2334,6 +2364,173 @@ class Api:
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    # ─── Perch link persistence (Phase 1: per-folder perch_link.json) ──
+
+    @staticmethod
+    def _perch_link_path(folder_path: str) -> "Path":
+        from pathlib import Path as _P
+        return _P(folder_path) / ".kestrel" / "perch_link.json"
+
+    @staticmethod
+    def _hash_kestrel_state(folder_path: str) -> str | None:
+        """SHA-256 over kestrel_database.csv + kestrel_scenedata.json contents.
+
+        Returned as ``"sha256:<hex>"`` or None if neither file is present. Used
+        as a "did anything change since upload?" gate by Phase 3 sync — covers
+        both row-level edits and scene-renames.
+        """
+        import hashlib
+        from pathlib import Path as _P
+        kestrel_dir = _P(folder_path) / ".kestrel"
+        h = hashlib.sha256()
+        any_read = False
+        for name in ("kestrel_database.csv", "kestrel_scenedata.json"):
+            fp = kestrel_dir / name
+            if fp.is_file():
+                try:
+                    with open(fp, "rb") as f:
+                        for chunk in iter(lambda: f.read(65536), b""):
+                            h.update(chunk)
+                    any_read = True
+                except OSError:
+                    pass
+        return ("sha256:" + h.hexdigest()) if any_read else None
+
+    def _write_perch_link(
+        self,
+        folder_path: str,
+        run_result: dict,
+        skip_rejected: bool,
+        preflight=None,
+    ) -> None:
+        """Persist `.kestrel/perch_link.json` after a successful upload."""
+        from pathlib import Path as _P
+        import json as _json
+        import time as _time
+        link_path = self._perch_link_path(folder_path)
+        link_path.parent.mkdir(parents=True, exist_ok=True)
+        title = _P(folder_path).name or ""
+        payload = {
+            "version": 1,
+            "perch_id": str(run_result.get("perch_id") or ""),
+            "perch_url": str(run_result.get("url") or ""),
+            "title": title,
+            "uploaded_at_ms": int(_time.time() * 1000),
+            "scene_count": int(run_result.get("scene_count") or 0),
+            "asset_count": int(getattr(preflight, "file_count", 0) or 0),
+            "image_count": int(getattr(preflight, "image_count", 0) or 0),
+            "skip_rejected_used": bool(skip_rejected),
+            "state_hash_at_upload": self._hash_kestrel_state(folder_path),
+        }
+        tmp = link_path.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(payload, f, indent=2)
+        os.replace(tmp, link_path)
+
+    def read_perch_link(self, folder_path: str) -> dict:
+        """Read .kestrel/perch_link.json. Returns {present, link} or {present: False}."""
+        root_real, err = self._validate_root_dir(folder_path, context="read_perch_link", require_exists=True)
+        if err:
+            return {"present": False, "error": err}
+        link_path = self._perch_link_path(str(root_real))
+        if not link_path.is_file():
+            return {"present": False}
+        try:
+            import json as _json
+            with open(link_path, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+            return {"present": True, "link": data}
+        except Exception as e:
+            return {"present": False, "error": str(e)}
+
+    def delete_perch_link(self, folder_path: str) -> dict:
+        """Delete .kestrel/perch_link.json (local only; does not touch Worker)."""
+        root_real, err = self._validate_root_dir(folder_path, context="delete_perch_link", require_exists=True)
+        if err:
+            return {"success": False, "error": err}
+        link_path = self._perch_link_path(str(root_real))
+        if not link_path.is_file():
+            return {"success": True, "removed": False}
+        try:
+            link_path.unlink()
+            return {"success": True, "removed": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def verify_perch_link(self, folder_path: str) -> dict:
+        """Check whether the perch a folder is linked to still exists on the server.
+
+        Returns one of:
+          {"status": "missing"}          — no perch_link.json present
+          {"status": "alive", ...}       — server returned 200, link is valid
+          {"status": "deleted", ...}     — server returned 404, local file removed
+          {"status": "unauthorized"}     — 401, user signed out (link untouched)
+          {"status": "forbidden"}        — 403, link owned by another account (untouched)
+          {"status": "unreachable", ...} — network error (link untouched)
+
+        Only a definite 404 clears local state. 401/403/network errors are
+        treated as transient and never cause a destructive cleanup.
+        """
+        root_real, err = self._validate_root_dir(
+            folder_path, context="verify_perch_link", require_exists=True
+        )
+        if err:
+            return {"status": "missing", "error": err}
+        link_path = self._perch_link_path(str(root_real))
+        if not link_path.is_file():
+            return {"status": "missing"}
+        try:
+            import json as _json
+            with open(link_path, "r", encoding="utf-8") as f:
+                link = _json.load(f)
+        except Exception as e:
+            return {"status": "missing", "error": f"link unreadable: {e}"}
+        perch_id = str((link or {}).get("perch_id") or "").strip()
+        if not perch_id:
+            return {"status": "missing", "error": "link has no perch_id"}
+
+        token, dev_user, terr = self._check_perch_token()
+        if terr:
+            # No usable auth — treat as unauthorized; do NOT clear the link.
+            return {"status": "unauthorized", "perch_id": perch_id, "link": link}
+        try:
+            import requests as _req
+            headers: dict = {}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            if dev_user:
+                headers["x-dev-user-id"] = str(dev_user)
+            r = _req.get(
+                f"{self.get_perch_api_base()}/v1/perches/{perch_id}",
+                headers=headers,
+                timeout=15,
+            )
+        except Exception as e:
+            return {"status": "unreachable", "error": str(e), "perch_id": perch_id, "link": link}
+
+        if r.status_code == 200:
+            return {"status": "alive", "perch_id": perch_id, "link": link}
+        if r.status_code == 404:
+            # Definite delete — clear local link AND any pending upload manifest
+            # (Phase 2). 1d only knows about perch_link.json, so we just remove it.
+            try:
+                link_path.unlink()
+            except OSError:
+                pass
+            # Phase 2 manifest cleanup goes here when that file lands.
+            return {"status": "deleted", "perch_id": perch_id, "cleared_local": True}
+        if r.status_code == 401:
+            return {"status": "unauthorized", "perch_id": perch_id, "link": link}
+        if r.status_code == 403:
+            return {"status": "forbidden", "perch_id": perch_id, "link": link}
+        # Anything else (5xx, etc.) — transient; leave local state alone.
+        return {
+            "status": "unreachable",
+            "error": f"HTTP {r.status_code}",
+            "perch_id": perch_id,
+            "link": link,
+        }
 
     def open_perch_sign_in(self, url):
         """Open a pywebview window for desktop Perch sign-in."""
