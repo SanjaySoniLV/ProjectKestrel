@@ -4587,6 +4587,44 @@
       background: rgba(243, 156, 18, .22);
     }
 
+    /* Resumable-upload banner — yellow-tinted (same warn palette as cancel hint),
+       shown when a partial upload is detected for this folder. */
+    .perch-resumable {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 14px;
+      background: rgba(243, 156, 18, .08);
+      border: 1px solid rgba(243, 156, 18, .30);
+      border-radius: 10px;
+      margin-bottom: 12px;
+    }
+    .perch-resumable.hidden { display: none !important; }
+    .perch-resumable-icon {
+      font-size: 22px;
+      flex-shrink: 0;
+    }
+    .perch-resumable-body {
+      flex: 1;
+      min-width: 0;
+    }
+    .perch-resumable-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: #e8f0f8;
+      margin-bottom: 2px;
+    }
+    .perch-resumable-text {
+      font-size: 12px;
+      color: var(--muted, #8a9099);
+    }
+    .perch-resumable-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
     /* Loading state */
     .perch-dlg-loading {
       display: flex;

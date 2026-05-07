@@ -8492,6 +8492,7 @@
       preflight: null,        // full response from Api.preflight_perch_upload
       deselected: new Set(),  // sceneIds the user has unchecked
       skipRejected: true,     // tracks the "Skip rejected photos" checkbox
+      resumable: null,        // {perchId, idempotencyKey, total, committed, pending} when partial upload found
     };
     // Job state for the in-flight upload (only one allowed at a time).
     let _perchActiveJobId = null;
@@ -8941,13 +8942,17 @@
       }
     }
 
-    async function kickShareJob(rootPath, excludedSceneIds, skipRejected) {
+    async function kickShareJob(rootPath, excludedSceneIds, skipRejected, resumeOpts) {
       let res;
+      const existingPerchId = (resumeOpts && resumeOpts.existingPerchId) || null;
+      const idempotencyKey = (resumeOpts && resumeOpts.idempotencyKey) || null;
       try {
         res = await window.pywebview.api.share_with_perch(
           rootPath,
           excludedSceneIds || [],
           skipRejected !== false,
+          existingPerchId,
+          idempotencyKey,
         );
       } catch (e) {
         showToast('Failed to start upload: ' + e.message, 6000);
@@ -9032,6 +9037,56 @@
       _perchUpdateDialogTotals();
     }
 
+    /** Phase 2: ask the bridge whether a partial upload exists for this folder.
+     *  On "resumable" → populate the resume banner and show it. On "complete"
+     *  → quietly clean up the manifest by treating it as a normal fresh open
+     *  (the bridge has already converted to no-op state on the server). On any
+     *  error → leave the dialog as a normal fresh upload. */
+    async function _perchCheckResumable(rootPath) {
+      let res;
+      try { res = await window.pywebview.api.detect_resumable_upload(rootPath); }
+      catch { return; }
+      if (!res || !res.present) return;
+      const status = res.status;
+      const banner = document.getElementById('perchResumableBanner');
+      const sub = document.getElementById('perchResumableSubtitle');
+      if (status === 'resumable') {
+        _perchDlgState.resumable = {
+          perchId: String(res.perch_id || ''),
+          idempotencyKey: String(res.idempotency_key || ''),
+          total: Number(res.total || 0),
+          committed: Number(res.committed || 0),
+          pending: Number(res.pending || 0),
+          title: String(res.title || ''),
+        };
+        if (banner) {
+          if (sub) {
+            const r = _perchDlgState.resumable;
+            sub.textContent = `${r.committed.toLocaleString()} of ${r.total.toLocaleString()} files already uploaded — ${r.pending.toLocaleString()} remaining.`;
+          }
+          banner.classList.remove('hidden');
+        }
+      } else if (status === 'complete') {
+        // Server says everything's already there — let the user know but
+        // don't block the dialog. (The link.json will be missing because the
+        // commit/finalize step didn't write it; user can finish via Resume,
+        // which is a no-op upload that just writes the link.)
+        _perchDlgState.resumable = {
+          perchId: String(res.perch_id || ''),
+          idempotencyKey: '',
+          total: Number(res.total || 0),
+          committed: Number(res.committed || 0),
+          pending: 0,
+          title: '',
+        };
+        if (banner) {
+          if (sub) sub.textContent = `Previous upload appears complete (${res.committed} of ${res.total} files). Click Resume to finalize.`;
+          banner.classList.remove('hidden');
+        }
+      }
+      // For 'unauthorized' / 'forbidden' / 'unreachable' / 'deleted' — silent.
+    }
+
     async function _perchOpenDialog(rootPath, verifyResult) {
       const dlg = document.getElementById('perchUploadDlg');
       if (!dlg) {
@@ -9042,11 +9097,14 @@
       _perchDlgState.preflight = null;
       _perchDlgState.deselected = new Set();
       _perchDlgState.skipRejected = true;  // dialog opens with skip-rejected ON
+      _perchDlgState.resumable = null;
       // Already-published banner: shown only for "alive" — the user picks
       // between opening the existing perch and starting a fresh upload.
       const banner = document.getElementById('perchAlreadyPublishedBanner');
       const bannerSub = document.getElementById('perchAlreadyPublishedSubtitle');
+      const resumableBanner = document.getElementById('perchResumableBanner');
       if (banner) banner.classList.add('hidden');
+      if (resumableBanner) resumableBanner.classList.add('hidden');
       if (verifyResult && verifyResult.status === 'alive' && verifyResult.link) {
         const link = verifyResult.link;
         if (banner) {
@@ -9103,6 +9161,9 @@
         _perchUpdateRejectToggleHint();
         _perchUpdateDialogTotals();
         _perchLoadAccountAndUsage();
+        // Phase 2: detect a resumable upload and surface a banner if found.
+        // Fire-and-forget; user can interact with the dialog meanwhile.
+        _perchCheckResumable(rootPath);
       } else {
         if (signedOut) signedOut.classList.remove('hidden');
         if (sigIn) sigIn.classList.remove('hidden');
@@ -9157,6 +9218,34 @@
         document.querySelectorAll(`.folder-perch-pill[data-folder-path="${cssEscape(folderPath)}"]`)
           .forEach(el => el.classList.add('hidden'));
         // Hide the banner; let the rest of the dialog continue normally.
+        if (banner) banner.classList.add('hidden');
+      });
+      // Phase 2 resumable-upload banner buttons.
+      const resumeBtn = document.getElementById('perchResumableResumeBtn');
+      const startOverBtn = document.getElementById('perchResumableStartOverBtn');
+      if (resumeBtn) resumeBtn.addEventListener('click', () => {
+        const root = _perchDlgState.rootPath;
+        const r = _perchDlgState.resumable;
+        if (!root || !r) return;
+        // Resume kicks off a new share job using the existing perch + key.
+        // Skip-rejected / scene-deselect controls don't apply mid-resume —
+        // we re-send the same payload the original session computed.
+        _perchClosePerchDialog();
+        kickShareJob(root, [], _perchDlgState.skipRejected, {
+          existingPerchId: r.perchId,
+          idempotencyKey: r.idempotencyKey,
+        });
+      });
+      if (startOverBtn) startOverBtn.addEventListener('click', async () => {
+        const root = _perchDlgState.rootPath;
+        if (!root) return;
+        const ok = window.confirm(
+          'Discard the partial upload?\n\nThis deletes the unfinished perch on Perch and removes the local progress file. The folder stays unchanged.'
+        );
+        if (!ok) return;
+        try { await window.pywebview.api.discard_resumable_upload(root); } catch {}
+        _perchDlgState.resumable = null;
+        const banner = document.getElementById('perchResumableBanner');
         if (banner) banner.classList.add('hidden');
       });
       if (sigIn) sigIn.addEventListener('click', async () => {

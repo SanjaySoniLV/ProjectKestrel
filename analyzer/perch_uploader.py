@@ -27,14 +27,18 @@ and per-export ``likeCount`` where implemented.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import tempfile
 import threading
+import time
 import uuid
 from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
+from queue import Empty, Queue
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 import requests
@@ -85,6 +89,151 @@ def _join_under_session(session_root: Path, rel: str) -> Path:
     if not str(candidate).startswith(str(root)):
         raise ValueError(f"Path escapes session root: {rel}")
     return candidate
+
+
+def _make_client_asset_id(
+    filename: str,
+    kind: str,
+    crop_idx: int,
+    scene_count: str,
+    file_path: Path,
+) -> str:
+    """Deterministic client-stable asset ID for resumable uploads (Phase 2).
+
+    Includes mtime+size so that a re-exported file produces a *different*
+    ID — the server then treats it as a new asset rather than refusing to
+    re-upload because "the same client_asset_id is already committed."
+    The ``scene_count`` disambiguates duplicate filenames across scenes
+    inside one folder. 24 hex chars of SHA-256 give plenty of headroom.
+    """
+    try:
+        st = file_path.stat()
+        mtime = st.st_mtime_ns
+        size = st.st_size
+    except OSError:
+        mtime = 0
+        size = 0
+    raw = f"{filename}|{kind}|{crop_idx}|{scene_count}|{mtime}|{size}"
+    return "kr_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+
+def _perch_upload_manifest_path(session_root: Path) -> Path:
+    """Path to the in-progress per-asset manifest (Phase 2).
+
+    Lives next to ``perch_link.json`` but is ephemeral — present only between
+    presign and final success. After success it's renamed to
+    ``perch_upload_manifest.completed.json`` for diagnostics.
+    """
+    return session_root / ".kestrel" / "perch_upload_manifest.json"
+
+
+class _ManifestWriter:
+    """Single-writer, batched, atomic-rename JSON manifest writer.
+
+    The R2 upload pool is up to 48 threads — letting them race to write one
+    JSON file is a recipe for partial reads on resume. This class owns one
+    writer thread and a queue; callers enqueue ``(client_asset_id, patch)``
+    tuples without blocking. The writer flushes on N pending updates OR
+    every ``flush_interval_s`` seconds, whichever fires first.
+    """
+
+    def __init__(self, path: Path, initial: Dict[str, Any]):
+        self._path = path
+        self._state: Dict[str, Any] = dict(initial)
+        if "assets" not in self._state or not isinstance(self._state["assets"], dict):
+            self._state["assets"] = {}
+        self._queue: Queue = Queue()
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._dirty = False
+        self._flush_interval_s = 2.0
+        self._flush_threshold = 10
+        self._thread = threading.Thread(target=self._run, name="PerchManifestWriter", daemon=True)
+        self._thread.start()
+        # Write the initial state synchronously so a crash before the first
+        # flush still leaves a usable file on disk.
+        self._write_now()
+
+    def patch_asset(self, client_asset_id: str, patch: Dict[str, Any]) -> None:
+        """Merge ``patch`` into the asset's entry. Non-blocking."""
+        self._queue.put((client_asset_id, dict(patch)))
+
+    def update_root(self, patch: Dict[str, Any]) -> None:
+        """Merge ``patch`` into top-level fields (non-asset). Forces a flush."""
+        with self._lock:
+            self._state.update(patch)
+            self._dirty = True
+        self._queue.put((None, None))  # wake the writer
+
+    def snapshot(self) -> Dict[str, Any]:
+        with self._lock:
+            return json.loads(json.dumps(self._state))  # deep copy via JSON
+
+    def stop(self, final_flush: bool = True) -> None:
+        self._stop.set()
+        if final_flush:
+            self._flush_pending()
+            self._write_now()
+        # Drain the worker by enqueueing a sentinel.
+        self._queue.put((None, None))
+        self._thread.join(timeout=5.0)
+
+    def _flush_pending(self) -> None:
+        while True:
+            try:
+                cid, patch = self._queue.get_nowait()
+            except Empty:
+                return
+            if cid is None:
+                continue
+            with self._lock:
+                slot = self._state["assets"].setdefault(cid, {})
+                slot.update(patch or {})
+                self._dirty = True
+
+    def _run(self) -> None:
+        last_flush = time.monotonic()
+        pending = 0
+        while not self._stop.is_set():
+            try:
+                cid, patch = self._queue.get(timeout=0.5)
+            except Empty:
+                cid, patch = None, None
+            if cid is not None and patch is not None:
+                with self._lock:
+                    slot = self._state["assets"].setdefault(cid, {})
+                    slot.update(patch)
+                    self._dirty = True
+                pending += 1
+            now = time.monotonic()
+            if self._dirty and (pending >= self._flush_threshold or now - last_flush >= self._flush_interval_s):
+                self._write_now()
+                last_flush = now
+                pending = 0
+        # Final drain on shutdown.
+        self._flush_pending()
+        if self._dirty:
+            self._write_now()
+
+    def _write_now(self) -> None:
+        with self._lock:
+            if not self._dirty and self._path.is_file():
+                return
+            payload = json.dumps(self._state, indent=2).encode("utf-8")
+            self._dirty = False
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        # Atomic write: write to .tmp in same dir, then os.replace.
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=self._path.parent, delete=False, suffix=".json.tmp"
+        ) as fh:
+            tmp = Path(fh.name)
+            fh.write(payload)
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                pass
+        os.replace(tmp, self._path)
 
 
 @dataclass
@@ -453,6 +602,8 @@ class PerchKestrelUploader:
         progress_callback: Optional[Callable[[dict], None]] = None,
         cancel_event: Optional[threading.Event] = None,
         skip_rejected: bool = True,
+        existing_perch_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         session_root = Path(session_path).resolve()
 
@@ -503,16 +654,36 @@ class PerchKestrelUploader:
         if not rows or not file_map:
             raise RuntimeError("No assets selected for upload")
 
-        emit({"phase": "creating_perch"})
-        res = self.s.post(
-            self._url("/v1/perches"),
-            json={"title": title or session_root.name},
-            timeout=self.timeout,
-        )
-        _raise_for_status(res)
-        data = res.json()
-        perch_id = str(data["id"])
-        base_url = str(data.get("url", ""))
+        # ── Create or reuse the perch (Phase 2: idempotency-key) ────────────
+        idemp_key = idempotency_key or str(uuid.uuid4())
+        if existing_perch_id:
+            # Resume path — caller already knows the server-side perch.
+            perch_id = str(existing_perch_id)
+            # Fetch base_url so the success card has a working "Open" link.
+            base_url = ""
+            try:
+                gr = self.s.get(self._url(f"/v1/perches/{perch_id}"), timeout=self.timeout)
+                if gr.ok:
+                    gj = gr.json()
+                    base_url = str(gj.get("url") or "")
+            except Exception:
+                pass
+            emit({"phase": "creating_perch", "resumed": True})
+        else:
+            emit({"phase": "creating_perch"})
+            res = self.s.post(
+                self._url("/v1/perches"),
+                json={
+                    "title": title or session_root.name,
+                    "idempotencyKey": idemp_key,
+                },
+                headers={"Idempotency-Key": idemp_key},
+                timeout=self.timeout,
+            )
+            _raise_for_status(res)
+            data = res.json()
+            perch_id = str(data["id"])
+            base_url = str(data.get("url", ""))
 
         # Build scene-structured presign payload from the (possibly filtered) rows + file_map.
         scene_payload, ordered_keys = self._build_scene_presign_payload(
@@ -526,23 +697,90 @@ class PerchKestrelUploader:
             )
         )
 
-        upload_items = [
-            (file_key, file_map[file_key][0], upload_url, self._content_type(file_map[file_key][0]))
-            for file_key, upload_url in presign_results
-        ]
+        # ── Initialize the on-disk manifest for resumability (Phase 2) ──────
+        # Records every asset we just presigned (or that the server reported as
+        # already-committed). Updated atomically as R2 PUTs complete + commit
+        # calls succeed. Survives a Kestrel crash so the next launch can resume.
+        manifest_path = _perch_upload_manifest_path(session_root)
+        manifest_initial: Dict[str, Any] = {
+            "version": 1,
+            "perch_id": perch_id,
+            "perch_url": base_url,
+            "idempotency_key": idemp_key,
+            "started_at_ms": int(time.time() * 1000),
+            "total_assets": len(presign_results),
+            "skip_rejected_used": bool(skip_rejected),
+            "title": title or session_root.name,
+            "assets": {},
+        }
+        for rec in presign_results:
+            cid = rec.get("client_asset_id")
+            if not cid:
+                continue
+            fk = rec["file_key"]
+            path = file_map[fk][0]
+            manifest_initial["assets"][cid] = {
+                "filename": path.name,
+                "kind": fk[1],
+                "asset_id_remote": rec.get("asset_id"),
+                "state": "committed" if rec.get("committed") else "pending",
+                "uploaded_at_ms": int(time.time() * 1000) if rec.get("committed") else None,
+            }
+        manifest = _ManifestWriter(manifest_path, manifest_initial)
 
-        total = len(upload_items)
-        print(f"[perch] Starting upload of {total} files to R2...")
-        completed_count = 0
+        # ── Upload list — only assets the server says are NOT yet committed ──
+        upload_items: List[tuple] = []
+        already_committed = 0
+        for rec in presign_results:
+            if rec.get("committed"):
+                already_committed += 1
+                continue
+            fk = rec["file_key"]
+            path = file_map[fk][0]
+            upload_items.append((
+                fk,
+                path,
+                rec["upload_url"],
+                self._content_type(path),
+                rec.get("asset_id"),
+                rec.get("client_asset_id"),
+            ))
+
+        total = len(presign_results)
+        remaining = len(upload_items)
+        print(f"[perch] Resumable upload: {already_committed}/{total} already committed; "
+              f"{remaining} files to PUT.")
+
+        # Counter starts at the already-committed count so the UI shows the
+        # true "uploaded so far" rather than counting from zero on a resume.
+        completed_count = already_committed
         lock = threading.Lock()
         canceled = False
 
         def _do_upload(item: tuple) -> Optional[str]:
             nonlocal completed_count
-            file_key, path, upload_url, content_type = item
+            file_key, path, upload_url, content_type, asset_id, client_asset_id = item
             if cancel_event is not None and cancel_event.is_set():
                 return None
             self._upload_direct(upload_url, path, content_type)
+            # Confirm the R2 PUT to the Worker — flips upload_state to 'committed'.
+            committed_ok = False
+            try:
+                cr = self.s.post(
+                    self._url(f"/v1/perches/{perch_id}/assets/{asset_id}/commit"),
+                    timeout=self.timeout,
+                )
+                if cr.ok:
+                    committed_ok = True
+            except Exception:
+                pass
+            # Update manifest entry — non-blocking, batched flush.
+            if client_asset_id:
+                manifest.patch_asset(client_asset_id, {
+                    "state": "committed" if committed_ok else "uploaded_uncommitted",
+                    "uploaded_at_ms": int(time.time() * 1000),
+                    "asset_id_remote": asset_id,
+                })
             with lock:
                 completed_count += 1
                 fname = path.name
@@ -556,25 +794,34 @@ class PerchKestrelUploader:
             return fname
 
         MAX_PARALLEL = 48
-        with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as executor:
-            futures = [executor.submit(_do_upload, item) for item in upload_items]
-            for fut in as_completed(futures):
-                if cancel_event is not None and cancel_event.is_set() and not canceled:
-                    # Cancel any not-yet-started futures; in-flight PUTs finish.
-                    for pending in futures:
-                        pending.cancel()
-                    canceled = True
-                try:
-                    fut.result()
-                except CancelledError:
-                    pass
-                except Exception:
-                    # Surface upload errors to the caller, but emit error event first.
-                    if not canceled:
-                        raise
+        try:
+            with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as executor:
+                futures = [executor.submit(_do_upload, item) for item in upload_items]
+                for fut in as_completed(futures):
+                    if cancel_event is not None and cancel_event.is_set() and not canceled:
+                        # Cancel any not-yet-started futures; in-flight PUTs finish.
+                        for pending in futures:
+                            pending.cancel()
+                        canceled = True
+                    try:
+                        fut.result()
+                    except CancelledError:
+                        pass
+                    except Exception:
+                        # Surface upload errors to the caller, but emit error event first.
+                        if not canceled:
+                            raise
+        except Exception:
+            # Manifest is already on disk via the writer thread — keep it for
+            # the resume flow. Just stop the writer cleanly before bubbling up.
+            manifest.update_root({"finished_at_ms": int(time.time() * 1000), "outcome": "error"})
+            manifest.stop()
+            raise
 
         if canceled:
             print(f"[perch] Upload canceled at {completed_count}/{total} files.")
+            manifest.update_root({"finished_at_ms": int(time.time() * 1000), "outcome": "canceled"})
+            manifest.stop()
             emit({
                 "phase": "canceled",
                 "perch_url": base_url,
@@ -593,11 +840,20 @@ class PerchKestrelUploader:
 
         print(f"[perch] All {total} files uploaded.")
         scene_count = len(scene_payload)
+        # Mark complete and rotate the manifest aside (kept for diagnostics).
+        manifest.update_root({"finished_at_ms": int(time.time() * 1000), "outcome": "done"})
+        manifest.stop()
+        try:
+            completed_path = manifest_path.with_name("perch_upload_manifest.completed.json")
+            os.replace(manifest_path, completed_path)
+        except OSError:
+            pass
         emit({"phase": "done", "perch_url": base_url, "perch_id": perch_id})
         return {
             "perch_id": perch_id,
             "url": base_url,
             "scene_count": scene_count,
+            "idempotency_key": idemp_key,
         }
 
     # Max scenes per presign request. The worker generates one HMAC-SHA256 per
@@ -687,6 +943,9 @@ class PerchKestrelUploader:
                         "exposureMeterScale": ru.exposure_meter_scale,
                         "exposurePipeline": ru.exposure_pipeline,
                         "byteLength": int(byte_len),
+                        "clientAssetId": _make_client_asset_id(
+                            path.name, "export", 0, ru.scene_count, path
+                        ),
                     })
                     ordered_keys.append((idx, "export", 0))
                 # Crops — use per-crop metadata from crops_json when available
@@ -717,6 +976,9 @@ class PerchKestrelUploader:
                         "exposureMeterScale": cd.get("exposure_meter_scale", ru.exposure_meter_scale),
                         "exposurePipeline": cd.get("exposure_pipeline", ru.exposure_pipeline),
                         "byteLength": int(byte_len),
+                        "clientAssetId": _make_client_asset_id(
+                            path.name, "crop", ci, ru.scene_count, path
+                        ),
                     })
                     ordered_keys.append((idx, "crop", ci))
                     ci += 1
@@ -752,8 +1014,15 @@ class PerchKestrelUploader:
         scene_payload: List[Dict[str, Any]],
         ordered_keys: List[tuple],
         on_chunk: Optional[Callable[[int, int], None]] = None,
-    ) -> List[tuple]:
-        """POST scene payload in chunks; returns (file_key, upload_url) pairs in order.
+    ) -> List[Dict[str, Any]]:
+        """POST scene payload in chunks; returns one record per asset, in order.
+
+        Each record: ``{"file_key": (idx, kind, ci), "client_asset_id": str,
+        "asset_id": str, "upload_url": str | None, "committed": bool}``.
+
+        ``committed`` is True for assets the server already has fully uploaded
+        (Phase 2 resume case): no R2 PUT is needed. ``upload_url`` will be
+        ``None`` for those.
 
         Retries on 503 / 429 with exponential backoff. Cloudflare's per-isolate
         CPU budget can tighten after sustained heavy use; a brief pause is
@@ -761,7 +1030,15 @@ class PerchKestrelUploader:
         whole upload.
         """
         import time as _time
-        upload_urls: List[tuple] = []
+        # Flatten the assets-payload to client_asset_ids in the same order as
+        # ordered_keys, so we can match them up against returned records that
+        # may not echo clientAssetId.
+        client_ids_in_order: List[Optional[str]] = []
+        for s in scene_payload:
+            for a in s["assets"]:
+                client_ids_in_order.append(a.get("clientAssetId"))
+
+        results: List[Dict[str, Any]] = []
         key_offset = 0
         total_chunks = max(1, (len(scene_payload) + self._PRESIGN_SCENE_CHUNK - 1) // self._PRESIGN_SCENE_CHUNK)
 
@@ -810,10 +1087,18 @@ class PerchKestrelUploader:
             resp = r.json()
 
             for j, item in enumerate(resp["assets"]):
-                upload_urls.append((ordered_keys[key_offset + j], item["uploadUrl"]))
+                fk = ordered_keys[key_offset + j]
+                cid = item.get("clientAssetId") or client_ids_in_order[key_offset + j]
+                results.append({
+                    "file_key": fk,
+                    "client_asset_id": cid,
+                    "asset_id": item.get("assetId"),
+                    "upload_url": item.get("uploadUrl"),
+                    "committed": bool(item.get("committed")),
+                })
             key_offset += chunk_asset_count
 
-        return upload_urls
+        return results
 
     def _upload_direct(self, upload_url: str, path: "Path", content_type: str) -> None:
         """PUT file bytes directly to a presigned R2 URL — no auth header needed.

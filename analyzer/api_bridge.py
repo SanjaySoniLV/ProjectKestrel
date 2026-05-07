@@ -2223,6 +2223,8 @@ class Api:
         root_path: str,
         excluded_scene_ids=None,
         skip_rejected: bool = True,
+        existing_perch_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> dict:
         """Kick off an async upload. Returns immediately with `{job_id}`.
 
@@ -2233,6 +2235,11 @@ class Api:
         ``skip_rejected``: when True (default), CSV rows marked culled are
         omitted from the upload. The dialog defaults this to True; the user
         can uncheck "Skip rejected photos" in the dialog to override.
+
+        ``existing_perch_id`` / ``idempotency_key`` (Phase 2 resume): when set,
+        the uploader reuses the given perch instead of creating a new one and
+        skips R2 PUTs for assets the server already reports as committed. The
+        client passes both from a stored ``perch_upload_manifest.json``.
         """
         try:
             from perch_uploader import PerchKestrelUploader
@@ -2292,6 +2299,8 @@ class Api:
                     progress_callback=_on_progress,
                     cancel_event=cancel_event,
                     skip_rejected=bool(skip_rejected),
+                    existing_perch_id=(str(existing_perch_id) if existing_perch_id else None),
+                    idempotency_key=(str(idempotency_key) if idempotency_key else None),
                 )
                 # Persist `.kestrel/perch_link.json` only on a fully-successful
                 # upload. On cancel, the partial perch lives on the server and
@@ -2512,13 +2521,15 @@ class Api:
         if r.status_code == 200:
             return {"status": "alive", "perch_id": perch_id, "link": link}
         if r.status_code == 404:
-            # Definite delete — clear local link AND any pending upload manifest
-            # (Phase 2). 1d only knows about perch_link.json, so we just remove it.
+            # Definite delete — clear local link AND any pending upload manifest.
             try:
                 link_path.unlink()
             except OSError:
                 pass
-            # Phase 2 manifest cleanup goes here when that file lands.
+            try:
+                self._perch_manifest_path(str(root_real)).unlink()
+            except OSError:
+                pass
             return {"status": "deleted", "perch_id": perch_id, "cleared_local": True}
         if r.status_code == 401:
             return {"status": "unauthorized", "perch_id": perch_id, "link": link}
@@ -2531,6 +2542,159 @@ class Api:
             "perch_id": perch_id,
             "link": link,
         }
+
+    # ─── Resumable upload helpers (Phase 2) ────────────────────────────────
+
+    @staticmethod
+    def _perch_manifest_path(folder_path: str) -> "Path":
+        from pathlib import Path as _P
+        return _P(folder_path) / ".kestrel" / "perch_upload_manifest.json"
+
+    def detect_resumable_upload(self, folder_path: str) -> dict:
+        """Inspect ``.kestrel/perch_upload_manifest.json`` and reconcile against
+        the server's authoritative upload state.
+
+        Returns one of:
+          {"present": False}                                  — no manifest
+          {"present": True, "status": "deleted"}              — server 404; manifest cleared
+          {"present": True, "status": "unauthorized"}         — 401; left alone
+          {"present": True, "status": "forbidden"}            — 403; left alone
+          {"present": True, "status": "unreachable", "error"} — network error
+          {"present": True, "status": "complete", ...}        — everything committed
+          {"present": True, "status": "resumable", "perch_id", "perch_url",
+           "idempotency_key", "title", "total", "committed", "pending"}
+        """
+        root_real, err = self._validate_root_dir(
+            folder_path, context="detect_resumable_upload", require_exists=True
+        )
+        if err:
+            return {"present": False, "error": err}
+        manifest_path = self._perch_manifest_path(str(root_real))
+        if not manifest_path.is_file():
+            return {"present": False}
+
+        import json as _json
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = _json.load(f)
+        except Exception as e:
+            return {"present": False, "error": f"manifest unreadable: {e}"}
+
+        perch_id = str((manifest or {}).get("perch_id") or "").strip()
+        if not perch_id:
+            return {"present": False, "error": "manifest has no perch_id"}
+
+        token, dev_user, terr = self._check_perch_token()
+        if terr:
+            return {"present": True, "status": "unauthorized", "manifest": manifest}
+
+        try:
+            import requests as _req
+            headers: dict = {}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            if dev_user:
+                headers["x-dev-user-id"] = str(dev_user)
+            r = _req.get(
+                f"{self.get_perch_api_base()}/v1/perches/{perch_id}/upload-state",
+                headers=headers,
+                timeout=15,
+            )
+        except Exception as e:
+            return {"present": True, "status": "unreachable", "error": str(e), "manifest": manifest}
+
+        if r.status_code == 404:
+            try:
+                manifest_path.unlink()
+            except OSError:
+                pass
+            return {"present": True, "status": "deleted", "perch_id": perch_id}
+        if r.status_code == 401:
+            return {"present": True, "status": "unauthorized", "manifest": manifest}
+        if r.status_code == 403:
+            return {"present": True, "status": "forbidden", "manifest": manifest}
+        if not r.ok:
+            return {
+                "present": True, "status": "unreachable",
+                "error": f"HTTP {r.status_code}", "manifest": manifest,
+            }
+
+        body = r.json()
+        server_assets = body.get("assets") or []
+        committed = sum(1 for a in server_assets if a.get("uploadState") == "committed")
+        pending = sum(1 for a in server_assets if a.get("uploadState") == "pending")
+        total = committed + pending
+
+        if total > 0 and pending == 0:
+            return {
+                "present": True,
+                "status": "complete",
+                "perch_id": perch_id,
+                "perch_url": str(manifest.get("perch_url") or ""),
+                "total": total,
+                "committed": committed,
+                "pending": 0,
+            }
+        return {
+            "present": True,
+            "status": "resumable",
+            "perch_id": perch_id,
+            "perch_url": str(manifest.get("perch_url") or ""),
+            "idempotency_key": str(manifest.get("idempotency_key") or ""),
+            "title": str(manifest.get("title") or ""),
+            "total": total,
+            "committed": committed,
+            "pending": pending,
+        }
+
+    def discard_resumable_upload(self, folder_path: str) -> dict:
+        """Delete the local manifest AND ``DELETE`` the partial perch on the
+        server — used by the dialog's "Start over" button. Best-effort: if the
+        Worker call fails the manifest is still removed so the user isn't stuck."""
+        root_real, err = self._validate_root_dir(
+            folder_path, context="discard_resumable_upload", require_exists=True
+        )
+        if err:
+            return {"success": False, "error": err}
+        manifest_path = self._perch_manifest_path(str(root_real))
+        if not manifest_path.is_file():
+            return {"success": True, "removed": False}
+        import json as _json
+        perch_id = ""
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = _json.load(f)
+            perch_id = str((manifest or {}).get("perch_id") or "").strip()
+        except Exception:
+            pass
+
+        worker_error: Optional[str] = None
+        if perch_id:
+            token, dev_user, terr = self._check_perch_token()
+            if terr is None:
+                try:
+                    import requests as _req
+                    headers: dict = {}
+                    if token:
+                        headers["Authorization"] = f"Bearer {token}"
+                    if dev_user:
+                        headers["x-dev-user-id"] = str(dev_user)
+                    dr = _req.delete(
+                        f"{self.get_perch_api_base()}/v1/perches/{perch_id}",
+                        headers=headers,
+                        timeout=15,
+                    )
+                    if not dr.ok and dr.status_code != 404:
+                        worker_error = f"HTTP {dr.status_code}"
+                except Exception as e:
+                    worker_error = str(e)
+
+        try:
+            manifest_path.unlink()
+        except OSError as e:
+            return {"success": False, "error": f"manifest unlink failed: {e}", "worker_error": worker_error}
+
+        return {"success": True, "removed": True, "perch_id": perch_id, "worker_error": worker_error}
 
     def open_perch_sign_in(self, url):
         """Open a pywebview window for desktop Perch sign-in."""

@@ -457,6 +457,19 @@
         </div>
       </div>
 
+      <!-- Resumable-upload banner — shown when a partial upload is detected on disk. -->
+      <div id="perchResumableBanner" class="perch-resumable hidden">
+        <div class="perch-resumable-icon">⏸</div>
+        <div class="perch-resumable-body">
+          <div class="perch-resumable-title">Resumable upload found</div>
+          <div class="perch-resumable-text" id="perchResumableSubtitle">A previous upload didn't finish.</div>
+        </div>
+        <div class="perch-resumable-actions">
+          <button type="button" class="perch-cta-secondary" id="perchResumableResumeBtn">Resume upload</button>
+          <button type="button" class="perch-cta-secondary perch-cta-warn" id="perchResumableStartOverBtn">Start over</button>
+        </div>
+      </div>
+
       <!-- ── Loading state: shown immediately, replaced after preflight ── -->
       <div id="perchDlgLoading" class="perch-dlg-loading">
         <div class="perch-dlg-loading-spinner"></div>
