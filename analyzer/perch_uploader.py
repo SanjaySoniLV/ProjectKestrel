@@ -695,14 +695,26 @@ class PerchKestrelUploader:
                 sort_in_scene += 1
 
             if assets_payload:
-                scene_payload.append({
+                entry: Dict[str, Any] = {
                     "kestrelSceneId": sc,
                     "title": title,
                     "sortIndex": sort_i,
                     "captureTimeMs": cap,
                     "maxQuality": max_q,
                     "assets": assets_payload,
-                })
+                }
+                # Forward user-finalized scene tags from the manual review UI.
+                # Only sent when finalized=True to avoid clobbering ML-derived
+                # per-asset species/family with empty review state.
+                user_tags = sd.get("user_tags") if isinstance(sd, dict) else None
+                if isinstance(user_tags, dict) and user_tags.get("finalized") is True:
+                    sp = [str(x).strip() for x in (user_tags.get("species") or []) if str(x).strip()]
+                    fa = [str(x).strip() for x in (user_tags.get("families") or []) if str(x).strip()]
+                    if sp:
+                        entry["userTagsSpecies"] = sp
+                    if fa:
+                        entry["userTagsFamilies"] = fa
+                scene_payload.append(entry)
 
         return scene_payload, ordered_keys
 
