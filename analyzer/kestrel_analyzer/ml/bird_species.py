@@ -16,7 +16,7 @@ class BirdSpeciesClassifier:
                 f"Failed to import onnxruntime: {e}\n"
                 "Try reinstalling: pip uninstall onnxruntime; pip install onnxruntime"
             ) from e
-        with open(labels_path, "r") as f:
+        with open(labels_path, "r", encoding="utf-8-sig") as f:
             self.labels = np.array([l.strip() for l in f.readlines()])
         providers = gpu_providers() if use_gpu else ["CPUExecutionProvider"]
         try:

@@ -276,7 +276,7 @@ class OnnxClassifier:
         providers = gpu_providers() if use_gpu else ["CPUExecutionProvider"]
         self._session = ort.InferenceSession(str(onnx_path), providers=providers)
         self.providers_used = self._session.get_providers()
-        with open(labels_path) as f:
+        with open(labels_path, "r", encoding="utf-8-sig") as f:
             self._labels = [line.strip() for line in f]
         _active = self.providers_used[0] if self.providers_used else "unknown"
         print(f"[OnnxClassifier] {len(self._labels)} labels  Active provider: {_active}  all providers: {self.providers_used}")
