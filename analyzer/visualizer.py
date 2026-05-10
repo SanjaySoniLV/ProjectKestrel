@@ -164,6 +164,31 @@ def _utc_now_iso() -> str:
     return datetime.utcnow().isoformat() + 'Z'
 
 
+# Settings key holding the previous session's outcome. One of:
+#   'clean'        - normal user-initiated close
+#   'os_shutdown'  - the OS told us to exit (reboot / logoff / power off)
+#   'crash'        - unhandled Python exception
+#   'unknown'      - never updated; ambiguous (e.g. SIGKILL, power loss,
+#                    or an old build that didn't write this key yet)
+EXIT_REASON_KEY = 'app_session_exit_reason'
+EXIT_REASON_MIGRATION_KEY = 'exit_reason_migrated_v1'
+
+
+def _classify_prior_session(settings: dict) -> str:
+    """Return the previous session's exit reason, applying legacy migration.
+
+    Pure function — no I/O, safe to call from tests. Reads only from the
+    provided settings dict; does not mutate it.
+    """
+    reason = str(settings.get(EXIT_REASON_KEY, '') or '').strip().lower()
+    if reason in ('clean', 'os_shutdown', 'crash', 'unknown'):
+        return reason
+    legacy_clean = settings.get('app_session_closed_cleanly', True)
+    if not bool(legacy_clean) and str(settings.get('app_session_started_utc', '') or '').strip():
+        return 'unknown'
+    return 'clean'
+
+
 def _mark_session_start() -> None:
     """Mark this app session as active and detect unclean prior shutdown.
 
@@ -173,12 +198,20 @@ def _mark_session_start() -> None:
     """
     try:
         settings = load_persisted_settings()
+        prev_reason = _classify_prior_session(settings)
         prev_started = str(settings.get('app_session_started_utc', '') or '').strip()
-        prev_clean = bool(settings.get('app_session_closed_cleanly', True))
-        if prev_started and not prev_clean:
+        # Only 'crash' and 'unknown' get surfaced as recoverable unclean
+        # shutdowns. 'os_shutdown' is intentionally suppressed so PC reboots
+        # don't generate false crash dialogs.
+        if prev_reason in ('crash', 'unknown') and prev_started:
             settings['last_unclean_shutdown_utc'] = prev_started
+        else:
+            settings.pop('last_unclean_shutdown_utc', None)
+        settings['last_exit_reason'] = prev_reason
+        settings[EXIT_REASON_MIGRATION_KEY] = True
         settings['app_session_started_utc'] = _utc_now_iso()
-        settings['app_session_closed_cleanly'] = False
+        settings['app_session_closed_cleanly'] = False  # legacy, kept one release
+        settings[EXIT_REASON_KEY] = 'unknown'
         settings['app_session_pid'] = int(os.getpid())
 
         try:
@@ -207,8 +240,30 @@ def _mark_session_clean_exit() -> None:
     try:
         settings = load_persisted_settings()
         settings['app_session_closed_cleanly'] = True
+        settings[EXIT_REASON_KEY] = 'clean'
         settings['last_session_closed_utc'] = _utc_now_iso()
         settings.pop('last_unclean_shutdown_utc', None)
+        save_persisted_settings(settings)
+    except Exception:
+        pass
+
+
+def _mark_session_exit_reason(reason: str) -> None:
+    """Atomically record the cause of an in-progress shutdown.
+
+    Called from the OS-shutdown watcher (``shutdown_watch``) and from the
+    top-level crash handler so the next launch can distinguish a true
+    application crash from a system reboot or logoff. Failsafe: any I/O
+    error is swallowed because this runs at the worst possible moment.
+    """
+    if reason not in ('clean', 'os_shutdown', 'crash', 'unknown'):
+        return
+    try:
+        settings = load_persisted_settings()
+        settings[EXIT_REASON_KEY] = reason
+        if reason == 'clean':
+            settings['app_session_closed_cleanly'] = True
+            settings.pop('last_unclean_shutdown_utc', None)
         save_persisted_settings(settings)
     except Exception:
         pass
@@ -513,6 +568,15 @@ def main():
     log('Legacy HTTP control API: removed (desktop-only). env-var escape hatches are no longer honoured.')
     _mark_session_start()
 
+    # Listen for OS-initiated shutdown / logoff / reboot so the next launch
+    # can distinguish a system-driven exit from a real application crash and
+    # suppress the false unclean-shutdown dialog. Best-effort and failsafe.
+    try:
+        import shutdown_watch
+        shutdown_watch.install(lambda: _mark_session_exit_reason('os_shutdown'))
+    except Exception as _e:
+        log('shutdown_watch install failed:', _e)
+
     # ── Crash hardening ───────────────────────────────────────────────────────
     # faulthandler dumps a Python traceback to stderr (which is tee-streamed to
     # the runtime log file) on SIGSEGV / SIGABRT / hard crashes from native libs
@@ -532,6 +596,7 @@ def main():
             tb_str = ''.join(_tb.format_exception(args.exc_type, args.exc_value, args.exc_traceback))
             log(f'[Thread {thread_name!r}] Uncaught exception: {args.exc_type.__name__}: {args.exc_value}')
             log(f'[Thread {thread_name!r}] Traceback:\n{tb_str}')
+            _mark_session_exit_reason('crash')
             if _telemetry is not None:
                 try:
                     _telemetry.send_crash_report(
@@ -539,6 +604,7 @@ def main():
                         tb_str=tb_str,
                         machine_id=_telemetry.get_machine_id(load_persisted_settings()),
                         version=_telemetry._read_version(),
+                        exit_reason='crash',
                     )
                 except Exception:
                     pass
@@ -770,25 +836,27 @@ if __name__ == '__main__':
         _mark_session_clean_exit()
     except Exception as _main_exc:
         # Top-level crash handler — send crash report before re-raising
+        _mark_session_exit_reason('crash')
         try:
             import traceback as _tb
             if _telemetry is not None:
                 _crash_settings = load_persisted_settings()
                 _crash_mid = _telemetry.get_machine_id(_crash_settings)
-                
+
                 # Fetch recent log tail, passing the active folder's log if available
                 _folder_path = _crash_settings.get('active_analysis_path', '')
                 if _folder_path:
                     _log_tail = _telemetry.get_recent_log_tail(folder=_folder_path, runtime_log_files=3)
                 else:
                     _log_tail = _telemetry.get_recent_log_tail(runtime_log_files=3)
-                
+
                 _telemetry.send_crash_report(
                     exc=_main_exc,
                     tb_str=_tb.format_exc(),
                     log_tail=_log_tail,
                     machine_id=_crash_mid,
                     version=_telemetry._read_version(),
+                    exit_reason='crash',
                 )
                 # Give daemon thread a moment to fire off the HTTP request
                 import time as _t

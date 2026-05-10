@@ -1722,15 +1722,26 @@ class Api:
         return {'running': _queue_manager.is_running}
 
     def get_recovery_status(self):
-        """Return persisted queue-recovery and unclean-shutdown state."""
+        """Return persisted queue-recovery and unclean-shutdown state.
+
+        ``exit_reason`` is the classified outcome of the previous session
+        (``'clean' | 'os_shutdown' | 'crash' | 'unknown'``). The frontend
+        uses it to pick dialog wording — alarming for ``'crash'``, soft
+        for ``'unknown'``, no dialog at all for the other two. See
+        ``visualizer._classify_prior_session``.
+        """
         try:
             settings = load_persisted_settings()
             queue_state = _queue_manager.get_persisted_recovery_state()
             unclean_utc = str(settings.get('last_unclean_shutdown_utc', '') or '').strip()
+            exit_reason = str(settings.get('last_exit_reason', '') or '').strip().lower()
+            if exit_reason not in ('clean', 'os_shutdown', 'crash', 'unknown'):
+                exit_reason = 'unknown' if unclean_utc else 'clean'
             return {
                 'success': True,
                 'unclean_shutdown': bool(unclean_utc),
                 'unclean_shutdown_utc': unclean_utc,
+                'exit_reason': exit_reason,
                 'queue_recovery': queue_state,
             }
         except Exception as e:
@@ -1761,6 +1772,7 @@ class Api:
             machine_id = _telemetry.get_machine_id(settings)
             active_folder = str(settings.get('active_analysis_path', '') or '').strip()
             log_tail = _telemetry.get_recent_log_tail(folder=active_folder or None, runtime_log_files=3)
+            exit_reason = str(settings.get('last_exit_reason', '') or '').strip().lower() or 'unknown'
             _telemetry.send_crash_report(
                 exc=None,
                 tb_str='Recovered unclean shutdown report requested by user.',
@@ -1768,9 +1780,11 @@ class Api:
                 session_analytics={
                     'recovery_report': True,
                     'active_analysis_path': active_folder,
+                    'exit_reason': exit_reason,
                 },
                 machine_id=machine_id,
                 version=_telemetry._read_version(),
+                exit_reason=exit_reason,
             )
             return {'success': True}
         except Exception as e:
