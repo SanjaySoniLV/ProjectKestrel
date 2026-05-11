@@ -1364,18 +1364,18 @@ class AnalysisPipeline:
                 except Exception:
                     pass
 
-            # === Post-analysis: compute quality distribution and normalized ratings ===
+            # === Post-analysis: persist database + audit-trail metadata + scene grouping ===
             stage_ctx["stage"] = "post_analysis_normalization"
             try:
-                from .ratings import compute_quality_distribution
                 if not database.empty and "quality" in database.columns:
-                    quality_scores = database["quality"].tolist()
-                    distribution = compute_quality_distribution(quality_scores)
-
-                    # Save analysis results (no normalized_rating; computed at runtime)
                     save_database(database, db_path)
 
-                    # Cache quality distribution in kestrel_metadata.json for runtime normalization
+                    # Update kestrel_metadata.json with the analysis-run audit trail
+                    # (render mode, settings snapshot). The frontend reads
+                    # exposure_render_mode / exposure_pipeline_version to pick the
+                    # correct RAW preview path; the rest is a record of which
+                    # parameters produced the cached results, intended for users
+                    # who later want to see what settings produced this folder.
                     metadata_path = os.path.join(kestrel_dir, METADATA_FILENAME)
                     try:
                         import json as _json
@@ -1401,17 +1401,10 @@ class AnalysisPipeline:
                         else:
                             render_mode_meta = "legacy_auto_bright_v1"
 
-                        _meta["quality_distribution"] = distribution
-                        _meta["quality_distribution_stored"] = True
                         _meta["exposure_pipeline_version"] = 3
                         _meta["exposure_render_mode"] = render_mode_meta
                         _meta["exposure_quality"] = exposure_quality
 
-                        # Record the full set of settings used for THIS analysis
-                        # run so users can later see which parameters produced
-                        # the cached results (detection thresholds, rating
-                        # profile, detector variant, etc.). This is a snapshot
-                        # — re-running analysis overwrites it.
                         _meta["analyzed_utc"] = _dt.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
                         _meta["kestrel_version"] = VERSION
                         _meta["analysis_settings"] = {
@@ -1437,7 +1430,7 @@ class AnalysisPipeline:
                     except Exception as _meta_e:
                         log_warning(
                             self._log_path,
-                            f"Failed to write quality distribution to metadata: {_meta_e}",
+                            f"Failed to write analysis metadata: {_meta_e}",
                             stage="post_analysis_normalization",
                         )
 

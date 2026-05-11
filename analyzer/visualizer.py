@@ -1,29 +1,19 @@
 #!/usr/bin/env python3
-"""Standalone local web server for the Project Kestrel visualizer (supersedes backend/editor_bridge.py).
+"""Project Kestrel application entry point.
 
-Features:
- - Serves the existing visualizer.html (and any static assets in the folder).
- - Exposes legacy HTTP API endpoints for compatibility while the desktop
-    pywebview bridge remains the primary integration path.
- - Intended to be frozen into a single executable with PyInstaller.
+Launches the pywebview desktop window and serves ``visualizer.html`` plus
+static assets from a local-only HTTP server (127.0.0.1). All control flows
+through the ``api_bridge.Api`` JS bridge; this module owns process startup,
+session-lifecycle bookkeeping, OS-shutdown detection, and the crash
+handler.
 
 Usage (development):
     python analyzer/visualizer.py --port 8765 --root C:/Photos/Trip
+    python analyzer/visualizer.py --cli C:/Photos/Trip --no-gpu   # headless
 
-After starting it will open the desktop UI (pywebview) at http://127.0.0.1:<port>/ .
-
-Build single-file EXE (example):
-    pyinstaller --onefile --name kestrel_viz analyzer/visualizer.py
-
-Optionally set env vars:
-    KESTREL_ALLOWED_ROOT=C:/Photos/Trip       (restrict paths)
-    KESTREL_ALLOWED_EXTENSIONS=.cr3,.jpg,...  (override allowed editor extensions)
-
-The legacy HTTP control API (``/settings``, ``/queue/*``, ``/recovery/*``,
-``/open``, ``/shutdown``, ``/feedback``) has been removed entirely: all
-integration happens through the pywebview JS bridge. The ``KESTREL_ENABLE_LEGACY_*``
-and ``KESTREL_ALLOW_ANY_EXTENSION`` / ``KESTREL_BRIDGE_TOKEN`` environment
-variables are no longer recognised.
+Optional env vars:
+    KESTREL_ALLOWED_ROOT=C:/Photos/Trip       (jail bridge calls to this root)
+    KESTREL_ALLOWED_EXTENSIONS=.cr3,.jpg,...  (override editor allowlist)
 """
 
 from __future__ import annotations
@@ -61,16 +51,8 @@ except ImportError:
 
 HOST = '127.0.0.1'
 
-# Phase 1 policy lock: the legacy HTTP control surface is permanently disabled.
-# All integration flows through the pywebview JS bridge (``api_bridge.Api``).
-# These constants are ``False`` literals (not env-derived) so an attacker
-# cannot set ``KESTREL_ENABLE_LEGACY_HTTP_API=1`` in the environment to
-# re-expose the legacy surface. See SECURITY.md / FINDING-07.
-SECURITY_POLICY_VERSION = '2026-04-21'
-BROWSER_ONLY_MODE_SUPPORTED = False
-API_AUTH_POLICY = 'desktop-api-only;legacy-http-api-removed'
-LEGACY_HTTP_API_ENABLED = False
-LEGACY_OPEN_ENDPOINT_ENABLED = False
+# One-time settings-migration key that flags whether the 2026-03 legal-consent
+# self-heal has already run for this install. See ``_apply_legal_upgrade_self_heal``.
 LEGAL_SELF_HEAL_MIGRATION_KEY = 'legal_upgrade_self_heal_2026_03'
 
 # --- Security / behavior configuration ---
@@ -164,6 +146,31 @@ def _utc_now_iso() -> str:
     return datetime.utcnow().isoformat() + 'Z'
 
 
+# Settings key holding the previous session's outcome. One of:
+#   'clean'        - normal user-initiated close
+#   'os_shutdown'  - the OS told us to exit (reboot / logoff / power off)
+#   'crash'        - unhandled Python exception
+#   'unknown'      - never updated; ambiguous (e.g. SIGKILL, power loss,
+#                    or an old build that didn't write this key yet)
+EXIT_REASON_KEY = 'app_session_exit_reason'
+EXIT_REASON_MIGRATION_KEY = 'exit_reason_migrated_v1'
+
+
+def _classify_prior_session(settings: dict) -> str:
+    """Return the previous session's exit reason, applying legacy migration.
+
+    Pure function — no I/O, safe to call from tests. Reads only from the
+    provided settings dict; does not mutate it.
+    """
+    reason = str(settings.get(EXIT_REASON_KEY, '') or '').strip().lower()
+    if reason in ('clean', 'os_shutdown', 'crash', 'unknown'):
+        return reason
+    legacy_clean = settings.get('app_session_closed_cleanly', True)
+    if not bool(legacy_clean) and str(settings.get('app_session_started_utc', '') or '').strip():
+        return 'unknown'
+    return 'clean'
+
+
 def _mark_session_start() -> None:
     """Mark this app session as active and detect unclean prior shutdown.
 
@@ -173,12 +180,20 @@ def _mark_session_start() -> None:
     """
     try:
         settings = load_persisted_settings()
+        prev_reason = _classify_prior_session(settings)
         prev_started = str(settings.get('app_session_started_utc', '') or '').strip()
-        prev_clean = bool(settings.get('app_session_closed_cleanly', True))
-        if prev_started and not prev_clean:
+        # Only 'crash' and 'unknown' get surfaced as recoverable unclean
+        # shutdowns. 'os_shutdown' is intentionally suppressed so PC reboots
+        # don't generate false crash dialogs.
+        if prev_reason in ('crash', 'unknown') and prev_started:
             settings['last_unclean_shutdown_utc'] = prev_started
+        else:
+            settings.pop('last_unclean_shutdown_utc', None)
+        settings['last_exit_reason'] = prev_reason
+        settings[EXIT_REASON_MIGRATION_KEY] = True
         settings['app_session_started_utc'] = _utc_now_iso()
-        settings['app_session_closed_cleanly'] = False
+        settings['app_session_closed_cleanly'] = False  # legacy, kept one release
+        settings[EXIT_REASON_KEY] = 'unknown'
         settings['app_session_pid'] = int(os.getpid())
 
         try:
@@ -207,8 +222,30 @@ def _mark_session_clean_exit() -> None:
     try:
         settings = load_persisted_settings()
         settings['app_session_closed_cleanly'] = True
+        settings[EXIT_REASON_KEY] = 'clean'
         settings['last_session_closed_utc'] = _utc_now_iso()
         settings.pop('last_unclean_shutdown_utc', None)
+        save_persisted_settings(settings)
+    except Exception:
+        pass
+
+
+def _mark_session_exit_reason(reason: str) -> None:
+    """Atomically record the cause of an in-progress shutdown.
+
+    Called from the OS-shutdown watcher (``shutdown_watch``) and from the
+    top-level crash handler so the next launch can distinguish a true
+    application crash from a system reboot or logoff. Failsafe: any I/O
+    error is swallowed because this runs at the worst possible moment.
+    """
+    if reason not in ('clean', 'os_shutdown', 'crash', 'unknown'):
+        return
+    try:
+        settings = load_persisted_settings()
+        settings[EXIT_REASON_KEY] = reason
+        if reason == 'clean':
+            settings['app_session_closed_cleanly'] = True
+            settings.pop('last_unclean_shutdown_utc', None)
         save_persisted_settings(settings)
     except Exception:
         pass
@@ -262,16 +299,6 @@ def _apply_legal_upgrade_self_heal(settings: dict, prev_version: str, current_ve
         mutated = True
 
     return mutated
-
-
-def build_original_path(*_a, **_k):  # pragma: no cover - legacy stub
-    """Deprecated — callers should use ``api_bridge.Api.open_in_editor``.
-
-    Preserved only so any stale import path short-circuits with a clear
-    exception instead of silently resurrecting the legacy HTTP ``/open``
-    semantics. See FINDING-07.
-    """
-    raise RuntimeError('build_original_path has been removed; use the pywebview API.')
 
 
 def _safe_under(base: str, candidate: str) -> bool:
@@ -403,19 +430,6 @@ class Handler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def do_GET(self):  # type: ignore[override]
-        # bridge_config.js remains for compatibility with any cached front-end
-        # that still fetches it; it no longer exports a token.
-        if self.path == '/bridge_config.js':
-            body = (
-                b"// bridge_config.js is deprecated in desktop-only mode\n"
-                b"window.__BRIDGE_ORIGIN=window.location.origin;\n"
-            )
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/javascript')
-            self.send_header('Cache-Control', 'no-store')
-            self.end_headers()
-            self.wfile.write(body)
-            return
         if self.path in ('/', '/index.html'):
             # Prefer analyzer/visualizer.html when present (merged layout).
             # Check multiple locations across dev, frozen, and installed builds.
@@ -457,26 +471,6 @@ class Handler(SimpleHTTPRequestHandler):
             self.path = _find_visualizer()
         return super().do_GET()
 
-    def do_OPTIONS(self):  # type: ignore[override]
-        # The legacy HTTP control API has been removed. Reject preflight so no
-        # third-party page can probe for control routes. See FINDING-07.
-        log('[security] Reject OPTIONS: legacy HTTP API removed')
-        self.send_response(405)
-        self.send_header('Allow', 'GET')
-        self.end_headers()
-
-    def do_POST(self):  # type: ignore[override]
-        # No POST routes exist any more — every mutation goes through the
-        # pywebview JS bridge. See FINDING-07.
-        log('[security] Reject POST: legacy HTTP API removed', self.path)
-        self.send_response(410)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        self.wfile.write(
-            b'{"ok":false,"error":"Legacy HTTP API has been removed; '
-            b'use the pywebview JS bridge instead."}'
-        )
-
 
 def _build_arg_parser():
     ap = argparse.ArgumentParser(description='Serve Project Kestrel visualizer with local desktop bridge.')
@@ -509,9 +503,16 @@ def main():
     runtime_log_path = _enable_runtime_log_capture()
     if runtime_log_path:
         log('Runtime log capture enabled:', runtime_log_path)
-    log('Security policy:', SECURITY_POLICY_VERSION, API_AUTH_POLICY, 'browser_mode_supported=', BROWSER_ONLY_MODE_SUPPORTED)
-    log('Legacy HTTP control API: removed (desktop-only). env-var escape hatches are no longer honoured.')
     _mark_session_start()
+
+    # Listen for OS-initiated shutdown / logoff / reboot so the next launch
+    # can distinguish a system-driven exit from a real application crash and
+    # suppress the false unclean-shutdown dialog. Best-effort and failsafe.
+    try:
+        import shutdown_watch
+        shutdown_watch.install(lambda: _mark_session_exit_reason('os_shutdown'))
+    except Exception as _e:
+        log('shutdown_watch install failed:', _e)
 
     # ── Crash hardening ───────────────────────────────────────────────────────
     # faulthandler dumps a Python traceback to stderr (which is tee-streamed to
@@ -532,6 +533,7 @@ def main():
             tb_str = ''.join(_tb.format_exception(args.exc_type, args.exc_value, args.exc_traceback))
             log(f'[Thread {thread_name!r}] Uncaught exception: {args.exc_type.__name__}: {args.exc_value}')
             log(f'[Thread {thread_name!r}] Traceback:\n{tb_str}')
+            _mark_session_exit_reason('crash')
             if _telemetry is not None:
                 try:
                     _telemetry.send_crash_report(
@@ -539,6 +541,7 @@ def main():
                         tb_str=tb_str,
                         machine_id=_telemetry.get_machine_id(load_persisted_settings()),
                         version=_telemetry._read_version(),
+                        exit_reason='crash',
                     )
                 except Exception:
                     pass
@@ -773,25 +776,27 @@ if __name__ == '__main__':
         _mark_session_clean_exit()
     except Exception as _main_exc:
         # Top-level crash handler — send crash report before re-raising
+        _mark_session_exit_reason('crash')
         try:
             import traceback as _tb
             if _telemetry is not None:
                 _crash_settings = load_persisted_settings()
                 _crash_mid = _telemetry.get_machine_id(_crash_settings)
-                
+
                 # Fetch recent log tail, passing the active folder's log if available
                 _folder_path = _crash_settings.get('active_analysis_path', '')
                 if _folder_path:
                     _log_tail = _telemetry.get_recent_log_tail(folder=_folder_path, runtime_log_files=3)
                 else:
                     _log_tail = _telemetry.get_recent_log_tail(runtime_log_files=3)
-                
+
                 _telemetry.send_crash_report(
                     exc=_main_exc,
                     tb_str=_tb.format_exc(),
                     log_tail=_log_tail,
                     machine_id=_crash_mid,
                     version=_telemetry._read_version(),
+                    exit_reason='crash',
                 )
                 # Give daemon thread a moment to fire off the HTTP request
                 import time as _t

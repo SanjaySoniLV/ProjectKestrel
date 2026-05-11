@@ -240,13 +240,6 @@ def _is_safe_external_url(url) -> bool:
 
 
 _ALLOWED_EDITOR_EXTENSIONS: set[str] = set()
-# ``KESTREL_ALLOW_ANY_EXTENSION`` was previously an env-var escape hatch that
-# let users bypass the extension allowlist on the ``open_in_editor`` surface.
-# That's a FINDING-07 escape hatch and is now hard-off: the set of allowed
-# extensions is fixed to ``_DEFAULT_EDITOR_EXTENSIONS`` plus the user's
-# ``KESTREL_ALLOWED_EXTENSIONS`` override (still validated), and the check is
-# never bypassed.
-_ALLOW_ANY_EDITOR_EXTENSION = False
 
 
 def _normalize_extensions(exts):
@@ -300,6 +293,10 @@ class Api:
         self._has_unsaved_changes: bool = False
         self._cache_cleanup_roots: set[str] = set()
         self._culling_companion_extensions: tuple[str, ...] = _CULLING_COMPANION_EXTENSIONS
+        # Set externally by visualizer.main() after window/server come up.
+        self._main_window = None
+        self._culling_window = None
+        self._server_port: int | None = None
         # Async share-with-perch state (job_id -> {progress, cancel_event, thread})
         self._share_jobs: dict = {}
         self._share_jobs_lock = None
@@ -408,8 +405,6 @@ class Api:
             return False
 
     def _editor_extension_allowed(self, path: str) -> bool:
-        if _ALLOW_ANY_EDITOR_EXTENSION:
-            return True
         _, ext = os.path.splitext(path)
         return ext.lower() in _ALLOWED_EDITOR_EXTENSIONS
 
@@ -1239,13 +1234,11 @@ class Api:
 
             try:
                 from kestrel_analyzer.ratings import (
-                    compute_quality_distribution,
                     get_profile_thresholds,
                     quality_to_rating,
                 )
             except ImportError:
                 from analyzer.kestrel_analyzer.ratings import (
-                    compute_quality_distribution,
                     get_profile_thresholds,
                     quality_to_rating,
                 )
@@ -1259,7 +1252,6 @@ class Api:
                 return {'success': False, 'error': err, 'normalized_ratings': {}, 'mode_used': ''}
 
             csv_path = os.path.join(kestrel_dir, 'kestrel_database.csv')
-            metadata_path = os.path.join(kestrel_dir, 'kestrel_metadata.json')
 
             if not os.path.exists(csv_path):
                 return {'success': False, 'error': 'No database found', 'normalized_ratings': {}, 'mode_used': ''}
@@ -1271,26 +1263,6 @@ class Api:
             df = pd.read_csv(csv_path)
             if df.empty:
                 return {'success': True, 'normalized_ratings': {}, 'mode_used': profile, 'error': ''}
-
-            # --- Cache per-folder quality distribution (for potential histogram display) ---
-            quality_scores = df['quality'].tolist() if 'quality' in df.columns else []
-            folder_dist = compute_quality_distribution(quality_scores)
-
-            try:
-                _meta = {}
-                if os.path.exists(metadata_path):
-                    with open(metadata_path, 'r', encoding='utf-8') as mf:
-                        content = mf.read().strip()
-                        if content:
-                            loaded = json.loads(content)
-                            if isinstance(loaded, dict):
-                                _meta = loaded
-                _meta['quality_distribution'] = folder_dist
-                _meta['quality_distribution_stored'] = True
-                with open(metadata_path, 'w', encoding='utf-8') as mf:
-                    json.dump(_meta, mf, indent=2)
-            except Exception:
-                pass
 
             # --- Map quality scores to star ratings (in memory only — no CSV write) ---
             if 'filename' not in df.columns or 'quality' not in df.columns:
@@ -1840,15 +1812,26 @@ class Api:
         return {'running': _queue_manager.is_running}
 
     def get_recovery_status(self):
-        """Return persisted queue-recovery and unclean-shutdown state."""
+        """Return persisted queue-recovery and unclean-shutdown state.
+
+        ``exit_reason`` is the classified outcome of the previous session
+        (``'clean' | 'os_shutdown' | 'crash' | 'unknown'``). The frontend
+        uses it to pick dialog wording — alarming for ``'crash'``, soft
+        for ``'unknown'``, no dialog at all for the other two. See
+        ``visualizer._classify_prior_session``.
+        """
         try:
             settings = load_persisted_settings()
             queue_state = _queue_manager.get_persisted_recovery_state()
             unclean_utc = str(settings.get('last_unclean_shutdown_utc', '') or '').strip()
+            exit_reason = str(settings.get('last_exit_reason', '') or '').strip().lower()
+            if exit_reason not in ('clean', 'os_shutdown', 'crash', 'unknown'):
+                exit_reason = 'unknown' if unclean_utc else 'clean'
             return {
                 'success': True,
                 'unclean_shutdown': bool(unclean_utc),
                 'unclean_shutdown_utc': unclean_utc,
+                'exit_reason': exit_reason,
                 'queue_recovery': queue_state,
             }
         except Exception as e:
@@ -1879,6 +1862,7 @@ class Api:
             machine_id = _telemetry.get_machine_id(settings)
             active_folder = str(settings.get('active_analysis_path', '') or '').strip()
             log_tail = _telemetry.get_recent_log_tail(folder=active_folder or None, runtime_log_files=3)
+            exit_reason = str(settings.get('last_exit_reason', '') or '').strip().lower() or 'unknown'
             _telemetry.send_crash_report(
                 exc=None,
                 tb_str='Recovered unclean shutdown report requested by user.',
@@ -1886,9 +1870,11 @@ class Api:
                 session_analytics={
                     'recovery_report': True,
                     'active_analysis_path': active_folder,
+                    'exit_reason': exit_reason,
                 },
                 machine_id=machine_id,
                 version=_telemetry._read_version(),
+                exit_reason=exit_reason,
             )
             return {'success': True}
         except Exception as e:
@@ -1918,12 +1904,7 @@ class Api:
             port = self._server_port or 8765
             from urllib.parse import quote
             culling_url = f'http://{HOST}:{port}/culling.html?root={quote(root_real, safe="")}'
-            
-            methods = [m for m in dir(self) if not m.startswith('_') and callable(getattr(self, m))]
-            log(f'[culling] Creating window with Api instance')
-            log(f'[culling] Available public methods (first 10): {methods[:10]}')
-            log(f'[culling] read_kestrel_csv available: {"read_kestrel_csv" in methods}')
-            
+
             win = _wv.create_window(
                 f'Culling Assistant \u2014 {folder_name}',
                 culling_url,
@@ -1932,7 +1913,6 @@ class Api:
                 height=900,
             )
             self._culling_window = win
-            log(f'[culling] Culling window created successfully')
             return {'success': True}
         except Exception as e:
             log(f'open_culling_window error: {e}')
@@ -3195,14 +3175,6 @@ class Api:
             log(f'get_reject_restore_state error: {e}')
             return {'success': False, 'error': str(e)}
 
-    def backup_kestrel_csv(self, root_path: str):
-        """Copy kestrel_database.csv to kestrel_database_old.csv as backup.
-
-        Deprecated: Use backup_kestrel_db instead for dual backup.
-        Kept for backward compatibility.
-        """
-        return self.backup_kestrel_db(root_path)
-
     def backup_kestrel_db(self, root_path: str):
         """Backup both kestrel_database.csv and kestrel_scenedata.json before major operations.
 
@@ -3252,14 +3224,6 @@ class Api:
         except Exception as e:
             log(f"backup_kestrel_db error: {e}")
             return {"success": False, "error": str(e), "backup_csv": "", "backup_scenedata": ""}
-
-    def restore_kestrel_csv_backup(self, root_path: str):
-        """Restore kestrel_database_old.csv back to kestrel_database.csv.
-
-        Deprecated: Use restore_kestrel_db_backup instead for dual restore.
-        Kept for backward compatibility.
-        """
-        return self.restore_kestrel_db_backup(root_path)
 
     def restore_kestrel_db_backup(self, root_path: str):
         """Restore both kestrel_database.csv and kestrel_scenedata.json from backups.

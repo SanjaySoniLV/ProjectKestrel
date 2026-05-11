@@ -6442,7 +6442,12 @@
         ? recovery.queue_recovery.restore_paths
         : [];
       const hasQueueRecovery = restorePaths.length > 0;
-      const hadUncleanShutdown = !!recovery.unclean_shutdown;
+      const exitReason = String(recovery.exit_reason || '').toLowerCase();
+      // 'os_shutdown' (PC reboot/logoff) and 'clean' never warrant a dialog.
+      // 'crash' is a real unhandled exception. 'unknown' is ambiguous
+      // (SIGKILL, power loss, or pre-upgrade install) and gets a soft prompt.
+      const hadUncleanShutdown = !!recovery.unclean_shutdown
+        && (exitReason === 'crash' || exitReason === 'unknown' || exitReason === '');
       if (!hasQueueRecovery && !hadUncleanShutdown) return;
 
       let queueDismissed = false;
@@ -6473,9 +6478,10 @@
       }
 
       if (hadUncleanShutdown) {
-        const sendReport = confirm(
-          'Kestrel detected that the previous session did not shut down cleanly.\n\nSend a crash report now?'
-        );
+        const promptText = exitReason === 'crash'
+          ? 'Kestrel detected that the previous session crashed.\n\nSend a crash report now?'
+          : 'Kestrel did not exit cleanly. This is sometimes caused by a system shutdown or power loss — would you still like to send a report?';
+        const sendReport = confirm(promptText);
         if (sendReport) {
           try {
             const reportResult = await apiSendRecoveryCrashReport();
