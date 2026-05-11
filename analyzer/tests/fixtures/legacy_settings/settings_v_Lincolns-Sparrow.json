@@ -1,0 +1,18 @@
+{
+  "detection_threshold": 0.27,
+  "detector_name": "mdv5a",
+  "editor": "/Applications/Adobe Lightroom Classic.app",
+  "exposure_quality": "balanced",
+  "future_feature_xyz": true,
+  "future_unknown_key": "hello",
+  "kestrel_impact_total_files": 15000,
+  "kestrel_impact_total_seconds": 9500.5,
+  "mask_threshold": 0.55,
+  "max_bird_crops": 5,
+  "rating_profile": "balanced",
+  "raw_preview_cache_enabled": true,
+  "scene_time_threshold": 1500,
+  "thumbnail_jpeg_quality": 75,
+  "thumbnail_max_width": 1200,
+  "wildlife_model_mode": "balanced"
+}
