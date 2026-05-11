@@ -1,0 +1,45 @@
+[
+  {
+    "timestamp_utc": "2026-05-11T03:45:08.819825Z",
+    "level": "info",
+    "event": "analysis_start",
+    "analyzer": "visualizer-queue",
+    "folder": "C:\\Data\\Code\\Project Kestrel\\ProjectKestrel\\analyzer\\tests\\fixtures\\test_sets\\set_c_preanalyzed",
+    "file_count": 5,
+    "detector_name": "mdv5a",
+    "detection_threshold": 0.15,
+    "parallel_prefetch": 3
+  },
+  {
+    "timestamp_utc": "2026-05-11T03:45:33.405767Z",
+    "level": "warning",
+    "stage": "save_database",
+    "context": {
+      "file": "IMG_2013.CR3",
+      "folder": "C:\\Data\\Code\\Project Kestrel\\ProjectKestrel\\analyzer\\tests\\fixtures\\test_sets\\set_c_preanalyzed"
+    },
+    "message": "The behavior of DataFrame concatenation with empty or all-NA entries is deprecated. In a future version, this will no longer exclude empty or all-NA columns when determining the result dtypes. To retain the old behavior, exclude the relevant entries before the concat operation.",
+    "category": "FutureWarning",
+    "filename": "C:\\Data\\Code\\Project Kestrel\\ProjectKestrel\\analyzer\\kestrel_analyzer\\pipeline.py",
+    "lineno": 1305
+  },
+  {
+    "timestamp_utc": "2026-05-11T03:45:47.254228Z",
+    "level": "info",
+    "event": "decode_queue_summary",
+    "max_workers": 3,
+    "file_count": 5,
+    "peak_inflight": 4,
+    "sum_decode_ms": 49424.0,
+    "sum_wait_ms": 10735.0,
+    "avg_decode_ms": 9884.8,
+    "avg_wait_ms": 2147.0
+  },
+  {
+    "timestamp_utc": "2026-05-11T03:45:47.316992Z",
+    "level": "info",
+    "event": "analysis_complete",
+    "folder": "C:\\Data\\Code\\Project Kestrel\\ProjectKestrel\\analyzer\\tests\\fixtures\\test_sets\\set_c_preanalyzed",
+    "total_files": 5
+  }
+]

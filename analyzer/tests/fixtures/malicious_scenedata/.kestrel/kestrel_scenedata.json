@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "scenes": [
+    {
+      "id": "1",
+      "name": "<img src=x onerror=\"alert('FINDING-01 XSS FIRED (img onerror) — scene #1'); document.body.style.background='#ff0044'; document.body.insertAdjacentHTML('afterbegin','<div style=&quot;position:fixed;top:0;left:0;right:0;padding:24px;background:#b00020;color:#fff;font:700 20px system-ui;z-index:999999;text-align:center;&quot;>FINDING-01 XSS FIRED via scene name — patch is NOT in place</div>');\">"
+    },
+    {
+      "id": "2",
+      "name": "<svg onload=\"alert('FINDING-01 XSS FIRED (svg onload) — scene #2');\"></svg>"
+    },
+    {
+      "id": "3",
+      "name": "<iframe srcdoc=\"&lt;script&gt;parent.alert('FINDING-01 XSS FIRED (iframe srcdoc) — scene #3')&lt;/script&gt;\"></iframe>"
+    },
+    {
+      "id": "4",
+      "name": "Normal scene name — if you see this text verbatim (not interpreted as HTML), the fix is holding."
+    }
+  ]
+}
