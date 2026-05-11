@@ -10,7 +10,6 @@ from kestrel_analyzer.ratings import (
     RATING_PROFILES,
     get_profile_thresholds,
     quality_to_rating,
-    compute_quality_distribution,
     get_image_display_rating,
 )
 
@@ -109,47 +108,6 @@ class TestQualityToRating:
         result = quality_to_rating(0.0)
         # 0.0 is below 'two' threshold (0.15) → 1 star
         assert result == 1
-
-
-class TestComputeQualityDistribution:
-    """Tests for compute_quality_distribution()."""
-
-    def test_returns_100_buckets(self):
-        """Always returns a list of 100 buckets."""
-        result = compute_quality_distribution([])
-        assert len(result) == 100
-        assert all(b == 0 for b in result)
-
-    def test_basic_distribution(self):
-        """Scores distributed into correct buckets."""
-        scores = [0.05, 0.55, 0.95]
-        result = compute_quality_distribution(scores)
-        # 0.05 → bucket 5
-        # 0.55 → bucket 55
-        # 0.95 → bucket 95
-        assert result[5] == 1
-        assert result[55] == 1
-        assert result[95] == 1
-
-    def test_excludes_negative_scores(self):
-        """Negative scores (no detection) are not counted."""
-        scores = [-1.0, -0.5, 0.5]
-        result = compute_quality_distribution(scores)
-        # Only 0.5 should be counted
-        assert sum(result) == 1
-        assert result[50] == 1
-
-    def test_score_at_one_goes_to_bucket_99(self):
-        """Score of 1.0 → bucket 99 (the last bucket)."""
-        result = compute_quality_distribution([1.0])
-        assert result[99] == 1
-
-    def test_invalid_scores_ignored(self):
-        """Non-numeric scores are ignored."""
-        scores = [0.5, None, "garbage", 0.7]
-        result = compute_quality_distribution(scores)
-        # Only 0.5 and 0.7 should be counted
-        assert sum(result) == 2
 
 
 class TestGetImageDisplayRating:

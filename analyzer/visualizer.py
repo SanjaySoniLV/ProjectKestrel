@@ -1,29 +1,19 @@
 #!/usr/bin/env python3
-"""Standalone local web server for the Project Kestrel visualizer (supersedes backend/editor_bridge.py).
+"""Project Kestrel application entry point.
 
-Features:
- - Serves the existing visualizer.html (and any static assets in the folder).
- - Exposes legacy HTTP API endpoints for compatibility while the desktop
-    pywebview bridge remains the primary integration path.
- - Intended to be frozen into a single executable with PyInstaller.
+Launches the pywebview desktop window and serves ``visualizer.html`` plus
+static assets from a local-only HTTP server (127.0.0.1). All control flows
+through the ``api_bridge.Api`` JS bridge; this module owns process startup,
+session-lifecycle bookkeeping, OS-shutdown detection, and the crash
+handler.
 
 Usage (development):
     python analyzer/visualizer.py --port 8765 --root C:/Photos/Trip
+    python analyzer/visualizer.py --cli C:/Photos/Trip --no-gpu   # headless
 
-After starting it will open the desktop UI (pywebview) at http://127.0.0.1:<port>/ .
-
-Build single-file EXE (example):
-    pyinstaller --onefile --name kestrel_viz analyzer/visualizer.py
-
-Optionally set env vars:
-    KESTREL_ALLOWED_ROOT=C:/Photos/Trip       (restrict paths)
-    KESTREL_ALLOWED_EXTENSIONS=.cr3,.jpg,...  (override allowed editor extensions)
-
-The legacy HTTP control API (``/settings``, ``/queue/*``, ``/recovery/*``,
-``/open``, ``/shutdown``, ``/feedback``) has been removed entirely: all
-integration happens through the pywebview JS bridge. The ``KESTREL_ENABLE_LEGACY_*``
-and ``KESTREL_ALLOW_ANY_EXTENSION`` / ``KESTREL_BRIDGE_TOKEN`` environment
-variables are no longer recognised.
+Optional env vars:
+    KESTREL_ALLOWED_ROOT=C:/Photos/Trip       (jail bridge calls to this root)
+    KESTREL_ALLOWED_EXTENSIONS=.cr3,.jpg,...  (override editor allowlist)
 """
 
 from __future__ import annotations
@@ -61,16 +51,8 @@ except ImportError:
 
 HOST = '127.0.0.1'
 
-# Phase 1 policy lock: the legacy HTTP control surface is permanently disabled.
-# All integration flows through the pywebview JS bridge (``api_bridge.Api``).
-# These constants are ``False`` literals (not env-derived) so an attacker
-# cannot set ``KESTREL_ENABLE_LEGACY_HTTP_API=1`` in the environment to
-# re-expose the legacy surface. See SECURITY.md / FINDING-07.
-SECURITY_POLICY_VERSION = '2026-04-21'
-BROWSER_ONLY_MODE_SUPPORTED = False
-API_AUTH_POLICY = 'desktop-api-only;legacy-http-api-removed'
-LEGACY_HTTP_API_ENABLED = False
-LEGACY_OPEN_ENDPOINT_ENABLED = False
+# One-time settings-migration key that flags whether the 2026-03 legal-consent
+# self-heal has already run for this install. See ``_apply_legal_upgrade_self_heal``.
 LEGAL_SELF_HEAL_MIGRATION_KEY = 'legal_upgrade_self_heal_2026_03'
 
 # --- Security / behavior configuration ---
@@ -319,16 +301,6 @@ def _apply_legal_upgrade_self_heal(settings: dict, prev_version: str, current_ve
     return mutated
 
 
-def build_original_path(*_a, **_k):  # pragma: no cover - legacy stub
-    """Deprecated — callers should use ``api_bridge.Api.open_in_editor``.
-
-    Preserved only so any stale import path short-circuits with a clear
-    exception instead of silently resurrecting the legacy HTTP ``/open``
-    semantics. See FINDING-07.
-    """
-    raise RuntimeError('build_original_path has been removed; use the pywebview API.')
-
-
 def _safe_under(base: str, candidate: str) -> bool:
     """Return True iff ``candidate`` resolves to a path under ``base``.
 
@@ -458,19 +430,6 @@ class Handler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def do_GET(self):  # type: ignore[override]
-        # bridge_config.js remains for compatibility with any cached front-end
-        # that still fetches it; it no longer exports a token.
-        if self.path == '/bridge_config.js':
-            body = (
-                b"// bridge_config.js is deprecated in desktop-only mode\n"
-                b"window.__BRIDGE_ORIGIN=window.location.origin;\n"
-            )
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/javascript')
-            self.send_header('Cache-Control', 'no-store')
-            self.end_headers()
-            self.wfile.write(body)
-            return
         if self.path in ('/', '/index.html'):
             # Prefer analyzer/visualizer.html when present (merged layout).
             # Check multiple locations across dev, frozen, and installed builds.
@@ -512,26 +471,6 @@ class Handler(SimpleHTTPRequestHandler):
             self.path = _find_visualizer()
         return super().do_GET()
 
-    def do_OPTIONS(self):  # type: ignore[override]
-        # The legacy HTTP control API has been removed. Reject preflight so no
-        # third-party page can probe for control routes. See FINDING-07.
-        log('[security] Reject OPTIONS: legacy HTTP API removed')
-        self.send_response(405)
-        self.send_header('Allow', 'GET')
-        self.end_headers()
-
-    def do_POST(self):  # type: ignore[override]
-        # No POST routes exist any more — every mutation goes through the
-        # pywebview JS bridge. See FINDING-07.
-        log('[security] Reject POST: legacy HTTP API removed', self.path)
-        self.send_response(410)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        self.wfile.write(
-            b'{"ok":false,"error":"Legacy HTTP API has been removed; '
-            b'use the pywebview JS bridge instead."}'
-        )
-
 
 def _build_arg_parser():
     ap = argparse.ArgumentParser(description='Serve Project Kestrel visualizer with local desktop bridge.')
@@ -564,8 +503,6 @@ def main():
     runtime_log_path = _enable_runtime_log_capture()
     if runtime_log_path:
         log('Runtime log capture enabled:', runtime_log_path)
-    log('Security policy:', SECURITY_POLICY_VERSION, API_AUTH_POLICY, 'browser_mode_supported=', BROWSER_ONLY_MODE_SUPPORTED)
-    log('Legacy HTTP control API: removed (desktop-only). env-var escape hatches are no longer honoured.')
     _mark_session_start()
 
     # Listen for OS-initiated shutdown / logoff / reboot so the next launch
