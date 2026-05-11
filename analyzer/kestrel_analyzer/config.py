@@ -31,7 +31,26 @@ WILDLIFE_CATEGORIES = [
     "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "bird"
 ]
 
-RAW_EXTENSIONS = [".cr2", ".cr3", ".nef", ".arw", ".dng", ".orf", ".rw2", ".pef", ".sr2"]
+# Canonical RAW format list. Single source of truth — all other modules import
+# from here rather than maintaining their own copies. Adding a format here
+# automatically enables it for pipeline discovery, folder inspection, RAW
+# preview routing, and editor-launch allowlisting.
+#
+# Caveat: .raf (Fujifilm) and .x3f (Sigma) decode via rawpy but lack capture-time
+# extraction in raw_exif.py. Scene grouping for these formats falls back to
+# AKAZE feature similarity (no timestamp shortcut). See raw_exif.UNSUPPORTED_EXTENSIONS.
+RAW_EXTENSIONS = [
+    ".cr2", ".cr3",         # Canon
+    ".nef",                 # Nikon
+    ".arw", ".srw",         # Sony / Samsung NX
+    ".dng",                 # Adobe / generic
+    ".orf",                 # Olympus
+    ".rw2",                 # Panasonic
+    ".pef",                 # Pentax
+    ".sr2",                 # Sony (older)
+    ".raf",                 # Fujifilm
+    ".x3f",                 # Sigma
+]
 JPEG_EXTENSIONS = [".jpg", ".jpeg", ".png", '.tiff', '.tif']
 
 DATABASE_NAME = "kestrel_database.csv"

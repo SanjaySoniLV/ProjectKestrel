@@ -42,14 +42,10 @@ except ImportError:
     except ImportError:
         _launch_editor = None
 
-try:
-    from kestrel_analyzer.config import JPEG_EXTENSIONS as _JPEG_EXTENSIONS, RAW_EXTENSIONS as _RAW_EXTENSIONS
-except ImportError:
-    try:
-        from analyzer.kestrel_analyzer.config import JPEG_EXTENSIONS as _JPEG_EXTENSIONS, RAW_EXTENSIONS as _RAW_EXTENSIONS
-    except ImportError:
-        _JPEG_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.tif', '.tiff']
-        _RAW_EXTENSIONS = ['.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.srw']
+from kestrel_analyzer.config import (
+    JPEG_EXTENSIONS as _JPEG_EXTENSIONS,
+    RAW_EXTENSIONS as _RAW_EXTENSIONS,
+)
 
 # Telemetry — failsafe import (never blocks startup)
 try:
@@ -86,10 +82,9 @@ _ALLOWED_EDITORS = {
     'acdsee', 'paintshop', 'faststone', 'xnview', 'irfanview', 'custom',
 }
 
-_DEFAULT_EDITOR_EXTENSIONS = [
-    '.cr3', '.cr2', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.sr2',
-    '.jpg', '.jpeg', '.png', '.tif', '.tiff'
-]
+# Editor-launch allowlist tracks the analyzer's supported formats so any
+# file Kestrel can analyze can also be opened in the configured editor.
+_DEFAULT_EDITOR_EXTENSIONS = list(_RAW_EXTENSIONS) + list(_JPEG_EXTENSIONS)
 _EXTERNAL_URL_SCHEME_ALLOWLIST = frozenset({'http', 'https', 'mailto'})
 
 
@@ -2264,10 +2259,9 @@ class Api:
             if not os.path.exists(full_path):
                 return {'success': False, 'error': f'File not found: {filename}'}
 
-            raw_extensions = {'.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.srw'}
             ext = os.path.splitext(filename)[1].lower()
 
-            if ext not in raw_extensions:
+            if ext not in _RAW_EXTENSION_SET:
                 return self.read_image_file(filename, root_path_real)
 
             # Clamp exposure correction to the same limits as the pipeline

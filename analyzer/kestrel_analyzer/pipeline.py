@@ -150,6 +150,7 @@ class AnalysisPipeline:
             "meter_warning": None,
             "orientation": "unknown",
             "capture_time": None,
+            "capture_time_warning": None,
             "error": None,
         }
         try:
@@ -183,8 +184,13 @@ class AnalysisPipeline:
             try:
                 ct = get_capture_time(image_path)
                 result["capture_time"] = ct
-            except Exception:
-                pass
+            except Exception as ct_exc:
+                # Scene grouping falls back to AKAZE feature similarity when
+                # capture_time is missing; not fatal. We record the reason so
+                # the main loop can surface it once via log_warning.
+                result["capture_time_warning"] = (
+                    f"Capture-time extraction failed: {ct_exc}"
+                )
 
         except Exception as exc:
             result["error"] = exc
@@ -697,6 +703,13 @@ class AnalysisPipeline:
                         log_warning(
                             self._log_path,
                             decoded["meter_warning"],
+                            stage=stage_ctx["stage"],
+                            context={"file": raw_file, "folder": folder},
+                        )
+                    if decoded.get("capture_time_warning"):
+                        log_warning(
+                            self._log_path,
+                            decoded["capture_time_warning"],
                             stage=stage_ctx["stage"],
                             context={"file": raw_file, "folder": folder},
                         )

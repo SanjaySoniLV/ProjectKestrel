@@ -13,15 +13,8 @@ try:
 except Exception:
     pd = None
 
-try:
-    from kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS, KESTREL_DIR_NAME, DATABASE_NAME
-    from kestrel_analyzer.database import load_database
-except Exception:
-    # If kestrel_analyzer isn't available, fall back to reasonable defaults.
-    RAW_EXTENSIONS = ['.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf', '.raf', '.rw2', '.pef', '.sr2', '.x3f']
-    JPEG_EXTENSIONS = ['.jpg', '.jpeg', '.png']
-    KESTREL_DIR_NAME = '.kestrel'
-    DATABASE_NAME = 'kestrel_database.csv'
+from kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS, KESTREL_DIR_NAME, DATABASE_NAME
+from kestrel_analyzer.database import load_database
 
 
 def _list_images_in_folder(folder: str) -> list:

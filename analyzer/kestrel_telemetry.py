@@ -555,16 +555,8 @@ def collect_folder_stats(item_path: str, files_this_session: int, total_files: i
     dict with keys: file_sizes_kb, file_formats
     """
     try:
-        # Import known extensions
-        try:
-            from kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS
-        except ImportError:
-            try:
-                from analyzer.kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS
-            except ImportError:
-                RAW_EXTENSIONS = {'.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf', '.rw2', '.raf'}
-                JPEG_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.tiff', '.tif', '.bmp', '.webp'}
-        
+        from kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS
+
         file_sizes_kb: List[float] = []
         file_formats: Dict[str, int] = {}
         # Ensure we can combine lists or sets without raising a TypeError
