@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from ..config import MODELS_DIR
+from ..logging_utils import debug, error
 from .provider_coordinator import ProviderCoordinator
 from .resilient_session import ResilientOnnxSession
 
@@ -23,14 +24,14 @@ class BirdSpeciesClassifier:
         # subsequent image dies at the species step on a still-broken provider.
         self.session = ResilientOnnxSession("bird_species", model_path, coord)
         active = self.session.get_providers()
-        print(f"[BirdSpeciesClassifier] Active provider: {active[0] if active else 'unknown'}  all providers: {active}")
+        debug(f"[BirdSpeciesClassifier] Active provider: {active[0] if active else 'unknown'}  all providers: {active}")
 
         try:
             base_dir = Path(models_dir) if models_dir else MODELS_DIR
             df_sf = pd.read_csv(base_dir / "labels_scispecies.csv")
             df_disp = pd.read_csv(base_dir / "scispecies_dispname.csv")
         except Exception as e:
-            print(f"Failed to load family mapping CSVs: {e}")
+            error(f"[BirdSpeciesClassifier] Failed to load family mapping CSVs: {e}")
             self.family_matrix = np.zeros((0, len(self.labels)), dtype=np.float32)
             self.family_display_names = []
             return

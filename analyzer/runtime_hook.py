@@ -4,11 +4,22 @@ import ctypes
 import glob
 
 
+# This file runs before the rest of the codebase is importable (it IS the
+# PyInstaller runtime hook). We can't import the leveled logger from
+# ``settings_utils`` here. Instead, gate the debug output behind the same
+# env var the leveled logger uses, so users see this tree dump only when
+# they've opted in for verbose diagnostics.
+_DEBUG_BUNDLE = os.environ.get('KESTREL_LOG_LEVEL', '').upper() == 'DEBUG'
+
+
 def _debug(msg: str) -> None:
-    print(f"[runtime_hook] {msg}")
+    if _DEBUG_BUNDLE:
+        print(f"[runtime_hook] {msg}")
 
 
 def _dump_tree(root: str, max_depth: int = 2) -> None:
+    if not _DEBUG_BUNDLE:
+        return
     if not os.path.isdir(root):
         _debug(f"MEIPASS not a directory: {root}")
         return

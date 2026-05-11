@@ -20,7 +20,12 @@ from kestrel_analyzer.config import (
 def parse_args(argv: Sequence[str] | None = None):
     detector_choices = sorted(DETECTOR_ONNX_PATHS.keys())
     parser = argparse.ArgumentParser(description="Kestrel Analyzer CLI")
-    parser.add_argument("folder", help="Folder with RAW/JPEG images")
+    parser.add_argument(
+        "folder",
+        nargs="?",
+        default=None,
+        help="Folder with RAW/JPEG images (optional when --validate is set)",
+    )
     parser.add_argument("--gpu", dest="use_gpu", action="store_true", help="Use GPU (DirectML on Windows, CoreML on macOS) for ONNX")
     parser.add_argument("--no-gpu", dest="use_gpu", action="store_false", help="Force CPU for ONNX")
     parser.add_argument(
@@ -45,6 +50,23 @@ def parse_args(argv: Sequence[str] | None = None):
         "--smoke",
         action="store_true",
         help="Load a single image via Wand and exit (skips model loading)",
+    )
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="Run the 9-check end-to-end validation harness and exit.",
+    )
+    parser.add_argument(
+        "--validate-images",
+        type=str,
+        default=None,
+        help="Folder with at least 2 sample images for --validate (e.g. test_imgs/).",
+    )
+    parser.add_argument(
+        "--validate-output",
+        type=str,
+        default=None,
+        help="Path for the --validate result JSON. Recommended on Windows where console=False hides stdout.",
     )
     parser.set_defaults(use_gpu=True)
     return parser.parse_args(argv)
@@ -74,6 +96,15 @@ def main(argv: Sequence[str] | None = None):
     log_path = get_log_path(None)
     try:
         args = parse_args(argv)
+        if args.validate:
+            from kestrel_analyzer.validation import run_validation
+            sys.exit(run_validation(
+                images_dir=args.validate_images,
+                output_path=args.validate_output,
+            ))
+        if not args.folder:
+            print("error: 'folder' is required unless --validate is set", flush=True, file=sys.stderr)
+            sys.exit(2)
         detection_threshold = max(0.10, min(0.99, float(args.detection_threshold)))
         parallel_pf = max(1, min(5, int(float(args.parallel_prefetch))))
         log_path = get_log_path(args.folder)

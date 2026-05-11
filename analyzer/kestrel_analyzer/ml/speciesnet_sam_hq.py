@@ -17,6 +17,7 @@ from ..config import (
     SAM_ENC_ONNX_PATH,
     SPECIESNET_MODEL_DIR,
 )
+from ..logging_utils import debug, warn
 from . import is_gpu_active
 from .provider_coordinator import (
     FailureAction,
@@ -282,7 +283,7 @@ class OnnxClassifier:
         with open(labels_path) as f:
             self._labels = [line.strip() for line in f]
         _active = self.providers_used[0] if self.providers_used else "unknown"
-        print(f"[OnnxClassifier] {len(self._labels)} labels  Active provider: {_active}  all providers: {self.providers_used}")
+        debug(f"[OnnxClassifier] {len(self._labels)} labels  Active provider: {_active}  all providers: {self.providers_used}")
 
     def preprocess(self, img_pil: Image.Image, bboxes: list | None = None) -> np.ndarray:
         """
@@ -396,7 +397,7 @@ class OnnxMDv5Detector:
         self._session = ResilientOnnxSession("detector", onnx_path, coord)
         _provs = self._session.get_providers()
         self.device = "ONNX/GPU" if is_gpu_active(_provs) else "ONNX/CPU"
-        print(f"[OnnxMDv5Detector] Loaded {onnx_path.name}  providers={_provs}")
+        debug(f"[OnnxMDv5Detector] Loaded {onnx_path.name}  providers={_provs}")
 
     def preprocess(self, img_pil: "Image.Image") -> tuple:
         """Resize image to 1280x1280 (simple resize, not letterbox)."""
@@ -559,7 +560,7 @@ class OnnxMDv6Detector:
         _provs = self._session.get_providers()
         self.device = "ONNX/GPU" if is_gpu_active(_provs) else "ONNX/CPU"
         _active = _provs[0] if _provs else "unknown"
-        print(f"[OnnxMDv6Detector] Loaded {onnx_path.name}  Active provider: {_active}  all providers: {_provs}")
+        debug(f"[OnnxMDv6Detector] Loaded {onnx_path.name}  Active provider: {_active}  all providers: {_provs}")
 
     def preprocess(self, img_pil: "Image.Image") -> tuple:
         """CPU: squash PIL to 640×640 float tensor; record original dims.
@@ -652,7 +653,7 @@ class OnnxMDv6MitYoloV9Detector:
         _provs = self._session.get_providers()
         self.device = "ONNX/GPU" if is_gpu_active(_provs) else "ONNX/CPU"
         _active = _provs[0] if _provs else "unknown"
-        print(
+        debug(
             f"[OnnxMDv6MitYoloV9Detector] Loaded {onnx_path.name}"
             f"  Active provider: {_active}  all providers: {_provs}"
             f"  inputs=({self._images_input_name}, {self._rev_input_name})"
@@ -841,10 +842,10 @@ class OnnxSamPredictor:
         _provs = self._enc_session.get_providers()
         self.device = "ONNX/GPU" if is_gpu_active(_provs) else "ONNX/CPU"
         _active = _provs[0] if _provs else "unknown"
-        print(f"[OnnxSamPredictor] Loaded encoder+decoder  Active provider: {_active}  all providers: {_provs}")
-        print(f"[OnnxSamPredictor] Prompt batching support: {self._supports_prompt_batching}")
-        print(f"[OnnxSamPredictor] Decoder requires padded_im_size: {self._decoder_requires_padded_im_size}")
-        print(f"[OnnxSamPredictor] Encoder fixed input HW: {self._encoder_fixed_hw()}")
+        debug(f"[OnnxSamPredictor] Loaded encoder+decoder  Active provider: {_active}  all providers: {_provs}")
+        debug(f"[OnnxSamPredictor] Prompt batching support: {self._supports_prompt_batching}")
+        debug(f"[OnnxSamPredictor] Decoder requires padded_im_size: {self._decoder_requires_padded_im_size}")
+        debug(f"[OnnxSamPredictor] Encoder fixed input HW: {self._encoder_fixed_hw()}")
 
     def _detect_prompt_batch_support(self) -> bool:
         """
@@ -1042,7 +1043,7 @@ class OnnxSamPredictor:
             return [self.decode_box(image_embeddings, interm_embeddings, boxes_xyxy[0], resized_hw, original_hw)]
         if not self._supports_prompt_batching:
             if not self._batch_unsupported_logged:
-                print(
+                debug(
                     "[SAM-HQ] decoder ONNX export has fixed batch=1 on prompt inputs; "
                     "using per-box decode path."
                 )
@@ -1132,9 +1133,9 @@ class SpeciesNetSAMHQWrapper:
             onnx_path   = SPECIESNET_MODEL_DIR / "speciesNet_v4.0.1a.onnx"
             labels_path = SPECIESNET_MODEL_DIR / "always_crop_99710272_22x8_v12_epoch_00148.labels.20251208.txt"
             self.classifier = OnnxClassifier(onnx_path, labels_path, self._coord)
-            print(f"[SpeciesNetSAMHQ] Detector model    : {self.detector_name} ({detector_path.name})")
-            print(f"[SpeciesNetSAMHQ] Detector          : {self.detector.device}")
-            print(f"[SpeciesNetSAMHQ] Classifier        : ONNX  providers={self.classifier.providers_used}")
+            debug(f"[SpeciesNetSAMHQ] Detector model    : {self.detector_name} ({detector_path.name})")
+            debug(f"[SpeciesNetSAMHQ] Detector          : {self.detector.device}")
+            debug(f"[SpeciesNetSAMHQ] Classifier        : ONNX  providers={self.classifier.providers_used}")
         if self.ensemble is None:
             self.ensemble = SpeciesNetEnsemble(self.model_name, geofence=False)
 
@@ -1163,11 +1164,11 @@ class SpeciesNetSAMHQWrapper:
             # the behavior of the old SAM-only fallback for any device that
             # can build a CPU session even when GPU init throws.
             if self._coord.on_run_failure(e) == FailureAction.RECREATE_AND_RETRY:
-                print(f"[SpeciesNetSAMHQ] SAM-HQ GPU init failed, falling back to CPU: {e}")
+                warn(f"[SpeciesNetSAMHQ] SAM-HQ GPU init failed, falling back to CPU: {e}")
                 self.predictor = OnnxSamPredictor(SAM_ENC_ONNX_PATH, SAM_DEC_ONNX_PATH, self._coord)
             else:
                 raise
-        print(f"[SpeciesNetSAMHQ] SAM-HQ            : {self.predictor.device}")
+        debug(f"[SpeciesNetSAMHQ] SAM-HQ            : {self.predictor.device}")
 
     def recreate_sessions(self, target_use_gpu: bool) -> None:
         """Rebuild every ONNX session registered with the coordinator on its
@@ -1318,13 +1319,13 @@ class SpeciesNetSAMHQWrapper:
         animal_dets = prefilter_overlapping_md_boxes(animal_dets)
         pre_nms_dropped = pre_nms_count - len(animal_dets)
         if pre_nms_dropped > 0:
-            print(
+            debug(
                 f"[SpeciesNet] pre-classifier NMS: dropped {pre_nms_dropped} of"
                 f" {pre_nms_count} MegaDetector proposals (IoU>={_PRE_CLASSIFIER_IOU}"
                 f" or containment>={_PRE_CLASSIFIER_CONTAINMENT})"
             )
 
-        print(
+        debug(
             f"[SpeciesNet] {os.path.basename(fp)}  animals -> classifier/SAM: {len(animal_dets)}"
             f"  (detector_threshold={detector_threshold:.2f}, total proposals={len(detections)}"
             f"{f', pre-NMS dropped {pre_nms_dropped}' if pre_nms_dropped else ''})"
@@ -1341,7 +1342,7 @@ class SpeciesNetSAMHQWrapper:
 
         # Encode once — all detections on this image share the same embeddings
         image_embeddings, interm_embeddings, resized_hw, original_hw = self.predictor.encode(image_data)
-        print(
+        debug(
             f"[SAM-HQ] encoder: image={os.path.basename(fp)} mode=single-per-image "
             f"detections={len(animal_dets)}"
         )
@@ -1353,12 +1354,12 @@ class SpeciesNetSAMHQWrapper:
             bbox_objs = [BBox(*md_bbox) for md_bbox in md_bboxes]
             preprocessed_many = self.classifier.preprocess_many(img_pil, bbox_objs)
             filepaths_many = [f"{fp}#det{i}" for i in range(len(animal_dets))]
-            print(
+            debug(
                 f"[SpeciesNet] batch classifier: image={os.path.basename(fp)} "
                 f"batch_size={len(preprocessed_many)}"
             )
             cls_preds_many = self.classifier.predict_many(filepaths_many, preprocessed_many)
-            print(
+            debug(
                 f"[SpeciesNet] batch classifier complete: image={os.path.basename(fp)} "
                 f"predictions={len(cls_preds_many)}"
             )
@@ -1399,7 +1400,7 @@ class SpeciesNetSAMHQWrapper:
                 pred_score = float(ensemble_det.get("prediction_score", conf))
                 pred_source = str(ensemble_det.get("prediction_source", ""))
             except Exception as e:
-                print("[SpeciesNet] ensemble error, fallback to classifier top-1:", e)
+                warn("[SpeciesNet] ensemble error, fallback to classifier top-1:", e)
                 classes = cls_info.get("classes", [])
                 scores = cls_info.get("scores", [])
                 pred_raw = str(classes[0]) if classes else "unknown"
@@ -1415,7 +1416,7 @@ class SpeciesNetSAMHQWrapper:
 
             if should_skip_confident_no_cv_classifier(cls_info, detector_threshold):
                 cutoff = 1.0 - float(detector_threshold)
-                print(
+                debug(
                     f"[SpeciesNet] det {det_idx}  SKIPPED — top classifier label is"
                     f" 'no cv result' with score > {cutoff:.2f} (1 − detector threshold)"
                     f"  (detector conf={conf:.2f})"
@@ -1424,13 +1425,13 @@ class SpeciesNetSAMHQWrapper:
 
             if is_ambiguous_generic_taxonomy(pred_raw):
                 bb, bo = bird_vs_wildlife_classifier_scores(cls_info)
-                print(
+                debug(
                     f"[SpeciesNet] det {det_idx}  conf={conf:.2f}  pred={pred_raw!r}"
                     f"  ambiguous: bird_max={bb:.3f} other={bo:.3f}"
                     f"  -> route={route} label={pred_label}"
                 )
             else:
-                print(
+                debug(
                     f"[SpeciesNet] det {det_idx}  conf={conf:.2f}  pred={pred_raw!r}"
                     f"  score={pred_score:.3f}  route={route}  label={pred_label}"
                     f"  via={pred_source}"
@@ -1454,7 +1455,7 @@ class SpeciesNetSAMHQWrapper:
                     )
                 elif not wildlife_enabled:
                     reason = "non-bird wildlife disabled"
-                print(
+                debug(
                     f"[SpeciesNet] det {det_idx}  SKIPPED — {reason}"
                     f"  (conf={conf:.2f}, pred={pred_raw!r})"
                 )
@@ -1464,7 +1465,7 @@ class SpeciesNetSAMHQWrapper:
             # SpeciesNet can prune false positives. Require the ensemble/classifier
             # score to clear the same user-facing threshold as the detector.
             if pred_score < detector_threshold:
-                print(
+                debug(
                     f"[SpeciesNet] det {det_idx}  SKIPPED — classifier pred_score"
                     f" {pred_score:.3f} < threshold {detector_threshold:.2f}"
                     f"  (detector conf={conf:.2f}, pred={pred_raw!r})"
@@ -1476,7 +1477,7 @@ class SpeciesNetSAMHQWrapper:
             resolved_class = pred_label if route == "wildlife" else "bird"
             if resolved_class == "bird":
                 if planned_bird_count >= self.max_bird_crops:
-                    print(
+                    debug(
                         f"[SpeciesNet] det {det_idx}  SKIPPED — bird crop cap reached "
                         f"({self.max_bird_crops}) before SAM decode"
                     )
@@ -1484,7 +1485,7 @@ class SpeciesNetSAMHQWrapper:
                 planned_bird_count += 1
             else:
                 if planned_wildlife_count >= self.max_bird_crops:
-                    print(
+                    debug(
                         f"[SpeciesNet] det {det_idx}  SKIPPED — wildlife crop cap reached "
                         f"({self.max_bird_crops}) before SAM decode"
                     )
@@ -1504,12 +1505,12 @@ class SpeciesNetSAMHQWrapper:
             sam_results: list[tuple[np.ndarray, float]] = []
             try:
                 if getattr(self.predictor, "_supports_prompt_batching", False):
-                    print(
+                    debug(
                         f"[SAM-HQ] batch decode: image={os.path.basename(fp)} "
                         f"batch_size={len(sam_decode_candidates)}"
                     )
                 else:
-                    print(
+                    debug(
                         f"[SAM-HQ] decode: image={os.path.basename(fp)} "
                         f"boxes={len(sam_decode_candidates)} mode=per-box(fixed-batch-model)"
                     )
@@ -1521,17 +1522,17 @@ class SpeciesNetSAMHQWrapper:
                     original_hw,
                 )
                 if getattr(self.predictor, "_supports_prompt_batching", False):
-                    print(
+                    debug(
                         f"[SAM-HQ] batch decode complete: image={os.path.basename(fp)} "
                         f"decoded={len(sam_results)}"
                     )
                 else:
-                    print(
+                    debug(
                         f"[SAM-HQ] decode complete: image={os.path.basename(fp)} "
                         f"decoded={len(sam_results)} mode=per-box(fixed-batch-model)"
                     )
             except Exception as e:
-                print(f"[SAM-HQ] batch decode failed, falling back to per-box decode: {e}")
+                warn(f"[SAM-HQ] batch decode failed, falling back to per-box decode: {e}")
                 sam_results = []
                 for c in sam_decode_candidates:
                     try:
@@ -1545,7 +1546,7 @@ class SpeciesNetSAMHQWrapper:
                             )
                         )
                     except Exception as e2:
-                        print(f"[SAM-HQ] mask failed for one box: {e2}")
+                        warn(f"[SAM-HQ] mask failed for one box: {e2}")
                         sam_results.append((None, 0.0))
 
             for candidate, sam_out in zip(sam_decode_candidates, sam_results):
@@ -1565,12 +1566,12 @@ class SpeciesNetSAMHQWrapper:
                     wildlife_rows.append(row)
 
         if len(bird_rows) > self.max_bird_crops:
-            print(
+            debug(
                 f"[SpeciesNet] crop limit: keeping {self.max_bird_crops} of"
                 f" {len(bird_rows)} bird detections"
             )
         if len(wildlife_rows) > self.max_bird_crops:
-            print(
+            debug(
                 f"[SpeciesNet] crop limit: keeping {self.max_bird_crops} of"
                 f" {len(wildlife_rows)} wildlife detections"
             )
@@ -1600,7 +1601,7 @@ class SpeciesNetSAMHQWrapper:
         )
         post_overlap_count = len(result[2]) if result[2] is not None else 0
         if post_overlap_count < pre_overlap_count:
-            print(
+            debug(
                 f"[SpeciesNet] overlap filter: removed {pre_overlap_count - post_overlap_count}"
                 f" of {pre_overlap_count} detections (IoU>={_HEAVY_OVERLAP_IOU}"
                 f" or containment>={_HEAVY_OVERLAP_CONTAINMENT})"

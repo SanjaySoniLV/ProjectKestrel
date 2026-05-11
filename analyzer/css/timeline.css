@@ -1,0 +1,134 @@
+/* Timeline action buttons (used outside timeline view too) */
+.timeline-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+}
+.action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #1a202e;
+  border: 1px solid #2a344d;
+  color: #cbd2dc;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.action-btn:hover {
+  background: #252d40;
+  border-color: #3a4a6d;
+  color: #fff;
+}
+.action-btn i {
+  font-style: normal;
+  font-size: 14px;
+}
+
+.action-btn i {
+  font-style: normal;
+  font-size: 14px;
+}
+
+/* ---- Timeline view (group-by-capture-time) ---- */
+.timeline-body {
+  padding: 4px 0 8px 0;
+}
+
+.timeline-day-banner {
+  position: sticky;
+  top: 44px; /* below folder-group-header */
+  z-index: 8;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #6a7a90;
+  padding: 10px 16px 6px 16px;
+  background: var(--bg);
+  border-bottom: 1px solid #1a2040;
+  margin-bottom: 4px;
+}
+
+.timeline-node {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+}
+
+.timeline-rail-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex-shrink: 0;
+  width: 44px;
+  padding-top: 0;
+}
+
+/* Dot size is set inline by JS to reflect image count in the cluster,
+   so bursts of activity are visible at a glance while scrolling down
+   the rail. Bigger dot = more images in that cluster. */
+.timeline-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #2e5ea0;
+  border: 2px solid var(--bg);
+  box-shadow: 0 0 0 3px rgba(58, 100, 200, 0.18);
+  flex-shrink: 0;
+  margin-top: 13px;
+  z-index: 1;
+  transition: transform .15s ease, box-shadow .15s ease;
+}
+.timeline-node:hover .timeline-dot {
+  box-shadow: 0 0 0 3px rgba(106, 160, 255, 0.32);
+}
+
+.timeline-line {
+  width: 2px;
+  background: #1c2438;
+  flex: 1;
+  min-height: 16px;
+  margin-top: 3px;
+}
+
+.timeline-line.last {
+  background: transparent;
+}
+
+.timeline-content-col {
+  flex: 1;
+  min-width: 0;
+  padding: 0 12px 20px 4px;
+}
+
+.timeline-node-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 0 8px 0;
+  border-bottom: 1px solid #141a28;
+  margin-bottom: 10px;
+}
+
+.timeline-node-time {
+  font-size: 13px;
+  font-weight: 600;
+  color: #9ab4cc;
+}
+
+.timeline-node-count {
+  font-size: 11px;
+}
+
+.timeline-node-untimed .timeline-dot {
+  background: #4a5266;
+  box-shadow: 0 0 0 3px rgba(74,82,102,0.18);
+}
+
+/* Inside a timeline node, cards are a bit denser */
+.timeline-grid {
+  gap: 10px;
+}

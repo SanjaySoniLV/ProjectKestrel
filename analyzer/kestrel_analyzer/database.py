@@ -7,6 +7,20 @@ import pandas as pd
 from .config import DATABASE_NAME, METADATA_FILENAME, SCENEDATA_FILENAME, VERSION
 from .logging_utils import log_warning
 
+# Leveled console logging — kestrel_analyzer is sometimes imported standalone
+# (e.g. tests), so fall back to a no-op if settings_utils isn't reachable.
+try:
+    from ..settings_utils import info as _info, warn as _warn
+except (ImportError, ValueError):
+    # cli.py imports kestrel_analyzer as a top-level package; relative ``..``
+    # walks above the root. Bare ``settings_utils`` works because analyzer/
+    # is on sys.path in that case.
+    try:
+        from settings_utils import info as _info, warn as _warn  # type: ignore
+    except ImportError:
+        def _info(*_a, **_kw): pass
+        def _warn(*_a, **_kw): pass
+
 # Columns written by the analysis pipeline only (no user-editable data).
 BASE_COLUMNS = [
     "filename",
@@ -83,7 +97,7 @@ def load_database(kestrel_dir: str, analyzer_name: str, log_path: str = None):
                     context={"metadata_path": metadata_path},
                 )
             else:
-                print(f"Warning: failed to write metadata file: {e}")
+                _warn(f"[database] failed to write metadata file: {e}")
 
     database = ensure_columns(database)
     return database, db_path
@@ -104,7 +118,7 @@ def _perform_db_upgrade(
     try:
         scenedata = _build_scenedata_from_legacy_db(database)
         save_scenedata(scenedata, kestrel_dir)
-        print(f"[database] Migrated legacy user data to {SCENEDATA_FILENAME}", flush=True)
+        _info(f"[database] Migrated legacy user data to {SCENEDATA_FILENAME}")
     except Exception as e:
         if log_path:
             log_warning(
@@ -115,7 +129,7 @@ def _perform_db_upgrade(
                 context={"kestrel_dir": kestrel_dir},
             )
         else:
-            print(f"Warning: failed to migrate legacy database: {e}", flush=True)
+            _warn(f"[database] failed to migrate legacy database: {e}")
 
     # Rename old CSV as backup, then save new one without legacy columns
     try:
@@ -127,10 +141,9 @@ def _perform_db_upgrade(
             errors="ignore",
         )
         cleaned.to_csv(db_path, index=False)
-        print(
+        _info(
             f"[database] Upgrade complete: backup at {os.path.basename(old_path)}, "
-            f"new clean {DATABASE_NAME} saved.",
-            flush=True,
+            f"new clean {DATABASE_NAME} saved."
         )
     except Exception as e:
         if log_path:
@@ -142,7 +155,7 @@ def _perform_db_upgrade(
                 context={"kestrel_dir": kestrel_dir},
             )
         else:
-            print(f"Warning: failed to save upgraded database: {e}", flush=True)
+            _warn(f"[database] failed to save upgraded database: {e}")
 
     return database.drop(
         columns=[c for c in LEGACY_USER_COLUMNS if c in database.columns],
@@ -302,7 +315,7 @@ def load_scenedata(kestrel_dir: str) -> dict:
             data.setdefault("scenes", {})
             return data
         except Exception as e:
-            print(f"Warning: failed to load {SCENEDATA_FILENAME}: {e}", flush=True)
+            _warn(f"[database] failed to load {SCENEDATA_FILENAME}: {e}")
     return {"version": SCENEDATA_VERSION, "image_ratings": {}, "scenes": {}}
 
 

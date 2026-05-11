@@ -149,11 +149,16 @@ Kestrel's quality scoring model is trained on RAW images, and may not work as we
 - Sony: `.arw`
 - Adobe: `.dng`
 - Olympus: `.orf`
-- Fuji: `.raf`
+- Fuji: `.raf` *
 - Panasonic: `.rw2`
 - Pentax: `.pef`
-- Samsung: `.sr2`
-- Sigma: `.x3f`
+- Samsung: `.sr2`, `.srw`
+- Sigma: `.x3f` *
+
+> &ast; For `.raf` and `.x3f`, Kestrel's native capture-time parser does not
+> yet support the EXIF layout used by these formats. The images analyze
+> normally, but scene grouping falls back to image-feature similarity
+> instead of using EXIF timestamps. Full timestamp support is planned.
 
 > Note: If this list does not support your camera's RAW file, please reach out via the email below. It is easy to add new RAW file formats thanks to the rawpy library.
 

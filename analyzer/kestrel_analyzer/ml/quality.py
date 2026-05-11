@@ -3,6 +3,7 @@ import csv
 import cv2
 import numpy as np
 
+from ..logging_utils import debug
 from .provider_coordinator import ProviderCoordinator
 from .resilient_session import ResilientOnnxSession
 
@@ -20,7 +21,7 @@ class QualityClassifier:
         self.session = ResilientOnnxSession("quality", model_path, coord)
         self.providers_used = list(self.session.get_providers())
         _active = self.providers_used[0] if self.providers_used else "unknown"
-        print(f"[QualityClassifier] Active provider: {_active}  all providers: {self.providers_used}")
+        debug(f"[QualityClassifier] Active provider: {_active}  all providers: {self.providers_used}")
 
         self._input_name = self.session.get_inputs()[0].name
 

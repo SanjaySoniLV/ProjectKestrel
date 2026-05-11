@@ -1,0 +1,124 @@
+/* ── Feedback Dialog ───────────────────────────────────────────── */
+.feedback-dlg {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.feedback-dlg h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.feedback-dlg .f-label {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 3px;
+  display: block;
+}
+
+.feedback-dlg textarea {
+  width: 100%;
+  min-height: 100px;
+  resize: vertical;
+  background: #0a0d12;
+  border: 1px solid #1d2230;
+  border-radius: 8px;
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.feedback-dlg textarea:focus {
+  outline: none;
+  border-color: var(--brand);
+}
+
+.feedback-dlg input[type="email"] {
+  width: 100%;
+  background: #0a0d12;
+  border: 1px solid #1d2230;
+  border-radius: 8px;
+  color: var(--text);
+  padding: 7px 10px;
+  font-size: 13px;
+  box-sizing: border-box;
+}
+
+.feedback-dlg input[type="email"]:focus {
+  outline: none;
+  border-color: var(--brand);
+}
+
+.feedback-dlg select {
+  width: 100%;
+  background: #0a0d12;
+  border: 1px solid #1d2230;
+  border-radius: 8px;
+  color: var(--text);
+  padding: 7px 10px;
+  font-size: 13px;
+  box-sizing: border-box;
+}
+
+.feedback-dlg select:focus {
+  outline: none;
+  border-color: var(--brand);
+}
+
+.feedback-ss-preview {
+  max-width: 100%;
+  max-height: 120px;
+  object-fit: contain;
+  border-radius: 6px;
+  border: 1px solid #1d2230;
+  background: #0a0d12;
+  margin-top: 4px;
+}
+
+/* ── Analytics Consent Dialog ─────────────────────────────────── */
+.analytics-dlg {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 24px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.analytics-dlg h3 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.analytics-dlg p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.analytics-dlg ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.75;
+}
+
+.analytics-dlg .analytics-note {
+  font-size: 12px;
+  color: #607080;
+}
+
+.analytics-dlg .analytics-btns {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}

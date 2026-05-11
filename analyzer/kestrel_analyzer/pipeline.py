@@ -46,12 +46,18 @@ from .raw_exif import get_capture_time
 from .logging_utils import get_log_path, log_event, log_exception, log_warning
 
 try:
-    from ..settings_utils import load_persisted_settings
-except ImportError:
+    from ..settings_utils import load_persisted_settings, debug as _debug, info as _info
+except (ImportError, ValueError):
+    # Top-level package case: cli.py adds analyzer/ to sys.path and imports
+    # ``kestrel_analyzer`` as a root package, so the relative ``..`` walks
+    # beyond it. The bare-name fallback works because ``settings_utils`` is
+    # then directly importable from sys.path.
     try:
-        from analyzer.settings_utils import load_persisted_settings
+        from settings_utils import load_persisted_settings, debug as _debug, info as _info  # type: ignore
     except ImportError:
         load_persisted_settings = None
+        def _debug(*_a, **_kw): pass
+        def _info(*_a, **_kw): pass
 from .ml.speciesnet_sam_hq import SpeciesNetSAMHQWrapper
 from .ml.provider_coordinator import ResilienceConfig
 from .ml.bird_species import BirdSpeciesClassifier
@@ -150,6 +156,7 @@ class AnalysisPipeline:
             "meter_warning": None,
             "orientation": "unknown",
             "capture_time": None,
+            "capture_time_warning": None,
             "error": None,
         }
         try:
@@ -183,8 +190,13 @@ class AnalysisPipeline:
             try:
                 ct = get_capture_time(image_path)
                 result["capture_time"] = ct
-            except Exception:
-                pass
+            except Exception as ct_exc:
+                # Scene grouping falls back to AKAZE feature similarity when
+                # capture_time is missing; not fatal. We record the reason so
+                # the main loop can surface it once via log_warning.
+                result["capture_time_warning"] = (
+                    f"Capture-time extraction failed: {ct_exc}"
+                )
 
         except Exception as exc:
             result["error"] = exc
@@ -275,10 +287,9 @@ class AnalysisPipeline:
         submit_thread.start()
 
         idx = 0
-        print(
+        _debug(
             f"[decode-queue] starting: files={total} workers={max_workers} "
-            f"buffer={max_buffered}",
-            flush=True,
+            f"buffer={max_buffered}"
         )
 
         while True:
@@ -301,11 +312,10 @@ class AnalysisPipeline:
                 decode_ms_str = f"{decode_ms:.0f}" if decode_ms is not None else "?"
                 inflight_now = max(0, snap_submitted - snap_completed)
                 ahead = max(0, snap_submitted - idx)
-                print(
+                _debug(
                     f"[decode-queue] idx={idx}/{total} "
                     f"inflight={inflight_now} ahead={ahead} "
-                    f"decode_ms={decode_ms_str} wait_ms={wait_ms:.0f}",
-                    flush=True,
+                    f"decode_ms={decode_ms_str} wait_ms={wait_ms:.0f}"
                 )
 
             yield decoded
@@ -334,10 +344,9 @@ class AnalysisPipeline:
             )
         except Exception:
             pass
-        print(
+        _debug(
             f"[decode-queue] done: files={total} peak_inflight={peak_inflight} "
-            f"avg_decode_ms={avg_decode:.0f} avg_wait_ms={avg_wait:.0f}",
-            flush=True,
+            f"avg_decode_ms={avg_decode:.0f} avg_wait_ms={avg_wait:.0f}"
         )
 
     def load_models(
@@ -697,6 +706,13 @@ class AnalysisPipeline:
                         log_warning(
                             self._log_path,
                             decoded["meter_warning"],
+                            stage=stage_ctx["stage"],
+                            context={"file": raw_file, "folder": folder},
+                        )
+                    if decoded.get("capture_time_warning"):
+                        log_warning(
+                            self._log_path,
+                            decoded["capture_time_warning"],
                             stage=stage_ctx["stage"],
                             context={"file": raw_file, "folder": folder},
                         )

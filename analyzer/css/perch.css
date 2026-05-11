@@ -1,0 +1,1025 @@
+/* ──────────────────────────────────────────────────────────────────
+   Perch — sharing platform integration
+   Account button in sidebar header, folder-card pills, sync button,
+   sync diff modal, share-with-Perch dialog, and uploads floating panel.
+   All selectors are namespaced (#accountBtn, .perch-*, .account-btn-*,
+   .folder-perch-*) so cascade order vs. other split files is safe.
+   ────────────────────────────────────────────────────────────────── */
+
+/* ── Account button (sidebar header, next to the logo) ───────────── */
+
+#accountBtn {
+  min-width: 28px;
+  height: 28px;
+  padding: 0 4px;        /* icon-only state — symmetric so the icon stays centered */
+  border-radius: 7px;
+  border: 1px solid var(--card-border);
+  background: var(--chip);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+/* When the label is visible, give the button real horizontal padding so
+   the text isn't crammed against the icon. The .hidden span has display:none
+   so the icon-only padding still applies in the signed-out state. */
+#accountBtn:has(.account-btn-label:not(.hidden)) {
+  padding: 0 10px 0 8px;
+}
+
+.account-btn-icon {
+  flex-shrink: 0;
+}
+
+.account-btn-label {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.1px;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#accountBtn:hover {
+  background: rgba(74, 163, 255, 0.15);
+  border-color: var(--brand);
+  color: var(--brand);
+}
+
+#accountBtn.signed-in {
+  border-color: var(--brand);
+  background: rgba(74, 163, 255, 0.08);
+  color: var(--brand);
+}
+
+#accountBtn svg {
+  stroke: currentColor;
+}
+
+/* Token in keyring but past exp — distinct from "never signed in" so the user
+   knows clicking will re-auth, not start fresh. */
+#accountBtn.session-expired {
+  border-color: #f5c542;
+  background: rgba(245, 197, 66, 0.10);
+  color: #f5c542;
+}
+
+/* ── Folder-card "Published" pill + Sync button ──────────────────── */
+
+/* Folder-card "Published" pill — shown when .kestrel/perch_link.json exists.
+   Sits to the right of "Share with Perch" so the relationship is obvious. */
+.folder-perch-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(74, 163, 255, .12);
+  border: 1px solid rgba(74, 163, 255, .35);
+  color: #4aa3ff;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background .15s, border-color .15s, color .15s;
+  user-select: none;
+}
+.folder-perch-pill.hidden {
+  display: none !important;
+}
+.folder-perch-pill:hover {
+  background: rgba(74, 163, 255, .22);
+  border-color: rgba(74, 163, 255, .55);
+  color: #6db4ff;
+}
+.folder-perch-pill-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+.folder-perch-pill-label {
+  letter-spacing: 0.2px;
+}
+
+/* Sync button — sibling of the Published pill, shown only when a perch
+   link exists. `.is-clean` greys it out when local state matches the
+   saved hash (nothing to sync). */
+.folder-perch-sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(74, 163, 255, .08);
+  border: 1px solid rgba(74, 163, 255, .25);
+  color: #4aa3ff;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background .15s, border-color .15s, color .15s, opacity .15s;
+  user-select: none;
+}
+.folder-perch-sync.hidden {
+  display: none !important;
+}
+.folder-perch-sync:hover {
+  background: rgba(74, 163, 255, .18);
+  border-color: rgba(74, 163, 255, .45);
+  color: #6db4ff;
+}
+.folder-perch-sync.is-clean {
+  opacity: .55;
+  color: var(--muted, #8a9099);
+  border-color: #2a3040;
+  background: rgba(255, 255, 255, .02);
+}
+.folder-perch-sync.is-clean:hover {
+  opacity: .85;
+}
+.folder-perch-sync-icon {
+  font-size: 12px;
+  line-height: 1;
+}
+
+/* ── Sync diff modal ─────────────────────────────────────────────── */
+
+.perch-sync-stats {
+  display: flex;
+  gap: 12px;
+  padding: 6px 0 4px;
+}
+.perch-sync-stat {
+  flex: 1;
+  text-align: center;
+  padding: 12px 6px;
+  background: rgba(74, 163, 255, .06);
+  border: 1px solid #1d2230;
+  border-radius: 10px;
+}
+.perch-sync-stat-num {
+  font-size: 22px;
+  font-weight: 700;
+  color: #e8f0f8;
+  font-variant-numeric: tabular-nums;
+}
+.perch-sync-stat-label {
+  font-size: 11px;
+  color: var(--muted, #8a9099);
+  margin-top: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.perch-sync-sub {
+  font-size: 12.5px;
+  color: var(--muted, #8a9099);
+  padding: 8px 2px 4px;
+}
+.perch-sync-note {
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  margin-top: 6px;
+}
+.perch-sync-note.warn {
+  background: rgba(243, 156, 18, .08);
+  border: 1px solid rgba(243, 156, 18, .25);
+  color: #d6a03a;
+}
+.perch-sync-section {
+  margin-top: 8px;
+  border: 1px solid #1d2230;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .015);
+}
+.perch-sync-section summary {
+  cursor: pointer;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #e8f0f8;
+  list-style: none;
+}
+.perch-sync-section summary::-webkit-details-marker { display: none; }
+.perch-sync-section[open] summary {
+  border-bottom: 1px solid #1d2230;
+}
+.perch-sync-list {
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 4px 8px 8px;
+}
+.perch-sync-list-row {
+  font-size: 11.5px;
+  color: #c8d0dc;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-family: ui-monospace, "Cascadia Mono", Menlo, monospace;
+}
+.perch-sync-list-row:hover {
+  background: rgba(74, 163, 255, .06);
+}
+.perch-upload-card.is-sync .perch-upload-card-progress-fill {
+  /* Slightly different tint for sync vs. upload to reinforce the distinction. */
+  background: linear-gradient(90deg, #4aa3ff 0%, #6db4ff 100%);
+}
+
+/* ─── Share-with-Perch dialog ───────────────────────────────────── */
+
+dialog.perch-upload-dlg {
+  width: min(560px, 96vw);
+  max-width: min(560px, 96vw);
+  height: auto;
+  max-height: 90vh;
+}
+dialog.perch-upload-dlg[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.perch-upload-dlg-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+}
+
+.perch-upload-dlg-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #1d2230;
+  padding-bottom: 10px;
+}
+
+.perch-upload-dlg-close {
+  background: none;
+  border: none;
+  color: var(--muted, #8a9099);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: background .15s, color .15s;
+}
+.perch-upload-dlg-close:hover {
+  background: rgba(255,255,255,.06);
+  color: #e8f0f8;
+}
+
+/* Already-published banner — sits above the loading spinner; shown when
+   verify_perch_link returns "alive" so the user can choose between
+   opening the existing perch or starting a fresh upload. */
+.perch-already-published {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: rgba(74, 163, 255, .10);
+  border: 1px solid rgba(74, 163, 255, .30);
+  border-radius: 10px;
+  margin-bottom: 12px;
+}
+.perch-already-published.hidden { display: none !important; }
+.perch-already-published-icon {
+  font-size: 22px;
+  flex-shrink: 0;
+}
+.perch-already-published-body {
+  flex: 1;
+  min-width: 0;
+}
+.perch-already-published-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e8f0f8;
+  margin-bottom: 2px;
+}
+.perch-already-published-text {
+  font-size: 12px;
+  color: var(--muted, #8a9099);
+}
+.perch-already-published-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.perch-cta-secondary {
+  font-size: 11.5px;
+  padding: 5px 10px;
+  border: 1px solid rgba(74, 163, 255, .35);
+  background: rgba(74, 163, 255, .14);
+  color: #4aa3ff;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background .15s;
+  white-space: nowrap;
+}
+.perch-cta-secondary:hover {
+  background: rgba(74, 163, 255, .26);
+}
+.perch-cta-secondary.perch-cta-warn {
+  border-color: rgba(243, 156, 18, .35);
+  background: rgba(243, 156, 18, .12);
+  color: #f39c12;
+}
+.perch-cta-secondary.perch-cta-warn:hover {
+  background: rgba(243, 156, 18, .22);
+}
+
+/* Resumable-upload banner — yellow-tinted (same warn palette as cancel hint),
+   shown when a partial upload is detected for this folder. */
+.perch-resumable {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: rgba(243, 156, 18, .08);
+  border: 1px solid rgba(243, 156, 18, .30);
+  border-radius: 10px;
+  margin-bottom: 12px;
+}
+.perch-resumable.hidden { display: none !important; }
+.perch-resumable-icon {
+  font-size: 22px;
+  flex-shrink: 0;
+}
+.perch-resumable-body {
+  flex: 1;
+  min-width: 0;
+}
+.perch-resumable-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e8f0f8;
+  margin-bottom: 2px;
+}
+.perch-resumable-text {
+  font-size: 12px;
+  color: var(--muted, #8a9099);
+}
+.perch-resumable-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Loading state */
+.perch-dlg-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 60px 20px;
+  min-height: 200px;
+}
+.perch-dlg-loading.hidden {
+  display: none;
+}
+.perch-dlg-loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid #1d2230;
+  border-top-color: var(--brand, #4aa3ff);
+  border-radius: 50%;
+  animation: perch-dlg-spin 0.8s linear infinite;
+}
+@keyframes perch-dlg-spin {
+  to { transform: rotate(360deg); }
+}
+.perch-dlg-loading-text {
+  font-size: 12px;
+  color: var(--muted, #8a9099);
+}
+
+/* Stat block — three big numbers in a row */
+.perch-stat-block {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  background: #0e1117;
+  border: 1px solid #1d2230;
+  border-radius: 10px;
+  padding: 14px;
+}
+.perch-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.perch-stat-num {
+  font-size: 22px;
+  font-weight: 700;
+  color: #e8f0f8;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+.perch-stat-label {
+  font-size: 11px;
+  color: var(--muted, #8a9099);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.perch-stat-sub {
+  font-size: 11.5px;
+  color: var(--muted, #8a9099);
+  text-align: center;
+  margin-top: -6px;
+}
+
+/* Account row */
+.perch-account-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #1d2230;
+  border-radius: 10px;
+  background: #0e1117;
+}
+.perch-account-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #4aa3ff, #1d4f8c);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
+}
+.perch-account-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.perch-account-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e8f0f8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.perch-account-meta {
+  font-size: 11.5px;
+  color: var(--muted, #8a9099);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.perch-usage-row {
+  font-size: 11.5px;
+  color: var(--muted, #8a9099);
+  padding: 0 4px;
+}
+
+/* Tip box */
+.perch-tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  background: rgba(245, 197, 66, .08);
+  border: 1px solid rgba(245, 197, 66, .25);
+  border-radius: 10px;
+}
+.perch-tip-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+  line-height: 1.4;
+}
+.perch-tip-body {
+  flex: 1;
+  min-width: 0;
+}
+.perch-tip-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #e8f0f8;
+  margin-bottom: 2px;
+}
+.perch-tip-text {
+  font-size: 11.5px;
+  color: var(--muted, #8a9099);
+  line-height: 1.5;
+}
+.perch-tip-btn {
+  flex-shrink: 0;
+  align-self: center;
+  font-size: 11px;
+  padding: 5px 10px;
+  border: 1px solid rgba(245, 197, 66, .35);
+  background: rgba(245, 197, 66, .12);
+  color: #f5c542;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background .15s;
+}
+.perch-tip-btn:hover {
+  background: rgba(245, 197, 66, .22);
+}
+
+/* Skip-rejected toggle — sits between the Culling Assistant tip and the
+   capture-time warning. Defaults checked. */
+.perch-reject-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, .02);
+  border: 1px solid #1d2230;
+  border-radius: 8px;
+  margin-top: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+.perch-reject-toggle:hover {
+  background: rgba(74, 163, 255, .05);
+}
+.perch-reject-toggle input[type="checkbox"] {
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.perch-reject-toggle-label {
+  font-size: 12.5px;
+  color: #e8f0f8;
+}
+.perch-reject-toggle-hint {
+  font-size: 11.5px;
+  color: var(--muted, #8a9099);
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Capture-time accuracy warning — blue/info-tinted, sits below the tip */
+.perch-time-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  background: rgba(74, 163, 255, .07);
+  border: 1px solid rgba(74, 163, 255, .25);
+  border-radius: 10px;
+  margin-top: 8px;
+}
+.perch-time-warn-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+  line-height: 1.4;
+}
+.perch-time-warn-body {
+  flex: 1;
+  min-width: 0;
+}
+.perch-time-warn-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #e8f0f8;
+  margin-bottom: 2px;
+}
+.perch-time-warn-text {
+  font-size: 11.5px;
+  color: var(--muted, #8a9099);
+  line-height: 1.5;
+}
+.perch-time-warn-btn {
+  flex-shrink: 0;
+  align-self: center;
+  font-size: 11px;
+  padding: 5px 10px;
+  border: 1px solid rgba(74, 163, 255, .35);
+  background: rgba(74, 163, 255, .12);
+  color: #4aa3ff;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background .15s;
+}
+.perch-time-warn-btn:hover {
+  background: rgba(74, 163, 255, .22);
+}
+
+/* Scene list */
+.perch-scenes-details summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted, #8a9099);
+  padding: 6px 4px;
+  border-bottom: 1px solid #1d2230;
+}
+.perch-scenes-details summary::-webkit-details-marker { display: none; }
+.perch-scenes-details[open] summary {
+  color: #c8d0dc;
+}
+.perch-scenes-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 400;
+}
+.perch-scenes-actions a {
+  color: var(--brand, #4aa3ff);
+  text-decoration: none;
+}
+.perch-scenes-actions a:hover { text-decoration: underline; }
+.perch-scenes-sep {
+  color: var(--muted, #8a9099);
+}
+.perch-scene-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+.perch-scene-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background .12s;
+}
+.perch-scene-row:hover {
+  background: rgba(74, 163, 255, .07);
+}
+.perch-scene-row input[type="checkbox"] {
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.perch-scene-thumb {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: 4px;
+  border: 1px solid #2a3040;
+  background: #0b0d12;
+  padding: 0;
+  cursor: pointer;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color .12s, transform .12s;
+}
+.perch-scene-thumb:hover {
+  border-color: #4aa3ff;
+  transform: scale(1.04);
+}
+.perch-scene-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.perch-scene-thumb.no-image::before {
+  content: '🖼';
+  font-size: 18px;
+  color: var(--muted, #8a9099);
+}
+.perch-scene-expand {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  color: var(--muted, #8a9099);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
+  border-radius: 4px;
+  transition: background .12s, color .12s;
+}
+.perch-scene-expand:hover {
+  background: rgba(74, 163, 255, .12);
+  color: #e8f0f8;
+}
+.perch-scene-preview {
+  padding: 6px 8px 10px 60px;  /* indent past checkbox + thumbnail */
+  animation: perch-scene-preview-in .15s ease-out;
+}
+.perch-scene-preview.hidden { display: none; }
+.perch-scene-preview-img {
+  max-width: 100%;
+  max-height: 280px;
+  border-radius: 6px;
+  border: 1px solid #2a3040;
+  background: #0b0d12;
+  display: block;
+}
+.perch-scene-row.is-expanded {
+  background: rgba(74, 163, 255, .08);
+}
+@keyframes perch-scene-preview-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.perch-scene-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.perch-scene-title {
+  font-size: 12.5px;
+  color: #e8f0f8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.perch-scene-meta {
+  font-size: 10.5px;
+  color: var(--muted, #8a9099);
+}
+.perch-scene-right {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+}
+.perch-scene-photos {
+  font-size: 11.5px;
+  color: #c8d0dc;
+  font-variant-numeric: tabular-nums;
+}
+.perch-scene-size {
+  font-size: 10.5px;
+  color: var(--muted, #8a9099);
+  font-variant-numeric: tabular-nums;
+}
+.perch-scene-empty {
+  padding: 16px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted, #8a9099);
+}
+
+/* Signed-out explainer */
+.perch-explainer-lead {
+  font-size: 14px;
+  color: #e8f0f8;
+  margin: 0;
+}
+.perch-explainer-sub {
+  font-size: 12px;
+  color: var(--muted, #8a9099);
+  margin: 0;
+  line-height: 1.5;
+}
+.perch-explainer-list {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 12px;
+  color: #c8d0dc;
+  line-height: 1.7;
+}
+.perch-explainer-list b { color: #e8f0f8; }
+.perch-explainer-ready {
+  font-size: 11.5px;
+  color: var(--brand, #4aa3ff);
+  margin: 6px 0 0;
+}
+
+/* Footer (overrides the .settings-footer baseline for buttons here) */
+.perch-upload-footer {
+  gap: 8px;
+}
+.perch-upload-footer button {
+  font-size: 12px;
+  padding: 7px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.perch-upload-footer button.perch-cta {
+  background: var(--brand, #4aa3ff);
+  color: #fff;
+  border: 1px solid var(--brand, #4aa3ff);
+  font-weight: 600;
+}
+.perch-upload-footer button.perch-cta:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+.perch-upload-footer button.perch-cta:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+/* ─── Perch Uploads floating panel + cards ──────────────────────── */
+
+.perch-uploads-panel {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;    /* Stacked above the analysis queue when both are visible */
+  width: 380px;
+  max-width: calc(100vw - 40px);
+  background: #111318;
+  border: 1px solid #2a3040;
+  border-radius: 12px;
+  box-shadow: 0 8px 36px rgba(0, 0, 0, .7);
+  overflow: hidden;
+  z-index: 401;   /* Above the analysis queue (z-index:400) */
+  transition: bottom .18s ease-out;
+}
+.perch-uploads-panel.collapsed .perch-uploads-body {
+  display: none;
+}
+
+.perch-uploads-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: #161922;
+  border-bottom: 1px solid #1d2230;
+  cursor: pointer;
+  user-select: none;
+}
+.perch-uploads-title {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 600;
+  color: #e8f0f8;
+}
+.perch-uploads-badge {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #1d5aa8;
+  border: 1px solid #2b6ec8;
+  color: #c8dcf5;
+}
+.perch-uploads-badge.done {
+  background: #0a2218;
+  border-color: #1a5e36;
+  color: #2ecc71;
+}
+.perch-uploads-badge.canceled {
+  background: #3a2408;
+  border-color: #7a5010;
+  color: #f5c542;
+}
+.perch-uploads-badge.error {
+  background: #2a0a0a;
+  border-color: #5e1a1a;
+  color: #e74c3c;
+}
+.perch-uploads-toggle {
+  font-size: 10px;
+  color: var(--muted, #8a9099);
+  transition: transform .15s;
+}
+.perch-uploads-toggle.open {
+  transform: rotate(180deg);
+}
+.perch-uploads-body {
+  padding: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Card — mirrors .queue-item */
+.perch-upload-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  background: #0e1117;
+  border: 1px solid #1d2230;
+  border-radius: 8px;
+}
+.perch-upload-card.is-done {
+  border-color: #1a5e36;
+}
+.perch-upload-card.is-canceled {
+  border-color: #7a5010;
+}
+.perch-upload-card.is-error {
+  border-color: #5e1a1a;
+}
+.perch-upload-card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.perch-upload-card-title {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 600;
+  color: #e8f0f8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.perch-upload-card-status {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #0f2b4d;
+  color: #4aa3ff;
+  border: 1px solid #1d4f8c;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.perch-upload-card-cancel,
+.perch-upload-card-dismiss {
+  flex-shrink: 0;
+  background: none;
+  border: 1px solid #2a3040;
+  color: var(--muted, #8a9099);
+  font-size: 11px;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.perch-upload-card-cancel:hover,
+.perch-upload-card-dismiss:hover {
+  background: rgba(231, 76, 60, .12);
+  color: #e74c3c;
+  border-color: #5e1a1a;
+}
+.perch-upload-card-progress {
+  height: 4px;
+  background: #1d2230;
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: 3px;
+}
+.perch-upload-card-progress-fill {
+  height: 100%;
+  background: #3a84e6;
+  border-radius: 999px;
+  transition: width .4s ease;
+}
+.perch-upload-card-current {
+  font-size: 11px;
+  color: var(--muted, #8a9099);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.perch-upload-card-success {
+  font-size: 12px;
+  color: #2ecc71;
+}
+.perch-upload-card-warn {
+  font-size: 11.5px;
+  color: #f5c542;
+  line-height: 1.45;
+}
+.perch-upload-card-err {
+  font-size: 11.5px;
+  color: #e74c3c;
+  line-height: 1.45;
+  word-break: break-word;
+}
+.perch-upload-card-cta {
+  align-self: flex-start;
+  font-size: 11.5px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  background: var(--brand, #4aa3ff);
+  color: #fff;
+  border: 1px solid var(--brand, #4aa3ff);
+  cursor: pointer;
+  font-weight: 600;
+  margin-top: 4px;
+}
+.perch-upload-card-cta:hover { filter: brightness(1.1); }
+.perch-upload-card-cta.warn {
+  background: rgba(245, 197, 66, .15);
+  color: #f5c542;
+  border-color: #7a5010;
+}
+.perch-upload-card-cta.warn:hover {
+  background: rgba(245, 197, 66, .25);
+}

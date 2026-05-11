@@ -36,7 +36,11 @@ from datetime import datetime
 from typing import Optional, TextIO
 
 # --- Extracted modules ---
-from settings_utils import load_persisted_settings, save_persisted_settings, log
+from settings_utils import (
+    load_persisted_settings,
+    save_persisted_settings,
+    debug, info, warn, error, log,
+)
 from queue_manager import _queue_manager
 from api_bridge import Api
 
@@ -481,7 +485,147 @@ def _build_arg_parser():
         action='store_true',
         help='Run analyzer CLI mode (headless) instead of launching the desktop UI.',
     )
+    ap.add_argument(
+        '--api-probe',
+        dest='api_probe',
+        action='store_true',
+        help='Headlessly launch pywebview, evaluate JS to confirm the bridge is reachable, '
+             'write a result JSON to --probe-output, and exit.',
+    )
+    ap.add_argument(
+        '--probe-output',
+        dest='probe_output',
+        type=str,
+        default=None,
+        help='Path for the --api-probe result JSON. Required with --api-probe.',
+    )
+    ap.add_argument(
+        '--probe-timeout',
+        dest='probe_timeout',
+        type=float,
+        default=15.0,
+        help='Hard timeout in seconds for --api-probe (default 15).',
+    )
     return ap
+
+
+# Minimal HTML for --api-probe mode. Loads, waits for the pywebview bridge to be
+# wired up, then calls Api.report_bridge_ready() which sets a threading.Event on
+# the Python side. The bridge call landing IS the proof — no side-channel polling.
+_PROBE_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Kestrel Bridge Probe</title>
+<style>body{font-family:sans-serif;padding:1em;}pre{background:#eee;padding:.5em;}</style>
+</head>
+<body>
+<h3>Kestrel Bridge Probe</h3>
+<pre id="status">waiting for window.pywebview.api...</pre>
+<script>
+  function _report() {
+    try {
+      window.pywebview.api.report_bridge_ready().then(function (r) {
+        document.getElementById('status').textContent = JSON.stringify(r);
+      }).catch(function (e) {
+        document.getElementById('status').textContent = 'CALL ERROR: ' + e;
+      });
+    } catch (e) {
+      document.getElementById('status').textContent = 'EXC: ' + e;
+    }
+  }
+  // pywebviewready fires once window.pywebview.api is fully wired up. If we
+  // missed it (rare race on fast machines), check directly.
+  window.addEventListener('pywebviewready', _report);
+  if (window.pywebview && window.pywebview.api && window.pywebview.api.report_bridge_ready) {
+    _report();
+  }
+</script>
+</body></html>"""
+
+
+def _run_api_probe(args) -> int:
+    """Implements --api-probe: launch a minimal pywebview window, wait for the
+    JS-Python bridge to round-trip a call, write the result JSON, return exit
+    code (0 success, 1 failure/timeout, 2 usage error).
+    """
+    import json
+    import threading
+    from datetime import datetime, timezone
+
+    def _write_result(path, payload):
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(payload, f, indent=2)
+        except Exception as exc:
+            warn('probe: failed to write result JSON:', exc)
+
+    if not args.probe_output:
+        sys.stderr.write('--api-probe requires --probe-output PATH\n')
+        return 2
+
+    if not WEBVIEW_IMPORT_SUCCESS:
+        _write_result(args.probe_output, {
+            'ok': False,
+            'error': 'pywebview unavailable (import failed)',
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+        })
+        return 1
+
+    api = Api()
+    api._probe_ready_event = threading.Event()
+    api._probe_ready_payload = None
+
+    timeout = max(1.0, float(args.probe_timeout))
+    final_payload = {'ok': False, 'error': 'probe did not start'}
+
+    try:
+        win = webview.create_window(
+            'Project Kestrel (probe)',
+            html=_PROBE_HTML,
+            js_api=api,
+            width=400,
+            height=300,
+        )
+    except Exception as exc:
+        _write_result(args.probe_output, {
+            'ok': False,
+            'error': f'create_window failed: {type(exc).__name__}: {exc}',
+        })
+        return 1
+
+    def _waiter():
+        # Runs on a worker thread (started via webview.start(func=...)).
+        # Blocks until the JS side calls Api.report_bridge_ready, or until the
+        # hard deadline elapses. Then writes the result JSON and destroys the
+        # window so webview.start() returns control to main().
+        nonlocal final_payload
+        ok = api._probe_ready_event.wait(timeout=timeout)
+        if ok and api._probe_ready_payload is not None:
+            final_payload = api._probe_ready_payload
+        else:
+            final_payload = {
+                'ok': False,
+                'error': f'bridge did not report ready within {timeout:.1f}s',
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+            }
+        _write_result(args.probe_output, final_payload)
+        try:
+            webview.destroy_window(win)
+        except Exception:
+            try:
+                win.destroy()
+            except Exception:
+                pass
+
+    try:
+        webview.start(func=_waiter, debug=False)
+    except Exception as exc:
+        _write_result(args.probe_output, {
+            'ok': False,
+            'error': f'webview.start failed: {type(exc).__name__}: {exc}',
+        })
+        return 1
+
+    return 0 if final_payload.get('ok') else 1
 
 
 def parse_args():
@@ -494,6 +638,8 @@ def parse_known_args():
 
 def main():
     args, remaining_args = parse_known_args()
+    if args.api_probe:
+        sys.exit(_run_api_probe(args))
     if args.cli:
         from cli import main as cli_main
 
@@ -512,7 +658,7 @@ def main():
         import shutdown_watch
         shutdown_watch.install(lambda: _mark_session_exit_reason('os_shutdown'))
     except Exception as _e:
-        log('shutdown_watch install failed:', _e)
+        warn('shutdown_watch install failed:', _e)
 
     # ── Crash hardening ───────────────────────────────────────────────────────
     # faulthandler dumps a Python traceback to stderr (which is tee-streamed to
@@ -531,8 +677,8 @@ def main():
             import traceback as _tb
             thread_name = getattr(args.thread, 'name', 'unknown')
             tb_str = ''.join(_tb.format_exception(args.exc_type, args.exc_value, args.exc_traceback))
-            log(f'[Thread {thread_name!r}] Uncaught exception: {args.exc_type.__name__}: {args.exc_value}')
-            log(f'[Thread {thread_name!r}] Traceback:\n{tb_str}')
+            error(f'[Thread {thread_name!r}] Uncaught exception: {args.exc_type.__name__}: {args.exc_value}')
+            error(f'[Thread {thread_name!r}] Traceback:\n{tb_str}')
             _mark_session_exit_reason('crash')
             if _telemetry is not None:
                 try:
@@ -628,7 +774,7 @@ def main():
                     if hasattr(api, 'cleanup_tracked_culling_caches'):
                         api.cleanup_tracked_culling_caches()
                 except Exception as e:
-                    log('Cache cleanup on close failed:', e)
+                    warn('Cache cleanup on close failed:', e)
 
             def _cancel_analysis_wait_for_worker_and_telemetry():
                 """Cancel queue, wait for worker (sends completion telemetry), then allow HTTP to finish."""
@@ -757,12 +903,12 @@ def main():
             if api is not None and hasattr(api, 'cleanup_tracked_culling_caches'):
                 api.cleanup_tracked_culling_caches()
         except Exception as e:
-            log('Cache cleanup during shutdown failed:', e)
+            warn('Cache cleanup during shutdown failed:', e)
         try:
             server.shutdown()
             server.server_close()
         except Exception as e:
-            log('Server shutdown error:', e)
+            warn('Server shutdown error:', e)
         log('Server stopped.')
         # Mark clean exit here (inside finally) so it runs even if server
         # shutdown raises, preventing a false "unclean shutdown" on next launch.

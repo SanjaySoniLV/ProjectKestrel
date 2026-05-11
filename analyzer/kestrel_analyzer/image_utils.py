@@ -3,6 +3,10 @@ import numpy as np
 import rawpy
 from PIL import Image
 
+from .config import RAW_EXTENSIONS
+
+_RAW_EXTENSION_SET = {ext.lower() for ext in RAW_EXTENSIONS}
+
 
 def read_image(path: str):
     """
@@ -10,13 +14,9 @@ def read_image(path: str):
     Returns a numpy array in RGB format (H, W, 3) or None on failure.
     """
     try:
-        # Determine file type by extension
         ext = os.path.splitext(path)[1].lower()
-        
-        # RAW formats supported by rawpy
-        raw_extensions = {'.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.srw'}
-        
-        if ext in raw_extensions:
+
+        if ext in _RAW_EXTENSION_SET:
             # Use rawpy for RAW files
             with rawpy.imread(path) as raw:
                 # postprocess() applies demosaicing, white balance, color correction, etc.
@@ -26,19 +26,19 @@ def read_image(path: str):
         else:
             # Use PIL for standard image formats (JPEG, PNG, TIFF, etc.)
             img = Image.open(path)
-            
+
             # Handle EXIF orientation
             from PIL import ImageOps
             img = ImageOps.exif_transpose(img)
-            
+
             # Convert to RGB (handles grayscale, RGBA, etc.)
             if img.mode != 'RGB':
                 img = img.convert('RGB')
-            
+
             # Convert to numpy array
             rgb = np.array(img)
             return rgb
-            
+
     except rawpy.LibRawFileUnsupportedError:
         return None
     except rawpy.LibRawIOError:
@@ -61,9 +61,8 @@ def read_image_for_pipeline(path: str):
     """
     try:
         ext = os.path.splitext(path)[1].lower()
-        raw_extensions = {'.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.srw'}
 
-        if ext in raw_extensions:
+        if ext in _RAW_EXTENSION_SET:
             # Do NOT use a context manager — we intentionally keep the object open.
             # Do NOT call raw.postprocess() here — the pipeline immediately calls
             # build_metered_detection_image() which does its own decode.  The
