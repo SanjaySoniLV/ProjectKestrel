@@ -14,7 +14,25 @@
         content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' blob:; font-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" />
   <title>Project Kestrel</title>
   <link rel="icon" href="data:," />
-  <link rel="stylesheet" href="visualizer.css" />
+  <!-- Stylesheets split by feature. base.css must load first (defines :root vars). -->
+  <link rel="stylesheet" href="css/base.css" />
+  <link rel="stylesheet" href="css/layout.css" />
+  <link rel="stylesheet" href="css/toolbar.css" />
+  <link rel="stylesheet" href="css/status-bar.css" />
+  <link rel="stylesheet" href="css/grid.css" />
+  <link rel="stylesheet" href="css/folder-tree.css" />
+  <link rel="stylesheet" href="css/welcome.css" />
+  <link rel="stylesheet" href="css/timeline.css" />
+  <link rel="stylesheet" href="css/legal-banner.css" />
+  <link rel="stylesheet" href="css/dialogs/base.css" />
+  <link rel="stylesheet" href="css/dialogs/scene.css" />
+  <link rel="stylesheet" href="css/dialogs/settings.css" />
+  <link rel="stylesheet" href="css/dialogs/analyze.css" />
+  <link rel="stylesheet" href="css/dialogs/live-analysis.css" />
+  <link rel="stylesheet" href="css/dialogs/feedback-consent.css" />
+  <link rel="stylesheet" href="css/dialogs/donate.css" />
+  <link rel="stylesheet" href="css/dialogs/tutorial-chooser.css" />
+  <link rel="stylesheet" href="css/tutorial.css" />
   <script src="csv_parser.js"></script>
 </head>
 

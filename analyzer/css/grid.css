@@ -1,0 +1,720 @@
+/* Grid */
+.grid {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+}
+
+/* When bird-crop thumbs are shown, widen the track so the main thumb
+   keeps the same (no-crop) height and the crop fits into the extra
+   width. 240px main + 6px gap + ~150px square crop ≈ 400px. */
+.grid.grid--bird-thumbs {
+  grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  /* overflow:clip clips border-radius without creating a stacking context */
+  overflow: clip;
+  display: flex;
+  flex-direction: column;
+  /* content-visibility:auto lets the browser skip ALL rendering work (style,
+     layout, paint) for cards that are off-screen.  This is the single biggest
+     scroll-perf win when hundreds/thousands of scene cards are in the DOM:
+     each image-load paint invalidation stays scoped to the visible card
+     instead of triggering an O(n) walk across every card in the grid.
+     contain-intrinsic-size gives the grid a stable placeholder height so
+     scroll position and scrollbar size stay correct. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 280px;
+}
+
+.card:hover {
+  /* Simple border tint — no transform (avoids GPU layer promotion/demotion
+     on every card the mouse crosses) and no background repaint */
+  border-color: #3a4a6a;
+}
+
+.thumb {
+  aspect-ratio: 16/10;
+  background: #0e1117;
+  /* overflow:hidden is fine here — .thumb is a leaf container with no stacking
+     context concerns, and it correctly clips the image to the card's top corners */
+  overflow: hidden;
+  position: relative;
+}
+
+/* Full scene + bird crop side by side (same row height as the main 16:10 thumb). */
+.thumb-row {
+  --thumb-row-gap: 6px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) calc((100% - var(--thumb-row-gap)) * 10 / 26);
+  gap: var(--thumb-row-gap);
+  width: 100%;
+  min-width: 0;
+}
+
+.thumb-row > .thumb {
+  min-width: 0;
+}
+
+.thumb-row > .thumb-bird-crop {
+  width: 100%;
+  min-width: 0;
+}
+
+.thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.card .body {
+  padding: 10px 12px 14px;
+  display: grid;
+  gap: 6px;
+}
+
+.meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: normal;
+  gap: 8px;
+}
+
+.meta> :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.chip {
+  background: var(--chip);
+  border: 1px solid #2a3040;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: #cbd2dc;
+}
+
+.chip.badge {
+  background: #10293d;
+  border-color: #1d3e5e;
+  color: #a9c9ee;
+}
+
+.chip.manual-approved,
+.edit-chip.manual-approved {
+  background: rgba(245, 197, 66, 0.10);
+  border-color: rgba(183, 145, 37, 0.65);
+  color: #e9d6a1;
+}
+
+.scene-approved {
+  box-shadow: inset 0 0 0 1px rgba(245, 197, 66, 0.14);
+}
+
+.scene-approved .thumb {
+  outline: 1px solid rgba(245, 197, 66, 0.10);
+  outline-offset: -1px;
+}
+
+.scene-approved .thumb-bird-crop {
+  outline: 1px solid rgba(245, 197, 66, 0.10);
+  outline-offset: -1px;
+}
+
+.thumb-bird-crop {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: 6px;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  overflow: hidden;
+  background: #0e1117;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+.thumb-bird-crop img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.scene-approved-badge {
+  margin-left: 6px;
+}
+
+.approval-note {
+  color: #f7dda0;
+  font-weight: 600;
+}
+
+.mark-reviewed-btn {
+  cursor: pointer;
+  background: rgba(245, 197, 66, 0.08);
+  border: 1px solid rgba(245, 197, 66, 0.3);
+  color: #f7dda0;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 12px;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+.mark-reviewed-btn:hover {
+  background: rgba(245, 197, 66, 0.18);
+  border-color: rgba(245, 197, 66, 0.5);
+}
+
+/* Improve chip rendering & truncation */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Slight breathing room on meta row */
+.meta {
+  padding-right: 2px;
+}
+
+/* Pill for score in meta rows to prevent clipping */
+.meta .score {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #10293d;
+  border: 1px solid #1d3e5e;
+  color: #a9c9ee;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+/* Further anti-clipping & wrapping safeguards */
+.meta {
+  flex-wrap: wrap;
+}
+
+.meta .score {
+  margin-left: auto;
+}
+
+.chips {
+  min-width: 0;
+}
+
+.chip {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filename {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Editable species chips in scene edit mode */
+.edit-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.edit-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--chip);
+  border: 1px solid #2a3040;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: #cbd2dc;
+}
+.edit-chip .chip-x {
+  cursor: pointer;
+  color: #e06060;
+  font-weight: bold;
+  font-size: 13px;
+  margin-left: 2px;
+  line-height: 1;
+}
+.edit-chip .chip-x:hover { color: #ff8080; }
+
+/* Inline chip input */
+.chip-input-wrap {
+  display: inline-flex;
+  align-items: center;
+  background: #1a2a44;
+  border: 1px solid var(--brand);
+  border-radius: 999px;
+  padding: 1px 4px 1px 8px;
+  margin-left: 4px;
+}
+.chip-input {
+  background: transparent;
+  border: none;
+  color: #fff;
+  font-size: 12px;
+  outline: none;
+  width: 100px;
+}
+.chip-commit-btn {
+  background: var(--brand);
+  border: none;
+  color: #fff;
+  border-radius: 50%;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 10px;
+  margin-left: 4px;
+}
+.chip-commit-btn:hover { background: #56afff; }
+
+/* Custom species combobox dropdown.
+   Uses position: fixed (instead of absolute relative to .chip-input-wrap)
+   to escape the overflow-x: auto clipping on .scene-topbar-tags. The
+   coordinates are set in JS via getBoundingClientRect on the input. */
+.chip-input-wrap--species { position: relative; }
+.chip-input-dropdown {
+  position: fixed;
+  background: #1a2a44;
+  border: 1px solid var(--brand);
+  border-radius: 8px;
+  z-index: 9999;
+  min-width: 240px;
+  max-width: 360px;
+  max-height: 280px;
+  overflow-y: auto;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+  font-size: 12px;
+  padding: 4px 0;
+}
+.chip-combo-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 5px 10px;
+  cursor: pointer;
+  color: #fff;
+  white-space: nowrap;
+}
+.chip-combo-item--active,
+.chip-combo-item:hover {
+  background: rgba(86, 175, 255, 0.28);
+}
+.chip-combo-name { font-weight: 500; }
+.chip-combo-family {
+  color: #9ab;
+  font-size: 11px;
+  font-style: italic;
+  flex-shrink: 0;
+}
+
+/* Reviewed tags golden styling */
+.reviewed-tags .chip {
+  background: rgba(245, 197, 66, 0.15);
+  border-color: rgba(245, 197, 66, 0.4);
+  color: #f5c542;
+}
+.reviewed-tags .chip .chip-x { color: #f5c542; opacity: 0.7; }
+.reviewed-tags .chip .chip-x:hover { color: #e06060; opacity: 1; }
+.chip-add-btn {
+  cursor: pointer;
+  background: transparent;
+  border: 1px dashed #3a84e6;
+  color: #6aa0ff;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+}
+.chip-add-btn:hover { background: #1a2a44; }
+.edit-panel {
+  display: grid;
+  gap: 8px;
+  background: #10131a;
+  border: 1px solid #1f2533;
+  border-radius: 10px;
+  padding: 10px;
+  font-size: 13px;
+}
+.edit-panel label { color: var(--muted); font-size: 12px; }
+.edit-section { display: grid; gap: 4px; }
+/* Scene split mode: checkboxes on image cards */
+.card.split-mode { position: relative; }
+.card.split-mode .split-check {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 3;
+  width: 18px;
+  height: 18px;
+  accent-color: #3a84e6;
+}
+.card.split-selected { outline: 2px solid #3a84e6; outline-offset: -2px; border-radius: 10px; }
+/* Yellow save button when dirty */
+#saveCsv:not(:disabled) {
+  background: #b59b2e;
+  color: #fff;
+  border-color: #d4b72e;
+}
+#saveCsv:not(:disabled):hover {
+  background: #c9ae34;
+}
+
+/* Anti-clipping improvements */
+.meta {
+  gap: 8px;
+}
+
+/* Removed invalid comma between overflow properties (was causing lint error) */
+/* .meta > :first-child duplicate rule retained earlier above */
+.inline input[type="text"] {
+  min-width: 0;
+}
+
+.card .body {
+  padding-bottom: 14px;
+}
+
+.card .body .meta {
+  justify-content: center;
+  gap: 14px;
+}
+
+.title-score,
+.title-count {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.title-score {
+  color: #a9c9ee;
+}
+
+.title-count {
+  color: var(--muted);
+}
+
+/* Prevent text clipping with truncation */
+.title {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.title i.folder-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 9em;
+  display: inline-block;
+  vertical-align: middle;
+  font-style: italic;
+}
+
+.title .title-sep {
+  flex-shrink: 0;
+}
+
+.title b {
+  flex-shrink: 0;
+}
+
+.title .name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.title-score {
+  font-size: 12px;
+  flex-shrink: 0;
+  color: #a9c9ee;
+  background: #10293d;
+  border: 1px solid #1d3e5e;
+  padding: 1px 7px;
+  border-radius: 999px;
+}
+
+.title-count {
+  font-size: 12px;
+  flex-shrink: 0;
+  color: var(--muted);
+}
+
+.meta .truncate {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Sticky folder group headers */
+.folder-group-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg);
+}
+
+/* Multi-select: selected scene card */
+.card.selected {
+  background: #1a2540 !important;
+  border-color: #3a84e6 !important;
+  outline: 2px solid rgba(58, 132, 230, .5);
+}
+
+.card.selected:hover {
+  background: #1f2d4e !important;
+}
+
+/* Keyboard-focused scene card (after closing scene dialog or arrow-key nav) */
+.card.focused {
+  outline: 2px solid rgba(58, 132, 230, .7);
+  outline-offset: 2px;
+  box-shadow: 0 0 12px rgba(58, 132, 230, .3);
+}
+
+/* Folder group headers in scene grid */
+.folder-group {
+  margin-bottom: 4px;
+}
+
+.folder-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  background: #161922;
+  border: 1px solid #222634;
+  border-radius: 8px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+  color: #cbd2dc;
+}
+
+.folder-group-header:hover {
+  background: #1d2230;
+  border-color: #2a3040;
+}
+
+.folder-group-toggle {
+  font-size: 10px;
+  flex-shrink: 0;
+  transition: transform .15s;
+  color: var(--muted);
+}
+
+.folder-group-header.collapsed .folder-group-toggle {
+  transform: rotate(-90deg);
+}
+
+.folder-group-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 0 1 auto; /* shrinks if needed, does not grow — spacer div handles remaining space */
+  max-width: 320px;
+}
+
+.folder-group-count {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.folder-group-left-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.folder-group-right-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.culling-btn {
+  margin-left: auto;
+  padding: 3px 12px;
+  font-size: 12px;
+  background: #1a2540;
+  color: #7eb8e0;
+  border: 1px solid #2a3b5a;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .15s, border-color .15s;
+}
+.culling-btn:hover {
+  background: #243456;
+  border-color: #3a84e6;
+  color: #b8daf0;
+}
+.write-metadata-btn {
+  margin-left: 6px;
+  padding: 3px 12px;
+  font-size: 12px;
+  background: #1a2a1e;
+  color: #7ed4a0;
+  border: 1px solid #2a5a3b;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .15s, border-color .15s;
+}
+.write-metadata-btn:hover {
+  background: #243d2c;
+  border-color: #3ae67a;
+  color: #b0f0c8;
+}
+
+.folder-group-grid.hidden {
+  display: none;
+}
+
+/* Floating multi-select action bar */
+.select-action-bar {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1d2230;
+  border: 1px solid #3a84e6;
+  border-radius: 12px;
+  padding: 10px 18px;
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  box-shadow: 0 6px 32px rgba(0, 0, 0, .6);
+  z-index: 300;
+  white-space: nowrap;
+}
+
+.select-action-bar.hidden {
+  display: none;
+}
+
+/* Final override: allow wrapping in meta rows (was nowrap earlier) */
+.meta {
+  white-space: normal;
+}
+
+.meta>* {
+  min-width: 0;
+}
+
+/* Thumbnail badges (quality & image count) */
+.thumb .badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  background: #10293d;
+  border: 1px solid #1d3e5e;
+  color: #a9c9ee;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .4);
+}
+
+.thumb .badge.count {
+  left: auto;
+  right: 8px;
+}
+
+/* Title-level badges (placed under title, right-aligned) */
+.title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.title-row .title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.title-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.title-badges .score {
+  background: #10293d;
+  border: 1px solid #1d3e5e;
+  color: #a9c9ee;
+  padding: 1px 7px;
+  border-radius: 999px;
+}
+
+/* Folder body collapse */
+.folder-group-body.hidden {
+  display: none;
+}
+
+/* Scroll position indicator (floating overlay on right edge of main view) */
+#scrollPositionIndicator {
+  position: fixed;
+  right: 22px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(10, 12, 15, 0.88);
+  border: 1px solid #2a3040;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 10px;
+  border-radius: 6px;
+  max-width: 220px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 9000;
+  transition: opacity 0.25s ease;
+  box-shadow: 0 3px 12px rgba(0,0,0,0.5);
+}

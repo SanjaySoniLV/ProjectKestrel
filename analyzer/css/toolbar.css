@@ -1,0 +1,221 @@
+.toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.toolbar-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.toolbar-row.actions {
+  flex-direction: column;
+  align-items: stretch;
+  flex: 0 0 auto;
+}
+
+/* Analyze + Settings on a shared second line */
+.actions-secondary-row {
+  display: flex;
+  gap: 6px;
+}
+.actions-secondary-row button {
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.toolbar-row.filters {
+  flex-direction: column;
+  align-items: stretch;
+  flex: 0 0 auto;
+  /* Filters panel is outside .toolbar so it stays pinned regardless of tree visibility */
+}
+
+.toolbar-row.status {
+  justify-content: flex-start;
+}
+
+.filter-panel {
+  width: 100%;
+}
+
+.filter-panel {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 6px 8px;
+  border: 1px solid #1d2230;
+  border-radius: 10px;
+  background: #0e1117;
+}
+
+.filter-panel .filter-title {
+  width: 100%;
+  text-align: center;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+}
+
+.filter-panel .muted {
+  color: var(--text);
+}
+
+.filter-divider {
+  width: 100%;
+  height: 1px;
+  background: #1d2230;
+  margin: 2px 0;
+}
+
+/* Centre the confidence threshold row horizontally in the panel */
+.filter-conf-row {
+  width: 100%;
+  justify-content: center;
+}
+
+.filter-sort-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+.filter-sort-label {
+  font-size: 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.filter-sort-row select {
+  flex: 1;
+  height: 30px;
+  font-size: 12px;
+}
+
+.filter-panel input[type="search"] {
+  flex: 1 1 100%;
+  width: 100%;
+}
+
+/* Generic form-control styling (buttons, inputs, selects) */
+button,
+select,
+input[type="text"],
+input[type="search"],
+input[type="number"] {
+  background: #0e1117;
+  color: var(--text);
+  border: 1px solid #2a3040;
+  border-radius: 8px;
+  height: 36px;
+  padding: 0 12px;
+  outline: none;
+  transition: border-color .15s ease, background .15s ease;
+}
+
+button {
+  cursor: pointer;
+  background: #173253;
+  border-color: #214c7d;
+}
+
+button:hover {
+  background: #1c3a62;
+  border-color: #2b5f9e;
+}
+
+button.primary {
+  background: #1d5aa8;
+  border-color: #2b6ec8;
+}
+
+button.primary:hover {
+  background: #1f63b8;
+  border-color: #3a84e6;
+}
+
+button[disabled] {
+  opacity: .6;
+  cursor: not-allowed;
+}
+
+#saveCsv:not([disabled]) {
+  background: #f5c542;
+  border-color: #d1a735;
+  color: #1a1a1a;
+}
+
+#saveCsv:not([disabled]):hover {
+  background: #ffd45f;
+  border-color: #e6c049;
+}
+
+.help-tip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-left: 8px;
+  border-radius: 50%;
+  background: #0e1117;
+  border: 1px solid #2a3040;
+  color: #a9c9ee;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.tooltip-layer {
+  position: fixed;
+  min-width: 220px;
+  max-width: 320px;
+  background: #0e1117;
+  border: 1px solid #2a3040;
+  color: #cbd2dc;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  white-space: normal;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition: opacity .12s ease, transform .12s ease;
+  z-index: 1000;
+}
+
+.tooltip-layer.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Inline form rows used by edit panels and small dialog forms */
+.inline {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.inline>* {
+  min-width: 0;
+}
+
+.inline button {
+  height: 30px;
+  white-space: nowrap;
+}
+
+.inline input[type="text"] {
+  height: 30px;
+  flex: 1 1 160px;
+  min-width: 0;
+}
