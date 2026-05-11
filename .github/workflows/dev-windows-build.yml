@@ -1,0 +1,99 @@
+name: Build Windows Dev Bundle
+
+# Dev-only workflow. Mirrors build-macos-dev.yml on Windows. Unlike main.yml,
+# this skips Inno Setup / MSIX / signing — it stops at the PyInstaller onedir
+# bundle and uploads it directly so developers can grab a working binary
+# without paying the full production-pipeline cost.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows-dev:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Create venv and install dependencies
+        shell: powershell
+        run: |
+          python -m venv .venv2
+          .\.venv2\Scripts\Activate.ps1
+          python -m pip install --upgrade pip
+          pip install -r requirements-windows.txt
+          pip install pyinstaller pytest
+
+      - name: Run pytest from source (skip ui marker)
+        id: pretest
+        continue-on-error: true
+        shell: powershell
+        run: |
+          .\.venv2\Scripts\Activate.ps1
+          python -m pytest analyzer/tests/ -m "not ui" -q --tb=short
+
+      - name: Warn if pre-build pytest failed
+        if: ${{ always() && steps.pretest.outcome == 'failure' }}
+        shell: powershell
+        run: Write-Host "::warning::Pre-build pytest failed on Windows dev build; continuing to PyInstaller."
+
+      - name: Build ProjectKestrel with PyInstaller
+        shell: powershell
+        run: |
+          .\.venv2\Scripts\Activate.ps1
+          cd analyzer
+          python -m PyInstaller ProjectKestrel.spec
+
+      - name: Run --validate against frozen binary
+        id: validate
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $validateOutput = Join-Path $env:RUNNER_TEMP "validate-result.json"
+          & "analyzer\dist\ProjectKestrel\ProjectKestrel.exe" `
+            --cli --validate `
+            --validate-images test_imgs `
+            --validate-output $validateOutput
+
+          if (!(Test-Path $validateOutput)) {
+            throw "Frozen --validate did not produce a result JSON at $validateOutput"
+          }
+          Write-Host "=== validate-result.json ==="
+          Get-Content $validateOutput
+
+          # Copy to repo root so the upload-artifact step finds it.
+          Copy-Item $validateOutput "validate-result.json"
+
+          $report = Get-Content $validateOutput | ConvertFrom-Json
+          if (-not $report.ok) {
+            throw "Validation reported failure (ok=false)"
+          }
+
+      - name: Warn if frozen --validate failed
+        if: ${{ always() && steps.validate.outcome == 'failure' }}
+        shell: powershell
+        run: Write-Host "::warning::Frozen-binary --validate failed on Windows dev build; continuing to publish available artifacts."
+
+      - name: Upload Windows dev bundle
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-dev-bundle
+          path: analyzer/dist/ProjectKestrel/
+          retention-days: 14
+
+      - name: Upload validate-result.json
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-dev-validate-result
+          path: validate-result.json
+          if-no-files-found: warn
+          retention-days: 14

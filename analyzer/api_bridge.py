@@ -769,6 +769,37 @@ class Api:
             except Exception:
                 return {'success': True, 'version': 'unknown'}
 
+    def report_bridge_ready(self):
+        """Diagnostic endpoint for --api-probe mode.
+
+        Called from JS on the ``pywebviewready`` event to prove the JS-Python
+        bridge round-trips. Safe to call at any time; side-effect-free unless a
+        probe is listening (when ``self._probe_ready_event`` is set, this stores
+        the payload on ``self._probe_ready_payload`` and signals the event).
+        """
+        from datetime import datetime, timezone
+        try:
+            from kestrel_analyzer.config import VERSION
+        except Exception:
+            try:
+                from analyzer.kestrel_analyzer.config import VERSION
+            except Exception:
+                VERSION = 'unknown'
+        payload = {
+            'ok': True,
+            'version': VERSION,
+            'frozen': bool(getattr(sys, 'frozen', False)),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+        }
+        evt = getattr(self, '_probe_ready_event', None)
+        if evt is not None:
+            self._probe_ready_payload = payload
+            try:
+                evt.set()
+            except Exception:
+                pass
+        return payload
+
     def get_species_family_map(self):
         """Return a {species_display_name: family_display_name} mapping for the
         bird species classifier's North American taxonomy.
