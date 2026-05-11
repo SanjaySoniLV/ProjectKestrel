@@ -225,6 +225,7 @@ def send_crash_report(
     session_analytics: Optional[dict] = None,
     machine_id: str = '',
     version: str = '',
+    exit_reason: str = 'crash',
 ) -> None:
     """Send a crash report to the Cloudflare Worker (async, failsafe).
 
@@ -240,6 +241,13 @@ def send_crash_report(
         Any analytics data collected so far in this session.
     machine_id, version : str
         Machine identifier and app version.
+    exit_reason : str
+        How the previous session ended. ``'crash'`` (default) for true
+        unhandled exceptions; ``'unknown'`` when the user opted in for an
+        ambiguous exit (SIGKILL, power loss); ``'os_shutdown'`` defensive
+        only — the recovery dialog filters these client-side, but the
+        server should record any that slip through so they can be excluded
+        from crash-rate dashboards.
     """
     if not is_frozen():
         return
@@ -260,6 +268,7 @@ def send_crash_report(
             'machine_id': machine_id,
             'version': version or _read_version(),
             'os': _get_os_info(),
+            'exit_reason': exit_reason,
         }
         _post_json_async('/api/crash', payload)
     except Exception:
