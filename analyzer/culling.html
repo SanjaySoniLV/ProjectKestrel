@@ -1246,6 +1246,12 @@
     // Culling Assistant — Project Kestrel
     // ====================================================================
 
+    // ── Debug-gated console logging ─────────────────────────────────────────
+    // Diagnostic console.log lines route through kdebug() — silent by default.
+    // Enable for a session via DevTools: window.__KESTREL_DEBUG = true; reload.
+    const _KESTREL_DEBUG = !!window.__KESTREL_DEBUG;
+    function kdebug(...args) { if (_KESTREL_DEBUG) console.log(...args); }
+
     // ---- Helpers ----
     function el(sel) { return document.querySelector(sel); }
     function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -2669,10 +2675,10 @@
 
     // ---- Load data ----
     async function loadData() {
-      console.log('[culling] loadData() starting...');
-      console.log('[culling] window.pywebview:', window.pywebview);
-      console.log('[culling] window.pywebview.api:', window.pywebview?.api);
-      console.log('[culling] typeof read_kestrel_csv:', typeof window.pywebview?.api?.read_kestrel_csv);
+      kdebug('[culling] loadData() starting...');
+      kdebug('[culling] window.pywebview:', window.pywebview);
+      kdebug('[culling] window.pywebview.api:', window.pywebview?.api);
+      kdebug('[culling] typeof read_kestrel_csv:', typeof window.pywebview?.api?.read_kestrel_csv);
       
       if (typeof window.pywebview?.api?.read_kestrel_csv !== 'function') {
         const ready = await waitForPywebview(['read_kestrel_csv'], 8000);

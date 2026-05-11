@@ -117,6 +117,21 @@ def _get_ssl_context():
     ctx = ssl.create_default_context(cafile=certifi.where())
     return ctx
 
+def _warn(msg: str) -> None:
+    """Lazy-import warn from settings_utils to avoid a circular import.
+
+    settings_utils imports kestrel_telemetry at module load; we can't import
+    back at the top level. Resolving the symbol at call time is fine because
+    telemetry posts only happen long after module init.
+    """
+    try:
+        from settings_utils import warn as _w
+        _w(msg)
+    except Exception:
+        # Failsafe: telemetry must never raise.
+        print(msg, file=sys.stderr, flush=True)
+
+
 def _post_json(endpoint: str, payload: dict) -> None:
     """POST JSON to the Cloudflare Worker (fire-and-forget, failsafe)."""
     if urllib is None:
@@ -139,11 +154,11 @@ def _post_json(endpoint: str, payload: dict) -> None:
             pass
     except urllib.error.HTTPError as e:
         body = e.read().decode('utf-8', errors='replace') if hasattr(e, 'read') else ''
-        print(f'[telemetry] HTTP {e.code} from {url}: {body[:300]}', flush=True)
+        _warn(f'[telemetry] HTTP {e.code} from {url}: {body[:300]}')
     except urllib.error.URLError as e:
-        print(f'[telemetry] URLError posting to {url}: {e.reason}', flush=True)
+        _warn(f'[telemetry] URLError posting to {url}: {e.reason}')
     except Exception as e:
-        print(f'[telemetry] Error posting to {url}: {e}', flush=True)
+        _warn(f'[telemetry] Error posting to {url}: {e}')
 
 
 def _post_json_async(endpoint: str, payload: dict) -> None:

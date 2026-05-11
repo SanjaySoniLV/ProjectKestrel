@@ -36,7 +36,11 @@ from datetime import datetime
 from typing import Optional, TextIO
 
 # --- Extracted modules ---
-from settings_utils import load_persisted_settings, save_persisted_settings, log
+from settings_utils import (
+    load_persisted_settings,
+    save_persisted_settings,
+    debug, info, warn, error, log,
+)
 from queue_manager import _queue_manager
 from api_bridge import Api
 
@@ -552,7 +556,7 @@ def _run_api_probe(args) -> int:
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(payload, f, indent=2)
         except Exception as exc:
-            log('probe: failed to write result JSON:', exc)
+            warn('probe: failed to write result JSON:', exc)
 
     if not args.probe_output:
         sys.stderr.write('--api-probe requires --probe-output PATH\n')
@@ -654,7 +658,7 @@ def main():
         import shutdown_watch
         shutdown_watch.install(lambda: _mark_session_exit_reason('os_shutdown'))
     except Exception as _e:
-        log('shutdown_watch install failed:', _e)
+        warn('shutdown_watch install failed:', _e)
 
     # ── Crash hardening ───────────────────────────────────────────────────────
     # faulthandler dumps a Python traceback to stderr (which is tee-streamed to
@@ -673,8 +677,8 @@ def main():
             import traceback as _tb
             thread_name = getattr(args.thread, 'name', 'unknown')
             tb_str = ''.join(_tb.format_exception(args.exc_type, args.exc_value, args.exc_traceback))
-            log(f'[Thread {thread_name!r}] Uncaught exception: {args.exc_type.__name__}: {args.exc_value}')
-            log(f'[Thread {thread_name!r}] Traceback:\n{tb_str}')
+            error(f'[Thread {thread_name!r}] Uncaught exception: {args.exc_type.__name__}: {args.exc_value}')
+            error(f'[Thread {thread_name!r}] Traceback:\n{tb_str}')
             _mark_session_exit_reason('crash')
             if _telemetry is not None:
                 try:
@@ -770,7 +774,7 @@ def main():
                     if hasattr(api, 'cleanup_tracked_culling_caches'):
                         api.cleanup_tracked_culling_caches()
                 except Exception as e:
-                    log('Cache cleanup on close failed:', e)
+                    warn('Cache cleanup on close failed:', e)
 
             def _cancel_analysis_wait_for_worker_and_telemetry():
                 """Cancel queue, wait for worker (sends completion telemetry), then allow HTTP to finish."""
@@ -896,12 +900,12 @@ def main():
             if api is not None and hasattr(api, 'cleanup_tracked_culling_caches'):
                 api.cleanup_tracked_culling_caches()
         except Exception as e:
-            log('Cache cleanup during shutdown failed:', e)
+            warn('Cache cleanup during shutdown failed:', e)
         try:
             server.shutdown()
             server.server_close()
         except Exception as e:
-            log('Server shutdown error:', e)
+            warn('Server shutdown error:', e)
         log('Server stopped.')
         # Mark clean exit here (inside finally) so it runs even if server
         # shutdown raises, preventing a false "unclean shutdown" on next launch.

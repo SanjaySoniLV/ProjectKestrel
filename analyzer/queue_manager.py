@@ -12,7 +12,7 @@ import threading
 import time as _time_mod
 from datetime import datetime
 
-from settings_utils import load_persisted_settings, save_persisted_settings, log
+from settings_utils import load_persisted_settings, save_persisted_settings, debug, info, warn, error, log
 
 # Telemetry — failsafe import (never blocks startup)
 try:
@@ -70,13 +70,13 @@ if not _PIPELINE_AVAILABLE:
 def _get_pipeline_class():
     """Import and cache AnalysisPipeline on first call (deferred ML import)."""
     global _AnalysisPipeline, _PIPELINE_AVAILABLE, _pipeline_import_error
-    log("_get_pipeline_class() called, available:", _PIPELINE_AVAILABLE)
+    debug("[queue] _get_pipeline_class() called, available:", _PIPELINE_AVAILABLE)
     if _AnalysisPipeline is not None:
         return _AnalysisPipeline
     try:
-        log("Importing AnalysisPipeline from kestrel_analyzer.pipeline...")
+        info("[queue] Importing AnalysisPipeline from kestrel_analyzer.pipeline...")
         from kestrel_analyzer.pipeline import AnalysisPipeline  # type: ignore  # noqa: PLC0415
-        log("AnalysisPipeline imported successfully.")
+        info("[queue] AnalysisPipeline imported successfully.")
         _AnalysisPipeline = AnalysisPipeline
         _PIPELINE_AVAILABLE = True
         return _AnalysisPipeline
@@ -513,7 +513,7 @@ class QueueManager:
                         if it.status in ('pending', 'running'):
                             it.status = 'error'
                             it.error = f'Pipeline unavailable: {_pipeline_import_error}'
-                log('[queue] Pipeline unavailable, aborting:', _pipeline_import_error)
+                error('[queue] Pipeline unavailable, aborting:', _pipeline_import_error)
                 self._persist_recovery_state()
                 return
             self._pipeline = cls(use_gpu=self._use_gpu, detector_name=self._detector_name)
@@ -554,7 +554,7 @@ class QueueManager:
                 def _on_status(msg, _it=item):
                     with self._lock:
                         _it.current_status_msg = msg
-                    log(f'[queue:{_it.name}]', msg)
+                    debug(f'[queue:{_it.name}]', msg)
 
                 def _on_thumbnail(data, _it=item):
                     with self._lock:
@@ -670,7 +670,7 @@ class QueueManager:
                 self._persist_recovery_state()
                 self._send_folder_analytics(item)
             except Exception as exc:
-                log(f'[queue] Error processing {item.path!r}:', exc)
+                error(f'[queue] Error processing {item.path!r}:', exc)
                 with self._lock:
                     item.status = 'error'
                     item.end_time = _time_mod.time()
@@ -678,7 +678,7 @@ class QueueManager:
                 self._persist_recovery_state()
                 self._send_folder_analytics(item)
 
-        log('[queue] Run thread finished.')
+        info('[queue] Run thread finished.')
         self._persist_recovery_state()
 
     def _send_folder_analytics(self, item):

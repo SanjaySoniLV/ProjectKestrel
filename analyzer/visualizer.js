@@ -1,3 +1,11 @@
+    // ── Debug-gated console logging ─────────────────────────────────────────
+    // Verbose diagnostic console.log lines are routed through kdebug() so
+    // they're silent by default. To enable for a session, open DevTools and
+    // run:  window.__KESTREL_DEBUG = true; location.reload();
+    // (console.warn / console.error are NOT gated — they always fire.)
+    const _KESTREL_DEBUG = !!window.__KESTREL_DEBUG;
+    function kdebug(...args) { if (_KESTREL_DEBUG) console.log(...args); }
+
     // State (desktop mode only)
     let rootPath = '';             // Absolute path to root folder (desktop pywebview mode)
     let rows = [];                 // CSV rows (objects)
@@ -124,13 +132,13 @@
     // ─────────────────────────────────────────────────────────────────────────
 
     // Debug: Log what APIs are available (initial check)
-    console.log('[DEBUG] Initial API Detection:');
-    console.log('  - Pywebview API (window.pywebview):', hasPywebviewApi);
+    kdebug('[init] API detection start');
+    kdebug('  - Pywebview API (window.pywebview):', hasPywebviewApi);
     if (hasPywebviewApi) {
-      console.log('  - window.pywebview object:', window.pywebview);
-      console.log('  - window.pywebview.api:', window.pywebview.api);
+      kdebug('  - window.pywebview object:', window.pywebview);
+      kdebug('  - window.pywebview.api:', window.pywebview.api);
       if (window.pywebview.api) {
-        console.log('  - Available API methods:', Object.keys(window.pywebview.api));
+        kdebug('  - Available API methods:', Object.keys(window.pywebview.api));
       }
     }
 
@@ -152,9 +160,9 @@
           if (found) {
             hasPywebviewApi = true;
             el('#compat')?.classList.add('hidden');
-            console.log('[DEBUG] Pywebview API ready (elapsed ~' + elapsed + 'ms)');
+            kdebug('[init] Pywebview API ready (elapsed ~' + elapsed + 'ms)');
           } else {
-            console.log('[DEBUG] Pywebview API not available after ' + elapsed + 'ms');
+            kdebug('[init] Pywebview API not available after ' + elapsed + 'ms');
           }
           resolve(found);
         }
@@ -478,7 +486,7 @@
 
     // Display the version update notification as a toast
     async function showVersionUpdateNotification(versionInfo) {
-      console.log('[DEBUG] Showing version update notification for version:', versionInfo);
+      kdebug('[init] Showing version update notification for version:', versionInfo);
       const toast = document.getElementById('versionUpdateToast');
       if (!toast) return;
       
@@ -3077,7 +3085,7 @@
           _speciesFamilyMapLower[sp.toLowerCase()] = { canonical: sp, family: fam };
         }
         _speciesNameList = Object.keys(map).sort((a, b) => a.localeCompare(b));
-        console.log(`[loadSpeciesFamilyMap] loaded ${_speciesNameList.length} species`);
+        kdebug(`[loadSpeciesFamilyMap] loaded ${_speciesNameList.length} species`);
       } catch (e) {
         console.warn('[loadSpeciesFamilyMap] failed:', e);
         _speciesFamilyMap = {};
@@ -5067,17 +5075,17 @@
             }
           } catch (_) { }
         }
-        console.log('[donation] checkDonationThresholdOnStartup: total =', total);
+        kdebug('[donation] checkDonationThresholdOnStartup: total =', total);
         if (total < 1000) {
-          console.log('[donation] Total < 1000, skipping');
+          kdebug('[donation] Total < 1000, skipping');
           return;
         }
         const thresholds = [1000, 5000, 10000, 25000, 50000, 100000, 200000];
         const shown = _loadDonateThresholdsShown();
-        console.log('[donation] Thresholds already shown:', shown);
+        kdebug('[donation] Thresholds already shown:', shown);
         for (const t of thresholds) {
           if (total >= t && !shown.includes(t)) {
-            console.log('[donation] Milestone crossed:', t, '- showing dialog');
+            kdebug('[donation] Milestone crossed:', t, '- showing dialog');
             shown.push(t);
             _saveDonateThresholdsShown(shown);
             // Show dialog after a brief delay to let UI settle
@@ -5086,7 +5094,7 @@
           }
         }
         if (shown.includes(1000)) {
-          console.log('[donation] 1000 threshold already shown, no dialog needed');
+          kdebug('[donation] 1000 threshold already shown, no dialog needed');
         }
       } catch (e) {
         console.error('[donation] checkDonationThresholdOnStartup error:', e);
@@ -7607,16 +7615,16 @@
 
     // Event wiring
     el('#pickFolder').addEventListener('click', async () => {
-      console.log('[DEBUG] Folder picker clicked');
-      console.log('[DEBUG] hasPywebviewApi:', hasPywebviewApi);
-      console.log('[DEBUG] window.pywebview:', window.pywebview);
-      console.log('[DEBUG] window.pywebview?.api:', window.pywebview?.api);
+      kdebug('[pickFolder] clicked');
+      kdebug('[pickFolder] hasPywebviewApi:', hasPywebviewApi);
+      kdebug('[pickFolder] window.pywebview:', window.pywebview);
+      kdebug('[pickFolder] window.pywebview?.api:', window.pywebview?.api);
 
       // Wait for pywebview API if it's not ready yet
       if (!hasPywebviewApi) {
-        console.log('[DEBUG] Waiting for pywebview API...');
+        kdebug('[pickFolder] Waiting for pywebview API...');
         const ready = await waitForPywebview();
-        console.log('[DEBUG] Pywebview API ready:', ready);
+        kdebug('[pickFolder] Pywebview API ready:', ready);
       }
       // When user opens a folder, reset any checked folders in the main tree
       // (acts like pressing "Check none") so we don't accidentally load
@@ -7631,7 +7639,7 @@
         // PRIORITY 1: Python API (desktop app - all platforms)
         // When available, ALWAYS use this for consistency
         if (hasPywebviewApi && window.pywebview?.api?.choose_directory) {
-          console.log('[DEBUG] Using Python API for folder picker');
+          kdebug('[pickFolder] Using Python API for folder picker');
           try {
             setStatus('Opening folder picker...');
             const folderPath = await window.pywebview.api.choose_directory();

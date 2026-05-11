@@ -9,7 +9,7 @@ import os
 import subprocess
 import sys
 
-from settings_utils import load_persisted_settings, log
+from settings_utils import load_persisted_settings, debug, info, warn, log
 
 # Cache for discovered darktable executable on Windows
 _DARKTABLE_EXE = None
@@ -46,24 +46,24 @@ def _validate_custom_editor_path(raw: str) -> str | None:
     for ch in candidate:
         o = ord(ch)
         if o < 0x20 or o == 0x7F:
-            log('[security] customEditorPath contains control characters; rejecting.')
+            warn('[security] customEditorPath contains control characters; rejecting.')
             return None
     # UNC paths — drive-by NTLM relay risk.
     if sys.platform.startswith('win'):
         if candidate.startswith('\\\\') or candidate.startswith('//'):
-            log(f'[security] customEditorPath rejected (UNC not allowed): {candidate!r}')
+            warn(f'[security] customEditorPath rejected (UNC not allowed): {candidate!r}')
             return None
     expanded = os.path.expanduser(candidate)
     if not os.path.isabs(expanded):
-        log(f'[security] customEditorPath rejected (must be absolute): {candidate!r}')
+        warn(f'[security] customEditorPath rejected (must be absolute): {candidate!r}')
         return None
     try:
         resolved = os.path.realpath(expanded)
     except (OSError, ValueError):
-        log(f'[security] customEditorPath could not be resolved: {candidate!r}')
+        warn(f'[security] customEditorPath could not be resolved: {candidate!r}')
         return None
     if not os.path.exists(resolved):
-        log(f'[security] customEditorPath does not exist: {resolved!r}')
+        warn(f'[security] customEditorPath does not exist: {resolved!r}')
         return None
     if os.path.isdir(resolved):
         # macOS ``.app`` bundles are directories and are valid targets for
@@ -71,10 +71,10 @@ def _validate_custom_editor_path(raw: str) -> str | None:
         # a misconfiguration or an attempt to hand a bogus value to Popen.
         if sys.platform == 'darwin' and resolved.endswith('.app'):
             return resolved
-        log(f'[security] customEditorPath rejected (is a directory): {resolved!r}')
+        warn(f'[security] customEditorPath rejected (is a directory): {resolved!r}')
         return None
     if not os.path.isfile(resolved):
-        log(f'[security] customEditorPath is neither file nor .app bundle: {resolved!r}')
+        warn(f'[security] customEditorPath is neither file nor .app bundle: {resolved!r}')
         return None
     return resolved
 
@@ -111,9 +111,9 @@ def _find_darktable_exe() -> str:
 
 def launch(path: str, editor: str):
     path = os.path.abspath(path)
-    print(f"[LAUNCH] requested path={path!r} editor={editor!r} platform={sys.platform}", flush=True)
+    debug(f"[LAUNCH] requested path={path!r} editor={editor!r} platform={sys.platform}")
     if not os.path.exists(path):
-        print(f"[LAUNCH] ERROR: path does not exist: {path}", flush=True)
+        warn(f"[LAUNCH] path does not exist: {path}")
         raise FileNotFoundError(path)
 
     # Custom editor: load path from settings and validate before exec.
@@ -127,17 +127,17 @@ def launch(path: str, editor: str):
         if custom_exe:
             # Audit log every custom-editor launch so the trail is obvious if
             # something goes sideways.
-            log(f'[editor] launching custom editor: exe={custom_exe!r} target={path!r}')
+            info(f'[editor] launching custom editor: exe={custom_exe!r} target={path!r}')
             try:
                 if sys.platform == 'darwin' and custom_exe.endswith('.app'):
                     subprocess.Popen(['open', '-a', custom_exe, path]); return
                 else:
                     subprocess.Popen([custom_exe, path]); return
             except Exception as e:
-                log(f'Custom editor launch failed ({custom_exe}): {e}, falling back to system default')
+                warn(f'Custom editor launch failed ({custom_exe}): {e}, falling back to system default')
         else:
             if raw_custom:
-                log(f'[security] customEditorPath failed validation; falling back to system default.')
+                warn(f'[security] customEditorPath failed validation; falling back to system default.')
         editor = 'system'
 
     # Editor name -> (Windows exe candidates, macOS app name, Linux commands)
@@ -295,7 +295,7 @@ def launch(path: str, editor: str):
                         subprocess.Popen([exe, path]); return
                     except Exception:
                         continue
-            log(f'{editor} not found on Windows, falling back to system default')
+            warn(f'{editor} not found on Windows, falling back to system default')
         os.startfile(path)  # type: ignore[attr-defined]
         return
 
@@ -309,24 +309,24 @@ def launch(path: str, editor: str):
             for app_name in apps_to_try:
                 try:
                     cmd = ['open', '-a', app_name, path]
-                    print(f"[LAUNCH] macOS: running: {cmd}", flush=True)
+                    debug(f"[LAUNCH] macOS: running: {cmd}")
                     subprocess.Popen(cmd)
                     return
                 except Exception as e:
-                    print(f"[LAUNCH] macOS {app_name} launch failed: {e}", flush=True)
+                    debug(f"[LAUNCH] macOS {app_name} launch failed: {e}")
             if not apps_to_try:
-                log(f'{editor} not available on macOS, falling back to system default')
+                warn(f'{editor} not available on macOS, falling back to system default')
 
         # System default: try a couple of strategies and log results
         try:
             cmd = ['open', path]
-            print(f"[LAUNCH] macOS: trying system open: {cmd}", flush=True)
+            debug(f"[LAUNCH] macOS: trying system open: {cmd}")
             p = subprocess.run(cmd, check=False)
-            print(f"[LAUNCH] macOS: open returned code {p.returncode}", flush=True)
+            debug(f"[LAUNCH] macOS: open returned code {p.returncode}")
             if p.returncode == 0:
                 return
         except Exception as e:
-            print(f"[LAUNCH] macOS: open() raised: {e}", flush=True)
+            debug(f"[LAUNCH] macOS: open() raised: {e}")
 
         # NOTE: the previous ``osascript -e 'tell ... open (POSIX file "<path>")'``
         # fallback has been removed. Interpolating ``path`` into an AppleScript
@@ -340,11 +340,11 @@ def launch(path: str, editor: str):
         # Last resort: reveal in Finder
         try:
             cmd = ['open', '-R', path]
-            print(f"[LAUNCH] macOS: fallback reveal: {cmd}", flush=True)
+            debug(f"[LAUNCH] macOS: fallback reveal: {cmd}")
             subprocess.Popen(cmd)
             return
         except Exception as e:
-            print(f"[LAUNCH] macOS: reveal fallback failed: {e}", flush=True)
+            debug(f"[LAUNCH] macOS: reveal fallback failed: {e}")
         return
 
     # Linux / other
