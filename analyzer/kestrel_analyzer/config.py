@@ -4,19 +4,12 @@ VERSION = "2.0.1"
 
 ANALYZER_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = ANALYZER_DIR.parent
-DOCUMENTATION_DIR = REPO_ROOT / "documentation"
-MODEL_CANDIDATE_DIR = DOCUMENTATION_DIR / "model_candidates"
-MODEL_CANDIDATE_WEIGHTS_DIR = MODEL_CANDIDATE_DIR / "weights"
 MODELS_DIR = ANALYZER_DIR / "models"
 
 SPECIESCLASSIFIER_PATH = MODELS_DIR / "model.onnx"
 SPECIESCLASSIFIER_LABELS = MODELS_DIR / "labels.txt"
 QUALITYCLASSIFIER_PATH = MODELS_DIR / "quality.onnx"
 QUALITY_NORMALIZATION_DATA_PATH = MODELS_DIR / "quality_normalization_data.csv"
-MASK_RCNN_WEIGHTS_PATH = MODELS_DIR / "mask_rcnn_resnet50_fpn_v2.pth"
-# SAM-HQ: ViT-Tiny default (faster). For ViT-B quality, set path to sam_hq_vit_b.pth and SAM_HQ_MODEL_KEY = "vit_b".
-SAM_HQ_WEIGHTS_PATH = MODELS_DIR / "sam_hq_vit_tiny.pth"
-SAM_HQ_MODEL_KEY = "vit_tiny"  # segment_anything_hq.sam_model_registry
 
 # SpeciesNet: bundled Kaggle-style folder (info.json + .pt + taxonomy). Passed as local model_name to speciesnet.ModelInfo.
 SPECIESNET_MODEL_DIR = MODELS_DIR / "speciesnet"
@@ -29,9 +22,6 @@ DETECTOR_ONNX_PATHS = {
     "mdv5a": SPECIESNET_MODEL_DIR / "mdv5a.onnx",
     "mdv6-e": SPECIESNET_MODEL_DIR / "mdv6-mit-yolov9-e.onnx",
 }
-
-# Backward-compatible alias used by existing call sites.
-MDV6_ONNX_PATH = DETECTOR_ONNX_PATHS[DEFAULT_DETECTOR_NAME]
 
 # SAM-HQ ViT-Tiny: split encoder + decoder ONNX files.
 SAM_ENC_ONNX_PATH = SPECIESNET_MODEL_DIR / "sam_hq_vit_tiny_encoder.onnx"
