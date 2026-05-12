@@ -1,11 +1,22 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
 from PyInstaller.utils.hooks import collect_dynamic_libs
 from PyInstaller.utils.hooks import collect_all
 
 # models/ includes bundled SpeciesNet (models/speciesnet/info.json + weights) and SAM-HQ checkpoints.
-datas = [('models', 'models'), ('kestrel_telemetry.py', '.'), ('folder_inspector.py', '.'), ('cli.py', '.'), ('VERSION.txt', '.'), ('kestrel_analyzer', 'kestrel_analyzer'), ('visualizer.html', '.'), ('css', 'css'), ('visualizer.js', '.'), ('csv_parser.js', '.'), ('culling.html', '.'), ('logo.png', '.'), ('logo.ico', '.'), ('sample_sets', 'sample_sets'), ('settings_utils.py', '.'), ('editor_launch.py', '.'), ('queue_manager.py', '.'), ('api_bridge.py', '.')]
+datas = [('models', 'models'), ('kestrel_telemetry.py', '.'), ('build_attestation.py', '.'), ('folder_inspector.py', '.'), ('cli.py', '.'), ('VERSION.txt', '.'), ('kestrel_analyzer', 'kestrel_analyzer'), ('visualizer.html', '.'), ('css', 'css'), ('visualizer.js', '.'), ('csv_parser.js', '.'), ('culling.html', '.'), ('logo.png', '.'), ('logo.ico', '.'), ('sample_sets', 'sample_sets'), ('settings_utils.py', '.'), ('editor_launch.py', '.'), ('queue_manager.py', '.'), ('api_bridge.py', '.')]
+
+# CI generates build_attestation.json with the HMAC attestation for official builds.
+# Source builds and dev workflows skip generation, in which case the bundle just
+# doesn't include the file and the client falls back to the legacy auth header.
+if os.path.exists('build_attestation.json'):
+    datas.append(('build_attestation.json', '.'))
+    print('[spec] Including build_attestation.json (official build).')
+else:
+    print('[spec] No build_attestation.json present (source/dev build).')
+
 binaries = []
-hiddenimports = ['pywebview','PIL','exifread','settings_utils','editor_launch','queue_manager','api_bridge']
+hiddenimports = ['pywebview','PIL','exifread','settings_utils','editor_launch','queue_manager','api_bridge','build_attestation']
 binaries += collect_dynamic_libs('onnxruntime')
 tmp_ret = collect_all('msvc-runtime')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]

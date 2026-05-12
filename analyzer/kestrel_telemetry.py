@@ -32,11 +32,21 @@ except ImportError:
 
 import ssl
 import certifi # ensure we have a CA bundle for HTTPS requests, even in frozen/packaged environments
+
+try:
+    from build_attestation import auth_headers as _build_auth_headers
+except Exception:
+    # Failsafe: if the module can't load for any reason, fall back to legacy headers only.
+    def _build_auth_headers():
+        return {}
 # ---------------------------------------------------------------------------
 # Configuration — the shared secret and endpoint URL
 # ---------------------------------------------------------------------------
 KESTREL_API_URL = "https://api.projectkestrel.org"  # production endpoint
 #KESTREL_API_URL = "http://127.0.0.1:8787"  # local testing endpoint
+# Legacy shared secret. Official builds override authentication via HMAC headers
+# from build_attestation.auth_headers(); this constant remains as the fallback
+# tier for source/dev builds and for pre-attestation installed binaries.
 KESTREL_SHARED_SECRET = "kestrel_secret_dev_shared"  # basic abuse-prevention
 
 _TIMEOUT_SECONDS = 10
@@ -139,15 +149,22 @@ def _post_json(endpoint: str, payload: dict) -> None:
     url = f"{KESTREL_API_URL}{endpoint}"
     try:
         data = json.dumps(payload).encode('utf-8')
+        headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (KestrelTelemetry/1.0)',
+        }
+        # Official builds carry HMAC attestation headers; everyone else falls back
+        # to the legacy shared-secret header. The worker accepts both.
+        attestation = _build_auth_headers()
+        if attestation:
+            headers.update(attestation)
+        else:
+            headers['X-Kestrel-Key'] = KESTREL_SHARED_SECRET
         req = urllib.request.Request(
             url,
             data=data,
-            headers={
-                'Content-Type': 'application/json',
-                'Accept': 'application/json',
-                'X-Kestrel-Key': KESTREL_SHARED_SECRET,
-                'User-Agent': 'Mozilla/5.0 (KestrelTelemetry/1.0)',
-            },
+            headers=headers,
             method='POST',
         )
         with urllib.request.urlopen(req, timeout=_TIMEOUT_SECONDS, context=_get_ssl_context()):
