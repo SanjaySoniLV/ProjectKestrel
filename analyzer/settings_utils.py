@@ -45,7 +45,23 @@ _ALLOWED_EDITORS = {
 _ALLOWED_RATING_PROFILES = {'very_strict', 'strict', 'balanced', 'lenient', 'very_lenient'}
 _ALLOWED_EXPOSURE_QUALITY = {'lenient', 'balanced', 'aggressive'}
 _ALLOWED_WILDLIFE_MODEL_MODES = {'fast', 'accurate'}
-_ALLOWED_QUEUE_DETECTOR_NAMES = {'mdv5a', 'mdv6-e'}
+_ALLOWED_QUEUE_DETECTOR_NAMES = {'mdv5a', 'mdv1000-cedar'}
+# Legacy detector names → current names. Applied silently at load to migrate
+# stored settings from older builds. UI semantics ("Fast"/"Accurate") are
+# preserved, so users never see a change.
+_LEGACY_DETECTOR_NAME_MIGRATIONS = {'mdv6-e': 'mdv1000-cedar'}
+
+
+def _migrate_legacy_detector_name(value):
+    """Remap a stored detector name through ``_LEGACY_DETECTOR_NAME_MIGRATIONS``.
+
+    Non-string or unknown values pass through unchanged so that the downstream
+    ``_coerce_enum`` allowlist check handles them.
+    """
+    if not isinstance(value, str):
+        return value
+    norm = value.strip().lower()
+    return _LEGACY_DETECTOR_NAME_MIGRATIONS.get(norm, value)
 _ALLOWED_QUEUE_ITEM_STATUSES = {'pending', 'running', 'done', 'error', 'cancelled'}
 
 # Telemetry — failsafe import (never blocks startup)
@@ -245,7 +261,7 @@ def _sanitize_queue_recovery_state(value: Any) -> dict | None:
         'wildlife_enabled': _coerce_bool(opts.get('wildlife_enabled', True), default=True),
         'species_detection_enabled': _coerce_bool(opts.get('species_detection_enabled', True), default=True),
         'detector_name': _coerce_enum(
-            opts.get('detector_name', 'mdv5a'),
+            _migrate_legacy_detector_name(opts.get('detector_name', 'mdv5a')),
             _ALLOWED_QUEUE_DETECTOR_NAMES,
             default='mdv5a',
         ),
@@ -405,7 +421,7 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
         )
     if 'detector_name' in data:
         out['detector_name'] = _coerce_enum(
-            data.get('detector_name'),
+            _migrate_legacy_detector_name(data.get('detector_name')),
             _ALLOWED_QUEUE_DETECTOR_NAMES,
             default='mdv5a',
         )

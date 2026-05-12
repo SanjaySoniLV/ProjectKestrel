@@ -111,6 +111,49 @@ class TestForwardCompatibility:
                     )
 
 
+class TestDetectorNameMigration:
+    """The 'fast' detector was switched from mdv6-e to mdv1000-cedar at v2.0.2.
+
+    Stored settings carrying the legacy name should be silently rewritten on
+    load — the user-facing 'Fast'/'Accurate' selector is unchanged.
+    """
+
+    def test_legacy_mdv6e_migrates_to_cedar(self):
+        result = _sanitize_settings_payload({'detector_name': 'mdv6-e'})
+        assert result['detector_name'] == 'mdv1000-cedar'
+
+    def test_legacy_mdv6e_case_insensitive(self):
+        for variant in ('MDv6-E', '  mdv6-e  ', 'MDV6-E'):
+            result = _sanitize_settings_payload({'detector_name': variant})
+            assert result['detector_name'] == 'mdv1000-cedar', f"failed for {variant!r}"
+
+    def test_mdv5a_passes_through(self):
+        result = _sanitize_settings_payload({'detector_name': 'mdv5a'})
+        assert result['detector_name'] == 'mdv5a'
+
+    def test_cedar_passes_through(self):
+        result = _sanitize_settings_payload({'detector_name': 'mdv1000-cedar'})
+        assert result['detector_name'] == 'mdv1000-cedar'
+
+    def test_unknown_name_falls_back_to_default(self):
+        # _coerce_enum default when the value isn't allowlisted
+        result = _sanitize_settings_payload({'detector_name': 'made-up-name'})
+        assert result['detector_name'] == 'mdv5a'
+
+    def test_gambels_quail_fixture_migrates(self):
+        """The Gambels-Quail fixture carries detector_name='mdv6-e' on purpose
+        so this migration path is exercised whenever fixtures are regenerated."""
+        fixture = FIXTURE_DIR / "settings_v_Gambels-Quail.json"
+        if not fixture.exists():
+            pytest.skip("Gambels-Quail fixture not present")
+        original = _load_fixture_dict(fixture)
+        assert original.get('detector_name') == 'mdv6-e', (
+            "Fixture should still carry the legacy name to exercise the migration"
+        )
+        result = _sanitize_settings_payload(original)
+        assert result['detector_name'] == 'mdv1000-cedar'
+
+
 class TestMonotonicGuardScenarios:
     """Specific scenarios where the monotonic guard must hold across load/save."""
 

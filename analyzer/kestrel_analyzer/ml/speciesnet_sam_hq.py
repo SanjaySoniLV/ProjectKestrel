@@ -51,8 +51,7 @@ _HEAVY_OVERLAP_CONTAINMENT = 0.90
 _PRE_CLASSIFIER_IOU = 0.85
 _PRE_CLASSIFIER_CONTAINMENT = 0.95
 _SUPPORTED_DETECTOR_NAMES = tuple(DETECTOR_ONNX_PATHS.keys())
-_YOLOV9_DETECTOR_NAMES = {"mdv6-c", "mdv6-e"}
-_MDV5A_DETECTOR_NAMES = {"mdv5a"}
+_MDV1000_CEDAR_DETECTOR_NAMES = {"mdv1000-cedar"}
 
 
 def _coerce_max_bird_crops(value) -> int:
@@ -531,94 +530,36 @@ class OnnxMDv5Detector:
         return {"filepath": filepath, "detections": detections}
 
 
-class OnnxMDv6Detector:
+class OnnxMDv1000CedarDetector:
     """
-    MegaDetector v6 (RT-DETRv2-C) via ONNX Runtime.
+    MegaDetector v1000 ``cedar`` variant (YOLOv9 gelan-c head) via ONNX Runtime.
 
-    Interface (identical to MDv6Detector):
-        preprocess(img_pil)          → (img_tensor, orig_w, orig_h)
+    Cedar's ONNX is a single-file export (no `.onnx.data` sidecar) produced via
+    ``torch.onnx.export(dynamo=False)``. That export path embeds weights inline
+    and — critically — emits Reshape ops the DirectML execution provider accepts,
+    so cedar runs on the GPU on Windows.
+
+    Interface matches the other detectors:
+        preprocess(img_pil)          → (img_tensor, scale, pad_left, pad_top, orig_w, orig_h)
         predict(filepath, det_input) → {"filepath": str,
                                          "detections": [{"label": str,
                                                           "conf": float,
                                                           "bbox": [xmin,ymin,w,h]}]}
 
-    Preprocessing squashes the image to 640×640 (CPU, pure numpy).
-    Category map:  0 → "animal"   1 → "person"   2 → "vehicle"
-    """
+    Preprocessing letterboxes the image to 640×640 (aspect-preserving + grey-114
+    pad) with [0,1] RGB float input. The ONNX output is shape ``(1, 7, 8400)``
+    channels-first — 4 box channels (cx, cy, w, h in network pixel space) + 3
+    sigmoid-activated class scores (animal, person, vehicle). The decoder
+    inverse-letterboxes boxes back to original-image space and runs per-class
+    greedy NMS at IoU 0.5.
 
-    _LABEL_MAP: dict[int, str] = {0: "animal", 1: "person", 2: "vehicle"}
-
-    def __init__(self, onnx_path: Path, coord: ProviderCoordinator) -> None:
-        onnx_path = Path(onnx_path)
-        if not onnx_path.is_file():
-            raise FileNotFoundError(
-                f"MDv6 weights not found: {onnx_path}\n"
-                "Place mdv6-apa-rtdetr-c.onnx (and mdv6-apa-rtdetr-c.onnx.data) "
-                "under models/speciesnet/."
-            )
-        self._session = ResilientOnnxSession("detector", onnx_path, coord)
-        _provs = self._session.get_providers()
-        self.device = "ONNX/GPU" if is_gpu_active(_provs) else "ONNX/CPU"
-        _active = _provs[0] if _provs else "unknown"
-        debug(f"[OnnxMDv6Detector] Loaded {onnx_path.name}  Active provider: {_active}  all providers: {_provs}")
-
-    def preprocess(self, img_pil: "Image.Image") -> tuple:
-        """CPU: squash PIL to 640×640 float tensor; record original dims.
-
-        Returns (img_tensor [1,3,640,640] float32 [0,1], orig_w, orig_h).
-        """
-        orig_w, orig_h = img_pil.size
-        img_640 = np.array(img_pil.resize((640, 640), Image.BILINEAR), dtype=np.float32) / 255.0
-        img_tensor = img_640.transpose(2, 0, 1)[np.newaxis]  # [1, 3, 640, 640]
-        return (img_tensor, orig_w, orig_h)
-
-    def predict(self, filepath: str, det_input: tuple) -> dict:
-        """ONNX inference + decode absolute xyxy → normalised xywh."""
-        img_tensor, orig_w, orig_h = det_input
-        orig_sizes = np.array([[orig_w, orig_h]], dtype=np.float32)
-        labels_b, boxes_b, scores_b = self._session.run(
-            None, {"images": img_tensor, "orig_target_sizes": orig_sizes}
-        )
-        labels = labels_b[0]  # (300,)
-        boxes  = boxes_b[0]   # (300, 4) xyxy absolute pixels in orig space
-        scores = scores_b[0]  # (300,)
-
-        detections: list[dict] = []
-        for i in range(len(labels)):
-            conf = float(scores[i])
-            if conf < 0.01:
-                continue
-            cls_idx = int(labels[i])
-            x1, y1, x2, y2 = float(boxes[i][0]), float(boxes[i][1]), float(boxes[i][2]), float(boxes[i][3])
-            bbox = [
-                x1 / orig_w,
-                y1 / orig_h,
-                (x2 - x1) / orig_w,
-                (y2 - y1) / orig_h,
-            ]
-            label = self._LABEL_MAP.get(cls_idx, "unknown")
-            detections.append({"label": label, "conf": conf, "bbox": bbox})
-        return {"filepath": filepath, "detections": detections}
-
-
-class OnnxMDv6MitYoloV9Detector:
-    """
-    MegaDetector v6 MIT YOLOv9 variants via ONNX Runtime.
-
-    The exported ONNX graph expects two inputs:
-        images    : [1, 3, 640, 640] float32 in [0,1]
-        rev_tensor: [1, 5] = [scale, pad_left, pad_top, pad_left, pad_top]
-
-    It outputs raw class logits and decoded boxes. The graph already applies
-    reverse letterbox transform using ``rev_tensor``, so output boxes are in
-    the original image coordinate space.
+    Category map: 0 → "animal"   1 → "person"   2 → "vehicle"
     """
 
     _LABEL_MAP: dict[int, str] = {0: "animal", 1: "person", 2: "vehicle"}
     _INPUT_SIZE = 640
     _MIN_CONF = 0.01
     _NMS_IOU = 0.5
-    _MAX_BBOX_PER_CLASS = 300
     _PRE_NMS_LIMIT = 4000
     _PAD_COLOR = (114, 114, 114)
 
@@ -626,58 +567,13 @@ class OnnxMDv6MitYoloV9Detector:
         onnx_path = Path(onnx_path)
         if not onnx_path.is_file():
             raise FileNotFoundError(
-                f"MDv6 MIT YOLOv9 weights not found: {onnx_path}\n"
-                "Place mdv6-mit-yolov9-*.onnx (and .onnx.data) under models/speciesnet/."
+                f"mdv1000-cedar weights not found: {onnx_path}\n"
+                "Place mdv1000-cedar.onnx under models/speciesnet/ (single file — no .onnx.data sidecar)."
             )
-
         self._session = ResilientOnnxSession("detector", onnx_path, coord)
-
-        inputs = self._session.get_inputs()
-        outputs = self._session.get_outputs()
-        self._images_input_name = self._pick_io_name(inputs, preferred=("images", "image", "input"))
-        self._rev_input_name = self._pick_io_name(
-            inputs,
-            preferred=("rev_tensor", "rev"),
-            exclude={self._images_input_name},
-        )
-        self._logits_output_name = self._pick_io_name(
-            outputs,
-            preferred=("raw_class_logits", "class", "logits"),
-        )
-        self._boxes_output_name = self._pick_io_name(
-            outputs,
-            preferred=("raw_boxes", "boxes", "bbox"),
-            exclude={self._logits_output_name},
-        )
-
         _provs = self._session.get_providers()
         self.device = "ONNX/GPU" if is_gpu_active(_provs) else "ONNX/CPU"
-        _active = _provs[0] if _provs else "unknown"
-        debug(
-            f"[OnnxMDv6MitYoloV9Detector] Loaded {onnx_path.name}"
-            f"  Active provider: {_active}  all providers: {_provs}"
-            f"  inputs=({self._images_input_name}, {self._rev_input_name})"
-            f"  outputs=({self._logits_output_name}, {self._boxes_output_name})"
-        )
-
-    @staticmethod
-    def _pick_io_name(
-        io_nodes,
-        preferred: tuple[str, ...],
-        exclude: Optional[set[str]] = None,
-    ) -> str:
-        excluded = exclude or set()
-        names = [node.name for node in io_nodes if node.name not in excluded]
-        if not names:
-            raise RuntimeError("Failed to resolve ONNX input/output names.")
-
-        lowered = [name.lower() for name in names]
-        for token in preferred:
-            token = token.lower()
-            for idx, lname in enumerate(lowered):
-                if token in lname:
-                    return names[idx]
-        return names[0]
+        debug(f"[OnnxMDv1000CedarDetector] Loaded {onnx_path.name}  providers={_provs}")
 
     @staticmethod
     def _nms_xyxy(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float) -> np.ndarray:
@@ -711,20 +607,18 @@ class OnnxMDv6MitYoloV9Detector:
 
         return np.array(keep, dtype=np.int64)
 
-    @staticmethod
-    def _sigmoid(x: np.ndarray) -> np.ndarray:
-        x = np.clip(x, -50.0, 50.0)
-        return 1.0 / (1.0 + np.exp(-x))
-
     def preprocess(self, img_pil: "Image.Image") -> tuple:
-        """Pad-resize image to 640x640 and build rev_tensor expected by the ONNX graph."""
+        """Letterbox the image into the fixed 640×640 input. Returns the
+        normalized RGB tensor plus the (scale, pad_left, pad_top) needed to
+        inverse-transform output boxes back to original-image space.
+        """
         orig_w, orig_h = img_pil.size
 
         scale = min(self._INPUT_SIZE / float(orig_w), self._INPUT_SIZE / float(orig_h))
-        new_w = max(1, int(orig_w * scale))
-        new_h = max(1, int(orig_h * scale))
+        new_w = max(1, int(round(orig_w * scale)))
+        new_h = max(1, int(round(orig_h * scale)))
 
-        resized = img_pil.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        resized = img_pil.resize((new_w, new_h), Image.Resampling.BILINEAR)
         pad_left = (self._INPUT_SIZE - new_w) // 2
         pad_top = (self._INPUT_SIZE - new_h) // 2
 
@@ -732,86 +626,104 @@ class OnnxMDv6MitYoloV9Detector:
         canvas.paste(resized, (pad_left, pad_top))
 
         img_np = np.asarray(canvas, dtype=np.float32) / 255.0
-        img_tensor = img_np.transpose(2, 0, 1)[np.newaxis]
-        rev_tensor = np.array(
-            [[scale, float(pad_left), float(pad_top), float(pad_left), float(pad_top)]],
-            dtype=np.float32,
-        )
-        return (img_tensor, rev_tensor, orig_w, orig_h)
+        img_tensor = img_np.transpose(2, 0, 1)[np.newaxis]  # [1, 3, 640, 640]
+        return (img_tensor, float(scale), int(pad_left), int(pad_top), int(orig_w), int(orig_h))
 
     def predict(self, filepath: str, det_input: tuple) -> dict:
-        """ONNX inference + sigmoid + class-wise NMS, returned as normalized xywh detections."""
-        img_tensor, rev_tensor, orig_w, orig_h = det_input
-        raw = self._session.run(
-            [self._logits_output_name, self._boxes_output_name],
-            {
-                self._images_input_name: img_tensor,
-                self._rev_input_name: rev_tensor,
-            },
-        )
+        """ONNX inference + decode (1,7,N) channels-first output → normalized xywh detections."""
+        img_tensor, scale, pad_left, pad_top, orig_w, orig_h = det_input
+        raw = self._session.run(None, {"images": img_tensor})
         if not raw:
             return {"filepath": filepath, "detections": []}
 
-        class_logits, boxes_b = raw
-        if class_logits.ndim != 3 or boxes_b.ndim != 3:
-            raise RuntimeError(
-                f"Unexpected mdv6-mit-yolov9 output shapes: logits={class_logits.shape}, boxes={boxes_b.shape}"
-            )
+        preds = raw[0]
+        if preds.ndim != 3 or preds.shape[1] != 7:
+            raise RuntimeError(f"Unexpected mdv1000-cedar output shape: {preds.shape}")
 
-        class_probs = self._sigmoid(class_logits[0])
-        boxes = boxes_b[0]
-        if boxes.shape[1] != 4 or class_probs.shape[0] != boxes.shape[0]:
-            raise RuntimeError(
-                f"Unexpected mdv6-mit-yolov9 tensor dimensions: probs={class_probs.shape}, boxes={boxes.shape}"
-            )
+        pred = preds[0].T  # (N, 7) — 4 box + 3 sigmoid class scores
+        cls_scores = pred[:, 4:7]
+        cls_idx = np.argmax(cls_scores, axis=1).astype(np.int64)
+        conf = cls_scores[np.arange(cls_scores.shape[0]), cls_idx]
 
-        detections: list[dict] = []
-        n_classes = min(class_probs.shape[1], len(self._LABEL_MAP))
-        for class_id in range(n_classes):
-            label = self._LABEL_MAP.get(class_id)
-            if label is None:
+        keep = conf >= self._MIN_CONF
+        if not np.any(keep):
+            return {"filepath": filepath, "detections": []}
+
+        pred = pred[keep]
+        cls_idx = cls_idx[keep]
+        conf = conf[keep]
+
+        # Box coords are in network-pixel space (0..INPUT_SIZE). If the model ever
+        # emits normalized coords (rare), scale up.
+        max_coord = float(np.max(pred[:, :4]))
+        if max_coord <= 2.0:
+            cx = pred[:, 0] * self._INPUT_SIZE
+            cy = pred[:, 1] * self._INPUT_SIZE
+            bw = pred[:, 2] * self._INPUT_SIZE
+            bh = pred[:, 3] * self._INPUT_SIZE
+        else:
+            cx = pred[:, 0]
+            cy = pred[:, 1]
+            bw = pred[:, 2]
+            bh = pred[:, 3]
+
+        # Inverse letterbox: undo the (scale, pad) transform, then normalize to original image.
+        x1 = ((cx - bw / 2.0) - pad_left) / scale
+        y1 = ((cy - bh / 2.0) - pad_top) / scale
+        x2 = ((cx + bw / 2.0) - pad_left) / scale
+        y2 = ((cy + bh / 2.0) - pad_top) / scale
+        x1 = np.clip(x1 / float(orig_w), 0.0, 1.0)
+        y1 = np.clip(y1 / float(orig_h), 0.0, 1.0)
+        x2 = np.clip(x2 / float(orig_w), 0.0, 1.0)
+        y2 = np.clip(y2 / float(orig_h), 0.0, 1.0)
+        boxes = np.stack([x1, y1, x2, y2], axis=1).astype(np.float32)
+
+        selected: list[int] = []
+        for class_id in np.unique(cls_idx):
+            class_indices = np.where(cls_idx == class_id)[0]
+            class_scores = conf[class_indices]
+            if class_scores.size == 0:
                 continue
 
-            scores = class_probs[:, class_id]
-            class_indices = np.where(scores >= self._MIN_CONF)[0]
-            if class_indices.size == 0:
-                continue
-
-            if class_indices.size > self._PRE_NMS_LIMIT:
-                top_local = np.argsort(scores[class_indices])[-self._PRE_NMS_LIMIT:]
+            if class_scores.size > self._PRE_NMS_LIMIT:
+                top_local = np.argsort(class_scores)[-self._PRE_NMS_LIMIT:]
                 class_indices = class_indices[top_local]
+                class_scores = conf[class_indices]
 
             keep_local = self._nms_xyxy(
                 boxes[class_indices],
-                scores[class_indices].astype(np.float32),
+                class_scores.astype(np.float32),
                 iou_threshold=self._NMS_IOU,
             )
-            kept_indices = class_indices[keep_local]
-            if kept_indices.size > self._MAX_BBOX_PER_CLASS:
-                top_by_score = np.argsort(scores[kept_indices])[::-1][: self._MAX_BBOX_PER_CLASS]
-                kept_indices = kept_indices[top_by_score]
+            selected.extend(class_indices[keep_local].tolist())
 
-            for i in kept_indices:
-                x1, y1, x2, y2 = [float(v) for v in boxes[i]]
-                x1 = float(np.clip(x1, 0.0, float(orig_w)))
-                y1 = float(np.clip(y1, 0.0, float(orig_h)))
-                x2 = float(np.clip(x2, 0.0, float(orig_w)))
-                y2 = float(np.clip(y2, 0.0, float(orig_h)))
-                if x2 <= x1 or y2 <= y1:
-                    continue
+        if not selected:
+            return {"filepath": filepath, "detections": []}
 
-                detections.append(
-                    {
-                        "label": label,
-                        "conf": float(scores[i]),
-                        "bbox": [
-                            x1 / float(orig_w),
-                            y1 / float(orig_h),
-                            (x2 - x1) / float(orig_w),
-                            (y2 - y1) / float(orig_h),
-                        ],
-                    }
-                )
+        selected_arr = np.array(selected, dtype=np.int64)
+        order = np.argsort(conf[selected_arr])[::-1]
+        selected_arr = selected_arr[order]
+
+        detections: list[dict] = []
+        for i in selected_arr:
+            cls_id = int(cls_idx[i])
+            label = self._LABEL_MAP.get(cls_id, "unknown")
+            if label == "unknown":
+                continue
+
+            bx1, by1, bx2, by2 = [float(v) for v in boxes[i]]
+            detections.append(
+                {
+                    "label": label,
+                    "conf": float(conf[i]),
+                    "bbox": [
+                        bx1,
+                        by1,
+                        max(0.0, bx2 - bx1),
+                        max(0.0, by2 - by1),
+                    ],
+                }
+            )
 
         detections.sort(key=lambda d: float(d.get("conf", 0.0)), reverse=True)
         return {"filepath": filepath, "detections": detections}
@@ -1124,12 +1036,12 @@ class SpeciesNetSAMHQWrapper:
         if self.detector is None or self.classifier is None:
             self.model_name = _speciesnet_bundle_model_name()
             detector_path = _resolve_detector_onnx_path(self.detector_name)
-            if self.detector_name in _MDV5A_DETECTOR_NAMES:
+            if self.detector_name == "mdv5a":
                 self.detector = OnnxMDv5Detector(detector_path, self._coord)
-            elif self.detector_name in _YOLOV9_DETECTOR_NAMES:
-                self.detector = OnnxMDv6MitYoloV9Detector(detector_path, self._coord)
+            elif self.detector_name in _MDV1000_CEDAR_DETECTOR_NAMES:
+                self.detector = OnnxMDv1000CedarDetector(detector_path, self._coord)
             else:
-                self.detector = OnnxMDv6Detector(detector_path, self._coord)
+                raise ValueError(f"Unsupported detector name: {self.detector_name!r}")
             onnx_path   = SPECIESNET_MODEL_DIR / "speciesNet_v4.0.1a.onnx"
             labels_path = SPECIESNET_MODEL_DIR / "always_crop_99710272_22x8_v12_epoch_00148.labels.20251208.txt"
             self.classifier = OnnxClassifier(onnx_path, labels_path, self._coord)
