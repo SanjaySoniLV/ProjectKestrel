@@ -1625,10 +1625,16 @@ class Api:
             if mode_raw == 'accurate':
                 detector_name = 'mdv5a'
             elif mode_raw == 'fast':
-                detector_name = 'mdv6-e'
+                detector_name = 'mdv1000-cedar'
             else:
-                legacy_detector = str(sett.get('detector_name', '') or '').strip().lower()
-                if legacy_detector in {'mdv5a', 'mdv6-e'}:
+                # Belt-and-braces: settings_utils._migrate_legacy_detector_name
+                # has already remapped 'mdv6-e' on load, but if a raw stored value
+                # still gets here we accept it and migrate again.
+                from settings_utils import _migrate_legacy_detector_name
+                legacy_detector = _migrate_legacy_detector_name(
+                    str(sett.get('detector_name', '') or '').strip().lower()
+                )
+                if legacy_detector in {'mdv5a', 'mdv1000-cedar'}:
                     detector_name = legacy_detector
             mask_threshold = float(sett.get('mask_threshold', 0.5))
             mask_threshold = max(0.5, min(0.95, mask_threshold))

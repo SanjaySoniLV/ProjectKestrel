@@ -44,7 +44,7 @@ to Lincolns-Sparrow (both have the same 16 keys). It is kept anyway because the
 | Key                     | Lincolns-Sparrow (raw seed) | Gambels-Quail (after its sanitizer) |
 |-------------------------|------------------------------|--------------------------------------|
 | `editor`                | `"/Applications/Adobe Lightroom Classic.app"` | `"darktable"` (coerced — full path not in allowlist) |
-| `detector_name`         | `"mdv5a"`                   | `"mdv6-e"` (coerced — `mdv5a` removed from allowlist at this tag) |
+| `detector_name`         | `"mdv5a"`                   | `"mdv6-e"` (coerced — `mdv5a` removed from allowlist at this tag; at v2.0.2 this fixture value migrates silently to `"mdv1000-cedar"`) |
 | `scene_time_threshold`  | `1500`                      | `60.0` (clamped to max) |
 | `wildlife_model_mode`   | `"balanced"`                | `"accurate"` (coerced — `balanced` not in allowlist) |
 
@@ -90,7 +90,7 @@ Earliest tag where each key appears in the saved-fixture output:
 | `mask_threshold`                  | Lincolns-Sparrow    | |
 | `max_bird_crops`                  | Lincolns-Sparrow    | |
 | `wildlife_model_mode`             | Lincolns-Sparrow    | Allowlist values changed at Gambels-Quail (`balanced` no longer valid → coerced to `accurate`). Dropped by Kentucky-Warbler's stricter sanitizer. |
-| `detector_name`                   | Lincolns-Sparrow    | Allowlist changed at Gambels-Quail (`mdv5a` → `mdv6-c`/`mdv6-e`). Dropped by Kentucky-Warbler. |
+| `detector_name`                   | Lincolns-Sparrow    | Allowlist changed at Gambels-Quail (`mdv5a` → `mdv6-c`/`mdv6-e`). Dropped by Kentucky-Warbler. At v2.0.2, legacy `mdv6-e` values are silently remapped to `mdv1000-cedar` (`_migrate_legacy_detector_name`); allowlist becomes `{mdv5a, mdv1000-cedar}`. |
 | `exposure_quality`                | Lincolns-Sparrow    | Dropped by Kentucky-Warbler (which used `_ALLOWED_EXPOSURE_PROFILES` instead). |
 | `thumbnail_max_width`             | Lincolns-Sparrow    | Dropped by Kentucky-Warbler's strict sanitizer. |
 | `thumbnail_jpeg_quality`          | Lincolns-Sparrow    | Dropped by Kentucky-Warbler's strict sanitizer. |

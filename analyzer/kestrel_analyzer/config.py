@@ -1,6 +1,6 @@
 from pathlib import Path
 
-VERSION = "2.0.1"
+VERSION = "2.0.2"
 
 ANALYZER_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = ANALYZER_DIR.parent
@@ -14,13 +14,17 @@ QUALITY_NORMALIZATION_DATA_PATH = MODELS_DIR / "quality_normalization_data.csv"
 # SpeciesNet: bundled Kaggle-style folder (info.json + .pt + taxonomy). Passed as local model_name to speciesnet.ModelInfo.
 SPECIESNET_MODEL_DIR = MODELS_DIR / "speciesnet"
 
-# Runtime-selectable MegaDetector ONNX variants (all require .onnx.data sidecar files).
-# mdv5a (accurate) and mdv6-e (YOLOv9-E, fast) are bundled under models/speciesnet.
-# mdv5a provides best accuracy for wildlife detection; mdv6-e is faster but less accurate.
+# Runtime-selectable MegaDetector ONNX variants.
+# mdv5a (accurate, YOLOv5x6 @ 1280) and mdv1000-cedar (fast, YOLOv9 gelan-c @ 640)
+# are bundled under models/speciesnet. mdv5a uses a `.onnx` + `.onnx.data` sidecar
+# pair; mdv1000-cedar is a single-file ONNX (no sidecar) because it was exported
+# via torch.onnx.export(dynamo=False), which embeds weights inline. The legacy
+# exporter path is also what makes cedar DirectML-compatible — the dynamo-exported
+# mdv1000 variants hit a Reshape op DML rejects.
 DEFAULT_DETECTOR_NAME = "mdv5a"
 DETECTOR_ONNX_PATHS = {
-    "mdv5a": SPECIESNET_MODEL_DIR / "mdv5a.onnx",
-    "mdv6-e": SPECIESNET_MODEL_DIR / "mdv6-mit-yolov9-e.onnx",
+    "mdv5a":         SPECIESNET_MODEL_DIR / "mdv5a.onnx",
+    "mdv1000-cedar": SPECIESNET_MODEL_DIR / "mdv1000-cedar.onnx",
 }
 
 # SAM-HQ ViT-Tiny: split encoder + decoder ONNX files.

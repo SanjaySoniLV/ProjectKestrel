@@ -1,8 +1,8 @@
 """Integration tests for MegaDetector (via SpeciesNetSAMHQWrapper).
 
 Parametrized over every detector in ``DETECTOR_ONNX_PATHS`` (currently
-``mdv5a`` and ``mdv6-e``). Each test runs once per detector whose ONNX
-weights are present; missing weights are cleanly skipped.
+``mdv5a`` and ``mdv1000-cedar``). Each test runs once per detector whose
+ONNX weights are present; missing weights are cleanly skipped.
 """
 
 import sys
