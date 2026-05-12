@@ -68,6 +68,13 @@ def parse_args(argv: Sequence[str] | None = None):
         default=None,
         help="Path for the --validate result JSON. Recommended on Windows where console=False hides stdout.",
     )
+    parser.add_argument(
+        "--export-training-data",
+        type=str,
+        default=None,
+        metavar="DIR",
+        help="Additionally dump per-detection (preprocessed .npy + RGB crop + mask + manifest) to DIR for quality-model retraining.",
+    )
     parser.set_defaults(use_gpu=True)
     return parser.parse_args(argv)
 
@@ -167,6 +174,7 @@ def main(argv: Sequence[str] | None = None):
             analyzer_name="cli",
             detection_threshold=detection_threshold,
             parallel_prefetch=parallel_pf,
+            training_export_dir=args.export_training_data,
         )
         print()
     except Exception as e:

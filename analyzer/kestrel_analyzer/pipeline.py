@@ -44,6 +44,7 @@ from .ratings import quality_to_rating, get_profile_thresholds
 from .similarity import compute_image_similarity_akaze, compute_similarity_timestamp
 from .raw_exif import get_capture_time
 from .logging_utils import get_log_path, log_event, log_exception, log_warning
+from . import training_export
 
 try:
     from ..settings_utils import load_persisted_settings, debug as _debug, info as _info
@@ -437,6 +438,7 @@ class AnalysisPipeline:
         max_bird_crops: int = 5,
         parallel_prefetch: int = 3,
         retry_errored: bool = False,
+        training_export_dir: Optional[str] = None,
     ) -> None:
         callbacks = callbacks or {}
         status_cb = callbacks.get("on_status")
@@ -569,6 +571,19 @@ class AnalysisPipeline:
             crop_dir = os.path.join(kestrel_dir, "crop")
             os.makedirs(export_dir, exist_ok=True)
             os.makedirs(crop_dir, exist_ok=True)
+
+            training_export_dir_abs: Optional[str] = None
+            if training_export_dir:
+                training_export_dir_abs = os.path.abspath(training_export_dir)
+                os.makedirs(training_export_dir_abs, exist_ok=True)
+                log_event(
+                    self._log_path,
+                    {
+                        "level": "info",
+                        "event": "training_export_enabled",
+                        "out_dir": training_export_dir_abs,
+                    },
+                )
 
             stage_ctx["stage"] = "load_database"
             database, db_path = load_database(kestrel_dir, analyzer_name, log_path=self._log_path)
@@ -1153,6 +1168,7 @@ class AnalysisPipeline:
                                 "quality": i["quality"],
                                 "rating": i["rating"],
                                 "quality_crop": i["quality_crop"],
+                                "quality_mask": i["quality_mask"],
                                 "exposure_correction": i.get("exposure_correction", 0.0),
                                 "exposure_pipeline": i.get("exposure_pipeline", "legacy_auto_bright_v1"),
                                 "exposure_subject_stops": i.get("exposure_subject_stops", 0.0),
@@ -1236,6 +1252,7 @@ class AnalysisPipeline:
 
                     stage_ctx["stage"] = "write_crop"
                     serialized_crops = []
+                    training_export_rows: list = []
                     base_name = os.path.splitext(raw_file)[0]
                     for crop_idx, crop_item in enumerate(crop_items_for_write):
                         crop_img = crop_item.get("quality_crop")
@@ -1294,6 +1311,33 @@ class AnalysisPipeline:
                                 },
                             }
                         )
+
+                        if training_export_dir_abs and int(crop_item.get("index", -1)) >= 0:
+                            quality_mask = crop_item.get("quality_mask")
+                            if quality_mask is not None:
+                                crop_id = training_export.make_crop_id(folder, raw_file, crop_idx)
+                                artifact_paths = training_export.write_crop_artifacts(
+                                    training_export_dir_abs,
+                                    crop_id,
+                                    crop_img,
+                                    quality_mask,
+                                )
+                                training_export_rows.append(
+                                    training_export.build_manifest_row(
+                                        crop_id=crop_id,
+                                        source_folder=folder,
+                                        source_filename=raw_file,
+                                        crop_index=crop_idx,
+                                        crop_item=crop_item,
+                                        serialized_crop=serialized_crops[-1],
+                                        capture_time=entry.get("capture_time", ""),
+                                        orientation=entry.get("orientation", ""),
+                                        artifact_paths=artifact_paths,
+                                    )
+                                )
+
+                    if training_export_dir_abs and training_export_rows:
+                        training_export.append_manifest_rows(training_export_dir_abs, training_export_rows)
 
                     if not serialized_crops:
                         raise RuntimeError("No crop records generated for image")
