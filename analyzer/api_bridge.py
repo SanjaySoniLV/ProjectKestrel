@@ -300,11 +300,22 @@ class Api:
         self._perch_account_cache_at: float = 0.0
         self._perch_usage_cache: dict | None = None
         self._perch_usage_cache_at: float = 0.0
-        # Async cloud-compute job state (job_id -> {progress, cancel_event, thread, result}).
-        # Cloud-compute reuses the Perch JWT (same Clerk identity) — see
-        # _check_perch_token() and analyzer/cloud_compute_client.py.
+        # Async cloud-compute job state (job_id -> {progress, cancel_event,
+        # pause_event, thread, result}). Cloud-compute reuses the Perch JWT
+        # (same Clerk identity) — see _check_perch_token() and
+        # analyzer/cloud_compute_client.py.
         self._cc_jobs: dict = {}
         self._cc_jobs_lock = None
+        # Short-poll event queue for pack-merged notifications from the
+        # background download thread. JS drains via
+        # ``cloud_compute_get_pack_events()`` ~every poll tick and triggers a
+        # folder rescan so the gallery refreshes as packs land — same UX as
+        # local-analysis live updates. Drained-and-cleared each poll.
+        self._cc_pack_events: list = []
+        # 5-minute TTL cache for /api/usage so the Cloud destination card in
+        # the analyze dialog doesn't hit the Worker on every keystroke.
+        self._cc_usage_cache: dict | None = None
+        self._cc_usage_cache_at: float = 0.0
 
     def notify_dirty(self, is_dirty: bool) -> dict:
         """Called from JS whenever the dirty flag changes."""
@@ -2249,23 +2260,142 @@ class Api:
             pass
         return default_api_base()
 
+    def _cc_import(self):
+        """Lazy import of cloud_compute_client. Returns the module or raises."""
+        try:
+            import cloud_compute_client as ccc
+            return ccc
+        except ImportError:
+            from analyzer import cloud_compute_client as ccc  # type: ignore[no-redef]
+            return ccc
+
+    def _cc_jobs_store(self):
+        """Lazy import of cloud_jobs_store."""
+        try:
+            import cloud_jobs_store as cjs
+            return cjs
+        except ImportError:
+            from analyzer import cloud_jobs_store as cjs  # type: ignore[no-redef]
+            return cjs
+
+    def _cc_make_client(self):
+        """Build an authenticated CloudComputeClient. Returns (client, error_dict)."""
+        token, dev_user, token_err = self._check_perch_token()
+        if token_err:
+            return None, token_err
+        try:
+            ccc = self._cc_import()
+        except ImportError as e:
+            return None, {"ok": False, "error": f"cloud_compute_client import failed: {e}"}
+        try:
+            client = ccc.CloudComputeClient(
+                self.cloud_compute_get_api_base(),
+                token,
+                dev_user=dev_user,
+            )
+        except ValueError as e:
+            return None, {"ok": False, "error": str(e)}
+        return client, None
+
+    def _cc_select_upload_files(self, folder) -> tuple:
+        """Resume-aware file-selection for cloud upload.
+
+        Mirrors the local pipeline's "pick up where Kestrel left off" behavior:
+        reads ``<folder>/.kestrel/kestrel_database.csv`` to discover which
+        images have already been analyzed, then returns only the unprocessed
+        ones — **prepending the last alphabetically-analyzed file as a
+        scene-merger anchor** so the cloud pipeline's per-image similarity
+        check has a real previous_image to compare against. Without the
+        anchor, the first new image would have no previous_image and could be
+        wrongly split into a new scene.
+
+        Returns ``(upload_files, anchor_filename, total_in_folder,
+        already_analyzed_count)``. ``anchor_filename`` is the file we
+        re-upload purely for scene continuity (its row will simply be
+        overwritten by merge_pack_into_kestrel on completion).
+
+        Returns an empty ``upload_files`` list when there is nothing new to
+        analyze — the caller should treat that as a no-op.
+        """
+        from pathlib import Path as _Path
+        folder = _Path(folder)
+        all_files = sorted(
+            p for p in folder.iterdir()
+            if p.is_file() and p.suffix.lower() in {".cr3", ".jpg", ".jpeg"}
+        )
+        if not all_files:
+            return [], None, 0, 0
+
+        db_path = folder / ".kestrel" / "kestrel_database.csv"
+        analyzed: set = set()
+        if db_path.is_file():
+            try:
+                import csv as _csv
+                with db_path.open("r", encoding="utf-8", newline="") as f:
+                    reader = _csv.DictReader(f)
+                    for row in reader:
+                        name = (row.get("filename") or "").strip()
+                        if name:
+                            analyzed.add(name)
+            except Exception:
+                analyzed = set()
+
+        new_files = [p for p in all_files if p.name not in analyzed]
+        # Anchor: the last (alphabetically) already-analyzed file in this
+        # folder, if any. We re-upload it so the cloud pipeline has a
+        # real previous_image when it picks up the first new file. Its row
+        # gets overwritten by the result-pack merge on completion (last-wins
+        # by filename, matching the existing merge semantics).
+        anchor_filename = None
+        if analyzed and new_files:
+            analyzed_in_folder = [p for p in all_files if p.name in analyzed]
+            if analyzed_in_folder:
+                anchor_path = analyzed_in_folder[-1]
+                anchor_filename = anchor_path.name
+                # Only include if it's not already in new_files (defensive).
+                if anchor_path not in new_files:
+                    upload_files = [anchor_path] + new_files
+                else:
+                    upload_files = new_files
+            else:
+                upload_files = new_files
+        else:
+            upload_files = new_files
+
+        return upload_files, anchor_filename, len(all_files), len(analyzed)
+
+    def _cc_analysis_settings_snapshot(self) -> dict | None:
+        """Read the cloud-compute analysis-settings override block from
+        settings.json. Returns a dict the client can pass to ``submit_job``,
+        or None when the user has not set any overrides. The sanitizer in
+        ``settings_utils.py`` has already enforced the allowlist, so this is
+        purely a load step."""
+        try:
+            settings = self.get_settings()
+            if not isinstance(settings, dict):
+                return None
+            cfg = settings.get("settings") if "settings" in settings else settings
+            overrides = (cfg or {}).get("cloud_compute_analysis_overrides")
+            if isinstance(overrides, dict) and overrides:
+                return dict(overrides)
+        except Exception:
+            pass
+        return None
+
     def cloud_compute_submit_job(self, root_path: str) -> dict:
         """Kick off a cloud-compute job for a folder of CR3s. Non-blocking.
 
-        Returns immediately with `{ok, jobId, imageCount}` (or an error dict);
-        a background thread handles the upload + poll + merge. Track with
+        Snapshots the cloud-compute analysis-settings overrides at submit time
+        (matches the local-queue pattern) and forwards them to the Worker so
+        Modal can splice them into the analyzer subprocess. Returns
+        immediately with ``{ok, jobId, imageCount}`` (or an error dict); a
+        background thread handles the upload + poll + merge. Track with
         ``cloud_compute_get_status(jobId)`` and ``cloud_compute_list_jobs()``.
         """
         try:
-            from cloud_compute_client import CloudComputeClient, CloudComputeError
-        except ImportError:
-            try:
-                from analyzer.cloud_compute_client import (  # type: ignore[no-redef]
-                    CloudComputeClient,
-                    CloudComputeError,
-                )
-            except ImportError as e:
-                return {"ok": False, "error": f"cloud_compute_client import failed: {e}"}
+            ccc = self._cc_import()
+        except ImportError as e:
+            return {"ok": False, "error": f"cloud_compute_client import failed: {e}"}
 
         root_real, err = self._validate_root_dir(
             root_path, context="cloud_compute_submit_job", require_exists=True
@@ -2273,36 +2403,39 @@ class Api:
         if err:
             return {"ok": False, "error": err}
 
-        token, dev_user, token_err = self._check_perch_token()
-        if token_err:
-            return token_err
+        client, client_err = self._cc_make_client()
+        if client_err is not None:
+            return client_err
 
-        # Discover CR3 files (matches the CLI's filter)
         from pathlib import Path as _Path
         root = _Path(root_real)
-        files = sorted(
-            p for p in root.iterdir()
-            if p.is_file() and p.suffix.lower() in {".cr3", ".jpg", ".jpeg"}
+        # Resume-aware selection: skip files the local pipeline has already
+        # analyzed (folder_inspector-style discovery), but RE-include the last
+        # already-analyzed file as a scene-merger anchor so the cloud
+        # pipeline's previous_image is real, not None.
+        files, anchor_filename, total_in_folder, already_analyzed = (
+            self._cc_select_upload_files(root)
         )
         if not files:
-            return {"ok": False, "error": "No CR3/JPEG files found in folder"}
+            if total_in_folder == 0:
+                return {"ok": False, "error": "No CR3/JPEG files found in folder"}
+            return {
+                "ok": False,
+                "error": (
+                    f"All {already_analyzed} of {total_in_folder} image(s) in "
+                    "this folder are already analyzed — nothing to send to "
+                    "cloud compute."
+                ),
+                "nothingToDo": True,
+            }
 
-        try:
-            client = CloudComputeClient(
-                self.cloud_compute_get_api_base(),
-                token,
-                dev_user=dev_user,
-            )
-        except ValueError as e:
-            return {"ok": False, "error": str(e)}
+        analysis_settings = self._cc_analysis_settings_snapshot()
 
         # Submit synchronously (cheap call). We need the jobId before we can
         # return it to the caller; the heavy upload+poll runs on a thread.
         try:
-            submit = client.submit_job(files)
-        except CloudComputeError as e:
-            # 403 from cloud-compute means Perch entitlement said no — surface
-            # the message verbatim so the JS layer can show it.
+            submit = client.submit_job(files, analysis_settings=analysis_settings)
+        except ccc.CloudComputeError as e:
             return {
                 "ok": False,
                 "error": e.message,
@@ -2318,6 +2451,10 @@ class Api:
 
         import threading as _t
         cancel_event = _t.Event()
+        # pause_event is "set" when uploads are running; cleared to pause.
+        # Starts set so the upload thread does not block out of the gate.
+        pause_event = _t.Event()
+        pause_event.set()
 
         def _on_progress(payload: dict) -> None:
             with self._ensure_cc_lock():
@@ -2325,13 +2462,31 @@ class Api:
                 if state is not None:
                     state["progress"] = dict(payload)
 
+        def _on_pack_merged(pack_name: str) -> None:
+            # Record both in cloud_jobs_store (persistent) and the in-memory
+            # event queue (drained by the JS poll for live folder refreshes).
+            try:
+                store = self._cc_jobs_store()
+                store.add_downloaded_pack(job_id, pack_name)
+            except Exception:
+                pass
+            with self._ensure_cc_lock():
+                self._cc_pack_events.append({
+                    "jobId": job_id,
+                    "folderPath": str(root),
+                    "packName": pack_name,
+                })
+
         def _worker() -> None:
             try:
                 result = client.run_full_job(
                     root,
                     file_paths=files,
+                    analysis_settings=analysis_settings,
                     on_progress=_on_progress,
+                    on_pack_merged=_on_pack_merged,
                     cancel_event=cancel_event,
+                    pause_event=pause_event,
                 )
             except Exception as e:
                 with self._ensure_cc_lock():
@@ -2339,39 +2494,82 @@ class Api:
                     if state is not None:
                         state["status"] = "failed"
                         state["error"] = str(e)
+                try:
+                    self._cc_jobs_store().update_job(job_id, status="failed")
+                except Exception:
+                    pass
                 return
+            terminal = "done" if result.get("ok") else "failed"
             with self._ensure_cc_lock():
                 state = self._cc_jobs.get(job_id)
                 if state is not None:
-                    state["status"] = "complete" if result.get("ok") else "failed"
+                    state["status"] = terminal
                     state["result"] = result
+            try:
+                self._cc_jobs_store().update_job(job_id, status=terminal)
+            except Exception:
+                pass
 
         with self._ensure_cc_lock():
             self._cc_jobs[job_id] = {
                 "jobId": job_id,
                 "rootPath": str(root),
                 "imageCount": len(files),
-                "status": "running",
+                "newImageCount": len(files) - (1 if anchor_filename else 0),
+                "anchorFilename": anchor_filename,
+                "totalInFolder": total_in_folder,
+                "alreadyAnalyzed": already_analyzed,
+                "status": "uploading",
                 "progress": {"event": "submitted"},
                 "cancel_event": cancel_event,
+                "pause_event": pause_event,
                 "presignedUrls": submit.get("presignedUrls", []),  # for completeness
             }
+
+        # Persist to cloud_jobs_store so a startup poll can discover this job
+        # after a restart. settingsSnapshot is the same allowlisted dict the
+        # Worker received so the audit trail matches what Modal actually ran.
+        try:
+            store = self._cc_jobs_store()
+            store.upsert_job({
+                "jobId": job_id,
+                "folderPath": str(root),
+                "createdAtUtc": store.utc_now_iso(),
+                "status": "uploading",
+                "imageCount": len(files),
+                "settingsSnapshot": analysis_settings or {},
+                "downloadedPacks": [],
+            })
+        except Exception:
+            pass
 
         thread = _t.Thread(target=_worker, name=f"cc-job-{job_id}", daemon=True)
         thread.start()
         with self._ensure_cc_lock():
             self._cc_jobs[job_id]["thread"] = thread
 
-        return {"ok": True, "jobId": job_id, "imageCount": len(files)}
+        return {
+            "ok": True,
+            "jobId": job_id,
+            "imageCount": len(files),
+            "newImageCount": len(files) - (1 if anchor_filename else 0),
+            "anchorFilename": anchor_filename,
+            "totalInFolder": total_in_folder,
+            "alreadyAnalyzed": already_analyzed,
+        }
 
     def cloud_compute_get_status(self, job_id: str) -> dict:
-        """Local + remote status for one job. Lightweight — call every few seconds."""
+        """Local + remote status for one job. Lightweight — call every few seconds.
+
+        Returns the locally-tracked state plus the latest Worker counters
+        (``uploadedCount``, ``analyzedCount``, ``dispatchedCount``,
+        ``uploadPauseRequested``, ``stopRequested``, ``packs``). Worker calls
+        are best-effort; transient failures fall back to local-only state.
+        """
         with self._ensure_cc_lock():
             state = self._cc_jobs.get(job_id)
         if state is None:
             return {"ok": False, "error": "unknown jobId"}
-        # Snapshot the locally-tracked state. Worker-side status is contained
-        # in the most recent progress event (the worker emits "status" each tick).
         progress = dict(state.get("progress") or {})
         out: dict = {
             "ok": True,
@@ -2385,6 +2583,31 @@ class Api:
             out["result"] = state["result"]
         if "error" in state:
             out["error"] = state["error"]
+
+        # Best-effort remote enrichment so the UI can render real progress
+        # bars and pause/cancel state. Skip when the local job is already
+        # terminal — Worker will tell us nothing new.
+        if state.get("status") not in ("done", "failed", "cancelled"):
+            try:
+                client, _ = self._cc_make_client()
+                if client is not None:
+                    remote = client.get_status(job_id)
+                    for key in (
+                        "analyzedCount", "uploadedCount", "dispatchedCount",
+                        "pendingCount", "downloadedCount", "pack_count",
+                        "uploadPauseRequested", "stopRequested",
+                        "controlFlags", "status",
+                    ):
+                        if key in remote:
+                            # Worker's `status` is the cloud-side state (e.g.
+                            # 'processing', 'complete'); expose alongside the
+                            # client-side `status` field as `remoteStatus`.
+                            if key == "status":
+                                out["remoteStatus"] = remote[key]
+                            else:
+                                out[key] = remote[key]
+            except Exception:
+                pass
         return out
 
     def cloud_compute_list_jobs(self) -> dict:
@@ -2401,18 +2624,280 @@ class Api:
                 })
         return {"ok": True, "jobs": jobs}
 
-    def cloud_compute_cancel_job(self, job_id: str) -> dict:
-        """Signal the local upload/poll thread to stop. Server-side stop is
-        not implemented (no Worker endpoint exists for it yet); the in-flight
-        Modal pack will continue but the desktop will stop polling/downloading."""
+    def cloud_compute_pause_job(self, job_id: str) -> dict:
+        """Pause uploads for a job. Modal keeps draining the already-uploaded
+        backlog — pause is upload-side only. Worker tracks the pause in
+        ``jobs.upload_pause_requested`` so cross-orchestrator decisions (Stage
+        2 multi-modal) can respect it later. Idempotent."""
         with self._ensure_cc_lock():
             state = self._cc_jobs.get(job_id)
             if state is None:
                 return {"ok": False, "error": "unknown jobId"}
-            ev = state.get("cancel_event")
-        if ev is not None:
-            ev.set()
-        return {"ok": True}
+            pause_ev = state.get("pause_event")
+        # Tell the Worker first so it survives a desktop crash.
+        client, client_err = self._cc_make_client()
+        if client is None:
+            return client_err or {"ok": False, "error": "no client"}
+        try:
+            client.pause_job(job_id)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        if pause_ev is not None:
+            pause_ev.clear()
+        with self._ensure_cc_lock():
+            if job_id in self._cc_jobs:
+                self._cc_jobs[job_id]["status"] = "upload_paused"
+        try:
+            self._cc_jobs_store().update_job(job_id, status="upload_paused")
+        except Exception:
+            pass
+        return {"ok": True, "uploadPauseRequested": True}
+
+    def cloud_compute_resume_job(self, job_id: str) -> dict:
+        """Inverse of pause_job. Idempotent."""
+        with self._ensure_cc_lock():
+            state = self._cc_jobs.get(job_id)
+            if state is None:
+                return {"ok": False, "error": "unknown jobId"}
+            pause_ev = state.get("pause_event")
+        client, client_err = self._cc_make_client()
+        if client is None:
+            return client_err or {"ok": False, "error": "no client"}
+        try:
+            client.resume_job(job_id)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        if pause_ev is not None:
+            pause_ev.set()
+        with self._ensure_cc_lock():
+            if job_id in self._cc_jobs:
+                self._cc_jobs[job_id]["status"] = "uploading"
+        try:
+            self._cc_jobs_store().update_job(job_id, status="uploading")
+        except Exception:
+            pass
+        return {"ok": True, "uploadPauseRequested": False}
+
+    def cloud_compute_cancel_job(self, job_id: str) -> dict:
+        """Terminal cancel. Tells the Worker to stop the job (Modal exits on
+        next pending-images poll, staging objects are async-deleted) AND
+        signals the local upload/poll thread to exit. Marks the job
+        ``cancelled`` in the persistent ledger.
+        """
+        with self._ensure_cc_lock():
+            state = self._cc_jobs.get(job_id)
+            if state is None:
+                return {"ok": False, "error": "unknown jobId"}
+            cancel_ev = state.get("cancel_event")
+            pause_ev = state.get("pause_event")
+        # Remote cancel first. If the desktop dies right after, the Worker
+        # has already started staging-cleanup so we don't leak storage.
+        client, _err = self._cc_make_client()
+        remote_err: str | None = None
+        if client is not None:
+            try:
+                client.cancel_job_remote(job_id)
+            except Exception as e:
+                remote_err = str(e)
+        # Local cleanup: release any pause so the upload thread can see the
+        # cancel and exit, then set cancel_event.
+        if pause_ev is not None:
+            pause_ev.set()
+        if cancel_ev is not None:
+            cancel_ev.set()
+        with self._ensure_cc_lock():
+            if job_id in self._cc_jobs:
+                self._cc_jobs[job_id]["status"] = "cancelled"
+        try:
+            self._cc_jobs_store().update_job(job_id, status="cancelled")
+        except Exception:
+            pass
+        return {"ok": True, "remoteError": remote_err}
+
+    def cloud_compute_upload_test(
+        self,
+        folder_path: str,
+        sample_count: int = 10,
+    ) -> dict:
+        """Run a real-image upload-throughput probe against the staging bucket.
+
+        Returns ``{ok, mbps, samples_uploaded, total_bytes, elapsed_ms,
+        errors}``. Errors surface as ``{ok: False, error}``; the Worker's
+        ``file_too_large`` rejection is propagated verbatim so the dialog can
+        explain the 200 MB cap.
+        """
+        root_real, err = self._validate_root_dir(
+            folder_path, context="cloud_compute_upload_test", require_exists=True
+        )
+        if err:
+            return {"ok": False, "error": err}
+        client, client_err = self._cc_make_client()
+        if client is None:
+            return client_err or {"ok": False, "error": "no client"}
+        try:
+            ccc = self._cc_import()
+        except ImportError as e:
+            return {"ok": False, "error": f"cloud_compute_client import failed: {e}"}
+        from pathlib import Path as _Path
+        try:
+            result = client.upload_test(_Path(root_real), sample_count=sample_count)
+        except ccc.CloudComputeError as e:
+            return {"ok": False, "error": e.message, "status": e.status}
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        result["ok"] = True
+        return result
+
+    def cloud_compute_list_pending_jobs(self) -> dict:
+        """Return the set of jobs whose status is not terminal locally OR whose
+        result packs have not all been downloaded yet. Used by the startup
+        resume flow: when the user reopens the app, JS calls this; if it
+        returns non-empty, the resume dialog prompts the user to download.
+
+        Each entry: ``{jobId, folderPath, status, imageCount, downloadedPacks,
+        remoteStatus, availablePacks}``. ``remoteStatus`` / ``availablePacks``
+        are best-effort — set to ``None`` on transient Worker failures.
+        """
+        try:
+            store = self._cc_jobs_store()
+            jobs = store.load_jobs()
+        except Exception as e:
+            return {"ok": False, "error": f"store load failed: {e}", "jobs": []}
+
+        if not jobs:
+            return {"ok": True, "jobs": []}
+
+        client, _ = self._cc_make_client()
+        out_jobs: list[dict] = []
+        for j in jobs:
+            entry: dict = {
+                "jobId": j["jobId"],
+                "folderPath": j["folderPath"],
+                "status": j["status"],
+                "imageCount": j["imageCount"],
+                "downloadedPacks": list(j.get("downloadedPacks") or []),
+                "createdAtUtc": j.get("createdAtUtc"),
+                "settingsSnapshot": j.get("settingsSnapshot") or {},
+                "remoteStatus": None,
+                "availablePacks": None,
+            }
+            if client is not None:
+                try:
+                    remote = client.get_status(j["jobId"])
+                    entry["remoteStatus"] = remote.get("status")
+                    entry["analyzedCount"] = remote.get("analyzedCount")
+                    files = client.list_results(j["jobId"])
+                    entry["availablePacks"] = [
+                        str(f.get("filename") or "")
+                        for f in files
+                        if str(f.get("filename") or "").endswith(".zip")
+                    ]
+                except Exception:
+                    pass
+            out_jobs.append(entry)
+        return {"ok": True, "jobs": out_jobs}
+
+    def cloud_compute_resume_download(self, job_id: str) -> dict:
+        """Re-run the pack download + merge for an existing job (typically one
+        that finished while the app was closed). Spawns a background thread;
+        returns immediately. Progress visible via the pack-events queue and
+        ``cloud_compute_list_jobs()``."""
+        try:
+            store = self._cc_jobs_store()
+            jobs = store.load_jobs()
+        except Exception as e:
+            return {"ok": False, "error": f"store load failed: {e}"}
+        target = next((j for j in jobs if j["jobId"] == job_id), None)
+        if target is None:
+            return {"ok": False, "error": "unknown jobId"}
+        from pathlib import Path as _Path
+        folder = _Path(target["folderPath"])
+        if not folder.is_dir():
+            return {"ok": False, "error": f"folder no longer exists: {folder}"}
+        client, client_err = self._cc_make_client()
+        if client is None:
+            return client_err or {"ok": False, "error": "no client"}
+        try:
+            ccc = self._cc_import()
+        except ImportError as e:
+            return {"ok": False, "error": str(e)}
+
+        import threading as _t
+
+        def _worker() -> None:
+            pack_dir = folder / ".kestrel" / "cloud-packs"
+            pack_dir.mkdir(parents=True, exist_ok=True)
+            already = set(target.get("downloadedPacks") or [])
+            try:
+                files = client.list_results(job_id)
+            except Exception as e:
+                with self._ensure_cc_lock():
+                    self._cc_pack_events.append({
+                        "jobId": job_id, "folderPath": str(folder),
+                        "packName": None, "error": str(e),
+                    })
+                return
+            for meta in files:
+                fname = str(meta.get("filename") or "")
+                if not fname.endswith(".zip") or fname in already:
+                    continue
+                dest = pack_dir / fname
+                try:
+                    client.download_pack(job_id, fname, dest)
+                    ccc.merge_pack_into_kestrel(dest, folder)
+                except Exception as e:
+                    with self._ensure_cc_lock():
+                        self._cc_pack_events.append({
+                            "jobId": job_id, "folderPath": str(folder),
+                            "packName": fname, "error": str(e),
+                        })
+                    continue
+                try:
+                    store.add_downloaded_pack(job_id, fname)
+                except Exception:
+                    pass
+                with self._ensure_cc_lock():
+                    self._cc_pack_events.append({
+                        "jobId": job_id, "folderPath": str(folder),
+                        "packName": fname,
+                    })
+            try:
+                store.update_job(job_id, status="done")
+            except Exception:
+                pass
+
+        _t.Thread(target=_worker, name=f"cc-resume-{job_id}", daemon=True).start()
+        return {"ok": True, "jobId": job_id}
+
+    def cloud_compute_get_pack_events(self) -> dict:
+        """Drain pack-merged events accumulated since the last call. JS calls
+        this on its cloud-queue poll tick and triggers a folder rescan +
+        gallery refresh for any ``folderPath`` mentioned."""
+        with self._ensure_cc_lock():
+            events = self._cc_pack_events
+            self._cc_pack_events = []
+        return {"ok": True, "events": events}
+
+    def cloud_compute_get_usage(self) -> dict:
+        """Cached fetch of ``/api/usage``. 5-minute TTL. Used by the Cloud
+        destination card to display ``Remaining cloud analysis images: N``.
+        Stub-shaped today (Stage 3 fleshes it out)."""
+        import time as _t
+        now = _t.time()
+        if self._cc_usage_cache is not None and (now - self._cc_usage_cache_at) < 300:
+            return {"ok": True, "usage": self._cc_usage_cache, "cached": True}
+        client, client_err = self._cc_make_client()
+        if client is None:
+            return client_err or {"ok": False, "error": "no client"}
+        try:
+            usage = client.get_usage()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        self._cc_usage_cache = usage
+        self._cc_usage_cache_at = now
+        return {"ok": True, "usage": usage, "cached": False}
 
     def share_with_perch(
         self,

@@ -1993,18 +1993,10 @@
           perchBtn.addEventListener('click', (ev) => { ev.stopPropagation(); shareWithPerchFolder(fd.folderPath); });
           rightActions.appendChild(perchBtn);
 
-          // Cloud Compute (feature-flagged via settings.cloud_compute_enabled,
-          // mirrored into localStorage by the standard settings round-trip).
-          // Hidden by default; opt-in keeps the affordance off the main UI
-          // until the unified-auth refactor is fully verified end-to-end.
-          if (getSetting('cloud_compute_enabled', false) === true) {
-            const ccBtn = document.createElement('button');
-            ccBtn.className = 'action-btn send-cloud-compute-btn';
-            ccBtn.innerHTML = '<i>☁</i> Send to Cloud Compute';
-            ccBtn.title = 'Run the Kestrel ML pipeline on a cloud GPU instead of locally';
-            ccBtn.addEventListener('click', (ev) => { ev.stopPropagation(); openCloudComputeDialog(fd.folderPath); });
-            rightActions.appendChild(ccBtn);
-          }
+          // Cloud Compute moved into the unified Analyze Folders dialog
+          // (destination toggle: Local / Cloud). The folder-level shortcut
+          // button has been retired so cloud and local share a single mental
+          // model and entry point.
 
           // "Published" pill \u2014 only shown if .kestrel/perch_link.json exists.
           // Click opens the perch URL (after stale-link verification, see 1d).
@@ -6313,6 +6305,15 @@
         if (countEl) countEl.textContent = _dlgSelected.size + ' folder' + (_dlgSelected.size === 1 ? '' : 's') + ' selected';
         if (addBtn) addBtn.disabled = _dlgSelected.size === 0;
         _refreshAnalyzeDlgQueuePreview();
+        // Cloud destination's speed-test button enables only once a folder is
+        // picked; keep it in sync with selection state.
+        if (typeof _ccUpdateSpeedTestButtonEnable === 'function') _ccUpdateSpeedTestButtonEnable();
+      }
+
+      // Reset destination state on each open so the user always starts at
+      // Local; refresh signed-in gate and usage line for the Cloud card.
+      if (typeof _ccResetDestinationOnDialogOpen === 'function') {
+        try { await _ccResetDestinationOnDialogOpen(); } catch {}
       }
 
       // Hydrate advanced analysis settings from persisted values
@@ -8206,6 +8207,22 @@
       analyzeDlgAdd.addEventListener('click', async () => {
         const paths = Array.from(_dlgSelected);
         if (paths.length === 0) return;
+        // Cloud destination short-circuits the local-only re-analyze /
+        // outdated-version dance. Cloud uploads run against the
+        // resume-aware file-selection helper on the desktop side and only
+        // send unprocessed files (plus a scene-merger anchor).
+        if (_analyzeDestination === 'cloud') {
+          document.getElementById('analyzeQueueDlg').close();
+          analyzeDlgAdd.disabled = true;
+          try {
+            await _ccSubmitSelectedFolders(paths);
+            _dlgSelected.clear();
+          } finally {
+            analyzeDlgAdd.disabled = false;
+            _ccUpdateAddButtonLabel();
+          }
+          return;
+        }
         const useGpu = document.getElementById('analyzeUseGpu')?.checked ?? true;
         const wildlifeEnabled = document.getElementById('analyzeWildlife')?.checked ?? false;
         const speciesDetectionEnabled = document.getElementById('analyzeSpeciesDetection')?.checked ?? true;
@@ -9785,97 +9802,526 @@
     // Confirms file count + opens the job, then shows a polling toast. No
     // queue-manager integration in v1 (per the unified-auth refactor plan,
     // C3 of the commercialization roadmap will flesh out the UX).
-    const _ccActivePolls = new Map(); // jobId -> intervalHandle
+    // ───────────────────────────────────────────────────────────────────
+    // Cloud Compute UX (Stage 1)
+    //
+    // Design:
+    //   - Entry point is the unified #analyzeQueueDlg destination toggle.
+    //     "Local" (default) routes to start_analysis_queue; "Cloud" routes
+    //     to cloud_compute_submit_job for each selected folder.
+    //   - Live state lives in #cloudQueuePanel, a sibling of #queuePanel.
+    //     We mirror the local queue's polling shape but at 10s cadence
+    //     (Worker rate limits + packs arrive in batches of 10).
+    //   - Pause = upload-side only (Modal keeps analyzing already-uploaded
+    //     backlog). Cancel = terminal (stops Modal, deletes staging).
+    //   - Pack-merged events drain into rescanFolderTree + scheduleAutoRefresh
+    //     so folder gallery updates as packs arrive — mirrors local live update.
+    //   - Startup resume: on pywebviewready, list pending jobs; if any have
+    //     unmerged packs, show #cloudResumeDlg.
+    // ───────────────────────────────────────────────────────────────────
 
-    async function openCloudComputeDialog(rootPath) {
-      if (!window.pywebview?.api) {
+    // -- destination state in analyze dialog --
+    let _analyzeDestination = 'local'; // 'local' | 'cloud'
+    let _cloudSpeedTestResult = null;  // { mbps, samples_uploaded, total_bytes } | null
+
+    function _ccPickFirstSelectedFolder() {
+      // Reuses the analyze-dialog selection set populated by the folder tree.
+      // Returns the first selected path (alphabetical) or null.
+      try {
+        if (typeof _dlgSelected === 'object' && _dlgSelected && _dlgSelected.size > 0) {
+          const arr = Array.from(_dlgSelected).sort();
+          return arr[0] || null;
+        }
+      } catch (_) { /* ignore */ }
+      return null;
+    }
+
+    function _ccUpdateAddButtonLabel() {
+      const btn = document.getElementById('analyzeDlgAdd');
+      if (!btn) return;
+      const label = _analyzeDestination === 'cloud'
+        ? '☁ Add to Cloud Analysis Queue'
+        : '➕ Add to Local Analysis Queue';
+      // Preserve disabled state; just rename.
+      btn.textContent = label;
+    }
+
+    function _ccSetDestination(dest) {
+      _analyzeDestination = (dest === 'cloud') ? 'cloud' : 'local';
+      const local = document.getElementById('analyzeDestLocal');
+      const cloud = document.getElementById('analyzeDestCloud');
+      if (local && cloud) {
+        local.classList.toggle('selected', _analyzeDestination === 'local');
+        local.setAttribute('aria-checked', _analyzeDestination === 'local' ? 'true' : 'false');
+        cloud.classList.toggle('selected', _analyzeDestination === 'cloud');
+        cloud.setAttribute('aria-checked', _analyzeDestination === 'cloud' ? 'true' : 'false');
+      }
+      _ccUpdateAddButtonLabel();
+      if (_analyzeDestination === 'cloud') {
+        _ccRefreshUsage();
+      }
+    }
+
+    async function _ccCheckSignedIn() {
+      // Returns true when a usable Perch JWT exists; false otherwise.
+      // Cloud and Perch share the same Clerk identity.
+      if (!window.pywebview?.api?.get_perch_token) return false;
+      try {
+        const r = await window.pywebview.api.get_perch_token();
+        return !!(r && r.success && r.token);
+      } catch { return false; }
+    }
+
+    async function _ccApplySignInGate() {
+      const overlay = document.getElementById('cloudDestSignInOverlay');
+      const card = document.getElementById('analyzeDestCloud');
+      if (!overlay || !card) return;
+      const signedIn = await _ccCheckSignedIn();
+      overlay.classList.toggle('hidden', signedIn);
+      card.classList.toggle('disabled', !signedIn);
+    }
+
+    async function _ccRefreshUsage() {
+      const el = document.getElementById('cloudDestUsage');
+      if (!el || !window.pywebview?.api?.cloud_compute_get_usage) return;
+      try {
+        const r = await window.pywebview.api.cloud_compute_get_usage();
+        if (r && r.ok && r.usage) {
+          const u = r.usage;
+          if (u.remainingImages == null) {
+            el.textContent = 'Usage metering not configured yet.';
+          } else {
+            el.textContent = `Remaining cloud images: ${u.remainingImages}`;
+          }
+        } else {
+          el.textContent = 'Usage unavailable.';
+        }
+      } catch {
+        el.textContent = 'Usage unavailable.';
+      }
+    }
+
+    function _ccUpdateSpeedTestButtonEnable() {
+      const btn = document.getElementById('cloudDestSpeedTestBtn');
+      if (!btn) return;
+      const folder = _ccPickFirstSelectedFolder();
+      btn.disabled = !folder;
+      btn.title = folder
+        ? `Upload 10 images from ${folder.split(/[\\/]/).pop()} to measure throughput`
+        : 'Pick at least one folder to enable the speed test';
+    }
+
+    async function _ccRunSpeedTest() {
+      const status = document.getElementById('cloudDestStatus');
+      const btn = document.getElementById('cloudDestSpeedTestBtn');
+      const folder = _ccPickFirstSelectedFolder();
+      if (!folder || !status || !btn) return;
+      if (!window.pywebview?.api?.cloud_compute_upload_test) return;
+      btn.disabled = true;
+      status.classList.remove('success', 'error');
+      status.textContent = 'Running speed test… 0/10';
+      // The bridge call is blocking; we can't get per-file progress without a
+      // side channel. Animate the status line with a coarse spinner instead.
+      let dots = 0;
+      const tick = setInterval(() => {
+        dots = (dots + 1) % 4;
+        status.textContent = `Running speed test… ${'.'.repeat(dots).padEnd(3, ' ')}`;
+      }, 500);
+      let r;
+      try {
+        r = await window.pywebview.api.cloud_compute_upload_test(folder, 10);
+      } catch (e) {
+        clearInterval(tick);
+        status.classList.add('error');
+        status.textContent = 'Speed test failed: ' + (e?.message || e);
+        btn.disabled = false;
+        return;
+      }
+      clearInterval(tick);
+      btn.disabled = false;
+      if (!r || !r.ok) {
+        status.classList.add('error');
+        // Worker returns `file_too_large` as the error string when the cap
+        // is hit; surface a user-friendly message.
+        if (r && r.error && String(r.error).indexOf('file_too_large') !== -1) {
+          status.textContent = 'Some files exceed the 200 MB cap. Try a folder with smaller files.';
+        } else {
+          status.textContent = 'Speed test failed: ' + (r?.error || 'unknown error');
+        }
+        return;
+      }
+      _cloudSpeedTestResult = r;
+      const mbps = Number(r.mbps || 0);
+      const samples = Number(r.samples_uploaded || 0);
+      const avgBytes = samples > 0 ? Number(r.total_bytes || 0) / samples : 0;
+      // Best-effort full-folder estimate: pick the first selected folder's
+      // file count from the analyzeDlg's tree-derived selection state if
+      // available; otherwise just report the throughput.
+      let estLine = '';
+      try {
+        const folderInfo = window._lastAnalyzeFolderInfos?.[folder];
+        const totalFiles = folderInfo?.total || 0;
+        const newFiles = Math.max(0, totalFiles - (folderInfo?.processed || 0));
+        if (newFiles > 0 && avgBytes > 0 && mbps > 0) {
+          const totalMB = (newFiles * avgBytes) / 1_048_576;
+          const seconds = totalMB / mbps;
+          const mins = Math.ceil(seconds / 60);
+          estLine = ` — est. ~${mins} min for ${newFiles} image(s)`;
+        }
+      } catch {}
+      status.classList.add('success');
+      status.textContent = `Avg ${mbps.toFixed(1)} MB/s${estLine}`;
+    }
+
+    function _ccWireDestinationDialog() {
+      const local = document.getElementById('analyzeDestLocal');
+      const cloud = document.getElementById('analyzeDestCloud');
+      const speedBtn = document.getElementById('cloudDestSpeedTestBtn');
+      if (!local || !cloud || local._ccWired) return;
+      local._ccWired = true;
+      const pickLocal = () => _ccSetDestination('local');
+      const pickCloud = async () => {
+        // Block if not signed in. The overlay is already showing in that case.
+        if (cloud.classList.contains('disabled')) {
+          showToast('Sign into Perch to use Cloud Compute.', 4000);
+          return;
+        }
+        _ccSetDestination('cloud');
+      };
+      local.addEventListener('click', pickLocal);
+      cloud.addEventListener('click', pickCloud);
+      local.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pickLocal(); } });
+      cloud.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pickCloud(); } });
+      if (speedBtn) speedBtn.addEventListener('click', _ccRunSpeedTest);
+    }
+
+    async function _ccResetDestinationOnDialogOpen() {
+      _ccWireDestinationDialog();
+      _ccSetDestination('local');
+      _cloudSpeedTestResult = null;
+      const status = document.getElementById('cloudDestStatus');
+      if (status) {
+        status.classList.remove('success', 'error');
+        status.textContent = 'Speed test not run';
+      }
+      _ccUpdateSpeedTestButtonEnable();
+      await _ccApplySignInGate();
+      _ccRefreshUsage();
+    }
+
+    async function _ccSubmitSelectedFolders(folderPaths) {
+      // Dispatched by the analyze dialog's Add button when destination=cloud.
+      // One cloud_compute_submit_job per folder. Each job appears as a row
+      // in #cloudQueuePanel as soon as the next poll tick fires.
+      if (!Array.isArray(folderPaths) || folderPaths.length === 0) return;
+      if (!window.pywebview?.api?.cloud_compute_submit_job) {
         showToast('Cloud Compute requires desktop mode', 4000);
         return;
       }
-      if (!getSetting('cloud_compute_enabled', false)) {
-        showToast('Cloud Compute is disabled. Enable it in Settings first.', 4500);
-        return;
-      }
-      // Same auth gate Perch uses — they share the JWT.
-      let tokenCheck;
-      try {
-        tokenCheck = await window.pywebview.api.get_perch_token();
-      } catch (e) {
-        showToast('Unable to read auth token: ' + (e?.message || e), 5000);
-        return;
-      }
-      if (!tokenCheck || !tokenCheck.success || !tokenCheck.token) {
-        // Reuse the existing Perch sign-in flow if available.
-        if (typeof openPerchSignInWindow === 'function') {
-          showToast('Sign into Perch to use Cloud Compute', 4500);
-          try { openPerchSignInWindow(); } catch {}
-        } else {
-          showToast('Sign into Perch first — use the account button at top-right.', 5500);
-        }
-        return;
-      }
-
-      const ok = window.confirm(
-        'Send this folder to Kestrel Cloud Compute?\n\n' +
-        'CR3/JPEG files in the folder will be uploaded to a cloud GPU for ' +
-        'analysis. Results will be written into the folder\'s .kestrel/ ' +
-        'directory just like a local run.'
-      );
-      if (!ok) return;
-
-      let res;
-      try {
-        res = await window.pywebview.api.cloud_compute_submit_job(rootPath);
-      } catch (e) {
-        showToast('Cloud Compute submit failed: ' + (e?.message || e), 6000);
-        return;
-      }
-      if (!res || !res.ok) {
-        const msg = res?.error || 'unknown error';
-        if (res?.needSignIn) {
-          showToast('Sign into Perch first — Cloud Compute uses the same account.', 5500);
-          if (typeof openPerchSignInWindow === 'function') {
-            try { openPerchSignInWindow(); } catch {}
-          }
-          return;
-        }
-        showToast('Cloud Compute: ' + msg, 6500);
-        return;
-      }
-
-      const jobId = res.jobId;
-      showToast(`Cloud Compute job started (${res.imageCount} images): ${jobId}`, 5000);
-
-      // Lightweight polling toast — every 5s, surface the latest progress
-      // event. On terminal status, clear the timer and show a final toast.
-      const tick = async () => {
-        let st;
+      let successCount = 0;
+      let nothingCount = 0;
+      const errors = [];
+      for (const fp of folderPaths) {
         try {
-          st = await window.pywebview.api.cloud_compute_get_status(jobId);
-        } catch {
+          const r = await window.pywebview.api.cloud_compute_submit_job(fp);
+          if (r && r.ok) {
+            successCount++;
+          } else if (r && r.nothingToDo) {
+            nothingCount++;
+          } else {
+            errors.push(`${fp.split(/[\\/]/).pop()}: ${r?.error || 'unknown'}`);
+            if (r?.needSignIn && typeof openPerchSignInWindow === 'function') {
+              try { openPerchSignInWindow(); } catch {}
+            }
+          }
+        } catch (e) {
+          errors.push(`${fp.split(/[\\/]/).pop()}: ${e?.message || e}`);
+        }
+      }
+      if (successCount > 0) {
+        showToast(`Cloud Compute: queued ${successCount} folder(s).`, 4000);
+        _ccStartPolling();
+      }
+      if (nothingCount > 0) {
+        showToast(`${nothingCount} folder(s) were already fully analyzed — nothing to send.`, 5000);
+      }
+      if (errors.length > 0) {
+        showToast('Cloud Compute errors:\n' + errors.join('\n'), 7000);
+      }
+    }
+
+    // ── Cloud queue panel (rendering + polling) ──────────────────────────
+
+    const _ccPanelEl = () => document.getElementById('cloudQueuePanel');
+    const _ccBodyEl  = () => document.getElementById('cloudQueuePanelBody');
+    const _ccBadgeEl = () => document.getElementById('cloudQueuePanelBadge');
+
+    let _ccPollingTimer = null;
+    const _ccActivePolls = new Map(); // jobId -> last status snapshot (for delta detection)
+
+    function _ccPhaseFromStatus(state) {
+      // Map (clientStatus, remoteStatus) → a UI-friendly phase string.
+      const s = (state && state.status) || 'running';
+      const r = state && state.remoteStatus;
+      if (s === 'done' || s === 'failed' || s === 'cancelled') return s;
+      if (s === 'upload_paused') return 'upload_paused';
+      // Local status='uploading' but remote may already be 'processing' if
+      // backlog is being analyzed.
+      if (r === 'processing') return 'analyzing';
+      if (r === 'complete') return 'downloading';
+      return 'uploading';
+    }
+
+    function _ccPhaseLabel(phase) {
+      return ({
+        uploading: 'Uploading',
+        analyzing: 'Analyzing',
+        downloading: 'Downloading',
+        done: 'Done',
+        failed: 'Failed',
+        cancelled: 'Cancelled',
+        upload_paused: 'Uploads Paused',
+      })[phase] || phase;
+    }
+
+    function _ccRenderItem(state) {
+      const phase = _ccPhaseFromStatus(state);
+      const phaseLabel = _ccPhaseLabel(phase);
+      const folder = (state.rootPath || '').split(/[\\/]/).pop() || state.jobId;
+      const total = Number(state.imageCount || 0);
+      const analyzed = Number(state.analyzedCount || 0);
+      const uploaded = Number(state.uploadedCount || 0);
+      // Two stacked progress bars would be loud; use the more representative
+      // of (analyzed/total) when analysis has started, otherwise upload bar.
+      const useAnalysisBar = analyzed > 0 || phase === 'analyzing' || phase === 'downloading' || phase === 'done';
+      const numer = useAnalysisBar ? analyzed : uploaded;
+      const pct = total > 0 ? Math.min(100, Math.round((numer / total) * 100)) : 0;
+      const barLabel = useAnalysisBar
+        ? `${analyzed} / ${total} analyzed`
+        : `${uploaded} / ${total} uploaded`;
+      // Anchor-image footnote: when newImageCount differs from imageCount, the
+      // user uploaded N+1 files (last-analyzed anchor + new). We want that
+      // visible so the user knows why the count differs from "new files".
+      const anchor = state.anchorFilename
+        ? ` <span class="muted">(+1 anchor for scene continuity)</span>`
+        : '';
+      const err = state.error
+        ? `<div class="cloud-queue-item-error" style="color:var(--bad,#ff7070);font-size:11px;">${escapeHtml(String(state.error))}</div>`
+        : '';
+      return `
+        <div class="queue-item cloud-queue-item" data-job-id="${escapeHtml(state.jobId)}">
+          <div class="queue-item-header">
+            <span class="queue-item-name" title="${escapeHtml(state.rootPath || '')}">${escapeHtml(folder)}</span>
+            <span class="cloud-phase ${phase}">${phaseLabel}</span>
+          </div>
+          <div class="queue-item-progress">
+            <div class="queue-item-progress-fill" style="width:${pct}%"></div>
+          </div>
+          <div class="queue-item-eta">${barLabel} (${pct}%)${anchor}</div>
+          ${err}
+          <div class="cloud-queue-item-controls">
+            <button data-cc-action="pause" data-job-id="${escapeHtml(state.jobId)}"
+                    ${(phase === 'upload_paused' || phase === 'done' || phase === 'failed' || phase === 'cancelled') ? 'disabled' : ''}>
+              ⏸ Pause
+            </button>
+            <button data-cc-action="resume" data-job-id="${escapeHtml(state.jobId)}"
+                    ${phase === 'upload_paused' ? '' : 'disabled'}>
+              ▶ Resume
+            </button>
+            <button data-cc-action="cancel" data-job-id="${escapeHtml(state.jobId)}"
+                    ${(phase === 'done' || phase === 'failed' || phase === 'cancelled') ? 'disabled' : ''}>
+              ⏹ Cancel
+            </button>
+          </div>
+        </div>
+      `;
+    }
+
+    function _ccEscapeBadge(jobs) {
+      const active = jobs.filter(j => !['done', 'failed', 'cancelled'].includes(j.status)).length;
+      const done = jobs.filter(j => j.status === 'done').length;
+      const failed = jobs.filter(j => j.status === 'failed' || j.status === 'cancelled').length;
+      if (active > 0) return `${active} active`;
+      if (done > 0 || failed > 0) return `${done + failed} done`;
+      return 'Idle';
+    }
+
+    async function _ccRenderPanel() {
+      const panel = _ccPanelEl(); const body = _ccBodyEl(); const badge = _ccBadgeEl();
+      if (!panel || !body || !badge) return;
+      if (!window.pywebview?.api?.cloud_compute_list_jobs) return;
+      let listRes;
+      try {
+        listRes = await window.pywebview.api.cloud_compute_list_jobs();
+      } catch { return; }
+      const jobs = (listRes && listRes.jobs) || [];
+      if (jobs.length === 0) {
+        panel.classList.add('hidden');
+        body.innerHTML = '';
+        return;
+      }
+      panel.classList.remove('hidden');
+      // Enrich each job with the richer per-job status (analyzed/uploaded counts).
+      const enriched = await Promise.all(jobs.map(async (j) => {
+        try {
+          const s = await window.pywebview.api.cloud_compute_get_status(j.jobId);
+          if (s && s.ok) return s;
+        } catch {}
+        return j;
+      }));
+      body.innerHTML = enriched.map(_ccRenderItem).join('');
+      badge.textContent = _ccEscapeBadge(enriched);
+      // Drain pack-merged events and trigger folder rescan so new photos show
+      // in the gallery as packs arrive — same UX as local live update.
+      try {
+        if (window.pywebview?.api?.cloud_compute_get_pack_events) {
+          const evRes = await window.pywebview.api.cloud_compute_get_pack_events();
+          const events = (evRes && evRes.events) || [];
+          const folders = new Set();
+          for (const ev of events) if (ev && ev.folderPath) folders.add(ev.folderPath);
+          for (const fp of folders) {
+            try { if (typeof rescanFolderTree === 'function' && folderTreeRootNode) rescanFolderTree(folderTreeRootNode.path); } catch {}
+            try { if (typeof scheduleAutoRefresh === 'function') scheduleAutoRefresh(fp); } catch {}
+          }
+        }
+      } catch {}
+    }
+
+    function _ccStartPolling() {
+      if (_ccPollingTimer) return;
+      _ccRenderPanel(); // immediate paint
+      // 10s cadence: packs come back in batches of ~10 images so finer
+      // polling wastes API budget. Worker rate limits would also bite.
+      _ccPollingTimer = setInterval(_ccRenderPanel, 10000);
+    }
+
+    function _ccStopPolling() {
+      if (_ccPollingTimer) { clearInterval(_ccPollingTimer); _ccPollingTimer = null; }
+    }
+
+    // Click delegation for per-item pause/resume/cancel buttons.
+    document.addEventListener('click', async (ev) => {
+      const t = ev.target;
+      if (!t || !(t instanceof HTMLElement)) return;
+      const action = t.getAttribute('data-cc-action');
+      const jobId = t.getAttribute('data-job-id');
+      if (!action || !jobId || !window.pywebview?.api) return;
+      const fnName = ({
+        pause: 'cloud_compute_pause_job',
+        resume: 'cloud_compute_resume_job',
+        cancel: 'cloud_compute_cancel_job',
+      })[action];
+      if (!fnName || !window.pywebview.api[fnName]) return;
+      t.disabled = true;
+      if (action === 'cancel') {
+        if (!window.confirm('Cancel this cloud analysis job?\n\nUploaded images will be deleted from the server. Any results already downloaded stay on disk.')) {
+          t.disabled = false;
           return;
         }
-        if (!st || !st.ok) return;
-        const phase = (st.progress && st.progress.event) || st.status || 'running';
-        if (st.status === 'complete') {
-          const handle = _ccActivePolls.get(jobId);
-          if (handle) clearInterval(handle);
-          _ccActivePolls.delete(jobId);
-          const packs = (st.result && st.result.packsDownloaded) || [];
-          showToast(
-            `Cloud Compute job ${jobId} finished — ${packs.length} pack(s) merged into .kestrel/. ` +
-            `Reload the folder to see results.`,
-            10000,
-          );
-        } else if (st.status === 'failed') {
-          const handle = _ccActivePolls.get(jobId);
-          if (handle) clearInterval(handle);
-          _ccActivePolls.delete(jobId);
-          showToast('Cloud Compute job failed: ' + (st.error || phase), 8000);
+      }
+      try {
+        const r = await window.pywebview.api[fnName](jobId);
+        if (r && r.ok) {
+          showToast(`Cloud Compute: ${action} OK`, 2500);
+          _ccRenderPanel();
+        } else {
+          showToast(`Cloud Compute ${action} failed: ${r?.error || 'unknown'}`, 5000);
         }
+      } catch (e) {
+        showToast(`Cloud Compute ${action} failed: ${e?.message || e}`, 5000);
+      } finally {
+        t.disabled = false;
+      }
+    });
+
+    // ── Startup resume ───────────────────────────────────────────────────
+
+    async function _ccStartupResume() {
+      if (!window.pywebview?.api?.cloud_compute_list_pending_jobs) return;
+      let r;
+      try {
+        r = await window.pywebview.api.cloud_compute_list_pending_jobs();
+      } catch { return; }
+      if (!r || !r.ok) return;
+      const candidates = (r.jobs || []).filter(j => {
+        const downloaded = new Set(j.downloadedPacks || []);
+        const available = j.availablePacks || [];
+        const unmerged = available.filter(p => !downloaded.has(p));
+        return unmerged.length > 0 || (j.remoteStatus === 'complete' && downloaded.size === 0);
+      });
+      if (candidates.length === 0) return;
+      _ccShowResumeDialog(candidates);
+    }
+
+    function _ccShowResumeDialog(jobs) {
+      const dlg = document.getElementById('cloudResumeDlg');
+      const list = document.getElementById('cloudResumeList');
+      const intro = document.getElementById('cloudResumeIntro');
+      if (!dlg || !list) return;
+      intro.textContent = `You have ${jobs.length} cloud analysis job(s) with result packs ready to download.`;
+      list.innerHTML = jobs.map((j, idx) => {
+        const folder = (j.folderPath || '').split(/[\\/]/).pop() || j.jobId;
+        const downloaded = (j.downloadedPacks || []).length;
+        const available = (j.availablePacks || []).length;
+        const status = j.remoteStatus || j.status || '?';
+        return `
+          <label class="cloud-resume-item">
+            <input type="checkbox" data-job-id="${escapeHtml(j.jobId)}" checked />
+            <div class="cloud-resume-item-body">
+              <div class="cloud-resume-item-folder">${escapeHtml(folder)}</div>
+              <div class="cloud-resume-item-meta">
+                ${escapeHtml(j.folderPath || '')}<br>
+                Status: ${escapeHtml(status)} · ${available - downloaded} pack(s) waiting
+              </div>
+            </div>
+          </label>
+        `;
+      }).join('');
+      try { dlg.showModal(); } catch { dlg.show(); }
+    }
+
+    function _ccWireResumeDialog() {
+      const dlg = document.getElementById('cloudResumeDlg');
+      if (!dlg || dlg._ccWired) return;
+      dlg._ccWired = true;
+      const close = () => { try { dlg.close(); } catch {} };
+      document.getElementById('cloudResumeLater')?.addEventListener('click', close);
+      const fireResume = async (jobIds) => {
+        for (const jid of jobIds) {
+          try {
+            await window.pywebview.api.cloud_compute_resume_download(jid);
+          } catch {}
+        }
+        showToast(`Resuming ${jobIds.length} cloud download(s).`, 3500);
+        _ccStartPolling();
+        close();
       };
-      const handle = setInterval(tick, 5000);
-      _ccActivePolls.set(jobId, handle);
+      document.getElementById('cloudResumeAll')?.addEventListener('click', () => {
+        const all = [...dlg.querySelectorAll('input[data-job-id]')].map(i => i.getAttribute('data-job-id'));
+        fireResume(all);
+      });
+      document.getElementById('cloudResumeSelected')?.addEventListener('click', () => {
+        const picked = [...dlg.querySelectorAll('input[data-job-id]:checked')].map(i => i.getAttribute('data-job-id'));
+        if (picked.length === 0) { showToast('Pick at least one job, or click Later.', 3000); return; }
+        fireResume(picked);
+      });
+    }
+
+    // Wire startup hooks. The pywebview ready event is the canonical signal
+    // that the bridge is alive; we also tolerate a fallback timer in case
+    // the event fired before our listener attached.
+    function _ccBootstrap() {
+      _ccWireResumeDialog();
+      _ccStartupResume();
+      // Also start polling immediately in case the user reopens the app
+      // mid-job; the panel stays hidden if there are no jobs.
+      _ccStartPolling();
+    }
+    if (window.pywebview && window.pywebview.api) {
+      _ccBootstrap();
+    } else {
+      window.addEventListener('pywebviewready', _ccBootstrap, { once: true });
+      setTimeout(() => { if (window.pywebview?.api && !_ccPollingTimer) _ccBootstrap(); }, 3000);
     }
 
     async function shareWithPerchFolder(rootPath) {

@@ -29,6 +29,7 @@
   <link rel="stylesheet" href="css/dialogs/settings.css" />
   <link rel="stylesheet" href="css/dialogs/analyze.css" />
   <link rel="stylesheet" href="css/dialogs/live-analysis.css" />
+  <link rel="stylesheet" href="css/dialogs/cloud-compute.css" />
   <link rel="stylesheet" href="css/dialogs/feedback-consent.css" />
   <link rel="stylesheet" href="css/dialogs/donate.css" />
   <link rel="stylesheet" href="css/dialogs/tutorial-chooser.css" />
@@ -248,6 +249,26 @@
         <button id="queueCancelBtn" title="Cancel all pending items">⏹ Cancel</button>
         <button id="queueClearBtn" title="Remove finished items from list">🗑 Clear done</button>
         <button id="queueLiveBtn" title="See live analysis details">👁 Live</button>
+      </div>
+    </div>
+
+    <!-- Cloud Analysis Queue panel — sibling of the local analysis queue.
+         Mirrors #queuePanel structure (queue-panel base class from
+         live-analysis.css) with cloud-specific accents from cloud-compute.css.
+         No 'Live' button: live preview thumbnails are not in v1 — progress
+         bars + phase chips only. Pause = upload-side pause (Worker keeps
+         analyzing already-uploaded backlog). Cancel = terminal job stop. -->
+    <div id="cloudQueuePanel" class="queue-panel cloud-queue-panel hidden" role="region" aria-label="Cloud Analysis Queue">
+      <div class="queue-panel-header" id="cloudQueuePanelHeader" title="Click to expand / collapse">
+        <span class="queue-panel-title">☁ Cloud Analysis</span>
+        <span class="queue-panel-badge" id="cloudQueuePanelBadge">Idle</span>
+        <span class="queue-panel-toggle open" id="cloudQueuePanelToggle">▲</span>
+      </div>
+      <div class="queue-panel-body" id="cloudQueuePanelBody"></div>
+      <div class="queue-panel-controls" id="cloudQueuePanelControls">
+        <button id="cloudQueuePauseBtn" title="Pause cloud uploads. Modal keeps analyzing whatever has already uploaded.">⏸ Pause</button>
+        <button id="cloudQueueCancelBtn" title="Cancel cloud analysis (stops Modal and deletes staged files).">⏹ Cancel</button>
+        <button id="cloudQueueClearBtn" title="Remove finished items from list">🗑 Clear done</button>
       </div>
     </div>
 
@@ -912,11 +933,53 @@
           </div>
         </div>
       </details>
+      <!-- Destination cards. Default = Local. Selecting Cloud activates the
+           speed-test / usage chrome and changes the Add button label. -->
+      <div class="analyze-dlg-destination-row" id="analyzeDlgDestinationRow" role="radiogroup" aria-label="Destination">
+        <div class="analyze-dlg-destination-card selected" id="analyzeDestLocal"
+             data-destination="local" role="radio" aria-checked="true" tabindex="0">
+          <div class="dest-card-title">💻 Local Analysis</div>
+          <div class="dest-card-desc">Run on this machine. Uses your GPU when available.</div>
+        </div>
+        <div class="analyze-dlg-destination-card" id="analyzeDestCloud"
+             data-destination="cloud" role="radio" aria-checked="false" tabindex="0">
+          <div class="dest-card-title">☁ Cloud Analysis
+            <a href="https://projectkestrel.org/cloud-compute" target="_blank" rel="noopener"
+               id="cloudDestHelpLink" class="dest-card-help"
+               title="Learn more about cloud compute">(?)</a>
+          </div>
+          <div class="dest-card-status" id="cloudDestStatus">Speed test not run</div>
+          <button id="cloudDestSpeedTestBtn" class="dest-card-speed-btn" type="button"
+                  disabled title="Pick at least one folder to enable the speed test">
+            Run Upload Speed Test
+          </button>
+          <div class="dest-card-usage" id="cloudDestUsage">Loading usage…</div>
+          <div class="dest-card-signin-overlay hidden" id="cloudDestSignInOverlay">
+            Sign in to Perch to use Cloud Compute.
+          </div>
+        </div>
+      </div>
       <div class="analyze-dlg-footer">
         <span class="analyze-dlg-selected-count" id="analyzeDlgCount">0 folders selected</span>
         <button id="analyzeDlgRestoreQueue" style="display:none;font-size:11px;padding:4px 8px;background:#5a4a7a;color:#d0b8ff;border:1px solid #7a6a9a;" title="Restore the queue from last time you cancelled">🔄 Restore Queue?</button>
         <button id="analyzeDlgCancel">Cancel</button>
-        <button id="analyzeDlgAdd" class="primary" disabled>➕ Add to Queue</button>
+        <button id="analyzeDlgAdd" class="primary" disabled>➕ Add to Local Analysis Queue</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Cloud Compute resume dialog. Opens on startup when there are finished
+       cloud jobs whose result packs haven't all been merged locally yet
+       (e.g. the desktop was closed while a job finished on its own). -->
+  <dialog id="cloudResumeDlg" style="width:min(640px,96vw);height:fit-content;max-height:92vh;">
+    <div class="cloud-resume-dlg">
+      <h3>☁ Cloud Analysis Results Available</h3>
+      <p id="cloudResumeIntro">You have finished cloud analysis jobs ready to download.</p>
+      <div id="cloudResumeList" class="cloud-resume-list"></div>
+      <div class="cloud-resume-footer">
+        <button id="cloudResumeLater">Later</button>
+        <button id="cloudResumeSelected">Download Selected</button>
+        <button id="cloudResumeAll" class="primary">Download All</button>
       </div>
     </div>
   </dialog>

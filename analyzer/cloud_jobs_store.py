@@ -1,0 +1,256 @@
+"""Persistent job ledger for cloud compute.
+
+Records every cloud-compute job the desktop has submitted so that the next
+launch can poll for finished result packs and prompt the user to download
+them. Lives next to ``settings.json`` in the platform-specific user data dir.
+
+Schema (JSON):
+    {
+      "jobs": [
+        {
+          "jobId": str,
+          "folderPath": str,            # absolute path of analyzed folder
+          "createdAtUtc": str,          # ISO-8601
+          "status": str,                # uploading|analyzing|downloading|done|cancelled|failed
+          "imageCount": int,
+          "settingsSnapshot": dict,     # filtered analysis-settings sent to Modal
+          "downloadedPacks": [str, ...] # filenames already merged locally
+        },
+        ...
+      ]
+    }
+
+Atomic-write pattern mirrors ``settings_utils.py``: write to tempfile, then
+``os.replace`` over the canonical file. A single in-process re-entrant lock
+serializes saves because the JS bridge, the per-job background download
+thread, and startup all write concurrently.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import tempfile
+import threading
+import time
+from typing import Any
+
+CLOUD_JOBS_FILENAME = "cloud_jobs.json"
+_SAVE_LOCK = threading.RLock()
+
+_TERMINAL_STATUSES = {"done", "cancelled", "failed"}
+_VALID_STATUSES = {
+    "uploading", "analyzing", "downloading", "done",
+    "cancelled", "failed", "upload_paused",
+}
+_MAX_JOBS_RETAINED = 200  # oldest non-terminal kept; terminal jobs prune on touch
+
+
+def _user_data_dir() -> str:
+    """Same directory ``settings_utils.py`` writes to. Kept in sync by convention."""
+    if sys.platform.startswith("win"):
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.path.expanduser("~")
+        return os.path.join(base, "ProjectKestrel")
+    if sys.platform == "darwin":
+        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", "ProjectKestrel")
+    base = os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
+    return os.path.join(base, "project-kestrel")
+
+
+def _store_path() -> str:
+    return os.path.join(_user_data_dir(), CLOUD_JOBS_FILENAME)
+
+
+def _coerce_str(v: Any, *, max_len: int = 4096) -> str:
+    if v is None:
+        return ""
+    s = str(v)
+    return s[:max_len]
+
+
+def _coerce_int(v: Any, default: int = 0) -> int:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_strlist(v: Any, *, max_len: int = 1024) -> list[str]:
+    if not isinstance(v, list):
+        return []
+    return [str(item)[:max_len] for item in v if item is not None][:_MAX_JOBS_RETAINED * 4]
+
+
+def _coerce_dict(v: Any) -> dict:
+    return dict(v) if isinstance(v, dict) else {}
+
+
+def _sanitize_job(raw: Any) -> dict | None:
+    """Return a canonical job dict, or ``None`` if input is unusable."""
+    if not isinstance(raw, dict):
+        return None
+    job_id = _coerce_str(raw.get("jobId"), max_len=128).strip()
+    folder = _coerce_str(raw.get("folderPath"), max_len=4096).strip()
+    if not job_id or not folder:
+        return None
+    status = _coerce_str(raw.get("status"), max_len=32) or "uploading"
+    if status not in _VALID_STATUSES:
+        status = "uploading"
+    return {
+        "jobId": job_id,
+        "folderPath": folder,
+        "createdAtUtc": _coerce_str(raw.get("createdAtUtc"), max_len=64),
+        "status": status,
+        "imageCount": _coerce_int(raw.get("imageCount")),
+        "settingsSnapshot": _coerce_dict(raw.get("settingsSnapshot")),
+        "downloadedPacks": _coerce_strlist(raw.get("downloadedPacks")),
+    }
+
+
+def _load_raw() -> dict:
+    path = _store_path()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except FileNotFoundError:
+        return {"jobs": []}
+    except (OSError, json.JSONDecodeError):
+        # Corrupt file — back it up and start fresh rather than blocking the user.
+        try:
+            os.replace(path, path + ".corrupt")
+        except OSError:
+            pass
+        return {"jobs": []}
+    return {"jobs": []}
+
+
+def _write_atomic(data: dict) -> None:
+    user_dir = _user_data_dir()
+    os.makedirs(user_dir, exist_ok=True)
+    final_path = _store_path()
+    fd, tmp_path = tempfile.mkstemp(
+        prefix="cloud_jobs.json.", suffix=".tmp", dir=user_dir
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, sort_keys=False)
+        os.replace(tmp_path, final_path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def load_jobs() -> list[dict]:
+    """Return all known cloud jobs, sanitized. Safe on first run (empty file)."""
+    with _SAVE_LOCK:
+        raw = _load_raw()
+    out: list[dict] = []
+    seen: set[str] = set()
+    for item in raw.get("jobs", []) if isinstance(raw, dict) else []:
+        job = _sanitize_job(item)
+        if job is None or job["jobId"] in seen:
+            continue
+        seen.add(job["jobId"])
+        out.append(job)
+    return out
+
+
+def save_jobs(jobs: list[dict]) -> None:
+    """Replace the on-disk job list with ``jobs`` (sanitized)."""
+    sanitized: list[dict] = []
+    seen: set[str] = set()
+    for item in jobs:
+        job = _sanitize_job(item)
+        if job is None or job["jobId"] in seen:
+            continue
+        seen.add(job["jobId"])
+        sanitized.append(job)
+    with _SAVE_LOCK:
+        _write_atomic({"jobs": sanitized})
+
+
+def upsert_job(job: dict) -> dict | None:
+    """Insert or replace a single job by ``jobId``. Returns the canonical row."""
+    canonical = _sanitize_job(job)
+    if canonical is None:
+        return None
+    with _SAVE_LOCK:
+        existing = load_jobs()
+        merged: list[dict] = []
+        replaced = False
+        for j in existing:
+            if j["jobId"] == canonical["jobId"]:
+                merged.append(canonical)
+                replaced = True
+            else:
+                merged.append(j)
+        if not replaced:
+            merged.append(canonical)
+        save_jobs(merged)
+        return canonical
+
+
+def update_job(job_id: str, **fields: Any) -> dict | None:
+    """Patch fields on an existing job. Unknown fields are ignored. Returns the
+    updated row, or ``None`` if the job_id is unknown."""
+    job_id = (job_id or "").strip()
+    if not job_id:
+        return None
+    with _SAVE_LOCK:
+        existing = load_jobs()
+        updated: dict | None = None
+        for j in existing:
+            if j["jobId"] == job_id:
+                for k, v in fields.items():
+                    if k in j:
+                        j[k] = v
+                updated = _sanitize_job(j)
+                if updated is not None:
+                    j.update(updated)
+                break
+        if updated is not None:
+            save_jobs(existing)
+        return updated
+
+
+def add_downloaded_pack(job_id: str, pack_filename: str) -> None:
+    """Record that a pack has been downloaded/merged locally. Idempotent."""
+    job_id = (job_id or "").strip()
+    pack_filename = (pack_filename or "").strip()
+    if not job_id or not pack_filename:
+        return
+    with _SAVE_LOCK:
+        existing = load_jobs()
+        for j in existing:
+            if j["jobId"] == job_id:
+                packs = list(j.get("downloadedPacks") or [])
+                if pack_filename not in packs:
+                    packs.append(pack_filename)
+                    j["downloadedPacks"] = packs
+                    save_jobs(existing)
+                return
+
+
+def remove_job(job_id: str) -> bool:
+    """Drop a job entry. Returns True if removed."""
+    job_id = (job_id or "").strip()
+    if not job_id:
+        return False
+    with _SAVE_LOCK:
+        existing = load_jobs()
+        before = len(existing)
+        existing = [j for j in existing if j["jobId"] != job_id]
+        if len(existing) == before:
+            return False
+        save_jobs(existing)
+        return True
+
+
+def utc_now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())

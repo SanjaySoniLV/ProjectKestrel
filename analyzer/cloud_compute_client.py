@@ -32,6 +32,38 @@ _DEFAULT_API_BASE = "https://cloudcompute.projectkestrel.org"
 _MAX_UPLOAD_WORKERS = 6
 _POLL_INTERVAL_SEC = 5
 
+# Analysis-settings allowlist — mirrors the Worker's and Modal's allowlists
+# (defence in depth). Only these keys are sent in the ``analysisSettings``
+# field of POST /api/jobs. Anything outside this tuple is dropped before the
+# request goes out, so the desktop can pass its full settings dict and trust
+# the filter.
+ANALYSIS_SETTINGS_ALLOWLIST: tuple[str, ...] = (
+    "detector_name",
+    "species_detection_enabled",
+    "wildlife_enabled",
+    "confidence_threshold",
+    "scene_grouping_enabled",
+    "crop_generation_enabled",
+    "quality_model_enabled",
+)
+
+
+def filter_analysis_settings(raw: Any) -> dict | None:
+    """Return a copy of ``raw`` containing only allowlisted keys with primitive
+    values. ``None`` is returned when nothing survives so callers can decide
+    whether to omit the field from the wire payload entirely (vs. sending an
+    empty object, which the Worker would treat the same way)."""
+    if not isinstance(raw, dict):
+        return None
+    cleaned: dict = {}
+    for key in ANALYSIS_SETTINGS_ALLOWLIST:
+        if key not in raw:
+            continue
+        val = raw[key]
+        if isinstance(val, (str, int, float, bool)):
+            cleaned[key] = val
+    return cleaned or None
+
 
 def default_api_base() -> str:
     """Resolve cloud-compute Worker base URL — env override, then default."""
@@ -103,18 +135,28 @@ class CloudComputeClient:
 
     # ─── REST endpoints ──────────────────────────────────────────────────
 
-    def submit_job(self, file_paths: list[Path]) -> dict:
-        """POST /api/jobs — returns {jobId, presignedUrls, ...}."""
+    def submit_job(
+        self,
+        file_paths: list[Path],
+        analysis_settings: dict | None = None,
+    ) -> dict:
+        """POST /api/jobs — returns {jobId, presignedUrls, ...}.
+
+        ``analysis_settings`` is filtered through
+        :func:`filter_analysis_settings` before send; the Worker re-validates
+        on receipt (defence in depth). Pass ``None`` to let Modal use its
+        built-in defaults.
+        """
         if not file_paths:
             raise ValueError("submit_job requires at least one file path")
-        return self._request(
-            "POST",
-            "/api/jobs",
-            {
-                "imageCount": len(file_paths),
-                "fileNames": [p.name for p in file_paths],
-            },
-        )
+        body: dict = {
+            "imageCount": len(file_paths),
+            "fileNames": [p.name for p in file_paths],
+        }
+        cleaned = filter_analysis_settings(analysis_settings)
+        if cleaned is not None:
+            body["analysisSettings"] = cleaned
+        return self._request("POST", "/api/jobs", body)
 
     def get_status(self, job_id: str) -> dict:
         return self._request("GET", f"/api/jobs/{job_id}")
@@ -126,6 +168,44 @@ class CloudComputeClient:
 
     def mark_complete(self, job_id: str) -> dict:
         return self._request("POST", f"/api/jobs/{job_id}/complete", {})
+
+    def pause_job(self, job_id: str) -> dict:
+        """POST /api/jobs/{jobId}/pause — upload-side pause. Modal keeps
+        analyzing whatever is already in flight; only further client uploads
+        are held. Idempotent."""
+        return self._request("POST", f"/api/jobs/{job_id}/pause", {})
+
+    def resume_job(self, job_id: str) -> dict:
+        """POST /api/jobs/{jobId}/resume — clears the upload-side pause."""
+        return self._request("POST", f"/api/jobs/{job_id}/resume", {})
+
+    def cancel_job_remote(self, job_id: str) -> dict:
+        """POST /api/jobs/{jobId}/cancel — terminal cancellation. Worker marks
+        the job ``cancelled``, sets ``stop_requested = 1`` so the Modal fetcher
+        exits on its next poll, and async-deletes staging objects for this job.
+        Results bucket is left intact so the client can still pull whatever
+        finished before the cancel landed."""
+        return self._request("POST", f"/api/jobs/{job_id}/cancel", {})
+
+    def request_upload_test_urls(
+        self,
+        count: int,
+        sizes: list[int] | None = None,
+    ) -> dict:
+        """POST /api/upload-test — returns a batch of short-lived presigned PUT
+        URLs scoped to a per-user prefix in the staging bucket. ``sizes`` is an
+        optional list of per-file Content-Length hints; the Worker returns
+        413 / ``file_too_large`` if any size exceeds the 200 MB cap."""
+        body: dict = {"count": int(count)}
+        if sizes is not None:
+            body["sizes"] = list(sizes)
+        return self._request("POST", "/api/upload-test", body)
+
+    def get_usage(self) -> dict:
+        """GET /api/usage — currently a stub (Stage 3 fleshes this out into
+        per-user image/credit metering). Returns ``{remainingImages: None,
+        stub: True}`` today."""
+        return self._request("GET", "/api/usage")
 
     def list_results(self, job_id: str) -> list[dict]:
         body = self._request("GET", f"/api/jobs/{job_id}/results")
@@ -166,14 +246,141 @@ class CloudComputeClient:
         except urllib.error.HTTPError as e:
             return e.code
 
+    # ─── Upload speed test ───────────────────────────────────────────────
+
+    def upload_test(
+        self,
+        folder: Path,
+        sample_count: int = 10,
+        on_progress: Optional[Callable[[int, int], None]] = None,
+    ) -> dict:
+        """Measure real upload throughput against the staging bucket.
+
+        Discovers the first ``sample_count`` images in ``folder`` (CR3/JPEG),
+        requests presigned PUT URLs from ``/api/upload-test`` (scoped to a
+        short-lived per-user prefix that the bucket's lifecycle policy
+        auto-purges — these files are NOT analyzed and do NOT count against
+        usage), uploads them with the same concurrency as a real job, and
+        returns aggregate stats.
+
+        If the folder has fewer than ``sample_count`` images, files are
+        re-used in round-robin to fill out the request so the user still
+        gets a meaningful measurement.
+
+        ``on_progress(idx, total)`` is fired after each upload completes (one
+        call per finished slot), letting the dialog show ``Running speed
+        test... N/10``.
+
+        Returns ``{mbps, samples_uploaded, total_bytes, elapsed_ms,
+        bytes_per_sample, errors}``. Raises :class:`CloudComputeError` if the
+        Worker rejects the request (e.g. a 200 MB file size cap is hit).
+        """
+        folder = Path(folder).resolve()
+        if not folder.is_dir():
+            raise ValueError(f"folder not a directory: {folder}")
+        if sample_count < 1:
+            raise ValueError("sample_count must be >= 1")
+        sample_count = min(sample_count, 10)  # Worker caps at 10 slots
+
+        all_images = sorted(
+            p for p in folder.iterdir()
+            if p.is_file() and p.suffix.lower() in {".cr3", ".jpg", ".jpeg"}
+        )
+        if not all_images:
+            raise ValueError(f"no images found in {folder}")
+
+        # Round-robin fill if the folder is smaller than the requested sample.
+        chosen: list[Path] = []
+        i = 0
+        while len(chosen) < sample_count:
+            chosen.append(all_images[i % len(all_images)])
+            i += 1
+
+        sizes = [p.stat().st_size for p in chosen]
+        biggest = max(sizes)
+        UPLOAD_TEST_MAX_BYTES = 200 * 1024 * 1024
+        if biggest > UPLOAD_TEST_MAX_BYTES:
+            # Surface the user-friendly error early instead of waiting for the
+            # Worker to 413. Matches the Worker's `file_too_large` semantics.
+            raise CloudComputeError(
+                413,
+                json.dumps({
+                    "error": "file_too_large",
+                    "maxBytes": UPLOAD_TEST_MAX_BYTES,
+                    "biggestFile": chosen[sizes.index(biggest)].name,
+                }),
+            )
+
+        resp = self.request_upload_test_urls(count=sample_count, sizes=sizes)
+        slots = list(resp.get("presignedUrls") or [])
+        if len(slots) < sample_count:
+            raise CloudComputeError(
+                500,
+                f"Worker returned {len(slots)} slots for {sample_count}-image request",
+            )
+
+        results: list[tuple[int, int, float]] = []  # (status, bytes, elapsed_s)
+        results_lock = threading.Lock()
+        errors: list[str] = []
+
+        def _upload_one(idx: int, slot: dict, path: Path) -> None:
+            url = slot["url"]
+            data = path.read_bytes()
+            t0 = time.perf_counter()
+            req = urllib.request.Request(
+                url, data=data, method="PUT",
+                headers={"Content-Type": "application/octet-stream"},
+            )
+            try:
+                with urllib.request.urlopen(req) as r:
+                    status = int(r.status)
+            except urllib.error.HTTPError as e:
+                status = int(e.code)
+                with results_lock:
+                    errors.append(f"slot {idx}: HTTP {status}")
+            elapsed = time.perf_counter() - t0
+            with results_lock:
+                results.append((status, len(data), elapsed))
+                if on_progress is not None:
+                    try:
+                        on_progress(len(results), sample_count)
+                    except Exception:
+                        pass
+
+        t_start = time.perf_counter()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=_MAX_UPLOAD_WORKERS) as pool:
+            futures = [
+                pool.submit(_upload_one, i, slots[i], chosen[i])
+                for i in range(sample_count)
+            ]
+            for f in concurrent.futures.as_completed(futures):
+                f.result()
+        elapsed_total = time.perf_counter() - t_start
+
+        ok_results = [r for r in results if 200 <= r[0] < 300]
+        total_bytes = sum(r[1] for r in ok_results)
+        mbps = (total_bytes / 1_048_576) / elapsed_total if elapsed_total > 0 else 0.0
+        return {
+            "mbps": mbps,
+            "samples_uploaded": len(ok_results),
+            "samples_attempted": sample_count,
+            "total_bytes": total_bytes,
+            "elapsed_ms": int(elapsed_total * 1000),
+            "bytes_per_sample": sizes,
+            "errors": errors,
+        }
+
     # ─── End-to-end orchestrator ─────────────────────────────────────────
 
     def run_full_job(
         self,
         images_dir: Path,
         file_paths: list[Path] | None = None,
+        analysis_settings: dict | None = None,
         on_progress: Optional[Callable[[dict], None]] = None,
+        on_pack_merged: Optional[Callable[[str], None]] = None,
         cancel_event: Optional[threading.Event] = None,
+        pause_event: Optional[threading.Event] = None,
         merge_into_kestrel: bool = True,
     ) -> dict:
         """End-to-end job: submit → upload → notify → complete → poll → download → merge.
@@ -206,7 +413,7 @@ class CloudComputeClient:
 
         # 1) Submit
         _emit("submit", imageCount=len(files))
-        submit = self.submit_job(files)
+        submit = self.submit_job(files, analysis_settings=analysis_settings)
         job_id: str = str(submit["jobId"])
         presigned: list[dict] = list(submit.get("presignedUrls", []))
         if len(presigned) != len(files):
@@ -223,6 +430,14 @@ class CloudComputeClient:
         def _upload_and_notify(item: dict, file_path: Path) -> None:
             nonlocal notified_count
             _check_cancel()
+            # Honour pause-event: when uploads are paused via the Worker
+            # endpoint, the api_bridge clears this event; we block (with a
+            # short timeout so cancellation can still preempt) until resumed.
+            if pause_event is not None:
+                while not pause_event.is_set():
+                    _check_cancel()
+                    if pause_event.wait(timeout=1.0):
+                        break
             status = self._put_file(item["url"], file_path)
             if status >= 400:
                 with notified_lock:
@@ -298,6 +513,11 @@ class CloudComputeClient:
                     try:
                         merge_pack_into_kestrel(dest, images_dir)
                         _emit("pack_merged", filename=fname)
+                        if on_pack_merged is not None:
+                            try:
+                                on_pack_merged(fname)
+                            except Exception:
+                                pass
                     except Exception as e:
                         _emit("pack_merge_failed", filename=fname, error=str(e))
 

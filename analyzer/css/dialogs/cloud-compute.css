@@ -1,0 +1,267 @@
+/* Cloud Compute UI: destination cards in #analyzeQueueDlg, #cloudQueuePanel
+   (mirrors #queuePanel), and #cloudResumeDlg. Reuses the existing queue-panel
+   shell from live-analysis.css and adds cloud-specific badge / card chrome. */
+
+/* ── Destination cards (in #analyzeQueueDlg footer area) ─────────────────── */
+
+.analyze-dlg-destination-row {
+  display: flex;
+  gap: 10px;
+  padding: 8px 0 4px 0;
+  border-top: 1px solid var(--border, #2a2a3a);
+  margin-top: 4px;
+}
+
+.analyze-dlg-destination-card {
+  flex: 1;
+  min-height: 88px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #2a2a3a);
+  border-radius: 6px;
+  background: #1c1c28;
+  cursor: pointer;
+  transition: border-color 120ms, background-color 120ms;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.analyze-dlg-destination-card:hover:not(.disabled) {
+  background: #232333;
+}
+
+.analyze-dlg-destination-card.selected {
+  border-color: var(--brand, #6b9eff);
+  background: #1f2440;
+  box-shadow: inset 0 0 0 1px var(--brand, #6b9eff);
+}
+
+.analyze-dlg-destination-card.disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.dest-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg, #eee);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dest-card-help {
+  font-size: 11px;
+  color: var(--muted, #888);
+  text-decoration: none;
+  font-weight: normal;
+}
+
+.dest-card-help:hover {
+  color: var(--brand, #6b9eff);
+  text-decoration: underline;
+}
+
+.dest-card-desc {
+  font-size: 11px;
+  color: var(--muted, #888);
+}
+
+.dest-card-status {
+  font-size: 11px;
+  color: var(--muted, #aaa);
+  font-style: italic;
+  min-height: 16px;
+}
+
+.dest-card-status.success {
+  color: var(--ok, #6bcf6b);
+  font-style: normal;
+}
+
+.dest-card-status.error {
+  color: var(--bad, #ff7070);
+  font-style: normal;
+}
+
+.dest-card-speed-btn {
+  align-self: flex-start;
+  font-size: 11px;
+  padding: 3px 9px;
+  background: #2a3550;
+  color: var(--brand, #6b9eff);
+  border: 1px solid #3a4a6a;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.dest-card-speed-btn:hover:not(:disabled) {
+  background: #324060;
+}
+
+.dest-card-speed-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.dest-card-usage {
+  font-size: 11px;
+  color: var(--muted, #888);
+}
+
+.dest-card-signin-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(28, 28, 40, 0.92);
+  border-radius: 6px;
+  color: var(--fg, #eee);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: center;
+  padding: 8px;
+  pointer-events: auto;
+}
+
+/* ── #cloudQueuePanel — sibling of #queuePanel, stacked above ─────────────── */
+
+.queue-panel.cloud-queue-panel {
+  /* Reuses .queue-panel base styles from live-analysis.css; cloud variant gets
+     a distinct title-area accent so the two panels are visually separable. */
+}
+
+.queue-panel.cloud-queue-panel .queue-panel-title {
+  color: #9bb8ff;
+}
+
+.queue-panel.cloud-queue-panel .queue-panel-badge {
+  background: #2a3550;
+  color: #9bb8ff;
+}
+
+.cloud-queue-item {
+  /* Inherits .queue-item box / spacing from analyze.css; this class exists
+     for cloud-only adjustments (phase chip, future fields). */
+}
+
+.cloud-queue-item-controls {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.cloud-queue-item-controls button {
+  font-size: 11px;
+  padding: 2px 7px;
+  background: #2a2a3a;
+  color: var(--fg, #eee);
+  border: 1px solid #3a3a4a;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.cloud-queue-item-controls button:hover:not(:disabled) {
+  background: #34344a;
+}
+
+.cloud-queue-item-controls button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.cloud-queue-item .cloud-phase {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted, #888);
+  padding: 1px 6px;
+  background: #2a2a3a;
+  border-radius: 3px;
+  margin-left: 6px;
+}
+
+.cloud-queue-item .cloud-phase.uploading { color: #9bb8ff; background: #1f2a45; }
+.cloud-queue-item .cloud-phase.analyzing { color: #ffc060; background: #3a2a1a; }
+.cloud-queue-item .cloud-phase.downloading { color: #b8ff9b; background: #1a3a1a; }
+.cloud-queue-item .cloud-phase.upload_paused { color: #ffb060; background: #3a2a1a; font-style: italic; }
+.cloud-queue-item .cloud-phase.cancelled { color: #ff7070; background: #3a1a1a; }
+.cloud-queue-item .cloud-phase.done { color: #6bcf6b; background: #1a3a1a; }
+.cloud-queue-item .cloud-phase.failed { color: #ff7070; background: #3a1a1a; }
+
+/* ── #cloudResumeDlg ──────────────────────────────────────────────────────── */
+
+.cloud-resume-dlg {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  min-width: 480px;
+  max-width: 640px;
+}
+
+.cloud-resume-dlg h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.cloud-resume-dlg p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted, #888);
+}
+
+.cloud-resume-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 360px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.cloud-resume-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border, #2a2a3a);
+  border-radius: 4px;
+  background: #1c1c28;
+}
+
+.cloud-resume-item input[type="checkbox"] {
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+
+.cloud-resume-item-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cloud-resume-item-folder {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg, #eee);
+  word-break: break-all;
+}
+
+.cloud-resume-item-meta {
+  font-size: 11px;
+  color: var(--muted, #888);
+}
+
+.cloud-resume-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border, #2a2a3a);
+}
