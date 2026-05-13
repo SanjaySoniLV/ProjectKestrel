@@ -173,24 +173,79 @@
   cursor: not-allowed;
 }
 
-.cloud-queue-item .cloud-phase {
+/* Dual-pill row: separate upload-phase + analysis-phase pills so the user
+   can read both halves of the cloud round-trip at a glance. */
+
+.cloud-phase-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 4px 0 2px 0;
+}
+
+.cloud-phase-pill {
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  color: var(--muted, #888);
-  padding: 1px 6px;
-  background: #2a2a3a;
+  padding: 1px 7px;
   border-radius: 3px;
-  margin-left: 6px;
+  background: #2a2a3a;
+  color: var(--muted, #888);
 }
 
-.cloud-queue-item .cloud-phase.uploading { color: #9bb8ff; background: #1f2a45; }
-.cloud-queue-item .cloud-phase.analyzing { color: #ffc060; background: #3a2a1a; }
-.cloud-queue-item .cloud-phase.downloading { color: #b8ff9b; background: #1a3a1a; }
-.cloud-queue-item .cloud-phase.upload_paused { color: #ffb060; background: #3a2a1a; font-style: italic; }
-.cloud-queue-item .cloud-phase.cancelled { color: #ff7070; background: #3a1a1a; }
-.cloud-queue-item .cloud-phase.done { color: #6bcf6b; background: #1a3a1a; }
-.cloud-queue-item .cloud-phase.failed { color: #ff7070; background: #3a1a1a; }
+/* Upload phase variants */
+.cloud-phase-pill.upload.uploading     { color: #9bb8ff; background: #1f2a45; }
+.cloud-phase-pill.upload.uploaded      { color: #6bcf6b; background: #1a3a1a; }
+.cloud-phase-pill.upload.upload_paused { color: #ffb060; background: #3a2a1a; font-style: italic; }
+.cloud-phase-pill.upload.cancelled     { color: #ff7070; background: #3a1a1a; }
+.cloud-phase-pill.upload.failed        { color: #ff7070; background: #3a1a1a; }
+
+/* Analysis phase variants */
+.cloud-phase-pill.analysis.waiting_uploads { color: var(--muted, #888); background: #2a2a3a; font-style: italic; }
+.cloud-phase-pill.analysis.analyzing       { color: #ffc060; background: #3a2a1a; }
+.cloud-phase-pill.analysis.done            { color: #6bcf6b; background: #1a3a1a; }
+.cloud-phase-pill.analysis.cancelled       { color: #ff7070; background: #3a1a1a; }
+.cloud-phase-pill.analysis.failed          { color: #ff7070; background: #3a1a1a; }
+
+/* Stacked progress bars: one for uploaded, one for analyzed. */
+
+.cloud-bar-block {
+  margin-top: 4px;
+}
+
+.cloud-bar-label {
+  font-size: 11px;
+  color: var(--muted, #aaa);
+  margin-bottom: 2px;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.cloud-queue-item .queue-item-progress-fill.upload   { background: #6b9eff; }
+.cloud-queue-item .queue-item-progress-fill.analysis { background: #ffc060; }
+
+/* Syncing badge: shown when the backend cache is older than the staleness
+   threshold. Inline in the row header so the user sees that the displayed
+   counters may not reflect "right now". Counters themselves stay rendered
+   from the last-known good snapshot — never zeroed by a transient blip. */
+
+.cloud-sync-badge {
+  font-size: 10px;
+  color: var(--muted, #aaa);
+  background: #2a2a3a;
+  padding: 1px 7px;
+  border-radius: 3px;
+  margin-left: auto;
+  font-style: italic;
+}
+
+.cloud-queue-item-error {
+  color: var(--bad, #ff7070);
+  font-size: 11px;
+  margin-top: 2px;
+}
 
 /* ── #cloudResumeDlg ──────────────────────────────────────────────────────── */
 

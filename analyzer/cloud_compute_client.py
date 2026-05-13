@@ -18,6 +18,7 @@ import csv
 import json
 import os
 import shutil
+import socket
 import tempfile
 import threading
 import time
@@ -31,6 +32,11 @@ from typing import Any, Callable, Optional
 _DEFAULT_API_BASE = "https://cloudcompute.projectkestrel.org"
 _MAX_UPLOAD_WORKERS = 6
 _POLL_INTERVAL_SEC = 5
+# Per-call timeouts. Status polls are short so a stuck poller can't freeze the
+# UI; submit/notify need a bit more headroom for the first request after a cold
+# Worker. See JobCancelled below for cooperative shutdown.
+_STATUS_TIMEOUT_SEC = 15
+_NOTIFY_TIMEOUT_SEC = 30
 
 # Analysis-settings allowlist — mirrors the Worker's and Modal's allowlists
 # (defence in depth). Only these keys are sent in the ``analysisSettings``
@@ -77,6 +83,22 @@ class CloudComputeError(RuntimeError):
         super().__init__(f"HTTP {status}: {message}")
         self.status = status
         self.message = message
+
+
+class CloudComputeNetworkError(CloudComputeError):
+    """Raised on transport-level failure talking to the Worker (timeout, DNS,
+    connection reset, malformed JSON). Distinct from ``CloudComputeError``
+    (HTTP-level error) so callers can decide whether to back off and retry vs.
+    treat as a hard failure (e.g. 401 needSignIn). ``status`` is 0 for these."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(0, message)
+
+
+class JobCancelled(RuntimeError):
+    """Raised inside ``run_full_job`` when the supplied ``cancel_event`` fires.
+    Distinct from generic exceptions so the caller can mark the job
+    ``cancelled`` (not ``failed``) without inspecting the message string."""
 
 
 class CloudComputeClient:
@@ -128,10 +150,23 @@ class CloudComputeClient:
         try:
             with urllib.request.urlopen(req, timeout=timeout or self.timeout) as resp:
                 raw = resp.read()
-                return json.loads(raw) if raw else {}
+                if not raw:
+                    return {}
+                try:
+                    return json.loads(raw)
+                except json.JSONDecodeError as e:
+                    raise CloudComputeNetworkError(
+                        f"Worker returned malformed JSON: {e}"
+                    ) from e
         except urllib.error.HTTPError as e:
             text = e.read().decode("utf-8", errors="replace")
             raise CloudComputeError(e.code, text) from e
+        except urllib.error.URLError as e:
+            raise CloudComputeNetworkError(f"network error: {e.reason}") from e
+        except socket.timeout as e:
+            raise CloudComputeNetworkError(f"request timed out after {timeout or self.timeout}s") from e
+        except (TimeoutError, ConnectionError) as e:
+            raise CloudComputeNetworkError(f"transport error: {e}") from e
 
     # ─── REST endpoints ──────────────────────────────────────────────────
 
@@ -159,11 +194,16 @@ class CloudComputeClient:
         return self._request("POST", "/api/jobs", body)
 
     def get_status(self, job_id: str) -> dict:
-        return self._request("GET", f"/api/jobs/{job_id}")
+        # Short timeout: this is the UI poller, a stuck call must not freeze
+        # the panel for two minutes.
+        return self._request("GET", f"/api/jobs/{job_id}", timeout=_STATUS_TIMEOUT_SEC)
 
     def notify_uploaded(self, job_id: str, filenames: list[str]) -> dict:
         return self._request(
-            "POST", f"/api/jobs/{job_id}/images/notify", {"filenames": filenames}
+            "POST",
+            f"/api/jobs/{job_id}/images/notify",
+            {"filenames": filenames},
+            timeout=_NOTIFY_TIMEOUT_SEC,
         )
 
     def mark_complete(self, job_id: str) -> dict:
@@ -382,8 +422,17 @@ class CloudComputeClient:
         cancel_event: Optional[threading.Event] = None,
         pause_event: Optional[threading.Event] = None,
         merge_into_kestrel: bool = True,
+        protected_filenames: Optional[set[str]] = None,
+        job_id: Optional[str] = None,
+        presigned_urls: Optional[list[dict]] = None,
     ) -> dict:
         """End-to-end job: submit → upload → notify → complete → poll → download → merge.
+
+        When ``job_id`` and ``presigned_urls`` are provided the caller has
+        already submitted the job; this method skips the internal submit so
+        only one job is created on the Worker. Pass them from api_bridge after
+        calling ``submit_job`` so the poller and the upload thread watch the
+        same job.
 
         Returns a dict summarizing the final job state plus pack paths.
         Raises CloudComputeError on Worker failures, ValueError on input issues.
@@ -409,18 +458,23 @@ class CloudComputeClient:
 
         def _check_cancel() -> None:
             if cancel_event is not None and cancel_event.is_set():
-                raise RuntimeError("Job cancelled by client")
+                raise JobCancelled("Job cancelled by client")
 
-        # 1) Submit
-        _emit("submit", imageCount=len(files))
-        submit = self.submit_job(files, analysis_settings=analysis_settings)
-        job_id: str = str(submit["jobId"])
-        presigned: list[dict] = list(submit.get("presignedUrls", []))
+        # 1) Submit — skip when the caller pre-submitted and passed job_id +
+        # presigned_urls so we don't create a second Worker job.
+        if job_id and presigned_urls is not None:
+            presigned: list[dict] = list(presigned_urls)
+            _emit("submitted", jobId=job_id)
+        else:
+            _emit("submit", imageCount=len(files))
+            _submit = self.submit_job(files, analysis_settings=analysis_settings)
+            job_id = str(_submit["jobId"])
+            presigned = list(_submit.get("presignedUrls", []))
+            _emit("submitted", jobId=job_id)
         if len(presigned) != len(files):
             raise CloudComputeError(
                 500, f"Expected {len(files)} presigned URLs, got {len(presigned)}"
             )
-        _emit("submitted", jobId=job_id)
 
         # 2) Concurrent uploads + per-file notify
         notified_lock = threading.Lock()
@@ -511,7 +565,10 @@ class CloudComputeClient:
                 _emit("pack_downloaded", filename=fname, packs=len(downloaded))
                 if merge_into_kestrel:
                     try:
-                        merge_pack_into_kestrel(dest, images_dir)
+                        merge_pack_into_kestrel(
+                            dest, images_dir,
+                            protected_filenames=protected_filenames,
+                        )
                         _emit("pack_merged", filename=fname)
                         if on_pack_merged is not None:
                             try:
@@ -542,20 +599,47 @@ class CloudComputeClient:
 # behavior so a desktop-driven job produces the same on-disk shape as a
 # CLI-driven one.
 
-def merge_pack_into_kestrel(pack_path: Path, target_root: Path) -> None:
+def merge_pack_into_kestrel(
+    pack_path: Path,
+    target_root: Path,
+    protected_filenames: Optional[set[str]] = None,
+) -> None:
     """Unzip a result pack into target_root/.kestrel.
 
     - copy .kestrel/crop/* into target .kestrel/crop/
     - copy .kestrel/export/* into target .kestrel/export/
     - append+dedupe .kestrel/kestrel_database.csv by filename (latest row wins)
     - overwrite .kestrel/{kestrel_metadata.json, kestrel_scenedata.json}
+
+    ``protected_filenames`` is the set of filenames whose existing CSV row
+    should NOT be overwritten by an incoming row. Used for the scene-merger
+    anchor file: the desktop re-uploads it so the cloud pipeline has a real
+    `previous_image` for scene-grouping continuity, but the local row is
+    already authoritative — replacing it with cloud-derived data (potentially
+    different settings) corrupts the database.
     """
+    protected = {str(p).strip() for p in (protected_filenames or set()) if str(p).strip()}
     target_kestrel = target_root / ".kestrel"
     target_crop = target_kestrel / "crop"
     target_export = target_kestrel / "export"
     target_kestrel.mkdir(parents=True, exist_ok=True)
     target_crop.mkdir(parents=True, exist_ok=True)
     target_export.mkdir(parents=True, exist_ok=True)
+
+    def _is_protected_artifact(name: str) -> bool:
+        # Match the local pipeline's naming: <stem>_export.jpg / <stem>_crop_*.jpg.
+        # If any protected filename's stem matches the artifact's stem, skip.
+        if not protected:
+            return False
+        for pf in protected:
+            stem = Path(pf).stem
+            if not stem:
+                continue
+            if name == f"{stem}_export.jpg":
+                return True
+            if name.startswith(f"{stem}_crop_") and name.endswith(".jpg"):
+                return True
+        return False
 
     with tempfile.TemporaryDirectory(prefix="kestrel-cc-pack-") as tmp:
         tmp_path = Path(tmp)
@@ -567,21 +651,27 @@ def merge_pack_into_kestrel(pack_path: Path, target_root: Path) -> None:
             # Some pack layouts place files at archive root.
             src_kestrel = tmp_path
 
-        # Copy crops + exports (overwrite existing)
+        # Copy crops + exports (overwrite existing). Skip artifacts that
+        # belong to a protected filename so the local pre-existing artifacts
+        # for the anchor file are preserved alongside its CSV row.
         for sub in ("crop", "export"):
             src = src_kestrel / sub
             if not src.is_dir():
                 continue
             dst = target_kestrel / sub
             for entry in src.iterdir():
-                if entry.is_file():
-                    shutil.copy2(entry, dst / entry.name)
+                if not entry.is_file():
+                    continue
+                if _is_protected_artifact(entry.name):
+                    continue
+                shutil.copy2(entry, dst / entry.name)
 
-        # CSV merge — last-write-wins on filename column
+        # CSV merge — last-write-wins on filename column, EXCEPT protected
+        # filenames where the existing row (if any) is preserved.
         src_csv = src_kestrel / "kestrel_database.csv"
         if src_csv.is_file():
             target_csv = target_kestrel / "kestrel_database.csv"
-            _merge_database_csv(src_csv, target_csv)
+            _merge_database_csv(src_csv, target_csv, protected=protected)
 
         # Metadata + scenedata are full replacements
         for fname in ("kestrel_metadata.json", "kestrel_scenedata.json"):
@@ -590,7 +680,18 @@ def merge_pack_into_kestrel(pack_path: Path, target_root: Path) -> None:
                 shutil.copy2(src_meta, target_kestrel / fname)
 
 
-def _merge_database_csv(src: Path, dst: Path) -> None:
+def _merge_database_csv(
+    src: Path,
+    dst: Path,
+    protected: Optional[set[str]] = None,
+) -> None:
+    """Merge ``src`` into ``dst``, deduping on the ``filename`` column.
+
+    Default policy: incoming row wins for any filename. When ``protected`` is
+    non-empty, an existing row for a protected filename is preserved over an
+    incoming one (the cloud pack may have re-analyzed an anchor file under
+    different settings; the local row is authoritative)."""
+    protected = protected or set()
     rows: dict[str, dict[str, Any]] = {}
     fieldnames: list[str] = []
 
@@ -614,8 +715,12 @@ def _merge_database_csv(src: Path, dst: Path) -> None:
                     fieldnames.append(fld)
         for row in reader:
             key = (row.get("filename") or "").strip()
-            if key:
-                rows[key] = row  # last-wins
+            if not key:
+                continue
+            if key in protected and key in rows:
+                # Keep the existing local row; drop the incoming one.
+                continue
+            rows[key] = row  # last-wins
 
     with dst.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")

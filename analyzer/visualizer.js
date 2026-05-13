@@ -10051,85 +10051,143 @@
     }
 
     // ── Cloud queue panel (rendering + polling) ──────────────────────────
+    //
+    // Architecture (post Stage-1 refactor):
+    //   - Backend (api_bridge.py) runs ONE remote-status poller per active
+    //     job that refreshes a cached snapshot every 5s. JS only ever calls
+    //     `cloud_compute_list_jobs`, which reads from cache — no Worker I/O
+    //     on the JS render path. Hence: no N+1, no per-render JWT calls.
+    //   - The cached snapshot includes `remoteUpdatedAtMs` (wall clock of
+    //     last successful Worker fetch). UI flags a job as "syncing" when
+    //     that timestamp is older than _CC_STALE_THRESHOLD_MS, but never
+    //     zeroes out the displayed counters — the previous good values
+    //     persist, so a transient network blip doesn't reset to "0/132".
+    //   - Each row shows two progress bars (uploaded + analyzed) and two
+    //     status pills (upload phase + analysis phase) so the user can see
+    //     both halves of the cloud round-trip at a glance.
+    // ─────────────────────────────────────────────────────────────────────
 
     const _ccPanelEl = () => document.getElementById('cloudQueuePanel');
     const _ccBodyEl  = () => document.getElementById('cloudQueuePanelBody');
     const _ccBadgeEl = () => document.getElementById('cloudQueuePanelBadge');
 
     let _ccPollingTimer = null;
-    const _ccActivePolls = new Map(); // jobId -> last status snapshot (for delta detection)
+    // After this many ms with no successful poll, the row shows a "syncing…"
+    // badge. Counters keep their last-known values regardless.
+    const _CC_STALE_THRESHOLD_MS = 30_000;
 
-    function _ccPhaseFromStatus(state) {
-      // Map (clientStatus, remoteStatus) → a UI-friendly phase string.
+    function _ccUploadPhase(state) {
+      // Phase of the upload half of the round-trip. Independent of analysis.
       const s = (state && state.status) || 'running';
-      const r = state && state.remoteStatus;
-      if (s === 'done' || s === 'failed' || s === 'cancelled') return s;
+      if (s === 'cancelled' || s === 'failed') return s;
       if (s === 'upload_paused') return 'upload_paused';
-      // Local status='uploading' but remote may already be 'processing' if
-      // backlog is being analyzed.
-      if (r === 'processing') return 'analyzing';
-      if (r === 'complete') return 'downloading';
+      const total = Number(state.imageCount || 0);
+      const uploaded = Number(state.uploadedCount || 0);
+      // "uploaded" on the Worker side is the union of uploaded/dispatched/
+      // downloaded/analyzed — any image past the wire boundary counts.
+      if (total > 0 && uploaded >= total) return 'uploaded';
       return 'uploading';
     }
 
-    function _ccPhaseLabel(phase) {
+    function _ccAnalysisPhase(state) {
+      // Phase of the analysis half of the round-trip.
+      const s = (state && state.status) || 'running';
+      if (s === 'cancelled' || s === 'failed' || s === 'done') return s;
+      const r = state && state.remoteStatus;
+      if (r === 'complete') return 'done';
+      const analyzed = Number(state.analyzedCount || 0);
+      const dispatched = Number(state.dispatchedCount || 0);
+      if (r === 'processing' || analyzed > 0 || dispatched > 0) return 'analyzing';
+      return 'waiting_uploads';
+    }
+
+    function _ccUploadPhaseLabel(phase) {
       return ({
-        uploading: 'Uploading',
-        analyzing: 'Analyzing',
-        downloading: 'Downloading',
-        done: 'Done',
-        failed: 'Failed',
-        cancelled: 'Cancelled',
-        upload_paused: 'Uploads Paused',
+        uploading:     'Uploading',
+        uploaded:      'Uploaded',
+        upload_paused: 'Paused',
+        cancelled:     'Cancelled',
+        failed:        'Failed',
+      })[phase] || phase;
+    }
+
+    function _ccAnalysisPhaseLabel(phase) {
+      return ({
+        waiting_uploads: 'Waiting for uploads',
+        analyzing:       'Analyzing',
+        done:            'Done',
+        cancelled:       'Cancelled',
+        failed:          'Failed',
       })[phase] || phase;
     }
 
     function _ccRenderItem(state) {
-      const phase = _ccPhaseFromStatus(state);
-      const phaseLabel = _ccPhaseLabel(phase);
       const folder = (state.rootPath || '').split(/[\\/]/).pop() || state.jobId;
       const total = Number(state.imageCount || 0);
       const analyzed = Number(state.analyzedCount || 0);
       const uploaded = Number(state.uploadedCount || 0);
-      // Two stacked progress bars would be loud; use the more representative
-      // of (analyzed/total) when analysis has started, otherwise upload bar.
-      const useAnalysisBar = analyzed > 0 || phase === 'analyzing' || phase === 'downloading' || phase === 'done';
-      const numer = useAnalysisBar ? analyzed : uploaded;
-      const pct = total > 0 ? Math.min(100, Math.round((numer / total) * 100)) : 0;
-      const barLabel = useAnalysisBar
-        ? `${analyzed} / ${total} analyzed`
-        : `${uploaded} / ${total} uploaded`;
-      // Anchor-image footnote: when newImageCount differs from imageCount, the
-      // user uploaded N+1 files (last-analyzed anchor + new). We want that
-      // visible so the user knows why the count differs from "new files".
+      const uploadPhase = _ccUploadPhase(state);
+      const analysisPhase = _ccAnalysisPhase(state);
+      const uploadPct = total > 0 ? Math.min(100, Math.round((uploaded / total) * 100)) : 0;
+      const analysisPct = total > 0 ? Math.min(100, Math.round((analyzed / total) * 100)) : 0;
       const anchor = state.anchorFilename
         ? ` <span class="muted">(+1 anchor for scene continuity)</span>`
         : '';
       const err = state.error
-        ? `<div class="cloud-queue-item-error" style="color:var(--bad,#ff7070);font-size:11px;">${escapeHtml(String(state.error))}</div>`
+        ? `<div class="cloud-queue-item-error">${escapeHtml(String(state.error))}</div>`
         : '';
+
+      // Staleness signal: if the backend hasn't received a successful Worker
+      // response recently, show a small "syncing…" badge but DO NOT zero the
+      // counters. Last-known values persist across transient failures.
+      const updatedAt = Number(state.remoteUpdatedAtMs || 0);
+      const ageMs = updatedAt > 0 ? (Date.now() - updatedAt) : Infinity;
+      const isStale = ageMs > _CC_STALE_THRESHOLD_MS;
+      const failureCount = Number(state.remoteFailureCount || 0);
+      const staleHint = isStale
+        ? `<span class="cloud-sync-badge" title="Last successful sync ${updatedAt > 0 ? Math.round(ageMs/1000)+'s ago' : 'never'}${failureCount > 0 ? ' — ' + failureCount + ' failed attempt(s)' : ''}">syncing…</span>`
+        : '';
+
+      // Per-row controls:
+      //  - Pause/Resume only meaningful while uploads are active. Once the
+      //    last image is on the wire there's nothing to pause; the analysis
+      //    half is server-side and can't be paused from the desktop.
+      //  - Cancel disabled in terminal states.
+      const pauseDisabled = uploadPhase !== 'uploading';
+      const resumeDisabled = uploadPhase !== 'upload_paused';
+      const cancelDisabled = ['done', 'failed', 'cancelled'].includes(state.status);
+
       return `
         <div class="queue-item cloud-queue-item" data-job-id="${escapeHtml(state.jobId)}">
           <div class="queue-item-header">
             <span class="queue-item-name" title="${escapeHtml(state.rootPath || '')}">${escapeHtml(folder)}</span>
-            <span class="cloud-phase ${phase}">${phaseLabel}</span>
+            ${staleHint}
           </div>
-          <div class="queue-item-progress">
-            <div class="queue-item-progress-fill" style="width:${pct}%"></div>
+          <div class="cloud-phase-row">
+            <span class="cloud-phase-pill upload ${uploadPhase}">↑ ${_ccUploadPhaseLabel(uploadPhase)}</span>
+            <span class="cloud-phase-pill analysis ${analysisPhase}">⚙ ${_ccAnalysisPhaseLabel(analysisPhase)}</span>
           </div>
-          <div class="queue-item-eta">${barLabel} (${pct}%)${anchor}</div>
+          <div class="cloud-bar-block">
+            <div class="cloud-bar-label">${uploaded} / ${total} uploaded${anchor}</div>
+            <div class="queue-item-progress">
+              <div class="queue-item-progress-fill upload" style="width:${uploadPct}%"></div>
+            </div>
+          </div>
+          <div class="cloud-bar-block">
+            <div class="cloud-bar-label">${analyzed} / ${total} analyzed</div>
+            <div class="queue-item-progress">
+              <div class="queue-item-progress-fill analysis" style="width:${analysisPct}%"></div>
+            </div>
+          </div>
           ${err}
           <div class="cloud-queue-item-controls">
-            <button data-cc-action="pause" data-job-id="${escapeHtml(state.jobId)}"
-                    ${(phase === 'upload_paused' || phase === 'done' || phase === 'failed' || phase === 'cancelled') ? 'disabled' : ''}>
+            <button data-cc-action="pause" data-job-id="${escapeHtml(state.jobId)}" ${pauseDisabled ? 'disabled' : ''}>
               ⏸ Pause
             </button>
-            <button data-cc-action="resume" data-job-id="${escapeHtml(state.jobId)}"
-                    ${phase === 'upload_paused' ? '' : 'disabled'}>
+            <button data-cc-action="resume" data-job-id="${escapeHtml(state.jobId)}" ${resumeDisabled ? 'disabled' : ''}>
               ▶ Resume
             </button>
-            <button data-cc-action="cancel" data-job-id="${escapeHtml(state.jobId)}"
-                    ${(phase === 'done' || phase === 'failed' || phase === 'cancelled') ? 'disabled' : ''}>
+            <button data-cc-action="cancel" data-job-id="${escapeHtml(state.jobId)}" ${cancelDisabled ? 'disabled' : ''}>
               ⏹ Cancel
             </button>
           </div>
@@ -10137,7 +10195,7 @@
       `;
     }
 
-    function _ccEscapeBadge(jobs) {
+    function _ccPanelBadge(jobs) {
       const active = jobs.filter(j => !['done', 'failed', 'cancelled'].includes(j.status)).length;
       const done = jobs.filter(j => j.status === 'done').length;
       const failed = jobs.filter(j => j.status === 'failed' || j.status === 'cancelled').length;
@@ -10161,16 +10219,11 @@
         return;
       }
       panel.classList.remove('hidden');
-      // Enrich each job with the richer per-job status (analyzed/uploaded counts).
-      const enriched = await Promise.all(jobs.map(async (j) => {
-        try {
-          const s = await window.pywebview.api.cloud_compute_get_status(j.jobId);
-          if (s && s.ok) return s;
-        } catch {}
-        return j;
-      }));
-      body.innerHTML = enriched.map(_ccRenderItem).join('');
-      badge.textContent = _ccEscapeBadge(enriched);
+      // Single bridge call returns the rich descriptors directly — counters
+      // come from the backend cache populated by the per-job remote poller.
+      // No N+1 cloud_compute_get_status loop here anymore.
+      body.innerHTML = jobs.map(_ccRenderItem).join('');
+      badge.textContent = _ccPanelBadge(jobs);
       // Drain pack-merged events and trigger folder rescan so new photos show
       // in the gallery as packs arrive — same UX as local live update.
       try {
@@ -10190,9 +10243,10 @@
     function _ccStartPolling() {
       if (_ccPollingTimer) return;
       _ccRenderPanel(); // immediate paint
-      // 10s cadence: packs come back in batches of ~10 images so finer
-      // polling wastes API budget. Worker rate limits would also bite.
-      _ccPollingTimer = setInterval(_ccRenderPanel, 10000);
+      // 4s cadence: backend cache is refreshed every 5s, so a slightly
+      // tighter UI tick keeps the displayed numbers within one render of
+      // the latest snapshot. No Worker I/O happens on this tick.
+      _ccPollingTimer = setInterval(_ccRenderPanel, 4000);
     }
 
     function _ccStopPolling() {
@@ -10310,12 +10364,23 @@
     // Wire startup hooks. The pywebview ready event is the canonical signal
     // that the bridge is alive; we also tolerate a fallback timer in case
     // the event fired before our listener attached.
-    function _ccBootstrap() {
+    async function _ccBootstrap() {
       _ccWireResumeDialog();
-      _ccStartupResume();
-      // Also start polling immediately in case the user reopens the app
-      // mid-job; the panel stays hidden if there are no jobs.
-      _ccStartPolling();
+      // Only spin up the panel poller if there's actually a non-terminal
+      // job to watch. Avoids burning a 4s tick forever after app launch
+      // when the user has never used cloud compute.
+      let hasPending = false;
+      try {
+        if (window.pywebview?.api?.cloud_compute_list_pending_jobs) {
+          const r = await window.pywebview.api.cloud_compute_list_pending_jobs();
+          const jobs = (r && r.jobs) || [];
+          hasPending = jobs.some(j => !['done', 'failed', 'cancelled'].includes(j.status));
+        }
+      } catch {}
+      _ccStartupResume();   // resume dialog gates itself on candidate count
+      if (hasPending) {
+        _ccStartPolling();
+      }
     }
     if (window.pywebview && window.pywebview.api) {
       _ccBootstrap();

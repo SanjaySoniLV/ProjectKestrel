@@ -103,6 +103,7 @@ def _sanitize_job(raw: Any) -> dict | None:
         "createdAtUtc": _coerce_str(raw.get("createdAtUtc"), max_len=64),
         "status": status,
         "imageCount": _coerce_int(raw.get("imageCount")),
+        "anchorFilename": _coerce_str(raw.get("anchorFilename"), max_len=512),
         "settingsSnapshot": _coerce_dict(raw.get("settingsSnapshot")),
         "downloadedPacks": _coerce_strlist(raw.get("downloadedPacks")),
     }
@@ -162,7 +163,10 @@ def load_jobs() -> list[dict]:
 
 
 def save_jobs(jobs: list[dict]) -> None:
-    """Replace the on-disk job list with ``jobs`` (sanitized)."""
+    """Replace the on-disk job list with ``jobs`` (sanitized), enforcing the
+    ``_MAX_JOBS_RETAINED`` cap. When over the cap, the oldest terminal entries
+    (done|cancelled|failed, sorted by ``createdAtUtc``) are evicted first so
+    active jobs are never dropped."""
     sanitized: list[dict] = []
     seen: set[str] = set()
     for item in jobs:
@@ -171,6 +175,14 @@ def save_jobs(jobs: list[dict]) -> None:
             continue
         seen.add(job["jobId"])
         sanitized.append(job)
+    if len(sanitized) > _MAX_JOBS_RETAINED:
+        non_terminal = [j for j in sanitized if j["status"] not in _TERMINAL_STATUSES]
+        terminal = sorted(
+            (j for j in sanitized if j["status"] in _TERMINAL_STATUSES),
+            key=lambda j: j.get("createdAtUtc") or "",
+        )
+        excess = len(sanitized) - _MAX_JOBS_RETAINED
+        sanitized = non_terminal + terminal[excess:]
     with _SAVE_LOCK:
         _write_atomic({"jobs": sanitized})
 

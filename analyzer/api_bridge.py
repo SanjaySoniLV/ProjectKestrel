@@ -65,6 +65,12 @@ try:
 except Exception:
     pass
 
+# Cloud-compute backend poller cadence (seconds). One poller per active job
+# keeps the per-job remote snapshot fresh; JS reads from cache so there is no
+# N+1 query against the Worker per render. 5s gives near-realtime UI without
+# burning Worker subrequests when several jobs run in parallel.
+_CC_POLL_INTERVAL_SEC = 5
+
 # ── Perch authentication helpers ──────────────────────────────────────────────
 _KEYRING_SERVICE = 'ProjectKestrel'
 _KEYRING_KEY     = 'perch_auth'
@@ -306,6 +312,12 @@ class Api:
         # analyzer/cloud_compute_client.py.
         self._cc_jobs: dict = {}
         self._cc_jobs_lock = None
+        # Per-job remote-status poller threads (job_id -> Thread). One thread
+        # per job, started at submit/resume, exits when local status becomes
+        # terminal or `cancel_event` fires. Centralised polling lets JS render
+        # from one bridge call (cloud_compute_list_jobs) without the N+1 query
+        # pattern that previously called get_status per job per render.
+        self._cc_poll_threads: dict = {}
         # Short-poll event queue for pack-merged notifications from the
         # background download thread. JS drains via
         # ``cloud_compute_get_pack_events()`` ~every poll tick and triggers a
@@ -2365,22 +2377,159 @@ class Api:
         return upload_files, anchor_filename, len(all_files), len(analyzed)
 
     def _cc_analysis_settings_snapshot(self) -> dict | None:
-        """Read the cloud-compute analysis-settings override block from
-        settings.json. Returns a dict the client can pass to ``submit_job``,
-        or None when the user has not set any overrides. The sanitizer in
-        ``settings_utils.py`` has already enforced the allowlist, so this is
-        purely a load step."""
+        """Project the user's local advanced-analysis settings into the
+        cloud-compute wire format.
+
+        The wire allowlist (``cloud_compute_client.ANALYSIS_SETTINGS_ALLOWLIST``)
+        is intentionally narrow — only ``detector_name``, ``confidence_threshold``
+        and a handful of feature toggles cross to Modal today. We pull each from
+        the same ``settings.json`` keys the local queue reads at enqueue time,
+        so picking ``Cloud`` from the destination toggle uses the same advanced
+        settings as ``Local`` would. ``filter_analysis_settings`` (called by
+        ``CloudComputeClient.submit_job``) will then drop anything the wire
+        doesn't accept, so this can safely include keys that aren't yet wired
+        up on the Modal side (forward-compatible).
+        """
         try:
             settings = self.get_settings()
             if not isinstance(settings, dict):
                 return None
             cfg = settings.get("settings") if "settings" in settings else settings
-            overrides = (cfg or {}).get("cloud_compute_analysis_overrides")
-            if isinstance(overrides, dict) and overrides:
-                return dict(overrides)
+            if not isinstance(cfg, dict):
+                return None
         except Exception:
-            pass
-        return None
+            return None
+        # Mirrors the local queue's advanced-settings keys (visualizer.js
+        # ~line 8285-8318). Cloud takes whatever subset it can use; the rest
+        # are dropped at the filter step.
+        candidate: dict = {}
+        det = cfg.get("detector_name")
+        if isinstance(det, str) and det:
+            candidate["detector_name"] = det
+        thr = cfg.get("detection_threshold")
+        if isinstance(thr, (int, float)) and 0.10 <= float(thr) <= 0.99:
+            candidate["confidence_threshold"] = float(thr)
+        # Boolean feature toggles. Project from the same flag names the local
+        # pipeline checks. Missing → omit (Modal uses its built-in default).
+        for src_key, wire_key in (
+            ("species_detection_enabled", "species_detection_enabled"),
+            ("wildlife_enabled",          "wildlife_enabled"),
+            ("scene_grouping_enabled",    "scene_grouping_enabled"),
+            ("crop_generation_enabled",   "crop_generation_enabled"),
+            ("quality_model_enabled",     "quality_model_enabled"),
+        ):
+            v = cfg.get(src_key)
+            if isinstance(v, bool):
+                candidate[wire_key] = v
+        return candidate or None
+
+    # Default cached remote counters — keeps the JS render code simple by
+    # guaranteeing every numeric counter is a number, never `None`.
+    _CC_REMOTE_DEFAULTS: dict = {  # type: ignore[var-annotated]
+        "uploadedCount": 0,
+        "analyzedCount": 0,
+        "dispatchedCount": 0,
+        "pendingCount": 0,
+        "downloadedCount": 0,
+        "pack_count": 0,
+        "uploadPauseRequested": False,
+        "stopRequested": False,
+        "controlFlags": {},
+        "remoteStatus": None,
+        "updatedAtMs": 0,
+        "failureCount": 0,
+        "lastError": None,
+    }
+
+    def _cc_apply_remote_snapshot(self, job_id: str, remote: dict) -> None:
+        """Merge a fresh remote snapshot from the Worker into the per-job cache.
+
+        Idempotent. Holds the cc lock briefly to swap the dict; the JS render
+        path reads from here under the same lock so partial updates can't be
+        observed."""
+        import time as _t
+        snapshot = dict(self._CC_REMOTE_DEFAULTS)
+        for key in (
+            "uploadedCount", "analyzedCount", "dispatchedCount", "pendingCount",
+            "downloadedCount", "pack_count", "uploadPauseRequested",
+            "stopRequested", "controlFlags",
+        ):
+            if key in remote and remote[key] is not None:
+                snapshot[key] = remote[key]
+        rs = remote.get("status")
+        if isinstance(rs, str) and rs:
+            snapshot["remoteStatus"] = rs
+        snapshot["updatedAtMs"] = int(_t.time() * 1000)
+        snapshot["failureCount"] = 0
+        snapshot["lastError"] = None
+        with self._ensure_cc_lock():
+            state = self._cc_jobs.get(job_id)
+            if state is not None:
+                state["remote"] = snapshot
+
+    def _cc_record_remote_failure(self, job_id: str, err: str) -> None:
+        """Bump the per-job remote-failure counter and stash the latest error.
+        Does NOT zero out the cached counters — JS keeps rendering the
+        last-known good values + a 'syncing…' badge driven by ``updatedAtMs``."""
+        with self._ensure_cc_lock():
+            state = self._cc_jobs.get(job_id)
+            if state is None:
+                return
+            cur = state.get("remote") or dict(self._CC_REMOTE_DEFAULTS)
+            cur["failureCount"] = int(cur.get("failureCount") or 0) + 1
+            cur["lastError"] = str(err)[:240]
+            state["remote"] = cur
+
+    def _cc_start_remote_poller(self, job_id: str) -> None:
+        """Start a single background poller thread that refreshes the per-job
+        cached remote snapshot every ``_CC_POLL_INTERVAL_SEC``. Idempotent —
+        a no-op if a poller is already running for this job_id. Exits when the
+        local status becomes terminal (``done|failed|cancelled``) or
+        ``cancel_event`` fires."""
+        import threading as _t
+        with self._ensure_cc_lock():
+            existing = self._cc_poll_threads.get(job_id)
+            if existing is not None and existing.is_alive():
+                return
+
+        def _poller() -> None:
+            import time as _time
+            while True:
+                with self._ensure_cc_lock():
+                    state = self._cc_jobs.get(job_id)
+                    if state is None:
+                        return
+                    if state.get("status") in ("done", "failed", "cancelled"):
+                        return
+                    cancel_ev = state.get("cancel_event")
+                if cancel_ev is not None and cancel_ev.is_set():
+                    return
+                try:
+                    client, client_err = self._cc_make_client()
+                    if client is None:
+                        # Auth gone (e.g. JWT expired). Record + back off.
+                        self._cc_record_remote_failure(
+                            job_id,
+                            (client_err or {}).get("error") or "no client",
+                        )
+                    else:
+                        remote = client.get_status(job_id)
+                        self._cc_apply_remote_snapshot(job_id, remote)
+                except Exception as e:
+                    self._cc_record_remote_failure(job_id, str(e))
+                    # Log every 5th consecutive failure so the journal doesn't
+                    # drown but the user can still find the original cause.
+                    with self._ensure_cc_lock():
+                        st = self._cc_jobs.get(job_id) or {}
+                        fc = int(((st.get("remote") or {}).get("failureCount")) or 0)
+                    if fc == 1 or fc % 5 == 0:
+                        warn(f"[cloud-compute] poller {job_id}: failure #{fc}: {e}")
+                _time.sleep(_CC_POLL_INTERVAL_SEC)
+
+        thread = _t.Thread(target=_poller, name=f"cc-poll-{job_id}", daemon=True)
+        with self._ensure_cc_lock():
+            self._cc_poll_threads[job_id] = thread
+        thread.start()
 
     def cloud_compute_submit_job(self, root_path: str) -> dict:
         """Kick off a cloud-compute job for a folder of CR3s. Non-blocking.
@@ -2487,7 +2636,20 @@ class Api:
                     on_pack_merged=_on_pack_merged,
                     cancel_event=cancel_event,
                     pause_event=pause_event,
+                    protected_filenames={anchor_filename} if anchor_filename else None,
+                    # Pass the pre-submitted job ID and presigned URLs so
+                    # run_full_job skips its internal submit_job call.
+                    # Without this, two Worker jobs are created: the poller
+                    # watches the first; uploads go to the second — counters
+                    # never advance in the UI.
+                    job_id=job_id,
+                    presigned_urls=submit.get("presignedUrls", []),
                 )
+            except ccc.JobCancelled:
+                # User clicked Cancel; cloud_compute_cancel_job has already
+                # set status='cancelled' in both the in-memory map and the
+                # persistent ledger. Don't overwrite that with 'failed'.
+                return
             except Exception as e:
                 with self._ensure_cc_lock():
                     state = self._cc_jobs.get(job_id)
@@ -2503,10 +2665,17 @@ class Api:
             with self._ensure_cc_lock():
                 state = self._cc_jobs.get(job_id)
                 if state is not None:
-                    state["status"] = terminal
-                    state["result"] = result
+                    # Don't clobber a cancellation that landed during the
+                    # final stretch (race between cancel + run_full_job's
+                    # natural completion).
+                    if state.get("status") != "cancelled":
+                        state["status"] = terminal
+                        state["result"] = result
             try:
-                self._cc_jobs_store().update_job(job_id, status=terminal)
+                if terminal == "done":
+                    self._cc_jobs_store().update_job(job_id, status="done")
+                else:
+                    self._cc_jobs_store().update_job(job_id, status="failed")
             except Exception:
                 pass
 
@@ -2524,6 +2693,11 @@ class Api:
                 "cancel_event": cancel_event,
                 "pause_event": pause_event,
                 "presignedUrls": submit.get("presignedUrls", []),  # for completeness
+                # Cached remote-counters snapshot. The background poller
+                # refreshes this; JS reads it via cloud_compute_list_jobs.
+                # Defaults are zeros so JS never sees `undefined → 0` flicker
+                # before the first poll lands.
+                "remote": dict(self._CC_REMOTE_DEFAULTS),
             }
 
         # Persist to cloud_jobs_store so a startup poll can discover this job
@@ -2537,6 +2711,7 @@ class Api:
                 "createdAtUtc": store.utc_now_iso(),
                 "status": "uploading",
                 "imageCount": len(files),
+                "anchorFilename": anchor_filename or "",
                 "settingsSnapshot": analysis_settings or {},
                 "downloadedPacks": [],
             })
@@ -2547,6 +2722,11 @@ class Api:
         thread.start()
         with self._ensure_cc_lock():
             self._cc_jobs[job_id]["thread"] = thread
+        # Start the per-job remote-status poller. Background-thread that
+        # refreshes the cached `remote` snapshot every _CC_POLL_INTERVAL_SEC.
+        # JS renders from the cache so the UI never depends on the JS-tick
+        # cadence aligning with a successful Worker fetch.
+        self._cc_start_remote_poller(job_id)
 
         return {
             "ok": True,
@@ -2558,70 +2738,70 @@ class Api:
             "alreadyAnalyzed": already_analyzed,
         }
 
-    def cloud_compute_get_status(self, job_id: str) -> dict:
-        """Local + remote status for one job. Lightweight — call every few seconds.
-
-        Returns the locally-tracked state plus the latest Worker counters
-        (``uploadedCount``, ``analyzedCount``, ``dispatchedCount``,
-        ``uploadPauseRequested``, ``stopRequested``, ``packs``). Worker calls
-        are best-effort; transient failures fall back to local-only state.
-        """
-        with self._ensure_cc_lock():
-            state = self._cc_jobs.get(job_id)
-        if state is None:
-            return {"ok": False, "error": "unknown jobId"}
-        progress = dict(state.get("progress") or {})
-        out: dict = {
-            "ok": True,
+    def _cc_serialise_job(self, job_id: str, state: dict) -> dict:
+        """Build the wire-shape descriptor for one job. Reads the cached
+        ``remote`` snapshot maintained by the background poller; never
+        triggers a Worker call so this is safe to call on every render tick.
+        Caller MUST hold the cc lock."""
+        remote = dict(state.get("remote") or self._CC_REMOTE_DEFAULTS)
+        out = {
             "jobId": job_id,
             "rootPath": state.get("rootPath"),
             "imageCount": state.get("imageCount"),
+            "newImageCount": state.get("newImageCount"),
+            "anchorFilename": state.get("anchorFilename"),
+            "totalInFolder": state.get("totalInFolder"),
+            "alreadyAnalyzed": state.get("alreadyAnalyzed"),
             "status": state.get("status", "running"),
-            "progress": progress,
+            "progress": dict(state.get("progress") or {}),
+            # Cached remote counters (zeros until first poll lands).
+            "uploadedCount": remote.get("uploadedCount", 0),
+            "analyzedCount": remote.get("analyzedCount", 0),
+            "dispatchedCount": remote.get("dispatchedCount", 0),
+            "pendingCount": remote.get("pendingCount", 0),
+            "downloadedCount": remote.get("downloadedCount", 0),
+            "pack_count": remote.get("pack_count", 0),
+            "uploadPauseRequested": remote.get("uploadPauseRequested", False),
+            "stopRequested": remote.get("stopRequested", False),
+            "controlFlags": remote.get("controlFlags", {}),
+            "remoteStatus": remote.get("remoteStatus"),
+            # Staleness signals for the UI: updatedAtMs is wall-clock of last
+            # successful poll (0 means "never"); failureCount is consecutive
+            # failures since the last success; lastError is the most recent
+            # network/HTTP error string (truncated). The JS layer renders a
+            # 'syncing…' badge when staleness > threshold.
+            "remoteUpdatedAtMs": remote.get("updatedAtMs", 0),
+            "remoteFailureCount": remote.get("failureCount", 0),
+            "remoteLastError": remote.get("lastError"),
         }
         if "result" in state:
             out["result"] = state["result"]
         if "error" in state:
             out["error"] = state["error"]
-
-        # Best-effort remote enrichment so the UI can render real progress
-        # bars and pause/cancel state. Skip when the local job is already
-        # terminal — Worker will tell us nothing new.
-        if state.get("status") not in ("done", "failed", "cancelled"):
-            try:
-                client, _ = self._cc_make_client()
-                if client is not None:
-                    remote = client.get_status(job_id)
-                    for key in (
-                        "analyzedCount", "uploadedCount", "dispatchedCount",
-                        "pendingCount", "downloadedCount", "pack_count",
-                        "uploadPauseRequested", "stopRequested",
-                        "controlFlags", "status",
-                    ):
-                        if key in remote:
-                            # Worker's `status` is the cloud-side state (e.g.
-                            # 'processing', 'complete'); expose alongside the
-                            # client-side `status` field as `remoteStatus`.
-                            if key == "status":
-                                out["remoteStatus"] = remote[key]
-                            else:
-                                out[key] = remote[key]
-            except Exception:
-                pass
         return out
 
-    def cloud_compute_list_jobs(self) -> dict:
-        """Return in-memory descriptors for every job submitted this session."""
+    def cloud_compute_get_status(self, job_id: str) -> dict:
+        """Single-job descriptor read from the in-process cache. Cheap — does
+        no Worker I/O. The cached counters are kept fresh by the per-job
+        background poller started in ``cloud_compute_submit_job`` and
+        ``cloud_compute_resume_download``."""
         with self._ensure_cc_lock():
-            jobs = []
-            for jid, state in self._cc_jobs.items():
-                jobs.append({
-                    "jobId": jid,
-                    "rootPath": state.get("rootPath"),
-                    "imageCount": state.get("imageCount"),
-                    "status": state.get("status", "running"),
-                    "progress": dict(state.get("progress") or {}),
-                })
+            state = self._cc_jobs.get(job_id)
+            if state is None:
+                return {"ok": False, "error": "unknown jobId"}
+            descriptor = self._cc_serialise_job(job_id, state)
+        descriptor["ok"] = True
+        return descriptor
+
+    def cloud_compute_list_jobs(self) -> dict:
+        """Return rich descriptors (with cached remote counters) for every job
+        submitted this session. JS renders the cloud queue panel from this
+        single bridge call — no per-job follow-up needed."""
+        with self._ensure_cc_lock():
+            jobs = [
+                self._cc_serialise_job(jid, state)
+                for jid, state in self._cc_jobs.items()
+            ]
         return {"ok": True, "jobs": jobs}
 
     def cloud_compute_pause_job(self, job_id: str) -> dict:
@@ -2650,7 +2830,12 @@ class Api:
         try:
             self._cc_jobs_store().update_job(job_id, status="upload_paused")
         except Exception:
-            pass
+            # Store write failed — revert in-memory state so local + remote agree.
+            if pause_ev is not None:
+                pause_ev.set()
+            with self._ensure_cc_lock():
+                if job_id in self._cc_jobs:
+                    self._cc_jobs[job_id]["status"] = "uploading"
         return {"ok": True, "uploadPauseRequested": True}
 
     def cloud_compute_resume_job(self, job_id: str) -> dict:
@@ -2675,7 +2860,12 @@ class Api:
         try:
             self._cc_jobs_store().update_job(job_id, status="uploading")
         except Exception:
-            pass
+            # Store write failed — revert in-memory state so local + remote agree.
+            if pause_ev is not None:
+                pause_ev.clear()
+            with self._ensure_cc_lock():
+                if job_id in self._cc_jobs:
+                    self._cc_jobs[job_id]["status"] = "upload_paused"
         return {"ok": True, "uploadPauseRequested": False}
 
     def cloud_compute_cancel_job(self, job_id: str) -> dict:
@@ -2800,10 +2990,15 @@ class Api:
         return {"ok": True, "jobs": out_jobs}
 
     def cloud_compute_resume_download(self, job_id: str) -> dict:
-        """Re-run the pack download + merge for an existing job (typically one
-        that finished while the app was closed). Spawns a background thread;
-        returns immediately. Progress visible via the pack-events queue and
-        ``cloud_compute_list_jobs()``."""
+        """Resume pack download + merge for an existing persisted job.
+
+        Registers the job in the in-memory ``_cc_jobs`` map (so the cloud
+        queue panel can render it), starts the standard background remote
+        poller, and spawns a one-off worker that downloads + merges any
+        packs not already present locally. Status is only marked ``done``
+        when the Worker confirms ``status==complete`` AND every available
+        pack has been downloaded — otherwise the live poller keeps tracking
+        and the UI reflects real state."""
         try:
             store = self._cc_jobs_store()
             jobs = store.load_jobs()
@@ -2826,6 +3021,29 @@ class Api:
 
         import threading as _t
 
+        # Register in-memory state so the cloud queue panel renders this job
+        # even though it predates the current process. The remote poller will
+        # populate the cached counters within one tick.
+        anchor_filename = (target.get("anchorFilename") or "") or None
+        with self._ensure_cc_lock():
+            if job_id not in self._cc_jobs:
+                self._cc_jobs[job_id] = {
+                    "jobId": job_id,
+                    "rootPath": str(folder),
+                    "imageCount": int(target.get("imageCount") or 0),
+                    "newImageCount": int(target.get("imageCount") or 0),
+                    "anchorFilename": anchor_filename,
+                    "totalInFolder": None,
+                    "alreadyAnalyzed": None,
+                    "status": str(target.get("status") or "downloading"),
+                    "progress": {"event": "resume"},
+                    "cancel_event": None,
+                    "pause_event": None,
+                    "remote": dict(self._CC_REMOTE_DEFAULTS),
+                }
+        # Start the live remote poller; safe to call again if already running.
+        self._cc_start_remote_poller(job_id)
+
         def _worker() -> None:
             pack_dir = folder / ".kestrel" / "cloud-packs"
             pack_dir.mkdir(parents=True, exist_ok=True)
@@ -2839,14 +3057,20 @@ class Api:
                         "packName": None, "error": str(e),
                     })
                 return
-            for meta in files:
-                fname = str(meta.get("filename") or "")
-                if not fname.endswith(".zip") or fname in already:
+            available_pack_names = [
+                str(meta.get("filename") or "") for meta in files
+                if str(meta.get("filename") or "").endswith(".zip")
+            ]
+            for fname in available_pack_names:
+                if fname in already:
                     continue
                 dest = pack_dir / fname
                 try:
                     client.download_pack(job_id, fname, dest)
-                    ccc.merge_pack_into_kestrel(dest, folder)
+                    ccc.merge_pack_into_kestrel(
+                        dest, folder,
+                        protected_filenames={anchor_filename} if anchor_filename else None,
+                    )
                 except Exception as e:
                     with self._ensure_cc_lock():
                         self._cc_pack_events.append({
@@ -2854,6 +3078,7 @@ class Api:
                             "packName": fname, "error": str(e),
                         })
                     continue
+                already.add(fname)
                 try:
                     store.add_downloaded_pack(job_id, fname)
                 except Exception:
@@ -2863,8 +3088,26 @@ class Api:
                         "jobId": job_id, "folderPath": str(folder),
                         "packName": fname,
                     })
+
+            # Only mark `done` when Worker confirms terminal-complete state
+            # AND every available pack has been pulled locally. Otherwise
+            # leave the persisted status untouched — the live poller (and
+            # subsequent app launches) will keep observing reality.
             try:
-                store.update_job(job_id, status="done")
+                remote = client.get_status(job_id)
+                remote_status = str(remote.get("status") or "")
+            except Exception:
+                remote_status = ""
+            try:
+                if (
+                    remote_status == "complete"
+                    and all(p in already for p in available_pack_names)
+                ):
+                    store.update_job(job_id, status="done")
+                    with self._ensure_cc_lock():
+                        st = self._cc_jobs.get(job_id)
+                        if st is not None:
+                            st["status"] = "done"
             except Exception:
                 pass
 

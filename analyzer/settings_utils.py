@@ -487,31 +487,13 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     # Empty string falls back to the env var KESTREL_CC_API_BASE then the
     # hardcoded default in cloud_compute_client.default_api_base().
     _set_str('cloud_compute_api_base', default='', max_len=256)
-    # Cloud-compute analysis-settings overrides — a dict of allowlisted keys
-    # whose values are sent to Modal in the job's analysisSettings payload.
-    # Empty / missing dict means "use the same analysis settings the local
-    # queue would". The wire-level allowlist also lives in
-    # ``cloud_compute_client.ANALYSIS_SETTINGS_ALLOWLIST`` and on the Worker
-    # / Modal side (defence in depth).
-    _CC_OVERRIDE_BOOL_KEYS = (
-        'species_detection_enabled', 'wildlife_enabled',
-        'scene_grouping_enabled', 'crop_generation_enabled',
-        'quality_model_enabled',
-    )
-    raw_cc_overrides = data.get('cloud_compute_analysis_overrides')
-    if isinstance(raw_cc_overrides, dict):
-        cleaned_overrides: dict = {}
-        det = raw_cc_overrides.get('detector_name')
-        if isinstance(det, str) and det in _ALLOWED_QUEUE_DETECTOR_NAMES:
-            cleaned_overrides['detector_name'] = det
-        thr = raw_cc_overrides.get('confidence_threshold')
-        if isinstance(thr, (int, float)) and 0.10 <= float(thr) <= 0.99:
-            cleaned_overrides['confidence_threshold'] = float(thr)
-        for k in _CC_OVERRIDE_BOOL_KEYS:
-            if k in raw_cc_overrides:
-                cleaned_overrides[k] = _coerce_bool(raw_cc_overrides.get(k), default=True)
-        if cleaned_overrides:
-            out['cloud_compute_analysis_overrides'] = cleaned_overrides
+    # Cloud-compute analysis settings are NOT a separate override block —
+    # they're projected from the same advanced-analysis settings the local
+    # queue uses (detection_threshold, detector_name, etc.) at submit time.
+    # See api_bridge._cc_build_analysis_settings_from_local. One source of
+    # truth across local + cloud; the wire allowlist lives on both the
+    # client (cloud_compute_client.ANALYSIS_SETTINGS_ALLOWLIST) and the
+    # Worker / Modal sides (defence in depth).
     _set_str('app_session_started_utc', max_len=64)
     _set_bool('app_session_closed_cleanly', default=True)
     _set_int('app_session_pid', default=0, min_value=0, max_value=2_147_483_647)
