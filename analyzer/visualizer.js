@@ -1993,6 +1993,19 @@
           perchBtn.addEventListener('click', (ev) => { ev.stopPropagation(); shareWithPerchFolder(fd.folderPath); });
           rightActions.appendChild(perchBtn);
 
+          // Cloud Compute (feature-flagged via settings.cloud_compute_enabled,
+          // mirrored into localStorage by the standard settings round-trip).
+          // Hidden by default; opt-in keeps the affordance off the main UI
+          // until the unified-auth refactor is fully verified end-to-end.
+          if (getSetting('cloud_compute_enabled', false) === true) {
+            const ccBtn = document.createElement('button');
+            ccBtn.className = 'action-btn send-cloud-compute-btn';
+            ccBtn.innerHTML = '<i>☁</i> Send to Cloud Compute';
+            ccBtn.title = 'Run the Kestrel ML pipeline on a cloud GPU instead of locally';
+            ccBtn.addEventListener('click', (ev) => { ev.stopPropagation(); openCloudComputeDialog(fd.folderPath); });
+            rightActions.appendChild(ccBtn);
+          }
+
           // "Published" pill \u2014 only shown if .kestrel/perch_link.json exists.
           // Click opens the perch URL (after stale-link verification, see 1d).
           // Right-click \u2192 Unlink (local-only).
@@ -9766,6 +9779,103 @@
       if (dismiss) dismiss.addEventListener('click', () => _perchDismissCard(card));
       const badge = document.getElementById('perchUploadsBadge');
       if (badge) { badge.textContent = 'Error'; badge.className = 'perch-uploads-badge error'; }
+    }
+
+    // ─── Cloud Compute — minimal v1 dialog ───────────────────────────────
+    // Confirms file count + opens the job, then shows a polling toast. No
+    // queue-manager integration in v1 (per the unified-auth refactor plan,
+    // C3 of the commercialization roadmap will flesh out the UX).
+    const _ccActivePolls = new Map(); // jobId -> intervalHandle
+
+    async function openCloudComputeDialog(rootPath) {
+      if (!window.pywebview?.api) {
+        showToast('Cloud Compute requires desktop mode', 4000);
+        return;
+      }
+      if (!getSetting('cloud_compute_enabled', false)) {
+        showToast('Cloud Compute is disabled. Enable it in Settings first.', 4500);
+        return;
+      }
+      // Same auth gate Perch uses — they share the JWT.
+      let tokenCheck;
+      try {
+        tokenCheck = await window.pywebview.api.get_perch_token();
+      } catch (e) {
+        showToast('Unable to read auth token: ' + (e?.message || e), 5000);
+        return;
+      }
+      if (!tokenCheck || !tokenCheck.success || !tokenCheck.token) {
+        // Reuse the existing Perch sign-in flow if available.
+        if (typeof openPerchSignInWindow === 'function') {
+          showToast('Sign into Perch to use Cloud Compute', 4500);
+          try { openPerchSignInWindow(); } catch {}
+        } else {
+          showToast('Sign into Perch first — use the account button at top-right.', 5500);
+        }
+        return;
+      }
+
+      const ok = window.confirm(
+        'Send this folder to Kestrel Cloud Compute?\n\n' +
+        'CR3/JPEG files in the folder will be uploaded to a cloud GPU for ' +
+        'analysis. Results will be written into the folder\'s .kestrel/ ' +
+        'directory just like a local run.'
+      );
+      if (!ok) return;
+
+      let res;
+      try {
+        res = await window.pywebview.api.cloud_compute_submit_job(rootPath);
+      } catch (e) {
+        showToast('Cloud Compute submit failed: ' + (e?.message || e), 6000);
+        return;
+      }
+      if (!res || !res.ok) {
+        const msg = res?.error || 'unknown error';
+        if (res?.needSignIn) {
+          showToast('Sign into Perch first — Cloud Compute uses the same account.', 5500);
+          if (typeof openPerchSignInWindow === 'function') {
+            try { openPerchSignInWindow(); } catch {}
+          }
+          return;
+        }
+        showToast('Cloud Compute: ' + msg, 6500);
+        return;
+      }
+
+      const jobId = res.jobId;
+      showToast(`Cloud Compute job started (${res.imageCount} images): ${jobId}`, 5000);
+
+      // Lightweight polling toast — every 5s, surface the latest progress
+      // event. On terminal status, clear the timer and show a final toast.
+      const tick = async () => {
+        let st;
+        try {
+          st = await window.pywebview.api.cloud_compute_get_status(jobId);
+        } catch {
+          return;
+        }
+        if (!st || !st.ok) return;
+        const phase = (st.progress && st.progress.event) || st.status || 'running';
+        if (st.status === 'complete') {
+          const handle = _ccActivePolls.get(jobId);
+          if (handle) clearInterval(handle);
+          _ccActivePolls.delete(jobId);
+          const packs = (st.result && st.result.packsDownloaded) || [];
+          showToast(
+            `Cloud Compute job ${jobId} finished — ${packs.length} pack(s) merged into .kestrel/. ` +
+            `Reload the folder to see results.`,
+            10000,
+          );
+        } else if (st.status === 'failed') {
+          const handle = _ccActivePolls.get(jobId);
+          if (handle) clearInterval(handle);
+          _ccActivePolls.delete(jobId);
+          showToast('Cloud Compute job failed: ' + (st.error || phase), 8000);
+        }
+      };
+      const handle = setInterval(tick, 5000);
+      _ccActivePolls.set(jobId, handle);
     }
 
     async function shareWithPerchFolder(rootPath) {

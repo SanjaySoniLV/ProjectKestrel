@@ -300,6 +300,11 @@ class Api:
         self._perch_account_cache_at: float = 0.0
         self._perch_usage_cache: dict | None = None
         self._perch_usage_cache_at: float = 0.0
+        # Async cloud-compute job state (job_id -> {progress, cancel_event, thread, result}).
+        # Cloud-compute reuses the Perch JWT (same Clerk identity) — see
+        # _check_perch_token() and analyzer/cloud_compute_client.py.
+        self._cc_jobs: dict = {}
+        self._cc_jobs_lock = None
 
     def notify_dirty(self, is_dirty: bool) -> dict:
         """Called from JS whenever the dirty flag changes."""
@@ -2208,6 +2213,206 @@ class Api:
             return out
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    # ─── Cloud Compute — submit / poll / cancel ───────────────────────────
+    # Reuses the Perch JWT (same Clerk identity). The cloud-compute Worker
+    # validates the JWT and calls Perch internally for entitlement + usage
+    # accrual; the desktop app does not need to know about that handshake.
+
+    def _ensure_cc_lock(self) -> "threading.Lock":
+        import threading as _t
+        if self._cc_jobs_lock is None:
+            self._cc_jobs_lock = _t.Lock()
+        return self._cc_jobs_lock
+
+    def cloud_compute_get_api_base(self) -> str:
+        """Settings-aware cloud-compute Worker base URL (no trailing slash)."""
+        try:
+            from cloud_compute_client import default_api_base
+        except ImportError:
+            try:
+                from analyzer.cloud_compute_client import default_api_base
+            except ImportError:
+                return "https://cloudcompute.projectkestrel.org"
+
+        # Settings override > env override > default. settings_utils stores the
+        # value as a string; empty string = unset.
+        try:
+            settings = self.get_settings()
+            if isinstance(settings, dict):
+                cfg = settings.get("settings") if "settings" in settings else settings
+                if isinstance(cfg, dict):
+                    s_val = str(cfg.get("cloud_compute_api_base") or "").strip()
+                    if s_val:
+                        return s_val.rstrip("/")
+        except Exception:
+            pass
+        return default_api_base()
+
+    def cloud_compute_submit_job(self, root_path: str) -> dict:
+        """Kick off a cloud-compute job for a folder of CR3s. Non-blocking.
+
+        Returns immediately with `{ok, jobId, imageCount}` (or an error dict);
+        a background thread handles the upload + poll + merge. Track with
+        ``cloud_compute_get_status(jobId)`` and ``cloud_compute_list_jobs()``.
+        """
+        try:
+            from cloud_compute_client import CloudComputeClient, CloudComputeError
+        except ImportError:
+            try:
+                from analyzer.cloud_compute_client import (  # type: ignore[no-redef]
+                    CloudComputeClient,
+                    CloudComputeError,
+                )
+            except ImportError as e:
+                return {"ok": False, "error": f"cloud_compute_client import failed: {e}"}
+
+        root_real, err = self._validate_root_dir(
+            root_path, context="cloud_compute_submit_job", require_exists=True
+        )
+        if err:
+            return {"ok": False, "error": err}
+
+        token, dev_user, token_err = self._check_perch_token()
+        if token_err:
+            return token_err
+
+        # Discover CR3 files (matches the CLI's filter)
+        from pathlib import Path as _Path
+        root = _Path(root_real)
+        files = sorted(
+            p for p in root.iterdir()
+            if p.is_file() and p.suffix.lower() in {".cr3", ".jpg", ".jpeg"}
+        )
+        if not files:
+            return {"ok": False, "error": "No CR3/JPEG files found in folder"}
+
+        try:
+            client = CloudComputeClient(
+                self.cloud_compute_get_api_base(),
+                token,
+                dev_user=dev_user,
+            )
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+
+        # Submit synchronously (cheap call). We need the jobId before we can
+        # return it to the caller; the heavy upload+poll runs on a thread.
+        try:
+            submit = client.submit_job(files)
+        except CloudComputeError as e:
+            # 403 from cloud-compute means Perch entitlement said no — surface
+            # the message verbatim so the JS layer can show it.
+            return {
+                "ok": False,
+                "error": e.message,
+                "status": e.status,
+                "needSignIn": e.status == 401,
+            }
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+        job_id = str(submit.get("jobId") or "")
+        if not job_id:
+            return {"ok": False, "error": "Worker returned no jobId"}
+
+        import threading as _t
+        cancel_event = _t.Event()
+
+        def _on_progress(payload: dict) -> None:
+            with self._ensure_cc_lock():
+                state = self._cc_jobs.get(job_id)
+                if state is not None:
+                    state["progress"] = dict(payload)
+
+        def _worker() -> None:
+            try:
+                result = client.run_full_job(
+                    root,
+                    file_paths=files,
+                    on_progress=_on_progress,
+                    cancel_event=cancel_event,
+                )
+            except Exception as e:
+                with self._ensure_cc_lock():
+                    state = self._cc_jobs.get(job_id)
+                    if state is not None:
+                        state["status"] = "failed"
+                        state["error"] = str(e)
+                return
+            with self._ensure_cc_lock():
+                state = self._cc_jobs.get(job_id)
+                if state is not None:
+                    state["status"] = "complete" if result.get("ok") else "failed"
+                    state["result"] = result
+
+        with self._ensure_cc_lock():
+            self._cc_jobs[job_id] = {
+                "jobId": job_id,
+                "rootPath": str(root),
+                "imageCount": len(files),
+                "status": "running",
+                "progress": {"event": "submitted"},
+                "cancel_event": cancel_event,
+                "presignedUrls": submit.get("presignedUrls", []),  # for completeness
+            }
+
+        thread = _t.Thread(target=_worker, name=f"cc-job-{job_id}", daemon=True)
+        thread.start()
+        with self._ensure_cc_lock():
+            self._cc_jobs[job_id]["thread"] = thread
+
+        return {"ok": True, "jobId": job_id, "imageCount": len(files)}
+
+    def cloud_compute_get_status(self, job_id: str) -> dict:
+        """Local + remote status for one job. Lightweight — call every few seconds."""
+        with self._ensure_cc_lock():
+            state = self._cc_jobs.get(job_id)
+        if state is None:
+            return {"ok": False, "error": "unknown jobId"}
+        # Snapshot the locally-tracked state. Worker-side status is contained
+        # in the most recent progress event (the worker emits "status" each tick).
+        progress = dict(state.get("progress") or {})
+        out: dict = {
+            "ok": True,
+            "jobId": job_id,
+            "rootPath": state.get("rootPath"),
+            "imageCount": state.get("imageCount"),
+            "status": state.get("status", "running"),
+            "progress": progress,
+        }
+        if "result" in state:
+            out["result"] = state["result"]
+        if "error" in state:
+            out["error"] = state["error"]
+        return out
+
+    def cloud_compute_list_jobs(self) -> dict:
+        """Return in-memory descriptors for every job submitted this session."""
+        with self._ensure_cc_lock():
+            jobs = []
+            for jid, state in self._cc_jobs.items():
+                jobs.append({
+                    "jobId": jid,
+                    "rootPath": state.get("rootPath"),
+                    "imageCount": state.get("imageCount"),
+                    "status": state.get("status", "running"),
+                    "progress": dict(state.get("progress") or {}),
+                })
+        return {"ok": True, "jobs": jobs}
+
+    def cloud_compute_cancel_job(self, job_id: str) -> dict:
+        """Signal the local upload/poll thread to stop. Server-side stop is
+        not implemented (no Worker endpoint exists for it yet); the in-flight
+        Modal pack will continue but the desktop will stop polling/downloading."""
+        with self._ensure_cc_lock():
+            state = self._cc_jobs.get(job_id)
+            if state is None:
+                return {"ok": False, "error": "unknown jobId"}
+            ev = state.get("cancel_event")
+        if ev is not None:
+            ev.set()
+        return {"ok": True}
 
     def share_with_perch(
         self,

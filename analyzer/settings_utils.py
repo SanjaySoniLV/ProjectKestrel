@@ -483,6 +483,13 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     _set_bool('legal_upgrade_self_heal_2026_03', default=False)
 
     _set_path('active_analysis_path')
+    # Cloud-compute opt-in flag. Default OFF so the "Send to Cloud Compute"
+    # affordance stays hidden until the user explicitly enables it.
+    _set_bool('cloud_compute_enabled', default=False)
+    # Override the cloud-compute Worker URL (handy for staging / wrangler dev).
+    # Empty string falls back to the env var KESTREL_CC_API_BASE then the
+    # hardcoded default in cloud_compute_client.default_api_base().
+    _set_str('cloud_compute_api_base', default='', max_len=256)
     _set_str('app_session_started_utc', max_len=64)
     _set_bool('app_session_closed_cleanly', default=True)
     _set_int('app_session_pid', default=0, min_value=0, max_value=2_147_483_647)
