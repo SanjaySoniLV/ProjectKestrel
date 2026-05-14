@@ -2478,6 +2478,46 @@ class Api:
             if state is not None:
                 state["remote"] = snapshot
 
+    def _cc_finalize_pack_merge(
+        self,
+        folder,
+        job_id: str,
+        pack_name: str,
+        dest_zip,
+        client,
+    ) -> None:
+        """Per-pack post-merge cleanup. Called from both the live job path
+        (`_on_pack_merged` callback in submit_job) and the resume-download
+        worker.
+
+        Order matters — durability-first:
+          1. Folder-local truth gets the merged-pack mark first. After this,
+             the next bootstrap will treat the pack as merged regardless of
+             whether the local zip still exists or the R2 delete fired.
+          2. Best-effort local zip delete (we don't need the bytes anymore).
+          3. Best-effort Worker delete-packs call. Failures are absorbed;
+             the next bootstrap reconciliation will retry — see
+             cloud_compute_list_pending_jobs's stale-R2-pack cleanup pass.
+
+        Each step is independent: a failure at step 2 doesn't block step 3,
+        and vice versa.
+        """
+        try:
+            from cloud_folder_state import mark_pack_merged as _mark
+            _mark(folder, job_id, pack_name)
+        except Exception as e:
+            warn(f"[cloud-compute] {job_id}: mark_pack_merged({pack_name}) failed: {e}")
+        try:
+            if dest_zip is not None and dest_zip.exists():
+                dest_zip.unlink()
+        except Exception as e:
+            warn(f"[cloud-compute] {job_id}: local zip cleanup ({pack_name}) failed: {e}")
+        if client is not None:
+            try:
+                client.delete_packs(job_id, [pack_name])
+            except Exception as e:
+                warn(f"[cloud-compute] {job_id}: R2 delete_packs({pack_name}) failed (will retry on next bootstrap): {e}")
+
     def _cc_record_remote_failure(self, job_id: str, err: str) -> None:
         """Bump the per-job remote-failure counter and stash the latest error.
         Does NOT zero out the cached counters — JS keeps rendering the
@@ -2639,13 +2679,25 @@ class Api:
                     state["progress"] = dict(payload)
 
         def _on_pack_merged(pack_name: str) -> None:
-            # Record both in cloud_jobs_store (persistent) and the in-memory
-            # event queue (drained by the JS poll for live folder refreshes).
+            # Record both in cloud_jobs_store (persistent legacy cache) and
+            # the in-memory event queue (drained by the JS poll for live
+            # folder refreshes).
             try:
                 store = self._cc_jobs_store()
                 store.add_downloaded_pack(job_id, pack_name)
             except Exception:
                 pass
+            # Folder-local truth + bounded R2 storage: mark merged, drop
+            # the local zip, ask the Worker to delete the R2 pack. See
+            # _cc_finalize_pack_merge for the durability ordering.
+            try:
+                from pathlib import Path as _P
+                pack_dir = _P(root) / ".kestrel" / "cloud-packs"
+                self._cc_finalize_pack_merge(
+                    _P(root), job_id, pack_name, pack_dir / pack_name, client,
+                )
+            except Exception as e:
+                warn(f"[cloud-compute] {job_id}: pack-merge finalize failed: {e}")
             with self._ensure_cc_lock():
                 self._cc_pack_events.append({
                     "jobId": job_id,
@@ -3066,15 +3118,33 @@ class Api:
         # job whose Worker race-condition'd to 'complete' still showed up as
         # resumable.
         from cloud_jobs_store import _TERMINAL_STATUSES as _CC_TERMINAL_STATUSES
+        try:
+            from cloud_folder_state import list_merged_packs as _fs_list_merged
+        except Exception:
+            _fs_list_merged = None  # noqa: N816
         out_jobs: list[dict] = []
         for j in jobs:
+            folder_available = bool(j.get("folderPath")) and os.path.isdir(j["folderPath"])
+            # Folder-local merged truth wins over the legacy global cache —
+            # but we union with `downloadedPacks` so jobs that pre-date the
+            # folder-state file still dedup correctly. JS sees a single
+            # `downloadedPacks` field and doesn't need to know about the
+            # split source.
+            legacy_downloaded = list(j.get("downloadedPacks") or [])
+            folder_merged: list[str] = []
+            if folder_available and _fs_list_merged is not None:
+                try:
+                    folder_merged = _fs_list_merged(j["folderPath"], j["jobId"])
+                except Exception:
+                    folder_merged = []
+            merged_union = list(dict.fromkeys(legacy_downloaded + folder_merged))
             entry: dict = {
                 "jobId": j["jobId"],
                 "folderPath": j["folderPath"],
                 "status": j["status"],
                 "failureReason": j.get("failureReason") or "",
                 "imageCount": j["imageCount"],
-                "downloadedPacks": list(j.get("downloadedPacks") or []),
+                "downloadedPacks": merged_union,
                 "createdAtUtc": j.get("createdAtUtc"),
                 "settingsSnapshot": j.get("settingsSnapshot") or {},
                 # True if the folder is currently mounted/readable. JS uses
@@ -3082,7 +3152,7 @@ class Api:
                 # drive ejected, network share offline) is silently deferred
                 # rather than throwing — the periodic recheck timer auto-
                 # resumes once the folder reappears.
-                "folderAvailable": bool(j.get("folderPath")) and os.path.isdir(j["folderPath"]),
+                "folderAvailable": folder_available,
                 "remoteStatus": None,
                 "availablePacks": None,
             }
@@ -3093,11 +3163,29 @@ class Api:
                     entry["remoteStatus"] = remote.get("status")
                     entry["analyzedCount"] = remote.get("analyzedCount")
                     files = client.list_results(j["jobId"])
-                    entry["availablePacks"] = [
+                    available = [
                         str(f.get("filename") or "")
                         for f in files
                         if str(f.get("filename") or "").endswith(".zip")
                     ]
+                    # Proactive stale-R2 cleanup: any pack that's already
+                    # been merged locally is dead weight in R2. Best-effort
+                    # batch delete; on failure, log and let the next
+                    # bootstrap (or a Worker-side cleanup cron, when we
+                    # build it) catch it.
+                    if folder_available:
+                        merged_set = set(merged_union)
+                        stale = [n for n in available if n in merged_set]
+                        if stale:
+                            try:
+                                client.delete_packs(j["jobId"], stale)
+                                available = [n for n in available if n not in merged_set]
+                            except Exception as e:
+                                warn(
+                                    f"[cloud-compute] {j['jobId']}: bootstrap stale-R2 "
+                                    f"cleanup ({len(stale)} packs) failed: {e}"
+                                )
+                    entry["availablePacks"] = available
                 except Exception:
                     pass
             out_jobs.append(entry)
@@ -3170,7 +3258,16 @@ class Api:
         def _worker() -> None:
             pack_dir = folder / ".kestrel" / "cloud-packs"
             pack_dir.mkdir(parents=True, exist_ok=True)
-            already = set(target.get("downloadedPacks") or [])
+            # Merged-set truth = union(folder-local cloud_folder_state,
+            # legacy desktop-store downloadedPacks). Folder-local is the
+            # post-fix authoritative source; the legacy field stays so old
+            # jobs that pre-date the folder-state file still dedup correctly.
+            try:
+                from cloud_folder_state import list_merged_packs as _list_merged
+                merged_in_folder = set(_list_merged(folder, job_id))
+            except Exception:
+                merged_in_folder = set()
+            already = set(target.get("downloadedPacks") or []) | merged_in_folder
             try:
                 files = client.list_results(job_id)
             except Exception as e:
@@ -3184,6 +3281,17 @@ class Api:
                 str(meta.get("filename") or "") for meta in files
                 if str(meta.get("filename") or "").endswith(".zip")
             ]
+            # Stale-R2 cleanup: any pack still in R2 that we've already merged
+            # is dead weight (probably from a pre-folder-state job, or a prior
+            # delete-packs call that lost network). Tell the Worker to drop it
+            # so the next list_results stops returning them.
+            stale = [n for n in available_pack_names if n in already]
+            if stale and client is not None:
+                try:
+                    client.delete_packs(job_id, stale)
+                    available_pack_names = [n for n in available_pack_names if n not in already]
+                except Exception as e:
+                    warn(f"[cloud-compute] {job_id}: stale-R2 cleanup ({len(stale)} packs) failed: {e}")
             for fname in available_pack_names:
                 if fname in already:
                     continue
@@ -3214,6 +3322,7 @@ class Api:
                         store.add_downloaded_pack(job_id, fname)
                     except Exception:
                         pass
+                    self._cc_finalize_pack_merge(folder, job_id, fname, dest, client)
                     with self._ensure_cc_lock():
                         self._cc_pack_events.append({
                             "jobId": job_id, "folderPath": str(folder),
@@ -3238,6 +3347,7 @@ class Api:
                     store.add_downloaded_pack(job_id, fname)
                 except Exception:
                     pass
+                self._cc_finalize_pack_merge(folder, job_id, fname, dest, client)
                 with self._ensure_cc_lock():
                     self._cc_pack_events.append({
                         "jobId": job_id, "folderPath": str(folder),

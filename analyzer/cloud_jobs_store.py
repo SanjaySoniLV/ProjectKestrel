@@ -11,7 +11,7 @@ Schema (JSON):
           "jobId": str,
           "folderPath": str,            # absolute path of analyzed folder
           "createdAtUtc": str,          # ISO-8601
-          "status": str,                # uploading|analyzing|downloading|done|cancelled|failed
+          "status": str,                # uploading|downloading|done|cancelled|failed|upload_paused
           "imageCount": int,
           "settingsSnapshot": dict,     # filtered analysis-settings sent to Modal
           "downloadedPacks": [str, ...] # filenames already merged locally
@@ -41,7 +41,7 @@ _SAVE_LOCK = threading.RLock()
 
 _TERMINAL_STATUSES = {"done", "cancelled", "failed"}
 _VALID_STATUSES = {
-    "uploading", "analyzing", "downloading", "done",
+    "uploading", "downloading", "done",
     "cancelled", "failed", "upload_paused",
 }
 _MAX_JOBS_RETAINED = 200  # oldest non-terminal kept; terminal jobs prune on touch

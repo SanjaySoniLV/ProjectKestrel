@@ -251,6 +251,33 @@ class CloudComputeClient:
         body = self._request("GET", f"/api/jobs/{job_id}/results")
         return list(body.get("files", []))
 
+    def delete_packs(self, job_id: str, pack_names: list[str]) -> dict:
+        """Tell the Worker to delete a set of result packs from R2 RESULTS_BUCKET.
+
+        Called after the desktop has confirmed each pack is merged into the
+        local kestrel database. Bounded R2 storage: a job's results live in
+        the bucket only as long as some pack hasn't yet been merged on the
+        client. Best-effort — exceptions are caller's problem; on failure
+        the pack stays in R2 and the next bootstrap reconciliation will
+        retry.
+        """
+        if not pack_names:
+            return {"deleted": 0, "failed": 0}
+        # Worker caps batch size at 200 — chunk if the desktop ever needs more
+        # (today the typical job has <50 packs, so this is future-proofing).
+        deleted = 0
+        failed = 0
+        for i in range(0, len(pack_names), 200):
+            chunk = pack_names[i:i + 200]
+            body = self._request(
+                "POST",
+                f"/api/jobs/{job_id}/results/delete",
+                {"packs": chunk},
+            )
+            deleted += int(body.get("deleted", 0))
+            failed += int(body.get("failed", 0))
+        return {"deleted": deleted, "failed": failed}
+
     def download_pack(self, job_id: str, filename: str, dest: Path) -> Path:
         """Stream a result-pack zip from the Worker (NOT direct R2)."""
         url = f"{self.api_base}/api/jobs/{job_id}/results/{filename}"
