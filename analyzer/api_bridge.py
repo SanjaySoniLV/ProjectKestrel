@@ -3077,6 +3077,12 @@ class Api:
                 "downloadedPacks": list(j.get("downloadedPacks") or []),
                 "createdAtUtc": j.get("createdAtUtc"),
                 "settingsSnapshot": j.get("settingsSnapshot") or {},
+                # True if the folder is currently mounted/readable. JS uses
+                # this to gate auto-resume: an unavailable folder (external
+                # drive ejected, network share offline) is silently deferred
+                # rather than throwing — the periodic recheck timer auto-
+                # resumes once the folder reappears.
+                "folderAvailable": bool(j.get("folderPath")) and os.path.isdir(j["folderPath"]),
                 "remoteStatus": None,
                 "availablePacks": None,
             }
@@ -3118,7 +3124,16 @@ class Api:
         from pathlib import Path as _Path
         folder = _Path(target["folderPath"])
         if not folder.is_dir():
-            return {"ok": False, "error": f"folder no longer exists: {folder}"}
+            # Soft-fail: external-drive eject / network-share unmount is
+            # transient. Returning a structured `reason` lets JS show a
+            # helpful "Folder not currently mounted" caption and start the
+            # periodic recheck instead of dropping a noisy error toast.
+            return {
+                "ok": False,
+                "reason": "folder_unavailable",
+                "folderPath": str(folder),
+                "error": f"folder not currently accessible: {folder}",
+            }
         client, client_err = self._cc_make_client()
         if client is None:
             return client_err or {"ok": False, "error": "no client"}

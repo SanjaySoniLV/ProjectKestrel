@@ -10318,14 +10318,10 @@
 
     // ── Startup resume ───────────────────────────────────────────────────
 
-    async function _ccStartupResume() {
-      if (!window.pywebview?.api?.cloud_compute_list_pending_jobs) return;
-      let r;
-      try {
-        r = await window.pywebview.api.cloud_compute_list_pending_jobs();
-      } catch { return; }
-      if (!r || !r.ok) return;
-      const candidates = (r.jobs || []).filter(j => {
+    // Helper: filter list_pending_jobs result down to "needs download" candidates.
+    // Used by both startup resume and the periodic folder-recheck timer.
+    function _ccPickResumeCandidates(jobs) {
+      return (jobs || []).filter(j => {
         // Defence in depth: backend already skips Worker I/O for terminal jobs,
         // but make sure cancelled / failed never appear as resumable here even
         // if the local store somehow shows pending packs (cancelled mid-flight
@@ -10336,35 +10332,141 @@
         const unmerged = available.filter(p => !downloaded.has(p));
         return unmerged.length > 0 || (j.remoteStatus === 'complete' && downloaded.size === 0);
       });
-      if (candidates.length === 0) return;
-      _ccShowResumeDialog(candidates);
     }
 
-    function _ccShowResumeDialog(jobs) {
+    // Fire-and-forget downloads. Centralised so startup, dialog, recheck, and
+    // the manual "Retry downloads" link all use the same path.
+    function _ccTriggerResume(jobIds, toastVerb = 'Resuming') {
+      if (!jobIds || jobIds.length === 0) return;
+      (async () => {
+        for (const jid of jobIds) {
+          try { await window.pywebview.api.cloud_compute_resume_download(jid); } catch {}
+        }
+        showToast(`${toastVerb} ${jobIds.length} cloud download(s).`, 3500);
+        _ccStartPolling();
+        _ccRenderPanel();
+      })();
+    }
+
+    async function _ccStartupResume() {
+      if (!window.pywebview?.api?.cloud_compute_list_pending_jobs) return;
+      let r;
+      try {
+        r = await window.pywebview.api.cloud_compute_list_pending_jobs();
+      } catch { return; }
+      if (!r || !r.ok) return;
+      const candidates = _ccPickResumeCandidates(r.jobs);
+      if (candidates.length === 0) return;
+      const accessible = candidates.filter(j => j.folderAvailable !== false);
+      const inaccessible = candidates.filter(j => j.folderAvailable === false);
+      // All folders accessible → just auto-resume; no need to show a dialog.
+      if (inaccessible.length === 0) {
+        _ccTriggerResume(accessible.map(j => j.jobId), 'Auto-resuming');
+        return;
+      }
+      // At least one inaccessible folder. Show the grouped dialog AND start
+      // the recheck timer so inaccessible folders auto-resume when mounted,
+      // regardless of how the user dismisses the dialog.
+      _ccShowResumeDialog(accessible, inaccessible);
+      _ccStartFolderRecheckTimer();
+    }
+
+    function _ccShowResumeDialog(accessibleJobs, inaccessibleJobs) {
       const dlg = document.getElementById('cloudResumeDlg');
       const list = document.getElementById('cloudResumeList');
       const intro = document.getElementById('cloudResumeIntro');
       if (!dlg || !list) return;
-      intro.textContent = `You have ${jobs.length} cloud analysis job(s) with result packs ready to download.`;
-      list.innerHTML = jobs.map((j, idx) => {
+      const accCount = accessibleJobs.length;
+      const inaccCount = inaccessibleJobs.length;
+      const totalCount = accCount + inaccCount;
+      let introText;
+      if (inaccCount === 0) {
+        introText = `You have ${totalCount} cloud analysis job(s) with result packs ready to download.`;
+      } else if (accCount === 0) {
+        introText = `${inaccCount} cloud analysis job(s) have packs ready, but their folders aren't currently mounted. They will auto-resume when the folders come back online.`;
+      } else {
+        introText = `${totalCount} cloud analysis job(s) have packs ready. ${accCount} can resume now; ${inaccCount} are waiting for a folder to be mounted.`;
+      }
+      intro.textContent = introText;
+      const renderItem = (j) => {
         const folder = (j.folderPath || '').split(/[\\/]/).pop() || j.jobId;
         const downloaded = (j.downloadedPacks || []).length;
         const available = (j.availablePacks || []).length;
         const status = j.remoteStatus || j.status || '?';
+        const isUnavail = j.folderAvailable === false;
+        // Disabled checkboxes are skipped by the "Resume All" handler so a
+        // user can't accidentally fire a download for a missing folder. The
+        // recheck timer auto-resumes them when the folder reappears.
+        const attrs = isUnavail ? 'disabled' : 'checked';
+        const cls = isUnavail ? ' cloud-resume-item-unavail' : '';
+        const meta = isUnavail
+          ? `${escapeHtml(j.folderPath || '')}<br><em>Folder not currently mounted — will auto-resume when available.</em>`
+          : `${escapeHtml(j.folderPath || '')}<br>Status: ${escapeHtml(status)} · ${available - downloaded} pack(s) waiting`;
         return `
-          <label class="cloud-resume-item">
-            <input type="checkbox" data-job-id="${escapeHtml(j.jobId)}" checked />
+          <label class="cloud-resume-item${cls}">
+            <input type="checkbox" data-job-id="${escapeHtml(j.jobId)}" ${attrs} />
             <div class="cloud-resume-item-body">
               <div class="cloud-resume-item-folder">${escapeHtml(folder)}</div>
-              <div class="cloud-resume-item-meta">
-                ${escapeHtml(j.folderPath || '')}<br>
-                Status: ${escapeHtml(status)} · ${available - downloaded} pack(s) waiting
-              </div>
+              <div class="cloud-resume-item-meta">${meta}</div>
             </div>
           </label>
         `;
-      }).join('');
+      };
+      let html = accessibleJobs.map(renderItem).join('');
+      if (inaccessibleJobs.length > 0) {
+        html += `
+          <details class="cloud-resume-section-deferred"${accCount === 0 ? ' open' : ''}>
+            <summary>Folders not currently accessible (${inaccCount})</summary>
+            ${inaccessibleJobs.map(renderItem).join('')}
+          </details>
+        `;
+      }
+      list.innerHTML = html;
       try { dlg.showModal(); } catch { dlg.show(); }
+    }
+
+    // ── Periodic folder-availability recheck ────────────────────────────
+    // Runs only while at least one job has packs ready but its folder is
+    // unmounted. Self-terminates as soon as the deferred set is empty so
+    // there's zero idle traffic when nothing's waiting.
+    let _ccFolderRecheckTimer = null;
+    const _CC_FOLDER_RECHECK_MS = 30000;
+
+    function _ccStartFolderRecheckTimer() {
+      if (_ccFolderRecheckTimer != null) return;
+      _ccFolderRecheckTimer = setInterval(_ccFolderRecheck, _CC_FOLDER_RECHECK_MS);
+      // Surface the manual "Retry downloads" entry while the timer is active
+      // so the user can collapse the wait if they just plugged a drive in.
+      const btn = document.getElementById('cloudQueueRetryDownloadsBtn');
+      if (btn) btn.classList.remove('hidden');
+    }
+    function _ccStopFolderRecheckTimer() {
+      if (_ccFolderRecheckTimer != null) {
+        clearInterval(_ccFolderRecheckTimer);
+        _ccFolderRecheckTimer = null;
+      }
+      const btn = document.getElementById('cloudQueueRetryDownloadsBtn');
+      if (btn) btn.classList.add('hidden');
+    }
+
+    async function _ccFolderRecheck() {
+      if (!window.pywebview?.api?.cloud_compute_list_pending_jobs) return;
+      let r;
+      try {
+        r = await window.pywebview.api.cloud_compute_list_pending_jobs();
+      } catch { return; }
+      if (!r || !r.ok) return;
+      const candidates = _ccPickResumeCandidates(r.jobs);
+      const stillDeferred = candidates.filter(j => j.folderAvailable === false);
+      const nowAvailable = candidates.filter(j => j.folderAvailable !== false);
+      if (nowAvailable.length > 0) {
+        // Folders that flipped from unavailable to available since last check
+        // (any candidate without an in-memory _cc_jobs entry counts; the
+        // backend's _cc_jobs map will already include resume jobs from this
+        // session, so calling resume_download is idempotent).
+        _ccTriggerResume(nowAvailable.map(j => j.jobId), 'Folder back online — resuming');
+      }
+      if (stillDeferred.length === 0) _ccStopFolderRecheckTimer();
     }
 
     function _ccWireResumeDialog() {
@@ -10384,7 +10486,12 @@
         close();
       };
       document.getElementById('cloudResumeAll')?.addEventListener('click', () => {
-        const all = [...dlg.querySelectorAll('input[data-job-id]')].map(i => i.getAttribute('data-job-id'));
+        // Skip :disabled — those are inaccessible-folder rows that auto-resume
+        // via the recheck timer. User clicking "Resume All" should not trigger
+        // a noisy folder_unavailable round-trip for them.
+        const all = [...dlg.querySelectorAll('input[data-job-id]:not(:disabled)')]
+          .map(i => i.getAttribute('data-job-id'));
+        if (all.length === 0) { showToast('No accessible folders to resume right now.', 3500); close(); return; }
         fireResume(all);
       });
       document.getElementById('cloudResumeSelected')?.addEventListener('click', () => {
@@ -10460,6 +10567,20 @@
             _ccRenderPanel();
           } finally {
             cancelBtn.disabled = false;
+          }
+        });
+      }
+      // "Retry downloads" — manual short-circuit for the 30s recheck timer.
+      // Visible only while the timer is running (i.e. at least one job is
+      // waiting for a folder to come back online).
+      const retryBtn = document.getElementById('cloudQueueRetryDownloadsBtn');
+      if (retryBtn) {
+        retryBtn.addEventListener('click', async () => {
+          retryBtn.disabled = true;
+          try {
+            await _ccFolderRecheck();
+          } finally {
+            retryBtn.disabled = false;
           }
         });
       }

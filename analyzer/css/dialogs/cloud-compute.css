@@ -313,6 +313,36 @@
   color: var(--muted, #888);
 }
 
+.cloud-resume-item-unavail {
+  opacity: 0.6;
+  background: #181822;
+  cursor: not-allowed;
+}
+
+.cloud-resume-item-unavail .cloud-resume-item-meta em {
+  color: #d4a948;
+  font-style: normal;
+}
+
+.cloud-resume-section-deferred {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px dashed var(--border, #2a2a3a);
+  border-radius: 4px;
+  background: #181822;
+}
+
+.cloud-resume-section-deferred > summary {
+  font-size: 12px;
+  color: var(--muted, #888);
+  cursor: pointer;
+  margin-bottom: 6px;
+}
+
+.cloud-resume-section-deferred > .cloud-resume-item {
+  margin-top: 4px;
+}
+
 .cloud-resume-footer {
   display: flex;
   justify-content: flex-end;
