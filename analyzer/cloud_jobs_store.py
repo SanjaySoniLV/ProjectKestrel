@@ -102,6 +102,12 @@ def _sanitize_job(raw: Any) -> dict | None:
         "folderPath": folder,
         "createdAtUtc": _coerce_str(raw.get("createdAtUtc"), max_len=64),
         "status": status,
+        # Free-form short tag explaining a non-obvious terminal status. Today
+        # the only producer is the bootstrap orphan-detection path setting it
+        # to "upload_interrupted" when a previous session crashed mid-upload.
+        # Surfaced in the cloud queue panel so the user understands why the
+        # job is dead instead of seeing a silent "failed" badge.
+        "failureReason": _coerce_str(raw.get("failureReason"), max_len=64),
         "imageCount": _coerce_int(raw.get("imageCount")),
         "anchorFilename": _coerce_str(raw.get("anchorFilename"), max_len=512),
         "settingsSnapshot": _coerce_dict(raw.get("settingsSnapshot")),

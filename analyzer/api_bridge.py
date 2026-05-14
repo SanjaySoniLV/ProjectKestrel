@@ -2780,6 +2780,9 @@ class Api:
             "totalInFolder": state.get("totalInFolder"),
             "alreadyAnalyzed": state.get("alreadyAnalyzed"),
             "status": state.get("status", "running"),
+            # Set by the bootstrap orphan reaper (e.g. "upload_interrupted")
+            # so the panel can explain why a non-obvious failure happened.
+            "failureReason": state.get("failureReason") or "",
             "progress": dict(state.get("progress") or {}),
             # Cached remote counters (zeros until first poll lands).
             "uploadedCount": remote.get("uploadedCount", 0),
@@ -2999,12 +3002,77 @@ class Api:
             return {"ok": True, "jobs": []}
 
         client, _ = self._cc_make_client()
+
+        # Bootstrap orphan reaper. Any local job stuck in 'uploading' or
+        # 'upload_paused' across a process restart has no upload thread to
+        # resume — the previous process took it to the grave. Mark such jobs
+        # failed locally with a clear reason so the UI can explain it, and
+        # fire-and-forget a Worker cancel to clean up R2 + D1 (idempotent;
+        # no-op if the Worker already moved to terminal). Only reaches here
+        # the first time bootstrap runs after a crash because subsequent
+        # passes find them in 'failed' state and skip.
+        orphan_statuses = {"uploading", "upload_paused"}
+        orphans = [j for j in jobs if j["status"] in orphan_statuses
+                   and j["jobId"] not in self._cc_jobs]
+        if orphans:
+            import threading as _t
+            for j in orphans:
+                try:
+                    store.update_job(
+                        j["jobId"],
+                        status="failed",
+                        failureReason="upload_interrupted",
+                    )
+                    j["status"] = "failed"
+                    j["failureReason"] = "upload_interrupted"
+                except Exception:
+                    pass
+                # Register in the in-memory map so the cloud queue panel
+                # surfaces the failed orphan with a clear reason. Without this
+                # the user would have no signal that the job is dead — the
+                # panel only renders _cc_jobs entries, not the persistent
+                # ledger.
+                with self._ensure_cc_lock():
+                    if j["jobId"] not in self._cc_jobs:
+                        self._cc_jobs[j["jobId"]] = {
+                            "jobId": j["jobId"],
+                            "rootPath": j["folderPath"],
+                            "imageCount": int(j.get("imageCount") or 0),
+                            "newImageCount": int(j.get("imageCount") or 0),
+                            "anchorFilename": (j.get("anchorFilename") or "") or None,
+                            "totalInFolder": None,
+                            "alreadyAnalyzed": None,
+                            "status": "failed",
+                            "failureReason": "upload_interrupted",
+                            "progress": {"event": "orphan_reaped"},
+                            "cancel_event": None,
+                            "pause_event": None,
+                            "remote": dict(self._CC_REMOTE_DEFAULTS),
+                        }
+                if client is not None:
+                    jid = j["jobId"]
+                    def _cancel(jid=jid):
+                        try:
+                            client.cancel_job(jid)
+                        except Exception:
+                            pass
+                    _t.Thread(target=_cancel, name=f"cc-reap-{jid}", daemon=True).start()
+
+        # Locally-terminal jobs (done/cancelled/failed) skip Worker I/O entirely
+        # at bootstrap. They still appear in the returned list so the panel can
+        # render them (and Clear Done can target them), but we don't burn
+        # /api/jobs/* + /api/jobs/*/results requests on jobs the desktop has
+        # already finalised. Avoids the audit's HIGH-2 case where a cancelled
+        # job whose Worker race-condition'd to 'complete' still showed up as
+        # resumable.
+        from cloud_jobs_store import _TERMINAL_STATUSES as _CC_TERMINAL_STATUSES
         out_jobs: list[dict] = []
         for j in jobs:
             entry: dict = {
                 "jobId": j["jobId"],
                 "folderPath": j["folderPath"],
                 "status": j["status"],
+                "failureReason": j.get("failureReason") or "",
                 "imageCount": j["imageCount"],
                 "downloadedPacks": list(j.get("downloadedPacks") or []),
                 "createdAtUtc": j.get("createdAtUtc"),
@@ -3012,7 +3080,8 @@ class Api:
                 "remoteStatus": None,
                 "availablePacks": None,
             }
-            if client is not None:
+            is_terminal = j["status"] in _CC_TERMINAL_STATUSES
+            if client is not None and not is_terminal:
                 try:
                     remote = client.get_status(j["jobId"])
                     entry["remoteStatus"] = remote.get("status")
@@ -3104,6 +3173,38 @@ class Api:
                 if fname in already:
                     continue
                 dest = pack_dir / fname
+                # Filesystem fallback dedup: if the pack zip is already on disk
+                # but missing from `downloadedPacks`, we previously re-downloaded
+                # it. That happens when the JSON ledger was killed mid-write
+                # (atomic-replace race) or `add_downloaded_pack` swallowed an
+                # exception. Re-merging is safe (the database merge is
+                # last-wins by filename) and skipping the network call is the
+                # whole point — repair the JSON so the next launch isn't
+                # confused either.
+                if dest.exists() and dest.stat().st_size > 0:
+                    try:
+                        ccc.merge_pack_into_kestrel(
+                            dest, folder,
+                            protected_filenames={anchor_filename} if anchor_filename else None,
+                        )
+                    except Exception as e:
+                        with self._ensure_cc_lock():
+                            self._cc_pack_events.append({
+                                "jobId": job_id, "folderPath": str(folder),
+                                "packName": fname, "error": str(e),
+                            })
+                        continue
+                    already.add(fname)
+                    try:
+                        store.add_downloaded_pack(job_id, fname)
+                    except Exception:
+                        pass
+                    with self._ensure_cc_lock():
+                        self._cc_pack_events.append({
+                            "jobId": job_id, "folderPath": str(folder),
+                            "packName": fname,
+                        })
+                    continue
                 try:
                     client.download_pack(job_id, fname, dest)
                     ccc.merge_pack_into_kestrel(

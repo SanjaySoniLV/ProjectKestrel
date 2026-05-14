@@ -10145,6 +10145,18 @@
       const anchor = state.anchorFilename
         ? ` <span class="muted">(+1 anchor for scene continuity)</span>`
         : '';
+      // Surface a known failureReason (set by the bootstrap orphan reaper) as
+      // an explanatory banner. Without this the user just sees "failed" with
+      // no clue why their upload disappeared after a crash.
+      const reasonMsg = (() => {
+        if (state.failureReason !== 'upload_interrupted') return '';
+        return 'Upload was interrupted (the desktop closed mid-upload). '
+             + 'The job cannot be resumed — server-side files have been cleaned up. '
+             + 'Re-submit the folder to start a new analysis.';
+      })();
+      const reasonBanner = reasonMsg
+        ? `<div class="cloud-queue-item-error">${escapeHtml(reasonMsg)}</div>`
+        : '';
       const err = state.error
         ? `<div class="cloud-queue-item-error">${escapeHtml(String(state.error))}</div>`
         : '';
@@ -10194,6 +10206,7 @@
               <div class="queue-item-progress-fill analysis" style="width:${analysisPct}%"></div>
             </div>
           </div>
+          ${reasonBanner}
           ${err}
           <div class="cloud-queue-item-controls">
             <button data-cc-action="pause" data-job-id="${escapeHtml(state.jobId)}" ${pauseDisabled ? 'disabled' : ''}>
@@ -10313,6 +10326,11 @@
       } catch { return; }
       if (!r || !r.ok) return;
       const candidates = (r.jobs || []).filter(j => {
+        // Defence in depth: backend already skips Worker I/O for terminal jobs,
+        // but make sure cancelled / failed never appear as resumable here even
+        // if the local store somehow shows pending packs (cancelled mid-flight
+        // could leave stale availablePacks data).
+        if (j.status === 'cancelled' || j.status === 'failed' || j.status === 'done') return false;
         const downloaded = new Set(j.downloadedPacks || []);
         const available = j.availablePacks || [];
         const unmerged = available.filter(p => !downloaded.has(p));
