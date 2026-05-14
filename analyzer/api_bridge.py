@@ -71,21 +71,24 @@ except Exception:
 # burning Worker subrequests when several jobs run in parallel.
 _CC_POLL_INTERVAL_SEC = 5
 
-# ── Perch authentication helpers ──────────────────────────────────────────────
+# ── Account-auth helpers (Kestrel Auth Worker JWT) ───────────────────────────
 _KEYRING_SERVICE = 'ProjectKestrel'
-_KEYRING_KEY     = 'perch_auth'
+# Big-bang rename in the auth-migration: keychain slot changed from
+# 'perch_auth' to 'kestrel_auth'. Existing installs see an empty slot and
+# are prompted to sign in once. Acceptable pre-launch.
+_KEYRING_KEY     = 'kestrel_auth'
 
-def _get_perch_auth_fallback_path() -> str:
+def _get_auth_fallback_path() -> str:
     """Plaintext fallback path when no keyring backend is available."""
     from settings_utils import _get_user_data_dir
-    return os.path.join(_get_user_data_dir(), 'perch_auth.json')
+    return os.path.join(_get_user_data_dir(), 'auth.json')
 
 def _keyring_load() -> dict | None:
-    """Read Perch auth from OS keychain; fall back to plaintext file.
+    """Read the stored auth JWT from OS keychain; fall back to plaintext file.
 
-    If the key is missing from the keychain (get_password returns None), we must
-    still read the file fallback — otherwise a token stored only in
-    ``perch_auth.json`` (when keyring save failed) is never loaded after restart.
+    If the key is missing from the keychain (get_password returns None), we
+    must still read the file fallback — otherwise a token stored only in
+    ``auth.json`` (when keyring save failed) is never loaded after restart.
     """
     try:
         import keyring
@@ -95,24 +98,24 @@ def _keyring_load() -> dict | None:
     except Exception:
         pass
     try:
-        with open(_get_perch_auth_fallback_path(), "r", encoding="utf-8") as f:
+        with open(_get_auth_fallback_path(), "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return None
 
 def _keyring_save(data: dict) -> None:
-    """Write Perch auth to OS keychain; fall back to plaintext file."""
+    """Write the auth JWT to OS keychain; fall back to plaintext file."""
     try:
         import keyring
         keyring.set_password(_KEYRING_SERVICE, _KEYRING_KEY, json.dumps(data))
     except Exception:
-        path = _get_perch_auth_fallback_path()
+        path = _get_auth_fallback_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(data, f)
 
 
-def _perch_normalize_expiry_seconds(expiry: float | int) -> float:
+def _auth_normalize_expiry_seconds(expiry: float | int) -> float:
     """JWT exp is seconds since epoch. Some callers accidentally pass ms."""
     e = float(expiry)
     if e > 1e12:  # e.g. 1730000000000
@@ -120,20 +123,20 @@ def _perch_normalize_expiry_seconds(expiry: float | int) -> float:
     return e
 
 
-def _perch_debug_jwt_enabled() -> bool:
-    return os.environ.get("PERCH_DEBUG_JWT", "").strip().lower() in (
+def _auth_debug_jwt_enabled() -> bool:
+    return os.environ.get("AUTH_DEBUG_JWT", "").strip().lower() in (
         "1",
         "true",
         "yes",
     )
 
 
-def _perch_debug_log_token(where: str, token: str | None) -> None:
+def _auth_debug_log_token(where: str, token: str | None) -> None:
     """Log non-secret JWT metadata (iss, aud, exp) and a short token fingerprint."""
-    if not _perch_debug_jwt_enabled():
+    if not _auth_debug_jwt_enabled():
         return
     if not token:
-        log(f"[Perch debug] {where}: (no token)")
+        log(f"[Auth debug] {where}: (no token)")
         return
     t = str(token).strip()
     parts = t.split(".")
@@ -147,13 +150,13 @@ def _perch_debug_log_token(where: str, token: str | None) -> None:
     head = t[:24] if len(t) > 24 else t
     tail = t[-16:] if len(t) > 16 else ""
     log(
-        f"[Perch debug] {where}: len={len(t)} fingerprint={head!r}…{tail!r} "
+        f"[Auth debug] {where}: len={len(t)} fingerprint={head!r}…{tail!r} "
         f"iss={payload.get('iss')!r} aud={payload.get('aud')!r} "
         f"exp={payload.get('exp')} sub={payload.get('sub')!r}"
     )
 
 
-def _perch_jwt_exp_unverified(token: str) -> float | None:
+def _auth_jwt_exp_unverified(token: str) -> float | None:
     """Return JWT `exp` (seconds since epoch) from the payload without verifying the signature."""
     t = str(token).strip()
     parts = t.split(".")
@@ -170,9 +173,9 @@ def _perch_jwt_exp_unverified(token: str) -> float | None:
         return None
 
 
-def _perch_jwt_seconds_until_exp(token: str) -> float | None:
+def _auth_jwt_seconds_until_exp(token: str) -> float | None:
     """Seconds from now until JWT exp (unverified), or None if not decodable / no exp."""
-    exp = _perch_jwt_exp_unverified(token)
+    exp = _auth_jwt_exp_unverified(token)
     if exp is None:
         return None
     return float(exp) - time.time()
@@ -308,7 +311,7 @@ class Api:
         self._perch_usage_cache_at: float = 0.0
         # Async cloud-compute job state (job_id -> {progress, cancel_event,
         # pause_event, thread, result}). Cloud-compute reuses the Perch JWT
-        # (same Clerk identity) — see _check_perch_token() and
+        # (same Clerk identity) — see _check_auth_token() and
         # analyzer/cloud_compute_client.py.
         self._cc_jobs: dict = {}
         self._cc_jobs_lock = None
@@ -1959,62 +1962,62 @@ class Api:
             error(f'[culling] Traceback: {traceback.format_exc()}')
             return {'success': False, 'error': str(e)}
 
-    def get_perch_token(self):
+    def get_auth_token(self):
         """Return stored Perch JWT if present and not near expiry, else token=None."""
         try:
             data = _keyring_load()
             if not data:
-                _perch_debug_log_token("get_perch_token: keyring empty", None)
+                _auth_debug_log_token("get_auth_token: keyring empty", None)
                 return {"success": True, "token": None}
             token = data.get("token")
             if not token:
                 return {"success": True, "token": None}
-            ttl = _perch_jwt_seconds_until_exp(str(token))
+            ttl = _auth_jwt_seconds_until_exp(str(token))
             if ttl is not None:
                 if ttl < 300:  # 5-min buffer (match prior keyring behaviour)
-                    _perch_debug_log_token(
-                        "get_perch_token: JWT exp within 5min (rejected)", token
+                    _auth_debug_log_token(
+                        "get_auth_token: JWT exp within 5min (rejected)", token
                     )
-                    if _perch_debug_jwt_enabled():
-                        log(f"[Perch debug] get_perch_token: ttl_sec={ttl:.0f}")
+                    if _auth_debug_jwt_enabled():
+                        log(f"[Auth debug] get_auth_token: ttl_sec={ttl:.0f}")
                     return {"success": True, "token": None}
             else:
                 expiry_raw = data.get("expiry", 0)
                 try:
-                    exp = _perch_normalize_expiry_seconds(expiry_raw) if expiry_raw else 0.0
+                    exp = _auth_normalize_expiry_seconds(expiry_raw) if expiry_raw else 0.0
                 except (TypeError, ValueError):
                     exp = 0.0
                 if time.time() > (exp - 300):
-                    _perch_debug_log_token(
-                        "get_perch_token: could not decode JWT; stored exp past buffer",
+                    _auth_debug_log_token(
+                        "get_auth_token: could not decode JWT; stored exp past buffer",
                         token,
                     )
                     return {"success": True, "token": None}
-            exp_out = _perch_jwt_exp_unverified(str(token))
+            exp_out = _auth_jwt_exp_unverified(str(token))
             if exp_out is None:
                 try:
-                    exp_out = _perch_normalize_expiry_seconds(data.get("expiry", 0))
+                    exp_out = _auth_normalize_expiry_seconds(data.get("expiry", 0))
                 except (TypeError, ValueError):
                     exp_out = 0.0
-            _perch_debug_log_token("get_perch_token: returning token", token)
+            _auth_debug_log_token("get_auth_token: returning token", token)
             return {"success": True, "token": token, "expiry": exp_out}
         except Exception as e:
-            print(f"[API] get_perch_token() -> Error: {e}", flush=True)
+            print(f"[API] get_auth_token() -> Error: {e}", flush=True)
             return {"success": True, "token": None}
 
-    def store_perch_token(self, token, expiry):
+    def store_auth_token(self, token, expiry):
         """Persist Perch JWT to OS keychain. Called from desktop-signin.html via pywebview."""
         try:
             try:
-                exp = _perch_normalize_expiry_seconds(
+                exp = _auth_normalize_expiry_seconds(
                     float(expiry) if expiry is not None else 0.0
                 )
             except (TypeError, ValueError):
                 exp = 0.0
             _keyring_save({"token": str(token), "expiry": exp})
-            _perch_debug_log_token("store_perch_token: saved", str(token) if token else None)
-            if _perch_debug_jwt_enabled():
-                log(f"[Perch debug] store_perch_token: exp_stored={exp!r} (from arg {expiry!r})")
+            _auth_debug_log_token("store_auth_token: saved", str(token) if token else None)
+            if _auth_debug_jwt_enabled():
+                log(f"[Auth debug] store_auth_token: exp_stored={exp!r} (from arg {expiry!r})")
             # Invalidate per-instance caches — they're keyed on the previous
             # (possibly expired) token and would otherwise pin the UI to a
             # stale "not signed in" state for up to 5 minutes after re-auth.
@@ -2026,7 +2029,7 @@ class Api:
             if self._main_window:
                 safe_token = json.dumps(str(token))
                 self._main_window.evaluate_js(
-                    f'window.onPerchSignIn && window.onPerchSignIn({safe_token})'
+                    f'window.onAuthSignIn && window.onAuthSignIn({safe_token})'
                 )
             # Close sign-in window
             if self._sign_in_window:
@@ -2034,7 +2037,7 @@ class Api:
                 self._sign_in_window = None
             return {'success': True}
         except Exception as e:
-            print(f'[API] store_perch_token() -> Error: {e}', flush=True)
+            print(f'[API] store_auth_token() -> Error: {e}', flush=True)
             return {'success': False, 'error': str(e)}
 
     def get_perch_api_base(self) -> str:
@@ -2054,7 +2057,7 @@ class Api:
             self._share_jobs_lock = _t.Lock()
         return self._share_jobs_lock
 
-    def _check_perch_token(self) -> tuple[str | None, str | None, dict | None]:
+    def _check_auth_token(self) -> tuple[str | None, str | None, dict | None]:
         """Return (token, dev_user, error_dict-if-not-signed-in-or-stale).
 
         On a usable token: error_dict is None.
@@ -2066,11 +2069,11 @@ class Api:
         if not token and not dev_user:
             return None, None, {"success": False, "error": "not_signed_in", "needSignIn": True}
         if token and not dev_user:
-            ttl = _perch_jwt_seconds_until_exp(str(token))
+            ttl = _auth_jwt_seconds_until_exp(str(token))
             if ttl is None or ttl < 90:
                 return None, None, {
                     "success": False,
-                    "error": "perch_token_expired",
+                    "error": "auth_token_expired",
                     "needSignIn": True,
                 }
         return (str(token) if token else None), dev_user, None
@@ -2108,7 +2111,7 @@ class Api:
         signed_in = bool(dev_user)
         token_stale = False
         if not signed_in and token:
-            ttl = _perch_jwt_seconds_until_exp(str(token))
+            ttl = _auth_jwt_seconds_until_exp(str(token))
             if ttl is None or ttl < 90:
                 token_stale = True
             else:
@@ -2179,7 +2182,7 @@ class Api:
             and (now - self._perch_account_cache_at) < 300
         ):
             return self._perch_account_cache
-        token, dev_user, err = self._check_perch_token()
+        token, dev_user, err = self._check_auth_token()
         if err:
             return err
         try:
@@ -2212,7 +2215,7 @@ class Api:
             and (now - self._perch_usage_cache_at) < 300
         ):
             return self._perch_usage_cache
-        token, dev_user, err = self._check_perch_token()
+        token, dev_user, err = self._check_auth_token()
         if err:
             return err
         try:
@@ -2292,7 +2295,7 @@ class Api:
 
     def _cc_make_client(self):
         """Build an authenticated CloudComputeClient. Returns (client, error_dict)."""
-        token, dev_user, token_err = self._check_perch_token()
+        token, dev_user, token_err = self._check_auth_token()
         if token_err:
             return None, token_err
         try:
@@ -3438,7 +3441,7 @@ class Api:
             except ImportError as e:
                 return {"success": False, "error": f"uploader import failed: {e}"}
 
-        token, dev_user, err = self._check_perch_token()
+        token, dev_user, err = self._check_auth_token()
         if err:
             return err
 
@@ -3688,7 +3691,7 @@ class Api:
         if not perch_id:
             return {"status": "missing", "error": "link has no perch_id"}
 
-        token, dev_user, terr = self._check_perch_token()
+        token, dev_user, terr = self._check_auth_token()
         if terr:
             # No usable auth — treat as unauthorized; do NOT clear the link.
             return {"status": "unauthorized", "perch_id": perch_id, "link": link}
@@ -3773,7 +3776,7 @@ class Api:
         if not perch_id:
             return {"present": False, "error": "manifest has no perch_id"}
 
-        token, dev_user, terr = self._check_perch_token()
+        token, dev_user, terr = self._check_auth_token()
         if terr:
             return {"present": True, "status": "unauthorized", "manifest": manifest}
 
@@ -3859,7 +3862,7 @@ class Api:
 
         worker_error: Optional[str] = None
         if perch_id:
-            token, dev_user, terr = self._check_perch_token()
+            token, dev_user, terr = self._check_auth_token()
             if terr is None:
                 try:
                     import requests as _req
@@ -3911,7 +3914,7 @@ class Api:
             except ImportError as e:
                 return {"success": False, "error": f"uploader import failed: {e}"}
 
-        token, dev_user, terr = self._check_perch_token()
+        token, dev_user, terr = self._check_auth_token()
         if terr:
             return terr
 
@@ -3961,7 +3964,7 @@ class Api:
             except ImportError as e:
                 return {"success": False, "error": f"uploader import failed: {e}"}
 
-        token, dev_user, terr = self._check_perch_token()
+        token, dev_user, terr = self._check_auth_token()
         if terr:
             return terr
 
@@ -4058,7 +4061,7 @@ class Api:
 
         return {"success": True, "job_id": job_id}
 
-    def open_perch_sign_in(self, url):
+    def open_auth_sign_in(self, url):
         """Open a pywebview window for desktop Perch sign-in."""
         try:
             if not WEBVIEW_IMPORT_SUCCESS:
@@ -4071,9 +4074,9 @@ class Api:
                     pass
                 self._sign_in_window = None
             win = _wv.create_window(
-                'Sign In to Perch',
+                'Sign In to Project Kestrel',
                 url,
-                js_api=self,   # same Api instance — store_perch_token is accessible
+                js_api=self,   # same Api instance — store_auth_token is accessible
                 width=520,
                 height=700,
                 resizable=False,
@@ -4081,7 +4084,7 @@ class Api:
             self._sign_in_window = win
             return {'success': True}
         except Exception as e:
-            print(f'[API] open_perch_sign_in() -> Error: {e}', flush=True)
+            print(f'[API] open_auth_sign_in() -> Error: {e}', flush=True)
             return {'success': False, 'error': str(e)}
 
     def _find_sidecar_file(self, root_path: str, filename: str, ext: str = '.xmp'):

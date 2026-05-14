@@ -98,8 +98,12 @@
 
     let hasPywebviewApi = !!(window.pywebview && window.pywebview.api);
 
-    // Perch authentication
+    // Auth / account origins. Same Clerk JWT works for both surfaces; the
+    // distinction is only which website hosts which UI:
+    //   PERCH_ORIGIN     — Perch share product (project URLs, share modals).
+    //   MYACCOUNT_ORIGIN — sign-in + future account dashboard.
     const PERCH_ORIGIN = 'https://perch.projectkestrel.org';
+    const MYACCOUNT_ORIGIN = 'https://myaccount.projectkestrel.org';
     let _perchToken = null;
 
     // ── Global error handlers ─────────────────────────────────────────────────

@@ -21,15 +21,15 @@
       let handle = null;
       let displayName = null;
 
-      if (window.pywebview?.api?.get_perch_token) {
+      if (window.pywebview?.api?.get_auth_token) {
         try {
-          const result = await window.pywebview.api.get_perch_token();
+          const result = await window.pywebview.api.get_auth_token();
           if (result?.token) {
             _perchToken = result.token;
             signedIn = true;
           }
         } catch (e) {
-          console.warn('Failed to get Perch token on startup:', e);
+          console.warn('Failed to get auth token on startup:', e);
         }
       }
 
@@ -44,7 +44,7 @@
             const a = accountRes.account;
             handle = a.username || a.userId || null;
             displayName = a.displayName || a.display_name || a.first_name || null;
-          } else if (accountRes?.error === 'perch_token_expired') {
+          } else if (accountRes?.error === 'auth_token_expired') {
             expired = true;
             signedIn = false;
           }
@@ -81,18 +81,18 @@
       }
 
       accountBtn.addEventListener('click', () => {
-        const signInUrl = `${PERCH_ORIGIN}/desktop-signin.html`;
-        if (hasPywebviewApi && window.pywebview?.api?.open_perch_sign_in) {
-          window.pywebview.api.open_perch_sign_in(signInUrl);
+        const signInUrl = `${MYACCOUNT_ORIGIN}/desktop-signin`;
+        if (hasPywebviewApi && window.pywebview?.api?.open_auth_sign_in) {
+          window.pywebview.api.open_auth_sign_in(signInUrl);
         } else {
           // Fallback: open web sign-in in browser
-          window.open(`${PERCH_ORIGIN}/signin.html`, '_blank');
+          window.open(`${MYACCOUNT_ORIGIN}/signin`, '_blank');
         }
       });
     }
 
-    // Called by Python after store_perch_token completes
-    window.onPerchSignIn = async (token) => {
+    // Called by Python after store_auth_token completes
+    window.onAuthSignIn = async (token) => {
       _perchToken = token;
       const accountBtn = el('#accountBtn');
       const labelEl = el('#accountBtnLabel');
@@ -106,7 +106,7 @@
       }
       // Fetch account info so the handle shows up on the button without
       // requiring a Kestrel restart. The cache was just cleared in
-      // store_perch_token, so this hits the network and gets fresh data.
+      // store_auth_token, so this hits the network and gets fresh data.
       try {
         if (window.pywebview?.api?.get_perch_account) {
           const accountRes = await window.pywebview.api.get_perch_account();

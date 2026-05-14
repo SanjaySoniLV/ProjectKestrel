@@ -63,11 +63,12 @@
     }
 
     async function _ccCheckSignedIn() {
-      // Returns true when a usable Perch JWT exists; false otherwise.
-      // Cloud and Perch share the same Clerk identity.
-      if (!window.pywebview?.api?.get_perch_token) return false;
+      // Returns true when a usable Clerk JWT exists; false otherwise. All
+      // services in the umbrella (Perch, Cloud Compute, Auth Worker) share
+      // the same Clerk identity, so the token from the keyring is enough.
+      if (!window.pywebview?.api?.get_auth_token) return false;
       try {
-        const r = await window.pywebview.api.get_perch_token();
+        const r = await window.pywebview.api.get_auth_token();
         return !!(r && r.success && r.token);
       } catch { return false; }
     }

@@ -764,8 +764,8 @@
       });
       if (sigIn) sigIn.addEventListener('click', async () => {
         try {
-          const signInUrl = `${PERCH_ORIGIN}/desktop-signin.html`;
-          await window.pywebview.api.open_perch_sign_in(signInUrl);
+          const signInUrl = `${MYACCOUNT_ORIGIN}/desktop-signin`;
+          await window.pywebview.api.open_auth_sign_in(signInUrl);
         } catch {}
         _perchClosePerchDialog();
       });
