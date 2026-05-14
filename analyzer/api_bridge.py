@@ -2331,10 +2331,21 @@ class Api:
         """
         from pathlib import Path as _Path
         folder = _Path(folder)
-        all_files = sorted(
-            p for p in folder.iterdir()
-            if p.is_file() and p.suffix.lower() in {".cr3", ".jpg", ".jpeg"}
-        )
+        # Match the local pipeline / folder_inspector RAW-priority rule: if the
+        # folder has any RAWs we ONLY analyze RAWs (their JPEG sidecars are
+        # ignored). Only when there are zero RAWs do we fall back to JPEGs.
+        # Without this, cloud jobs upload both RAW and JPG, doubling bandwidth
+        # and producing duplicate scene rows on merge. See folder_inspector.py
+        # `_list_images_in_folder` (line 20-34) — keep the two filters in sync.
+        try:
+            from kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS
+        except ImportError:
+            from analyzer.kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS  # type: ignore[no-redef]
+        raw_set = {ext.lower() for ext in RAW_EXTENSIONS}
+        jpeg_set = {ext.lower() for ext in JPEG_EXTENSIONS}
+        candidates = [p for p in folder.iterdir() if p.is_file()]
+        raws = sorted(p for p in candidates if p.suffix.lower() in raw_set)
+        all_files = raws if raws else sorted(p for p in candidates if p.suffix.lower() in jpeg_set)
         if not all_files:
             return [], None, 0, 0
 
@@ -2515,6 +2526,22 @@ class Api:
                     else:
                         remote = client.get_status(job_id)
                         self._cc_apply_remote_snapshot(job_id, remote)
+                        # Phase 2 auto-resume: when the Worker observes that
+                        # the client is heartbeating again after a previous
+                        # auto-pause (e.g. desktop was offline), it returns
+                        # autoPausedCleared=true on this single response.
+                        # Release the local pause_event so the upload thread
+                        # un-blocks without needing the user to click Resume.
+                        if isinstance(remote, dict) and remote.get("autoPausedCleared"):
+                            with self._ensure_cc_lock():
+                                st = self._cc_jobs.get(job_id) or {}
+                                pe = st.get("pause_event")
+                            if pe is not None and not pe.is_set():
+                                pe.set()
+                                warn(
+                                    f"[cloud-compute] {job_id}: Worker auto-cleared upload pause; "
+                                    "resuming local upload thread."
+                                )
                 except Exception as e:
                     self._cc_record_remote_failure(job_id, str(e))
                     # Log every 5th consecutive failure so the journal doesn't
@@ -2803,6 +2830,18 @@ class Api:
                 for jid, state in self._cc_jobs.items()
             ]
         return {"ok": True, "jobs": jobs}
+
+    def cloud_compute_clear_done(self) -> dict:
+        """Remove every terminal job (done|cancelled|failed) from both the
+        persistent ledger and the in-memory map. Returns the IDs removed."""
+        try:
+            removed = self._cc_jobs_store().remove_terminal_jobs()
+        except Exception as e:
+            return {"ok": False, "error": f"store: {e}"}
+        with self._ensure_cc_lock():
+            for jid in removed:
+                self._cc_jobs.pop(jid, None)
+        return {"ok": True, "removed": removed}
 
     def cloud_compute_pause_job(self, job_id: str) -> dict:
         """Pause uploads for a job. Modal keeps draining the already-uploaded

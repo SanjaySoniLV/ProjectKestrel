@@ -264,5 +264,18 @@ def remove_job(job_id: str) -> bool:
         return True
 
 
+def remove_terminal_jobs() -> list[str]:
+    """Drop every job in a terminal status (done|cancelled|failed).
+    Returns the list of removed job IDs."""
+    with _SAVE_LOCK:
+        existing = load_jobs()
+        removed = [j["jobId"] for j in existing if j["status"] in _TERMINAL_STATUSES]
+        if not removed:
+            return []
+        kept = [j for j in existing if j["status"] not in _TERMINAL_STATUSES]
+        save_jobs(kept)
+        return removed
+
+
 def utc_now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())

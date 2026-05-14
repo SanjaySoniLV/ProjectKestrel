@@ -10081,6 +10081,9 @@
       const s = (state && state.status) || 'running';
       if (s === 'cancelled' || s === 'failed') return s;
       if (s === 'upload_paused') return 'upload_paused';
+      // Use total-with-anchor here so the "Uploaded" pill flips only when ALL
+      // wire-level uploads are complete (including the anchor), even though
+      // the visible bar uses newImageCount as denominator.
       const total = Number(state.imageCount || 0);
       const uploaded = Number(state.uploadedCount || 0);
       // "uploaded" on the Worker side is the union of uploaded/dispatched/
@@ -10123,9 +10126,18 @@
 
     function _ccRenderItem(state) {
       const folder = (state.rootPath || '').split(/[\\/]/).pop() || state.jobId;
-      const total = Number(state.imageCount || 0);
-      const analyzed = Number(state.analyzedCount || 0);
-      const uploaded = Number(state.uploadedCount || 0);
+      // Display denominator: use newImageCount when available (excludes the
+      // scene-continuity anchor), so the user sees "146/181" not "146/182" on
+      // re-analysis of a folder with prior results. The percentage bars clamp
+      // at 100%, so when uploaded/analyzed transiently exceeds the displayed
+      // total (the anchor is in the numerator), the bar still looks right.
+      const total = Number(state.newImageCount ?? state.imageCount ?? 0);
+      const rawAnalyzed = Number(state.analyzedCount || 0);
+      const rawUploaded = Number(state.uploadedCount || 0);
+      // Numerators are also clamped to the displayed total so the text never
+      // shows e.g. "182/181 uploaded".
+      const analyzed = total > 0 ? Math.min(rawAnalyzed, total) : rawAnalyzed;
+      const uploaded = total > 0 ? Math.min(rawUploaded, total) : rawUploaded;
       const uploadPhase = _ccUploadPhase(state);
       const analysisPhase = _ccAnalysisPhase(state);
       const uploadPct = total > 0 ? Math.min(100, Math.round((uploaded / total) * 100)) : 0;
@@ -10140,9 +10152,12 @@
       // Staleness signal: if the backend hasn't received a successful Worker
       // response recently, show a small "syncing…" badge but DO NOT zero the
       // counters. Last-known values persist across transient failures.
+      // Terminal jobs intentionally have stale timestamps (the per-job poller
+      // stops once a job is done), so suppress the badge for them.
       const updatedAt = Number(state.remoteUpdatedAtMs || 0);
       const ageMs = updatedAt > 0 ? (Date.now() - updatedAt) : Infinity;
-      const isStale = ageMs > _CC_STALE_THRESHOLD_MS;
+      const isTerminal = ['done', 'failed', 'cancelled'].includes(state.status);
+      const isStale = !isTerminal && ageMs > _CC_STALE_THRESHOLD_MS;
       const failureCount = Number(state.remoteFailureCount || 0);
       const staleHint = isStale
         ? `<span class="cloud-sync-badge" title="Last successful sync ${updatedAt > 0 ? Math.round(ageMs/1000)+'s ago' : 'never'}${failureCount > 0 ? ' — ' + failureCount + ' failed attempt(s)' : ''}">syncing…</span>`
@@ -10361,11 +10376,83 @@
       });
     }
 
+    // Panel-level controls (one-time wiring): Clear done removes terminal jobs
+    // from the persistent ledger; Pause All / Cancel All apply to every active
+    // job in the panel. The buttons themselves live in visualizer.html.
+    let _ccPanelControlsWired = false;
+    function _ccWirePanelControls() {
+      if (_ccPanelControlsWired) return;
+      _ccPanelControlsWired = true;
+      const clearBtn = document.getElementById('cloudQueueClearBtn');
+      const pauseBtn = document.getElementById('cloudQueuePauseBtn');
+      const cancelBtn = document.getElementById('cloudQueueCancelBtn');
+      if (clearBtn) {
+        clearBtn.addEventListener('click', async () => {
+          if (!window.pywebview?.api?.cloud_compute_clear_done) return;
+          clearBtn.disabled = true;
+          try {
+            const r = await window.pywebview.api.cloud_compute_clear_done();
+            if (r && r.ok) {
+              showToast(`Cleared ${(r.removed || []).length} finished job(s)`, 2500);
+              _ccRenderPanel();
+            } else {
+              showToast(`Clear done failed: ${r?.error || 'unknown'}`, 5000);
+            }
+          } catch (e) {
+            showToast(`Clear done failed: ${e?.message || e}`, 5000);
+          } finally {
+            clearBtn.disabled = false;
+          }
+        });
+      }
+      const _activeJobIds = async () => {
+        if (!window.pywebview?.api?.cloud_compute_list_jobs) return [];
+        try {
+          const r = await window.pywebview.api.cloud_compute_list_jobs();
+          return ((r && r.jobs) || [])
+            .filter(j => !['done', 'failed', 'cancelled'].includes(j.status))
+            .map(j => j.jobId);
+        } catch { return []; }
+      };
+      if (pauseBtn) {
+        pauseBtn.addEventListener('click', async () => {
+          if (!window.pywebview?.api?.cloud_compute_pause_job) return;
+          pauseBtn.disabled = true;
+          try {
+            const ids = await _activeJobIds();
+            if (ids.length === 0) { showToast('No active jobs to pause', 2500); return; }
+            await Promise.all(ids.map(id => window.pywebview.api.cloud_compute_pause_job(id).catch(() => null)));
+            showToast(`Paused ${ids.length} job(s)`, 2500);
+            _ccRenderPanel();
+          } finally {
+            pauseBtn.disabled = false;
+          }
+        });
+      }
+      if (cancelBtn) {
+        cancelBtn.addEventListener('click', async () => {
+          if (!window.pywebview?.api?.cloud_compute_cancel_job) return;
+          const ids = await _activeJobIds();
+          if (ids.length === 0) { showToast('No active jobs to cancel', 2500); return; }
+          if (!window.confirm(`Cancel ${ids.length} active cloud job(s)?\n\nUploaded images will be deleted from the server. Any results already downloaded stay on disk.`)) return;
+          cancelBtn.disabled = true;
+          try {
+            await Promise.all(ids.map(id => window.pywebview.api.cloud_compute_cancel_job(id).catch(() => null)));
+            showToast(`Cancelled ${ids.length} job(s)`, 2500);
+            _ccRenderPanel();
+          } finally {
+            cancelBtn.disabled = false;
+          }
+        });
+      }
+    }
+
     // Wire startup hooks. The pywebview ready event is the canonical signal
     // that the bridge is alive; we also tolerate a fallback timer in case
     // the event fired before our listener attached.
     async function _ccBootstrap() {
       _ccWireResumeDialog();
+      _ccWirePanelControls();
       // Only spin up the panel poller if there's actually a non-terminal
       // job to watch. Avoids burning a 4s tick forever after app launch
       // when the user has never used cloud compute.
