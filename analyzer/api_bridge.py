@@ -104,15 +104,32 @@ def _keyring_load() -> dict | None:
         return None
 
 def _keyring_save(data: dict) -> None:
-    """Write the auth JWT to OS keychain; fall back to plaintext file."""
+    """Write the auth JWT to OS keychain; fall back to plaintext file.
+
+    Fallback file is locked down to owner-read/write (``0o600``) and lives
+    in a ``0o700`` directory. Without that the default umask leaves the
+    file world-readable on POSIX, which on a shared dev box / CI box is a
+    direct JWT exfil path (audit Medium-13). On Windows, ``chmod`` is a
+    weak ACL approximation; this is best-effort there — the keyring path
+    is the only secure-by-default option on Windows.
+    """
     try:
         import keyring
         keyring.set_password(_KEYRING_SERVICE, _KEYRING_KEY, json.dumps(data))
     except Exception:
         path = _get_auth_fallback_path()
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        directory = os.path.dirname(path)
+        os.makedirs(directory, exist_ok=True)
+        try:
+            os.chmod(directory, 0o700)
+        except OSError:
+            pass
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(data, f)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
 
 
 def _auth_normalize_expiry_seconds(expiry: float | int) -> float:
