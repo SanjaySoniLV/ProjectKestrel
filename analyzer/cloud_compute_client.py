@@ -23,6 +23,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -219,13 +220,21 @@ class CloudComputeClient:
         """POST /api/jobs/{jobId}/resume — clears the upload-side pause."""
         return self._request("POST", f"/api/jobs/{job_id}/resume", {})
 
-    def cancel_job_remote(self, job_id: str) -> dict:
+    def cancel_job_remote(self, job_id: str, *, origin: str = "user") -> dict:
         """POST /api/jobs/{jobId}/cancel — terminal cancellation. Worker marks
         the job ``cancelled``, sets ``stop_requested = 1`` so the Modal fetcher
         exits on its next poll, and async-deletes staging objects for this job.
         Results bucket is left intact so the client can still pull whatever
-        finished before the cancel landed."""
-        return self._request("POST", f"/api/jobs/{job_id}/cancel", {})
+        finished before the cancel landed.
+
+        ``origin`` distinguishes user-initiated cancellation from the desktop
+        bootstrap orphan reaper (pass ``"orphan"`` for the latter). Worker
+        records this in the audit log so the dashboard can show "the desktop
+        crashed mid-upload" vs "the user clicked Cancel" without ambiguity."""
+        path = f"/api/jobs/{job_id}/cancel"
+        if origin == "orphan":
+            path += "?origin=orphan"
+        return self._request("POST", path, {})
 
     def request_upload_test_urls(
         self,
@@ -241,11 +250,49 @@ class CloudComputeClient:
             body["sizes"] = list(sizes)
         return self._request("POST", "/api/upload-test", body)
 
-    def get_usage(self) -> dict:
-        """GET /api/usage — currently a stub (Stage 3 fleshes this out into
-        per-user image/credit metering). Returns ``{remainingImages: None,
-        stub: True}`` today."""
-        return self._request("GET", "/api/usage")
+    def get_usage(self, period: str = "monthly") -> dict:
+        """GET /api/usage — Stage 5D. Returns the caller's aggregate cloud
+        activity (totalJobs, totalImagesAnalyzed, byTerminalReason). Pass
+        ``period='all'`` for lifetime totals; default is current UTC month.
+
+        ``remainingImages`` stays ``None`` until quota enforcement is wired."""
+        path = "/api/usage" if period == "monthly" else f"/api/usage?period={period}"
+        return self._request("GET", path)
+
+    def list_jobs(
+        self,
+        *,
+        status: str | None = None,
+        from_iso: str | None = None,
+        to_iso: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> dict:
+        """GET /api/jobs — Stage 5C. Paginated list of the caller's jobs with
+        live counters baked in (uploaded/dispatched/downloaded/analyzed). For
+        the dashboard's "my jobs" tab. ``status`` accepts a csv (`'running'`
+        is shorthand for `'uploading,processing'`)."""
+        params: list[str] = []
+        if status:    params.append(f"status={urllib.parse.quote(status)}")
+        if from_iso:  params.append(f"from={urllib.parse.quote(from_iso)}")
+        if to_iso:    params.append(f"to={urllib.parse.quote(to_iso)}")
+        if limit:     params.append(f"limit={int(limit)}")
+        if cursor:    params.append(f"cursor={urllib.parse.quote(cursor)}")
+        suffix = ("?" + "&".join(params)) if params else ""
+        return self._request("GET", f"/api/jobs{suffix}")
+
+    def get_job_events(self, job_id: str, *, order: str = "desc") -> dict:
+        """GET /api/jobs/:jobId/events — Stage 5C. Full audit timeline for one
+        job. ``order='asc'`` for chronological replay; default `'desc'`
+        (newest first) for the dashboard's "recent activity" view."""
+        suffix = "?order=asc" if order == "asc" else ""
+        return self._request("GET", f"/api/jobs/{job_id}/events{suffix}")
+
+    def get_job_timing_stats(self, job_id: str) -> dict:
+        """GET /api/jobs/:jobId/timing-stats — Stage 5C. Derived throughput +
+        latency aggregates (p50/p95) from job_images timestamps. Returns null
+        fields when not enough samples exist (e.g. analyze stats mid-upload)."""
+        return self._request("GET", f"/api/jobs/{job_id}/timing-stats")
 
     def list_results(self, job_id: str) -> list[dict]:
         body = self._request("GET", f"/api/jobs/{job_id}/results")
@@ -503,7 +550,102 @@ class CloudComputeClient:
                 500, f"Expected {len(files)} presigned URLs, got {len(presigned)}"
             )
 
-        # 2) Concurrent uploads + per-file notify
+        # 2) Spawn the pack-download poller BEFORE uploads start. Modal
+        # dispatches at BASE_DISPATCH_THRESHOLD (=50) — packs can land in R2
+        # while uploads are still streaming, and serial-then-poll would leave
+        # them sitting unfetched until the upload pool drains. The poller and
+        # upload pool now run concurrently; the poller exits when the Worker
+        # reports a terminal status.
+        pack_dir = images_dir / ".kestrel" / "cloud-packs"
+        pack_dir.mkdir(parents=True, exist_ok=True)
+        poller_downloaded: set[str] = set()
+        poller_lock = threading.Lock()
+        poller_done = threading.Event()
+        poller_state: dict = {"final": None, "analyzed": 0, "exception": None}
+
+        def _poll_loop() -> None:
+            try:
+                while not poller_done.is_set():
+                    if cancel_event is not None and cancel_event.is_set():
+                        return
+                    try:
+                        status_body = self.get_status(job_id)
+                    except CloudComputeError as e:
+                        _emit("status_failed", error=str(e))
+                        if poller_done.wait(timeout=_POLL_INTERVAL_SEC):
+                            return
+                        continue
+                    cur_status = str(status_body.get("status", ""))
+                    analyzed = int(status_body.get("analyzedCount") or 0)
+                    poller_state["analyzed"] = analyzed
+                    _emit(
+                        "status",
+                        jobStatus=cur_status,
+                        analyzedCount=analyzed,
+                        imageCount=int(status_body.get("image_count") or len(files)),
+                    )
+
+                    try:
+                        files_meta = self.list_results(job_id)
+                    except CloudComputeError as e:
+                        _emit("list_failed", error=str(e))
+                        files_meta = []
+
+                    for meta in files_meta:
+                        if cancel_event is not None and cancel_event.is_set():
+                            return
+                        fname = str(meta.get("filename") or "")
+                        if not fname.endswith(".zip"):
+                            continue
+                        # Dedup under the lock; the actual download + merge
+                        # runs OUTSIDE so concurrent merges of different packs
+                        # don't serialise.
+                        with poller_lock:
+                            if fname in poller_downloaded:
+                                continue
+                            poller_downloaded.add(fname)
+                        dest = pack_dir / fname
+                        try:
+                            self.download_pack(job_id, fname, dest)
+                        except CloudComputeError as e:
+                            _emit("pack_download_failed", filename=fname, error=str(e))
+                            with poller_lock:
+                                poller_downloaded.discard(fname)
+                            continue
+                        _emit("pack_downloaded", filename=fname, packs=len(poller_downloaded))
+                        if merge_into_kestrel:
+                            try:
+                                merge_pack_into_kestrel(
+                                    dest, images_dir,
+                                    protected_filenames=protected_filenames,
+                                )
+                                _emit("pack_merged", filename=fname)
+                                if on_pack_merged is not None:
+                                    try:
+                                        on_pack_merged(fname)
+                                    except Exception:
+                                        pass
+                            except Exception as e:
+                                _emit("pack_merge_failed", filename=fname, error=str(e))
+
+                    if cur_status in ("complete", "failed"):
+                        poller_state["final"] = status_body
+                        return
+                    if poller_done.wait(timeout=_POLL_INTERVAL_SEC):
+                        return
+            except Exception as e:
+                # Capture but don't raise — the foreground thread joins on
+                # poller_done and inspects poller_state["exception"].
+                poller_state["exception"] = e
+            finally:
+                poller_done.set()
+
+        poller_thread = threading.Thread(
+            target=_poll_loop, name=f"cc-pack-poller-{job_id}", daemon=True,
+        )
+        poller_thread.start()
+
+        # 3) Concurrent uploads + per-file notify (runs alongside the poller)
         notified_lock = threading.Lock()
         notified_count = 0
         failed_uploads: list[str] = []
@@ -540,74 +682,35 @@ class CloudComputeClient:
                     total=len(files),
                 )
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=_MAX_UPLOAD_WORKERS) as pool:
-            futures = [
-                pool.submit(_upload_and_notify, item, fp)
-                for item, fp in zip(presigned, files)
-            ]
-            for fut in concurrent.futures.as_completed(futures):
-                _check_cancel()
-                fut.result()  # propagate exceptions
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=_MAX_UPLOAD_WORKERS) as pool:
+                futures = [
+                    pool.submit(_upload_and_notify, item, fp)
+                    for item, fp in zip(presigned, files)
+                ]
+                for fut in concurrent.futures.as_completed(futures):
+                    _check_cancel()
+                    fut.result()  # propagate exceptions
 
-        # 3) Mark uploads complete (also dispatches stragglers on the Worker)
-        _emit("uploads_done", failed=len(failed_uploads))
-        self.mark_complete(job_id)
+            # 4) Mark uploads complete (also dispatches stragglers on the Worker)
+            _emit("uploads_done", failed=len(failed_uploads))
+            self.mark_complete(job_id)
+        except Exception:
+            # If uploads failed or were cancelled, make sure the poller exits
+            # before we re-raise — otherwise we'd leak the thread.
+            poller_done.set()
+            poller_thread.join(timeout=10.0)
+            raise
 
-        # 4) Poll status, download new packs as they appear
-        pack_dir = images_dir / ".kestrel" / "cloud-packs"
-        pack_dir.mkdir(parents=True, exist_ok=True)
-        downloaded: set[str] = set()
+        # 5) Wait for the poller to observe a terminal status. It picks up any
+        # stragglers (the final pack(s) Modal produces after `mark_complete`).
+        poller_thread.join()
+        if poller_state["exception"] is not None:
+            raise poller_state["exception"]
 
-        while True:
-            _check_cancel()
-            status_body = self.get_status(job_id)
-            cur_status = str(status_body.get("status", ""))
-            analyzed = int(status_body.get("analyzedCount") or 0)
-            _emit(
-                "status",
-                jobStatus=cur_status,
-                analyzedCount=analyzed,
-                imageCount=int(status_body.get("image_count") or len(files)),
-            )
-
-            try:
-                files_meta = self.list_results(job_id)
-            except CloudComputeError as e:
-                # Don't fail the job over a transient list error — try again next tick.
-                _emit("list_failed", error=str(e))
-                files_meta = []
-
-            for meta in files_meta:
-                fname = str(meta.get("filename") or "")
-                if not fname.endswith(".zip") or fname in downloaded:
-                    continue
-                _check_cancel()
-                dest = pack_dir / fname
-                try:
-                    self.download_pack(job_id, fname, dest)
-                except CloudComputeError as e:
-                    _emit("pack_download_failed", filename=fname, error=str(e))
-                    continue
-                downloaded.add(fname)
-                _emit("pack_downloaded", filename=fname, packs=len(downloaded))
-                if merge_into_kestrel:
-                    try:
-                        merge_pack_into_kestrel(
-                            dest, images_dir,
-                            protected_filenames=protected_filenames,
-                        )
-                        _emit("pack_merged", filename=fname)
-                        if on_pack_merged is not None:
-                            try:
-                                on_pack_merged(fname)
-                            except Exception:
-                                pass
-                    except Exception as e:
-                        _emit("pack_merge_failed", filename=fname, error=str(e))
-
-            if cur_status in ("complete", "failed"):
-                break
-            time.sleep(_POLL_INTERVAL_SEC)
+        final = poller_state["final"] or {}
+        cur_status = str(final.get("status", ""))
+        analyzed = int(final.get("analyzedCount") or poller_state["analyzed"])
 
         return {
             "ok": cur_status == "complete",
@@ -615,7 +718,7 @@ class CloudComputeClient:
             "status": cur_status,
             "analyzedCount": analyzed,
             "uploadFailures": failed_uploads,
-            "packsDownloaded": sorted(downloaded),
+            "packsDownloaded": sorted(poller_downloaded),
             "packDir": str(pack_dir),
         }
 
@@ -678,9 +781,12 @@ def merge_pack_into_kestrel(
             # Some pack layouts place files at archive root.
             src_kestrel = tmp_path
 
-        # Copy crops + exports (overwrite existing). Skip artifacts that
-        # belong to a protected filename so the local pre-existing artifacts
-        # for the anchor file are preserved alongside its CSV row.
+        # Copy crops + exports. Stage 4C: skip if a destination file already
+        # exists — local artifacts are authoritative. This generalises the
+        # protected_filenames check (which only covered anchor files) to all
+        # local artifacts, matching the CSV append-only semantics from 4A.
+        # protected_filenames is still consulted as an early-skip for the
+        # anchor case (same name + present locally → skipped twice, harmless).
         for sub in ("crop", "export"):
             src = src_kestrel / sub
             if not src.is_dir():
@@ -691,7 +797,11 @@ def merge_pack_into_kestrel(
                     continue
                 if _is_protected_artifact(entry.name):
                     continue
-                shutil.copy2(entry, dst / entry.name)
+                dst_path = dst / entry.name
+                if dst_path.exists():
+                    # Don't clobber a local artifact — keep what the user has.
+                    continue
+                shutil.copy2(entry, dst_path)
 
         # CSV merge — last-write-wins on filename column, EXCEPT protected
         # filenames where the existing row (if any) is preserved.
@@ -700,27 +810,47 @@ def merge_pack_into_kestrel(
             target_csv = target_kestrel / "kestrel_database.csv"
             _merge_database_csv(src_csv, target_csv, protected=protected)
 
-        # Metadata + scenedata are full replacements
-        for fname in ("kestrel_metadata.json", "kestrel_scenedata.json"):
-            src_meta = src_kestrel / fname
-            if src_meta.is_file():
-                shutil.copy2(src_meta, target_kestrel / fname)
+        # Scenedata: additive merge (Stage 4B). Never overwrite existing
+        # image_ratings, scene names, statuses, or user_tags. Add new
+        # image-to-scene assignments and new scene records from the pack.
+        src_scene = src_kestrel / "kestrel_scenedata.json"
+        if src_scene.is_file():
+            _merge_scenedata_additive(src_scene, target_kestrel / "kestrel_scenedata.json")
+
+        # Metadata: full replacement is safe — file contains no user data
+        # (analysis_settings, version stamps, quality histogram).
+        src_metadata = src_kestrel / "kestrel_metadata.json"
+        if src_metadata.is_file():
+            shutil.copy2(src_metadata, target_kestrel / "kestrel_metadata.json")
 
 
 def _merge_database_csv(
     src: Path,
     dst: Path,
-    protected: Optional[set[str]] = None,
+    protected: Optional[set[str]] = None,  # kept for signature compat; see below
 ) -> None:
     """Merge ``src`` into ``dst``, deduping on the ``filename`` column.
 
-    Default policy: incoming row wins for any filename. When ``protected`` is
-    non-empty, an existing row for a protected filename is preserved over an
-    incoming one (the cloud pack may have re-analyzed an anchor file under
-    different settings; the local row is authoritative)."""
-    protected = protected or set()
+    **Append-new-rows-only semantics (Stage 4A).** Any filename already
+    present locally is preserved verbatim — the cloud row is dropped. This
+    is stricter than the previous "protected_filenames only" gate: it
+    protects every row from being clobbered by cloud-derived data, including
+    user-editable columns (`culled`, `culled_origin`, etc.) that share the
+    same CSV with analysis columns.
+
+    The ``protected`` argument is now redundant for the CSV path (every
+    existing row is protected) but is kept on the signature so callers don't
+    have to be reworked simultaneously; it's still meaningful for artifact
+    skipping in the caller.
+
+    New rows from the cloud pack are appended. Cloud-only columns that
+    don't exist in the local CSV get added to the fieldnames list so the
+    new rows can populate them.
+    """
+    del protected  # see docstring — no longer used here
     rows: dict[str, dict[str, Any]] = {}
     fieldnames: list[str] = []
+    existing_keys: set[str] = set()
 
     if dst.is_file():
         with dst.open("r", encoding="utf-8", newline="") as f:
@@ -730,6 +860,7 @@ def _merge_database_csv(
                 key = (row.get("filename") or "").strip()
                 if key:
                     rows[key] = row
+                    existing_keys.add(key)
 
     with src.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
@@ -744,13 +875,101 @@ def _merge_database_csv(
             key = (row.get("filename") or "").strip()
             if not key:
                 continue
-            if key in protected and key in rows:
-                # Keep the existing local row; drop the incoming one.
+            if key in existing_keys:
+                # Local row wins — never overwrite. Protects user-editable
+                # columns alongside analysis columns.
                 continue
-            rows[key] = row  # last-wins
+            rows[key] = row
 
     with dst.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         for key in sorted(rows.keys()):
             writer.writerow(rows[key])
+
+
+def _merge_scenedata_additive(src: Path, dst: Path) -> None:
+    """Merge ``src`` scenedata JSON into ``dst`` additively (Stage 4B).
+
+    Mirrors the safety semantics of `database.update_scenedata_with_database`
+    (line 265 in `kestrel_analyzer/database.py`) but operates JSON-to-JSON
+    so the pack-merge path doesn't have to round-trip through a DataFrame:
+
+    - `image_ratings`: existing entries are preserved; new entries from the
+      pack are added. A user rating is never overwritten.
+    - `scenes`: for each incoming scene_id:
+        * If the scene exists locally, keep `name`, `status`, `user_tags`
+          from the local copy; take the UNION of `image_filenames`.
+        * If the scene is new, copy it wholesale.
+    - `version`: take the higher of the two strings (lexicographic — both
+      are dotted-decimal in practice; "2.0" < "2.0.1" < "2.1").
+
+    When ``dst`` doesn't exist yet (fresh folder), the incoming file is
+    written verbatim.
+    """
+    try:
+        with src.open("r", encoding="utf-8") as f:
+            incoming = json.load(f)
+    except (OSError, ValueError):
+        return
+    if not isinstance(incoming, dict):
+        return
+
+    if not dst.is_file():
+        with dst.open("w", encoding="utf-8") as f:
+            json.dump(incoming, f, indent=2)
+        return
+
+    try:
+        with dst.open("r", encoding="utf-8") as f:
+            existing = json.load(f)
+    except (OSError, ValueError):
+        existing = {}
+    if not isinstance(existing, dict):
+        existing = {}
+
+    # version: take the higher string (lexicographic ordering works for
+    # the dotted-decimal scheme used in practice).
+    inc_ver = str(incoming.get("version") or "")
+    cur_ver = str(existing.get("version") or "")
+    existing["version"] = inc_ver if inc_ver > cur_ver else (cur_ver or inc_ver)
+
+    # image_ratings: existing entries win.
+    inc_ratings = incoming.get("image_ratings") or {}
+    cur_ratings = existing.setdefault("image_ratings", {})
+    if isinstance(inc_ratings, dict):
+        for fname, rating in inc_ratings.items():
+            if fname not in cur_ratings:
+                cur_ratings[fname] = rating
+
+    # scenes: existing scene_ids keep user-editable fields; image_filenames
+    # gets a stable de-duplicated union.
+    inc_scenes = incoming.get("scenes") or {}
+    cur_scenes = existing.setdefault("scenes", {})
+    if isinstance(inc_scenes, dict):
+        for sid, inc_scene in inc_scenes.items():
+            if not isinstance(inc_scene, dict):
+                continue
+            if sid not in cur_scenes or not isinstance(cur_scenes[sid], dict):
+                # New scene — copy wholesale.
+                cur_scenes[sid] = dict(inc_scene)
+                continue
+            local_scene = cur_scenes[sid]
+            # Union image_filenames preserving local order, appending any
+            # new incoming filenames at the end.
+            local_files = list(local_scene.get("image_filenames") or [])
+            seen = set(local_files)
+            for fname in (inc_scene.get("image_filenames") or []):
+                if isinstance(fname, str) and fname and fname not in seen:
+                    local_files.append(fname)
+                    seen.add(fname)
+            local_scene["image_filenames"] = local_files
+            # Defensively keep local name/status/user_tags untouched. If a
+            # local scene is missing these fields (legacy data), seed them
+            # from the incoming scene so the schema stays consistent.
+            for f in ("name", "status", "user_tags"):
+                if f not in local_scene and f in inc_scene:
+                    local_scene[f] = inc_scene[f]
+
+    with dst.open("w", encoding="utf-8") as f:
+        json.dump(existing, f, indent=2)

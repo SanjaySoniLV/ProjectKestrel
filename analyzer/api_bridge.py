@@ -2889,6 +2889,70 @@ class Api:
             ]
         return {"ok": True, "jobs": jobs}
 
+    # ─── Stage 5E — dashboard-feeding bridge methods ────────────────────
+    # Thin proxies over the Worker's user-facing endpoints. The primary
+    # consumer is the external online dashboard; the desktop UI keeps a
+    # single "View cloud usage online →" link in Settings rather than
+    # mirroring the full history table.
+
+    def cloud_compute_list_history(self, filters: dict | None = None) -> dict:
+        """Proxy GET /api/jobs (Stage 5C). ``filters`` is a dict matching the
+        query params: ``status`` (str/csv, supports `'running'`), ``from`` /
+        ``to`` (ISO datetimes), ``limit`` (int), ``cursor`` (opaque)."""
+        client, client_err = self._cc_make_client()
+        if client is None:
+            return client_err or {"ok": False, "error": "no client"}
+        f = filters or {}
+        try:
+            body = client.list_jobs(
+                status=f.get("status"),
+                from_iso=f.get("from"),
+                to_iso=f.get("to"),
+                limit=f.get("limit"),
+                cursor=f.get("cursor"),
+            )
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        body["ok"] = True
+        return body
+
+    def cloud_compute_get_job_events(self, job_id: str, order: str = "desc") -> dict:
+        """Proxy GET /api/jobs/:jobId/events (Stage 5C)."""
+        client, client_err = self._cc_make_client()
+        if client is None:
+            return client_err or {"ok": False, "error": "no client"}
+        try:
+            body = client.get_job_events(job_id, order=order)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        body["ok"] = True
+        return body
+
+    def cloud_compute_get_job_timing_stats(self, job_id: str) -> dict:
+        """Proxy GET /api/jobs/:jobId/timing-stats (Stage 5C)."""
+        client, client_err = self._cc_make_client()
+        if client is None:
+            return client_err or {"ok": False, "error": "no client"}
+        try:
+            body = client.get_job_timing_stats(job_id)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        body["ok"] = True
+        return body
+
+    def cloud_compute_get_usage_summary(self, period: str = "monthly") -> dict:
+        """Proxy GET /api/usage (Stage 5D). Returns aggregate totals for the
+        current month or all-time. Used by the panel badge / Settings link."""
+        client, client_err = self._cc_make_client()
+        if client is None:
+            return client_err or {"ok": False, "error": "no client"}
+        try:
+            body = client.get_usage(period=period)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        body["ok"] = True
+        return body
+
     def cloud_compute_clear_done(self) -> dict:
         """Remove every terminal job (done|cancelled|failed) from both the
         persistent ledger and the in-memory map. Returns the IDs removed."""
@@ -3108,9 +3172,16 @@ class Api:
                     jid = j["jobId"]
                     def _cancel(jid=jid):
                         try:
-                            client.cancel_job(jid)
-                        except Exception:
-                            pass
+                            # `origin=orphan` so the Worker audit log can
+                            # distinguish a desktop-crash reap from a user
+                            # click. Was previously calling the wrong method
+                            # (`cancel_job` doesn't exist; only
+                            # `cancel_job_remote` does) — the bare except
+                            # silently swallowed the AttributeError so orphan
+                            # cleanup on the Worker side was never firing.
+                            client.cancel_job_remote(jid, origin="orphan")
+                        except Exception as e:
+                            warn(f"[cloud-compute] orphan reap {jid}: cancel_job_remote failed: {e}")
                     _t.Thread(target=_cancel, name=f"cc-reap-{jid}", daemon=True).start()
 
         # Locally-terminal jobs (done/cancelled/failed) skip Worker I/O entirely
