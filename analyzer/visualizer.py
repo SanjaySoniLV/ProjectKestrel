@@ -222,11 +222,20 @@ def _mark_session_start() -> None:
 
 
 def _mark_session_clean_exit() -> None:
-    """Mark this session closed cleanly and clear stale unclean-shutdown recovery."""
+    """Mark this session closed cleanly and clear stale unclean-shutdown recovery.
+
+    Preserves a previously-recorded 'os_shutdown' or 'crash' reason — the
+    main() finally block fires after webview.start() returns, which happens
+    both on user-initiated quit (truly clean) AND when the OS closes our
+    window during reboot/logoff. In the latter case shutdown_watch has
+    already recorded 'os_shutdown' and we must not overwrite it.
+    """
     try:
         settings = load_persisted_settings()
         settings['app_session_closed_cleanly'] = True
-        settings[EXIT_REASON_KEY] = 'clean'
+        existing_reason = str(settings.get(EXIT_REASON_KEY, '') or '').strip().lower()
+        if existing_reason not in ('os_shutdown', 'crash'):
+            settings[EXIT_REASON_KEY] = 'clean'
         settings['last_session_closed_utc'] = _utc_now_iso()
         settings.pop('last_unclean_shutdown_utc', None)
         save_persisted_settings(settings)
