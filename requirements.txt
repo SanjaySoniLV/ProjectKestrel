@@ -1,16 +1,16 @@
 # Core ML/AI Dependencies
 # Note: use onnxruntime-directml instead of onnxruntime to enable DirectML GPU
 # acceleration on Windows (any DX12-compatible GPU). They are mutually exclusive.
-onnxruntime==1.23.2
+onnxruntime==1.26.0
 
 numpy==2.4.4
 
 # Computer Vision
-opencv-python==4.11.0.86
+opencv-python==4.13.0.92
 rawpy==0.27.0
 
 # Data Processing
-pandas==2.2.2
+pandas==3.0.3
 
 # Utilities
 PyExifTool==0.5.6

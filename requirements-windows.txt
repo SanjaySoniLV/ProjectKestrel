@@ -11,18 +11,20 @@
 # in .github/workflows/main.yml.
 
 # Core ML/AI Dependencies
-# onnxruntime-directml has no 1.23.2 release; 1.23.0 is the nearest match to
-# the 1.23.2 pin used for macOS / local dev (same minor series).
+# onnxruntime-directml lags the upstream onnxruntime release cadence; 1.24.4
+# is the latest published Windows DirectML build. macOS / local dev pin
+# onnxruntime==1.26.0 (CPU + CoreML); the two packages share the same
+# `onnxruntime` module so only one can be installed at a time.
 onnxruntime-directml==1.24.4
 
 numpy==2.4.4
 
 # Computer Vision
-opencv-python==4.11.0.86
+opencv-python==4.13.0.92
 rawpy==0.27.0
 
 # Data Processing
-pandas==2.2.2
+pandas==3.0.3
 
 # Utilities
 PyExifTool==0.5.6
