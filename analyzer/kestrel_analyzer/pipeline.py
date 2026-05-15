@@ -437,6 +437,9 @@ class AnalysisPipeline:
         max_bird_crops: int = 5,
         parallel_prefetch: int = 3,
         retry_errored: bool = False,
+        exposure_quality: Optional[str] = None,
+        thumbnail_max_width: Optional[int] = None,
+        thumbnail_jpeg_compression: Optional[float] = None,
     ) -> None:
         callbacks = callbacks or {}
         status_cb = callbacks.get("on_status")
@@ -463,6 +466,11 @@ class AnalysisPipeline:
 
         rating_thresholds = None
         rating_profile = "balanced"
+        # Caller-provided overrides win over persisted settings. None means
+        # "fall back to settings.json (or default)".
+        eq_override = exposure_quality
+        tmw_override = thumbnail_max_width
+        tjc_override = thumbnail_jpeg_compression
         exposure_quality = "balanced"
         thumbnail_max_width = 1200
         thumbnail_jpeg_compression = 0.75
@@ -493,6 +501,20 @@ class AnalysisPipeline:
                         thumbnail_jpeg_compression = 0.75
             except Exception:
                 rating_thresholds = None
+        if eq_override is not None:
+            raw_eq = str(eq_override).strip().lower()
+            if raw_eq in {'lenient', 'balanced', 'aggressive'}:
+                exposure_quality = raw_eq
+        if tmw_override is not None:
+            try:
+                thumbnail_max_width = int(tmw_override)
+            except (TypeError, ValueError):
+                pass
+        if tjc_override is not None:
+            try:
+                thumbnail_jpeg_compression = float(tjc_override)
+            except (TypeError, ValueError):
+                pass
         thumbnail_max_width = max(400, min(2400, thumbnail_max_width))
         thumbnail_jpeg_compression = max(0.5, min(1.0, thumbnail_jpeg_compression))
         thumbnail_jpeg_quality = int(round(thumbnail_jpeg_compression * 100.0))
