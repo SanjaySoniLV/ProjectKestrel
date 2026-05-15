@@ -12,9 +12,6 @@ rawpy==0.27.0
 # Data Processing
 pandas==2.2.2
 
-# GUI Framework
-PyQt6==6.11.0
-
 # Utilities
 PyExifTool==0.5.6
 requests==2.34.2
