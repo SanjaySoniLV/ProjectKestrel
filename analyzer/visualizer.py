@@ -515,7 +515,39 @@ def _build_arg_parser():
         default=15.0,
         help='Hard timeout in seconds for --api-probe (default 15).',
     )
+    ap.add_argument(
+        '--probe-target',
+        dest='probe_target',
+        choices=('synthetic', 'visualizer'),
+        default='synthetic',
+        help=(
+            "What --api-probe loads. 'synthetic' (default, fast) uses a minimal "
+            "probe HTML; 'visualizer' spins up the local HTTP server and loads the "
+            "real visualizer.html, proving the production JS actually sees "
+            "window.pywebview.api on the built binary."
+        ),
+    )
     return ap
+
+
+def _chdir_to_static_root() -> None:
+    """Set CWD so the local HTTP server's Handler resolves static asset paths.
+
+    Shared by ``main()`` (full app) and ``_run_api_probe(target='visualizer')``
+    so the probe sees exactly the same file layout the real desktop session
+    does — including the frozen ``_internal/`` bundle when running off a
+    PyInstaller exe.
+    """
+    if getattr(sys, 'frozen', False):
+        meipass = getattr(sys, '_MEIPASS', None) or os.path.dirname(sys.executable)
+        candidate = os.path.join(meipass, '_internal')
+        if os.path.isdir(candidate):
+            os.chdir(candidate)
+            return
+        if meipass and os.path.isdir(meipass):
+            os.chdir(meipass)
+            return
+    os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..') or '.')
 
 
 # Minimal HTML for --api-probe mode. Loads, waits for the pywebview bridge to be
@@ -585,16 +617,61 @@ def _run_api_probe(args) -> int:
 
     timeout = max(1.0, float(args.probe_timeout))
     final_payload = {'ok': False, 'error': 'probe did not start'}
+    target = getattr(args, 'probe_target', 'synthetic') or 'synthetic'
+
+    # In 'visualizer' mode we stand up the same local HTTP server the real
+    # desktop session uses and point pywebview at it, so the probe exercises
+    # the production visualizer.html + visualizer.js bundle. The signal that
+    # the bridge wired up still comes from JS calling Api.report_bridge_ready
+    # — we just added one such call in visualizer.js for this purpose.
+    server = None
+    server_thread = None
+    if target == 'visualizer':
+        try:
+            _chdir_to_static_root()
+            server = ThreadingHTTPServer((HOST, args.port), Handler)
+        except Exception as exc:
+            _write_result(args.probe_output, {
+                'ok': False,
+                'error': f'probe: HTTP server bind failed on port {args.port}: '
+                         f'{type(exc).__name__}: {exc}',
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+            })
+            return 1
+
+        def _serve():
+            try:
+                server.serve_forever()
+            except Exception:
+                pass
+
+        server_thread = threading.Thread(target=_serve, daemon=True)
+        server_thread.start()
 
     try:
-        win = webview.create_window(
-            'Project Kestrel (probe)',
-            html=_PROBE_HTML,
-            js_api=api,
-            width=400,
-            height=300,
-        )
+        if target == 'visualizer':
+            win = webview.create_window(
+                'Project Kestrel (probe)',
+                url=f'http://{HOST}:{args.port}/',
+                js_api=api,
+                width=900,
+                height=600,
+            )
+        else:
+            win = webview.create_window(
+                'Project Kestrel (probe)',
+                html=_PROBE_HTML,
+                js_api=api,
+                width=400,
+                height=300,
+            )
     except Exception as exc:
+        if server is not None:
+            try:
+                server.shutdown()
+                server.server_close()
+            except Exception:
+                pass
         _write_result(args.probe_output, {
             'ok': False,
             'error': f'create_window failed: {type(exc).__name__}: {exc}',
@@ -609,11 +686,13 @@ def _run_api_probe(args) -> int:
         nonlocal final_payload
         ok = api._probe_ready_event.wait(timeout=timeout)
         if ok and api._probe_ready_payload is not None:
-            final_payload = api._probe_ready_payload
+            final_payload = dict(api._probe_ready_payload)
+            final_payload.setdefault('probe_target', target)
         else:
             final_payload = {
                 'ok': False,
                 'error': f'bridge did not report ready within {timeout:.1f}s',
+                'probe_target': target,
                 'timestamp': datetime.now(timezone.utc).isoformat(),
             }
         _write_result(args.probe_output, final_payload)
@@ -633,6 +712,13 @@ def _run_api_probe(args) -> int:
             'error': f'webview.start failed: {type(exc).__name__}: {exc}',
         })
         return 1
+    finally:
+        if server is not None:
+            try:
+                server.shutdown()
+                server.server_close()
+            except Exception:
+                pass
 
     return 0 if final_payload.get('ok') else 1
 
@@ -709,22 +795,9 @@ def main():
 
     # When visualizer.py is run from inside analyzer/ (merged layout) set
     # the working directory to the repository root so assets and shared
-    # files (assets/, visualizer files) are served correctly.
-    # If frozen by PyInstaller (onedir), prefer the bundled _internal folder
-    # inside the distribution so static assets (visualizer.html, logos) are
-    # served from the on-disk bundle.
-    if getattr(sys, 'frozen', False):
-        meipass = getattr(sys, '_MEIPASS', None) or os.path.dirname(sys.executable)
-        candidate = os.path.join(meipass, '_internal')
-        if os.path.isdir(candidate):
-            os.chdir(candidate)
-        elif meipass and os.path.isdir(meipass):
-            os.chdir(meipass)
-        else:
-            # Fallback to repo-root relative when running unpacked
-            os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..') or '.')
-    else:
-        os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..') or '.')
+    # files (assets/, visualizer files) are served correctly. The frozen
+    # PyInstaller branch prefers the bundled _internal/ folder.
+    _chdir_to_static_root()
     server = ThreadingHTTPServer((HOST, args.port), Handler)
     log(f'Serving visualizer at http://{HOST}:{args.port}/  (Press Ctrl+C to stop)')
     log('HTTP surface: static-file GET only. Control routes permanently removed.')
