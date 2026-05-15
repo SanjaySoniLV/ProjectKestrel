@@ -213,3 +213,153 @@ class TestInspectFolderViaApi:
         result = api.inspect_folder(str(tmp_path))
         # Folder inspector should detect them
         assert result.get('total', 0) >= 2 or result.get('success', True)
+
+
+def _seed_kestrel_csv(folder: Path, rows: list[dict]) -> None:
+    """Write a kestrel_database.csv into <folder>/.kestrel/ with the given
+    rows. Helper for the cloud-compute upload-selection tests below."""
+    import csv as _csv
+    kestrel = folder / ".kestrel"
+    kestrel.mkdir(parents=True, exist_ok=True)
+    csv_path = kestrel / "kestrel_database.csv"
+    fieldnames = list(rows[0].keys()) if rows else ["filename", "species"]
+    with csv_path.open("w", encoding="utf-8", newline="") as f:
+        w = _csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        w.writerows(rows)
+
+
+class TestCCSelectUploadFiles:
+    """Tests for _cc_select_upload_files retry-errored manifest logic."""
+
+    def test_default_excludes_errored_rows(self, api, tmp_path):
+        """retry_errored=False (default): errored rows count as analyzed
+        and are NOT re-uploaded. Existing Stage 4A behavior."""
+        for n in ("a.CR3", "b.CR3", "c.CR3", "d.CR3"):
+            (tmp_path / n).touch()
+        _seed_kestrel_csv(tmp_path, [
+            {"filename": "a.CR3", "species": "American Goldfinch"},
+            {"filename": "b.CR3", "species": "Error"},
+            {"filename": "c.CR3", "species": "House Finch"},
+        ])
+        files, anchor, anchors, total, analyzed = api._cc_select_upload_files(tmp_path)
+        names = {p.name for p in files}
+        # 'd.CR3' is the only un-analyzed file → in manifest. Plus the
+        # last-analyzed anchor 'c.CR3'.
+        assert "d.CR3" in names
+        assert "b.CR3" not in names, "errored row leaked into default manifest"
+        assert anchor == "c.CR3"
+        assert anchors == frozenset({"c.CR3"})
+        assert total == 4
+        assert analyzed == 3
+
+    def test_retry_errored_includes_errored_and_predecessor(self, api, tmp_path):
+        """retry_errored=True: errored rows go back in the manifest, and
+        the immediately-preceding file becomes a protected scene anchor."""
+        for n in ("a.CR3", "b.CR3", "c.CR3", "d.CR3"):
+            (tmp_path / n).touch()
+        _seed_kestrel_csv(tmp_path, [
+            {"filename": "a.CR3", "species": "American Goldfinch"},
+            {"filename": "b.CR3", "species": "Error"},
+            {"filename": "c.CR3", "species": "House Finch"},
+        ])
+        files, anchor, anchors, _, _ = api._cc_select_upload_files(
+            tmp_path, retry_errored=True
+        )
+        names = {p.name for p in files}
+        assert "b.CR3" in names, "errored row missing from retry manifest"
+        assert "d.CR3" in names, "unanalyzed row missing from retry manifest"
+        # Predecessor of 'b.CR3' is 'a.CR3' — must be in the protected anchor
+        # set so its row isn't clobbered when the cloud re-uploads it for
+        # scene continuity. 'c.CR3' is the primary (last-alphabetical) anchor.
+        assert "a.CR3" in anchors
+        assert "c.CR3" in anchors
+        assert anchor == "c.CR3", "primary anchor should be last alphabetical healthy row"
+
+    def test_retry_errored_first_file_no_predecessor(self, api, tmp_path):
+        """When the errored file is the first in the folder, no
+        predecessor anchor is added (there's nothing before it)."""
+        for n in ("a.CR3", "b.CR3", "c.CR3"):
+            (tmp_path / n).touch()
+        _seed_kestrel_csv(tmp_path, [
+            {"filename": "a.CR3", "species": "Error"},
+            {"filename": "b.CR3", "species": "House Finch"},
+        ])
+        files, _, anchors, _, _ = api._cc_select_upload_files(
+            tmp_path, retry_errored=True
+        )
+        names = {p.name for p in files}
+        assert "a.CR3" in names
+        assert "c.CR3" in names
+        # No predecessor for a.CR3 (index 0). The primary anchor 'b.CR3'
+        # is the only protected entry.
+        assert anchors == frozenset({"b.CR3"})
+
+    def test_retry_errored_off_keeps_legacy_behavior(self, api, tmp_path):
+        """retry_errored=False with only-errored database still produces
+        an empty new_files list (no manifest churn). Guards against the
+        flag accidentally leaking through."""
+        for n in ("a.CR3", "b.CR3"):
+            (tmp_path / n).touch()
+        _seed_kestrel_csv(tmp_path, [
+            {"filename": "a.CR3", "species": "American Goldfinch"},
+            {"filename": "b.CR3", "species": "Error"},
+        ])
+        files, _, anchors, _, _ = api._cc_select_upload_files(tmp_path)
+        # Both files counted as analyzed, nothing new to upload.
+        assert files == []
+        assert anchors == frozenset()
+
+
+class TestCCAnalysisSettingsSnapshot:
+    """Tests for _cc_analysis_settings_snapshot read of advanced settings."""
+
+    def test_new_advanced_settings_projected(self, api, monkeypatch):
+        """The 6 new advanced settings keys make it into the wire dict
+        when present in the settings store, with the same names."""
+        def _fake_get_settings():
+            return {
+                "settings": {
+                    "detector_name": "mdv5a",
+                    "detection_threshold": 0.45,
+                    "max_bird_crops": 7,
+                    "exposure_quality": "aggressive",
+                    "scene_time_threshold": 2.5,
+                    "thumbnail_max_width": 1600,
+                    "thumbnail_jpeg_compression": 0.85,
+                    "retry_errored": True,
+                    "wildlife_enabled": False,
+                    "species_detection_enabled": True,
+                }
+            }
+        monkeypatch.setattr(api, "get_settings", _fake_get_settings)
+        out = api._cc_analysis_settings_snapshot()
+        assert out is not None
+        assert out["detector_name"] == "mdv5a"
+        assert out["confidence_threshold"] == 0.45  # rename preserved
+        assert out["max_bird_crops"] == 7
+        assert out["exposure_quality"] == "aggressive"
+        assert out["scene_time_threshold"] == 2.5
+        assert out["thumbnail_max_width"] == 1600
+        assert out["thumbnail_jpeg_compression"] == 0.85
+        assert out["retry_errored"] is True
+        assert out["wildlife_enabled"] is False
+        assert out["species_detection_enabled"] is True
+
+    def test_out_of_range_values_dropped(self, api, monkeypatch):
+        """Range guards mirror the CLI's documented ranges so we don't ship
+        values that would be clamped by the analyzer."""
+        def _fake_get_settings():
+            return {
+                "settings": {
+                    "max_bird_crops": 999,            # > 20: dropped
+                    "thumbnail_max_width": 100,        # < 400: dropped
+                    "thumbnail_jpeg_compression": 5.0,  # > 1.0: dropped
+                    "scene_time_threshold": -1,        # < 0: dropped
+                    "exposure_quality": "nuclear",     # not in choices: dropped
+                }
+            }
+        monkeypatch.setattr(api, "get_settings", _fake_get_settings)
+        out = api._cc_analysis_settings_snapshot()
+        # All 5 above are invalid → the snapshot has no entries, returns None.
+        assert out is None or out == {}

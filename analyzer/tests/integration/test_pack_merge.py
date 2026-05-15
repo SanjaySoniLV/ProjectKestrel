@@ -274,3 +274,178 @@ def test_metadata_full_replace_safe(tmp_path: Path) -> None:
     merged = json.loads((kestrel / "kestrel_metadata.json").read_text())
     assert merged["kestrel_version"] == "2.0.1"
     assert merged["analyzer_name"] == "cloud"
+
+
+# ── Retry-errored merge tests ──────────────────────────────────────────────
+
+
+def test_overwrite_errors_replaces_errored_row(tmp_path: Path) -> None:
+    """overwrite_errors=True: a local row whose species=='Error' is
+    replaced when the cloud row has a real classification. This is the
+    retry-errored happy path."""
+    folder = tmp_path / "shoot"
+    kestrel = folder / ".kestrel"
+    kestrel.mkdir(parents=True)
+
+    _write_local_csv(kestrel, [
+        {
+            "filename": "IMG_001.CR3",
+            "species": "Error",
+            "species_confidence": "",
+            "culled": "0",
+            "culled_origin": "",
+        },
+        {
+            "filename": "IMG_002.CR3",
+            "species": "American Goldfinch",   # healthy, must not be overwritten
+            "species_confidence": "0.92",
+            "culled": "1",
+            "culled_origin": "user",
+        },
+    ])
+
+    pack = tmp_path / "pack_1.zip"
+    _build_pack_zip(
+        pack,
+        csv_rows=[
+            {
+                "filename": "IMG_001.CR3",
+                "species": "House Finch",   # successful re-analysis
+                "species_confidence": "0.88",
+                "culled": "0",
+                "culled_origin": "",
+            },
+            {
+                "filename": "IMG_002.CR3",
+                "species": "Different Bird",  # would clobber a healthy row
+                "species_confidence": "0.50",
+                "culled": "0",
+                "culled_origin": "",
+            },
+        ],
+        scenedata={"version": "2.0", "image_ratings": {}, "scenes": {}},
+        metadata={"kestrel_version": "2.0.1"},
+    )
+
+    merge_pack_into_kestrel(pack, folder, overwrite_errors=True)
+
+    rows = {r["filename"]: r for r in _read_csv(kestrel / "kestrel_database.csv")}
+    assert rows["IMG_001.CR3"]["species"] == "House Finch", \
+        "errored row not overwritten despite overwrite_errors=True"
+    assert rows["IMG_002.CR3"]["species"] == "American Goldfinch", \
+        "healthy row clobbered — overwrite_errors must scope to errored rows only"
+    assert rows["IMG_002.CR3"]["culled"] == "1"
+    assert rows["IMG_002.CR3"]["culled_origin"] == "user"
+
+
+def test_overwrite_errors_keeps_local_when_cloud_also_errored(tmp_path: Path) -> None:
+    """overwrite_errors=True + cloud row is also 'Error' → keep local row
+    (no churn, avoids overwriting a local error with a cloud error)."""
+    folder = tmp_path / "shoot"
+    kestrel = folder / ".kestrel"
+    kestrel.mkdir(parents=True)
+
+    _write_local_csv(kestrel, [
+        {
+            "filename": "IMG_001.CR3",
+            "species": "Error",
+            "species_confidence": "",
+        },
+    ])
+
+    pack = tmp_path / "pack_1.zip"
+    _build_pack_zip(
+        pack,
+        csv_rows=[
+            {
+                "filename": "IMG_001.CR3",
+                "species": "Error",   # cloud also failed on the same file
+                "species_confidence": "",
+            },
+        ],
+        scenedata={"version": "2.0", "image_ratings": {}, "scenes": {}},
+        metadata={"kestrel_version": "2.0.1"},
+    )
+
+    merge_pack_into_kestrel(pack, folder, overwrite_errors=True)
+    rows = {r["filename"]: r for r in _read_csv(kestrel / "kestrel_database.csv")}
+    assert rows["IMG_001.CR3"]["species"] == "Error"
+    # We don't care which Error row "wins" — both are identical in the user's
+    # eyes — but the row count must not double.
+    assert len(rows) == 1
+
+
+def test_overwrite_errors_off_keeps_legacy_behavior(tmp_path: Path) -> None:
+    """overwrite_errors=False (default): errored local row + healthy cloud
+    row → local errored row WINS (Stage 4A semantics preserved)."""
+    folder = tmp_path / "shoot"
+    kestrel = folder / ".kestrel"
+    kestrel.mkdir(parents=True)
+
+    _write_local_csv(kestrel, [
+        {
+            "filename": "IMG_001.CR3",
+            "species": "Error",
+            "species_confidence": "",
+        },
+    ])
+
+    pack = tmp_path / "pack_1.zip"
+    _build_pack_zip(
+        pack,
+        csv_rows=[
+            {
+                "filename": "IMG_001.CR3",
+                "species": "House Finch",
+                "species_confidence": "0.88",
+            },
+        ],
+        scenedata={"version": "2.0", "image_ratings": {}, "scenes": {}},
+        metadata={"kestrel_version": "2.0.1"},
+    )
+
+    merge_pack_into_kestrel(pack, folder)  # overwrite_errors defaults to False
+    rows = {r["filename"]: r for r in _read_csv(kestrel / "kestrel_database.csv")}
+    assert rows["IMG_001.CR3"]["species"] == "Error", \
+        "default merge silently replaced an errored row — regression"
+
+
+def test_overwrite_errors_respects_protected_filenames(tmp_path: Path) -> None:
+    """protected_filenames takes priority over overwrite_errors. A row
+    in BOTH sets (errored locally + protected anchor) must be kept."""
+    folder = tmp_path / "shoot"
+    kestrel = folder / ".kestrel"
+    kestrel.mkdir(parents=True)
+
+    _write_local_csv(kestrel, [
+        {
+            "filename": "ANCHOR.CR3",
+            "species": "Error",         # local is errored
+            "species_confidence": "",
+        },
+    ])
+
+    pack = tmp_path / "pack_1.zip"
+    _build_pack_zip(
+        pack,
+        csv_rows=[
+            {
+                "filename": "ANCHOR.CR3",
+                "species": "House Finch",  # cloud has a real classification
+                "species_confidence": "0.88",
+            },
+        ],
+        scenedata={"version": "2.0", "image_ratings": {}, "scenes": {}},
+        metadata={"kestrel_version": "2.0.1"},
+    )
+
+    merge_pack_into_kestrel(
+        pack, folder,
+        protected_filenames={"ANCHOR.CR3"},
+        overwrite_errors=True,
+    )
+    rows = {r["filename"]: r for r in _read_csv(kestrel / "kestrel_database.csv")}
+    # Protected wins even though the local row is errored and the cloud has
+    # a real classification. The anchor's local row is authoritative.
+    assert rows["ANCHOR.CR3"]["species"] == "Error", \
+        "protected anchor was overwritten by retry_errored path"

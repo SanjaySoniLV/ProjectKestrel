@@ -2329,7 +2329,7 @@ class Api:
             return None, {"ok": False, "error": str(e)}
         return client, None
 
-    def _cc_select_upload_files(self, folder) -> tuple:
+    def _cc_select_upload_files(self, folder, retry_errored: bool = False) -> tuple:
         """Resume-aware file-selection for cloud upload.
 
         Mirrors the local pipeline's "pick up where Kestrel left off" behavior:
@@ -2341,10 +2341,24 @@ class Api:
         anchor, the first new image would have no previous_image and could be
         wrongly split into a new scene.
 
-        Returns ``(upload_files, anchor_filename, total_in_folder,
-        already_analyzed_count)``. ``anchor_filename`` is the file we
-        re-upload purely for scene continuity (its row will simply be
-        overwritten by merge_pack_into_kestrel on completion).
+        When ``retry_errored=True``, rows with ``species == "Error"`` are
+        treated as un-analyzed (re-uploaded + expected to be overwritten by
+        the cloud-result merge), and the file immediately preceding each
+        errored file (by sort order) is added to the protected-anchor set
+        so the cloud pipeline has a real previous_image for scene continuity
+        at the errored file's position. The pack-merge respects the protected
+        set by passing it to ``merge_pack_into_kestrel(..., protected_filenames=...)``.
+
+        Returns ``(upload_files, anchor_filename, anchor_filenames,
+        total_in_folder, already_analyzed_count)`` where:
+          - ``anchor_filename``: the primary (last-alphabetical) anchor, used
+            for display/log messages. May be ``None``.
+          - ``anchor_filenames``: frozenset of ALL filenames we re-upload
+            purely for scene continuity (the primary anchor plus any
+            per-errored-predecessor anchors). Caller MUST pass this to
+            ``merge_pack_into_kestrel`` as ``protected_filenames`` so the
+            cloud pipeline's re-analysis of these anchor frames doesn't
+            clobber the user's already-good local rows.
 
         Returns an empty ``upload_files`` list when there is nothing new to
         analyze — the caller should treat that as a no-op.
@@ -2367,10 +2381,11 @@ class Api:
         raws = sorted(p for p in candidates if p.suffix.lower() in raw_set)
         all_files = raws if raws else sorted(p for p in candidates if p.suffix.lower() in jpeg_set)
         if not all_files:
-            return [], None, 0, 0
+            return [], None, frozenset(), 0, 0
 
         db_path = folder / ".kestrel" / "kestrel_database.csv"
         analyzed: set = set()
+        errored: set = set()
         if db_path.is_file():
             try:
                 import csv as _csv
@@ -2378,34 +2393,69 @@ class Api:
                     reader = _csv.DictReader(f)
                     for row in reader:
                         name = (row.get("filename") or "").strip()
-                        if name:
-                            analyzed.add(name)
+                        if not name:
+                            continue
+                        analyzed.add(name)
+                        # Error marker matches the local pipeline's predicate
+                        # at pipeline.py: species=="Error" (no separate boolean).
+                        if (row.get("species") or "").strip() == "Error":
+                            errored.add(name)
             except Exception:
                 analyzed = set()
+                errored = set()
 
-        new_files = [p for p in all_files if p.name not in analyzed]
-        # Anchor: the last (alphabetically) already-analyzed file in this
-        # folder, if any. We re-upload it so the cloud pipeline has a
-        # real previous_image when it picks up the first new file. Its row
-        # gets overwritten by the result-pack merge on completion (last-wins
-        # by filename, matching the existing merge semantics).
+        # When retry_errored is on, errored filenames are NOT considered
+        # "analyzed" for the skip filter, so they get re-uploaded. They are,
+        # however, expected to be overwritten by the cloud result-merge —
+        # they're NOT added to the protected anchor set.
+        skip = analyzed - errored if retry_errored else analyzed
+        new_files = [p for p in all_files if p.name not in skip]
+
+        # Build the protected-anchor set. The primary anchor is the last
+        # alphabetical analyzed-and-not-errored file (same as before). When
+        # retry_errored is on, we ALSO need a scene-continuity anchor for each
+        # errored gap: the immediately-preceding file in the sorted folder
+        # listing. That predecessor is a healthy already-analyzed row whose
+        # local data we MUST keep, hence membership in the protected set.
+        protected: set = set()
         anchor_filename = None
         if analyzed and new_files:
-            analyzed_in_folder = [p for p in all_files if p.name in analyzed]
-            if analyzed_in_folder:
-                anchor_path = analyzed_in_folder[-1]
-                anchor_filename = anchor_path.name
-                # Only include if it's not already in new_files (defensive).
-                if anchor_path not in new_files:
-                    upload_files = [anchor_path] + new_files
-                else:
-                    upload_files = new_files
-            else:
-                upload_files = new_files
-        else:
-            upload_files = new_files
+            # Healthy-analyzed = analyzed minus errored. Errored rows being
+            # re-uploaded shouldn't double as scene anchors (their species
+            # value is "Error", not a real classification).
+            healthy = analyzed - errored
+            healthy_in_folder = [p for p in all_files if p.name in healthy]
+            if healthy_in_folder:
+                primary = healthy_in_folder[-1]
+                anchor_filename = primary.name
+                protected.add(primary.name)
+                if primary not in new_files:
+                    new_files = [primary] + new_files
 
-        return upload_files, anchor_filename, len(all_files), len(analyzed)
+        if retry_errored and errored:
+            errored_in_folder = [p for p in all_files if p.name in errored]
+            # Build index map once so predecessor lookup is O(1) per errored file.
+            index_by_path = {p: i for i, p in enumerate(all_files)}
+            for ep in errored_in_folder:
+                idx = index_by_path.get(ep)
+                if idx is None or idx == 0:
+                    continue  # first file in folder has no predecessor
+                pred = all_files[idx - 1]
+                # Skip a predecessor that's itself errored or un-analyzed —
+                # neither provides a clean scene-continuity baseline.
+                if pred.name in errored or pred.name not in analyzed:
+                    continue
+                protected.add(pred.name)
+                if pred not in new_files:
+                    new_files = [pred] + new_files
+
+        return (
+            new_files,
+            anchor_filename,
+            frozenset(protected),
+            len(all_files),
+            len(analyzed),
+        )
 
     def _cc_analysis_settings_snapshot(self) -> dict | None:
         """Project the user's local advanced-analysis settings into the
@@ -2448,10 +2498,29 @@ class Api:
             ("scene_grouping_enabled",    "scene_grouping_enabled"),
             ("crop_generation_enabled",   "crop_generation_enabled"),
             ("quality_model_enabled",     "quality_model_enabled"),
+            ("retry_errored",             "retry_errored"),
         ):
             v = cfg.get(src_key)
             if isinstance(v, bool):
                 candidate[wire_key] = v
+        # Advanced numeric/enum settings. Range guards mirror the CLI's
+        # documented ranges (cli.py) so we don't ship out-of-range values that
+        # Modal would just clamp anyway.
+        mbc = cfg.get("max_bird_crops")
+        if isinstance(mbc, int) and not isinstance(mbc, bool) and 1 <= mbc <= 20:
+            candidate["max_bird_crops"] = mbc
+        eq = cfg.get("exposure_quality")
+        if isinstance(eq, str) and eq in ("lenient", "balanced", "aggressive"):
+            candidate["exposure_quality"] = eq
+        stt = cfg.get("scene_time_threshold")
+        if isinstance(stt, (int, float)) and not isinstance(stt, bool) and 0.0 <= float(stt) <= 60.0:
+            candidate["scene_time_threshold"] = float(stt)
+        tmw = cfg.get("thumbnail_max_width")
+        if isinstance(tmw, int) and not isinstance(tmw, bool) and 400 <= tmw <= 2400:
+            candidate["thumbnail_max_width"] = tmw
+        tjc = cfg.get("thumbnail_jpeg_compression")
+        if isinstance(tjc, (int, float)) and not isinstance(tjc, bool) and 0.50 <= float(tjc) <= 1.00:
+            candidate["thumbnail_jpeg_compression"] = float(tjc)
         return candidate or None
 
     # Default cached remote counters — keeps the JS render code simple by
@@ -2648,9 +2717,12 @@ class Api:
         # Resume-aware selection: skip files the local pipeline has already
         # analyzed (folder_inspector-style discovery), but RE-include the last
         # already-analyzed file as a scene-merger anchor so the cloud
-        # pipeline's previous_image is real, not None.
-        files, anchor_filename, total_in_folder, already_analyzed = (
-            self._cc_select_upload_files(root)
+        # pipeline's previous_image is real, not None. With retry_errored on,
+        # also include errored rows + the file before each errored row.
+        analysis_settings = self._cc_analysis_settings_snapshot()
+        _retry_errored = bool((analysis_settings or {}).get("retry_errored"))
+        files, anchor_filename, anchor_filenames, total_in_folder, already_analyzed = (
+            self._cc_select_upload_files(root, retry_errored=_retry_errored)
         )
         if not files:
             if total_in_folder == 0:
@@ -2664,8 +2736,6 @@ class Api:
                 ),
                 "nothingToDo": True,
             }
-
-        analysis_settings = self._cc_analysis_settings_snapshot()
 
         # Submit synchronously (cheap call). We need the jobId before we can
         # return it to the caller; the heavy upload+poll runs on a thread.
@@ -2746,7 +2816,8 @@ class Api:
                     on_pack_merged=_on_pack_merged,
                     cancel_event=cancel_event,
                     pause_event=pause_event,
-                    protected_filenames={anchor_filename} if anchor_filename else None,
+                    protected_filenames=set(anchor_filenames) if anchor_filenames else None,
+                    overwrite_errors=_retry_errored,
                     # Pass the pre-submitted job ID and presigned URLs so
                     # run_full_job skips its internal submit_job call.
                     # Without this, two Worker jobs are created: the poller
@@ -2794,8 +2865,9 @@ class Api:
                 "jobId": job_id,
                 "rootPath": str(root),
                 "imageCount": len(files),
-                "newImageCount": len(files) - (1 if anchor_filename else 0),
+                "newImageCount": len(files) - len(anchor_filenames),
                 "anchorFilename": anchor_filename,
+                "anchorFilenames": sorted(anchor_filenames),
                 "totalInFolder": total_in_folder,
                 "alreadyAnalyzed": already_analyzed,
                 "status": "uploading",
@@ -2822,6 +2894,7 @@ class Api:
                 "status": "uploading",
                 "imageCount": len(files),
                 "anchorFilename": anchor_filename or "",
+                "anchorFilenames": sorted(anchor_filenames),
                 "settingsSnapshot": analysis_settings or {},
                 "downloadedPacks": [],
             })
@@ -2842,8 +2915,9 @@ class Api:
             "ok": True,
             "jobId": job_id,
             "imageCount": len(files),
-            "newImageCount": len(files) - (1 if anchor_filename else 0),
+            "newImageCount": len(files) - len(anchor_filenames),
             "anchorFilename": anchor_filename,
+            "anchorFilenames": sorted(anchor_filenames),
             "totalInFolder": total_in_folder,
             "alreadyAnalyzed": already_analyzed,
         }
@@ -3338,6 +3412,23 @@ class Api:
         # even though it predates the current process. The remote poller will
         # populate the cached counters within one tick.
         anchor_filename = (target.get("anchorFilename") or "") or None
+        # anchorFilenames is the post-retry_errored protected-anchor set
+        # persisted by cloud_compute_submit_job. Older jobs (pre-this-change)
+        # only have anchorFilename, so fall back to the singleton.
+        _persisted_anchors = target.get("anchorFilenames")
+        if isinstance(_persisted_anchors, (list, tuple)) and _persisted_anchors:
+            anchor_filenames = frozenset(
+                str(x) for x in _persisted_anchors if isinstance(x, str) and x
+            )
+        elif anchor_filename:
+            anchor_filenames = frozenset({anchor_filename})
+        else:
+            anchor_filenames = frozenset()
+        # Retry-errored: persisted in settingsSnapshot at submit time. We
+        # don't re-read settings.json here because the user may have toggled
+        # the flag off after submission; the job-time snapshot is authoritative.
+        _snapshot = target.get("settingsSnapshot") or {}
+        _retry_errored = bool(isinstance(_snapshot, dict) and _snapshot.get("retry_errored"))
         with self._ensure_cc_lock():
             if job_id not in self._cc_jobs:
                 self._cc_jobs[job_id] = {
@@ -3346,6 +3437,7 @@ class Api:
                     "imageCount": int(target.get("imageCount") or 0),
                     "newImageCount": int(target.get("imageCount") or 0),
                     "anchorFilename": anchor_filename,
+                    "anchorFilenames": sorted(anchor_filenames),
                     "totalInFolder": None,
                     "alreadyAnalyzed": None,
                     "status": str(target.get("status") or "downloading"),
@@ -3410,7 +3502,8 @@ class Api:
                     try:
                         ccc.merge_pack_into_kestrel(
                             dest, folder,
-                            protected_filenames={anchor_filename} if anchor_filename else None,
+                            protected_filenames=set(anchor_filenames) if anchor_filenames else None,
+                            overwrite_errors=_retry_errored,
                         )
                     except Exception as e:
                         with self._ensure_cc_lock():
@@ -3435,7 +3528,8 @@ class Api:
                     client.download_pack(job_id, fname, dest)
                     ccc.merge_pack_into_kestrel(
                         dest, folder,
-                        protected_filenames={anchor_filename} if anchor_filename else None,
+                        protected_filenames=set(anchor_filenames) if anchor_filenames else None,
+                        overwrite_errors=_retry_errored,
                     )
                 except Exception as e:
                     with self._ensure_cc_lock():

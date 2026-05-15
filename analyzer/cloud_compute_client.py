@@ -52,6 +52,15 @@ ANALYSIS_SETTINGS_ALLOWLIST: tuple[str, ...] = (
     "scene_grouping_enabled",
     "crop_generation_enabled",
     "quality_model_enabled",
+    # Advanced analysis settings (settings.json names verbatim — no rename like
+    # detection_threshold->confidence_threshold). Modal's _settings_to_cli_args
+    # converts these into the matching CLI flags.
+    "max_bird_crops",
+    "exposure_quality",
+    "scene_time_threshold",
+    "thumbnail_max_width",
+    "thumbnail_jpeg_compression",
+    "retry_errored",
 )
 
 
@@ -528,6 +537,7 @@ class CloudComputeClient:
         pause_event: Optional[threading.Event] = None,
         merge_into_kestrel: bool = True,
         protected_filenames: Optional[set[str]] = None,
+        overwrite_errors: bool = False,
         job_id: Optional[str] = None,
         presigned_urls: Optional[list[dict]] = None,
     ) -> dict:
@@ -649,6 +659,7 @@ class CloudComputeClient:
                                 merge_pack_into_kestrel(
                                     dest, images_dir,
                                     protected_filenames=protected_filenames,
+                                    overwrite_errors=overwrite_errors,
                                 )
                                 _emit("pack_merged", filename=fname)
                                 if on_pack_merged is not None:
@@ -764,6 +775,7 @@ def merge_pack_into_kestrel(
     pack_path: Path,
     target_root: Path,
     protected_filenames: Optional[set[str]] = None,
+    overwrite_errors: bool = False,
 ) -> None:
     """Unzip a result pack into target_root/.kestrel.
 
@@ -778,6 +790,12 @@ def merge_pack_into_kestrel(
     `previous_image` for scene-grouping continuity, but the local row is
     already authoritative — replacing it with cloud-derived data (potentially
     different settings) corrupts the database.
+
+    ``overwrite_errors`` enables the retry-errored path: a local row whose
+    ``species == "Error"`` will be replaced when the incoming cloud row has
+    a real classification (``species != "Error"``). Protected filenames
+    still take priority — a row in both ``protected_filenames`` and the
+    errored set is kept unchanged.
     """
     protected = {str(p).strip() for p in (protected_filenames or set()) if str(p).strip()}
     target_kestrel = target_root / ".kestrel"
@@ -839,7 +857,11 @@ def merge_pack_into_kestrel(
         src_csv = src_kestrel / "kestrel_database.csv"
         if src_csv.is_file():
             target_csv = target_kestrel / "kestrel_database.csv"
-            _merge_database_csv(src_csv, target_csv, protected=protected)
+            _merge_database_csv(
+                src_csv, target_csv,
+                protected=protected,
+                overwrite_errors=overwrite_errors,
+            )
 
         # Scenedata: additive merge (Stage 4B). Never overwrite existing
         # image_ratings, scene names, statuses, or user_tags. Add new
@@ -858,7 +880,8 @@ def merge_pack_into_kestrel(
 def _merge_database_csv(
     src: Path,
     dst: Path,
-    protected: Optional[set[str]] = None,  # kept for signature compat; see below
+    protected: Optional[set[str]] = None,
+    overwrite_errors: bool = False,
 ) -> None:
     """Merge ``src`` into ``dst``, deduping on the ``filename`` column.
 
@@ -869,19 +892,22 @@ def _merge_database_csv(
     user-editable columns (`culled`, `culled_origin`, etc.) that share the
     same CSV with analysis columns.
 
-    The ``protected`` argument is now redundant for the CSV path (every
-    existing row is protected) but is kept on the signature so callers don't
-    have to be reworked simultaneously; it's still meaningful for artifact
-    skipping in the caller.
+    ``overwrite_errors`` carves a single exception out of that rule: a local
+    row whose ``species == "Error"`` (the marker the analyzer writes when a
+    file fails) is replaced when the incoming cloud row has a real
+    classification. If the cloud row is also ``"Error"``, the local row is
+    kept (no churn). Rows in ``protected`` keep priority — they're scene
+    anchors, never to be overwritten regardless of error state.
 
     New rows from the cloud pack are appended. Cloud-only columns that
     don't exist in the local CSV get added to the fieldnames list so the
     new rows can populate them.
     """
-    del protected  # see docstring — no longer used here
+    protected_set = {str(p).strip() for p in (protected or set()) if str(p).strip()}
     rows: dict[str, dict[str, Any]] = {}
     fieldnames: list[str] = []
     existing_keys: set[str] = set()
+    errored_keys: set[str] = set()
 
     if dst.is_file():
         with dst.open("r", encoding="utf-8", newline="") as f:
@@ -892,6 +918,8 @@ def _merge_database_csv(
                 if key:
                     rows[key] = row
                     existing_keys.add(key)
+                    if (row.get("species") or "").strip() == "Error":
+                        errored_keys.add(key)
 
     with src.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
@@ -907,6 +935,18 @@ def _merge_database_csv(
             if not key:
                 continue
             if key in existing_keys:
+                # Retry-errored exception: if the local row is errored AND the
+                # cloud row has a real classification, the cloud row wins.
+                # Anchor protection takes priority over this — a protected
+                # row is never overwritten.
+                if (
+                    overwrite_errors
+                    and key in errored_keys
+                    and key not in protected_set
+                    and (row.get("species") or "").strip() != "Error"
+                ):
+                    rows[key] = row
+                    continue
                 # Local row wins — never overwrite. Protects user-editable
                 # columns alongside analysis columns.
                 continue
