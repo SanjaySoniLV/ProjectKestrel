@@ -165,7 +165,7 @@ jobs:
           $sig = -join ($sigBytes | ForEach-Object { $_.ToString('x2') })
 
           if (-not (Test-Path 'analyzer')) {
-            Write-Host "::error::analyzer/ directory is missing — cannot place build_attestation.json"
+            Write-Host "::error::analyzer/ directory is missing - cannot place build_attestation.json"
             exit 1
           }
           $payload = @{ meta = $meta; sig = $sig } | ConvertTo-Json -Compress
