@@ -1,0 +1,104 @@
+/* Settings dialog: larger, flex column with sticky footer */
+dialog.dlg-settings {
+  width: min(660px, 96vw);
+  max-width: min(660px, 96vw);
+  height: min(860px, 90vh);
+  max-height: min(860px, 90vh);
+  overflow: hidden;
+  padding: 0;
+}
+/* Only apply flex layout when the dialog is actually open —
+   otherwise display:flex overrides the browser's native display:none
+   that keeps closed <dialog> elements hidden. */
+dialog.dlg-settings[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 16px;
+  display: grid;
+  gap: 10px;
+}
+
+.settings-footer {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid #1d2230;
+  background: var(--panel);
+}
+
+/* Yellow Save button when settings have unsaved changes */
+#settingsSave.dirty {
+  background: #c9ae34;
+  border-color: #d4b72e;
+  color: #1a1a1a;
+}
+#settingsSave.dirty:hover {
+  background: #d4ba38;
+}
+
+/* Reuse dialog styling for settings */
+.settings {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  width: min(560px, 96vw);
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.row label {
+  min-width: 160px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.row input[type="text"] {
+  flex: 1;
+}
+
+.row select {
+  width: 200px;
+}
+
+#ratingProfile {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  flex: 1;
+}
+
+/* Rating stars */
+.stars {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  user-select: none;
+}
+
+.star {
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  color: #2a3040;
+  /* No color transition — firing a transition on 5 stars × N cards during
+     mouse movement adds up quickly */
+}
+
+.star.filled.auto {
+  color: #6aa0ff;
+}
+
+.stars .star.manual.filled { color: #f5c542; }
+.stars .star.auto.filled { color: #6aa0ff; }

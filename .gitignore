@@ -39,10 +39,9 @@ tmp_exposure_solver_benchmark_report.json
 tmp_exposure_solver_benchmark_rounds.py
 tmp*
 .venv-speciesnet/
-.kestrel*
+test_imgs/.kestrel*
 documentation/
 .claude*
 EXPCOMP_tests/
 _kestrel*
 .tmp*
-tests*

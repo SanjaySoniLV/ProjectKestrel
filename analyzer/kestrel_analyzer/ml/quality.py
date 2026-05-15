@@ -3,7 +3,9 @@ import csv
 import cv2
 import numpy as np
 
-from . import gpu_providers
+from ..logging_utils import debug
+from .provider_coordinator import ProviderCoordinator
+from .resilient_session import ResilientOnnxSession
 
 
 class QualityClassifier:
@@ -12,20 +14,14 @@ class QualityClassifier:
         model_path: str,
         normalization_data_path: str = None,
         *,
-        use_gpu: bool = True,
+        coord: ProviderCoordinator,
     ):
-        import onnxruntime as ort
-
-        providers = gpu_providers() if use_gpu else ["CPUExecutionProvider"]
-        try:
-            self.session = ort.InferenceSession(model_path, providers=providers)
-        except Exception as e:
-            print(f"[QualityClassifier] Failed with preferred providers ({e}), falling back to CPU")
-            self.session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
-
+        # Registered with the coordinator so demote/promote rebuilds this
+        # session alongside the wrapper's. See note in BirdSpeciesClassifier.
+        self.session = ResilientOnnxSession("quality", model_path, coord)
         self.providers_used = list(self.session.get_providers())
         _active = self.providers_used[0] if self.providers_used else "unknown"
-        print(f"[QualityClassifier] Active provider: {_active}  all providers: {self.providers_used}")
+        debug(f"[QualityClassifier] Active provider: {_active}  all providers: {self.providers_used}")
 
         self._input_name = self.session.get_inputs()[0].name
 

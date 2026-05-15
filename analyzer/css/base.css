@@ -1,0 +1,72 @@
+:root {
+  --bg: #0b0c0f;
+  --panel: #111318;
+  --muted: #8a9099;
+  --text: #e7e9ee;
+  --brand: #4aa3ff;
+  --ok: #2ecc71;
+  --warn: #f39c12;
+  --bad: #e74c3c;
+  --card: #161922;
+  --card-border: #222634;
+  --chip: #1d2230;
+  /* New: dialog column sizing */
+  --right-w: 510px;
+  --divider-w: 8px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.35 system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* Generic utilities */
+.muted {
+  color: var(--muted);
+}
+
+.hidden {
+  display: none !important;
+}
+
+.notice {
+  background: #0e1117;
+  border: 1px dashed #3a84e6;
+  color: #a9c9ee;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 13px;
+}
+
+.footer {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+/* Global kbd styling — used by welcome tips, tutorial body, workflow captions */
+kbd {
+  background: #161922;
+  border: 1px solid #2a3040;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 11px;
+  font-family: monospace;
+  color: #cbd2dc;
+  white-space: nowrap;
+}

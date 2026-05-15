@@ -1,0 +1,103 @@
+/* Z-index stacking: dialog backdrop sits below floating toasts */
+dialog::backdrop {
+  z-index: 10000;
+}
+
+/* Place dialogs below the toasts */
+dialog {
+  z-index: 11000;
+}
+
+/* Toasts should always be on top */
+#toastContainer {
+  z-index: 9999999;
+  pointer-events: none;
+  position: fixed !important;
+}
+
+/* Modal.
+   Default: size to content in both dimensions. Dialogs that genuinely
+   need the full viewport (scene viewer, settings) opt in explicitly
+   below. This keeps small dialogs (merge, info, adjust-time, etc.)
+   from stretching to window width/height when they only have a few
+   rows of content.
+
+   Note: we deliberately use `fit-content` rather than `auto` for both
+   dimensions. In Chromium, a centered <dialog> with `height:auto` +
+   `max-height:Xvh` + `overflow-y:auto` can end up rendering at the
+   max-height instead of shrinking to content — `fit-content`
+   consistently hugs the content. */
+dialog {
+  border: 1px solid #2a3040;
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 14px;
+  width: fit-content;
+  max-width: min(1200px, 96vw);
+  height: fit-content;
+  max-height: 92vh;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+dialog::backdrop {
+  background: rgba(0, 0, 0, .6);
+  backdrop-filter: blur(2px);
+}
+
+/* Compact dialogs that should size to their content */
+dialog.dlg-compact {
+  width: fit-content;
+  height: fit-content;
+  max-height: 92vh;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+dialog#analyzeQueueDlg,
+dialog#liveAnalysisDlg {
+  width: 98vw;
+  max-width: 98vw;
+}
+
+dialog#sceneDlg {
+  width: calc(100% - 60px);
+  height: calc(100% - 60px);
+  max-width: none;
+  max-height: none;
+}
+
+/* Legacy modal fallback (keep for dialogs that still use .modal) */
+.modal {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--divider-w) var(--right-w);
+  gap: 0;
+  height: 100%;
+}
+.modal .left {
+  padding: 0;
+  min-height: 60vh;
+  overflow: auto;
+}
+.modal .right {
+  border-left: 1px solid #2a3040;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+  grid-template-rows: auto auto auto auto 1fr auto auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.modal .grid {
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  padding: 12px;
+}
+
+.detail {
+  font-size: 13px;
+  color: #cbd2dc;
+  background: #10131a;
+  border: 1px solid #1f2533;
+  border-radius: 10px;
+  padding: 10px;
+}

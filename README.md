@@ -118,16 +118,24 @@ Features of the visualizer:
 
 ```
 ProjectKestrel/
-├── analyzer/                 # Analyzer app (GUI + CLI + core pipeline)
-│   ├── gui_app.py            # PyQt GUI entry
-│   ├── cli.py                # CLI entry
-│   ├── main.py               # GUI entrypoint wrapper
-│   ├── models/               # AI model files
-│   └── kestrel_analyzer/     # Core pipeline + ML wrappers
-├── visualizer/               # Visualizer app (local web server)
-│   ├── visualizer.py         # Server entry
-│   └── visualizer.html       # Web UI
-├── packaging/                # PyInstaller specs for .exe builds
+├── analyzer/                 # Single unified app (desktop UI + CLI + pipeline)
+│   ├── visualizer.py         # App entry: launches the pywebview window
+│   ├── api_bridge.py         # JS↔Python bridge (Api class exposed to the UI)
+│   ├── queue_manager.py      # Sequential folder-analysis queue
+│   ├── settings_utils.py     # settings.json I/O with schema validation
+│   ├── cli.py                # Headless CLI entry
+│   ├── visualizer.html       # UI markup
+│   ├── visualizer.js         # UI logic (vanilla JS)
+│   ├── visualizer.css        # UI styles
+│   ├── culling.html          # Culling Assistant window
+│   ├── metadata_writer.py    # XMP sidecar writer
+│   ├── editor_launch.py      # Open photos in external editors
+│   ├── models/               # AI model files (ONNX + SpeciesNet)
+│   ├── kestrel_analyzer/     # Core analysis pipeline (no UI dependencies)
+│   └── tests/                # pytest + unittest test suites
+├── packaging/                # PyInstaller specs + installer build scripts
+├── utils/                    # Developer utility scripts
+├── test_imgs/                # Tiny smoke-test images for CI
 └── README.md
 ```
 
@@ -141,11 +149,16 @@ Kestrel's quality scoring model is trained on RAW images, and may not work as we
 - Sony: `.arw`
 - Adobe: `.dng`
 - Olympus: `.orf`
-- Fuji: `.raf`
+- Fuji: `.raf` *
 - Panasonic: `.rw2`
 - Pentax: `.pef`
-- Samsung: `.sr2`
-- Sigma: `.x3f`
+- Samsung: `.sr2`, `.srw`
+- Sigma: `.x3f` *
+
+> &ast; For `.raf` and `.x3f`, Kestrel's native capture-time parser does not
+> yet support the EXIF layout used by these formats. The images analyze
+> normally, but scene grouping falls back to image-feature similarity
+> instead of using EXIF timestamps. Full timestamp support is planned.
 
 > Note: If this list does not support your camera's RAW file, please reach out via the email below. It is easy to add new RAW file formats thanks to the rawpy library.
 

@@ -14,7 +14,25 @@
         content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' blob:; font-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" />
   <title>Project Kestrel</title>
   <link rel="icon" href="data:," />
-  <link rel="stylesheet" href="visualizer.css" />
+  <!-- Stylesheets split by feature. base.css must load first (defines :root vars). -->
+  <link rel="stylesheet" href="css/base.css" />
+  <link rel="stylesheet" href="css/layout.css" />
+  <link rel="stylesheet" href="css/toolbar.css" />
+  <link rel="stylesheet" href="css/status-bar.css" />
+  <link rel="stylesheet" href="css/grid.css" />
+  <link rel="stylesheet" href="css/folder-tree.css" />
+  <link rel="stylesheet" href="css/welcome.css" />
+  <link rel="stylesheet" href="css/timeline.css" />
+  <link rel="stylesheet" href="css/legal-banner.css" />
+  <link rel="stylesheet" href="css/dialogs/base.css" />
+  <link rel="stylesheet" href="css/dialogs/scene.css" />
+  <link rel="stylesheet" href="css/dialogs/settings.css" />
+  <link rel="stylesheet" href="css/dialogs/analyze.css" />
+  <link rel="stylesheet" href="css/dialogs/live-analysis.css" />
+  <link rel="stylesheet" href="css/dialogs/feedback-consent.css" />
+  <link rel="stylesheet" href="css/dialogs/donate.css" />
+  <link rel="stylesheet" href="css/dialogs/tutorial-chooser.css" />
+  <link rel="stylesheet" href="css/tutorial.css" />
   <script src="csv_parser.js"></script>
 </head>
 
@@ -275,6 +293,11 @@
         <span><kbd>1</kbd>–<kbd>5</kbd> Rate</span>
         <span><kbd>Space</kbd> Open in editor</span>
         <span><kbd>M1</kbd> RAW Zoom (Scroll to zoom in/out)</span>
+        <span><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>R</kbd> Mark as Reviewed</span>
+        <span><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>T</kbd> Add species tag</span>
+        <span><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> Add family tag</span>
+        <span><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> Clear all tags</span>
+        <span><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd> Reset &amp; reassign tags</span>
         <span><kbd>Esc</kbd> Close</span>
       </div>
 
@@ -598,6 +621,7 @@
         &nbsp;<span style="color:var(--ok);font-style:italic;">●</span>&thinsp;<i>outdated version</i>
         &nbsp;<span style="color:#b36bff;">●</span>&thinsp;in progress
         &nbsp;<span style="color:var(--brand);">●</span>&thinsp;not started
+        &nbsp;<span style="color:var(--bad);">●</span>&thinsp;has errors
         &nbsp;<span style="color:#555;font-size:11px;">● faded = no photos</span></p>
       <div class="analyze-dlg-split">
         <!-- Left panel: folder tree -->
@@ -636,6 +660,13 @@
                 <span class="adlg-toggle-hint muted">Accelerates detection and classification via DirectML (Windows) or CoreML (macOS).</span>
               </div>
             </label>
+            <label class="adlg-toggle-row" id="analyzeRetryErroredLabel">
+              <input id="adlgRetryErrored" type="checkbox" checked />
+              <div class="adlg-toggle-text">
+                <span class="adlg-toggle-label">Re-attempt errored images</span>
+                <span class="adlg-toggle-hint muted">For any selected folder that contains images previously marked as errored, drop those rows and re-run analysis on them. Reuses similarity values that were already computed before the error; otherwise compares against the alphabetically-prior image. Other already-analyzed images are not touched.</span>
+              </div>
+            </label>
             <div class="adlg-setting-row">
               <label for="adlgParallelPrefetch">Parallel Processing</label>
               <input id="adlgParallelPrefetch" type="number" min="1" max="5" step="1" value="3"
@@ -671,6 +702,13 @@
               <div class="adlg-toggle-text">
                 <span class="adlg-toggle-label">Check for other wildlife species in addition to birds <span class="adlg-tag">experimental</span></span>
                 <span class="adlg-toggle-hint muted">Detects 1,200+ non-bird species (squirrels, deer, bears, etc.) using SpeciesNet.</span>
+              </div>
+            </label>
+            <label class="adlg-toggle-row">
+              <input id="analyzeSpeciesDetection" type="checkbox" checked />
+              <div class="adlg-toggle-text">
+                <span class="adlg-toggle-label">Identify bird species &amp; family</span>
+                <span class="adlg-toggle-hint muted">Runs the bird species classifier on each cropped bird. Optimized for North American species — disable if you photograph birds outside North America. Detection, quality scoring, and culling are unaffected.</span>
               </div>
             </label>
           </div>

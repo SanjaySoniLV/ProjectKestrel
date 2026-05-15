@@ -1,0 +1,6 @@
+{
+  "version": "1.2.0",
+  "analyzer": "cli",
+  "created_utc": "2026-05-11T05:10:59.714327Z",
+  "database_file": "kestrel_database.csv"
+}

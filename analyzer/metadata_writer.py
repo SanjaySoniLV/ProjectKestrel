@@ -7,7 +7,6 @@ files. Compatible with Adobe Lightroom, darktable, and Capture One.
 """
 
 import os
-import sys
 
 # XMP namespace URIs
 _KESTREL_NS = 'http://ns.projectkestrel.app/xmp/1.0/'
@@ -91,9 +90,7 @@ _DEFAULT_FIELDS = {
 }
 
 
-def log(*args):
-    """Log message to stderr with [metadata] prefix."""
-    print('[metadata]', *args, file=sys.stderr)
+from settings_utils import debug, info, warn, error
 
 
 def _xml_escape(text: str) -> str:
@@ -335,7 +332,7 @@ def write_xmp_metadata(
                 resolved_image = _safe_sidecar_path(root_path, filename)
                 if resolved_image is None:
                     errors.append(f'{filename}: rejected (unsafe filename)')
-                    log(f'[security] write_xmp_metadata rejected unsafe filename: {filename!r}')
+                    warn(f'[metadata][security] write_xmp_metadata rejected unsafe filename: {filename!r}')
                     continue
                 base, _ext = os.path.splitext(resolved_image)
                 xmp_path = base + '.xmp'
@@ -346,10 +343,10 @@ def write_xmp_metadata(
                     if not _is_kestrel_xmp(xmp_path):
                         if not overwrite_external:
                             skipped_conflicts.append(xmp_filename)
-                            log(f'write_xmp: skipping external XMP {xmp_path}')
+                            warn(f'[metadata] write_xmp: skipping external XMP {xmp_path}')
                             continue
                         else:
-                            log(f'write_xmp: overwriting external XMP {xmp_path} (user confirmed)')
+                            info(f'[metadata] write_xmp: overwriting external XMP {xmp_path} (user confirmed)')
 
                 xmp_content = _build_xmp_packet(
                     rating=rating,
@@ -366,12 +363,12 @@ def write_xmp_metadata(
                     f.write(xmp_content)
 
                 written += 1
-                log(f'write_xmp: wrote {xmp_path}')
+                info(f'[metadata] write_xmp: wrote {xmp_path}')
 
             except Exception as entry_err:
                 errors.append(f'{entry.get("filename", "?")}: {entry_err}')
 
-        log(f'write_xmp_metadata: written={written}, conflicts={len(skipped_conflicts)}, errors={len(errors)}')
+        info(f'[metadata] write_xmp_metadata: written={written}, conflicts={len(skipped_conflicts)}, errors={len(errors)}')
         return {
             'success': True,
             'written': written,
@@ -380,5 +377,5 @@ def write_xmp_metadata(
         }
 
     except Exception as e:
-        log(f'write_xmp_metadata error: {e}')
+        error(f'[metadata] write_xmp_metadata error: {e}')
         return {'success': False, 'error': str(e)}

@@ -46,13 +46,20 @@ from .raw_exif import get_capture_time
 from .logging_utils import get_log_path, log_event, log_exception, log_warning
 
 try:
-    from ..settings_utils import load_persisted_settings
-except ImportError:
+    from ..settings_utils import load_persisted_settings, debug as _debug, info as _info
+except (ImportError, ValueError):
+    # Top-level package case: cli.py adds analyzer/ to sys.path and imports
+    # ``kestrel_analyzer`` as a root package, so the relative ``..`` walks
+    # beyond it. The bare-name fallback works because ``settings_utils`` is
+    # then directly importable from sys.path.
     try:
-        from analyzer.settings_utils import load_persisted_settings
+        from settings_utils import load_persisted_settings, debug as _debug, info as _info  # type: ignore
     except ImportError:
         load_persisted_settings = None
+        def _debug(*_a, **_kw): pass
+        def _info(*_a, **_kw): pass
 from .ml.speciesnet_sam_hq import SpeciesNetSAMHQWrapper
+from .ml.provider_coordinator import ResilienceConfig
 from .ml.bird_species import BirdSpeciesClassifier
 from .ml.quality import QualityClassifier
 
@@ -149,6 +156,7 @@ class AnalysisPipeline:
             "meter_warning": None,
             "orientation": "unknown",
             "capture_time": None,
+            "capture_time_warning": None,
             "error": None,
         }
         try:
@@ -182,8 +190,13 @@ class AnalysisPipeline:
             try:
                 ct = get_capture_time(image_path)
                 result["capture_time"] = ct
-            except Exception:
-                pass
+            except Exception as ct_exc:
+                # Scene grouping falls back to AKAZE feature similarity when
+                # capture_time is missing; not fatal. We record the reason so
+                # the main loop can surface it once via log_warning.
+                result["capture_time_warning"] = (
+                    f"Capture-time extraction failed: {ct_exc}"
+                )
 
         except Exception as exc:
             result["error"] = exc
@@ -274,10 +287,9 @@ class AnalysisPipeline:
         submit_thread.start()
 
         idx = 0
-        print(
+        _debug(
             f"[decode-queue] starting: files={total} workers={max_workers} "
-            f"buffer={max_buffered}",
-            flush=True,
+            f"buffer={max_buffered}"
         )
 
         while True:
@@ -300,11 +312,10 @@ class AnalysisPipeline:
                 decode_ms_str = f"{decode_ms:.0f}" if decode_ms is not None else "?"
                 inflight_now = max(0, snap_submitted - snap_completed)
                 ahead = max(0, snap_submitted - idx)
-                print(
+                _debug(
                     f"[decode-queue] idx={idx}/{total} "
                     f"inflight={inflight_now} ahead={ahead} "
-                    f"decode_ms={decode_ms_str} wait_ms={wait_ms:.0f}",
-                    flush=True,
+                    f"decode_ms={decode_ms_str} wait_ms={wait_ms:.0f}"
                 )
 
             yield decoded
@@ -333,10 +344,9 @@ class AnalysisPipeline:
             )
         except Exception:
             pass
-        print(
+        _debug(
             f"[decode-queue] done: files={total} peak_inflight={peak_inflight} "
-            f"avg_decode_ms={avg_decode:.0f} avg_wait_ms={avg_wait:.0f}",
-            flush=True,
+            f"avg_decode_ms={avg_decode:.0f} avg_wait_ms={avg_wait:.0f}"
         )
 
     def load_models(
@@ -357,29 +367,57 @@ class AnalysisPipeline:
             and str(getattr(self.sn_sam, "detector_name", DEFAULT_DETECTOR_NAME)) == self.detector_name
         )
         if mask_ready_for_cap and self.species_clf and self.quality_clf:
+            # Wrapper is being reused — repoint its status_cb at the active
+            # folder so coord notifications (e.g., "Switched to CPU after GPU
+            # error") land on this folder's queue item, not whichever folder
+            # first constructed the wrapper.
+            try:
+                self.sn_sam.update_status_cb(status_cb)
+            except Exception:
+                pass
             return
         if status_cb:
             status_cb(
                 f"Loading models (detector={self.detector_name})... This may take a while on first run."
             )
         if not mask_ready_for_cap:
+            resilience_cfg = None
+            if callable(load_persisted_settings):
+                try:
+                    resilience_cfg = ResilienceConfig.from_settings(load_persisted_settings() or {})
+                except Exception:
+                    resilience_cfg = None
             self.sn_sam = SpeciesNetSAMHQWrapper(
                 max_bird_crops=max_bird_crops,
                 use_gpu=self.use_gpu,
                 detector_name=self.detector_name,
+                status_cb=status_cb,
+                resilience_cfg=resilience_cfg,
             )
+            # The new wrapper has a fresh coord. Any existing species/quality
+            # classifiers were registered with the OLD coord, so drop them and
+            # rebuild below — otherwise their sessions wouldn't migrate when
+            # the new coord recreates.
+            self.species_clf = None
+            self.quality_clf = None
+        # Share the wrapper's coordinator with the species/quality classifiers
+        # so demote/promote rebuilds every session in the run together. Without
+        # this, a DML/CoreML failure recovers the wrapper but leaves these two
+        # sessions on the dead provider — every later image errors at the
+        # species step and the run looks "stuck on error".
+        coord = self.sn_sam.coord
         if not self.species_clf:
             self.species_clf = BirdSpeciesClassifier(
                 str(SPECIESCLASSIFIER_PATH),
                 str(SPECIESCLASSIFIER_LABELS),
-                self.use_gpu,
+                coord,
                 models_dir=str(MODELS_DIR),
             )
         if not self.quality_clf:
             self.quality_clf = QualityClassifier(
                 str(QUALITYCLASSIFIER_PATH),
                 normalization_data_path=str(QUALITY_NORMALIZATION_DATA_PATH),
-                use_gpu=self.use_gpu,
+                coord=coord,
             )
         if status_cb:
             status_cb("Models loaded. Processing started.")
@@ -392,11 +430,16 @@ class AnalysisPipeline:
         callbacks: Optional[Dict[str, Callable]] = None,
         analyzer_name: str = "pipeline",
         wildlife_enabled: bool = True,
+        species_detection_enabled: bool = True,
         detection_threshold: float = 0.25,
         scene_time_threshold: float = 1.0,
         mask_threshold: float = 0.5,
         max_bird_crops: int = 5,
         parallel_prefetch: int = 3,
+        retry_errored: bool = False,
+        exposure_quality: Optional[str] = None,
+        thumbnail_max_width: Optional[int] = None,
+        thumbnail_jpeg_compression: Optional[float] = None,
     ) -> None:
         callbacks = callbacks or {}
         status_cb = callbacks.get("on_status")
@@ -423,6 +466,11 @@ class AnalysisPipeline:
 
         rating_thresholds = None
         rating_profile = "balanced"
+        # Caller-provided overrides win over persisted settings. None means
+        # "fall back to settings.json (or default)".
+        eq_override = exposure_quality
+        tmw_override = thumbnail_max_width
+        tjc_override = thumbnail_jpeg_compression
         exposure_quality = "balanced"
         thumbnail_max_width = 1200
         thumbnail_jpeg_compression = 0.75
@@ -453,6 +501,20 @@ class AnalysisPipeline:
                         thumbnail_jpeg_compression = 0.75
             except Exception:
                 rating_thresholds = None
+        if eq_override is not None:
+            raw_eq = str(eq_override).strip().lower()
+            if raw_eq in {'lenient', 'balanced', 'aggressive'}:
+                exposure_quality = raw_eq
+        if tmw_override is not None:
+            try:
+                thumbnail_max_width = int(tmw_override)
+            except (TypeError, ValueError):
+                pass
+        if tjc_override is not None:
+            try:
+                thumbnail_jpeg_compression = float(tjc_override)
+            except (TypeError, ValueError):
+                pass
         thumbnail_max_width = max(400, min(2400, thumbnail_max_width))
         thumbnail_jpeg_compression = max(0.5, min(1.0, thumbnail_jpeg_compression))
         thumbnail_jpeg_quality = int(round(thumbnail_jpeg_compression * 100.0))
@@ -533,8 +595,36 @@ class AnalysisPipeline:
             stage_ctx["stage"] = "load_database"
             database, db_path = load_database(kestrel_dir, analyzer_name, log_path=self._log_path)
 
+            # When retrying errored images, capture each errored row's previously-
+            # computed values BEFORE dropping it. Many errors hit during detection
+            # or later, after similarity / capture_time / orientation are already
+            # filled in — the retry can reuse those instead of recomputing AKAZE
+            # against the wrong neighbor (the rolling ``previous_image`` would be
+            # the last surviving DB row, not the alphabetical predecessor).
+            errored_rows_by_filename: Dict[str, dict] = {}
+            if retry_errored and not database.empty and "species" in database.columns:
+                errored_mask = database["species"].astype(str) == "Error"
+                errored_count = int(errored_mask.sum())
+                if errored_count > 0:
+                    if status_cb:
+                        status_cb(f"Including {errored_count} previously errored image(s) for retry.")
+                    for _, row in database.loc[errored_mask].iterrows():
+                        try:
+                            errored_rows_by_filename[str(row["filename"])] = row.to_dict()
+                        except Exception:
+                            continue
+                    # Drop errored rows so the pipeline's later concat doesn't
+                    # produce duplicate (filename, species=Error) rows. The
+                    # retried images will append fresh rows below.
+                    database = database.loc[~errored_mask].copy()
+                    save_database(database, db_path)
+
             processed_set = set(database["filename"].values)
             new_files = [f for f in files if f not in processed_set]
+            # Index of every file in the sorted ``files`` list, so retry
+            # iterations can look up each errored image's alphabetical
+            # predecessor in O(1) for the previous_image reset path.
+            files_idx: Dict[str, int] = {f: i for i, f in enumerate(files)}
             processed_count = len(files) - len(new_files)
             total = len(files)
             if progress_cb:
@@ -641,6 +731,13 @@ class AnalysisPipeline:
                             stage=stage_ctx["stage"],
                             context={"file": raw_file, "folder": folder},
                         )
+                    if decoded.get("capture_time_warning"):
+                        log_warning(
+                            self._log_path,
+                            decoded["capture_time_warning"],
+                            stage=stage_ctx["stage"],
+                            context={"file": raw_file, "folder": folder},
+                        )
 
                     current_orientation = decoded["orientation"]
                     entry["orientation"] = current_orientation
@@ -649,65 +746,125 @@ class AnalysisPipeline:
                     entry["capture_time"] = ct.isoformat() if ct is not None else ""
 
                     stage_ctx["stage"] = "compute_similarity"
-                    timestamp_similar = None
-                    try:
-                        timestamp_similar = compute_similarity_timestamp(
-                            previous_image_path, image_path,
-                            threshold_seconds=scene_time_threshold
-                        ) if previous_image_path else None
-                    except Exception as e:
-                        log_warning(
-                            self._log_path,
-                            f"Timestamp similarity check failed: {e}",
-                            stage=stage_ctx["stage"],
-                            context={"file": raw_file, "folder": folder},
-                        )
 
-                    orientation_changed = (
-                        previous_orientation is not None
-                        and current_orientation != "unknown"
-                        and previous_orientation != "unknown"
-                        and current_orientation != previous_orientation
+                    preserved_row = errored_rows_by_filename.get(raw_file)
+
+                    def _coerce_float(v, default):
+                        try:
+                            f = float(v)
+                            return f if f == f else default  # NaN check
+                        except (TypeError, ValueError):
+                            return default
+
+                    preserved_feat_sim = _coerce_float(preserved_row.get("feature_similarity"), -1.0) if preserved_row else -1.0
+                    preserved_was_similar = bool(preserved_row.get("similar", False)) if preserved_row else False
+                    preserved_sim_valid = bool(
+                        preserved_row is not None
+                        and (preserved_feat_sim >= 0.0 or preserved_was_similar)
                     )
 
-                    if orientation_changed:
-                        scene_count += 1
+                    if preserved_sim_valid:
+                        # Reuse similarity from the prior (errored) attempt. The
+                        # previous_image AKAZE was originally computed against is
+                        # gone, but the saved values are still authoritative —
+                        # the source images haven't changed.
+                        preserved_scene = int(_coerce_float(preserved_row.get("scene_count"), scene_count))
                         entry.update(
                             {
-                                "feature_similarity": -1.0,
-                                "feature_confidence": -1.0,
-                                "color_similarity": -1.0,
-                                "color_confidence": -1.0,
-                                "scene_count": scene_count,
-                                "similar": False,
+                                "feature_similarity": preserved_feat_sim,
+                                "feature_confidence": _coerce_float(preserved_row.get("feature_confidence"), -1.0),
+                                "color_similarity": _coerce_float(preserved_row.get("color_similarity"), -1.0),
+                                "color_confidence": _coerce_float(preserved_row.get("color_confidence"), -1.0),
+                                "scene_count": preserved_scene,
+                                "similar": preserved_was_similar,
                             }
                         )
-                    elif timestamp_similar is True:
-                        # Images captured within the same second — treat as similar, skip AKAZE
-                        entry.update(
-                            {
-                                "feature_similarity": -1.0,
-                                "feature_confidence": -1.0,
-                                "color_similarity": -1.0,
-                                "color_confidence": -1.0,
-                                "scene_count": scene_count,
-                                "similar": True,
-                            }
-                        )
+                        # Keep the running scene counter monotonic so subsequent
+                        # genuinely-new scenes get unique IDs.
+                        scene_count = max(scene_count, preserved_scene)
                     else:
-                        similarity = compute_image_similarity_akaze(previous_image, img)
-                        if not similarity["similar"]:
-                            scene_count += 1
-                        entry.update(
-                            {
-                                "feature_similarity": similarity["feature_similarity"],
-                                "feature_confidence": similarity["feature_confidence"],
-                                "color_similarity": similarity["color_similarity"],
-                                "color_confidence": similarity["color_confidence"],
-                                "scene_count": scene_count,
-                                "similar": similarity["similar"],
-                            }
+                        # No usable preserved values. If this is a retry image,
+                        # reset previous_image to its alphabetical predecessor
+                        # so AKAZE compares against the right neighbor instead
+                        # of whatever rolled in from the last DB row.
+                        if preserved_row is not None:
+                            prev_idx = files_idx.get(raw_file, -1) - 1
+                            if prev_idx >= 0:
+                                pred_filename = files[prev_idx]
+                                pred_path = os.path.join(folder, pred_filename)
+                                if os.path.exists(pred_path):
+                                    try:
+                                        pred_img = read_image(pred_path)
+                                    except Exception:
+                                        pred_img = None
+                                    if pred_img is not None:
+                                        previous_image = pred_img
+                                        previous_image_path = pred_path
+                                        previous_orientation = self._get_image_orientation(pred_img)
+                            else:
+                                previous_image = None
+                                previous_image_path = None
+                                previous_orientation = None
+
+                        timestamp_similar = None
+                        try:
+                            timestamp_similar = compute_similarity_timestamp(
+                                previous_image_path, image_path,
+                                threshold_seconds=scene_time_threshold
+                            ) if previous_image_path else None
+                        except Exception as e:
+                            log_warning(
+                                self._log_path,
+                                f"Timestamp similarity check failed: {e}",
+                                stage=stage_ctx["stage"],
+                                context={"file": raw_file, "folder": folder},
+                            )
+
+                        orientation_changed = (
+                            previous_orientation is not None
+                            and current_orientation != "unknown"
+                            and previous_orientation != "unknown"
+                            and current_orientation != previous_orientation
                         )
+
+                        if orientation_changed:
+                            scene_count += 1
+                            entry.update(
+                                {
+                                    "feature_similarity": -1.0,
+                                    "feature_confidence": -1.0,
+                                    "color_similarity": -1.0,
+                                    "color_confidence": -1.0,
+                                    "scene_count": scene_count,
+                                    "similar": False,
+                                }
+                            )
+                        elif timestamp_similar is True:
+                            # Images captured within the same second — treat as similar, skip AKAZE
+                            entry.update(
+                                {
+                                    "feature_similarity": -1.0,
+                                    "feature_confidence": -1.0,
+                                    "color_similarity": -1.0,
+                                    "color_confidence": -1.0,
+                                    "scene_count": scene_count,
+                                    "similar": True,
+                                }
+                            )
+                        else:
+                            similarity = compute_image_similarity_akaze(previous_image, img)
+                            if not similarity["similar"]:
+                                scene_count += 1
+                            entry.update(
+                                {
+                                    "feature_similarity": similarity["feature_similarity"],
+                                    "feature_confidence": similarity["feature_confidence"],
+                                    "color_similarity": similarity["color_similarity"],
+                                    "color_confidence": similarity["color_confidence"],
+                                    "scene_count": scene_count,
+                                    "similar": similarity["similar"],
+                                }
+                            )
                     # Hold the previous image by reference, not by copy. The next
                     # iteration rebinds ``img`` to a fresh decoded array, so the
                     # old array stays alive for AKAZE via this reference. The
@@ -935,27 +1092,33 @@ class AnalysisPipeline:
                         for item in items:
                             i = item["index"]
                             if pred_class[i] == "bird":
-                                species_result = self.species_clf.classify(item["species_crop"])
-                                item["species"] = (
-                                    species_result["top_species_labels"][0]
-                                    if len(species_result["top_species_labels"])
-                                    else "Unknown"
-                                )
-                                item["species_confidence"] = (
-                                    float(species_result["top_species_scores"][0])
-                                    if len(species_result["top_species_scores"])
-                                    else 0.0
-                                )
-                                item["family"] = (
-                                    species_result["top_family_labels"][0]
-                                    if len(species_result["top_family_labels"])
-                                    else "Unknown"
-                                )
-                                item["family_confidence"] = (
-                                    float(species_result["top_family_scores"][0])
-                                    if len(species_result["top_family_scores"])
-                                    else 0.0
-                                )
+                                if species_detection_enabled:
+                                    species_result = self.species_clf.classify(item["species_crop"])
+                                    item["species"] = (
+                                        species_result["top_species_labels"][0]
+                                        if len(species_result["top_species_labels"])
+                                        else "Unknown"
+                                    )
+                                    item["species_confidence"] = (
+                                        float(species_result["top_species_scores"][0])
+                                        if len(species_result["top_species_scores"])
+                                        else 0.0
+                                    )
+                                    item["family"] = (
+                                        species_result["top_family_labels"][0]
+                                        if len(species_result["top_family_labels"])
+                                        else "Unknown"
+                                    )
+                                    item["family_confidence"] = (
+                                        float(species_result["top_family_scores"][0])
+                                        if len(species_result["top_family_scores"])
+                                        else 0.0
+                                    )
+                                else:
+                                    item["species"] = "Unknown"
+                                    item["species_confidence"] = 0.0
+                                    item["family"] = "Unknown"
+                                    item["family_confidence"] = 0.0
                             else:
                                 item["species"] = pred_class[i]
                                 item["species_confidence"] = float(pred_score[i])
@@ -1239,18 +1402,18 @@ class AnalysisPipeline:
                 except Exception:
                     pass
 
-            # === Post-analysis: compute quality distribution and normalized ratings ===
+            # === Post-analysis: persist database + audit-trail metadata + scene grouping ===
             stage_ctx["stage"] = "post_analysis_normalization"
             try:
-                from .ratings import compute_quality_distribution
                 if not database.empty and "quality" in database.columns:
-                    quality_scores = database["quality"].tolist()
-                    distribution = compute_quality_distribution(quality_scores)
-
-                    # Save analysis results (no normalized_rating; computed at runtime)
                     save_database(database, db_path)
 
-                    # Cache quality distribution in kestrel_metadata.json for runtime normalization
+                    # Update kestrel_metadata.json with the analysis-run audit trail
+                    # (render mode, settings snapshot). The frontend reads
+                    # exposure_render_mode / exposure_pipeline_version to pick the
+                    # correct RAW preview path; the rest is a record of which
+                    # parameters produced the cached results, intended for users
+                    # who later want to see what settings produced this folder.
                     metadata_path = os.path.join(kestrel_dir, METADATA_FILENAME)
                     try:
                         import json as _json
@@ -1276,23 +1439,17 @@ class AnalysisPipeline:
                         else:
                             render_mode_meta = "legacy_auto_bright_v1"
 
-                        _meta["quality_distribution"] = distribution
-                        _meta["quality_distribution_stored"] = True
                         _meta["exposure_pipeline_version"] = 3
                         _meta["exposure_render_mode"] = render_mode_meta
                         _meta["exposure_quality"] = exposure_quality
 
-                        # Record the full set of settings used for THIS analysis
-                        # run so users can later see which parameters produced
-                        # the cached results (detection thresholds, rating
-                        # profile, detector variant, etc.). This is a snapshot
-                        # — re-running analysis overwrites it.
                         _meta["analyzed_utc"] = _dt.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
                         _meta["kestrel_version"] = VERSION
                         _meta["analysis_settings"] = {
                             "detector_name": str(getattr(self, "detector_name", "") or ""),
                             "use_gpu": bool(getattr(self, "use_gpu", False)),
                             "wildlife_enabled": bool(wildlife_enabled),
+                            "species_detection_enabled": bool(species_detection_enabled),
                             "detection_threshold": float(detection_threshold),
                             "scene_time_threshold": float(scene_time_threshold),
                             "mask_threshold": float(mask_threshold),
@@ -1311,7 +1468,7 @@ class AnalysisPipeline:
                     except Exception as _meta_e:
                         log_warning(
                             self._log_path,
-                            f"Failed to write quality distribution to metadata: {_meta_e}",
+                            f"Failed to write analysis metadata: {_meta_e}",
                             stage="post_analysis_normalization",
                         )
 

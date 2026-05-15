@@ -1,0 +1,129 @@
+.status {
+  color: var(--muted);
+  padding: 8px 2px;
+  font-size: 13px;
+}
+
+.version-badge {
+  color: var(--muted);
+  padding: 4px 2px 8px;
+  font-size: 12px;
+}
+
+/* Folder-load progress bar */
+.load-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 4px 2px 2px;
+}
+
+.load-progress-label {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.load-progress-track {
+  height: 4px;
+  background: #1d2230;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.load-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: #3a84e6;
+  border-radius: 999px;
+  transition: width .18s ease;
+}
+
+/* ── Bottom status bar ── */
+.app-status-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 3px 14px;
+  background: #111318;
+  border-top: 1px solid #1d2230;
+  font-size: 12px;
+  color: var(--muted);
+  z-index: 10;
+  min-height: 26px;
+}
+
+.app-status-bar .status {
+  padding: 0;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.app-status-bar .load-progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  flex-direction: row;
+}
+
+.app-status-bar .load-progress-label {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.app-status-bar .load-progress-track {
+  width: 120px;
+  height: 3px;
+}
+
+.app-status-bar .version-badge {
+  padding: 0;
+  font-size: 11px;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.sidebar-footer {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+}
+
+/* Circular zoom buttons */
+#zoomOut, #zoomIn {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  border-radius: 50%;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+/* Sidebar footer: uniform small button styles */
+.sidebar-footer button {
+  height: 28px;
+  font-size: 12px;
+  padding: 0 10px;
+  border-radius: 7px;
+}
+.sidebar-footer #zoomOut,
+.sidebar-footer #zoomIn {
+  padding: 0;
+  width: 28px;
+  height: 28px;
+}

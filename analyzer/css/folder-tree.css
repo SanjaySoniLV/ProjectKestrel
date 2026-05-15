@@ -1,0 +1,284 @@
+/* Folder tree panel */
+.folder-tree-wrap {
+  border-top: 1px solid #1d2230;
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Empty state: tree visible but greyed out before any folder is opened */
+.folder-tree-wrap.folder-tree-empty {
+  opacity: 0.45;
+  pointer-events: none;
+}
+.folder-tree-wrap.folder-tree-empty #folderTree::before {
+  content: 'Open a folder to see the tree';
+  display: block;
+  padding: 12px 8px;
+  font-size: 11px;
+  color: var(--muted);
+  text-align: center;
+  font-style: italic;
+}
+
+.folder-tree-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.folder-tree-header .tree-title {
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: .3px;
+  flex: 1 1 auto;
+}
+
+.folder-tree-header button {
+  padding: 2px 7px;
+  font-size: 11px;
+  height: auto;
+}
+
+#folderTree {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: #0a0d12;
+  border: 1px solid #1d2230;
+  border-radius: 8px;
+  padding: 4px 2px;
+}
+
+/* Lock the sidebar width so long folder names can't blow it out */
+.folder-tree-wrap {
+  max-width: 100%;
+}
+
+/* ── Tree node layout: consistent flex rows ──────────────────── */
+.tree-node-row, .adlg-node-row {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  cursor: default;
+  min-height: 20px;
+}
+.tree-node-row:hover { background: rgba(255,255,255,.04); }
+.adlg-node-row:hover { background: rgba(255,255,255,.04); }
+/* Expand arrow: fixed 12px slot, always present; leaf = invisible */
+.tree-arrow {
+  flex: 0 0 12px;
+  width: 12px;
+  font-size: 9px;
+  text-align: center;
+  line-height: 1;
+  cursor: pointer;
+  color: #6a7585;
+  user-select: none;
+  transition: transform .12s;
+}
+.tree-arrow.open { transform: rotate(90deg); }
+.tree-arrow.leaf { visibility: hidden; cursor: default; }
+/* Folder icon: alignment anchor */
+.tree-icon { flex: 0 0 18px; font-size: 14px; text-align: center; }
+/* Invisible spacer matching tree-cb width (sidebar rows without a checkbox) */
+.tree-cb-spacer { flex: 0 0 13px; width: 13px; height: 1px; display: inline-block; }
+/* Greyed-out folder: Kestrel found no supported photos */
+/* Deep: folder AND every descendant have 0 images — fade whole row */
+.adlg-node-row.no-photos-deep { opacity: 0.38; }
+.adlg-node-row.no-photos-deep .adlg-cb { cursor: not-allowed; pointer-events: none; }
+/* Shallow: folder itself has 0 images but a descendant has some — fade checkbox only */
+.adlg-node-row.no-photos-shallow .adlg-cb { opacity: 0.38; cursor: not-allowed; pointer-events: none; }
+/* Legacy class kept for backwards compat */
+.adlg-node-row.no-photos { opacity: 0.38; }
+.adlg-node-row.no-photos .adlg-cb { cursor: not-allowed; pointer-events: none; }
+
+.tree-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.tree-count {
+  margin-left: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.tree-node-row.has-kestrel:not(.analyzed-full):not(.analyzed-partial):not(.analyzed-none) .tree-label {
+  color: var(--ok);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.tree-node-row.has-kestrel:not(.analyzed-full):not(.analyzed-partial):not(.analyzed-none):hover .tree-label {
+  color: #c8dcf5;
+}
+
+/* Analysis completion states */
+.tree-node-row.analyzed-full .tree-label {
+  color: var(--ok);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.tree-node-row.analyzed-partial .tree-label {
+  color: #b36bff;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.tree-node-row.analyzed-none .tree-label {
+  color: var(--brand);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+/* Mirror classes for analyze dialog rows */
+.adlg-node-row.analyzed-full .tree-label {
+  color: var(--ok);
+  font-weight: 700;
+}
+
+.adlg-node-row.analyzed-partial .tree-label {
+  color: #b36bff;
+  font-weight: 700;
+}
+
+.adlg-node-row.analyzed-none .tree-label {
+  color: var(--brand);
+  font-weight: 700;
+}
+
+/* Mirror has-kestrel styling for analyze dialog rows */
+.adlg-node-row.has-kestrel:not(.analyzed-full):not(.analyzed-partial):not(.analyzed-none) .tree-label {
+  color: var(--ok);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.adlg-node-row.has-kestrel:not(.analyzed-full):not(.analyzed-partial):not(.analyzed-none):hover .tree-label {
+  color: #c8dcf5;
+}
+
+/* Outdated version styling (analyzed on an earlier Kestrel version) */
+.tree-node-row.version-outdated .tree-label {
+  color: var(--ok);
+  cursor: pointer;
+  font-weight: 600;
+  font-style: italic;
+}
+.adlg-node-row.version-outdated .tree-label {
+  color: var(--ok);
+  font-weight: 600;
+  font-style: italic;
+}
+
+/* Errored-images styling: light-red tint + left border. Composes with
+   analyzed-partial / analyzed-full so the row still picks up its primary
+   color via the .tree-label rules. */
+.tree-node-row.has-errored-images,
+.adlg-node-row.has-errored-images {
+  background: rgba(231, 76, 60, 0.08);
+  border-left: 3px solid var(--bad);
+  padding-left: 6px;
+}
+.tree-node-row.has-errored-images .tree-count,
+.adlg-node-row.has-errored-images .tree-count {
+  color: var(--bad);
+}
+
+/* In-progress analysis styling (subtle purple indicator with text) */
+.tree-node-row.in-progress {
+  background: rgba(179, 153, 204, 0.08);
+  border-left: 3px solid #b399cc;
+  padding-left: 6px;
+}
+.tree-node-row.in-progress .tree-label {
+  color: #d4a3ff !important;
+  font-style: italic;
+  font-weight: 700;
+}
+.tree-node-row.in-progress .tree-label::after {
+  content: ' (analysis in progress)';
+  margin-left: 6px;
+  font-size: 0.9em;
+  opacity: 0.85;
+}
+
+/* Context menu for folder tree */
+.kestrel-ctx-menu {
+  position: fixed;
+  z-index: 9999;
+  background: #23272e;
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 220px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+}
+.kestrel-ctx-menu-item {
+  padding: 7px 16px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #ddd;
+  white-space: nowrap;
+}
+.kestrel-ctx-menu-item:hover {
+  background: #3a3f4b;
+  color: #fff;
+}
+.kestrel-ctx-menu-item.danger {
+  color: #e74c3c;
+}
+.kestrel-ctx-menu-item.danger:hover {
+  background: #5a2020;
+  color: #ff6b6b;
+}
+
+.tree-node-row.no-kestrel {
+  opacity: 0.38;
+}
+
+/* Bold non-analyzed folder labels for better visibility on all platforms */
+.tree-node-row.no-kestrel .tree-label {
+  font-weight: 700 !important;
+  color: #cbd2dc !important;
+}
+
+.tree-node-row.active .tree-label {
+  color: #fff;
+  font-weight: 700;
+}
+
+.tree-node-row.active {
+  background: #10293d;
+}
+
+/* Visual connector lines from parent to children */
+.tree-children {
+  padding-left: 12px;
+  border-left: 1px solid #1e2840;
+  margin-left: 8px;
+}
+
+.tree-cb {
+  flex: 0 0 13px;
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: #3a84e6;
+}

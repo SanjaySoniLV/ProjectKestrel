@@ -7,6 +7,26 @@ from typing import Any, Dict, Optional
 
 from .config import KESTREL_DIR_NAME, LOG_FILENAME_PREFIX, LOG_FILE_EXTENSION
 
+# Re-export the leveled console logger from ``settings_utils`` so any module
+# inside the kestrel_analyzer subpackage (including ml/) can do
+# ``from ..logging_utils import debug, info, warn, error`` without dealing
+# with the package-depth or fallback-import dance themselves. The structured
+# JSON channel (``log_event`` / ``log_warning`` / ``log_exception`` below) is
+# unrelated and lives alongside.
+try:
+    from ..settings_utils import debug, info, warn, error  # type: ignore  # noqa: F401
+except (ImportError, ValueError):
+    # cli.py imports kestrel_analyzer as a top-level package, so the relative
+    # ``..settings_utils`` walks above the package root and raises. The bare
+    # import works because ``analyzer/`` is on sys.path in that case.
+    try:
+        from settings_utils import debug, info, warn, error  # type: ignore  # noqa: F401
+    except ImportError:
+        def debug(*_a, **_kw): pass  # type: ignore[no-redef]
+        def info(*_a, **_kw): pass   # type: ignore[no-redef]
+        def warn(*_a, **_kw): pass   # type: ignore[no-redef]
+        def error(*_a, **_kw): pass  # type: ignore[no-redef]
+
 
 def _utc_timestamp() -> str:
     return datetime.utcnow().isoformat() + "Z"

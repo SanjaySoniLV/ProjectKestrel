@@ -125,6 +125,63 @@ jobs:
             throw "Source CLI smoke test processed fewer than 2 images (rows=$processedRows)"
           }
 
+      - name: Generate build attestation
+        id: attestation
+        shell: powershell
+        env:
+          SIGNING_SECRET: ${{ secrets.KESTREL_BUILD_SIGNING_SECRET }}
+        run: |
+          if (-not $env:SIGNING_SECRET) {
+            Write-Host "::warning::KESTREL_BUILD_SIGNING_SECRET is not set; skipping attestation. This build will be tagged 'legacy' by the API worker."
+            exit 0
+          }
+
+          # Read version from VERSION.txt (root or analyzer/) using the same logic as
+          # kestrel_telemetry._read_version: prefer a 'version:' line, else single-line fallback.
+          $version = 'unknown'
+          foreach ($candidate in @('VERSION.txt', 'analyzer\VERSION.txt')) {
+            if (Test-Path $candidate) {
+              $lines = Get-Content $candidate | Where-Object { $_.Trim() -ne '' }
+              foreach ($line in $lines) {
+                if ($line.ToLower().StartsWith('version:')) {
+                  $version = ($line -split ':', 2)[1].Trim()
+                  break
+                }
+              }
+              if ($version -eq 'unknown' -and $lines.Count -eq 1) {
+                $version = $lines[0].Trim()
+              }
+              if ($version -ne 'unknown') { break }
+            }
+          }
+
+          $sha = $env:GITHUB_SHA
+          $ts  = [int][double]::Parse((Get-Date -UFormat %s))
+          $meta = "$version|$sha|$ts"
+
+          $hmac = New-Object System.Security.Cryptography.HMACSHA256
+          $hmac.Key = [Text.Encoding]::UTF8.GetBytes($env:SIGNING_SECRET)
+          $sigBytes = $hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($meta))
+          $sig = -join ($sigBytes | ForEach-Object { $_.ToString('x2') })
+
+          if (-not (Test-Path 'analyzer')) {
+            Write-Host "::error::analyzer/ directory is missing — cannot place build_attestation.json"
+            exit 1
+          }
+          $payload = @{ meta = $meta; sig = $sig } | ConvertTo-Json -Compress
+          Set-Content -Path 'analyzer\build_attestation.json' -Value $payload -Encoding utf8 -NoNewline
+
+          Write-Host "Build attestation generated:"
+          Write-Host "  version : $version"
+          Write-Host "  sha     : $sha"
+          Write-Host "  ts      : $ts"
+          Write-Host "  meta    : $meta"
+          Write-Host "  sig     : $($sig.Substring(0, 16))... (truncated)"
+
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$version"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "sha=$sha"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "ts=$ts"
+
       - name: Build ProjectKestrel with PyInstaller
         shell: cmd
         run: packaging\build_installer_headless.bat
@@ -250,3 +307,39 @@ jobs:
         with:
           name: windows-bundle
           path: analyzer/dist/ProjectKestrel/
+
+      - name: Register build with worker
+        if: ${{ always() && steps.attestation.outputs.sha != '' }}
+        shell: powershell
+        continue-on-error: true
+        env:
+          SIGNING_SECRET: ${{ secrets.KESTREL_BUILD_SIGNING_SECRET }}
+          BUILD_VERSION:  ${{ steps.attestation.outputs.version }}
+          BUILD_SHA:      ${{ steps.attestation.outputs.sha }}
+          BUILD_TS:       ${{ steps.attestation.outputs.ts }}
+        run: |
+          if (-not $env:SIGNING_SECRET) {
+            Write-Host "::warning::No signing secret available; skipping build registration."
+            exit 0
+          }
+          $body = @{
+            version = $env:BUILD_VERSION
+            sha     = $env:BUILD_SHA
+            ts      = $env:BUILD_TS
+            run_id  = $env:GITHUB_RUN_ID
+            actor   = $env:GITHUB_ACTOR
+          } | ConvertTo-Json -Compress
+
+          try {
+            $resp = Invoke-RestMethod `
+              -Uri 'https://api.projectkestrel.org/api/builds/register' `
+              -Method POST -TimeoutSec 15 `
+              -Headers @{
+                'X-Kestrel-Signing-Token' = $env:SIGNING_SECRET
+                'Content-Type'            = 'application/json'
+              } `
+              -Body $body
+            Write-Host "Build registered with worker: $($resp | ConvertTo-Json -Compress)"
+          } catch {
+            Write-Host "::warning::Build registration failed (non-blocking): $($_.Exception.Message)"
+          }

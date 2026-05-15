@@ -12,7 +12,7 @@ import threading
 import time as _time_mod
 from datetime import datetime
 
-from settings_utils import load_persisted_settings, save_persisted_settings, log
+from settings_utils import load_persisted_settings, save_persisted_settings, debug, info, warn, error, log
 
 # Telemetry — failsafe import (never blocks startup)
 try:
@@ -32,7 +32,7 @@ except ImportError:
 _pipeline_import_error = ''
 _AnalysisPipeline = None   # populated lazily on first use
 _DEFAULT_DETECTOR_NAME = 'mdv5a'
-_ALLOWED_DETECTOR_NAMES = {'mdv5a', 'mdv6-e'}
+_ALLOWED_DETECTOR_NAMES = {'mdv5a', 'mdv1000-cedar'}
 
 
 def _coerce_detector_name(value) -> str:
@@ -70,13 +70,13 @@ if not _PIPELINE_AVAILABLE:
 def _get_pipeline_class():
     """Import and cache AnalysisPipeline on first call (deferred ML import)."""
     global _AnalysisPipeline, _PIPELINE_AVAILABLE, _pipeline_import_error
-    log("_get_pipeline_class() called, available:", _PIPELINE_AVAILABLE)
+    debug("[queue] _get_pipeline_class() called, available:", _PIPELINE_AVAILABLE)
     if _AnalysisPipeline is not None:
         return _AnalysisPipeline
     try:
-        log("Importing AnalysisPipeline from kestrel_analyzer.pipeline...")
+        info("[queue] Importing AnalysisPipeline from kestrel_analyzer.pipeline...")
         from kestrel_analyzer.pipeline import AnalysisPipeline  # type: ignore  # noqa: PLC0415
-        log("AnalysisPipeline imported successfully.")
+        info("[queue] AnalysisPipeline imported successfully.")
         _AnalysisPipeline = AnalysisPipeline
         _PIPELINE_AVAILABLE = True
         return _AnalysisPipeline
@@ -176,12 +176,14 @@ class QueueManager:
         self._pipeline = None
         self._use_gpu = True
         self._wildlife_enabled = True
+        self._species_detection_enabled = True
         self._detection_threshold = 0.25
         self._scene_time_threshold = 1.0
         self._mask_threshold = 0.5
         self._max_bird_crops = 10
         self._parallel_prefetch = 3
         self._detector_name = _DEFAULT_DETECTOR_NAME
+        self._retry_errored = False
 
     def _collect_restore_paths_locked(self) -> list:
         restore_statuses = {'pending', 'running', 'cancelled'}
@@ -206,6 +208,7 @@ class QueueManager:
             'options': {
                 'use_gpu': bool(self._use_gpu),
                 'wildlife_enabled': bool(self._wildlife_enabled),
+                'species_detection_enabled': bool(self._species_detection_enabled),
                 'detector_name': str(self._detector_name),
                 'detection_threshold': float(self._detection_threshold),
                 'scene_time_threshold': float(self._scene_time_threshold),
@@ -300,6 +303,7 @@ class QueueManager:
             restore_paths,
             use_gpu=bool(options.get('use_gpu', True)),
             wildlife_enabled=bool(options.get('wildlife_enabled', True)),
+            species_detection_enabled=bool(options.get('species_detection_enabled', True)),
             detector_name=_coerce_detector_name(options.get('detector_name', _DEFAULT_DETECTOR_NAME)),
             detection_threshold=_safe_float(options.get('detection_threshold', 0.25), 0.25),
             scene_time_threshold=_safe_float(options.get('scene_time_threshold', 1.0), 1.0),
@@ -349,12 +353,14 @@ class QueueManager:
         paths: list,
         use_gpu: bool = True,
         wildlife_enabled: bool = True,
+        species_detection_enabled: bool = True,
         detector_name: str = _DEFAULT_DETECTOR_NAME,
         detection_threshold: float = 0.25,
         scene_time_threshold: float = 1.0,
         mask_threshold: float = 0.5,
         max_bird_crops: int = 10,
         parallel_prefetch: int = 3,
+        retry_errored: bool = False,
     ) -> dict:
         if not _PIPELINE_AVAILABLE:
             return {'success': False, 'error': f'Analyzer unavailable: {_pipeline_import_error}'}
@@ -395,6 +401,7 @@ class QueueManager:
             self._pause_event.set()
             self._use_gpu = use_gpu
             self._wildlife_enabled = wildlife_enabled
+            self._species_detection_enabled = bool(species_detection_enabled)
             self._detection_threshold = float(detection_threshold)
             self._scene_time_threshold = float(scene_time_threshold)
             self._mask_threshold = float(mask_threshold)
@@ -409,6 +416,7 @@ class QueueManager:
             except (TypeError, ValueError):
                 parallel_prefetch_num = 3
             self._parallel_prefetch = max(1, min(5, parallel_prefetch_num))
+            self._retry_errored = bool(retry_errored)
             self._thread = threading.Thread(target=self._run, daemon=True, name='kestrel-queue')
             self._thread.start()
         self._persist_recovery_state()
@@ -505,7 +513,7 @@ class QueueManager:
                         if it.status in ('pending', 'running'):
                             it.status = 'error'
                             it.error = f'Pipeline unavailable: {_pipeline_import_error}'
-                log('[queue] Pipeline unavailable, aborting:', _pipeline_import_error)
+                error('[queue] Pipeline unavailable, aborting:', _pipeline_import_error)
                 self._persist_recovery_state()
                 return
             self._pipeline = cls(use_gpu=self._use_gpu, detector_name=self._detector_name)
@@ -546,7 +554,7 @@ class QueueManager:
                 def _on_status(msg, _it=item):
                     with self._lock:
                         _it.current_status_msg = msg
-                    log(f'[queue:{_it.name}]', msg)
+                    debug(f'[queue:{_it.name}]', msg)
 
                 def _on_thumbnail(data, _it=item):
                     with self._lock:
@@ -642,11 +650,13 @@ class QueueManager:
                     },
                     analyzer_name='visualizer-queue',
                     wildlife_enabled=self._wildlife_enabled,
+                    species_detection_enabled=self._species_detection_enabled,
                     detection_threshold=self._detection_threshold,
                     scene_time_threshold=self._scene_time_threshold,
                     mask_threshold=self._mask_threshold,
                     max_bird_crops=self._max_bird_crops,
                     parallel_prefetch=self._parallel_prefetch,
+                    retry_errored=self._retry_errored,
                 )
                 with self._lock:
                     if self._cancel_event.is_set():
@@ -660,7 +670,7 @@ class QueueManager:
                 self._persist_recovery_state()
                 self._send_folder_analytics(item)
             except Exception as exc:
-                log(f'[queue] Error processing {item.path!r}:', exc)
+                error(f'[queue] Error processing {item.path!r}:', exc)
                 with self._lock:
                     item.status = 'error'
                     item.end_time = _time_mod.time()
@@ -668,7 +678,7 @@ class QueueManager:
                 self._persist_recovery_state()
                 self._send_folder_analytics(item)
 
-        log('[queue] Run thread finished.')
+        info('[queue] Run thread finished.')
         self._persist_recovery_state()
 
     def _send_folder_analytics(self, item):

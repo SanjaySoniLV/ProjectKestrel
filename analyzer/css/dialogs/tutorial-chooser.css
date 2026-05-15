@@ -1,0 +1,106 @@
+/* ═══ Tutorial chooser dialog ═══ */
+dialog.tut-chooser-dlg {
+  width: min(560px, 96vw);
+  max-width: min(560px, 96vw);
+  padding: 0;
+  border-radius: 14px;
+}
+.tut-chooser-body {
+  padding: 22px 24px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.tut-chooser-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text);
+}
+.tut-chooser-sub {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.tut-chooser-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.tut-chooser-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  width: 100%;
+  min-height: 0;
+  height: auto;
+  padding: 14px 16px;
+  background: #10141c;
+  border: 1px solid #2a3040;
+  border-radius: 10px;
+  text-align: left;
+  color: var(--text);
+  cursor: pointer;
+  white-space: normal;
+  font: inherit;
+  line-height: 1.4;
+  transition: border-color .15s, background .15s, transform .1s;
+}
+.tut-chooser-choice:hover {
+  border-color: var(--brand);
+  background: #141a24;
+}
+.tut-chooser-choice:active {
+  transform: translateY(1px);
+}
+.tut-chooser-choice.primary {
+  border-color: rgba(74, 163, 255, 0.5);
+  background: rgba(74, 163, 255, 0.06);
+}
+.tut-chooser-choice.primary:hover {
+  background: rgba(74, 163, 255, 0.12);
+  border-color: var(--brand);
+}
+.tut-chooser-icon {
+  flex: 0 0 36px;
+  font-size: 28px;
+  line-height: 1;
+  text-align: center;
+  padding-top: 2px;
+}
+.tut-chooser-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.tut-chooser-label {
+  display: block;
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--text);
+}
+.tut-chooser-hint {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+  font-weight: 400;
+  white-space: normal;
+}
+.tut-chooser-foot {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+.tut-chooser-cancel {
+  background: none;
+  border: 1px solid #333;
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.tut-chooser-cancel:hover { border-color: #555; color: var(--text); }

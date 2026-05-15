@@ -32,11 +32,21 @@ except ImportError:
 
 import ssl
 import certifi # ensure we have a CA bundle for HTTPS requests, even in frozen/packaged environments
+
+try:
+    from build_attestation import auth_headers as _build_auth_headers
+except Exception:
+    # Failsafe: if the module can't load for any reason, fall back to legacy headers only.
+    def _build_auth_headers():
+        return {}
 # ---------------------------------------------------------------------------
 # Configuration — the shared secret and endpoint URL
 # ---------------------------------------------------------------------------
 KESTREL_API_URL = "https://api.projectkestrel.org"  # production endpoint
 #KESTREL_API_URL = "http://127.0.0.1:8787"  # local testing endpoint
+# Legacy shared secret. Official builds override authentication via HMAC headers
+# from build_attestation.auth_headers(); this constant remains as the fallback
+# tier for source/dev builds and for pre-attestation installed binaries.
 KESTREL_SHARED_SECRET = "kestrel_secret_dev_shared"  # basic abuse-prevention
 
 _TIMEOUT_SECONDS = 10
@@ -117,6 +127,21 @@ def _get_ssl_context():
     ctx = ssl.create_default_context(cafile=certifi.where())
     return ctx
 
+def _warn(msg: str) -> None:
+    """Lazy-import warn from settings_utils to avoid a circular import.
+
+    settings_utils imports kestrel_telemetry at module load; we can't import
+    back at the top level. Resolving the symbol at call time is fine because
+    telemetry posts only happen long after module init.
+    """
+    try:
+        from settings_utils import warn as _w
+        _w(msg)
+    except Exception:
+        # Failsafe: telemetry must never raise.
+        print(msg, file=sys.stderr, flush=True)
+
+
 def _post_json(endpoint: str, payload: dict) -> None:
     """POST JSON to the Cloudflare Worker (fire-and-forget, failsafe)."""
     if urllib is None:
@@ -124,26 +149,33 @@ def _post_json(endpoint: str, payload: dict) -> None:
     url = f"{KESTREL_API_URL}{endpoint}"
     try:
         data = json.dumps(payload).encode('utf-8')
+        headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (KestrelTelemetry/1.0)',
+        }
+        # Official builds carry HMAC attestation headers; everyone else falls back
+        # to the legacy shared-secret header. The worker accepts both.
+        attestation = _build_auth_headers()
+        if attestation:
+            headers.update(attestation)
+        else:
+            headers['X-Kestrel-Key'] = KESTREL_SHARED_SECRET
         req = urllib.request.Request(
             url,
             data=data,
-            headers={
-                'Content-Type': 'application/json',
-                'Accept': 'application/json',
-                'X-Kestrel-Key': KESTREL_SHARED_SECRET,
-                'User-Agent': 'Mozilla/5.0 (KestrelTelemetry/1.0)',
-            },
+            headers=headers,
             method='POST',
         )
         with urllib.request.urlopen(req, timeout=_TIMEOUT_SECONDS, context=_get_ssl_context()):
             pass
     except urllib.error.HTTPError as e:
         body = e.read().decode('utf-8', errors='replace') if hasattr(e, 'read') else ''
-        print(f'[telemetry] HTTP {e.code} from {url}: {body[:300]}', flush=True)
+        _warn(f'[telemetry] HTTP {e.code} from {url}: {body[:300]}')
     except urllib.error.URLError as e:
-        print(f'[telemetry] URLError posting to {url}: {e.reason}', flush=True)
+        _warn(f'[telemetry] URLError posting to {url}: {e.reason}')
     except Exception as e:
-        print(f'[telemetry] Error posting to {url}: {e}', flush=True)
+        _warn(f'[telemetry] Error posting to {url}: {e}')
 
 
 def _post_json_async(endpoint: str, payload: dict) -> None:
@@ -225,6 +257,7 @@ def send_crash_report(
     session_analytics: Optional[dict] = None,
     machine_id: str = '',
     version: str = '',
+    exit_reason: str = 'crash',
 ) -> None:
     """Send a crash report to the Cloudflare Worker (async, failsafe).
 
@@ -240,6 +273,13 @@ def send_crash_report(
         Any analytics data collected so far in this session.
     machine_id, version : str
         Machine identifier and app version.
+    exit_reason : str
+        How the previous session ended. ``'crash'`` (default) for true
+        unhandled exceptions; ``'unknown'`` when the user opted in for an
+        ambiguous exit (SIGKILL, power loss); ``'os_shutdown'`` defensive
+        only — the recovery dialog filters these client-side, but the
+        server should record any that slip through so they can be excluded
+        from crash-rate dashboards.
     """
     if not is_frozen():
         return
@@ -260,6 +300,7 @@ def send_crash_report(
             'machine_id': machine_id,
             'version': version or _read_version(),
             'os': _get_os_info(),
+            'exit_reason': exit_reason,
         }
         _post_json_async('/api/crash', payload)
     except Exception:
@@ -546,16 +587,8 @@ def collect_folder_stats(item_path: str, files_this_session: int, total_files: i
     dict with keys: file_sizes_kb, file_formats
     """
     try:
-        # Import known extensions
-        try:
-            from kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS
-        except ImportError:
-            try:
-                from analyzer.kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS
-            except ImportError:
-                RAW_EXTENSIONS = {'.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf', '.rw2', '.raf'}
-                JPEG_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.tiff', '.tif', '.bmp', '.webp'}
-        
+        from kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS
+
         file_sizes_kb: List[float] = []
         file_formats: Dict[str, int] = {}
         # Ensure we can combine lists or sets without raising a TypeError

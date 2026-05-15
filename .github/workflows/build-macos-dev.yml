@@ -25,7 +25,20 @@ jobs:
           source .venv2/bin/activate
           python -m pip install --upgrade pip
           pip install -r requirements-macos.txt
-          pip install pyinstaller
+          pip install pyinstaller pytest
+
+      - name: Run pytest from source (skip ui marker)
+        id: pretest
+        continue-on-error: true
+        shell: bash
+        run: |
+          source .venv2/bin/activate
+          python -m pytest analyzer/tests/ -m "not ui" -q --tb=short
+
+      - name: Warn if pre-build pytest failed
+        if: ${{ always() && steps.pretest.outcome == 'failure' }}
+        shell: bash
+        run: echo "::warning::Pre-build pytest failed on macOS dev build; continuing to PyInstaller."
 
       - name: Smoke test CLI from source (repo root, first 2 test images)
         shell: bash
@@ -67,47 +80,76 @@ jobs:
           chmod +x packaging/build_app_headless.sh
           ./packaging/build_app_headless.sh
 
-      - name: Smoke test built executable (first 2 test images)
-        id: smoke_test
+      - name: Run --validate against frozen binary
+        id: validate
         continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
-          SMOKE_DIR="${RUNNER_TEMP}/kestrel-smoke-input"
-          rm -rf "${SMOKE_DIR}"
-          mkdir -p "${SMOKE_DIR}"
+          VALIDATE_OUTPUT="${RUNNER_TEMP}/validate-result.json"
+          rm -f "${VALIDATE_OUTPUT}"
 
-          # mapfile is unavailable in macOS runner bash (3.2), so use while-read.
-          smoke_imgs=()
-          while IFS= read -r img; do
-            smoke_imgs+=("${img}")
-          done < <(find test_imgs -maxdepth 1 -type f | sort | head -n 2)
-          if [ "${#smoke_imgs[@]}" -lt 2 ]; then
-            echo "Expected at least 2 images in test_imgs/ for smoke test"
+          analyzer/dist/ProjectKestrel/ProjectKestrel \
+            --cli --validate \
+            --validate-images test_imgs \
+            --validate-output "${VALIDATE_OUTPUT}"
+
+          if [ ! -f "${VALIDATE_OUTPUT}" ]; then
+            echo "Frozen --validate did not produce a result JSON"
+            exit 1
+          fi
+          echo "=== validate-result.json ==="
+          cat "${VALIDATE_OUTPUT}"
+
+          # Copy to repo root so upload-artifact finds it.
+          cp "${VALIDATE_OUTPUT}" validate-result.json
+
+          ok=$(python3 -c "import json,sys; print(str(json.load(open('${VALIDATE_OUTPUT}')).get('ok')).lower())")
+          if [ "${ok}" != "true" ]; then
+            echo "Validation reported failure (ok=${ok})"
             exit 1
           fi
 
-          for img in "${smoke_imgs[@]}"; do
-            cp "${img}" "${SMOKE_DIR}/"
-          done
-
-          analyzer/dist/ProjectKestrel/ProjectKestrel --cli "${SMOKE_DIR}" --no-gpu --parallel-prefetch 1
-
-          META_PATH="${SMOKE_DIR}/.kestrel/kestrel_database.csv"
-          if [ ! -f "${META_PATH}" ]; then
-            echo "Smoke test did not produce kestrel_database.csv"
-            exit 1
-          fi
-          PROCESSED_ROWS=$(( $(wc -l < "${META_PATH}") - 1 ))
-          if [ "${PROCESSED_ROWS}" -lt 2 ]; then
-            echo "Smoke test processed fewer than 2 images (rows=${PROCESSED_ROWS})"
-            exit 1
-          fi
-
-      - name: Warn if smoke test failed
-        if: ${{ always() && steps.smoke_test.outcome == 'failure' }}
+      - name: Warn if frozen --validate failed
+        if: ${{ always() && steps.validate.outcome == 'failure' }}
         shell: bash
-        run: echo "::warning::Smoke test failed on macOS dev build; continuing to publish available artifacts."
+        run: echo "::warning::Frozen-binary --validate failed on macOS dev build; continuing to publish available artifacts."
+
+      - name: UI probe (real visualizer.html) against frozen binary
+        id: ui_probe
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          UI_PROBE_OUTPUT="${RUNNER_TEMP}/ui-probe-result.json"
+          rm -f "${UI_PROBE_OUTPUT}"
+
+          analyzer/dist/ProjectKestrel/ProjectKestrel \
+            --api-probe \
+            --probe-target visualizer \
+            --probe-output "${UI_PROBE_OUTPUT}" \
+            --probe-timeout 60 \
+            --port 8798
+
+          if [ ! -f "${UI_PROBE_OUTPUT}" ]; then
+            echo "UI probe did not produce a result JSON"
+            exit 1
+          fi
+          echo "=== ui-probe-result.json ==="
+          cat "${UI_PROBE_OUTPUT}"
+
+          cp "${UI_PROBE_OUTPUT}" ui-probe-result.json
+
+          ok=$(python3 -c "import json,sys; print(str(json.load(open('${UI_PROBE_OUTPUT}')).get('ok')).lower())")
+          if [ "${ok}" != "true" ]; then
+            echo "UI probe reported failure (ok=${ok}); visualizer.html did not wire up window.pywebview.api"
+            exit 1
+          fi
+
+      - name: Warn if UI probe failed
+        if: ${{ always() && steps.ui_probe.outcome == 'failure' }}
+        shell: bash
+        run: echo "::warning::Frozen-binary UI probe failed on macOS dev build; visualizer.html did not see window.pywebview.api."
 
       - name: Collect macOS .app
         shell: bash
@@ -131,3 +173,21 @@ jobs:
         with:
           name: macos-dev-app
           path: artifact/
+
+      - name: Upload validate-result.json
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dev-validate-result
+          path: validate-result.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload ui-probe-result.json
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dev-ui-probe-result
+          path: ui-probe-result.json
+          if-no-files-found: warn
+          retention-days: 14

@@ -44,24 +44,6 @@ def quality_to_rating(q: float, thresholds: dict = None) -> int:
     return 1
 
 
-def compute_quality_distribution(quality_scores) -> list:
-    """Compute distribution of quality scores in 100 buckets of 0.01 width.
-
-    Only includes scores >= 0 (detected subjects; quality == -1 means no detection).
-    Returns a list of 100 ints where index i = count of scores in [i*0.01, (i+1)*0.01).
-    """
-    buckets = [0] * 100
-    for q in quality_scores:
-        try:
-            q_f = float(q)
-        except (TypeError, ValueError):
-            continue
-        if q_f >= 0:
-            idx = min(int(q_f * 100), 99)
-            buckets[idx] += 1
-    return buckets
-
-
 def get_image_display_rating(
     filename: str,
     quality: float,

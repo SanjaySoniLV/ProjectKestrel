@@ -1,3 +1,11 @@
+    // ── Debug-gated console logging ─────────────────────────────────────────
+    // Verbose diagnostic console.log lines are routed through kdebug() so
+    // they're silent by default. To enable for a session, open DevTools and
+    // run:  window.__KESTREL_DEBUG = true; location.reload();
+    // (console.warn / console.error are NOT gated — they always fire.)
+    const _KESTREL_DEBUG = !!window.__KESTREL_DEBUG;
+    function kdebug(...args) { if (_KESTREL_DEBUG) console.log(...args); }
+
     // State (desktop mode only)
     let rootPath = '';             // Absolute path to root folder (desktop pywebview mode)
     let rows = [];                 // CSV rows (objects)
@@ -124,13 +132,13 @@
     // ─────────────────────────────────────────────────────────────────────────
 
     // Debug: Log what APIs are available (initial check)
-    console.log('[DEBUG] Initial API Detection:');
-    console.log('  - Pywebview API (window.pywebview):', hasPywebviewApi);
+    kdebug('[init] API detection start');
+    kdebug('  - Pywebview API (window.pywebview):', hasPywebviewApi);
     if (hasPywebviewApi) {
-      console.log('  - window.pywebview object:', window.pywebview);
-      console.log('  - window.pywebview.api:', window.pywebview.api);
+      kdebug('  - window.pywebview object:', window.pywebview);
+      kdebug('  - window.pywebview.api:', window.pywebview.api);
       if (window.pywebview.api) {
-        console.log('  - Available API methods:', Object.keys(window.pywebview.api));
+        kdebug('  - Available API methods:', Object.keys(window.pywebview.api));
       }
     }
 
@@ -152,9 +160,9 @@
           if (found) {
             hasPywebviewApi = true;
             el('#compat')?.classList.add('hidden');
-            console.log('[DEBUG] Pywebview API ready (elapsed ~' + elapsed + 'ms)');
+            kdebug('[init] Pywebview API ready (elapsed ~' + elapsed + 'ms)');
           } else {
-            console.log('[DEBUG] Pywebview API not available after ' + elapsed + 'ms');
+            kdebug('[init] Pywebview API not available after ' + elapsed + 'ms');
           }
           resolve(found);
         }
@@ -188,6 +196,10 @@
         return;
       }
       hasPywebviewApi = true;
+      // Signal the production-JS-saw-the-bridge proof to --api-probe
+      // (no-op outside probe mode; report_bridge_ready is side-effect-free
+      // unless Api._probe_ready_event is set on the Python side).
+      try { window.pywebview?.api?.report_bridge_ready?.(); } catch (_) { }
       // After API is ready, check legal agreement
       checkLegalAgreement();
       el('#compat').classList.add('hidden');
@@ -195,6 +207,8 @@
       await new Promise(function(r) { setTimeout(r, 500); });
       // Hydrate settings from server to ensure localStorage has the latest data
       await hydrateSettingsFromServer();
+      // Load species→family taxonomy map (used for auto-link, cascade, and autocomplete)
+      loadSpeciesFamilyMap();
       // Then check donation threshold (after settings are loaded into localStorage)
       checkDonationThresholdOnStartup();
     })();
@@ -476,7 +490,7 @@
 
     // Display the version update notification as a toast
     async function showVersionUpdateNotification(versionInfo) {
-      console.log('[DEBUG] Showing version update notification for version:', versionInfo);
+      kdebug('[init] Showing version update notification for version:', versionInfo);
       const toast = document.getElementById('versionUpdateToast');
       if (!toast) return;
       
@@ -3050,6 +3064,119 @@
     let _activeTagInputType = null; // 'species' or 'family'
     let _activeTagInputSceneId = null;
 
+    // Species → family taxonomy map (loaded once from backend on startup).
+    // Used to auto-add the family chip when a recognized species is added,
+    // cascade-remove species when a family chip is X'd, and populate the
+    // species autocomplete datalist.
+    let _speciesFamilyMap = null;        // { "American Robin": "Thrush sp.", ... } (canonical case)
+    let _speciesFamilyMapLower = null;   // lowercase keys → { canonicalName, family }
+    let _speciesNameList = [];           // sorted array of canonical species names
+
+    async function loadSpeciesFamilyMap() {
+      if (_speciesFamilyMap) return;
+      if (!hasPywebviewApi || !window.pywebview?.api?.get_species_family_map) {
+        _speciesFamilyMap = {};
+        _speciesFamilyMapLower = {};
+        _speciesNameList = [];
+        return;
+      }
+      try {
+        const res = await window.pywebview.api.get_species_family_map();
+        const map = (res && res.success && res.map) ? res.map : {};
+        _speciesFamilyMap = map;
+        _speciesFamilyMapLower = {};
+        for (const [sp, fam] of Object.entries(map)) {
+          _speciesFamilyMapLower[sp.toLowerCase()] = { canonical: sp, family: fam };
+        }
+        _speciesNameList = Object.keys(map).sort((a, b) => a.localeCompare(b));
+        kdebug(`[loadSpeciesFamilyMap] loaded ${_speciesNameList.length} species`);
+      } catch (e) {
+        console.warn('[loadSpeciesFamilyMap] failed:', e);
+        _speciesFamilyMap = {};
+        _speciesFamilyMapLower = {};
+        _speciesNameList = [];
+      }
+    }
+
+    // ── Custom species combobox (replaces native <datalist>) ──
+    // Up to SPECIES_COMBO_MAX visible matches at a time. Arrow keys navigate
+    // the highlight; Enter commits the highlighted item (or the typed value
+    // if no highlight); clicking an item commits that item.
+    const SPECIES_COMBO_MAX = 12;
+
+    /** Filter the species list for a typed query.
+     *  Returns up to SPECIES_COMBO_MAX matches: prefix matches first, then
+     *  substring matches. Empty query returns the alphabetical head of the list. */
+    function _filterSpeciesForCombo(query) {
+      if (!_speciesNameList || _speciesNameList.length === 0) return [];
+      const q = String(query || '').trim().toLowerCase();
+      if (!q) return _speciesNameList.slice(0, SPECIES_COMBO_MAX);
+      const prefix = [];
+      const substring = [];
+      for (const name of _speciesNameList) {
+        const lower = name.toLowerCase();
+        if (lower.startsWith(q)) {
+          prefix.push(name);
+        } else if (lower.includes(q)) {
+          substring.push(name);
+        }
+        if (prefix.length >= SPECIES_COMBO_MAX) break;
+      }
+      return prefix.concat(substring).slice(0, SPECIES_COMBO_MAX);
+    }
+
+    /** Render the dropdown list inside the given container element.
+     *  Each row shows the species name and (if known) its family in muted text,
+     *  so the user can confirm the auto-link before committing. */
+    function _renderSpeciesComboDropdown(dropdownEl, items, highlightIdx) {
+      if (!dropdownEl) return;
+      if (!items || items.length === 0) {
+        dropdownEl.innerHTML = '';
+        dropdownEl.style.display = 'none';
+        return;
+      }
+      const html = items.map((name, i) => {
+        const family = (_speciesFamilyMap && _speciesFamilyMap[name]) || '';
+        const cls = i === highlightIdx ? 'chip-combo-item chip-combo-item--active' : 'chip-combo-item';
+        const fam = family ? `<span class="chip-combo-family">${escapeHtml(family)}</span>` : '';
+        return `<div class="${cls}" data-combo-index="${i}"><span class="chip-combo-name">${escapeHtml(name)}</span>${fam}</div>`;
+      }).join('');
+      dropdownEl.innerHTML = html;
+      dropdownEl.style.display = '';
+    }
+
+    /** Look up the family display name for a species name (case-insensitive).
+     *  Returns { canonical, family } if matched, or null for free-form input. */
+    function _lookupFamilyForSpecies(name) {
+      if (!name || !_speciesFamilyMapLower) return null;
+      const hit = _speciesFamilyMapLower[String(name).trim().toLowerCase()];
+      return hit || null;
+    }
+
+    /** Add a species to the draft and, if the species is in the taxonomy map,
+     *  also add its family. Returns:
+     *    { speciesAdded: bool, speciesValue: string, familyAdded: string|null, matched: bool }
+     *  - speciesValue is the canonical-cased name on match, the input as-typed otherwise.
+     *  - familyAdded is the family display name if it was newly added, else null.
+     *  - matched indicates whether the species was found in the taxonomy map.
+     */
+    function _applySpeciesAutoLink(draft, rawName) {
+      const name = String(rawName || '').trim();
+      if (!name) return { speciesAdded: false, speciesValue: '', familyAdded: null, matched: false };
+      const hit = _lookupFamilyForSpecies(name);
+      const speciesValue = hit ? hit.canonical : name;
+      const speciesBefore = draft.species.length;
+      draft.species = Array.from(new Set([...draft.species, speciesValue])).sort();
+      const speciesAdded = draft.species.length !== speciesBefore;
+      let familyAdded = null;
+      if (hit) {
+        const famBefore = draft.families.length;
+        draft.families = Array.from(new Set([...draft.families, hit.family])).sort();
+        if (draft.families.length !== famBefore) familyAdded = hit.family;
+      }
+      return { speciesAdded, speciesValue, familyAdded, matched: !!hit };
+    }
+
     function renderTopbarTags(scene) {
       const tagsEl = el('#sceneTopbarTags');
       if (!tagsEl) return;
@@ -3071,7 +3198,7 @@
         html += _buildSuggestedTagButton('species', suggestions.species);
       }
       if (_activeTagInputType === 'species' && _activeTagInputSceneId === String(scene.id)) {
-        html += `<span class="chip-input-wrap"><input type="text" class="chip-input" id="inlineTagInput" placeholder="Species..." /><button class="chip-commit-btn" title="Save">✓</button></span>`;
+        html += `<span class="chip-input-wrap chip-input-wrap--species"><input type="text" class="chip-input" id="inlineTagInput" placeholder="Species..." autocomplete="off" /><button class="chip-commit-btn" title="Save">✓</button><div class="chip-input-dropdown" id="inlineTagDropdown" style="display:none"></div></span>`;
       } else {
         html += `<button class="scene-chip-add" data-add-type="species" title="Add species tag">+</button>`;
       }
@@ -3124,13 +3251,29 @@
         btn.onclick = () => {
           if (!_sceneEditDraft) _beginSceneEditDraft(scene.id);
           _sceneEditMode = true;
-          removeFamilyFromScene(scene, btn.dataset.removeFamily);
+          const removedFamily = btn.dataset.removeFamily;
+          removeFamilyFromScene(scene, removedFamily);
+          // Cascade: also drop any species in the draft whose looked-up family
+          // matches the removed family. Free-form species (no map entry) are
+          // left in place — we cannot prove they belong to this family.
+          let cascaded = 0;
+          if (_sceneEditDraft && Array.isArray(_sceneEditDraft.species) && removedFamily) {
+            const before = _sceneEditDraft.species.length;
+            _sceneEditDraft.species = _sceneEditDraft.species.filter(sp => {
+              const hit = _lookupFamilyForSpecies(sp);
+              return !(hit && hit.family === removedFamily);
+            });
+            cascaded = before - _sceneEditDraft.species.length;
+          }
           _finalizeSceneReview(scene.id);
           _sceneEditMode = false;
           _sceneEditDraft = null;
           const updatedScene = reloadScene(scene.id) || scene;
           renderTopbarTags(updatedScene);
           renderScenes();
+          if (cascaded > 0) {
+            showToast(`Removed family "${removedFamily}" and ${cascaded} associated ${cascaded === 1 ? 'species' : 'species tags'}`, 2200);
+          }
         };
       });
 
@@ -3155,20 +3298,25 @@
           if (!_sceneEditDraft) _beginSceneEditDraft(scene.id);
           _sceneEditMode = true;
 
-          let changed = false;
+          let toastMsg = '';
           if (suggestType === 'species') {
-            const before = _sceneEditDraft.species.length;
-            _sceneEditDraft.species = Array.from(new Set([..._sceneEditDraft.species, suggestValue])).sort();
-            changed = _sceneEditDraft.species.length !== before;
+            const result = _applySpeciesAutoLink(_sceneEditDraft, suggestValue);
+            if (result.speciesAdded || result.familyAdded) {
+              toastMsg = result.familyAdded
+                ? `Added suggested species "${result.speciesValue}" (family: ${result.familyAdded})`
+                : `Added suggested species "${result.speciesValue}"`;
+            }
           } else {
             const before = _sceneEditDraft.families.length;
             _sceneEditDraft.families = Array.from(new Set([..._sceneEditDraft.families, suggestValue])).sort();
-            changed = _sceneEditDraft.families.length !== before;
+            if (_sceneEditDraft.families.length !== before) {
+              toastMsg = `Added suggested family "${suggestValue}"`;
+            }
           }
 
-          if (changed) {
+          if (toastMsg) {
             _finalizeSceneReview(scene.id);
-            showToast(`Added suggested ${suggestType} "${suggestValue}"`, 2000);
+            showToast(toastMsg, 2000);
           }
 
           _sceneEditMode = false;
@@ -3198,33 +3346,122 @@
         };
       }
 
-      // Wire inline input
+      // Wire inline input (with combobox behavior for species)
       const inp = el('#inlineTagInput');
       if (inp) {
-        const commit = () => {
-          const val = inp.value.trim();
+        const dropdown = tagsEl.querySelector('#inlineTagDropdown');
+        const isSpeciesInput = _activeTagInputType === 'species';
+        // Combobox state — only meaningful for species inputs.
+        let comboItems = [];
+        let comboIndex = -1;
+
+        const positionDropdown = () => {
+          if (!dropdown || !inp) return;
+          const rect = inp.getBoundingClientRect();
+          dropdown.style.left = Math.round(rect.left) + 'px';
+          dropdown.style.top = Math.round(rect.bottom + 4) + 'px';
+          // Width: at least the input's width, but allow it to grow up to the
+          // CSS max-width for longer species names.
+          dropdown.style.minWidth = Math.max(Math.round(rect.width), 240) + 'px';
+        };
+
+        const refreshDropdown = () => {
+          if (!isSpeciesInput || !dropdown) return;
+          comboItems = _filterSpeciesForCombo(inp.value);
+          comboIndex = comboItems.length > 0 ? 0 : -1;
+          _renderSpeciesComboDropdown(dropdown, comboItems, comboIndex);
+          if (comboItems.length > 0) positionDropdown();
+        };
+
+        const updateHighlight = (newIdx) => {
+          if (!comboItems.length) return;
+          const n = comboItems.length;
+          comboIndex = ((newIdx % n) + n) % n;
+          _renderSpeciesComboDropdown(dropdown, comboItems, comboIndex);
+          // Scroll the active row into view if the dropdown is scrollable.
+          const active = dropdown?.querySelector('.chip-combo-item--active');
+          if (active && active.scrollIntoView) {
+            active.scrollIntoView({ block: 'nearest' });
+          }
+        };
+
+        // Guard against re-entry: when commit() runs from Enter and then we
+        // re-render, the OLD input element is detached from the DOM and its
+        // onblur fires asynchronously (~150ms) — without this flag, that stale
+        // blur callback re-invokes this same closure, reading the old input's
+        // value but using the NEW _activeTagInputType, which can post the
+        // species value as a family tag.
+        let committed = false;
+        const commit = (chosenValue) => {
+          if (committed) return;
+          committed = true;
+          const raw = (chosenValue !== undefined && chosenValue !== null)
+            ? String(chosenValue)
+            : inp.value;
+          const val = raw.trim();
+          // Track whether to reopen the family input after a free-form species commit.
+          let reopenFamilyInput = false;
           if (val) {
             if (!_sceneEditDraft) _beginSceneEditDraft(scene.id);
             _sceneEditMode = true;
             if (_activeTagInputType === 'species') {
-              _sceneEditDraft.species = Array.from(new Set([..._sceneEditDraft.species, val])).sort();
+              const result = _applySpeciesAutoLink(_sceneEditDraft, val);
+              _finalizeSceneReview(scene.id);
+              _sceneEditMode = false;
+              _sceneEditDraft = null;
+              if (result.matched) {
+                if (result.familyAdded) {
+                  showToast(`Added species "${result.speciesValue}" (family: ${result.familyAdded})`, 2200);
+                } else {
+                  showToast(`Added species "${result.speciesValue}"`, 2000);
+                }
+              } else {
+                // Free-form species (not in taxonomy map). Per design, advance
+                // focus to the family input so the user can add it next.
+                showToast(`Added "${result.speciesValue}" — type family next`, 2200);
+                reopenFamilyInput = true;
+              }
             } else {
               _sceneEditDraft.families = Array.from(new Set([..._sceneEditDraft.families, val])).sort();
+              _finalizeSceneReview(scene.id);
+              _sceneEditMode = false;
+              _sceneEditDraft = null;
+              showToast(`Added family "${val}"`, 2000);
             }
-            _finalizeSceneReview(scene.id);
-            _sceneEditMode = false;
-            _sceneEditDraft = null;
-            showToast(`Added ${_activeTagInputType} "${val}"`, 2000);
           }
-          _activeTagInputType = null;
-          _activeTagInputSceneId = null;
+          if (reopenFamilyInput) {
+            _activeTagInputType = 'family';
+            _activeTagInputSceneId = String(scene.id);
+          } else {
+            _activeTagInputType = null;
+            _activeTagInputSceneId = null;
+          }
           const updated = reloadScene(scene.id) || scene;
           renderTopbarTags(updated);
           renderScenes();
+          if (reopenFamilyInput) {
+            const next = el('#inlineTagInput');
+            if (next) next.focus();
+          }
         };
 
         inp.onkeydown = (e) => {
-          if (e.key === 'Enter') { e.preventDefault(); commit(); }
+          if (isSpeciesInput && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+            if (!comboItems.length) return;
+            e.preventDefault();
+            updateHighlight(comboIndex + (e.key === 'ArrowDown' ? 1 : -1));
+            return;
+          }
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            // If a dropdown row is highlighted, commit that. Otherwise commit
+            // the typed value (allowing free-form species like "Eurasian Wren").
+            const chosen = (isSpeciesInput && comboIndex >= 0 && comboIndex < comboItems.length)
+              ? comboItems[comboIndex]
+              : undefined;
+            commit(chosen);
+            return;
+          }
           if (e.key === 'Escape') {
             e.preventDefault();
             _activeTagInputType = null;
@@ -3232,15 +3469,34 @@
             renderTopbarTags(scene);
           }
         };
+        if (isSpeciesInput) {
+          inp.oninput = () => { refreshDropdown(); };
+          inp.onfocus = () => { refreshDropdown(); };
+          // Mousedown (not click) so the selection registers BEFORE the input
+          // loses focus and the blur-commit timer has a chance to fire.
+          if (dropdown) {
+            dropdown.onmousedown = (e) => {
+              const row = e.target.closest('.chip-combo-item');
+              if (!row) return;
+              e.preventDefault(); // keep input focused so blur-commit doesn't race
+              const idx = parseInt(row.dataset.comboIndex || '-1', 10);
+              if (idx >= 0 && idx < comboItems.length) {
+                commit(comboItems[idx]);
+              }
+            };
+          }
+          // Initial population on render.
+          refreshDropdown();
+        }
         inp.onblur = (e) => {
-          // Small delay to allow clicking the commit button if it exists
+          // Small delay to allow clicking the commit button or a dropdown row.
           setTimeout(() => {
             if (document.activeElement === tagsEl.querySelector('.chip-commit-btn')) return;
-            if (_activeTagInputType) commit(); 
+            if (_activeTagInputType) commit();
           }, 150);
         };
         const commitBtn = tagsEl.querySelector('.chip-commit-btn');
-        if (commitBtn) commitBtn.onclick = commit;
+        if (commitBtn) commitBtn.onclick = () => commit();
       }
     }
 
@@ -3455,6 +3711,51 @@
       openSceneDialog(nextScene.id, startIndex);
     }
 
+    // ── Review-flow shortcut helpers (used by _sceneKeyHandler) ──
+
+    /** Mark the current scene as reviewed (same effect as clicking the button). */
+    function _markCurrentSceneReviewed() {
+      if (!_currentScene) return;
+      _beginSceneEditDraft(_currentScene.id);
+      _sceneEditMode = true;
+      _finalizeSceneReview(_currentScene.id);
+      _sceneEditMode = false;
+      _sceneEditDraft = null;
+      const updated = reloadScene(_currentScene.id) || _currentScene;
+      renderTopbarTags(updated);
+      renderScenes();
+      showToast('Scene tags marked as reviewed', 1800);
+    }
+
+    /** Open the inline species/family tag input on the current scene and focus it. */
+    function _openInlineTagInputForCurrentScene(type) {
+      if (!_currentScene) return;
+      if (type !== 'species' && type !== 'family') return;
+      _activeTagInputType = type;
+      _activeTagInputSceneId = String(_currentScene.id);
+      renderTopbarTags(_currentScene);
+      const inp = el('#inlineTagInput');
+      if (inp) inp.focus();
+    }
+
+    /** Clear all species and family tags on the current scene (keeps reviewed state). */
+    function _clearAllTagsForCurrentScene() {
+      if (!_currentScene) return;
+      _beginSceneEditDraft(_currentScene.id);
+      _sceneEditMode = true;
+      if (_sceneEditDraft) {
+        _sceneEditDraft.species = [];
+        _sceneEditDraft.families = [];
+      }
+      _finalizeSceneReview(_currentScene.id);
+      _sceneEditMode = false;
+      _sceneEditDraft = null;
+      const updated = reloadScene(_currentScene.id) || _currentScene;
+      renderTopbarTags(updated);
+      renderScenes();
+      showToast('Cleared all tags', 1600);
+    }
+
     // Keyboard handler for scene dialog
     function _sceneKeyHandler(e) {
       // Skip if focused in input/textarea (but allow our inline tag input to handle its own Esc/Enter)
@@ -3466,6 +3767,47 @@
       const len = images.length;
 
       const hasSceneModifier = e.ctrlKey || e.metaKey;
+      const onlyCtrl = hasSceneModifier && !e.shiftKey && !e.altKey;
+      const ctrlShift = hasSceneModifier && e.shiftKey && !e.altKey;
+      const lowerKey = (e.key || '').toLowerCase();
+
+      // ── Review-flow shortcuts ──
+      // Ctrl+R: mark reviewed. Must preventDefault to suppress browser reload.
+      if (onlyCtrl && lowerKey === 'r') {
+        e.preventDefault();
+        e.stopPropagation();
+        _markCurrentSceneReviewed();
+        return;
+      }
+      // Ctrl+T: open species tag input.
+      if (onlyCtrl && lowerKey === 't') {
+        e.preventDefault();
+        e.stopPropagation();
+        _openInlineTagInputForCurrentScene('species');
+        return;
+      }
+      // Ctrl+Shift+T: open family tag input.
+      if (ctrlShift && lowerKey === 't') {
+        e.preventDefault();
+        e.stopPropagation();
+        _openInlineTagInputForCurrentScene('family');
+        return;
+      }
+      // Ctrl+Shift+C: clear all tags. Must run before the plain-'c' cull-reject branch below.
+      if (ctrlShift && lowerKey === 'c') {
+        e.preventDefault();
+        e.stopPropagation();
+        _clearAllTagsForCurrentScene();
+        return;
+      }
+      // Ctrl+Shift+R: reset and reassign — clear all tags, then open the species input.
+      if (ctrlShift && lowerKey === 'r') {
+        e.preventDefault();
+        e.stopPropagation();
+        _clearAllTagsForCurrentScene();
+        _openInlineTagInputForCurrentScene('species');
+        return;
+      }
 
       // Tab skips to next scene; Ctrl/Cmd+Tab (or Shift+Tab) skips to previous
       if (e.key === 'Tab') {
@@ -4737,17 +5079,17 @@
             }
           } catch (_) { }
         }
-        console.log('[donation] checkDonationThresholdOnStartup: total =', total);
+        kdebug('[donation] checkDonationThresholdOnStartup: total =', total);
         if (total < 1000) {
-          console.log('[donation] Total < 1000, skipping');
+          kdebug('[donation] Total < 1000, skipping');
           return;
         }
         const thresholds = [1000, 5000, 10000, 25000, 50000, 100000, 200000];
         const shown = _loadDonateThresholdsShown();
-        console.log('[donation] Thresholds already shown:', shown);
+        kdebug('[donation] Thresholds already shown:', shown);
         for (const t of thresholds) {
           if (total >= t && !shown.includes(t)) {
-            console.log('[donation] Milestone crossed:', t, '- showing dialog');
+            kdebug('[donation] Milestone crossed:', t, '- showing dialog');
             shown.push(t);
             _saveDonateThresholdsShown(shown);
             // Show dialog after a brief delay to let UI settle
@@ -4756,7 +5098,7 @@
           }
         }
         if (shown.includes(1000)) {
-          console.log('[donation] 1000 threshold already shown, no dialog needed');
+          kdebug('[donation] 1000 threshold already shown, no dialog needed');
         }
       } catch (e) {
         console.error('[donation] checkDonationThresholdOnStartup error:', e);
@@ -5340,7 +5682,8 @@
           for (const row of related) {
             const span = row.querySelector('.tree-count');
             row.classList.remove('analyzed-full', 'analyzed-partial', 'analyzed-none',
-                                 'no-photos', 'no-photos-deep', 'no-photos-shallow', 'version-outdated');
+                                 'no-photos', 'no-photos-deep', 'no-photos-shallow', 'version-outdated',
+                                 'has-errored-images');
             row.title = '';
             if (span) { span.title = ''; span.textContent = ''; }
 
@@ -5348,11 +5691,18 @@
 
             const totalImgs = info.total;
             const processedImgs = info.processed;
+            const erroredImgs = info.errored || 0;
 
             if (totalImgs > 0) {
-              if (span) span.textContent = ` ${processedImgs}/${totalImgs}`;
-              if (processedImgs >= totalImgs) {
-                row.classList.add('analyzed-full');          // green: finished
+              const countText = erroredImgs > 0
+                ? ` ${processedImgs}/${totalImgs} (${erroredImgs} errored)`
+                : ` ${processedImgs}/${totalImgs}`;
+              if (span) span.textContent = countText;
+              if (erroredImgs > 0) {
+                row.classList.add('has-errored-images');
+              }
+              if (processedImgs >= totalImgs && erroredImgs === 0) {
+                row.classList.add('analyzed-full');          // green: finished, no errors
                 // Check if analyzed on an outdated version
                 const origPath = normToOriginal.get(np) || np;
                 const nodeVer = findNodeVersion(folderTreeRootNode, origPath);
@@ -5361,9 +5711,12 @@
                   row.title = `Analyzed on Kestrel v${nodeVer} (current: v${_appVersion}). Consider re-analyzing.`;
                 }
               } else if (processedImgs > 0) {
-                row.classList.add('analyzed-partial');       // purple: started not finished
+                row.classList.add('analyzed-partial');       // purple: started not finished, OR has errors
               } else {
                 row.classList.add('analyzed-none');          // blue: has images, not started
+              }
+              if (erroredImgs > 0) {
+                row.title = `${erroredImgs} image(s) errored during the previous analysis. Tick "Re-attempt errored images" before queuing to retry just those.`;
               }
             } else {
               // This folder has 0 images — determine deep vs shallow fading
@@ -5844,11 +6197,11 @@
     const CONF_LOW = 0.30;
 
     /** Call the backend queue API (desktop pywebview mode only). */
-    async function apiStartQueue(paths, useGpu = true, wildlifeEnabled = true) {
+    async function apiStartQueue(paths, useGpu = true, wildlifeEnabled = true, retryErrored = false, speciesDetectionEnabled = true) {
       if (!window.pywebview?.api?.start_analysis_queue) {
         throw new Error('Desktop API unavailable: start_analysis_queue');
       }
-      return window.pywebview.api.start_analysis_queue(JSON.stringify(paths), useGpu, wildlifeEnabled);
+      return window.pywebview.api.start_analysis_queue(JSON.stringify(paths), useGpu, wildlifeEnabled, retryErrored, speciesDetectionEnabled);
     }
 
     async function apiQueueControl(action) {
@@ -5917,7 +6270,12 @@
         ? recovery.queue_recovery.restore_paths
         : [];
       const hasQueueRecovery = restorePaths.length > 0;
-      const hadUncleanShutdown = !!recovery.unclean_shutdown;
+      const exitReason = String(recovery.exit_reason || '').toLowerCase();
+      // 'os_shutdown' (PC reboot/logoff) and 'clean' never warrant a dialog.
+      // 'crash' is a real unhandled exception. 'unknown' is ambiguous
+      // (SIGKILL, power loss, or pre-upgrade install) and gets a soft prompt.
+      const hadUncleanShutdown = !!recovery.unclean_shutdown
+        && (exitReason === 'crash' || exitReason === 'unknown' || exitReason === '');
       if (!hasQueueRecovery && !hadUncleanShutdown) return;
 
       let queueDismissed = false;
@@ -5948,9 +6306,10 @@
       }
 
       if (hadUncleanShutdown) {
-        const sendReport = confirm(
-          'Kestrel detected that the previous session did not shut down cleanly.\n\nSend a crash report now?'
-        );
+        const promptText = exitReason === 'crash'
+          ? 'Kestrel detected that the previous session crashed.\n\nSend a crash report now?'
+          : 'Kestrel did not exit cleanly. This is sometimes caused by a system shutdown or power loss — would you still like to send a report?';
+        const sendReport = confirm(promptText);
         if (sendReport) {
           try {
             const reportResult = await apiSendRecoveryCrashReport();
@@ -7260,16 +7619,16 @@
 
     // Event wiring
     el('#pickFolder').addEventListener('click', async () => {
-      console.log('[DEBUG] Folder picker clicked');
-      console.log('[DEBUG] hasPywebviewApi:', hasPywebviewApi);
-      console.log('[DEBUG] window.pywebview:', window.pywebview);
-      console.log('[DEBUG] window.pywebview?.api:', window.pywebview?.api);
+      kdebug('[pickFolder] clicked');
+      kdebug('[pickFolder] hasPywebviewApi:', hasPywebviewApi);
+      kdebug('[pickFolder] window.pywebview:', window.pywebview);
+      kdebug('[pickFolder] window.pywebview?.api:', window.pywebview?.api);
 
       // Wait for pywebview API if it's not ready yet
       if (!hasPywebviewApi) {
-        console.log('[DEBUG] Waiting for pywebview API...');
+        kdebug('[pickFolder] Waiting for pywebview API...');
         const ready = await waitForPywebview();
-        console.log('[DEBUG] Pywebview API ready:', ready);
+        kdebug('[pickFolder] Pywebview API ready:', ready);
       }
       // When user opens a folder, reset any checked folders in the main tree
       // (acts like pressing "Check none") so we don't accidentally load
@@ -7284,7 +7643,7 @@
         // PRIORITY 1: Python API (desktop app - all platforms)
         // When available, ALWAYS use this for consistency
         if (hasPywebviewApi && window.pywebview?.api?.choose_directory) {
-          console.log('[DEBUG] Using Python API for folder picker');
+          kdebug('[pickFolder] Using Python API for folder picker');
           try {
             setStatus('Opening folder picker...');
             const folderPath = await window.pywebview.api.choose_directory();
@@ -7655,6 +8014,8 @@
         if (paths.length === 0) return;
         const useGpu = document.getElementById('analyzeUseGpu')?.checked ?? true;
         const wildlifeEnabled = document.getElementById('analyzeWildlife')?.checked ?? false;
+        const speciesDetectionEnabled = document.getElementById('analyzeSpeciesDetection')?.checked ?? true;
+        const retryErrored = document.getElementById('adlgRetryErrored')?.checked ?? true;
 
         // Check for outdated-version folders not already confirmed for re-analysis
         const outdatedPaths = [];
@@ -7719,7 +8080,7 @@
           const eqVal = ['lenient', 'balanced', 'aggressive'].includes(eqRaw) ? eqRaw : 'balanced';
           const modelRaw = String(document.getElementById('adlgWildlifeModelMode')?.value || 'fast').toLowerCase();
           const modelVal = modelRaw === 'accurate' ? 'accurate' : 'fast';
-          const detectorName = modelVal === 'accurate' ? 'mdv5a' : 'mdv6-e';
+          const detectorName = modelVal === 'accurate' ? 'mdv5a' : 'mdv1000-cedar';
           const stVal = Math.max(0, parseFloat(document.getElementById('adlgSceneTime')?.value) || 1.0);
           const ppRaw = parseInt(document.getElementById('adlgParallelPrefetch')?.value, 10);
           const ppVal = Math.max(1, Math.min(5, Number.isFinite(ppRaw) ? ppRaw : 3));
@@ -7750,7 +8111,7 @@
         try {
           // Show loading overlay while analyzer imports models (lazy-load)
           showLoadingAnalyzer();
-          const result = await apiStartQueue(paths, useGpu, wildlifeEnabled);
+          const result = await apiStartQueue(paths, useGpu, wildlifeEnabled, retryErrored, speciesDetectionEnabled);
           if (result && result.success) {
             queuedFolderPaths.clear();
             _dlgSelected.clear();

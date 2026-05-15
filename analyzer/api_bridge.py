@@ -16,7 +16,7 @@ import subprocess
 import sys
 import webbrowser
 
-from settings_utils import load_persisted_settings, save_persisted_settings, log
+from settings_utils import load_persisted_settings, save_persisted_settings, debug, info, warn, error
 from queue_manager import _queue_manager
 
 try:
@@ -42,14 +42,10 @@ except ImportError:
     except ImportError:
         _launch_editor = None
 
-try:
-    from kestrel_analyzer.config import JPEG_EXTENSIONS as _JPEG_EXTENSIONS, RAW_EXTENSIONS as _RAW_EXTENSIONS
-except ImportError:
-    try:
-        from analyzer.kestrel_analyzer.config import JPEG_EXTENSIONS as _JPEG_EXTENSIONS, RAW_EXTENSIONS as _RAW_EXTENSIONS
-    except ImportError:
-        _JPEG_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.tif', '.tiff']
-        _RAW_EXTENSIONS = ['.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.srw']
+from kestrel_analyzer.config import (
+    JPEG_EXTENSIONS as _JPEG_EXTENSIONS,
+    RAW_EXTENSIONS as _RAW_EXTENSIONS,
+)
 
 # Telemetry — failsafe import (never blocks startup)
 try:
@@ -86,10 +82,9 @@ _ALLOWED_EDITORS = {
     'acdsee', 'paintshop', 'faststone', 'xnview', 'irfanview', 'custom',
 }
 
-_DEFAULT_EDITOR_EXTENSIONS = [
-    '.cr3', '.cr2', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.sr2',
-    '.jpg', '.jpeg', '.png', '.tif', '.tiff'
-]
+# Editor-launch allowlist tracks the analyzer's supported formats so any
+# file Kestrel can analyze can also be opened in the configured editor.
+_DEFAULT_EDITOR_EXTENSIONS = list(_RAW_EXTENSIONS) + list(_JPEG_EXTENSIONS)
 _EXTERNAL_URL_SCHEME_ALLOWLIST = frozenset({'http', 'https', 'mailto'})
 
 
@@ -130,13 +125,6 @@ def _is_safe_external_url(url) -> bool:
 
 
 _ALLOWED_EDITOR_EXTENSIONS: set[str] = set()
-# ``KESTREL_ALLOW_ANY_EXTENSION`` was previously an env-var escape hatch that
-# let users bypass the extension allowlist on the ``open_in_editor`` surface.
-# That's a FINDING-07 escape hatch and is now hard-off: the set of allowed
-# extensions is fixed to ``_DEFAULT_EDITOR_EXTENSIONS`` plus the user's
-# ``KESTREL_ALLOWED_EXTENSIONS`` override (still validated), and the check is
-# never bypassed.
-_ALLOW_ANY_EDITOR_EXTENSION = False
 
 
 def _normalize_extensions(exts):
@@ -190,6 +178,10 @@ class Api:
         self._has_unsaved_changes: bool = False
         self._cache_cleanup_roots: set[str] = set()
         self._culling_companion_extensions: tuple[str, ...] = _CULLING_COMPANION_EXTENSIONS
+        # Set externally by visualizer.main() after window/server come up.
+        self._main_window = None
+        self._culling_window = None
+        self._server_port: int | None = None
 
     def notify_dirty(self, is_dirty: bool) -> dict:
         """Called from JS whenever the dirty flag changes."""
@@ -206,9 +198,9 @@ class Api:
             stack = str(error_data.get('stack', ''))[:1500]
             source = str(error_data.get('source', ''))
             line = error_data.get('line', '')
-            log(f'[JS {err_type}] {msg}' + (f' @ {source}:{line}' if source else ''))
+            warn(f'[JS {err_type}] {msg}' + (f' @ {source}:{line}' if source else ''))
             if stack:
-                log(f'[JS {err_type} stack]\n{stack}')
+                warn(f'[JS {err_type} stack]\n{stack}')
         except Exception:
             pass
         return {'success': True}
@@ -290,8 +282,6 @@ class Api:
             return False
 
     def _editor_extension_allowed(self, path: str) -> bool:
-        if _ALLOW_ANY_EDITOR_EXTENSION:
-            return True
         _, ext = os.path.splitext(path)
         return ext.lower() in _ALLOWED_EDITOR_EXTENSIONS
 
@@ -312,7 +302,7 @@ class Api:
                     txt = txt[:300] + '...'
                 parts.append(f'{key}={txt!r}')
             suffix = f' ({", ".join(parts)})' if parts else ''
-            log(f'[security] Reject {context}: {reason}{suffix}')
+            warn(f'[security] Reject {context}: {reason}{suffix}')
         except Exception:
             pass
 
@@ -456,7 +446,7 @@ class Api:
                     'privacy_url': str(data.get('privacy_url', '') or '').strip(),
                 }
         except Exception as e:
-            log(f'[legal] fetch_remote_legal failed: {e}')
+            warn(f'[legal] fetch_remote_legal failed: {e}')
             return {}
 
     def fetch_remote_legal(self):
@@ -497,7 +487,7 @@ class Api:
         if not effective_date:
             agreed = legacy_agreed
             reason = None if agreed else 'new_user'
-            log(f'[legal] get_legal_status (offline fallback): agreed={agreed}')
+            info(f'[legal] get_legal_status (offline fallback): agreed={agreed}')
             return {
                 'agreed': agreed,
                 'reason': reason,
@@ -517,7 +507,7 @@ class Api:
             agreed = False
             reason = 'new_user'
 
-        log(
+        info(
             f'[legal] get_legal_status: agreed={agreed}, reason={reason}, '
             f'stored_date={stored_date!r}, effective_date={effective_date!r}'
         )
@@ -547,14 +537,14 @@ class Api:
         date_str = str(effective_date or '').strip()
         if date_str:
             settings['legal_agreed_date'] = date_str
-        log(f'[legal] User agreed to terms (version {version}, effective_date={date_str!r})')
+        info(f'[legal] User agreed to terms (version {version}, effective_date={date_str!r})')
 
         if not settings.get('installed_telemetry_sent', False):
             if _telemetry:
                 mid = _telemetry.get_machine_id(settings)
                 _telemetry.send_installation_telemetry(mid, version=version)
                 settings['installed_telemetry_sent'] = True
-                log('[legal] Initial installation telemetry triggered.')
+                info('[legal] Initial installation telemetry triggered.')
 
         save_persisted_settings(settings)
         return {'success': True}
@@ -563,7 +553,6 @@ class Api:
         """Open native folder picker dialog.
         Returns: absolute path to selected folder, or None if cancelled.
         """
-        print(f"[API] choose_directory() called (platform: {sys.platform})", flush=True)
         try:
             if sys.platform == 'darwin':
                 script = 'POSIX path of (choose folder with prompt "Select folder containing analyzed photos")'
@@ -573,27 +562,9 @@ class Api:
                     text=True,
                     timeout=120
                 )
-                if result.returncode == 0 and result.stdout.strip():
-                    selected_path = result.stdout.strip()
-                    print(f"[API] choose_directory() -> Success: {selected_path}", flush=True)
-                    return selected_path
-                print("[API] choose_directory() -> Cancelled by user", flush=True)
-                return None
-            elif sys.platform.startswith('win'):
-                import tkinter as tk
-                from tkinter import filedialog
-                root = tk.Tk()
-                root.withdraw()
-                root.attributes('-topmost', True)
-                folder = filedialog.askdirectory(title="Select folder containing analyzed photos")
-                root.destroy()
-                if folder:
-                    print(f"[API] choose_directory() -> Success: {folder}", flush=True)
-                    return folder
-                else:
-                    print("[API] choose_directory() -> Cancelled by user", flush=True)
-                    return None
+                folder = result.stdout.strip() if result.returncode == 0 else ''
             else:
+                # tkinter filedialog works on both Windows and Linux
                 import tkinter as tk
                 from tkinter import filedialog
                 root = tk.Tk()
@@ -601,15 +572,11 @@ class Api:
                 root.attributes('-topmost', True)
                 folder = filedialog.askdirectory(title="Select folder containing analyzed photos")
                 root.destroy()
-                if folder:
-                    print(f"[API] choose_directory() -> Success: {folder}", flush=True)
-                    return folder
-                else:
-                    print("[API] choose_directory() -> Cancelled by user", flush=True)
-                    return None
+
+            info(f'[API] choose_directory -> {folder!r}' if folder else '[API] choose_directory -> cancelled')
+            return folder or None
         except Exception as e:
-            print(f"[API] choose_directory() -> Error: {e}", flush=True)
-            log(f"Error in choose_directory: {e}")
+            error(f'[API] choose_directory error: {e}')
             return None
 
     def open_file_explorer(self, folder_path):
@@ -631,7 +598,7 @@ class Api:
                 subprocess.run(['xdg-open', root_real], check=False)
             return {'success': True, 'path': root_real}
         except Exception as e:
-            print(f"[API] open_file_explorer error: {e}", flush=True)
+            error(f'[API] open_file_explorer error: {e}')
             return {'success': False, 'error': str(e)}
 
     def choose_application(self):
@@ -663,7 +630,7 @@ class Api:
                 root.destroy()
                 return filepath if filepath else None
         except Exception as e:
-            print(f"[API] choose_application() -> Error: {e}", flush=True)
+            error(f'[API] choose_application error: {e}')
             return None
 
     def read_kestrel_csv(self, folder_path):
@@ -714,7 +681,7 @@ class Api:
                 'root': parent_folder
             }
         except Exception as e:
-            print(f"[API] read_kestrel_csv() -> Error: {e}", flush=True)
+            error(f'[API] read_kestrel_csv error: {e}')
             return {
                 'success': False,
                 'error': str(e),
@@ -757,10 +724,10 @@ class Api:
                 return {'success': True, 'message': 'No .kestrel folder found'}
 
             shutil.rmtree(kestrel_dir)
-            print(f"[API] clear_kestrel_data() -> Removed .kestrel from {kestrel_dir}", flush=True)
+            info(f'[API] clear_kestrel_data: removed {kestrel_dir}')
             return {'success': True, 'message': 'Kestrel analysis data cleared'}
         except Exception as e:
-            print(f"[API] clear_kestrel_data() -> Error: {e}", flush=True)
+            error(f'[API] clear_kestrel_data error: {e}')
             return {'success': False, 'error': str(e)}
 
     def is_frozen_app(self):
@@ -778,6 +745,83 @@ class Api:
                 return {'success': True, 'version': VERSION}
             except Exception:
                 return {'success': True, 'version': 'unknown'}
+
+    def report_bridge_ready(self):
+        """Diagnostic endpoint for --api-probe mode.
+
+        Called from JS on the ``pywebviewready`` event to prove the JS-Python
+        bridge round-trips. Safe to call at any time; side-effect-free unless a
+        probe is listening (when ``self._probe_ready_event`` is set, this stores
+        the payload on ``self._probe_ready_payload`` and signals the event).
+        """
+        from datetime import datetime, timezone
+        try:
+            from kestrel_analyzer.config import VERSION
+        except Exception:
+            try:
+                from analyzer.kestrel_analyzer.config import VERSION
+            except Exception:
+                VERSION = 'unknown'
+        payload = {
+            'ok': True,
+            'version': VERSION,
+            'frozen': bool(getattr(sys, 'frozen', False)),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+        }
+        evt = getattr(self, '_probe_ready_event', None)
+        if evt is not None:
+            self._probe_ready_payload = payload
+            try:
+                evt.set()
+            except Exception:
+                pass
+        return payload
+
+    def get_species_family_map(self):
+        """Return a {species_display_name: family_display_name} mapping for the
+        bird species classifier's North American taxonomy.
+
+        Joins ``labels_scispecies.csv`` (Species → Scientific Family) with
+        ``scispecies_dispname.csv`` (Scientific Family → Display Name) and
+        caches the result on the bridge instance. Used by the frontend to
+        auto-link species/family chips and populate species autocomplete.
+        """
+        cached = getattr(self, '_species_family_map_cache', None)
+        if cached is not None:
+            return cached
+        try:
+            import csv
+            try:
+                from kestrel_analyzer.config import MODELS_DIR as _models_dir
+            except ImportError:
+                from analyzer.kestrel_analyzer.config import MODELS_DIR as _models_dir
+            base = str(_models_dir)
+            species_to_scifam: dict[str, str] = {}
+            with open(os.path.join(base, 'labels_scispecies.csv'), 'r', encoding='utf-8-sig', newline='') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    sp = (row.get('Species') or '').strip()
+                    fam = (row.get('Scientific Family') or '').strip()
+                    if sp and fam:
+                        species_to_scifam[sp] = fam
+            scifam_to_display: dict[str, str] = {}
+            with open(os.path.join(base, 'scispecies_dispname.csv'), 'r', encoding='utf-8-sig', newline='') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    sci = (row.get('Scientific Family') or '').strip()
+                    disp = (row.get('Display Name') or '').strip()
+                    if sci and disp:
+                        scifam_to_display[sci] = disp
+            mapping: dict[str, str] = {}
+            for sp, sci in species_to_scifam.items():
+                disp = scifam_to_display.get(sci, sci)
+                mapping[sp] = disp
+            result = {'success': True, 'map': mapping}
+        except Exception as e:
+            error(f'[API] get_species_family_map error: {e}')
+            result = {'success': False, 'error': str(e), 'map': {}}
+        self._species_family_map_cache = result
+        return result
 
     def fetch_remote_version(self):
         """Fetch version.json from projectkestrel.org to bypass CORS in JS."""
@@ -801,7 +845,7 @@ class Api:
                 data = json.loads(resp.read().decode('utf-8'))
                 return {'success': True, 'data': data}
         except Exception as e:
-            print(f"[API] fetch_remote_version() -> Error: {e}", flush=True)
+            error(f'[API] fetch_remote_version error: {e}')
             return {'success': False, 'error': str(e)}
 
     def get_platform_info(self):
@@ -849,7 +893,7 @@ class Api:
             info = inspector.inspect_folder(folder_real)
             return {'success': True, 'info': info}
         except Exception as e:
-            print(f"[API] inspect_folder() -> Error: {e}", flush=True)
+            error(f'[API] inspect_folder error: {e}')
             return {'success': False, 'error': str(e)}
 
     def inspect_folders(self, paths):
@@ -896,7 +940,7 @@ class Api:
             results = inspector.inspect_folders(validated_paths)
             return {'success': True, 'results': results}
         except Exception as e:
-            print(f"[API] inspect_folders() -> Error: {e}", flush=True)
+            error(f'[API] inspect_folders error: {e}')
             return {'success': False, 'error': str(e), 'results': {}}
     
     def read_image_file(self, relative_path, root_path):
@@ -937,7 +981,7 @@ class Api:
                 'error': ''
             }
         except Exception as e:
-            print(f"[API] read_image_file() -> Error: {e}", flush=True)
+            error(f'[API] read_image_file error: {e}')
             return {'success': False, 'error': str(e), 'data': '', 'mime': ''}
 
     def list_subfolders(self, root_path: str, max_depth: int = 3):
@@ -1025,7 +1069,7 @@ class Api:
                 'truncated': bool(limit_reached[0]),
             }
         except Exception as e:
-            print(f"[API] list_subfolders() -> Error: {e}", flush=True)
+            error(f'[API] list_subfolders error: {e}')
             return {'success': False, 'tree': [], 'error': str(e)}
 
     def write_kestrel_csv(self, folder_path: str, csv_content: str):
@@ -1042,11 +1086,11 @@ class Api:
             csv_path = os.path.join(kestrel_dir, 'kestrel_database.csv')
             if not os.path.exists(csv_path):
                 return {'success': False, 'error': f'CSV not found: {csv_path}'}
-            with open(csv_path, 'w', encoding='utf-8', newline='') as f:
+            with open(csv_path, 'w', encoding='utf-8-sig', newline='') as f:
                 f.write(csv_content)
             return {'success': True, 'path': csv_path}
         except Exception as e:
-            print(f'[API] write_kestrel_csv({folder_path!r}) -> Error: {e}', flush=True)
+            error(f'[API] write_kestrel_csv({folder_path!r}) error: {e}')
             return {'success': False, 'error': str(e)}
 
     def apply_normalization(self, folder_path: str, mode: str = None) -> dict:
@@ -1075,13 +1119,11 @@ class Api:
 
             try:
                 from kestrel_analyzer.ratings import (
-                    compute_quality_distribution,
                     get_profile_thresholds,
                     quality_to_rating,
                 )
             except ImportError:
                 from analyzer.kestrel_analyzer.ratings import (
-                    compute_quality_distribution,
                     get_profile_thresholds,
                     quality_to_rating,
                 )
@@ -1095,7 +1137,6 @@ class Api:
                 return {'success': False, 'error': err, 'normalized_ratings': {}, 'mode_used': ''}
 
             csv_path = os.path.join(kestrel_dir, 'kestrel_database.csv')
-            metadata_path = os.path.join(kestrel_dir, 'kestrel_metadata.json')
 
             if not os.path.exists(csv_path):
                 return {'success': False, 'error': 'No database found', 'normalized_ratings': {}, 'mode_used': ''}
@@ -1107,26 +1148,6 @@ class Api:
             df = pd.read_csv(csv_path)
             if df.empty:
                 return {'success': True, 'normalized_ratings': {}, 'mode_used': profile, 'error': ''}
-
-            # --- Cache per-folder quality distribution (for potential histogram display) ---
-            quality_scores = df['quality'].tolist() if 'quality' in df.columns else []
-            folder_dist = compute_quality_distribution(quality_scores)
-
-            try:
-                _meta = {}
-                if os.path.exists(metadata_path):
-                    with open(metadata_path, 'r', encoding='utf-8') as mf:
-                        content = mf.read().strip()
-                        if content:
-                            loaded = json.loads(content)
-                            if isinstance(loaded, dict):
-                                _meta = loaded
-                _meta['quality_distribution'] = folder_dist
-                _meta['quality_distribution_stored'] = True
-                with open(metadata_path, 'w', encoding='utf-8') as mf:
-                    json.dump(_meta, mf, indent=2)
-            except Exception:
-                pass
 
             # --- Map quality scores to star ratings (in memory only — no CSV write) ---
             if 'filename' not in df.columns or 'quality' not in df.columns:
@@ -1150,7 +1171,7 @@ class Api:
                 'error': '',
             }
         except Exception as e:
-            print(f'[API] apply_normalization() -> Error: {e}', flush=True)
+            error(f'[API] apply_normalization error: {e}')
             return {'success': False, 'error': str(e), 'normalized_ratings': {}, 'mode_used': ''}
 
     def read_kestrel_scenedata(self, folder_path: str) -> dict:
@@ -1185,7 +1206,7 @@ class Api:
             
             return {'success': True, 'data': data, 'error': ''}
         except Exception as e:
-            print(f'[API] read_kestrel_scenedata({folder_path!r}) -> Error: {e}', flush=True)
+            error(f'[API] read_kestrel_scenedata({folder_path!r}) error: {e}')
             return {'success': False, 'data': {}, 'error': str(e)}
 
     def write_kestrel_scenedata(self, folder_path: str, scenedata: dict) -> dict:
@@ -1218,7 +1239,7 @@ class Api:
                 json.dump(scenedata, f, indent=2)
             return {'success': True, 'path': scenedata_path, 'error': ''}
         except Exception as e:
-            print(f'[API] write_kestrel_scenedata({folder_path!r}) -> Error: {e}', flush=True)
+            error(f'[API] write_kestrel_scenedata({folder_path!r}) error: {e}')
             return {'success': False, 'error': str(e), 'path': ''}
 
     def open_folder(self, path: str):
@@ -1238,7 +1259,7 @@ class Api:
                 subprocess.Popen(['xdg-open', path])
             return {'success': True}
         except Exception as e:
-            print(f'[API] open_folder({path!r}) -> Error: {e}', flush=True)
+            error(f'[API] open_folder({path!r}) error: {e}')
             return {'success': False, 'error': str(e)}
 
     def open_in_editor(self, root: str, relative: str, editor: str = 'system'):
@@ -1269,7 +1290,7 @@ class Api:
             _launch_editor(target, editor_name)
             return {'success': True, 'path': target}
         except Exception as e:
-            print(f'[API] open_in_editor() -> Error: {e}', flush=True)
+            error(f'[API] open_in_editor error: {e}')
             return {'success': False, 'error': str(e)}
 
     def open_url(self, url: str):
@@ -1282,12 +1303,12 @@ class Api:
         """
         try:
             if not _is_safe_external_url(url):
-                log(f'[security] open_url refused unsafe URL: {url!r}')
+                warn(f'[security] open_url refused unsafe URL: {url!r}')
                 return {'success': False, 'error': 'URL scheme not allowed'}
             webbrowser.open(url)
             return {'success': True}
         except Exception as e:
-            print(f'[API] open_url({url!r}) -> Error: {e}', flush=True)
+            error(f'[API] open_url({url!r}) error: {e}')
             return {'success': False, 'error': str(e)}
 
     # ------------------------------------------------------------------ #
@@ -1298,7 +1319,7 @@ class Api:
         """Send feedback / bug report (async, failsafe). Called from JS."""
         try:
             if _telemetry is None:
-                print('[API] send_feedback() -> telemetry unavailable', flush=True)
+                warn('[API] send_feedback: telemetry unavailable')
                 return {'success': False, 'error': 'Telemetry module not available'}
             if not isinstance(data, dict):
                 return {'success': False, 'error': 'Invalid data'}
@@ -1319,7 +1340,7 @@ class Api:
             )
             return {'success': True}
         except Exception as e:
-            print(f'[API] send_feedback() -> Error: {e}', flush=True)
+            error(f'[API] send_feedback error: {e}')
             return {'success': False, 'error': str(e)}
 
     def get_settings(self):
@@ -1333,7 +1354,7 @@ class Api:
             save_persisted_settings(settings)
             return {'success': True, 'settings': settings}
         except Exception as e:
-            print(f'[API] get_settings() -> Error: {e}', flush=True)
+            error(f'[API] get_settings error: {e}')
             return {'success': False, 'error': str(e), 'settings': {}}
 
     def save_settings_data(self, settings_dict):
@@ -1369,7 +1390,7 @@ class Api:
             save_persisted_settings(merged)
             return {'success': True}
         except Exception as e:
-            print(f'[API] save_settings_data() -> Error: {e}', flush=True)
+            error(f'[API] save_settings_data error: {e}')
             return {'success': False, 'error': str(e)}
 
     # ------------------------------------------------------------------ #
@@ -1494,9 +1515,10 @@ class Api:
 
             if not candidates:
                 error_msg = 'sample_sets folder not found'
+                # Dump the full path-search trace on failure so users can diagnose.
                 for line in debug_info:
-                    print(line, flush=True)
-                print(f'[API] get_sample_sets_paths() -> Error: {error_msg}', flush=True)
+                    warn(line)
+                error(f'[API] get_sample_sets_paths: {error_msg}')
                 return {'success': False, 'error': error_msg, 'paths': []}
 
             sample_root = candidates[0]
@@ -1535,22 +1557,32 @@ class Api:
                     paths.append(full)
                     debug_info.append(f'[api]     Added path: {full}')
             
+            # Success path: one-line summary at INFO. Full trace only at DEBUG.
             for line in debug_info:
-                print(line, flush=True)
-            print(f'[API] get_sample_sets_paths() -> {len(paths)} sets from {sample_root}', flush=True)
+                debug(line)
+            info(f'[API] get_sample_sets_paths: {len(paths)} sets from {sample_root}')
             return {'success': True, 'paths': paths}
         except Exception as e:
             import traceback
-            print(f'[API] get_sample_sets_paths() -> Error: {e}', flush=True)
-            print(f'[API] Traceback: {traceback.format_exc()}', flush=True)
+            error(f'[API] get_sample_sets_paths error: {e}')
+            error(f'[API] Traceback: {traceback.format_exc()}')
             return {'success': False, 'error': str(e), 'paths': []}
 
     # ------------------------------------------------------------------ #
     #  Analysis Queue API (called from JavaScript in pywebview mode)       #
     # ------------------------------------------------------------------ #
 
-    def start_analysis_queue(self, paths, use_gpu=True, wildlife_enabled=True):
-        """Enqueue folders for analysis. ``paths`` may be a JSON string or list."""
+    def start_analysis_queue(self, paths, use_gpu=True, wildlife_enabled=True, retry_errored=False, species_detection_enabled=True):
+        """Enqueue folders for analysis. ``paths`` may be a JSON string or list.
+
+        ``retry_errored`` (bool): when True, drop rows previously marked
+        ``species == "Error"`` from each folder's CSV before reprocessing, so
+        those images get re-analyzed instead of being skipped as already-done.
+
+        ``species_detection_enabled`` (bool): when False, the bird species
+        classifier is skipped and species/family fields are recorded as
+        ``Unknown``. Detection, quality scoring, and culling still run.
+        """
         try:
             if isinstance(paths, str):
                 paths = json.loads(paths)
@@ -1593,10 +1625,16 @@ class Api:
             if mode_raw == 'accurate':
                 detector_name = 'mdv5a'
             elif mode_raw == 'fast':
-                detector_name = 'mdv6-e'
+                detector_name = 'mdv1000-cedar'
             else:
-                legacy_detector = str(sett.get('detector_name', '') or '').strip().lower()
-                if legacy_detector in {'mdv5a', 'mdv6-e'}:
+                # Belt-and-braces: settings_utils._migrate_legacy_detector_name
+                # has already remapped 'mdv6-e' on load, but if a raw stored value
+                # still gets here we accept it and migrate again.
+                from settings_utils import _migrate_legacy_detector_name
+                legacy_detector = _migrate_legacy_detector_name(
+                    str(sett.get('detector_name', '') or '').strip().lower()
+                )
+                if legacy_detector in {'mdv5a', 'mdv1000-cedar'}:
                     detector_name = legacy_detector
             mask_threshold = float(sett.get('mask_threshold', 0.5))
             mask_threshold = max(0.5, min(0.95, mask_threshold))
@@ -1612,14 +1650,16 @@ class Api:
             parallel_prefetch = max(1, min(5, parallel_prefetch))
             return _queue_manager.enqueue(validated_paths, use_gpu=bool(use_gpu),
                                           wildlife_enabled=bool(wildlife_enabled),
+                                          species_detection_enabled=bool(species_detection_enabled),
                                           detection_threshold=detection_threshold,
                                           scene_time_threshold=scene_time_threshold,
                                           mask_threshold=mask_threshold,
                                           max_bird_crops=max_bird_crops,
                                           parallel_prefetch=parallel_prefetch,
-                                          detector_name=detector_name)
+                                          detector_name=detector_name,
+                                          retry_errored=bool(retry_errored))
         except Exception as e:
-            print(f'[API] start_analysis_queue() -> Error: {e}', flush=True)
+            error(f'[API] start_analysis_queue error: {e}')
             return {'success': False, 'error': str(e)}
 
     def pause_analysis_queue(self):
@@ -1665,15 +1705,26 @@ class Api:
         return {'running': _queue_manager.is_running}
 
     def get_recovery_status(self):
-        """Return persisted queue-recovery and unclean-shutdown state."""
+        """Return persisted queue-recovery and unclean-shutdown state.
+
+        ``exit_reason`` is the classified outcome of the previous session
+        (``'clean' | 'os_shutdown' | 'crash' | 'unknown'``). The frontend
+        uses it to pick dialog wording — alarming for ``'crash'``, soft
+        for ``'unknown'``, no dialog at all for the other two. See
+        ``visualizer._classify_prior_session``.
+        """
         try:
             settings = load_persisted_settings()
             queue_state = _queue_manager.get_persisted_recovery_state()
             unclean_utc = str(settings.get('last_unclean_shutdown_utc', '') or '').strip()
+            exit_reason = str(settings.get('last_exit_reason', '') or '').strip().lower()
+            if exit_reason not in ('clean', 'os_shutdown', 'crash', 'unknown'):
+                exit_reason = 'unknown' if unclean_utc else 'clean'
             return {
                 'success': True,
                 'unclean_shutdown': bool(unclean_utc),
                 'unclean_shutdown_utc': unclean_utc,
+                'exit_reason': exit_reason,
                 'queue_recovery': queue_state,
             }
         except Exception as e:
@@ -1704,6 +1755,7 @@ class Api:
             machine_id = _telemetry.get_machine_id(settings)
             active_folder = str(settings.get('active_analysis_path', '') or '').strip()
             log_tail = _telemetry.get_recent_log_tail(folder=active_folder or None, runtime_log_files=3)
+            exit_reason = str(settings.get('last_exit_reason', '') or '').strip().lower() or 'unknown'
             _telemetry.send_crash_report(
                 exc=None,
                 tb_str='Recovered unclean shutdown report requested by user.',
@@ -1711,9 +1763,11 @@ class Api:
                 session_analytics={
                     'recovery_report': True,
                     'active_analysis_path': active_folder,
+                    'exit_reason': exit_reason,
                 },
                 machine_id=machine_id,
                 version=_telemetry._read_version(),
+                exit_reason=exit_reason,
             )
             return {'success': True}
         except Exception as e:
@@ -1722,10 +1776,6 @@ class Api:
     # ------------------------------------------------------------------ #
     #  Culling Assistant API                                               #
     # ------------------------------------------------------------------ #
-
-    _main_window = None
-    _culling_window = None
-    _server_port = None
 
     def open_culling_window(self, root_path: str):
         """Open a new pywebview window for the Culling Assistant."""
@@ -1742,12 +1792,7 @@ class Api:
             port = self._server_port or 8765
             from urllib.parse import quote
             culling_url = f'http://{HOST}:{port}/culling.html?root={quote(root_real, safe="")}'
-            
-            methods = [m for m in dir(self) if not m.startswith('_') and callable(getattr(self, m))]
-            log(f'[culling] Creating window with Api instance')
-            log(f'[culling] Available public methods (first 10): {methods[:10]}')
-            log(f'[culling] read_kestrel_csv available: {"read_kestrel_csv" in methods}')
-            
+
             win = _wv.create_window(
                 f'Culling Assistant \u2014 {folder_name}',
                 culling_url,
@@ -1756,12 +1801,11 @@ class Api:
                 height=900,
             )
             self._culling_window = win
-            log(f'[culling] Culling window created successfully')
             return {'success': True}
         except Exception as e:
-            log(f'open_culling_window error: {e}')
+            error(f'[API] open_culling_window error: {e}')
             import traceback
-            log(f'[culling] Traceback: {traceback.format_exc()}')
+            error(f'[culling] Traceback: {traceback.format_exc()}')
             return {'success': False, 'error': str(e)}
 
     def _find_sidecar_file(self, root_path: str, filename: str, ext: str = '.xmp'):
@@ -1835,12 +1879,12 @@ class Api:
                         shutil.move(companion_src, companion_dst)
                         moved_files.append(companion)
                     else:
-                        log(f'move_rejects: Warning - companion detected but not found at: {companion_src}')
+                        warn(f'[reject] companion detected but not found at: {companion_src}')
                 except Exception as e:
                     # Log warning but don't fail the main move if a companion fails
-                    log(f'move_rejects: Warning - Failed to move {companion}: {e}')
+                    warn(f'[reject] Failed to move {companion}: {e}')
         else:
-            log(f'move_rejects: No companion sidecars found for: {filename}')
+            debug(f'[reject] No companion sidecars found for: {filename}')
 
         return True, moved_files
 
@@ -1883,10 +1927,10 @@ class Api:
                     moved.extend(moved_files)
                 else:
                     errors.append(f'{fn}: move failed')
-            log(f'move_rejects: moved {len(moved)} file(s) (including sidecars), errors {len(errors)}')
+            info(f'[reject] moved {len(moved)} file(s) (including sidecars), errors {len(errors)}')
             return {'success': True, 'moved': len(moved), 'errors': errors, 'reject_folder': reject_real}
         except Exception as e:
-            log(f'move_rejects_to_folder error: {e}')
+            error(f'[API] move_rejects_to_folder error: {e}')
             return {'success': False, 'error': str(e)}
 
     def write_xmp_metadata(
@@ -1945,9 +1989,9 @@ class Api:
                     restored_files.append(companion)
                 except Exception as e:
                     # Log warning but don't fail if companion restore fails
-                    log(f'undo_reject_move: Warning - Failed to restore {companion}: {e}')
+                    warn(f'[reject-undo] Failed to restore {companion}: {e}')
         else:
-            log(f'undo_reject_move: No companion sidecars found for: {filename}')
+            debug(f'[reject-undo] No companion sidecars found for: {filename}')
 
         return True, restored_files
 
@@ -1992,10 +2036,10 @@ class Api:
                     restored.extend(restored_files)
                 else:
                     errors.append(f"{fn}: not found in rejects")
-            log(f"undo_reject_move: restored {len(restored)} file(s) (including sidecars), errors {len(errors)}")
+            info(f"[reject-undo] restored {len(restored)} file(s) (including sidecars), errors {len(errors)}")
             return {"success": True, "restored": len(restored), "errors": errors}
         except Exception as e:
-            log(f"undo_reject_move error: {e}")
+            error(f"[API] undo_reject_move error: {e}")
             return {"success": False, "error": str(e)}
 
     def get_reject_restore_state(self, root_path: str):
@@ -2061,16 +2105,8 @@ class Api:
                 'has_scenedata_backup': has_scenedata_backup,
             }
         except Exception as e:
-            log(f'get_reject_restore_state error: {e}')
+            error(f'[API] get_reject_restore_state error: {e}')
             return {'success': False, 'error': str(e)}
-
-    def backup_kestrel_csv(self, root_path: str):
-        """Copy kestrel_database.csv to kestrel_database_old.csv as backup.
-
-        Deprecated: Use backup_kestrel_db instead for dual backup.
-        Kept for backward compatibility.
-        """
-        return self.backup_kestrel_db(root_path)
 
     def backup_kestrel_db(self, root_path: str):
         """Backup both kestrel_database.csv and kestrel_scenedata.json before major operations.
@@ -2103,14 +2139,14 @@ class Api:
 
             # Backup CSV
             shutil.copy2(csv_path, csv_backup)
-            log(f"backup_kestrel_db: CSV backed up to {csv_backup}")
+            info(f"[backup] CSV backed up to {csv_backup}")
 
             # Backup scenedata if it exists
             scenedata_backed = False
             if os.path.exists(scenedata_path):
                 shutil.copy2(scenedata_path, scenedata_backup)
                 scenedata_backed = True
-                log(f"backup_kestrel_db: Scenedata backed up to {scenedata_backup}")
+                info(f"[backup] Scenedata backed up to {scenedata_backup}")
 
             return {
                 "success": True,
@@ -2119,16 +2155,8 @@ class Api:
                 "error": ""
             }
         except Exception as e:
-            log(f"backup_kestrel_db error: {e}")
+            error(f"[API] backup_kestrel_db error: {e}")
             return {"success": False, "error": str(e), "backup_csv": "", "backup_scenedata": ""}
-
-    def restore_kestrel_csv_backup(self, root_path: str):
-        """Restore kestrel_database_old.csv back to kestrel_database.csv.
-
-        Deprecated: Use restore_kestrel_db_backup instead for dual restore.
-        Kept for backward compatibility.
-        """
-        return self.restore_kestrel_db_backup(root_path)
 
     def restore_kestrel_db_backup(self, root_path: str):
         """Restore both kestrel_database.csv and kestrel_scenedata.json from backups.
@@ -2161,16 +2189,16 @@ class Api:
 
             # Restore CSV
             shutil.copy2(csv_backup, csv_path)
-            log(f"restore_kestrel_db_backup: CSV restored from {csv_backup}")
+            info(f"[backup] CSV restored from {csv_backup}")
 
             # Restore scenedata if backup exists
             if os.path.exists(scenedata_backup):
                 shutil.copy2(scenedata_backup, scenedata_path)
-                log(f"restore_kestrel_db_backup: Scenedata restored from {scenedata_backup}")
+                info(f"[backup] Scenedata restored from {scenedata_backup}")
 
             return {"success": True, "error": ""}
         except Exception as e:
-            log(f"restore_kestrel_db_backup error: {e}")
+            error(f"[API] restore_kestrel_db_backup error: {e}")
             return {"success": False, "error": str(e)}
 
     def open_reject_folder(self, root_path: str):
@@ -2201,7 +2229,7 @@ class Api:
                 return {'success': True}
             return {'success': False, 'error': 'No main window found'}
         except Exception as e:
-            log(f'notify_main_window_refresh error: {e}')
+            error(f'[API] notify_main_window_refresh error: {e}')
             return {'success': False, 'error': str(e)}
 
     def read_raw_full(
@@ -2247,10 +2275,9 @@ class Api:
             if not os.path.exists(full_path):
                 return {'success': False, 'error': f'File not found: {filename}'}
 
-            raw_extensions = {'.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.srw'}
             ext = os.path.splitext(filename)[1].lower()
 
-            if ext not in raw_extensions:
+            if ext not in _RAW_EXTENSION_SET:
                 return self.read_image_file(filename, root_path_real)
 
             # Clamp exposure correction to the same limits as the pipeline
@@ -2325,8 +2352,8 @@ class Api:
             }
 
             if use_cache and os.path.exists(cache_path):
-                log(
-                    f'read_raw_full: Cache hit for {filename} '
+                debug(
+                    f'[raw-preview] cache hit for {filename} '
                     f'(exp={exp_correction:+.3f}, mode={render_mode})'
                 )
                 with open(cache_path, 'rb') as f:
@@ -2339,15 +2366,15 @@ class Api:
                     'storage_preview_path': cache_path,
                 })
                 if debug_logging_enabled:
-                    log(f'read_raw_full debug: {json.dumps(debug_meta, sort_keys=True)}')
+                    debug(f'[raw-preview] debug: {json.dumps(debug_meta, sort_keys=True)}')
                 b64 = base64.b64encode(cache_bytes).decode('ascii')
                 return {'success': True, 'data': b64, 'mime': 'image/jpeg', 'debug': debug_meta}
 
             import rawpy
             from PIL import Image
 
-            log(
-                f'read_raw_full: Processing RAW file {filename} '
+            debug(
+                f'[raw-preview] Processing RAW file {filename} '
                 f'(exp={exp_correction:+.3f}, mode={render_mode}, cache={use_cache})'
             )
             with rawpy.imread(full_path) as raw:
@@ -2373,12 +2400,13 @@ class Api:
                         exp_preserve_highlights=_preserve_highlights_for_stops(exp_correction),
                     )
                 else:
-                    rgb = raw.postprocess()
                     if exp_correction != 0.0:
                         rgb = raw.postprocess(
                             exp_shift=linear_scale,
                             exp_preserve_highlights=_preserve_highlights_for_stops(exp_correction),
                         )
+                    else:
+                        rgb = raw.postprocess()
 
             img = Image.fromarray(rgb)
 
@@ -2414,14 +2442,14 @@ class Api:
                 'jpeg_dimensions': {'width': int(img.width), 'height': int(img.height)},
             })
             if debug_logging_enabled:
-                log(f'read_raw_full debug: {json.dumps(debug_meta, sort_keys=True)}')
+                debug(f'[raw-preview] debug: {json.dumps(debug_meta, sort_keys=True)}')
             if use_cache:
-                log(f'read_raw_full: Done, {len(jpg_bytes)//1024}KB JPEG ({img.width}x{img.height}), cached as {cache_name}')
+                debug(f'[raw-preview] Done, {len(jpg_bytes)//1024}KB JPEG ({img.width}x{img.height}), cached as {cache_name}')
             else:
-                log(f'read_raw_full: Done, {len(jpg_bytes)//1024}KB JPEG ({img.width}x{img.height}), cache disabled')
+                debug(f'[raw-preview] Done, {len(jpg_bytes)//1024}KB JPEG ({img.width}x{img.height}), cache disabled')
             return {'success': True, 'data': b64, 'mime': 'image/jpeg', 'debug': debug_meta}
         except Exception as e:
-            log(f'read_raw_full error: {e} (filename={filename}, root_path={root_path_real if "root_path_real" in locals() else root_path})')
+            error(f'[API] read_raw_full error: {e} (filename={filename}, root_path={root_path_real if "root_path_real" in locals() else root_path})')
             return {'success': False, 'error': str(e)}
 
     def cleanup_culling_cache(self, root_path: str):
@@ -2442,11 +2470,11 @@ class Api:
 
             if os.path.exists(cache_dir):
                 shutil.rmtree(cache_dir)
-                log(f'cleanup_culling_cache: Removed {cache_dir}')
+                info(f'[cache] cleanup_culling_cache: removed {cache_dir}')
                 return {'success': True}
             return {'success': True}
         except Exception as e:
-            log(f'cleanup_culling_cache error: {e}')
+            error(f'[API] cleanup_culling_cache error: {e}')
             return {'success': False, 'error': str(e)}
 
     def cleanup_tracked_culling_caches(self):
@@ -2469,5 +2497,5 @@ class Api:
             self._cache_cleanup_roots.clear()
             return {'success': len(failed) == 0, 'cleared': cleared, 'failed': failed}
         except Exception as e:
-            log(f'cleanup_tracked_culling_caches error: {e}')
+            error(f'[API] cleanup_tracked_culling_caches error: {e}')
             return {'success': False, 'cleared': 0, 'failed': [{'root': '', 'error': str(e)}]}

@@ -45,7 +45,23 @@ _ALLOWED_EDITORS = {
 _ALLOWED_RATING_PROFILES = {'very_strict', 'strict', 'balanced', 'lenient', 'very_lenient'}
 _ALLOWED_EXPOSURE_QUALITY = {'lenient', 'balanced', 'aggressive'}
 _ALLOWED_WILDLIFE_MODEL_MODES = {'fast', 'accurate'}
-_ALLOWED_QUEUE_DETECTOR_NAMES = {'mdv5a', 'mdv6-e'}
+_ALLOWED_QUEUE_DETECTOR_NAMES = {'mdv5a', 'mdv1000-cedar'}
+# Legacy detector names → current names. Applied silently at load to migrate
+# stored settings from older builds. UI semantics ("Fast"/"Accurate") are
+# preserved, so users never see a change.
+_LEGACY_DETECTOR_NAME_MIGRATIONS = {'mdv6-e': 'mdv1000-cedar'}
+
+
+def _migrate_legacy_detector_name(value):
+    """Remap a stored detector name through ``_LEGACY_DETECTOR_NAME_MIGRATIONS``.
+
+    Non-string or unknown values pass through unchanged so that the downstream
+    ``_coerce_enum`` allowlist check handles them.
+    """
+    if not isinstance(value, str):
+        return value
+    norm = value.strip().lower()
+    return _LEGACY_DETECTOR_NAME_MIGRATIONS.get(norm, value)
 _ALLOWED_QUEUE_ITEM_STATUSES = {'pending', 'running', 'done', 'error', 'cancelled'}
 
 # Telemetry — failsafe import (never blocks startup)
@@ -243,8 +259,9 @@ def _sanitize_queue_recovery_state(value: Any) -> dict | None:
     state['options'] = {
         'use_gpu': _coerce_bool(opts.get('use_gpu', True), default=True),
         'wildlife_enabled': _coerce_bool(opts.get('wildlife_enabled', True), default=True),
+        'species_detection_enabled': _coerce_bool(opts.get('species_detection_enabled', True), default=True),
         'detector_name': _coerce_enum(
-            opts.get('detector_name', 'mdv5a'),
+            _migrate_legacy_detector_name(opts.get('detector_name', 'mdv5a')),
             _ALLOWED_QUEUE_DETECTOR_NAMES,
             default='mdv5a',
         ),
@@ -341,7 +358,7 @@ def _merge_forward_compatible_keys(out: dict[str, Any], data: dict, emit_log: bo
     if emit_log and skipped:
         sample = ', '.join(skipped[:12])
         suffix = ' ...' if len(skipped) > 12 else ''
-        log(f'[settings] Could not preserve {len(skipped)} key(s) (unsupported type): {sample}{suffix}')
+        warn(f'[settings] Could not preserve {len(skipped)} key(s) (unsupported type): {sample}{suffix}')
 
 
 def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
@@ -391,6 +408,11 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     _set_int('max_bird_crops', default=10, min_value=1, max_value=20)
     _set_int('parallel_prefetch', default=3, min_value=1, max_value=5)
     _set_bool('exposure_corrected_thumbs', default=True)
+    # ONNX provider resilience (auto GPU↔CPU fallback). Advanced/triage knobs;
+    # not exposed in the UI. ``gpu_resilience_enabled=False`` reverts to the
+    # pre-resilience behavior (single GPU session, no recovery).
+    _set_bool('gpu_resilience_enabled', default=True)
+    _set_bool('gpu_aggressive_recreate', default=False)
     if 'wildlife_model_mode' in data:
         out['wildlife_model_mode'] = _coerce_enum(
             data.get('wildlife_model_mode'),
@@ -399,7 +421,7 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
         )
     if 'detector_name' in data:
         out['detector_name'] = _coerce_enum(
-            data.get('detector_name'),
+            _migrate_legacy_detector_name(data.get('detector_name')),
             _ALLOWED_QUEUE_DETECTOR_NAMES,
             default='mdv5a',
         )
@@ -529,7 +551,7 @@ def _load_settings_raw() -> tuple[dict | None, str]:
         with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
-        log(f'[settings] WARN: could not parse {path}: {exc}')
+        warn(f'[settings] could not parse {path}: {exc}')
         return None, 'corrupt'
     if not isinstance(data, dict):
         return None, 'corrupt'
@@ -546,7 +568,7 @@ def _load_backup_if_valid() -> dict | None:
         with open(bak, 'r', encoding='utf-8') as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
-        log(f'[settings] WARN: .bak is also unreadable: {exc}')
+        warn(f'[settings] .bak is also unreadable: {exc}')
         return None
     return data if isinstance(data, dict) else None
 
@@ -565,10 +587,10 @@ def _quarantine_corrupt_settings(path: str) -> str | None:
             attempt += 1
             quarantine = f'{path}.corrupt-{ts}-{attempt}'
         shutil.copy2(path, quarantine)
-        log(f'[settings] Quarantined corrupt settings file to {quarantine}')
+        warn(f'[settings] Quarantined corrupt settings file to {quarantine}')
         return quarantine
     except OSError as exc:
-        log(f'[settings] Failed to quarantine corrupt settings: {exc}')
+        error(f'[settings] Failed to quarantine corrupt settings: {exc}')
         return None
 
 
@@ -615,7 +637,7 @@ def load_persisted_settings() -> dict:
     if status == 'corrupt':
         bak_data = _load_backup_if_valid()
         if bak_data is not None:
-            log('[settings] Main settings file is corrupt; serving from .bak.')
+            warn('[settings] Main settings file is corrupt; serving from .bak.')
             return _sanitize_settings_payload(bak_data, emit_log=False)
     return {}
 
@@ -670,7 +692,7 @@ def save_persisted_settings(data: dict) -> None:
         if status == 'corrupt':
             bak_data = _load_backup_if_valid()
             if bak_data is None:
-                log(
+                error(
                     f'[settings] REFUSING to save over unreadable {path}; '
                     f'no valid .bak to recover from. '
                     f'Remove or repair the file manually, then retry.'
@@ -698,9 +720,9 @@ def save_persisted_settings(data: dict) -> None:
             if data.get('analytics_opted_in', False) and _telemetry is not None:
                 try:
                     _telemetry.send_folder_analytics(**pending)
-                    log('[analytics] Flushed pending detailed analytics after opt-in.')
+                    info('[analytics] Flushed pending detailed analytics after opt-in.')
                 except Exception as e:
-                    log(f'[analytics] Failed to flush pending analytics: {e}')
+                    warn(f'[analytics] Failed to flush pending analytics: {e}')
         # ------------------------------------------
 
         os.makedirs(directory, exist_ok=True)
@@ -714,7 +736,7 @@ def save_persisted_settings(data: dict) -> None:
                 dir=directory,
             )
         except OSError as exc:
-            log(
+            error(
                 f'[settings] FAILED to create temp file for atomic save ({exc}); '
                 f'existing file left unchanged. Check disk space and permissions '
                 f'on {directory}.'
@@ -744,14 +766,14 @@ def save_persisted_settings(data: dict) -> None:
                 try:
                     shutil.copy2(path, path + '.bak')
                 except OSError as exc:
-                    log(f'[settings] WARN: could not refresh .bak: {exc}')
+                    warn(f'[settings] could not refresh .bak: {exc}')
 
             os.replace(tmp, path)
         except OSError as exc:
             # Do NOT fall back to a non-atomic direct write — that path is how
             # partial writes corrupt settings.json in the first place. Leave the
             # existing (possibly older) file in place and log loudly.
-            log(
+            error(
                 f'[settings] FAILED to atomically save settings ({exc}); '
                 f'existing file left unchanged. Check disk space, permissions, '
                 f'and antivirus locks on {path}.'
@@ -765,8 +787,58 @@ def save_persisted_settings(data: dict) -> None:
             _reap_orphan_tmp_files(directory)
 
 
-def log(*args):
-    print('[serve]', *args, file=sys.stderr)
+# ---------------------------------------------------------------------------
+# Leveled logging
+# ---------------------------------------------------------------------------
+# All output goes to stderr (captured by ``_TeeStream`` in visualizer.py into
+# ~/.kestrel/logs/kestrel_runtime_*.log). Threshold is read per-emit from the
+# ``KESTREL_LOG_LEVEL`` env var; default INFO. Setting it to DEBUG re-enables
+# the per-image / per-detection / per-batch traces that are normally silenced.
+#
+# Line format: ``[serve][LEVEL] <message>``. Callers preserve their existing
+# ``[area]`` tag inside the message (e.g. ``[settings] ...``, ``[culling] ...``)
+# for grep-filtering.
+
+_LEVELS = ('DEBUG', 'INFO', 'WARN', 'ERROR')
+_LEVEL_VALUES = {name: idx for idx, name in enumerate(_LEVELS)}
+
+
+def _current_log_threshold() -> str:
+    raw = os.environ.get('KESTREL_LOG_LEVEL', 'INFO').upper()
+    return raw if raw in _LEVEL_VALUES else 'INFO'
+
+
+def _emit_log(level: str, args: tuple) -> None:
+    if _LEVEL_VALUES[level] < _LEVEL_VALUES[_current_log_threshold()]:
+        return
+    msg = ' '.join(str(a) for a in args)
+    print(f'[serve][{level}] {msg}', file=sys.stderr, flush=True)
+
+
+# The level helpers accept and discard arbitrary kwargs so they're a
+# drop-in replacement for ``print(..., flush=True)`` call sites without
+# requiring every conversion to also strip the keyword arguments.
+
+def debug(*args, **_kwargs) -> None:
+    _emit_log('DEBUG', args)
+
+
+def info(*args, **_kwargs) -> None:
+    _emit_log('INFO', args)
+
+
+def warn(*args, **_kwargs) -> None:
+    _emit_log('WARN', args)
+
+
+def error(*args, **_kwargs) -> None:
+    _emit_log('ERROR', args)
+
+
+# Backwards-compat alias. Existing ``log(...)`` call sites stay valid and
+# emit at INFO level; we retag the ones that should be WARN/ERROR/DEBUG
+# individually.
+log = info
 
 
 def _normalize(p: str) -> str:

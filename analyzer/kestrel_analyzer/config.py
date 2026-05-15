@@ -1,37 +1,31 @@
 from pathlib import Path
 
-VERSION = "2.0.1"
+VERSION = "2.0.4"
 
 ANALYZER_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = ANALYZER_DIR.parent
-DOCUMENTATION_DIR = REPO_ROOT / "documentation"
-MODEL_CANDIDATE_DIR = DOCUMENTATION_DIR / "model_candidates"
-MODEL_CANDIDATE_WEIGHTS_DIR = MODEL_CANDIDATE_DIR / "weights"
 MODELS_DIR = ANALYZER_DIR / "models"
 
 SPECIESCLASSIFIER_PATH = MODELS_DIR / "model.onnx"
 SPECIESCLASSIFIER_LABELS = MODELS_DIR / "labels.txt"
 QUALITYCLASSIFIER_PATH = MODELS_DIR / "quality.onnx"
 QUALITY_NORMALIZATION_DATA_PATH = MODELS_DIR / "quality_normalization_data.csv"
-MASK_RCNN_WEIGHTS_PATH = MODELS_DIR / "mask_rcnn_resnet50_fpn_v2.pth"
-# SAM-HQ: ViT-Tiny default (faster). For ViT-B quality, set path to sam_hq_vit_b.pth and SAM_HQ_MODEL_KEY = "vit_b".
-SAM_HQ_WEIGHTS_PATH = MODELS_DIR / "sam_hq_vit_tiny.pth"
-SAM_HQ_MODEL_KEY = "vit_tiny"  # segment_anything_hq.sam_model_registry
 
 # SpeciesNet: bundled Kaggle-style folder (info.json + .pt + taxonomy). Passed as local model_name to speciesnet.ModelInfo.
 SPECIESNET_MODEL_DIR = MODELS_DIR / "speciesnet"
 
-# Runtime-selectable MegaDetector ONNX variants (all require .onnx.data sidecar files).
-# mdv5a (accurate) and mdv6-e (YOLOv9-E, fast) are bundled under models/speciesnet.
-# mdv5a provides best accuracy for wildlife detection; mdv6-e is faster but less accurate.
+# Runtime-selectable MegaDetector ONNX variants.
+# mdv5a (accurate, YOLOv5x6 @ 1280) and mdv1000-cedar (fast, YOLOv9 gelan-c @ 640)
+# are bundled under models/speciesnet. mdv5a uses a `.onnx` + `.onnx.data` sidecar
+# pair; mdv1000-cedar is a single-file ONNX (no sidecar) because it was exported
+# via torch.onnx.export(dynamo=False), which embeds weights inline. The legacy
+# exporter path is also what makes cedar DirectML-compatible — the dynamo-exported
+# mdv1000 variants hit a Reshape op DML rejects.
 DEFAULT_DETECTOR_NAME = "mdv5a"
 DETECTOR_ONNX_PATHS = {
-    "mdv5a": SPECIESNET_MODEL_DIR / "mdv5a.onnx",
-    "mdv6-e": SPECIESNET_MODEL_DIR / "mdv6-mit-yolov9-e.onnx",
+    "mdv5a":         SPECIESNET_MODEL_DIR / "mdv5a.onnx",
+    "mdv1000-cedar": SPECIESNET_MODEL_DIR / "mdv1000-cedar.onnx",
 }
-
-# Backward-compatible alias used by existing call sites.
-MDV6_ONNX_PATH = DETECTOR_ONNX_PATHS[DEFAULT_DETECTOR_NAME]
 
 # SAM-HQ ViT-Tiny: split encoder + decoder ONNX files.
 SAM_ENC_ONNX_PATH = SPECIESNET_MODEL_DIR / "sam_hq_vit_tiny_encoder.onnx"
@@ -41,7 +35,26 @@ WILDLIFE_CATEGORIES = [
     "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "bird"
 ]
 
-RAW_EXTENSIONS = [".cr2", ".cr3", ".nef", ".arw", ".dng", ".orf", ".rw2", ".pef", ".sr2"]
+# Canonical RAW format list. Single source of truth — all other modules import
+# from here rather than maintaining their own copies. Adding a format here
+# automatically enables it for pipeline discovery, folder inspection, RAW
+# preview routing, and editor-launch allowlisting.
+#
+# Caveat: .raf (Fujifilm) and .x3f (Sigma) decode via rawpy but lack capture-time
+# extraction in raw_exif.py. Scene grouping for these formats falls back to
+# AKAZE feature similarity (no timestamp shortcut). See raw_exif.UNSUPPORTED_EXTENSIONS.
+RAW_EXTENSIONS = [
+    ".cr2", ".cr3",         # Canon
+    ".nef",                 # Nikon
+    ".arw", ".srw",         # Sony / Samsung NX
+    ".dng",                 # Adobe / generic
+    ".orf",                 # Olympus
+    ".rw2",                 # Panasonic
+    ".pef",                 # Pentax
+    ".sr2",                 # Sony (older)
+    ".raf",                 # Fujifilm
+    ".x3f",                 # Sigma
+]
 JPEG_EXTENSIONS = [".jpg", ".jpeg", ".png", '.tiff', '.tif']
 
 DATABASE_NAME = "kestrel_database.csv"
