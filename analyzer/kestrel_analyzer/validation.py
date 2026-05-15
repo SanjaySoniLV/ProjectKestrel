@@ -23,6 +23,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
+# Per-check `except Exception` only catches Python exceptions, so native crashes
+# in onnxruntime / libraw / etc. exit the process without a traceback. The
+# --cli --validate entry point doesn't go through visualizer.main(), so the
+# faulthandler enable there is bypassed — turn it on here so the CI log shows
+# which native call segfaulted on the next failure.
+try:
+    import faulthandler
+    faulthandler.enable()
+except Exception:
+    pass
+
 
 @dataclasses.dataclass
 class _Ctx:
