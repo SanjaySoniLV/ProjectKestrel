@@ -78,16 +78,33 @@ def _kill_subprocess(proc: subprocess.Popen) -> None:
             pass
 
 
-def test_api_probe_writes_result_json(tmp_path):
-    """End-to-end: subprocess --api-probe -> JS -> Api.report_bridge_ready -> JSON."""
-    probe_out = tmp_path / "probe.json"
+@pytest.mark.parametrize(
+    ("probe_target", "port", "deadline_s", "probe_timeout"),
+    [
+        # synthetic: minimal probe HTML, fast (~3-5s including pywebview boot).
+        ("synthetic", 8799, 30.0, "15"),
+        # visualizer: real visualizer.html via local HTTP server. Bigger payload
+        # (CSS bundle, JS, taxonomy fetches), needs more headroom.
+        ("visualizer", 8798, 60.0, "45"),
+    ],
+)
+def test_api_probe_writes_result_json(tmp_path, probe_target, port, deadline_s, probe_timeout):
+    """End-to-end: subprocess --api-probe -> JS -> Api.report_bridge_ready -> JSON.
+
+    Runs once with the minimal synthetic probe HTML (proves the bridge
+    mechanism itself), and once loading the real ``visualizer.html`` via the
+    local HTTP server (proves the production JS bundle actually sees
+    ``window.pywebview.api``).
+    """
+    probe_out = tmp_path / f"probe-{probe_target}.json"
     cmd = [
         sys.executable,
         str(VISUALIZER_PATH),
         "--api-probe",
+        "--probe-target", probe_target,
         "--probe-output", str(probe_out),
-        "--probe-timeout", "15",
-        "--port", "8799",
+        "--probe-timeout", probe_timeout,
+        "--port", str(port),
     ]
     proc = subprocess.Popen(
         cmd,
@@ -96,14 +113,15 @@ def test_api_probe_writes_result_json(tmp_path):
         stderr=subprocess.PIPE,
     )
     try:
-        appeared = _wait_for_file(probe_out, proc, deadline_s=30.0)
+        appeared = _wait_for_file(probe_out, proc, deadline_s=deadline_s)
         stdout, stderr = b"", b""
         try:
             stdout, stderr = proc.communicate(timeout=10)
         except subprocess.TimeoutExpired:
             pass
         assert appeared, (
-            f"probe output not written within 30s. rc={proc.returncode}\n"
+            f"probe output not written within {deadline_s}s "
+            f"(target={probe_target}). rc={proc.returncode}\n"
             f"stdout:\n{stdout.decode(errors='replace')}\n"
             f"stderr:\n{stderr.decode(errors='replace')}"
         )

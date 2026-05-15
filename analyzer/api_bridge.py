@@ -4778,12 +4778,13 @@ class Api:
                         exp_preserve_highlights=_preserve_highlights_for_stops(exp_correction),
                     )
                 else:
-                    rgb = raw.postprocess()
                     if exp_correction != 0.0:
                         rgb = raw.postprocess(
                             exp_shift=linear_scale,
                             exp_preserve_highlights=_preserve_highlights_for_stops(exp_correction),
                         )
+                    else:
+                        rgb = raw.postprocess()
 
             img = Image.fromarray(rgb)
 
