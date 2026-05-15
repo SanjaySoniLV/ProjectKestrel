@@ -138,10 +138,13 @@ jobs:
 
           # Read version from VERSION.txt (root or analyzer/) using the same logic as
           # kestrel_telemetry._read_version: prefer a 'version:' line, else single-line fallback.
+          # @(...) forces array context so $lines[0] returns the first STRING, not the first
+          # CHARACTER, when VERSION.txt is a single line (PowerShell collapses one-element
+          # pipelines to a scalar by default).
           $version = 'unknown'
           foreach ($candidate in @('VERSION.txt', 'analyzer\VERSION.txt')) {
             if (Test-Path $candidate) {
-              $lines = Get-Content $candidate | Where-Object { $_.Trim() -ne '' }
+              $lines = @(Get-Content $candidate | Where-Object { $_.Trim() -ne '' })
               foreach ($line in $lines) {
                 if ($line.ToLower().StartsWith('version:')) {
                   $version = ($line -split ':', 2)[1].Trim()
