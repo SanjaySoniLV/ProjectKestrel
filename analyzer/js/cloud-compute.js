@@ -229,6 +229,12 @@
             successCount++;
           } else if (r && r.nothingToDo) {
             nothingCount++;
+          } else if (r && r.ok === false && r.error === 'job_in_progress') {
+            // Stage 6 concurrency gate — one cloud job per user at a time.
+            // Not a fault; just inform the user and try the next folder.
+            const url = r.myAccountUrl || 'https://myaccount.projectkestrel.org/cloud-compute';
+            showToast(`You have a Cloud Compute job running. Visit ${url} to manage it.`, 8000);
+            continue;
           } else {
             errors.push(`${fp.split(/[\\/]/).pop()}: ${r?.error || 'unknown'}`);
             if (r?.needSignIn && typeof openPerchSignInWindow === 'function') {

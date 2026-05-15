@@ -96,6 +96,17 @@ class CloudComputeNetworkError(CloudComputeError):
         super().__init__(0, message)
 
 
+class JobInProgressError(CloudComputeError):
+    """The user already has a Cloud Compute job in flight. Cloud-compute
+    worker returned 403 with reason='job_in_progress' from the Auth Worker's
+    concurrency gate. Carries the activeJobId so the UI can offer a deep-link
+    to MyAccount."""
+
+    def __init__(self, active_job_id: str | None, message: str):
+        super().__init__(403, message)
+        self.active_job_id = active_job_id
+
+
 class JobCancelled(RuntimeError):
     """Raised inside ``run_full_job`` when the supplied ``cancel_event`` fires.
     Distinct from generic exceptions so the caller can mark the job
@@ -192,7 +203,27 @@ class CloudComputeClient:
         cleaned = filter_analysis_settings(analysis_settings)
         if cleaned is not None:
             body["analysisSettings"] = cleaned
-        return self._request("POST", "/api/jobs", body)
+        try:
+            return self._request("POST", "/api/jobs", body)
+        except CloudComputeError as e:
+            # Stage 6 concurrency gate: Auth Worker rejects a second concurrent
+            # job per user. The cloud-compute Worker propagates this as a 403
+            # with JSON body {error:'job_in_progress', activeJobId, message}.
+            # Surface it as a typed exception so api_bridge can show a
+            # MyAccount deep-link instead of a generic "submit failed". Older
+            # workers without this gate either return a different 403 body
+            # shape or a non-403 — in either case we fall through and re-raise.
+            if e.status == 403:
+                try:
+                    parsed = json.loads(e.message)
+                except (ValueError, TypeError):
+                    parsed = None
+                if isinstance(parsed, dict) and parsed.get("error") == "job_in_progress":
+                    raise JobInProgressError(
+                        parsed.get("activeJobId"),
+                        str(parsed.get("message") or "You have a Cloud Compute job running."),
+                    ) from e
+            raise
 
     def get_status(self, job_id: str) -> dict:
         # Short timeout: this is the UI poller, a stuck call must not freeze

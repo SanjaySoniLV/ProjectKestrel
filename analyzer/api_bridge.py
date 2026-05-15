@@ -2671,6 +2671,17 @@ class Api:
         # return it to the caller; the heavy upload+poll runs on a thread.
         try:
             submit = client.submit_job(files, analysis_settings=analysis_settings)
+        except ccc.JobInProgressError as e:
+            # Stage 6 concurrency gate: a Cloud Compute job is already in
+            # flight for this user. Not a fault — surface to JS with a
+            # MyAccount deep-link instead of an error toast.
+            return {
+                "ok": False,
+                "error": "job_in_progress",
+                "activeJobId": e.active_job_id,
+                "myAccountUrl": "https://myaccount.projectkestrel.org/cloud-compute",
+                "message": str(e) or "You have a Cloud Compute job running.",
+            }
         except ccc.CloudComputeError as e:
             return {
                 "ok": False,
