@@ -115,6 +115,42 @@ jobs:
         shell: bash
         run: echo "::warning::Frozen-binary --validate failed on macOS dev build; continuing to publish available artifacts."
 
+      - name: UI probe (real visualizer.html) against frozen binary
+        id: ui_probe
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          UI_PROBE_OUTPUT="${RUNNER_TEMP}/ui-probe-result.json"
+          rm -f "${UI_PROBE_OUTPUT}"
+
+          analyzer/dist/ProjectKestrel/ProjectKestrel \
+            --api-probe \
+            --probe-target visualizer \
+            --probe-output "${UI_PROBE_OUTPUT}" \
+            --probe-timeout 60 \
+            --port 8798
+
+          if [ ! -f "${UI_PROBE_OUTPUT}" ]; then
+            echo "UI probe did not produce a result JSON"
+            exit 1
+          fi
+          echo "=== ui-probe-result.json ==="
+          cat "${UI_PROBE_OUTPUT}"
+
+          cp "${UI_PROBE_OUTPUT}" ui-probe-result.json
+
+          ok=$(python3 -c "import json,sys; print(str(json.load(open('${UI_PROBE_OUTPUT}')).get('ok')).lower())")
+          if [ "${ok}" != "true" ]; then
+            echo "UI probe reported failure (ok=${ok}); visualizer.html did not wire up window.pywebview.api"
+            exit 1
+          fi
+
+      - name: Warn if UI probe failed
+        if: ${{ always() && steps.ui_probe.outcome == 'failure' }}
+        shell: bash
+        run: echo "::warning::Frozen-binary UI probe failed on macOS dev build; visualizer.html did not see window.pywebview.api."
+
       - name: Collect macOS .app
         shell: bash
         run: |
@@ -144,5 +180,14 @@ jobs:
         with:
           name: macos-dev-validate-result
           path: validate-result.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload ui-probe-result.json
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dev-ui-probe-result
+          path: ui-probe-result.json
           if-no-files-found: warn
           retention-days: 14

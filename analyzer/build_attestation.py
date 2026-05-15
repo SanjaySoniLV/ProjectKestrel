@@ -38,20 +38,23 @@ def _load() -> None:
     if _loaded:
         return
     _loaded = True
-    try:
-        for path in _candidate_paths():
-            if os.path.isfile(path):
-                with open(path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                meta = data.get('meta')
-                sig = data.get('sig')
-                if isinstance(meta, str) and isinstance(sig, str) and meta and sig:
-                    _meta = meta
-                    _sig = sig
+    for path in _candidate_paths():
+        try:
+            if not os.path.isfile(path):
+                continue
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            meta = data.get('meta')
+            sig = data.get('sig')
+            if isinstance(meta, str) and isinstance(sig, str) and meta and sig:
+                _meta = meta
+                _sig = sig
                 return
-    except Exception:
-        # Failsafe — telemetry must never raise from import-time work.
-        pass
+        except Exception:
+            # Failsafe — telemetry must never raise from import-time work.
+            # Keep trying remaining candidates instead of giving up on the
+            # first malformed/unreadable file.
+            continue
 
 
 def auth_headers() -> Dict[str, str]:

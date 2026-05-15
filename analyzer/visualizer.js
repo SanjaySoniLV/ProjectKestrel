@@ -196,6 +196,10 @@
         return;
       }
       hasPywebviewApi = true;
+      // Signal the production-JS-saw-the-bridge proof to --api-probe
+      // (no-op outside probe mode; report_bridge_ready is side-effect-free
+      // unless Api._probe_ready_event is set on the Python side).
+      try { window.pywebview?.api?.report_bridge_ready?.(); } catch (_) { }
       // After API is ready, check legal agreement
       checkLegalAgreement();
       el('#compat').classList.add('hidden');
