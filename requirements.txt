@@ -3,7 +3,7 @@
 # acceleration on Windows (any DX12-compatible GPU). They are mutually exclusive.
 onnxruntime==1.23.2
 
-numpy==2.1.3
+numpy==2.4.4
 
 # Computer Vision
 opencv-python==4.11.0.86

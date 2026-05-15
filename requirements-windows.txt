@@ -15,7 +15,7 @@
 # the 1.23.2 pin used for macOS / local dev (same minor series).
 onnxruntime-directml==1.24.4
 
-numpy==2.1.3
+numpy==2.4.4
 
 # Computer Vision
 opencv-python==4.11.0.86
