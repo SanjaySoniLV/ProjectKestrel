@@ -1,3 +1,42 @@
+    // Threshold below which a stored Kestrel JWT is considered "too short to
+    // survive a normal restart cycle". We refuse to store anything < 1 hour
+    // on the sign-in side (desktop-signin/index.html), so seeing a TTL under
+    // this threshold here means either the dashboard template was downgraded
+    // after the token was minted, or the desktop-signin protection was
+    // bypassed somehow — either way the user should know loudly.
+    const AUTH_SHORT_TTL_SEC = 3600;
+
+    function _decodeJwtExpUnverified(token) {
+      try {
+        const parts = String(token || '').split('.');
+        if (parts.length < 2) return null;
+        const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+        const pad = b64.length % 4 ? '='.repeat(4 - (b64.length % 4)) : '';
+        const payload = JSON.parse(atob(b64 + pad));
+        return typeof payload.exp === 'number' ? payload.exp : null;
+      } catch (_) { return null; }
+    }
+
+    function warnIfShortTokenTtl(ttlSec, source) {
+      if (!(ttlSec > 0) || ttlSec >= AUTH_SHORT_TTL_SEC) return false;
+      const msg = `Kestrel auth token has TTL ${Math.round(ttlSec)}s ` +
+        `(expected ≥ ${AUTH_SHORT_TTL_SEC}s). The 'kestrel_api' Clerk JWT ` +
+        `template is likely misconfigured — your sign-in will not survive ` +
+        `the next app restart. Please contact support.`;
+      console.error('[auth]', msg, `(source=${source})`);
+      try {
+        if (typeof showToast === 'function') {
+          showToast(`⚠ Short auth token TTL (${Math.round(ttlSec)}s). Sign-in will not persist — see console.`, 30000);
+        }
+      } catch (_) {}
+      const accountBtn = el('#accountBtn');
+      if (accountBtn) {
+        accountBtn.classList.add('short-ttl-warning');
+        accountBtn.title = `Perch — Warning: token TTL ${Math.round(ttlSec)}s (will not survive restart)`;
+      }
+      return true;
+    }
+
     // Perch Authentication Handler
     async function initPerchAuth() {
       const accountBtn = el('#accountBtn');
@@ -27,6 +66,10 @@
           if (result?.token) {
             _perchToken = result.token;
             signedIn = true;
+            const exp = Number(result.expiry) || _decodeJwtExpUnverified(result.token);
+            if (exp) {
+              warnIfShortTokenTtl(exp - Date.now() / 1000, 'startup');
+            }
           }
         } catch (e) {
           console.warn('Failed to get auth token on startup:', e);
@@ -109,11 +152,20 @@
       if (accountBtn) {
         accountBtn.classList.add('signed-in');
         accountBtn.classList.remove('session-expired');
+        // Clear any stale short-TTL warning; warnIfShortTokenTtl below
+        // re-adds it if the new token is also short-lived.
+        accountBtn.classList.remove('short-ttl-warning');
       }
       if (labelEl) {
         labelEl.textContent = 'Signed in';
         labelEl.classList.remove('hidden');
       }
+
+      // Catches the case where desktop-signin's TTL guard was bypassed (e.g.,
+      // an older deployed version of the page) or the Clerk template config
+      // was downgraded after a previous successful sign-in.
+      const exp = _decodeJwtExpUnverified(token);
+      if (exp) warnIfShortTokenTtl(exp - Date.now() / 1000, 'onAuthSignIn');
       // Fetch account info so the handle shows up on the button without
       // requiring a Kestrel restart. The cache was just cleared in
       // store_auth_token, so this hits the network and gets fresh data.

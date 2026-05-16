@@ -2757,6 +2757,26 @@ class Api:
                 "myAccountUrl": "https://myaccount.projectkestrel.org/cloud-compute",
                 "message": str(e) or "You have a Cloud Compute job running.",
             }
+        except ccc.LegalAcceptanceRequiredError as e:
+            # Launch item #13: updated ToS / Privacy Policy. Open the accept
+            # page in the system browser so the user can review and agree
+            # there. Best-effort — if webbrowser fails, the URL is still
+            # surfaced to JS for an in-app link.
+            try:
+                webbrowser.open(e.accept_url, new=2)
+            except Exception as _e:
+                warn(f"[cloud-compute] failed to launch browser for legal accept: {_e}")
+            return {
+                "ok": False,
+                "error": "legal_acceptance_required",
+                "acceptUrl": e.accept_url,
+                "currentEffectiveDate": e.current_effective_date,
+                "message": (
+                    str(e)
+                    or "Project Kestrel's Terms of Service or Privacy Policy "
+                       "have been updated. Please review and accept in your browser."
+                ),
+            }
         except ccc.CloudComputeError as e:
             return {
                 "ok": False,
@@ -3632,10 +3652,10 @@ class Api:
         client passes both from a stored ``perch_upload_manifest.json``.
         """
         try:
-            from perch_uploader import PerchKestrelUploader
+            from perch_uploader import PerchKestrelUploader, PerchLegalAcceptanceRequired
         except ImportError:
             try:
-                from analyzer.perch_uploader import PerchKestrelUploader
+                from analyzer.perch_uploader import PerchKestrelUploader, PerchLegalAcceptanceRequired
             except ImportError as e:
                 return {"success": False, "error": f"uploader import failed: {e}"}
 
@@ -3706,6 +3726,21 @@ class Api:
                         )
                     except Exception as link_err:
                         log(f"share_with_perch: perch_link.json write failed: {link_err}")
+            except PerchLegalAcceptanceRequired as e:
+                # Launch item #13: open the browser for ToS / Privacy re-acceptance
+                # and surface a structured progress payload so the JS side can
+                # render a "Review updated terms" card with a fallback link
+                # if the browser launch failed.
+                try:
+                    webbrowser.open(e.accept_url, new=2)
+                except Exception as _e:
+                    warn(f"share_with_perch: failed to open legal accept URL: {_e}")
+                _on_progress({
+                    "phase": "error",
+                    "message": "legal_acceptance_required",
+                    "acceptUrl": e.accept_url,
+                    "currentEffectiveDate": e.current_effective_date,
+                })
             except Exception as e:
                 log(f"share_with_perch: {e}")
                 import traceback as _tb

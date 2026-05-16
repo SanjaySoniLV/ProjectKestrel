@@ -116,6 +116,19 @@ class JobInProgressError(CloudComputeError):
         self.active_job_id = active_job_id
 
 
+class LegalAcceptanceRequiredError(CloudComputeError):
+    """The user must agree to the current ToS + Privacy Policy before
+    submitting a new job. Cloud-compute worker returned 403 with
+    ``error='legal_acceptance_required'`` from the Auth Worker's legal gate
+    (launch item #13). Carries the URL the desktop should open in the
+    system browser so the user can review and accept."""
+
+    def __init__(self, accept_url: str | None, current_effective_date: str | None, message: str):
+        super().__init__(403, message)
+        self.accept_url = accept_url or "https://myaccount.projectkestrel.org/legal/accept"
+        self.current_effective_date = current_effective_date
+
+
 class JobCancelled(RuntimeError):
     """Raised inside ``run_full_job`` when the supplied ``cancel_event`` fires.
     Distinct from generic exceptions so the caller can mark the job
@@ -231,6 +244,19 @@ class CloudComputeClient:
                     raise JobInProgressError(
                         parsed.get("activeJobId"),
                         str(parsed.get("message") or "You have a Cloud Compute job running."),
+                    ) from e
+                # Launch item #13 — ToS / Privacy Policy gate. The worker
+                # returns the URL the system browser should open; api_bridge
+                # surfaces a "review updated terms" dialog around this and
+                # launches the browser.
+                if isinstance(parsed, dict) and parsed.get("error") == "legal_acceptance_required":
+                    raise LegalAcceptanceRequiredError(
+                        parsed.get("accept_url"),
+                        parsed.get("currentEffectiveDate"),
+                        str(
+                            parsed.get("message")
+                            or "Project Kestrel's Terms of Service or Privacy Policy have been updated."
+                        ),
                     ) from e
             raise
 

@@ -90,6 +90,16 @@ class _PerchDeleted(Exception):
         self.perch_id = perch_id
 
 
+class PerchLegalAcceptanceRequired(Exception):
+    """Raised when Perch Worker returned 403 ``legal_acceptance_required``
+    (launch item #13). The caller (api_bridge) opens ``accept_url`` in the
+    system browser and surfaces a "review updated terms" toast to JS."""
+    def __init__(self, accept_url: str | None, current_effective_date: str | None, message: str):
+        super().__init__(message or "Updated terms must be reviewed before uploading.")
+        self.accept_url = accept_url or "https://myaccount.projectkestrel.org/legal/accept"
+        self.current_effective_date = current_effective_date
+
+
 def _join_under_session(session_root: Path, rel: str) -> Path:
     rel = _norm_rel(rel)
     if not rel or rel == ".":
@@ -727,6 +737,25 @@ class PerchKestrelUploader:
                 headers={"Idempotency-Key": idemp_key},
                 timeout=self.timeout,
             )
+            # ToS / Privacy Policy gate (launch item #13). The Perch Worker
+            # returns 403 with a structured body that includes the URL the
+            # desktop should open in the system browser. Surface as a typed
+            # exception so api_bridge can open the browser + show a clean
+            # toast instead of a generic HTTP error.
+            if res.status_code == 403:
+                try:
+                    body_json = res.json()
+                except Exception:
+                    body_json = None
+                if (
+                    isinstance(body_json, dict)
+                    and body_json.get("error") == "legal_acceptance_required"
+                ):
+                    raise PerchLegalAcceptanceRequired(
+                        body_json.get("accept_url"),
+                        body_json.get("currentEffectiveDate"),
+                        str(body_json.get("message") or ""),
+                    )
             _raise_for_status(res)
             data = res.json()
             perch_id = str(data["id"])
