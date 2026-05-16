@@ -889,12 +889,32 @@ def merge_pack_into_kestrel(
                 overwrite_errors=overwrite_errors,
             )
 
-        # Scenedata: additive merge (Stage 4B). Never overwrite existing
-        # image_ratings, scene names, statuses, or user_tags. Add new
-        # image-to-scene assignments and new scene records from the pack.
+        # Scenedata: split into two concerns.
+        #
+        # `image_ratings` IS trustworthy in the pack (filename-keyed, no
+        # scene_id collision risk). Merge additively — local entries always
+        # win; pack ratings fill in for files not yet rated locally. Same
+        # semantics as the old _merge_scenedata_additive flow.
+        #
+        # `scenes` from the pack uses container-local scene_ids that collide
+        # across containers (scene "1" from container A and container B
+        # describe different content). Don't trust it — rebuild from the
+        # scene_count-corrected CSV. User edits (name/status/user_tags) are
+        # preserved by snapshot-restore through the rebuild.
         src_scene = src_kestrel / "kestrel_scenedata.json"
-        if src_scene.is_file():
-            _merge_scenedata_additive(src_scene, target_kestrel / "kestrel_scenedata.json")
+        target_csv = target_kestrel / "kestrel_database.csv"
+        if src_scene.is_file() or target_csv.is_file():
+            try:
+                _rebuild_scenedata_from_csv(
+                    target_kestrel,
+                    pack_scenedata_path=src_scene if src_scene.is_file() else None,
+                )
+            except Exception as e:
+                # Best-effort — CSV is the rendering source of truth. Stale
+                # scenedata is harmless for display; it only matters for
+                # scene merge/split ops.
+                import sys as _sys
+                print(f"[cloud-compute] scenedata rebuild failed for {target_kestrel}: {e}", file=_sys.stderr)
 
         # Metadata: full replacement is safe — file contains no user data
         # (analysis_settings, version stamps, quality histogram).
@@ -934,6 +954,7 @@ def _merge_database_csv(
     fieldnames: list[str] = []
     existing_keys: set[str] = set()
     errored_keys: set[str] = set()
+    cloud_sourced_keys: set[str] = set()  # rows whose data came from src this merge
 
     if dst.is_file():
         with dst.open("r", encoding="utf-8", newline="") as f:
@@ -972,17 +993,175 @@ def _merge_database_csv(
                     and (row.get("species") or "").strip() != "Error"
                 ):
                     rows[key] = row
+                    cloud_sourced_keys.add(key)
                     continue
                 # Local row wins — never overwrite. Protects user-editable
                 # columns alongside analysis columns.
                 continue
             rows[key] = row
+            cloud_sourced_keys.add(key)
+
+    # Renumber scene_count for cloud-sourced rows so they pick up from where
+    # the prior CSV left off, instead of restarting at 1 per Modal container.
+    # Each Modal segment-container starts its scene_count locally; without this
+    # pass, "scene 1" ends up containing images from every container run (see
+    # pack-merge bug diagnosis). Matches pipeline.py:856-857 — split a scene
+    # iff `similar == False` against the prior file in sort order.
+    sorted_keys = sorted(rows.keys())
+    prev_scene_count = 0
+    for key in sorted_keys:
+        row = rows[key]
+        if key in cloud_sourced_keys:
+            is_similar = str(row.get("similar", "")).strip().lower() in ("true", "1")
+            if not is_similar:
+                prev_scene_count += 1
+            row["scene_count"] = str(prev_scene_count)
+        else:
+            # Locally-authoritative row — trust its scene_count and let it
+            # seed the running counter for any subsequent cloud row.
+            try:
+                prev_scene_count = int(float(str(row.get("scene_count") or "0")))
+            except (TypeError, ValueError):
+                pass
 
     with dst.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
-        for key in sorted(rows.keys()):
+        for key in sorted_keys:
             writer.writerow(rows[key])
+
+
+def _rebuild_scenedata_from_csv(
+    target_kestrel: Path,
+    pack_scenedata_path: Optional[Path] = None,
+) -> None:
+    """Rebuild ``<target_kestrel>/kestrel_scenedata.json`` after a pack merge.
+
+    Same end-state as the local pipeline's post-analysis flow at
+    pipeline.py:1477-1483, adapted for the cloud pack-merge:
+
+    - ``image_ratings`` from the pack is merged additively (local entries
+      always win; pack ratings fill in for files not yet rated locally).
+      Runs regardless of whether a CSV exists.
+    - When the merged CSV exists, ``scenes`` is rebuilt from the scene_count-
+      corrected CSV (the column written by ``_merge_database_csv``). The
+      pack's own ``scenes`` dict is ignored — its scene_ids collide across
+      containers. User-edited scene fields (``name``, ``status``,
+      ``user_tags``) are preserved by snapshot-restore through the rebuild.
+    - When no CSV exists (synthetic / test cases), scenes from the pack are
+      merged additively into local scenes — same legacy semantics as
+      ``_merge_scenedata_additive``, since there's nothing to rebuild from.
+    """
+    try:
+        try:
+            from kestrel_analyzer.database import (
+                load_database,
+                load_scenedata,
+                save_scenedata,
+                build_scenedata_from_database,
+            )
+        except ImportError:
+            from analyzer.kestrel_analyzer.database import (  # type: ignore[no-redef]
+                load_database,
+                load_scenedata,
+                save_scenedata,
+                build_scenedata_from_database,
+            )
+    except ImportError:
+        return  # analyzer package not on path — nothing we can do
+
+    existing = load_scenedata(str(target_kestrel))
+
+    # ── image_ratings: additive merge from the pack (always) ─────────────
+    cur_ratings = dict(existing.get("image_ratings") or {})
+    pack_sd: dict = {}
+    if pack_scenedata_path is not None:
+        try:
+            with pack_scenedata_path.open("r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                pack_sd = loaded
+        except (OSError, ValueError):
+            pack_sd = {}
+        pack_ratings = pack_sd.get("image_ratings") or {}
+        if isinstance(pack_ratings, dict):
+            for fname, rating in pack_ratings.items():
+                if fname not in cur_ratings:
+                    cur_ratings[fname] = rating
+
+    # ── scenes: rebuild from CSV if present; else additive from pack ─────
+    csv_path = target_kestrel / "kestrel_database.csv"
+    if csv_path.is_file():
+        # Snapshot user-edited per-scene metadata so we can restore after
+        # the CSV-driven rebuild replaces the scenes dict.
+        user_edits: dict[str, dict] = {}
+        for sid, scene in (existing.get("scenes") or {}).items():
+            if not isinstance(scene, dict):
+                continue
+            edits: dict = {}
+            name = scene.get("name") or ""
+            if name:
+                edits["name"] = name
+            status = scene.get("status") or ""
+            if status and status != "pending":
+                edits["status"] = status
+            user_tags = scene.get("user_tags")
+            if isinstance(user_tags, dict) and (
+                user_tags.get("species")
+                or user_tags.get("families")
+                or user_tags.get("finalized")
+            ):
+                edits["user_tags"] = user_tags
+            if edits:
+                user_edits[str(sid)] = edits
+
+        database, _ = load_database(
+            str(target_kestrel), analyzer_name="cloud-compute-merge"
+        )
+        rebuilt = build_scenedata_from_database(database)
+
+        # Restore user-edited scene metadata. Only re-applies to scene_ids
+        # that still exist after the rebuild (a renumbered scene loses its
+        # edits — acceptable since scene_ids are stable when the cloud path
+        # is operating correctly; for already-corrupted folders the user
+        # edits were attached to wrong content anyway).
+        for sid, edits in user_edits.items():
+            scene = rebuilt["scenes"].get(sid)
+            if isinstance(scene, dict):
+                scene.update(edits)
+
+        rebuilt["image_ratings"] = cur_ratings
+        save_scenedata(rebuilt, str(target_kestrel))
+        return
+
+    # ── No CSV: legacy additive scenes merge (test/edge case only) ───────
+    pack_scenes = pack_sd.get("scenes") or {}
+    cur_scenes = existing.setdefault("scenes", {})
+    if isinstance(pack_scenes, dict):
+        for sid, pack_scene in pack_scenes.items():
+            if not isinstance(pack_scene, dict):
+                continue
+            sid = str(sid)
+            if sid not in cur_scenes or not isinstance(cur_scenes[sid], dict):
+                cur_scenes[sid] = dict(pack_scene)
+                continue
+            local_scene = cur_scenes[sid]
+            local_files = list(local_scene.get("image_filenames") or [])
+            seen = set(local_files)
+            for fname in (pack_scene.get("image_filenames") or []):
+                if isinstance(fname, str) and fname and fname not in seen:
+                    local_files.append(fname)
+                    seen.add(fname)
+            local_scene["image_filenames"] = local_files
+            for f in ("name", "status", "user_tags"):
+                if f not in local_scene and f in pack_scene:
+                    local_scene[f] = pack_scene[f]
+    existing["image_ratings"] = cur_ratings
+    # version bump (lexicographic, matches old behavior)
+    inc_ver = str(pack_sd.get("version") or "")
+    cur_ver = str(existing.get("version") or "")
+    existing["version"] = inc_ver if inc_ver > cur_ver else (cur_ver or inc_ver)
+    save_scenedata(existing, str(target_kestrel))
 
 
 def _merge_scenedata_additive(src: Path, dst: Path) -> None:
