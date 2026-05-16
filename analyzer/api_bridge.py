@@ -2461,6 +2461,51 @@ class Api:
             return None, {"ok": False, "error": str(e)}
         return client, None
 
+    def _cc_load_analyzed_filenames(self, folder) -> tuple[set, set]:
+        """Read analyzed + errored filenames from the folder's kestrel database,
+        running schema migration as needed.
+
+        Wraps ``kestrel_analyzer.database.load_database`` so legacy CSVs (with
+        ``rating`` / ``scene_name`` columns and no ``kestrel_scenedata.json``)
+        get the same OLD_..._csv backup + scenedata.json extraction as on a
+        local enqueue. Without this, the cloud path would read a legacy CSV
+        directly and the pack-merge would silently lose the user's pre-migration
+        ratings / scene names.
+
+        Returns ``(analyzed_filenames, errored_filenames)``. Both empty when
+        no database exists yet.
+        """
+        from pathlib import Path as _Path
+        folder = _Path(folder)
+        kestrel_dir = folder / ".kestrel"
+        if not (kestrel_dir / "kestrel_database.csv").is_file():
+            return set(), set()
+        try:
+            from kestrel_analyzer.database import load_database
+        except ImportError:
+            from analyzer.kestrel_analyzer.database import load_database  # type: ignore[no-redef]
+        try:
+            database, _db_path = load_database(
+                str(kestrel_dir), analyzer_name="cloud-compute-select"
+            )
+        except Exception as e:
+            warn(f"[cloud-compute] load_database failed for {folder}: {e}")
+            return set(), set()
+        if database.empty or "filename" not in database.columns:
+            return set(), set()
+        analyzed = {
+            str(f).strip() for f in database["filename"].values if str(f).strip()
+        }
+        errored: set = set()
+        if "species" in database.columns:
+            mask = database["species"].astype(str) == "Error"
+            errored = {
+                str(f).strip()
+                for f in database.loc[mask, "filename"].values
+                if str(f).strip()
+            }
+        return analyzed, errored
+
     def _cc_select_upload_files(self, folder, retry_errored: bool = False) -> tuple:
         """Resume-aware file-selection for cloud upload.
 
@@ -2515,26 +2560,12 @@ class Api:
         if not all_files:
             return [], None, frozenset(), 0, 0
 
-        db_path = folder / ".kestrel" / "kestrel_database.csv"
-        analyzed: set = set()
-        errored: set = set()
-        if db_path.is_file():
-            try:
-                import csv as _csv
-                with db_path.open("r", encoding="utf-8", newline="") as f:
-                    reader = _csv.DictReader(f)
-                    for row in reader:
-                        name = (row.get("filename") or "").strip()
-                        if not name:
-                            continue
-                        analyzed.add(name)
-                        # Error marker matches the local pipeline's predicate
-                        # at pipeline.py: species=="Error" (no separate boolean).
-                        if (row.get("species") or "").strip() == "Error":
-                            errored.add(name)
-            except Exception:
-                analyzed = set()
-                errored = set()
+        # Read analyzed/errored filenames via the shared helper so legacy CSVs
+        # get migrated (load_database → _needs_upgrade → _perform_db_upgrade)
+        # the same way the local enqueue path does. Without this, a folder
+        # whose CSV still has the pre-migration rating/scene_name columns
+        # would have its user data silently dropped on first cloud pack-merge.
+        analyzed, errored = self._cc_load_analyzed_filenames(folder)
 
         # When retry_errored is on, errored filenames are NOT considered
         # "analyzed" for the skip filter, so they get re-uploaded. They are,

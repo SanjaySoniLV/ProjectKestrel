@@ -26,28 +26,16 @@
       analyzeDlgAdd.addEventListener('click', async () => {
         const paths = Array.from(_dlgSelected);
         if (paths.length === 0) return;
-        // Cloud destination short-circuits the local-only re-analyze /
-        // outdated-version dance. Cloud uploads run against the
-        // resume-aware file-selection helper on the desktop side and only
-        // send unprocessed files (plus a scene-merger anchor).
-        if (_analyzeDestination === 'cloud') {
-          document.getElementById('analyzeQueueDlg').close();
-          analyzeDlgAdd.disabled = true;
-          try {
-            await _ccSubmitSelectedFolders(paths);
-            _dlgSelected.clear();
-          } finally {
-            analyzeDlgAdd.disabled = false;
-            _ccUpdateAddButtonLabel();
-          }
-          return;
-        }
         const useGpu = document.getElementById('analyzeUseGpu')?.checked ?? true;
         const wildlifeEnabled = document.getElementById('analyzeWildlife')?.checked ?? false;
         const speciesDetectionEnabled = document.getElementById('analyzeSpeciesDetection')?.checked ?? true;
         const retryErrored = document.getElementById('adlgRetryErrored')?.checked ?? true;
 
-        // Check for outdated-version folders not already confirmed for re-analysis
+        // Outdated-version + re-analyze gates run for BOTH destinations. Cloud
+        // jobs need the same .kestrel/ clearing as local before submit — without
+        // it, an out-of-date local CSV either feeds a stale resume-anchor to
+        // the cloud pipeline or silently merges incompatible rows back on
+        // pack-merge. See plan: cloud previously short-circuited these gates.
         const outdatedPaths = [];
         function findNode(node, targetPath) {
           if (node.path === targetPath) return node;
@@ -99,6 +87,23 @@
           } catch (e) {
             console.warn('Failed to clear kestrel data for re-analyze', p, e);
           }
+        }
+
+        // Cloud destination: branch here so the outdated/re-analyze gates above
+        // ran (clearing .kestrel/ on user confirm) before submission. Local
+        // settings persistence + start_analysis_queue do not apply to cloud.
+        if (_analyzeDestination === 'cloud') {
+          document.getElementById('analyzeQueueDlg').close();
+          analyzeDlgAdd.disabled = true;
+          try {
+            await _ccSubmitSelectedFolders(paths);
+            _dlgSelected.clear();
+            _dlgReanalyze.clear();
+          } finally {
+            analyzeDlgAdd.disabled = false;
+            _ccUpdateAddButtonLabel();
+          }
+          return;
         }
 
         // Persist advanced analysis settings before starting the queue
