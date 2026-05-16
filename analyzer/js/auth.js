@@ -89,6 +89,16 @@
           window.open(`${MYACCOUNT_ORIGIN}/signin`, '_blank');
         }
       });
+
+      // Fire-and-forget silent refresh on every app launch. Python skips
+      // this entirely if no token is stored; otherwise it spins up a hidden
+      // pywebview window that reuses Clerk's persisted session cookie to
+      // mint a fresh JWT, then calls back into store_auth_token (which in
+      // turn invokes window.onAuthSignIn to re-hydrate this UI).
+      if (window.pywebview?.api?.refresh_auth_token_silently) {
+        try { window.pywebview.api.refresh_auth_token_silently(); }
+        catch (e) { console.warn('refresh_auth_token_silently failed:', e); }
+      }
     }
 
     // Called by Python after store_auth_token completes

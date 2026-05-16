@@ -1946,6 +1946,8 @@ class Api:
     _main_window = None
     _culling_window = None
     _sign_in_window = None
+    _refresh_window = None
+    _refresh_watchdog = None
     _server_port = None
 
     def open_culling_window(self, root_path: str):
@@ -2052,6 +2054,9 @@ class Api:
             if self._sign_in_window:
                 self._sign_in_window.destroy()
                 self._sign_in_window = None
+            # Close the hidden refresh window if this token came from a
+            # silent refresh — also cancels its watchdog timer.
+            self._close_refresh_window()
             return {'success': True}
         except Exception as e:
             print(f'[API] store_auth_token() -> Error: {e}', flush=True)
@@ -4260,6 +4265,9 @@ class Api:
             if not WEBVIEW_IMPORT_SUCCESS:
                 return {'success': False, 'error': 'pywebview not available'}
             import webview as _wv
+            # If a silent-refresh window is open, kill it so we don't race
+            # the visible sign-in flow.
+            self._close_refresh_window()
             if self._sign_in_window:
                 try:
                     self._sign_in_window.destroy()
@@ -4279,6 +4287,101 @@ class Api:
         except Exception as e:
             print(f'[API] open_auth_sign_in() -> Error: {e}', flush=True)
             return {'success': False, 'error': str(e)}
+
+    def refresh_auth_token_silently(self):
+        """Mint a fresh Kestrel JWT from Clerk's persisted session cookie.
+
+        Opens a hidden pywebview window pointed at the MyAccount desktop-signin
+        page in ``?mode=refresh``. That page reuses the Clerk session cookie
+        already present in the pywebview profile (set by a previous interactive
+        sign-in) to call ``clerk.session.getToken()`` and post the new JWT back
+        through ``store_auth_token``. On success the same code path that closes
+        the visible sign-in window will also destroy this hidden one.
+
+        No-op cases (returns success with ``skipped`` reason, no window opened):
+          - pywebview unavailable.
+          - No stored token (user has never signed in or has signed out).
+          - A sign-in or refresh window is already open.
+
+        A 15-second watchdog tears the window down if the page never calls back
+        (network failure, Clerk outage, etc.), so a failed refresh never leaves
+        a hanging hidden window.
+        """
+        try:
+            if not WEBVIEW_IMPORT_SUCCESS:
+                return {'success': False, 'error': 'pywebview not available'}
+            # Bypass get_auth_token()'s 5-min expiry cutoff — even a token
+            # near or past expiry means the user had a session, so the Clerk
+            # cookie may still mint a fresh one. We only skip when there is
+            # literally no stored credential.
+            data = _keyring_load()
+            if not data or not data.get('token'):
+                return {'success': True, 'skipped': 'no_stored_token'}
+            if self._sign_in_window or self._refresh_window:
+                return {'success': True, 'skipped': 'window_already_open'}
+
+            import webview as _wv
+            # Origin is fixed; cannot be steered from JS to a malicious URL.
+            refresh_url = (
+                'https://myaccount.projectkestrel.org/desktop-signin?mode=refresh'
+            )
+            win = _wv.create_window(
+                'Kestrel session refresh',
+                refresh_url,
+                js_api=self,
+                width=400,
+                height=400,
+                hidden=True,
+            )
+            self._refresh_window = win
+
+            import threading as _t
+            self._refresh_watchdog = _t.Timer(15.0, self._close_refresh_window)
+            self._refresh_watchdog.daemon = True
+            self._refresh_watchdog.start()
+            _auth_debug_log_token('refresh_auth_token_silently: window opened', None)
+            return {'success': True}
+        except Exception as e:
+            print(f'[API] refresh_auth_token_silently() -> Error: {e}', flush=True)
+            self._close_refresh_window()
+            return {'success': False, 'error': str(e)}
+
+    def refresh_auth_failed(self, reason=''):
+        """Called by the refresh page when Clerk has no session or the page times out.
+
+        Tears down the hidden refresh window. Deliberately does NOT clear the
+        stored token: it may still be valid for hours/days, and the standard
+        ``get_auth_token`` expiry check will surface "session expired" when it
+        actually elapses.
+        """
+        try:
+            _auth_debug_log_token(
+                f'refresh_auth_failed: reason={str(reason)[:64]!r}', None
+            )
+        except Exception:
+            pass
+        self._close_refresh_window()
+        return {'success': True}
+
+    def _close_refresh_window(self):
+        """Destroy the hidden refresh window and cancel its watchdog timer."""
+        try:
+            wd = self._refresh_watchdog
+            if wd is not None:
+                try:
+                    wd.cancel()
+                except Exception:
+                    pass
+                self._refresh_watchdog = None
+            win = self._refresh_window
+            if win is not None:
+                try:
+                    win.destroy()
+                except Exception:
+                    pass
+                self._refresh_window = None
+        except Exception as e:
+            print(f'[API] _close_refresh_window() -> Error: {e}', flush=True)
 
     def _find_sidecar_file(self, root_path: str, filename: str, ext: str = '.xmp'):
         """Find sidecar file with given extension for an image file.
