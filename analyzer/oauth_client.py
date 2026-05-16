@@ -326,14 +326,21 @@ def revoke_token(token: str) -> dict:
 
 
 def build_bundle(token_response: dict, *, now: Optional[float] = None) -> dict:
-    """Translate Clerk's token response into our keychain schema."""
+    """Translate Clerk's token response into our keychain schema.
+
+    Deliberately drops ``id_token``: nothing in the desktop app reads it, and
+    the extra ~700 bytes pushes the bundle past Windows Credential Manager's
+    2560-byte UTF-16 cap, forcing the plaintext file fallback. Dropping it
+    keeps the durable secret (refresh_token) and the bearer (access_token)
+    in the OS keystore on most installs.
+    """
     t = now if now is not None else time.time()
     expires_in = token_response.get("expires_in") or 0
     try:
         expires_in = float(expires_in)
     except (TypeError, ValueError):
         expires_in = 0.0
-    bundle = {
+    return {
         "access_token":  token_response.get("access_token") or "",
         "refresh_token": token_response.get("refresh_token") or "",
         "expires_at":    t + expires_in,
@@ -341,9 +348,6 @@ def build_bundle(token_response: dict, *, now: Optional[float] = None) -> dict:
         "scope":         token_response.get("scope") or CLERK_SCOPES,
         "obtained_at":   t,
     }
-    if token_response.get("id_token"):
-        bundle["id_token"] = token_response["id_token"]
-    return bundle
 
 
 def run_authorization_flow(
