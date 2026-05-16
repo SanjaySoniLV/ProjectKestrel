@@ -31,8 +31,8 @@ def pinned_user(monkeypatch):
     monkeypatch.setenv('USERNAME', 'Sanja')
     monkeypatch.setenv('USER', 'Sanja')
     log_redactor._cache_key = ('', '')
-    log_redactor._cache_pattern = None
-    log_redactor._cache_home = ''
+    log_redactor._cache_username_pattern = None
+    log_redactor._cache_home_pattern = None
     yield state
     log_redactor._cache_key = ('', '')
 

@@ -156,8 +156,22 @@ def _install_windows(callback: Callable[[], None]) -> bool:
     user32 = ctypes.WinDLL('user32', use_last_error=True)
     kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
 
+    # LRESULT is LONG_PTR — 64-bit on x64. c_ssize_t matches it on both
+    # 32-bit and 64-bit Windows. Using c_long here truncates pointer-sized
+    # return values from DefWindowProcW.
+    LRESULT = ctypes.c_ssize_t
+
+    # Declare DefWindowProcW's full signature *before* WNDPROC wraps any
+    # function that calls it. Without explicit argtypes, ctypes defaults
+    # every argument to c_int and overflows on the 64-bit LPARAM that
+    # Windows passes in messages like WM_NCCREATE.
+    user32.DefWindowProcW.argtypes = [
+        wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+    ]
+    user32.DefWindowProcW.restype = LRESULT
+
     WNDPROC = ctypes.WINFUNCTYPE(
-        ctypes.c_long,
+        LRESULT,
         wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
     )
 

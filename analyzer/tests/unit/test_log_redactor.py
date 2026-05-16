@@ -41,8 +41,8 @@ def _set_user(state, home, username, monkeypatch):
     monkeypatch.setenv('USERNAME', username)
     monkeypatch.setenv('USER', username)
     log_redactor._cache_key = ('', '')
-    log_redactor._cache_pattern = None
-    log_redactor._cache_home = ''
+    log_redactor._cache_username_pattern = None
+    log_redactor._cache_home_pattern = None
 
 
 class TestRedactUserPaths:
