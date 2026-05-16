@@ -100,6 +100,82 @@ class PerchLegalAcceptanceRequired(Exception):
         self.current_effective_date = current_effective_date
 
 
+# Server error codes the Worker emits when a plan-tier cap denies a write.
+# Keep in sync with `Perch Worker/src/lib/caps.ts`.
+_PERCH_PLAN_LIMIT_ERROR_CODES = frozenset({
+    "perch_limit_reached",
+    "perch_storage_limit_reached",
+    "perch_image_limit_reached",
+    "perch_asset_limit_reached",
+    "asset_too_large",
+})
+
+
+class PerchPlanLimitExceeded(Exception):
+    """Raised when Perch Worker returned a structured plan-tier cap denial
+    (HTTP 403 or 413 with one of the known ``error`` codes — see
+    ``_PERCH_PLAN_LIMIT_ERROR_CODES``). The api_bridge layer translates this
+    into a progress payload that the JS UI surfaces as a "you've hit your
+    plan limit" card with an Upgrade button (links to
+    ``myaccount.projectkestrel.org/perch``).
+
+    This is distinct from generic HTTPError so the UI can show a friendly
+    message + a direct upgrade link rather than a "presigning stuck"
+    spinner or a raw "403" toast.
+    """
+    def __init__(
+        self,
+        error_code: str,
+        *,
+        status: int,
+        message: str | None = None,
+        tier: str | None = None,
+        current: int | None = None,
+        limit: int | None = None,
+        filename: str | None = None,
+        upgrade_url: str | None = None,
+    ):
+        super().__init__(message or f"Plan limit: {error_code}")
+        self.error_code = error_code
+        self.status = status
+        self.tier = tier
+        self.current = current
+        self.limit = limit
+        self.filename = filename
+        self.upgrade_url = upgrade_url or "https://myaccount.projectkestrel.org/perch"
+
+    @classmethod
+    def from_response(cls, r: "requests.Response") -> "PerchPlanLimitExceeded | None":
+        """Inspect a response; return a typed exception if the body matches
+        a known plan-limit error code, else None. Safe to call on any 4xx —
+        non-matching responses just return None so the caller can fall
+        through to the generic error path."""
+        if r.status_code not in (403, 413):
+            return None
+        try:
+            body = r.json()
+        except Exception:
+            return None
+        if not isinstance(body, dict):
+            return None
+        code = body.get("error")
+        if not isinstance(code, str) or code not in _PERCH_PLAN_LIMIT_ERROR_CODES:
+            return None
+        def _i(k: str) -> int | None:
+            v = body.get(k)
+            return int(v) if isinstance(v, (int, float)) else None
+        return cls(
+            code,
+            status=r.status_code,
+            message=body.get("message") if isinstance(body.get("message"), str) else None,
+            tier=body.get("tier") if isinstance(body.get("tier"), str) else None,
+            current=_i("current"),
+            limit=_i("limit"),
+            filename=body.get("filename") if isinstance(body.get("filename"), str) else None,
+            upgrade_url=body.get("upgrade_url") if isinstance(body.get("upgrade_url"), str) else None,
+        )
+
+
 def _join_under_session(session_root: Path, rel: str) -> Path:
     rel = _norm_rel(rel)
     if not rel or rel == ".":
@@ -756,6 +832,12 @@ class PerchKestrelUploader:
                         body_json.get("currentEffectiveDate"),
                         str(body_json.get("message") or ""),
                     )
+            # Plan-tier caps (Stage 7). `perch_limit_reached` is the only
+            # code that can fire from POST /v1/perches today; the rest are
+            # presign-only. Detect generically so future codes Just Work.
+            plan_err = PerchPlanLimitExceeded.from_response(res)
+            if plan_err is not None:
+                raise plan_err
             _raise_for_status(res)
             data = res.json()
             perch_id = str(data["id"])
@@ -1556,6 +1638,14 @@ class PerchKestrelUploader:
                 _time.sleep(wait)
                 backoff_s = min(backoff_s * 2, 60)
 
+            # Stage 7: surface tier-cap denials as a typed exception so the
+            # UI can render an upgrade card instead of a stuck "presigning"
+            # spinner. Runs BEFORE _raise_for_status so a 413
+            # ``asset_too_large`` becomes a clean plan-limit error rather
+            # than a generic HTTPError.
+            plan_err = PerchPlanLimitExceeded.from_response(r)
+            if plan_err is not None:
+                raise plan_err
             _raise_for_status(r)  # raise the final non-retried response
             resp = r.json()
 

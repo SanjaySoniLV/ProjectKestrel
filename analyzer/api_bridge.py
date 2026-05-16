@@ -3822,10 +3822,18 @@ class Api:
         client passes both from a stored ``perch_upload_manifest.json``.
         """
         try:
-            from perch_uploader import PerchKestrelUploader, PerchLegalAcceptanceRequired
+            from perch_uploader import (
+                PerchKestrelUploader,
+                PerchLegalAcceptanceRequired,
+                PerchPlanLimitExceeded,
+            )
         except ImportError:
             try:
-                from analyzer.perch_uploader import PerchKestrelUploader, PerchLegalAcceptanceRequired
+                from analyzer.perch_uploader import (
+                    PerchKestrelUploader,
+                    PerchLegalAcceptanceRequired,
+                    PerchPlanLimitExceeded,
+                )
             except ImportError as e:
                 return {"success": False, "error": f"uploader import failed: {e}"}
 
@@ -3910,6 +3918,23 @@ class Api:
                     "message": "legal_acceptance_required",
                     "acceptUrl": e.accept_url,
                     "currentEffectiveDate": e.current_effective_date,
+                })
+            except PerchPlanLimitExceeded as e:
+                # Stage 7: plan-tier cap denial. Surface a typed error so JS
+                # renders an upgrade card with a clickable "Upgrade" button
+                # to myaccount.projectkestrel.org/perch. The presigning
+                # spinner unwinds because we end the job here.
+                _on_progress({
+                    "phase": "error",
+                    "message": "plan_limit_exceeded",
+                    "errorCode": e.error_code,
+                    "status": e.status,
+                    "tier": e.tier,
+                    "current": e.current,
+                    "limit": e.limit,
+                    "filename": e.filename,
+                    "upgradeUrl": e.upgrade_url,
+                    "friendlyMessage": str(e),
                 })
             except Exception as e:
                 log(f"share_with_perch: {e}")

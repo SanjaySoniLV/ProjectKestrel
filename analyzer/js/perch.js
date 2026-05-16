@@ -400,8 +400,87 @@
       if (badge) { badge.textContent = 'Canceled'; badge.className = 'perch-uploads-badge canceled'; }
     }
 
+    // Plain-language copy for each plan-limit error code from the Perch
+    // Worker (see Perch Worker/src/lib/caps.ts). Falls back to a generic
+    // line when the code is unknown.
+    function _perchPlanLimitCopy(prog) {
+      const code = prog && prog.errorCode;
+      const limit = Number(prog && prog.limit);
+      const current = Number(prog && prog.current);
+      const limitMB = Number.isFinite(limit) ? Math.round(limit / (1024 * 1024)) : null;
+      const filename = (prog && prog.filename) ? String(prog.filename) : null;
+      const tier = (prog && prog.tier) ? String(prog.tier) : null;
+      const tierLine = tier ? ` Your current plan is ${tier}.` : '';
+      switch (code) {
+        case 'perch_limit_reached':
+          return {
+            title: 'Perch limit reached',
+            body: `You've used ${Number.isFinite(current) ? current : '?'} of ${Number.isFinite(limit) ? limit : '?'} perches available on your plan.${tierLine}`,
+          };
+        case 'perch_storage_limit_reached':
+          return {
+            title: 'Perch is full',
+            body: `This perch has hit the storage limit (${limitMB != null ? limitMB + ' MB' : 'plan cap'}). Upgrade for more storage per perch, or split the upload across multiple perches.${tierLine}`,
+          };
+        case 'perch_image_limit_reached':
+          return {
+            title: 'Perch image limit reached',
+            body: `This perch is at the maximum number of images allowed on your plan (${Number.isFinite(limit) ? limit : '?'}).${tierLine}`,
+          };
+        case 'perch_asset_limit_reached':
+          return {
+            title: 'Perch asset limit reached',
+            body: `This perch is at the maximum number of assets (images + crops) allowed on your plan (${Number.isFinite(limit) ? limit : '?'}).${tierLine}`,
+          };
+        case 'asset_too_large':
+          return {
+            title: 'File too large for your plan',
+            body: `${filename ? `"${filename}" is` : 'A file is'} larger than your plan's per-file limit (${limitMB != null ? limitMB + ' MB' : 'plan cap'}). Upgrade for higher per-file limits.${tierLine}`,
+          };
+        default:
+          return {
+            title: 'Plan limit reached',
+            body: (prog && prog.friendlyMessage) ? String(prog.friendlyMessage) : 'Your upload exceeds your current plan limits.',
+          };
+      }
+    }
+
+    function _perchSwapToPlanLimitState(card, prog) {
+      if (!card) return;
+      const copy = _perchPlanLimitCopy(prog);
+      const upgradeUrl = (prog && prog.upgradeUrl) || 'https://myaccount.projectkestrel.org/perch';
+      const esc = (s) => String(s).replace(/[<>&"']/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]));
+      card.className = 'perch-upload-card is-error';
+      card.innerHTML = `
+        <div class="perch-upload-card-header">
+          <span class="perch-upload-card-title">${esc(copy.title)}</span>
+          <button type="button" class="perch-upload-card-dismiss" data-role="dismiss" title="Dismiss">✕</button>
+        </div>
+        <div class="perch-upload-card-body">
+          <div class="perch-upload-card-err">${esc(copy.body)}</div>
+          <button type="button" class="perch-upload-card-cta" data-role="upgrade">Upgrade plan →</button>
+        </div>
+      `;
+      const upgrade = card.querySelector('[data-role="upgrade"]');
+      if (upgrade) {
+        upgrade.addEventListener('click', () => {
+          try { window.pywebview.api.open_perch_url(upgradeUrl); } catch {}
+        });
+      }
+      const dismiss = card.querySelector('[data-role="dismiss"]');
+      if (dismiss) dismiss.addEventListener('click', () => _perchDismissCard(card));
+      const badge = document.getElementById('perchUploadsBadge');
+      if (badge) { badge.textContent = 'Plan limit'; badge.className = 'perch-uploads-badge error'; }
+    }
+
     function _perchSwapToErrorState(card, prog, rootPath) {
       if (!card) return;
+      // Stage 7: tier-cap denials get their own card with an Upgrade CTA
+      // (no Retry — retrying without upgrading would just 403 again).
+      if (prog && prog.message === 'plan_limit_exceeded') {
+        _perchSwapToPlanLimitState(card, prog);
+        return;
+      }
       const msg = (prog && prog.message) || 'Unknown error';
       card.className = 'perch-upload-card is-error';
       card.innerHTML = `
