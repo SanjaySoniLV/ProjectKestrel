@@ -278,6 +278,32 @@
     const _ccBodyEl  = () => document.getElementById('cloudQueuePanelBody');
     const _ccBadgeEl = () => document.getElementById('cloudQueuePanelBadge');
 
+    let _cloudQueuePanelExpanded = true;
+
+    function _ccRepositionPanel() {
+      const panel = _ccPanelEl();
+      if (!panel || panel.classList.contains('hidden')) return;
+      const queue = document.getElementById('queuePanel');
+      if (queue && !queue.classList.contains('hidden')) {
+        const h = queue.getBoundingClientRect().height;
+        if (h > 0) { panel.style.bottom = (20 + h + 12) + 'px'; return; }
+      }
+      panel.style.bottom = '20px';
+    }
+
+    function _ccInstallPanelObservers() {
+      if (_ccInstallPanelObservers._done) return;
+      _ccInstallPanelObservers._done = true;
+      const queue = document.getElementById('queuePanel');
+      if (!queue) return;
+      try { new ResizeObserver(() => _ccRepositionPanel()).observe(queue); } catch {}
+      try {
+        new MutationObserver(() => _ccRepositionPanel())
+          .observe(queue, { attributes: true, attributeFilter: ['class'] });
+      } catch {}
+      window.addEventListener('resize', _ccRepositionPanel);
+    }
+
     let _ccPollingTimer = null;
     // After this many ms with no successful poll, the row shows a "syncing…"
     // badge. Counters keep their last-known values regardless.
@@ -454,11 +480,18 @@
         return;
       }
       panel.classList.remove('hidden');
+      const controls = document.getElementById('cloudQueuePanelControls');
+      const toggle = document.getElementById('cloudQueuePanelToggle');
+      if (toggle) toggle.classList.toggle('open', _cloudQueuePanelExpanded);
+      body.classList.toggle('hidden', !_cloudQueuePanelExpanded);
+      if (controls) controls.classList.toggle('hidden', !_cloudQueuePanelExpanded);
       // Single bridge call returns the rich descriptors directly — counters
       // come from the backend cache populated by the per-job remote poller.
       // No N+1 cloud_compute_get_status loop here anymore.
       body.innerHTML = jobs.map(_ccRenderItem).join('');
       badge.textContent = _ccPanelBadge(jobs);
+      _ccRepositionPanel();
+      _ccInstallPanelObservers();
       // Drain pack-merged events and trigger folder rescan so new photos show
       // in the gallery as packs arrive — same UX as local live update.
       try {

@@ -275,6 +275,22 @@
       });
     }
 
+    // Cloud queue panel header: toggle expand / collapse
+    const cloudQueuePanelHeader = document.getElementById('cloudQueuePanelHeader');
+    if (cloudQueuePanelHeader) {
+      cloudQueuePanelHeader.addEventListener('click', () => {
+        _cloudQueuePanelExpanded = !_cloudQueuePanelExpanded;
+        const toggle = document.getElementById('cloudQueuePanelToggle');
+        const body = document.getElementById('cloudQueuePanelBody');
+        const controls = document.getElementById('cloudQueuePanelControls');
+        if (toggle) toggle.classList.toggle('open', _cloudQueuePanelExpanded);
+        if (body) body.classList.toggle('hidden', !_cloudQueuePanelExpanded);
+        if (controls) controls.classList.toggle('hidden', !_cloudQueuePanelExpanded);
+        if (typeof _ccRepositionPanel === 'function') _ccRepositionPanel();
+        if (typeof _perchRepositionUploadsPanel === 'function') _perchRepositionUploadsPanel();
+      });
+    }
+
     // Pause / Resume button
     const queuePauseBtn = document.getElementById('queuePauseBtn');
     if (queuePauseBtn) {

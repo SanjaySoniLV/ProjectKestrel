@@ -242,39 +242,47 @@
     }
 
     /**
-     * Position the Perch uploads panel above the analysis queue when both
-     * are visible. Right-aligned with the queue panel; bottom = (20 + queue
-     * panel height + 12) when queue is on screen, otherwise bottom = 20px.
+     * Position the Perch uploads panel above whichever queue panels are
+     * visible (local analysis + cloud analysis). Right-aligned with them;
+     * bottom = 20 + sum of visible queue heights + 12px gap per visible queue.
      */
     function _perchRepositionUploadsPanel() {
       const panel = document.getElementById('perchUploadsPanel');
       if (!panel || panel.classList.contains('hidden')) return;
+      const gap = 12;
+      let bottom = 20;
       const queue = document.getElementById('queuePanel');
+      const cloud = document.getElementById('cloudQueuePanel');
       if (queue && !queue.classList.contains('hidden')) {
         const h = queue.getBoundingClientRect().height;
-        if (h > 0) {
-          panel.style.bottom = (20 + h + 12) + 'px';
-          return;
-        }
+        if (h > 0) bottom += h + gap;
       }
-      panel.style.bottom = '20px';
+      if (cloud && !cloud.classList.contains('hidden')) {
+        const h = cloud.getBoundingClientRect().height;
+        if (h > 0) bottom += h + gap;
+      }
+      panel.style.bottom = bottom + 'px';
     }
 
     function _perchInstallPanelObservers() {
       if (_perchInstallPanelObservers._done) return;
       _perchInstallPanelObservers._done = true;
-      const queue = document.getElementById('queuePanel');
-      if (!queue) return;
-      // Watch for size changes (queue items added/removed, body collapsed).
-      try {
-        const ro = new ResizeObserver(() => _perchRepositionUploadsPanel());
-        ro.observe(queue);
-      } catch {}
-      // Watch for the .hidden class flipping on the queue panel.
-      try {
-        const mo = new MutationObserver(() => _perchRepositionUploadsPanel());
-        mo.observe(queue, { attributes: true, attributeFilter: ['class'] });
-      } catch {}
+      const targets = [
+        document.getElementById('queuePanel'),
+        document.getElementById('cloudQueuePanel'),
+      ].filter(Boolean);
+      for (const el of targets) {
+        // Watch for size changes (queue items added/removed, body collapsed).
+        try {
+          const ro = new ResizeObserver(() => _perchRepositionUploadsPanel());
+          ro.observe(el);
+        } catch {}
+        // Watch for the .hidden class flipping.
+        try {
+          const mo = new MutationObserver(() => _perchRepositionUploadsPanel());
+          mo.observe(el, { attributes: true, attributeFilter: ['class'] });
+        } catch {}
+      }
       window.addEventListener('resize', _perchRepositionUploadsPanel);
     }
 
