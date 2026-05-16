@@ -73,33 +73,36 @@
 
 /* ── Folder-card "Published" pill + Sync button ──────────────────── */
 
-/* Folder-card "Published" pill — shown when .kestrel/perch_link.json exists.
-   Sits to the right of "Share with Perch" so the relationship is obvious. */
+/* Folder-card "Published" button — shown when .kestrel/perch_link.json
+   exists. Sits to the right of "Share with Perch". Sized + cornered to
+   match the sibling .action-btn buttons (timeline.css) so the right-side
+   button row reads as one rhythm. The blue tint is the only visual
+   difference and signals "this folder is connected to a published perch". */
 .folder-perch-pill {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  background: rgba(74, 163, 255, .12);
+  gap: 6px;
+  background: rgba(74, 163, 255, .10);
   border: 1px solid rgba(74, 163, 255, .35);
   color: #4aa3ff;
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 11.5px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
   font-weight: 500;
   cursor: pointer;
-  transition: background .15s, border-color .15s, color .15s;
+  transition: background .15s ease, border-color .15s ease, color .15s ease;
   user-select: none;
 }
 .folder-perch-pill.hidden {
   display: none !important;
 }
 .folder-perch-pill:hover {
-  background: rgba(74, 163, 255, .22);
+  background: rgba(74, 163, 255, .18);
   border-color: rgba(74, 163, 255, .55);
   color: #6db4ff;
 }
 .folder-perch-pill-icon {
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1;
 }
 .folder-perch-pill-label {

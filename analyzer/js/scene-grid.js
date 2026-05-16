@@ -512,20 +512,12 @@
           });
           rightActions.appendChild(perchPill);
 
-          // Phase 3: "Sync to Perch" button — only visible alongside the
-          // Published pill, greyed out when local state hash matches the
-          // saved hash (i.e. nothing to sync).
-          const perchSyncBtn = document.createElement('button');
-          perchSyncBtn.type = 'button';
-          perchSyncBtn.className = 'folder-perch-sync hidden';
-          perchSyncBtn.dataset.folderPath = fd.folderPath;
-          perchSyncBtn.innerHTML = '<span class="folder-perch-sync-icon">🔄</span><span class="folder-perch-sync-label">Sync</span>';
-          perchSyncBtn.title = 'Push local edits (species/family/scene names, rejections) to this perch';
-          perchSyncBtn.addEventListener('click', (ev) => {
-            ev.stopPropagation();
-            handlePerchSyncClick(fd.folderPath, perchSyncBtn);
-          });
-          rightActions.appendChild(perchSyncBtn);
+          // Phase 3 "Sync to Perch" button is temporarily hidden — the
+          // dirty/clean state detection is unreliable (the button greys out
+          // when there ARE local edits, etc.). Once that's reworked, restore
+          // by re-creating perchSyncBtn here and calling
+          // applyPerchLinkToSyncBtn from the link loader below.
+          const perchSyncBtn = null;
 
           // Async-populate from disk; show only if the file exists.
           (async () => {
@@ -533,7 +525,6 @@
               const res = await window.pywebview?.api?.read_perch_link?.(fd.folderPath);
               if (res && res.present && res.link) {
                 applyPerchLinkToPill(perchPill, res.link);
-                applyPerchLinkToSyncBtn(perchSyncBtn, res.link, fd.folderPath);
               }
             } catch {}
           })();
