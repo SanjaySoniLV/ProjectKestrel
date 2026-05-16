@@ -65,6 +65,16 @@ try:
 except Exception:
     pass
 
+# OAuth 2.0 + PKCE flow against Clerk OAuth Applications. Pure-stdlib module
+# kept separate so it's unit-testable without pywebview / JS.
+try:
+    import oauth_client as _oauth  # type: ignore
+except ImportError:
+    try:
+        from analyzer import oauth_client as _oauth  # type: ignore
+    except ImportError:
+        _oauth = None  # type: ignore[assignment]
+
 # Cloud-compute backend poller cadence (seconds). One poller per active job
 # keeps the per-job remote snapshot fresh; JS reads from cache so there is no
 # N+1 query against the Worker per render. 5s gives near-realtime UI without
@@ -104,40 +114,78 @@ def _keyring_load() -> dict | None:
         return None
 
 def _keyring_save(data: dict) -> None:
-    """Write the auth JWT to OS keychain; fall back to plaintext file.
+    """Write the auth bundle to OS keychain; fall back to plaintext file.
 
-    Fallback file is locked down to owner-read/write (``0o600``) and lives
-    in a ``0o700`` directory. Without that the default umask leaves the
-    file world-readable on POSIX, which on a shared dev box / CI box is a
-    direct JWT exfil path (audit Medium-13). On Windows, ``chmod`` is a
-    weak ACL approximation; this is best-effort there — the keyring path
-    is the only secure-by-default option on Windows.
+    Critical invariant: only ONE of keychain / fallback-file should hold
+    canonical data at any moment. If keychain write succeeds we delete any
+    stale fallback file (and vice versa) so ``_keyring_load`` — which checks
+    keychain first — cannot return outdated data while fresh data sits
+    invisibly in the file. OAuth bundles routinely exceed Windows
+    Credential Manager's ~2560-byte per-credential limit, so the file
+    fallback is hit in practice, not just in keyring-unavailable
+    environments.
+
+    Fallback file is locked down to owner-read/write (``0o600``) in a
+    ``0o700`` directory. Without that the default umask leaves the file
+    world-readable on POSIX, which on a shared dev / CI box is a direct
+    JWT exfil path (audit Medium-13). On Windows, ``chmod`` is a weak ACL
+    approximation; the keyring path is the secure-by-default option there.
     """
+    serialized = json.dumps(data)
+    fallback_path = _get_auth_fallback_path()
+
+    keyring_ok = False
+    keyring_err: Exception | None = None
     try:
         import keyring
-        keyring.set_password(_KEYRING_SERVICE, _KEYRING_KEY, json.dumps(data))
+        keyring.set_password(_KEYRING_SERVICE, _KEYRING_KEY, serialized)
+        keyring_ok = True
+    except Exception as e:
+        keyring_err = e
+
+    if keyring_ok:
+        # Wipe any stale file fallback so the next _keyring_load doesn't
+        # silently return outdated data if keychain later breaks.
+        try:
+            os.remove(fallback_path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+        return
+
+    # Keychain failed (most often: bundle too large for the OS keystore).
+    # Log it so this isn't silent, then ensure the keychain has no stale
+    # entry that would shadow the about-to-be-written file.
+    try:
+        print(
+            f"[Auth] keychain write failed ({type(keyring_err).__name__}: "
+            f"{keyring_err}); falling back to plaintext file at {fallback_path}",
+            flush=True,
+        )
     except Exception:
-        path = _get_auth_fallback_path()
-        directory = os.path.dirname(path)
-        os.makedirs(directory, exist_ok=True)
+        pass
+    try:
+        import keyring as _kr
         try:
-            os.chmod(directory, 0o700)
-        except OSError:
+            _kr.delete_password(_KEYRING_SERVICE, _KEYRING_KEY)
+        except Exception:
             pass
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(data, f)
-        try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass
+    except ImportError:
+        pass
 
-
-def _auth_normalize_expiry_seconds(expiry: float | int) -> float:
-    """JWT exp is seconds since epoch. Some callers accidentally pass ms."""
-    e = float(expiry)
-    if e > 1e12:  # e.g. 1730000000000
-        e = e / 1000.0
-    return e
+    directory = os.path.dirname(fallback_path)
+    os.makedirs(directory, exist_ok=True)
+    try:
+        os.chmod(directory, 0o700)
+    except OSError:
+        pass
+    with open(fallback_path, 'w', encoding='utf-8') as f:
+        f.write(serialized)
+    try:
+        os.chmod(fallback_path, 0o600)
+    except OSError:
+        pass
 
 
 def _auth_debug_jwt_enabled() -> bool:
@@ -1945,10 +1993,11 @@ class Api:
 
     _main_window = None
     _culling_window = None
-    _sign_in_window = None
-    _refresh_window = None
-    _refresh_watchdog = None
     _server_port = None
+    # OAuth flow state (per-instance, defaults safe for fresh sessions).
+    _oauth_lock = None              # lazy-init threading.Lock in _get_oauth_lock
+    _oauth_in_flight = False
+    _oauth_status = "idle"
 
     def open_culling_window(self, root_path: str):
         """Open a new pywebview window for the Culling Assistant."""
@@ -1981,86 +2030,154 @@ class Api:
             error(f'[culling] Traceback: {traceback.format_exc()}')
             return {'success': False, 'error': str(e)}
 
-    def get_auth_token(self):
-        """Return stored Perch JWT if present and not near expiry, else token=None."""
-        try:
-            data = _keyring_load()
-            if not data:
-                _auth_debug_log_token("get_auth_token: keyring empty", None)
-                return {"success": True, "token": None}
-            token = data.get("token")
-            if not token:
-                return {"success": True, "token": None}
-            ttl = _auth_jwt_seconds_until_exp(str(token))
-            if ttl is not None:
-                if ttl < 300:  # 5-min buffer (match prior keyring behaviour)
-                    _auth_debug_log_token(
-                        "get_auth_token: JWT exp within 5min (rejected)", token
-                    )
-                    if _auth_debug_jwt_enabled():
-                        log(f"[Auth debug] get_auth_token: ttl_sec={ttl:.0f}")
-                    return {"success": True, "token": None}
-            else:
-                expiry_raw = data.get("expiry", 0)
-                try:
-                    exp = _auth_normalize_expiry_seconds(expiry_raw) if expiry_raw else 0.0
-                except (TypeError, ValueError):
-                    exp = 0.0
-                if time.time() > (exp - 300):
-                    _auth_debug_log_token(
-                        "get_auth_token: could not decode JWT; stored exp past buffer",
-                        token,
-                    )
-                    return {"success": True, "token": None}
-            exp_out = _auth_jwt_exp_unverified(str(token))
-            if exp_out is None:
-                try:
-                    exp_out = _auth_normalize_expiry_seconds(data.get("expiry", 0))
-                except (TypeError, ValueError):
-                    exp_out = 0.0
-            _auth_debug_log_token("get_auth_token: returning token", token)
-            return {"success": True, "token": token, "expiry": exp_out}
-        except Exception as e:
-            print(f"[API] get_auth_token() -> Error: {e}", flush=True)
-            return {"success": True, "token": None}
+    def _get_oauth_lock(self):
+        """Lazy-init the OAuth flow lock; mirrors the _share_jobs_lock pattern."""
+        if self._oauth_lock is None:
+            import threading as _t
+            self._oauth_lock = _t.Lock()
+        return self._oauth_lock
 
-    def store_auth_token(self, token, expiry):
-        """Persist Perch JWT to OS keychain. Called from desktop-signin.html via pywebview."""
+    def _load_token_bundle(self) -> dict | None:
+        """Read the OAuth bundle from keychain. Returns None if missing or stale-schema."""
+        data = _keyring_load()
+        if not data or not isinstance(data, dict):
+            return None
+        if not data.get("access_token"):
+            return None
+        return data
+
+    def _clear_keychain_auth(self) -> None:
+        """Best-effort: remove the keyring slot and the plaintext fallback file."""
         try:
+            import keyring as _kr
             try:
-                exp = _auth_normalize_expiry_seconds(
-                    float(expiry) if expiry is not None else 0.0
-                )
+                _kr.delete_password(_KEYRING_SERVICE, _KEYRING_KEY)
+            except Exception:
+                pass
+        except ImportError:
+            pass
+        try:
+            os.remove(_get_auth_fallback_path())
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+    def _refresh_if_needed(self, bundle: dict) -> dict | None:
+        """Refresh the access token if within REFRESH_BUFFER_SEC of expiry.
+
+        Returns the (possibly updated) bundle. Returns None only if refresh
+        definitively failed with ``invalid_grant`` and the keychain was
+        cleared. On transient failures (network), returns the unchanged
+        bundle so callers can still attempt to use the existing token until
+        it truly expires.
+        """
+        if _oauth is None:
+            return bundle  # OAuth module unavailable — nothing we can do
+        try:
+            expires_at = float(bundle.get("expires_at") or 0)
+        except (TypeError, ValueError):
+            expires_at = 0.0
+        ttl = expires_at - time.time()
+        if ttl >= _oauth.REFRESH_BUFFER_SEC:
+            return bundle
+        refresh_token = bundle.get("refresh_token") or ""
+        if not refresh_token:
+            return bundle  # no refresh available; let upstream stale-check handle it
+
+        lock = self._get_oauth_lock()
+        if not lock.acquire(timeout=10.0):
+            return bundle
+        try:
+            # Another caller may have refreshed while we waited for the lock.
+            current = _keyring_load() or {}
+            if (current.get("access_token")
+                    and current.get("access_token") != bundle.get("access_token")):
+                return current
+            try:
+                ttl_now = float(current.get("expires_at") or 0) - time.time()
             except (TypeError, ValueError):
-                exp = 0.0
-            _keyring_save({"token": str(token), "expiry": exp})
-            _auth_debug_log_token("store_auth_token: saved", str(token) if token else None)
-            if _auth_debug_jwt_enabled():
-                log(f"[Auth debug] store_auth_token: exp_stored={exp!r} (from arg {expiry!r})")
-            # Invalidate per-instance caches — they're keyed on the previous
-            # (possibly expired) token and would otherwise pin the UI to a
-            # stale "not signed in" state for up to 5 minutes after re-auth.
+                ttl_now = 0.0
+            if ttl_now >= _oauth.REFRESH_BUFFER_SEC:
+                return current
+
+            resp = _oauth.refresh_access_token(refresh_token)
+            if resp.get("error"):
+                # invalid_grant => refresh token revoked / aged out / rotated past.
+                if resp.get("error") == "invalid_grant":
+                    _auth_debug_log_token(
+                        "refresh: invalid_grant — clearing keychain", None
+                    )
+                    self._clear_keychain_auth()
+                    self._perch_account_cache = None
+                    self._perch_account_cache_at = 0.0
+                    self._perch_usage_cache = None
+                    self._perch_usage_cache_at = 0.0
+                    return None
+                # Network / 5xx — keep old bundle, downstream will surface stale.
+                _auth_debug_log_token(
+                    f"refresh: transient error {resp.get('error')!r}", None
+                )
+                return current or bundle
+
+            new_bundle = _oauth.build_bundle(resp)
+            # Clerk may omit refresh_token if it isn't rotating; preserve ours.
+            if not new_bundle.get("refresh_token"):
+                new_bundle["refresh_token"] = refresh_token
+            if not new_bundle.get("access_token"):
+                _auth_debug_log_token("refresh: response missing access_token", None)
+                return current or bundle
+            _keyring_save(new_bundle)
+            _auth_debug_log_token(
+                "refresh: rotated access token", new_bundle.get("access_token")
+            )
+            # Caches were keyed on the now-rotated access token.
             self._perch_account_cache = None
             self._perch_account_cache_at = 0.0
             self._perch_usage_cache = None
             self._perch_usage_cache_at = 0.0
-            # Notify main window
-            if self._main_window:
-                safe_token = json.dumps(str(token))
-                self._main_window.evaluate_js(
-                    f'window.onAuthSignIn && window.onAuthSignIn({safe_token})'
+            return new_bundle
+        finally:
+            lock.release()
+
+    def get_auth_token(self):
+        """Return current OAuth access token; trigger lazy refresh near expiry.
+
+        Return shape preserved for backward compatibility with JS callers:
+        ``{success, token, expiry}``. ``token`` is None when the user is signed
+        out or the token is past its post-refresh staleness floor.
+        """
+        try:
+            bundle = self._load_token_bundle()
+            if not bundle:
+                _auth_debug_log_token("get_auth_token: keyring empty", None)
+                return {"success": True, "token": None}
+            bundle = self._refresh_if_needed(bundle)
+            if bundle is None:
+                return {"success": True, "token": None}
+            access_token = bundle.get("access_token") or ""
+            if not access_token:
+                return {"success": True, "token": None}
+            ttl = _auth_jwt_seconds_until_exp(str(access_token))
+            if ttl is None or ttl < 60:
+                # Token is past its useful life and refresh didn't (or couldn't)
+                # extend it — surface signed-out so the UI prompts re-auth.
+                _auth_debug_log_token(
+                    "get_auth_token: token unusable after refresh attempt",
+                    access_token,
                 )
-            # Close sign-in window
-            if self._sign_in_window:
-                self._sign_in_window.destroy()
-                self._sign_in_window = None
-            # Close the hidden refresh window if this token came from a
-            # silent refresh — also cancels its watchdog timer.
-            self._close_refresh_window()
-            return {'success': True}
+                return {"success": True, "token": None}
+            exp_out = _auth_jwt_exp_unverified(str(access_token))
+            if exp_out is None:
+                try:
+                    exp_out = float(bundle.get("expires_at") or 0)
+                except (TypeError, ValueError):
+                    exp_out = 0.0
+            _auth_debug_log_token("get_auth_token: returning token", access_token)
+            return {"success": True, "token": access_token, "expiry": exp_out}
         except Exception as e:
-            print(f'[API] store_auth_token() -> Error: {e}', flush=True)
-            return {'success': False, 'error': str(e)}
+            print(f"[API] get_auth_token() -> Error: {e}", flush=True)
+            return {"success": True, "token": None}
 
     def get_perch_api_base(self) -> str:
         """Base URL of the Perch API Worker (no trailing slash)."""
@@ -2084,10 +2201,18 @@ class Api:
 
         On a usable token: error_dict is None.
         On no token: error_dict has `needSignIn: True`.
+
+        Triggers a lazy OAuth refresh when the access token is within the
+        300s pre-expiry buffer, so a long-running call doesn't 401 if the
+        token rolled over mid-flight.
         """
-        data = _keyring_load()
-        token = (data or {}).get("token")
         dev_user = os.environ.get("PERCH_DEV_USER_ID")
+        bundle = self._load_token_bundle()
+        token = None
+        if bundle is not None:
+            bundle = self._refresh_if_needed(bundle)
+            if bundle is not None:
+                token = bundle.get("access_token") or None
         if not token and not dev_user:
             return None, None, {"success": False, "error": "not_signed_in", "needSignIn": True}
         if token and not dev_user:
@@ -2127,9 +2252,11 @@ class Api:
             return {"ok": False, "error": err}
 
         # Token check is non-fatal here — preflight runs even when signed out.
-        data = _keyring_load()
-        token = (data or {}).get("token")
         dev_user = os.environ.get("PERCH_DEV_USER_ID")
+        bundle = self._load_token_bundle()
+        if bundle is not None:
+            bundle = self._refresh_if_needed(bundle)
+        token = (bundle or {}).get("access_token") if bundle else None
         signed_in = bool(dev_user)
         token_stale = False
         if not signed_in and token:
@@ -2741,6 +2868,18 @@ class Api:
                 ),
                 "nothingToDo": True,
             }
+
+        # Log file-selection details so the user can see if files are being reused
+        # or re-analyzed (mirrors the local pipeline's "Picking up where Kestrel
+        # left off" message via the queue manager logs).
+        new_count = len(files) - len(anchor_filenames)
+        if already_analyzed > 0:
+            info(
+                f"[cloud-compute] Picking up where Kestrel left off: "
+                f"{already_analyzed} analyzed, sending {new_count} new + {len(anchor_filenames)} anchor(s)"
+            )
+        else:
+            info(f"[cloud-compute] No prior analysis found, sending all {len(files)} file(s) to cloud")
 
         # Submit synchronously (cheap call). We need the jobId before we can
         # return it to the caller; the heavy upload+poll runs on a thread.
@@ -4294,129 +4433,144 @@ class Api:
 
         return {"success": True, "job_id": job_id}
 
-    def open_auth_sign_in(self, url):
-        """Open a pywebview window for desktop Perch sign-in."""
-        try:
-            if not WEBVIEW_IMPORT_SUCCESS:
-                return {'success': False, 'error': 'pywebview not available'}
-            import webview as _wv
-            # If a silent-refresh window is open, kill it so we don't race
-            # the visible sign-in flow.
-            self._close_refresh_window()
-            if self._sign_in_window:
-                try:
-                    self._sign_in_window.destroy()
-                except Exception:
-                    pass
-                self._sign_in_window = None
-            win = _wv.create_window(
-                'Sign In to Project Kestrel',
-                url,
-                js_api=self,   # same Api instance — store_auth_token is accessible
-                width=520,
-                height=700,
-                resizable=False,
-            )
-            self._sign_in_window = win
-            return {'success': True}
-        except Exception as e:
-            print(f'[API] open_auth_sign_in() -> Error: {e}', flush=True)
-            return {'success': False, 'error': str(e)}
+    # ── OAuth 2.0 + PKCE sign-in / refresh / sign-out ────────────────────
 
-    def refresh_auth_token_silently(self):
-        """Mint a fresh Kestrel JWT from Clerk's persisted session cookie.
+    def start_oauth_sign_in(self):
+        """Start a Clerk OAuth Authorization Code + PKCE flow in a background thread.
 
-        Opens a hidden pywebview window pointed at the MyAccount desktop-signin
-        page in ``?mode=refresh``. That page reuses the Clerk session cookie
-        already present in the pywebview profile (set by a previous interactive
-        sign-in) to call ``clerk.session.getToken()`` and post the new JWT back
-        through ``store_auth_token``. On success the same code path that closes
-        the visible sign-in window will also destroy this hidden one.
-
-        No-op cases (returns success with ``skipped`` reason, no window opened):
-          - pywebview unavailable.
-          - No stored token (user has never signed in or has signed out).
-          - A sign-in or refresh window is already open.
-
-        A 15-second watchdog tears the window down if the page never calls back
-        (network failure, Clerk outage, etc.), so a failed refresh never leaves
-        a hanging hidden window.
+        Returns immediately. On success the worker thread persists the OAuth
+        bundle to the keychain and calls ``window.onAuthSignIn(token)``; on
+        failure it calls ``window.onAuthSignInFailed({error, description})``.
+        Refuses to start a second concurrent flow.
         """
+        if _oauth is None:
+            return {"success": False, "error": "oauth_module_unavailable"}
         try:
-            if not WEBVIEW_IMPORT_SUCCESS:
-                return {'success': False, 'error': 'pywebview not available'}
-            # Bypass get_auth_token()'s 5-min expiry cutoff — even a token
-            # near or past expiry means the user had a session, so the Clerk
-            # cookie may still mint a fresh one. We only skip when there is
-            # literally no stored credential.
-            data = _keyring_load()
-            if not data or not data.get('token'):
-                return {'success': True, 'skipped': 'no_stored_token'}
-            if self._sign_in_window or self._refresh_window:
-                return {'success': True, 'skipped': 'window_already_open'}
-
-            import webview as _wv
-            # Origin is fixed; cannot be steered from JS to a malicious URL.
-            refresh_url = (
-                'https://myaccount.projectkestrel.org/desktop-signin?mode=refresh'
-            )
-            win = _wv.create_window(
-                'Kestrel session refresh',
-                refresh_url,
-                js_api=self,
-                width=400,
-                height=400,
-                hidden=True,
-            )
-            self._refresh_window = win
+            lock = self._get_oauth_lock()
+            if not lock.acquire(blocking=False):
+                return {"success": False, "error": "flow_in_progress"}
+            try:
+                if self._oauth_in_flight:
+                    return {"success": False, "error": "flow_in_progress"}
+                self._oauth_in_flight = True
+                self._oauth_status = "starting"
+            finally:
+                lock.release()
 
             import threading as _t
-            self._refresh_watchdog = _t.Timer(15.0, self._close_refresh_window)
-            self._refresh_watchdog.daemon = True
-            self._refresh_watchdog.start()
-            _auth_debug_log_token('refresh_auth_token_silently: window opened', None)
-            return {'success': True}
+            thread = _t.Thread(
+                target=self._oauth_worker, name="oauth-flow", daemon=True
+            )
+            thread.start()
+            return {"success": True, "started": True}
         except Exception as e:
-            print(f'[API] refresh_auth_token_silently() -> Error: {e}', flush=True)
-            self._close_refresh_window()
-            return {'success': False, 'error': str(e)}
+            self._oauth_in_flight = False
+            self._oauth_status = "idle"
+            print(f"[API] start_oauth_sign_in() -> Error: {e}", flush=True)
+            return {"success": False, "error": str(e)}
 
-    def refresh_auth_failed(self, reason=''):
-        """Called by the refresh page when Clerk has no session or the page times out.
+    def _oauth_progress_cb(self, label: str) -> None:
+        self._oauth_status = str(label)
 
-        Tears down the hidden refresh window. Deliberately does NOT clear the
-        stored token: it may still be valid for hours/days, and the standard
-        ``get_auth_token`` expiry check will surface "session expired" when it
-        actually elapses.
+    def _oauth_worker(self) -> None:
+        """Background thread that drives ``oauth_client.run_authorization_flow``.
+
+        Persists the result on success and notifies JS either way. Always
+        clears ``_oauth_in_flight`` in ``finally`` so a botched flow doesn't
+        permanently block re-attempts.
         """
         try:
-            _auth_debug_log_token(
-                f'refresh_auth_failed: reason={str(reason)[:64]!r}', None
+            result = _oauth.run_authorization_flow(
+                progress_cb=self._oauth_progress_cb,
+                url_validator=_is_safe_external_url,
             )
-        except Exception:
-            pass
-        self._close_refresh_window()
-        return {'success': True}
+            if not result.get("ok"):
+                err = str(result.get("error") or "unknown")
+                desc = str(result.get("error_description") or "")
+                print(f"[API] OAuth flow failed: {err} ({desc})", flush=True)
+                _auth_debug_log_token(f"oauth: failed err={err!r}", None)
+                self._notify_js_sign_in_failed(err, desc)
+                return
 
-    def _close_refresh_window(self):
-        """Destroy the hidden refresh window and cancel its watchdog timer."""
-        try:
-            wd = self._refresh_watchdog
-            if wd is not None:
-                try:
-                    wd.cancel()
-                except Exception:
-                    pass
-                self._refresh_watchdog = None
-            win = self._refresh_window
-            if win is not None:
-                try:
-                    win.destroy()
-                except Exception:
-                    pass
-                self._refresh_window = None
+            bundle = result["bundle"]
+            _keyring_save(bundle)
+            _auth_debug_log_token("oauth: signed in", bundle.get("access_token"))
+            # Caches were keyed on the previous (now-stale) identity.
+            self._perch_account_cache = None
+            self._perch_account_cache_at = 0.0
+            self._perch_usage_cache = None
+            self._perch_usage_cache_at = 0.0
+            self._notify_js_sign_in(bundle.get("access_token") or "")
         except Exception as e:
-            print(f'[API] _close_refresh_window() -> Error: {e}', flush=True)
+            print(f"[API] _oauth_worker() -> Error: {e}", flush=True)
+            try:
+                self._notify_js_sign_in_failed("unexpected", str(e))
+            except Exception:
+                pass
+        finally:
+            self._oauth_in_flight = False
+            self._oauth_status = "idle"
+
+    def _notify_js_sign_in(self, token: str) -> None:
+        if self._main_window is None:
+            return
+        try:
+            safe = json.dumps(str(token))
+            self._main_window.evaluate_js(
+                f"window.onAuthSignIn && window.onAuthSignIn({safe})"
+            )
+        except Exception as e:
+            print(f"[API] _notify_js_sign_in() -> Error: {e}", flush=True)
+
+    def _notify_js_sign_in_failed(self, error: str, description: str = "") -> None:
+        if self._main_window is None:
+            return
+        try:
+            payload = json.dumps({"error": str(error), "description": str(description)})
+            self._main_window.evaluate_js(
+                f"window.onAuthSignInFailed && window.onAuthSignInFailed({payload})"
+            )
+        except Exception as e:
+            print(f"[API] _notify_js_sign_in_failed() -> Error: {e}", flush=True)
+
+    def _notify_js_sign_out(self) -> None:
+        if self._main_window is None:
+            return
+        try:
+            self._main_window.evaluate_js(
+                "window.onAuthSignOut && window.onAuthSignOut()"
+            )
+        except Exception as e:
+            print(f"[API] _notify_js_sign_out() -> Error: {e}", flush=True)
+
+    def get_oauth_flow_status(self) -> dict:
+        """Diagnostic — JS-callable. Mostly useful for surfacing 'stuck' flows."""
+        return {
+            "success": True,
+            "in_flight": bool(self._oauth_in_flight),
+            "status": str(self._oauth_status or "idle"),
+        }
+
+    def sign_out(self) -> dict:
+        """Clear keychain credentials, best-effort revoke at Clerk, notify JS."""
+        try:
+            bundle = self._load_token_bundle()
+            refresh_token = (bundle or {}).get("refresh_token") if bundle else None
+            self._clear_keychain_auth()
+            self._perch_account_cache = None
+            self._perch_account_cache_at = 0.0
+            self._perch_usage_cache = None
+            self._perch_usage_cache_at = 0.0
+            if refresh_token and _oauth is not None:
+                try:
+                    _oauth.revoke_token(str(refresh_token))
+                except Exception:
+                    pass  # best-effort
+            self._notify_js_sign_out()
+            return {"success": True}
+        except Exception as e:
+            print(f"[API] sign_out() -> Error: {e}", flush=True)
+            return {"success": False, "error": str(e)}
 
     def _find_sidecar_file(self, root_path: str, filename: str, ext: str = '.xmp'):
         """Find sidecar file with given extension for an image file.

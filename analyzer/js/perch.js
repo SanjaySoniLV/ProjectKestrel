@@ -772,8 +772,12 @@
       });
       if (sigIn) sigIn.addEventListener('click', async () => {
         try {
-          const signInUrl = `${MYACCOUNT_ORIGIN}/desktop-signin`;
-          await window.pywebview.api.open_auth_sign_in(signInUrl);
+          if (window.pywebview?.api?.start_oauth_sign_in) {
+            await window.pywebview.api.start_oauth_sign_in();
+            if (typeof showToast === 'function') {
+              showToast('Sign-in in progress — complete sign-in in your browser, then return here.', 8000);
+            }
+          }
         } catch {}
         _perchClosePerchDialog();
       });

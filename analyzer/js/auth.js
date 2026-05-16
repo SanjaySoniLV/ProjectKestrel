@@ -1,40 +1,19 @@
-    // Threshold below which a stored Kestrel JWT is considered "too short to
-    // survive a normal restart cycle". We refuse to store anything < 1 hour
-    // on the sign-in side (desktop-signin/index.html), so seeing a TTL under
-    // this threshold here means either the dashboard template was downgraded
-    // after the token was minted, or the desktop-signin protection was
-    // bypassed somehow — either way the user should know loudly.
-    const AUTH_SHORT_TTL_SEC = 3600;
-
-    function _decodeJwtExpUnverified(token) {
-      try {
-        const parts = String(token || '').split('.');
-        if (parts.length < 2) return null;
-        const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-        const pad = b64.length % 4 ? '='.repeat(4 - (b64.length % 4)) : '';
-        const payload = JSON.parse(atob(b64 + pad));
-        return typeof payload.exp === 'number' ? payload.exp : null;
-      } catch (_) { return null; }
-    }
-
-    function warnIfShortTokenTtl(ttlSec, source) {
-      if (!(ttlSec > 0) || ttlSec >= AUTH_SHORT_TTL_SEC) return false;
-      const msg = `Kestrel auth token has TTL ${Math.round(ttlSec)}s ` +
-        `(expected ≥ ${AUTH_SHORT_TTL_SEC}s). The 'kestrel_api' Clerk JWT ` +
-        `template is likely misconfigured — your sign-in will not survive ` +
-        `the next app restart. Please contact support.`;
-      console.error('[auth]', msg, `(source=${source})`);
-      try {
-        if (typeof showToast === 'function') {
-          showToast(`⚠ Short auth token TTL (${Math.round(ttlSec)}s). Sign-in will not persist — see console.`, 30000);
-        }
-      } catch (_) {}
-      const accountBtn = el('#accountBtn');
-      if (accountBtn) {
-        accountBtn.classList.add('short-ttl-warning');
-        accountBtn.title = `Perch — Warning: token TTL ${Math.round(ttlSec)}s (will not survive restart)`;
-      }
-      return true;
+    // Render the account button's display label from a /v1/me response.
+    // Preference order: "First Last" > "First" > displayName > "@username" >
+    // generic "Signed in" fallback. Same logic is used by both the startup
+    // hydration path and the post-sign-in onAuthSignIn handler so the UI is
+    // consistent across both entry points.
+    function _accountDisplayLabel(account) {
+      if (!account) return 'Signed in';
+      const firstName = (account.firstName || account.first_name || '').trim();
+      const lastName  = (account.lastName  || account.last_name  || '').trim();
+      if (firstName && lastName) return `${firstName} ${lastName}`;
+      if (firstName) return firstName;
+      const displayName = (account.displayName || account.display_name || '').trim();
+      if (displayName) return displayName;
+      const handle = account.username || null;
+      if (handle) return `@${handle}`;
+      return 'Signed in';
     }
 
     // Perch Authentication Handler
@@ -57,8 +36,6 @@
       // we still want the indicator on so the user knows their token is good.
       let signedIn = false;
       let expired = false;          // token stored but past exp
-      let handle = null;
-      let displayName = null;
 
       if (window.pywebview?.api?.get_auth_token) {
         try {
@@ -66,10 +43,6 @@
           if (result?.token) {
             _perchToken = result.token;
             signedIn = true;
-            const exp = Number(result.expiry) || _decodeJwtExpUnverified(result.token);
-            if (exp) {
-              warnIfShortTokenTtl(exp - Date.now() / 1000, 'startup');
-            }
           }
         } catch (e) {
           console.warn('Failed to get auth token on startup:', e);
@@ -80,13 +53,12 @@
       // here doesn't roll back the signed-in state — we just don't show the
       // handle. If the worker explicitly says the token is expired, that
       // overrides the local-only check.
+      let accountObj = null;
       if (signedIn && window.pywebview?.api?.get_perch_account) {
         try {
           const accountRes = await window.pywebview.api.get_perch_account();
           if (accountRes?.success && accountRes.account) {
-            const a = accountRes.account;
-            handle = a.username || a.userId || null;
-            displayName = a.displayName || a.display_name || a.first_name || null;
+            accountObj = accountRes.account;
           } else if (accountRes?.error === 'auth_token_expired') {
             expired = true;
             signedIn = false;
@@ -100,7 +72,7 @@
       if (signedIn) {
         accountBtn.classList.add('signed-in');
         accountBtn.classList.remove('session-expired');
-        const label = handle ? `@${handle}` : (displayName || 'Signed in');
+        const label = _accountDisplayLabel(accountObj);
         accountBtn.title = `Perch — Signed in as ${label}`;
         accountBtn.setAttribute('aria-label', `Perch account: signed in as ${label}`);
         if (labelEl) {
@@ -124,27 +96,30 @@
       }
 
       accountBtn.addEventListener('click', () => {
-        const signInUrl = `${MYACCOUNT_ORIGIN}/desktop-signin`;
-        if (hasPywebviewApi && window.pywebview?.api?.open_auth_sign_in) {
-          window.pywebview.api.open_auth_sign_in(signInUrl);
+        // OAuth + PKCE: Python opens the system browser, runs a loopback
+        // callback server on 127.0.0.1:53682, exchanges the code for a token
+        // pair, and notifies us via window.onAuthSignIn(...).
+        if (hasPywebviewApi && window.pywebview?.api?.start_oauth_sign_in) {
+          try {
+            window.pywebview.api.start_oauth_sign_in();
+            if (typeof showToast === 'function') {
+              showToast('Sign-in in progress — complete sign-in in your browser, then return here.', 8000);
+            }
+          } catch (e) {
+            console.warn('start_oauth_sign_in failed:', e);
+          }
         } else {
-          // Fallback: open web sign-in in browser
-          window.open(`${MYACCOUNT_ORIGIN}/signin`, '_blank');
+          // No bridge available — desktop app should always have it; surface this.
+          if (typeof showToast === 'function') {
+            showToast('Sign-in unavailable in this environment.', 5000);
+          }
         }
       });
-
-      // Fire-and-forget silent refresh on every app launch. Python skips
-      // this entirely if no token is stored; otherwise it spins up a hidden
-      // pywebview window that reuses Clerk's persisted session cookie to
-      // mint a fresh JWT, then calls back into store_auth_token (which in
-      // turn invokes window.onAuthSignIn to re-hydrate this UI).
-      if (window.pywebview?.api?.refresh_auth_token_silently) {
-        try { window.pywebview.api.refresh_auth_token_silently(); }
-        catch (e) { console.warn('refresh_auth_token_silently failed:', e); }
-      }
     }
 
-    // Called by Python after store_auth_token completes
+    // Called by Python after a successful OAuth sign-in or refresh that
+    // produced a fresh access token. Python clears its account/usage caches
+    // before this fires, so the get_perch_account call below hits the network.
     window.onAuthSignIn = async (token) => {
       _perchToken = token;
       const accountBtn = el('#accountBtn');
@@ -152,37 +127,58 @@
       if (accountBtn) {
         accountBtn.classList.add('signed-in');
         accountBtn.classList.remove('session-expired');
-        // Clear any stale short-TTL warning; warnIfShortTokenTtl below
-        // re-adds it if the new token is also short-lived.
-        accountBtn.classList.remove('short-ttl-warning');
       }
       if (labelEl) {
         labelEl.textContent = 'Signed in';
         labelEl.classList.remove('hidden');
       }
-
-      // Catches the case where desktop-signin's TTL guard was bypassed (e.g.,
-      // an older deployed version of the page) or the Clerk template config
-      // was downgraded after a previous successful sign-in.
-      const exp = _decodeJwtExpUnverified(token);
-      if (exp) warnIfShortTokenTtl(exp - Date.now() / 1000, 'onAuthSignIn');
-      // Fetch account info so the handle shows up on the button without
-      // requiring a Kestrel restart. The cache was just cleared in
-      // store_auth_token, so this hits the network and gets fresh data.
       try {
         if (window.pywebview?.api?.get_perch_account) {
           const accountRes = await window.pywebview.api.get_perch_account();
           if (accountRes?.success && accountRes.account && accountBtn) {
-            const a = accountRes.account;
-            const handle = a.username || null;
-            const displayName = a.displayName || a.display_name || a.first_name || null;
-            const label = handle ? `@${handle}` : (displayName || 'Signed in');
+            const label = _accountDisplayLabel(accountRes.account);
             accountBtn.title = `Perch — Signed in as ${label}`;
             accountBtn.setAttribute('aria-label', `Perch account: signed in as ${label}`);
             if (labelEl) labelEl.textContent = label;
           }
         }
       } catch (e) { /* ignore — indicator is on regardless */ }
+    };
+
+    // Called by Python when the OAuth flow fails (user closed the browser,
+    // callback timed out, port collision, state mismatch, token-exchange
+    // error). ``info`` is ``{error, description}``.
+    window.onAuthSignInFailed = (info) => {
+      const err = (info && info.error) || 'unknown';
+      const desc = (info && info.description) || '';
+      console.warn('[auth] sign-in failed:', err, desc);
+      let msg;
+      switch (err) {
+        case 'timeout':         msg = 'Sign-in timed out. Click Sign In to try again.'; break;
+        case 'port_in_use':     msg = 'Port 53682 is in use. Close the conflicting app and try again.'; break;
+        case 'state_mismatch':  msg = 'Sign-in failed (state mismatch). Click Sign In to try again.'; break;
+        case 'flow_in_progress': msg = 'Sign-in is already in progress. Complete it in your browser.'; break;
+        case 'browser_open_failed': msg = 'Could not open your browser. Sign in manually at myaccount.projectkestrel.org and try again.'; break;
+        default:                msg = `Sign-in failed: ${err}${desc ? ' — ' + desc : ''}`;
+      }
+      if (typeof showToast === 'function') showToast(msg, 8000);
+    };
+
+    // Called by Python after sign_out clears the keychain.
+    window.onAuthSignOut = () => {
+      _perchToken = null;
+      const accountBtn = el('#accountBtn');
+      const labelEl = el('#accountBtnLabel');
+      if (accountBtn) {
+        accountBtn.classList.remove('signed-in');
+        accountBtn.classList.remove('session-expired');
+        accountBtn.title = 'Perch — Sign in';
+        accountBtn.setAttribute('aria-label', 'Perch account: sign in');
+      }
+      if (labelEl) {
+        labelEl.textContent = '';
+        labelEl.classList.add('hidden');
+      }
     };
 
     function loadVersionBadge() {
