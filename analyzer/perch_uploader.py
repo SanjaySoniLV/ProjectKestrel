@@ -273,6 +273,32 @@ class PerchPreflight:
     rejected_skipped: int = 0  # number of CSV rows omitted because culled is True
 
 
+def project_expected_after_exclusion(
+    preflight: Optional[PerchPreflight],
+    excluded_scene_ids: Iterable[str],
+) -> Dict[str, int]:
+    """Compute the `expected` POST body for /v1/perches given a preflight and a
+    set of scene IDs the user de-selected. Returns zeros when no preflight is
+    available so the worker treats it as "client didn't declare anything" and
+    falls back to the legacy perch-count-only check (no regression for old
+    clients or unusual code paths)."""
+    out: Dict[str, int] = {
+        "totalBytes": 0,
+        "exportCount": 0,
+        "cropCount": 0,
+        "fileCount": 0,
+    }
+    if preflight is None:
+        return out
+    excluded = {str(s) for s in (excluded_scene_ids or ())}
+    kept = [s for s in preflight.scenes if str(s.scene_id) not in excluded]
+    out["totalBytes"] = int(sum(s.total_bytes for s in kept))
+    out["exportCount"] = int(sum(s.export_count for s in kept))
+    out["cropCount"] = int(sum(s.crop_count for s in kept))
+    out["fileCount"] = out["exportCount"] + out["cropCount"]
+    return out
+
+
 @dataclass
 class _RowUpload:
     filename: str
@@ -681,11 +707,22 @@ class PerchKestrelUploader:
             emit({"phase": "creating_perch", "resumed": True})
         else:
             emit({"phase": "creating_perch"})
+
+            # Project the post-exclusion preflight so the worker can pre-check
+            # user-wide storage / image / total-asset quotas before issuing
+            # presigns. Server treats this body as an untrusted hint — declared
+            # bytes are reconciled at commit via R2 HEAD — but a truthful client
+            # gets pre-rejection instead of failing midway through presign.
+            expected_payload = project_expected_after_exclusion(
+                self._cached_preflight, excluded
+            )
+
             res = self.s.post(
                 self._url("/v1/perches"),
                 json={
                     "title": title or session_root.name,
                     "idempotencyKey": idemp_key,
+                    "expected": expected_payload,
                 },
                 headers={"Idempotency-Key": idemp_key},
                 timeout=self.timeout,
