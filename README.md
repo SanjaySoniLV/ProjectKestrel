@@ -201,6 +201,13 @@ Direct questions or comments to [support@projectkestrel.org](mailto:support@proj
 
 This project is licensed under the GPL v3 License with a Commons Clause License Condition v1.0 - see the LICENSE file for details. Commercial use is prohibited without explicit permission from the author.
 
+## 📜 Terms of Use & Privacy Policy
+
+The canonical Terms of Service and Privacy Policy live on the marketing site and apply to the desktop app, Perch, and Cloud Compute:
+
+- **Terms of Service**: https://projectkestrel.org/terms-of-use
+- **Privacy Policy**: https://projectkestrel.org/privacy-policy
+
 ## 🙏 Acknowledgments
 
 - **rawpy** library for robust RAW image file format handling
