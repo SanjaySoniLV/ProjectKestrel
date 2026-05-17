@@ -40,12 +40,11 @@ WILDLIFE_CATEGORIES = [
 # automatically enables it for pipeline discovery, folder inspection, RAW
 # preview routing, and editor-launch allowlisting.
 #
-# Caveat: .raf (Fujifilm) and .x3f (Sigma) decode via rawpy but lack capture-time
-# extraction in raw_exif.py. Scene grouping for these formats falls back to
-# AKAZE feature similarity (no timestamp shortcut). See raw_exif.UNSUPPORTED_EXTENSIONS.
+# Every extension below has both rawpy/LibRaw decode support and an in-house
+# capture-time extractor in raw_exif.py — no exiftool dependency.
 RAW_EXTENSIONS = [
     ".cr2", ".cr3",         # Canon
-    ".nef",                 # Nikon
+    ".nef", ".nrw",         # Nikon (DSLR/Z + Coolpix)
     ".arw", ".srw",         # Sony / Samsung NX
     ".dng",                 # Adobe / generic
     ".orf",                 # Olympus
@@ -54,6 +53,14 @@ RAW_EXTENSIONS = [
     ".sr2",                 # Sony (older)
     ".raf",                 # Fujifilm
     ".x3f",                 # Sigma
+    ".3fr", ".fff",         # Hasselblad
+    ".iiq",                 # Phase One
+    ".mos",                 # Leaf
+    ".rwl",                 # Leica
+    ".erf",                 # Epson
+    ".dcr", ".kdc",         # Kodak (DCS / EasyShare)
+    ".mef",                 # Mamiya
+    ".mrw",                 # Minolta / Konica Minolta
 ]
 JPEG_EXTENSIONS = [".jpg", ".jpeg", ".png", '.tiff', '.tif']
 
