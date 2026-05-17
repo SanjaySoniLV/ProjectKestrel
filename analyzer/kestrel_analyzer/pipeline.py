@@ -4,6 +4,7 @@ import os
 import queue
 import threading
 import time
+import traceback
 import warnings
 from typing import Callable, Dict, Generator, Optional
 
@@ -39,25 +40,26 @@ from .exposure_compensation import (
     compute_stops_numpy_solver,
     linear_to_srgb_u8,
 )
-from .image_utils import read_image, read_image_for_pipeline
+from .image_utils import decode_embedded_preview, read_image, read_image_for_pipeline
 from .ratings import quality_to_rating, get_profile_thresholds
 from .similarity import compute_image_similarity_akaze, compute_similarity_timestamp
 from .raw_exif import get_capture_time
 from .logging_utils import get_log_path, log_event, log_exception, log_warning
 
 try:
-    from ..settings_utils import load_persisted_settings, debug as _debug, info as _info
+    from ..settings_utils import load_persisted_settings, debug as _debug, info as _info, error as _error
 except (ImportError, ValueError):
     # Top-level package case: cli.py adds analyzer/ to sys.path and imports
     # ``kestrel_analyzer`` as a root package, so the relative ``..`` walks
     # beyond it. The bare-name fallback works because ``settings_utils`` is
     # then directly importable from sys.path.
     try:
-        from settings_utils import load_persisted_settings, debug as _debug, info as _info  # type: ignore
+        from settings_utils import load_persisted_settings, debug as _debug, info as _info, error as _error  # type: ignore
     except ImportError:
         load_persisted_settings = None
         def _debug(*_a, **_kw): pass
         def _info(*_a, **_kw): pass
+        def _error(*_a, **_kw): pass
 from .ml.speciesnet_sam_hq import SpeciesNetSAMHQWrapper
 from .ml.provider_coordinator import ResilienceConfig
 from .ml.bird_species import BirdSpeciesClassifier
@@ -177,9 +179,28 @@ class AnalysisPipeline:
                 if metered_img is not None:
                     img = metered_img
                 elif meter_debug.get("error"):
-                    result["meter_warning"] = (
-                        f"RAW metering fallback to default decode: {meter_debug['error']}"
-                    )
+                    # Metered RAW decode failed. Try the embedded JPEG
+                    # preview before giving up — most modern bodies ship a
+                    # full-resolution preview that's still useful for ML
+                    # inference (Nikon HE/HE* NEFs are the typical trigger:
+                    # LibRaw reads metadata but can't decompress TicoRAW
+                    # sensor data). Reopens the file because the
+                    # already-closed raw_obj is in an out-of-order state
+                    # after a failed postprocess.
+                    preview = decode_embedded_preview(image_path)
+                    if preview is not None:
+                        img = preview
+                        result["exposure_pipeline"] = "embedded_preview_jpeg"
+                        result["meter_warning"] = (
+                            f"RAW decode unsupported ({meter_debug['error']}); "
+                            "analyzing embedded JPEG preview instead "
+                            "(highlight recovery disabled)"
+                        )
+                    else:
+                        result["meter_warning"] = (
+                            f"RAW metering fallback to default decode: "
+                            f"{meter_debug['error']}"
+                        )
 
             if img is None:
                 raise RuntimeError("Image build returned None after decode")
@@ -724,6 +745,15 @@ class AnalysisPipeline:
 
                     entry["exposure_pipeline"] = decoded["exposure_pipeline"]
                     entry["exposure_meter_scale"] = float(raw_meter_scale)
+                    # Live-status visibility for the embedded-preview fallback
+                    # (Nikon HE NEFs etc.). The "Processed" message below
+                    # overwrites this almost immediately for normal files;
+                    # showing it here surfaces the warning in the Live
+                    # dialog's status line during heavy ML work for the same
+                    # file, where the user is most likely to notice it.
+                    used_preview_fallback = (
+                        decoded.get("exposure_pipeline") == "embedded_preview_jpeg"
+                    )
                     if decoded.get("meter_warning"):
                         log_warning(
                             self._log_path,
@@ -731,6 +761,11 @@ class AnalysisPipeline:
                             stage=stage_ctx["stage"],
                             context={"file": raw_file, "folder": folder},
                         )
+                        if used_preview_fallback and status_cb:
+                            status_cb(
+                                f"⚠ {raw_file}: LibRaw can't decompress "
+                                "sensor data; using embedded JPEG preview"
+                            )
                     if decoded.get("capture_time_warning"):
                         log_warning(
                             self._log_path,
@@ -1349,9 +1384,10 @@ class AnalysisPipeline:
                     if status_cb:
                         _q = entry.get('quality', -1)
                         _display_q = f"{float(_q):.3f}" if _q not in (None, 'N/A', -1) else '—'
+                        _suffix = " [⚠ preview fallback]" if used_preview_fallback else ""
                         status_cb(
                             f"Processed {raw_file}: {entry['species']} Q={_display_q}"
-                            f" ({idx + processed_count}/{total})"
+                            f" ({idx + processed_count}/{total}){_suffix}"
                         )
                 except Exception as e:
                     log_exception(
@@ -1364,6 +1400,17 @@ class AnalysisPipeline:
                             "image_path": image_path,
                             "analyzer": analyzer_name,
                         },
+                    )
+                    # Mirror the full traceback into the runtime stderr log.
+                    # ``log_exception`` already records it in the per-folder
+                    # JSON, but bug reports usually attach only the runtime
+                    # tail — without this line the user-visible payload is
+                    # just ``str(e)`` and the originating library/call is
+                    # invisible.
+                    _error(
+                        f"[queue:{os.path.basename(folder)}] {raw_file}"
+                        f" stage={stage_ctx['stage']}"
+                        f" {type(e).__name__}: {e}\n{traceback.format_exc()}"
                     )
                     if error_cb:
                         error_cb(raw_file, e)

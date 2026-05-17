@@ -58,7 +58,7 @@ jobs:
         run: |
           $validateOutput = Join-Path $env:RUNNER_TEMP "validate-result.json"
           & "analyzer\dist\ProjectKestrel\ProjectKestrel.exe" `
-            --cli --validate `
+            --cli --validate --no-gpu `
             --validate-images test_imgs `
             --validate-output $validateOutput
 

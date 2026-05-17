@@ -411,12 +411,16 @@ class Handler(SimpleHTTPRequestHandler):
         # ``window.pywebview.api.<method>`` stub with ``new Function(params,
         # body)``, which CSP treats as ``eval``. Without ``'unsafe-eval'``
         # the stubs are never created and ``window.pywebview.api`` ends up
-        # empty. Windows WebView2's ``ExecuteScriptAsync`` runs in a
-        # privileged context that bypasses page CSP, so the bug only
-        # manifests on macOS (WKWebView's ``evaluateJavaScript:`` enforces
-        # page CSP). Allowing ``'unsafe-eval'`` is required to keep the
-        # desktop bridge working on macOS until pywebview drops the
-        # dynamic-Function pattern. The CSP scope is otherwise the same.
+        # empty — buttons that route through the bridge silently no-op and
+        # the version badge stays on its ``Version: —`` placeholder.
+        # Originally believed to be macOS-only (WKWebView enforces page CSP
+        # on ``evaluateJavaScript:``) because older Edge WebView2 builds
+        # ran ``ExecuteScriptAsync`` in a privileged isolated world that
+        # bypassed page CSP. Issue #39 disproves that on Windows 10 with a
+        # recent WebView2 runtime: the same dead-bridge symptoms appear
+        # there too. Allowing ``'unsafe-eval'`` is required on every
+        # platform until pywebview drops the dynamic-Function pattern. The
+        # CSP scope is otherwise the same.
         self.send_header(
             'Content-Security-Policy',
             "default-src 'self'; "
@@ -719,6 +723,17 @@ def _run_api_probe(args) -> int:
                 server.server_close()
             except Exception:
                 pass
+        # If webview.start() returned before the waiter wrote a result (window
+        # closed early, platform-specific event-loop quirk, etc.), the CI step
+        # sees nothing but an exit-1 with no JSON. Write a placeholder so the
+        # failure mode is observable.
+        if not os.path.exists(args.probe_output):
+            _write_result(args.probe_output, {
+                'ok': False,
+                'error': 'probe ended without waiter completing (webview.start returned early?)',
+                'probe_target': target,
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+            })
 
     return 0 if final_payload.get('ok') else 1
 

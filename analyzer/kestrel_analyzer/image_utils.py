@@ -1,11 +1,54 @@
+import io
 import os
+
 import numpy as np
 import rawpy
-from PIL import Image
+from PIL import Image, ImageOps
 
 from .config import RAW_EXTENSIONS
 
 _RAW_EXTENSION_SET = {ext.lower() for ext in RAW_EXTENSIONS}
+
+
+def decode_embedded_preview(path: str) -> np.ndarray | None:
+    """Return the embedded JPEG preview as a (H, W, 3) uint8 RGB array, or None.
+
+    Used as a graceful fallback when LibRaw can open the RAW container
+    (reads metadata fine) but can't decompress the sensor data — most
+    commonly Nikon's High Efficiency / HE* / NRAW formats on the Z8/Z9,
+    which use the proprietary TicoRAW codec from intoPIX. The embedded
+    JPEG preview is typically full sensor resolution; for ML inference
+    at 640-1280 px input it's indistinguishable from a metered RAW
+    decode. The only thing lost is sensor-level highlight recovery.
+
+    Opens a fresh LibRaw handle on each call — once a postprocess()
+    fails on a raw_obj, LibRaw rejects subsequent calls with
+    LibRawOutOfOrderCallError, so the helper must not try to reuse a
+    dirty handle.
+    """
+    try:
+        with rawpy.imread(path) as raw:
+            thumb = raw.extract_thumb()
+    except (rawpy.LibRawFileUnsupportedError,
+            rawpy.LibRawIOError,
+            rawpy.LibRawNoThumbnailError,
+            rawpy.LibRawUnsupportedThumbnailError):
+        return None
+    except Exception:
+        return None
+
+    if thumb is None or not thumb.data:
+        return None
+    if thumb.format != rawpy.ThumbFormat.JPEG:
+        return None
+    try:
+        with Image.open(io.BytesIO(thumb.data)) as img:
+            img = ImageOps.exif_transpose(img)
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            return np.array(img)
+    except Exception:
+        return None
 
 
 def read_image(path: str):
@@ -18,26 +61,27 @@ def read_image(path: str):
 
         if ext in _RAW_EXTENSION_SET:
             # Use rawpy for RAW files
-            with rawpy.imread(path) as raw:
-                # postprocess() applies demosaicing, white balance, color correction, etc.
-                # Returns numpy array in RGB format
-                rgb = raw.postprocess()
-            return rgb
+            try:
+                with rawpy.imread(path) as raw:
+                    # postprocess() applies demosaicing, white balance, color
+                    # correction, etc. Returns numpy array in RGB format.
+                    return raw.postprocess()
+            except rawpy.LibRawFileUnsupportedError:
+                # LibRaw could parse the container but can't decompress the
+                # sensor data (e.g. Nikon HE compression). Fall back to the
+                # embedded JPEG preview, which is full sensor resolution on
+                # modern Nikon bodies. Must reopen — the failed-postprocess
+                # handle is in an out-of-order state.
+                return decode_embedded_preview(path)
         else:
             # Use PIL for standard image formats (JPEG, PNG, TIFF, etc.)
             img = Image.open(path)
-
-            # Handle EXIF orientation
-            from PIL import ImageOps
             img = ImageOps.exif_transpose(img)
 
-            # Convert to RGB (handles grayscale, RGBA, etc.)
             if img.mode != 'RGB':
                 img = img.convert('RGB')
 
-            # Convert to numpy array
-            rgb = np.array(img)
-            return rgb
+            return np.array(img)
 
     except rawpy.LibRawFileUnsupportedError:
         return None
