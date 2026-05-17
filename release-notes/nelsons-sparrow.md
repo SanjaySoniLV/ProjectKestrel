@@ -20,6 +20,10 @@ Nelson's Sparrow is a stability, resilience, and developer-experience release bu
   - Backward-compat tests for legacy `kestrel_database.csv` schemas (Willow-Ptarmigan, Lincoln's-Sparrow, Kentucky-Warbler, alpha-2026_02_04) and legacy `settings.json` shapes.
   - Integration tests for every ML model (MegaDetector, SpeciesNet, SAM-HQ, BirdSpecies, Quality, EXIF, RAW decode, full pipeline e2e).
   - Dev CI workflows now run the real `visualizer.html` against the frozen PyInstaller binary via `--api-probe --probe-target visualizer` to catch JS-bridge regressions on the actual shipped bundle.
+- **Major RAW-format expansion** — adds first-class decode and EXIF-timestamp extraction for 11 additional camera formats, plus an embedded-preview fallback for compression schemes LibRaw can't yet decompress. The internal "unsupported extensions" list is now empty.
+  - **Newly supported:** Nikon NRW (Coolpix, Z), Hasselblad 3FR/FFF, Phase One IIQ, Leaf MOS, Leica RWL, Epson ERF, Kodak DCR/KDC, Mamiya MEF, Minolta MRW.
+  - **Now extracts EXIF timestamps:** Fujifilm RAF and Sigma X3F (they previously decoded but were timestamp-blind).
+  - **Nikon Z8 / Z9 / Zf / Z6III "High Efficiency" (HE/HE\*/NRAW) NEFs** — where LibRaw can't decompress the proprietary TicoRAW codec — now load via the full-resolution embedded JPEG preview. Detection and classification accuracy are unaffected at Kestrel's 640–1280 px ML input resolution; only sensor-level highlight recovery is disabled, and the Live analysis dialog displays a "⚠ preview fallback" notice while affected files are processed.
 
 ## Minor Changes
 
@@ -34,6 +38,8 @@ Nelson's Sparrow is a stability, resilience, and developer-experience release bu
 - **Refactor:** consolidated RAW + JPEG extension lists and capture-time handling across modules; dead code removed across 10 files; DEVELOPMENT.md and README.md rewritten to match the current pywebview-only architecture.
 - **Deps:** dropped unused PyQt6 dependency (~100 MB off the dev install, smaller PyInstaller surface). Bumped `rawpy 0.26.1 → 0.27.0` (newer CR3/CR2 demosaic), `pyinstaller 6.18 → 6.20`, `pywebview 6.1 → 6.2.1` (JS bridge stability), `requests 2.33 → 2.34.2`, `pillow 12.1.1 → 12.2.0`, and `numpy 2.1.3 → 2.4.4`. Removed `msvc-runtime` from cross-platform `requirements.txt`.
 - **Feature:** species-detection UI improvements with taxonomy mapping (cleaner labels, better tag suggestions).
+- **Fix:** model label files (`labels.txt`, SpeciesNet `labels.csv`) now decode with explicit BOM-tolerant UTF-8. Previously, Spanish, Japanese, and Chinese Windows installs could see mojibake or a `UnicodeDecodeError` because Python fell back to the locale's default codepage (cp1252 / cp932 / gbk) instead of UTF-8.
+- **Diagnostics:** per-image analysis errors now emit a full Python traceback to the runtime log alongside the existing structured JSON log, so future crash reports identify the offending library and call site without a second round-trip.
 
 ---
 
@@ -41,6 +47,7 @@ Nelson's Sparrow is a stability, resilience, and developer-experience release bu
 1. Analysis now recovers from GPU and driver crashes automatically, and you can re-run just the failed images instead of starting over.
 2. A new Fast wildlife detector (MegaDetector v1000-cedar) and a fix that nearly doubles species-classification speed on batches.
 3. Restarting your PC no longer triggers a false "crash" warning, and a rebalanced quality scale gives fairer star ratings across your library.
+4. Adds RAW support for 11 more camera formats and fixes failing Nikon NEFs via an embedded-preview fallback.
 
 ## In-App WHATS_NEW Items (for analyzer/js/welcome.js)
 - New <b>Resilient GPU pipeline</b> automatically falls back to CPU when your graphics driver hiccups, and a new <b>"Re-attempt analysis on errored images"</b> button re-runs just the failures without touching successful results.
