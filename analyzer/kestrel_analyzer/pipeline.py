@@ -4,6 +4,7 @@ import os
 import queue
 import threading
 import time
+import traceback
 import warnings
 from typing import Callable, Dict, Generator, Optional
 
@@ -46,18 +47,19 @@ from .raw_exif import get_capture_time
 from .logging_utils import get_log_path, log_event, log_exception, log_warning
 
 try:
-    from ..settings_utils import load_persisted_settings, debug as _debug, info as _info
+    from ..settings_utils import load_persisted_settings, debug as _debug, info as _info, error as _error
 except (ImportError, ValueError):
     # Top-level package case: cli.py adds analyzer/ to sys.path and imports
     # ``kestrel_analyzer`` as a root package, so the relative ``..`` walks
     # beyond it. The bare-name fallback works because ``settings_utils`` is
     # then directly importable from sys.path.
     try:
-        from settings_utils import load_persisted_settings, debug as _debug, info as _info  # type: ignore
+        from settings_utils import load_persisted_settings, debug as _debug, info as _info, error as _error  # type: ignore
     except ImportError:
         load_persisted_settings = None
         def _debug(*_a, **_kw): pass
         def _info(*_a, **_kw): pass
+        def _error(*_a, **_kw): pass
 from .ml.speciesnet_sam_hq import SpeciesNetSAMHQWrapper
 from .ml.provider_coordinator import ResilienceConfig
 from .ml.bird_species import BirdSpeciesClassifier
@@ -1398,6 +1400,17 @@ class AnalysisPipeline:
                             "image_path": image_path,
                             "analyzer": analyzer_name,
                         },
+                    )
+                    # Mirror the full traceback into the runtime stderr log.
+                    # ``log_exception`` already records it in the per-folder
+                    # JSON, but bug reports usually attach only the runtime
+                    # tail — without this line the user-visible payload is
+                    # just ``str(e)`` and the originating library/call is
+                    # invisible.
+                    _error(
+                        f"[queue:{os.path.basename(folder)}] {raw_file}"
+                        f" stage={stage_ctx['stage']}"
+                        f" {type(e).__name__}: {e}\n{traceback.format_exc()}"
                     )
                     if error_cb:
                         error_cb(raw_file, e)

@@ -17,7 +17,7 @@ class BirdSpeciesClassifier:
         coord: ProviderCoordinator,
         models_dir: str | None = None,
     ):
-        with open(labels_path, "r") as f:
+        with open(labels_path, "r", encoding="utf-8-sig") as f:
             self.labels = np.array([l.strip() for l in f.readlines()])
         # Registered with the coordinator so a DML/CoreML failure that demotes
         # the wrapper's sessions also rebuilds this one — otherwise every
