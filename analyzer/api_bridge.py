@@ -72,6 +72,127 @@ except ImportError:
 
 HOST = '127.0.0.1'
 
+
+def _win_choose_directory(title: str) -> str:
+    """Open the Windows shell folder picker via ``SHBrowseForFolderW``.
+
+    Used by ``choose_directory`` on Windows so paths with non-ASCII
+    characters (CJK, Cyrillic, etc.) survive the round-trip back to Python.
+    Returns an empty string when the user cancels. Caller handles fallback
+    if this raises (e.g. on a non-Windows interpreter).
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    BIF_RETURNONLYFSDIRS = 0x0001
+    BIF_NEWDIALOGSTYLE = 0x0040
+    BIF_USENEWUI = BIF_NEWDIALOGSTYLE | 0x0010
+
+    class BROWSEINFOW(ctypes.Structure):
+        _fields_ = [
+            ('hwndOwner', wintypes.HWND),
+            ('pidlRoot', ctypes.c_void_p),
+            ('pszDisplayName', wintypes.LPWSTR),
+            ('lpszTitle', wintypes.LPCWSTR),
+            ('ulFlags', wintypes.UINT),
+            ('lpfn', ctypes.c_void_p),
+            ('lParam', wintypes.LPARAM),
+            ('iImage', ctypes.c_int),
+        ]
+
+    shell32 = ctypes.windll.shell32
+    ole32 = ctypes.windll.ole32
+
+    # MAX_PATH is 260 but the modern dialog can return longer paths; oversize.
+    buf = ctypes.create_unicode_buffer(1024)
+    bi = BROWSEINFOW()
+    bi.hwndOwner = None
+    bi.pidlRoot = None
+    bi.pszDisplayName = ctypes.cast(buf, wintypes.LPWSTR)
+    bi.lpszTitle = title
+    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_USENEWUI
+
+    # COM init is required by the new-style folder dialog.
+    ole32.CoInitialize(None)
+    try:
+        pidl = shell32.SHBrowseForFolderW(ctypes.byref(bi))
+        if not pidl:
+            return ''
+        path_buf = ctypes.create_unicode_buffer(1024)
+        try:
+            if not shell32.SHGetPathFromIDListW(pidl, path_buf):
+                return ''
+            return path_buf.value or ''
+        finally:
+            ole32.CoTaskMemFree(pidl)
+    finally:
+        ole32.CoUninitialize()
+
+
+def _win_choose_open_file(title: str, filters=(('All Files', '*.*'),)) -> str:
+    """Open the Windows shell file-open dialog via ``GetOpenFileNameW``.
+
+    Same Unicode rationale as ``_win_choose_directory``. ``filters`` is a
+    sequence of ``(label, pattern)`` tuples.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    OFN_EXPLORER = 0x00080000
+    OFN_FILEMUSTEXIST = 0x00001000
+    OFN_PATHMUSTEXIST = 0x00000800
+    OFN_HIDEREADONLY = 0x00000004
+    OFN_NOCHANGEDIR = 0x00000008
+
+    class OPENFILENAMEW(ctypes.Structure):
+        _fields_ = [
+            ('lStructSize', wintypes.DWORD),
+            ('hwndOwner', wintypes.HWND),
+            ('hInstance', wintypes.HINSTANCE),
+            ('lpstrFilter', wintypes.LPCWSTR),
+            ('lpstrCustomFilter', wintypes.LPWSTR),
+            ('nMaxCustFilter', wintypes.DWORD),
+            ('nFilterIndex', wintypes.DWORD),
+            ('lpstrFile', wintypes.LPWSTR),
+            ('nMaxFile', wintypes.DWORD),
+            ('lpstrFileTitle', wintypes.LPWSTR),
+            ('nMaxFileTitle', wintypes.DWORD),
+            ('lpstrInitialDir', wintypes.LPCWSTR),
+            ('lpstrTitle', wintypes.LPCWSTR),
+            ('Flags', wintypes.DWORD),
+            ('nFileOffset', wintypes.WORD),
+            ('nFileExtension', wintypes.WORD),
+            ('lpstrDefExt', wintypes.LPCWSTR),
+            ('lCustData', wintypes.LPARAM),
+            ('lpfnHook', ctypes.c_void_p),
+            ('lpTemplateName', wintypes.LPCWSTR),
+            ('pvReserved', ctypes.c_void_p),
+            ('dwReserved', wintypes.DWORD),
+            ('FlagsEx', wintypes.DWORD),
+        ]
+
+    # Filter string is double-NUL terminated, with each entry as label\0pattern\0.
+    filter_parts = []
+    for label, pattern in filters:
+        filter_parts.append(f'{label} ({pattern})')
+        filter_parts.append(pattern)
+    filter_str = '\0'.join(filter_parts) + '\0\0'
+
+    path_buf = ctypes.create_unicode_buffer(1024)
+    ofn = OPENFILENAMEW()
+    ofn.lStructSize = ctypes.sizeof(OPENFILENAMEW)
+    ofn.lpstrFilter = filter_str
+    ofn.lpstrFile = ctypes.cast(path_buf, wintypes.LPWSTR)
+    ofn.nMaxFile = 1024
+    ofn.lpstrTitle = title
+    ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY | OFN_NOCHANGEDIR
+
+    comdlg32 = ctypes.windll.comdlg32
+    if not comdlg32.GetOpenFileNameW(ctypes.byref(ofn)):
+        return ''
+    return path_buf.value or ''
+
+
 _ALLOWED_ROOT = os.environ.get('KESTREL_ALLOWED_ROOT')
 if _ALLOWED_ROOT:
     _ALLOWED_ROOT = os.path.abspath(os.path.expanduser(_ALLOWED_ROOT))
@@ -554,30 +675,52 @@ class Api:
         Returns: absolute path to selected folder, or None if cancelled.
         """
         try:
-            if sys.platform == 'darwin':
-                script = 'POSIX path of (choose folder with prompt "Select folder containing analyzed photos")'
-                result = subprocess.run(
-                    ['osascript', '-e', script],
-                    capture_output=True,
-                    text=True,
-                    timeout=120
-                )
-                folder = result.stdout.strip() if result.returncode == 0 else ''
-            else:
-                # tkinter filedialog works on both Windows and Linux
-                import tkinter as tk
-                from tkinter import filedialog
-                root = tk.Tk()
-                root.withdraw()
-                root.attributes('-topmost', True)
-                folder = filedialog.askdirectory(title="Select folder containing analyzed photos")
-                root.destroy()
-
+            folder = self._open_native_folder_dialog()
             info(f'[API] choose_directory -> {folder!r}' if folder else '[API] choose_directory -> cancelled')
             return folder or None
         except Exception as e:
             error(f'[API] choose_directory error: {e}')
             return None
+
+    def _open_native_folder_dialog(self) -> str:
+        """Open a native folder picker and return the selected path (or '').
+
+        On Windows we call ``SHBrowseForFolderW`` directly via ctypes instead
+        of ``tkinter.filedialog.askdirectory``. Tk's wrapper round-trips the
+        selected path through interpreters that, under non-UTF-8 system code
+        pages (e.g. CJK locales), can collapse non-ASCII characters to
+        replacement chars before the string returns to Python. The W-suffixed
+        shell entry point is fully Unicode (UTF-16) and round-trips Chinese,
+        Japanese, etc. correctly — see issue #40, where a path like
+        ``C:\\Picture\\... 猫头鹰\\116ND810`` was reaching ``os.path.isdir``
+        as mojibake and silently failing folder-tree population.
+        """
+        if sys.platform.startswith('win'):
+            try:
+                return _win_choose_directory('Select folder containing analyzed photos') or ''
+            except Exception as e:
+                warn(f'[API] SHBrowseForFolderW failed, falling back to tkinter: {e}')
+
+        if sys.platform == 'darwin':
+            script = 'POSIX path of (choose folder with prompt "Select folder containing analyzed photos")'
+            result = subprocess.run(
+                ['osascript', '-e', script],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            return result.stdout.strip() if result.returncode == 0 else ''
+
+        # Linux / fallback. tkinter on X11 handles Unicode via Tk 8.6+.
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+        try:
+            return filedialog.askdirectory(title='Select folder containing analyzed photos') or ''
+        finally:
+            root.destroy()
 
     def open_file_explorer(self, folder_path):
         """Open a folder in the native file explorer."""
@@ -606,6 +749,19 @@ class Api:
         Returns: absolute path to selected file, or None if cancelled.
         """
         try:
+            # Issue #40: on Windows we call the Unicode shell file-open dialog
+            # directly via ctypes (``GetOpenFileNameW``) instead of tkinter so
+            # paths like ``C:\\用户\\...\\app.exe`` round-trip without mojibake.
+            if sys.platform.startswith('win'):
+                try:
+                    picked = _win_choose_open_file(
+                        title='Select application executable',
+                        filters=(('Executables', '*.exe'), ('All Files', '*.*')),
+                    )
+                    return picked or None
+                except Exception as e:
+                    warn(f'[API] GetOpenFileNameW failed, falling back to tkinter: {e}')
+
             if sys.platform == 'darwin':
                 import subprocess as _sp
                 script = 'POSIX path of (choose file of type {"app","APPL"} with prompt "Select an application")'
@@ -613,22 +769,20 @@ class Api:
                 if result.returncode == 0 and result.stdout.strip():
                     return result.stdout.strip()
                 return None
-            else:
-                import tkinter as tk
-                from tkinter import filedialog
-                root = tk.Tk()
-                root.withdraw()
-                root.attributes('-topmost', True)
-                if sys.platform.startswith('win'):
-                    filetypes = [('Executables', '*.exe'), ('All Files', '*.*')]
-                else:
-                    filetypes = [('All Files', '*.*')]
+
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes('-topmost', True)
+            try:
                 filepath = filedialog.askopenfilename(
-                    title="Select application executable",
-                    filetypes=filetypes
+                    title='Select application executable',
+                    filetypes=[('All Files', '*.*')],
                 )
+            finally:
                 root.destroy()
-                return filepath if filepath else None
+            return filepath if filepath else None
         except Exception as e:
             error(f'[API] choose_application error: {e}')
             return None
