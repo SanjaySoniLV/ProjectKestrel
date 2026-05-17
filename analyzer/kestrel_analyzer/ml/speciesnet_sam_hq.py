@@ -279,7 +279,7 @@ class OnnxClassifier:
     def __init__(self, onnx_path: Path, labels_path: Path, coord: ProviderCoordinator):
         self._session = ResilientOnnxSession("classifier", onnx_path, coord)
         self.providers_used = self._session.get_providers()
-        with open(labels_path) as f:
+        with open(labels_path, "r", encoding="utf-8-sig") as f:
             self._labels = [line.strip() for line in f]
         _active = self.providers_used[0] if self.providers_used else "unknown"
         debug(f"[OnnxClassifier] {len(self._labels)} labels  Active provider: {_active}  all providers: {self.providers_used}")
