@@ -39,7 +39,7 @@ from .exposure_compensation import (
     compute_stops_numpy_solver,
     linear_to_srgb_u8,
 )
-from .image_utils import read_image, read_image_for_pipeline
+from .image_utils import decode_embedded_preview, read_image, read_image_for_pipeline
 from .ratings import quality_to_rating, get_profile_thresholds
 from .similarity import compute_image_similarity_akaze, compute_similarity_timestamp
 from .raw_exif import get_capture_time
@@ -177,9 +177,28 @@ class AnalysisPipeline:
                 if metered_img is not None:
                     img = metered_img
                 elif meter_debug.get("error"):
-                    result["meter_warning"] = (
-                        f"RAW metering fallback to default decode: {meter_debug['error']}"
-                    )
+                    # Metered RAW decode failed. Try the embedded JPEG
+                    # preview before giving up — most modern bodies ship a
+                    # full-resolution preview that's still useful for ML
+                    # inference (Nikon HE/HE* NEFs are the typical trigger:
+                    # LibRaw reads metadata but can't decompress TicoRAW
+                    # sensor data). Reopens the file because the
+                    # already-closed raw_obj is in an out-of-order state
+                    # after a failed postprocess.
+                    preview = decode_embedded_preview(image_path)
+                    if preview is not None:
+                        img = preview
+                        result["exposure_pipeline"] = "embedded_preview_jpeg"
+                        result["meter_warning"] = (
+                            f"RAW decode unsupported ({meter_debug['error']}); "
+                            "analyzing embedded JPEG preview instead "
+                            "(highlight recovery disabled)"
+                        )
+                    else:
+                        result["meter_warning"] = (
+                            f"RAW metering fallback to default decode: "
+                            f"{meter_debug['error']}"
+                        )
 
             if img is None:
                 raise RuntimeError("Image build returned None after decode")
