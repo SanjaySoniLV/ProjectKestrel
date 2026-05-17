@@ -743,6 +743,15 @@ class AnalysisPipeline:
 
                     entry["exposure_pipeline"] = decoded["exposure_pipeline"]
                     entry["exposure_meter_scale"] = float(raw_meter_scale)
+                    # Live-status visibility for the embedded-preview fallback
+                    # (Nikon HE NEFs etc.). The "Processed" message below
+                    # overwrites this almost immediately for normal files;
+                    # showing it here surfaces the warning in the Live
+                    # dialog's status line during heavy ML work for the same
+                    # file, where the user is most likely to notice it.
+                    used_preview_fallback = (
+                        decoded.get("exposure_pipeline") == "embedded_preview_jpeg"
+                    )
                     if decoded.get("meter_warning"):
                         log_warning(
                             self._log_path,
@@ -750,6 +759,11 @@ class AnalysisPipeline:
                             stage=stage_ctx["stage"],
                             context={"file": raw_file, "folder": folder},
                         )
+                        if used_preview_fallback and status_cb:
+                            status_cb(
+                                f"⚠ {raw_file}: LibRaw can't decompress "
+                                "sensor data; using embedded JPEG preview"
+                            )
                     if decoded.get("capture_time_warning"):
                         log_warning(
                             self._log_path,
@@ -1368,9 +1382,10 @@ class AnalysisPipeline:
                     if status_cb:
                         _q = entry.get('quality', -1)
                         _display_q = f"{float(_q):.3f}" if _q not in (None, 'N/A', -1) else '—'
+                        _suffix = " [⚠ preview fallback]" if used_preview_fallback else ""
                         status_cb(
                             f"Processed {raw_file}: {entry['species']} Q={_display_q}"
-                            f" ({idx + processed_count}/{total})"
+                            f" ({idx + processed_count}/{total}){_suffix}"
                         )
                 except Exception as e:
                     log_exception(
