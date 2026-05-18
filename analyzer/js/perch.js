@@ -803,12 +803,19 @@
       if (rejectCb) rejectCb.addEventListener('change', _perchOnRejectToggleChange);
       // Already-published banner buttons.
       const alreadyOpen = document.getElementById('perchAlreadyPublishedOpenBtn');
+      const alreadySync = document.getElementById('perchAlreadyPublishedSyncBtn');
       const alreadyNew = document.getElementById('perchAlreadyPublishedNewBtn');
       if (alreadyOpen) alreadyOpen.addEventListener('click', async () => {
         const banner = document.getElementById('perchAlreadyPublishedBanner');
         const url = banner?.dataset?.perchUrl;
         if (url) { try { await window.pywebview.api.open_perch_url(url); } catch {} }
         _perchClosePerchDialog();
+      });
+      if (alreadySync) alreadySync.addEventListener('click', async () => {
+        const banner = document.getElementById('perchAlreadyPublishedBanner');
+        const folderPath = banner?.dataset?.folderPath || _perchDlgState.rootPath;
+        _perchClosePerchDialog();
+        if (folderPath) handlePerchSyncClick(folderPath, alreadySync);
       });
       if (alreadyNew) alreadyNew.addEventListener('click', async () => {
         const banner = document.getElementById('perchAlreadyPublishedBanner');
