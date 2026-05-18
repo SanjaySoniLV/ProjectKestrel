@@ -13,7 +13,13 @@ try:
 except Exception:
     pd = None
 
-from kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS, KESTREL_DIR_NAME, DATABASE_NAME
+from kestrel_analyzer.config import (
+    RAW_EXTENSIONS,
+    JPEG_EXTENSIONS,
+    KESTREL_DIR_NAME,
+    DATABASE_NAME,
+    is_supported_image_file,
+)
 from kestrel_analyzer.database import load_database
 
 
@@ -21,12 +27,14 @@ def _list_images_in_folder(folder: str) -> list:
     try:
         files = [
             f for f in os.listdir(folder)
-            if os.path.isfile(os.path.join(folder, f)) and os.path.splitext(f)[1].lower() in RAW_EXTENSIONS
+            if is_supported_image_file(f, RAW_EXTENSIONS)
+            and os.path.isfile(os.path.join(folder, f))
         ]
         if not files:
             files = [
                 f for f in os.listdir(folder)
-                if os.path.isfile(os.path.join(folder, f)) and os.path.splitext(f)[1].lower() in JPEG_EXTENSIONS
+                if is_supported_image_file(f, JPEG_EXTENSIONS)
+                and os.path.isfile(os.path.join(folder, f))
             ]
         files.sort()
         return files
