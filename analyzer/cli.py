@@ -204,6 +204,16 @@ def _find_first_image(folder: str) -> str | None:
 
 
 def main(argv: Sequence[str] | None = None):
+    # Dump a Python traceback on SIGSEGV / SIGABRT / native crashes from ONNX
+    # Runtime, OpenCV, etc. The full-app entrypoint (visualizer.py:main) enables
+    # this too, but the --cli branch hands off before that — without this, a
+    # native abort inside the pipeline leaves zero diagnostic output in CI.
+    try:
+        import faulthandler
+        faulthandler.enable()
+    except Exception:
+        pass
+
     log_path = get_log_path(None)
     try:
         args = parse_args(argv)

@@ -31,14 +31,37 @@ def set_a_path(fixtures_dir):
 
 @pytest.fixture
 def set_b_paths(fixtures_dir):
-    """Dict of {ext: path} for diverse RAW formats in set_b_formats/."""
+    """Dict of {ext: path} for diverse RAW formats in set_b_formats/.
+
+    Picks up any RAW sample that's actually checked in (or dropped in
+    locally for manual testing). Extensions that don't appear in
+    set_b_formats/ are silently skipped, so adding new format coverage
+    doesn't require a fixture commit."""
     test_sets_dir = fixtures_dir / "test_sets" / "set_b_formats"
     result = {}
+    extensions = [
+        ".cr2", ".cr3",
+        ".nef", ".nrw",
+        ".arw", ".srw",
+        ".dng",
+        ".orf", ".rw2", ".pef", ".sr2",
+        ".raf", ".x3f",
+        ".3fr", ".fff",
+        ".iiq", ".mos",
+        ".rwl", ".erf",
+        ".dcr", ".kdc",
+        ".mef", ".mrw",
+    ]
     if test_sets_dir.exists():
-        for ext in [".cr2", ".cr3", ".nef", ".arw", ".dng", ".orf", ".rw2", ".pef"]:
+        for ext in extensions:
             for file in test_sets_dir.glob(f"*{ext}"):
                 result[ext] = file
                 break
+            else:
+                # Case-insensitive: some samples ship with upper-case extensions
+                for file in test_sets_dir.glob(f"*{ext.upper()}"):
+                    result[ext] = file
+                    break
     return result
 
 

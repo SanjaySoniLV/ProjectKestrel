@@ -90,7 +90,7 @@ jobs:
           rm -f "${VALIDATE_OUTPUT}"
 
           analyzer/dist/ProjectKestrel/ProjectKestrel \
-            --cli --validate \
+            --cli --validate --no-gpu \
             --validate-images test_imgs \
             --validate-output "${VALIDATE_OUTPUT}"
 
