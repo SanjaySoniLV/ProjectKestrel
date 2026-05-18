@@ -159,11 +159,16 @@
         return true;
       }
       return new Promise((resolve) => {
+        // Hoist before settle()/onReady are defined — settle reads `elapsed`
+        // in its kdebug calls, and if pywebviewready fires synchronously during
+        // addEventListener registration the TDZ would throw and never resolve.
+        let elapsed = 0;
+        let pollTimer = null;
         let settled = false;
         function settle(found) {
           if (settled) return;
           settled = true;
-          clearInterval(pollTimer);
+          if (pollTimer !== null) clearInterval(pollTimer);
           window.removeEventListener('pywebviewready', onReady);
           if (found) {
             hasPywebviewApi = true;
@@ -182,8 +187,7 @@
         }
         window.addEventListener('pywebviewready', onReady);
         // Polling fallback — catches cases where the event already fired
-        let elapsed = 0;
-        const pollTimer = setInterval(() => {
+        pollTimer = setInterval(() => {
           elapsed += 100;
           if (typeof window.pywebview !== 'undefined' && window.pywebview.api) {
             settle(true);

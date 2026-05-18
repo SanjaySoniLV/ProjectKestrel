@@ -5,13 +5,13 @@
     // Bump this whenever you author a new changelog. Clients with a matching
     // `last_seen_whats_new_version` will not see the banner again.
     const WHATS_NEW = {
-      version: 'gambels-quail',
-      headline: "New in v(Gambel\u2019s Quail) \u2014 the biggest update yet!",
+      version: 'nelsons-sparrow',
+      headline: "New in v(Nelson\u2019s Sparrow) \u2014 resilient analysis, smarter shutdowns!",
       items: [
-        'New <b>Analysis Pipeline v2.0</b> is up to <b>500% faster</b> with better bird detection and exposure compensation, made possible by GPU support, more efficient machine learning models, and algorithmic tweaks!',
-        'Kestrel is rolling out <b>beta support for 1,200+ wildlife species</b>. Enable this experimental feature in <b>Advanced Analysis Settings</b>.',
-        'Several UI tweaks, new features, enhancements, and bug fixes improve Kestrel\u2019s usability.',
-        'New <b>in-app tutorials</b> let you choose between just the basics or showing all features.',
+        'New <b>Resilient GPU pipeline</b> automatically falls back to CPU when your graphics driver hiccups, and a new <b>"Re-attempt analysis on errored images"</b> button re-runs just the failures without touching successful results.',
+        'Faster and more accurate wildlife detection with the new <b>MegaDetector v1000-cedar</b> "Fast" model, plus a fix that <b>doubles SpeciesNet batch speed</b> by removing a duplicate inference pass.',
+        'Kestrel now <b>tells the difference between a real crash and a normal PC shutdown</b>, so reboots and logoffs no longer trigger the alarming "did not shut down cleanly" dialog.',
+        'New <b>quality normalization curve (v3)</b> rebalances star ratings across your library, and the <b>command-line interface</b> now exposes every Advanced Analysis Setting for power users and scripted workflows.',
       ],
     };
 
