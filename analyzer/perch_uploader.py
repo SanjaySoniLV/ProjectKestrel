@@ -998,6 +998,40 @@ class PerchKestrelUploader:
 
         print(f"[perch] All {total} files uploaded.")
         scene_count = len(scene_payload)
+
+        # Notify the server that uploads are finished so it can flip the
+        # perch from upload_state='uploading' to 'complete'. This is what
+        # converts the held byte-budget reservation into actual usage
+        # (server-side); without it, the perch would eventually be swept
+        # to 'incomplete' by the cron and the user would lose their
+        # storage allocation. Best-effort: log on failure and continue
+        # (the server's cron will reconcile on its own schedule, and a
+        # later sync from the desktop will retry).
+        try:
+            uc_resp = self.s.post(
+                self._url(f"/v1/perches/{perch_id}/upload-complete"),
+                json={},
+                timeout=self.timeout,
+            )
+            if uc_resp.status_code >= 500:
+                # 5xx is retryable; one quick retry covers transient
+                # Worker hiccups without delaying the user noticeably.
+                try:
+                    uc_resp = self.s.post(
+                        self._url(f"/v1/perches/{perch_id}/upload-complete"),
+                        json={},
+                        timeout=self.timeout,
+                    )
+                except requests.RequestException as e:
+                    print(f"[perch] upload-complete retry failed: {e}")
+            if uc_resp.status_code >= 400:
+                print(
+                    f"[perch] upload-complete returned {uc_resp.status_code}: "
+                    f"{uc_resp.text[:300]}"
+                )
+        except requests.RequestException as e:
+            print(f"[perch] upload-complete network error: {e}")
+
         # Mark complete and rotate the manifest aside (kept for diagnostics).
         manifest.update_root({"finished_at_ms": int(time.time() * 1000), "outcome": "done"})
         manifest.stop()
