@@ -24,6 +24,7 @@ from .config import (
     KESTREL_DIR_NAME,
     METADATA_FILENAME,
     VERSION,
+    is_supported_image_file,
 )
 from .database import (
     load_database,
@@ -567,15 +568,15 @@ class AnalysisPipeline:
             files = [
                 f
                 for f in os.listdir(folder)
-                if os.path.isfile(os.path.join(folder, f))
-                and os.path.splitext(f)[1].lower() in RAW_EXTENSIONS
+                if is_supported_image_file(f, RAW_EXTENSIONS)
+                and os.path.isfile(os.path.join(folder, f))
             ]
             if not files:
                 files = [
                     f
                     for f in os.listdir(folder)
-                    if os.path.isfile(os.path.join(folder, f))
-                    and os.path.splitext(f)[1].lower() in JPEG_EXTENSIONS
+                    if is_supported_image_file(f, JPEG_EXTENSIONS)
+                    and os.path.isfile(os.path.join(folder, f))
                 ]
             files.sort()
             if not files:

@@ -587,7 +587,7 @@ def collect_folder_stats(item_path: str, files_this_session: int, total_files: i
     dict with keys: file_sizes_kb, file_formats
     """
     try:
-        from kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS
+        from kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS, is_supported_image_file
 
         file_sizes_kb: List[float] = []
         file_formats: Dict[str, int] = {}
@@ -605,12 +605,12 @@ def collect_folder_stats(item_path: str, files_this_session: int, total_files: i
         for fname in entries:
             if len(file_sizes_kb) >= MAX_ENTRIES:
                 break
+            if not is_supported_image_file(fname, all_exts):
+                continue
             fpath = os.path.join(item_path, fname)
             if not os.path.isfile(fpath):
                 continue
             ext = os.path.splitext(fname)[1].lower()
-            if ext not in all_exts:
-                continue
             try:
                 size_kb = os.path.getsize(fpath) / 1024.0
                 file_sizes_kb.append(round(size_kb, 1))

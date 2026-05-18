@@ -147,3 +147,50 @@ class TestInspectFolders:
 
         # Shallower path should come first
         assert paths.index(str(shallow)) < paths.index(str(deep))
+
+
+class TestAppleDoubleFiltering:
+    """Tests that macOS AppleDouble (``._``-prefixed) companion files are
+    excluded from enumeration. macOS creates these automatically when
+    writing to non-HFS/APFS volumes (exFAT/NTFS USB drives, network
+    shares) to preserve extended attributes. They share the same
+    extension as the real file (e.g. ``._IMG_0142.ARW``) so an
+    extension-only filter lets them through, but they contain ~4 KB of
+    metadata, not image data, and LibRaw rejects every one of them."""
+
+    def test_apple_double_files_skipped_raw(self, tmp_path):
+        """A folder with both real ARWs and AppleDouble companions counts only the real files."""
+        (tmp_path / "IMG_0141.ARW").touch()
+        (tmp_path / "IMG_0142.ARW").touch()
+        (tmp_path / "._IMG_0141.ARW").write_bytes(b'\x00\x05\x16\x07' + b'\x00' * 100)
+        (tmp_path / "._IMG_0142.ARW").write_bytes(b'\x00\x05\x16\x07' + b'\x00' * 100)
+
+        result = inspect_folder(str(tmp_path))
+        assert result['total'] == 2  # only the real ARWs
+
+    def test_apple_double_jpegs_skipped(self, tmp_path):
+        """JPEG fallback path also filters ._ companions."""
+        (tmp_path / "IMG_001.JPG").touch()
+        (tmp_path / "._IMG_001.JPG").write_bytes(b'\x00' * 50)
+        (tmp_path / "._IMG_999.JPG").write_bytes(b'\x00' * 50)
+
+        result = inspect_folder(str(tmp_path))
+        assert result['total'] == 1
+
+    def test_hidden_files_skipped(self, tmp_path):
+        """Dot-prefixed files (`.foo.CR3`, `.DS_Store`) are skipped too."""
+        (tmp_path / "IMG_001.CR3").touch()
+        (tmp_path / ".hidden.CR3").touch()
+        (tmp_path / ".DS_Store").write_bytes(b'\x00' * 10)
+
+        result = inspect_folder(str(tmp_path))
+        assert result['total'] == 1
+
+    def test_folder_with_only_apple_doubles_returns_zero(self, tmp_path):
+        """A folder containing nothing but ._ companions reports 0 images."""
+        (tmp_path / "._IMG_0141.ARW").write_bytes(b'\x00' * 100)
+        (tmp_path / "._IMG_0142.ARW").write_bytes(b'\x00' * 100)
+        (tmp_path / "._IMG_0143.ARW").write_bytes(b'\x00' * 100)
+
+        result = inspect_folder(str(tmp_path))
+        assert result['total'] == 0
