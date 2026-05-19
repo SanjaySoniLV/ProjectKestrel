@@ -361,12 +361,14 @@
 
 /* Pill variant: stacks the italicised scientific name on a second row
    under the primary chip label. Used in the scene topbar tags and the
-   timeline scene-card chips when the show-scientific-names setting is on. */
+   timeline scene-card chips when the show-scientific-names setting is on.
+   Padding-right reserves space for the absolutely-positioned X button so
+   it doesn't overlap the trailing characters of longer names. */
 .chip--with-sci {
   display: inline-flex;
   flex-direction: column;
   align-items: flex-start;
-  padding: 3px 10px;
+  padding: 3px 18px 3px 10px;
   line-height: 1.15;
   position: relative;
 }
@@ -379,8 +381,10 @@
 }
 .chip--with-sci .chip-x {
   position: absolute;
-  top: 1px;
-  right: 4px;
+  top: 2px;
+  right: 5px;
+  font-size: 11px;
+  line-height: 1;
 }
 
 /* Reviewed tags golden styling */
