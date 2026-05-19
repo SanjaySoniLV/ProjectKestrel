@@ -347,6 +347,10 @@
 
     // Version counter so concurrent renderScenes calls can bail out early
     let _renderScenesVersion = 0;
+    // True while a batched bird-catalog hydration kicked off by renderScenes
+    // is still in flight, so concurrent renders don't pile up duplicate IPC
+    // calls before the first one returns and re-renders the grid.
+    let _sceneCardHydrationPending = false;
     // Version counter so loadMultipleFolders can be cancelled mid-flight
     let _loadFoldersVersion = 0;
 
@@ -1418,6 +1422,32 @@
       //  - manual star rating on any image
       const visibleScenes = onlyReviewedScenes ? scenes.filter(isManuallyReviewedScene) : scenes;
 
+      // Batched hydration of bird-catalog records for every species pill we're
+      // about to paint when the show-scientific-names toggle is on. Collect
+      // the missing names up-front, fire one IPC call, and re-render once if
+      // any new records arrived. Without this batching the per-card loop
+      // below would fan out N requests on first paint of a large folder.
+      const _showSciOnCards = _getShowSciNames();
+      if (_showSciOnCards && !_sceneCardHydrationPending) {
+        const need = new Set();
+        for (const s of visibleScenes) {
+          for (const sp of (s.species || []).slice(0, 3)) {
+            if (sp && !_getCachedBirdRecord(sp)) need.add(sp);
+          }
+        }
+        if (need.size > 0) {
+          _sceneCardHydrationPending = true;
+          _hydrateBirdRecords(Array.from(need)).then(() => {
+            _sceneCardHydrationPending = false;
+            // Bail out if a newer renderScenes call has superseded us so we
+            // don't repaint over a stale view.
+            if (myVer === _renderScenesVersion) {
+              requestAnimationFrame(() => { try { renderScenes(); } catch (_) {} });
+            }
+          }).catch(() => { _sceneCardHydrationPending = false; });
+        }
+      }
+
       updateStatusBar(visibleScenes);
 
       // Prevent flash-of-empty-content: lock the grid's current height as a
@@ -1621,8 +1651,33 @@
           card.classList.add('scene-approved');
           chips.classList.add('reviewed-tags');
         }
+        // ``_showSciOnCards`` and ``_sceneCardHydrationPending`` are hoisted to
+        // the renderScenes scope (see top of the function). Per-card hydration
+        // would fan out N parallel IPC calls on the first render with the
+        // show-sci toggle on, so we batch the lookup once for the whole grid.
         for (const sp of s.species.slice(0, 3)) {
-          const c = document.createElement('span'); c.className = s.isApproved ? 'chip manual-approved' : 'chip'; c.textContent = sp; c.title = sp; chips.appendChild(c);
+          const c = document.createElement('span');
+          c.className = s.isApproved ? 'chip manual-approved' : 'chip';
+          if (_showSciOnCards) c.classList.add('chip--with-sci');
+          const primary = document.createElement('span');
+          primary.className = 'chip-primary';
+          primary.textContent = sp;
+          c.appendChild(primary);
+          let titleStr = sp;
+          if (_showSciOnCards) {
+            const rec = _getCachedBirdRecord(sp);
+            if (rec && rec.scientific_name) {
+              const sci = document.createElement('span');
+              sci.className = 'chip-sci';
+              const em = document.createElement('em');
+              em.textContent = rec.scientific_name;
+              sci.appendChild(em);
+              c.appendChild(sci);
+              titleStr = `${sp} — ${rec.scientific_name}`;
+            }
+          }
+          c.title = titleStr;
+          chips.appendChild(c);
         }
         if (s.species.length > 3) { const more = document.createElement('span'); more.className = 'chip badge'; more.textContent = `+${s.species.length - 3} more`; more.title = s.species.slice(3).join(', '); chips.appendChild(more); }
         // Put title and badges on the same physical line: left = title, right = badges
@@ -3069,19 +3124,29 @@
     let _activeTagInputSceneId = null;
 
     // Species → family taxonomy map (loaded once from backend on startup).
-    // Used to auto-add the family chip when a recognized species is added,
-    // cascade-remove species when a family chip is X'd, and populate the
-    // species autocomplete datalist.
+    // Used to auto-add the family chip when a recognized species is added and
+    // to cascade-remove species when a family chip is X'd. Populated from the
+    // legacy ``get_species_family_map`` endpoint so the auto-link behaviour
+    // stays scoped to the 500 ML-model species the existing flow was designed
+    // for -- the combobox itself sources its candidates from the bigger
+    // regional bird catalog via ``search_birds``.
     let _speciesFamilyMap = null;        // { "American Robin": "Thrush sp.", ... } (canonical case)
     let _speciesFamilyMapLower = null;   // lowercase keys → { canonicalName, family }
-    let _speciesNameList = [];           // sorted array of canonical species names
+
+    // Bird-catalog record cache for the new regional combobox. Records arrive
+    // from the backend with ``scientific_name``, ``family_common``, ``regions``,
+    // etc. We cache them keyed by lowercase canonical name so already-applied
+    // species pills can render their italicised scientific-name subtext
+    // without an extra round-trip per pill render.
+    const _birdRecordCache = new Map();
+    let _birdCatalogMeta = null;         // { regions: [...], default_regions: [...], total_species: N }
 
     async function loadSpeciesFamilyMap() {
-      if (_speciesFamilyMap) return;
+      if (_speciesFamilyMap && _birdCatalogMeta) return;
       if (!hasPywebviewApi || !window.pywebview?.api?.get_species_family_map) {
-        _speciesFamilyMap = {};
-        _speciesFamilyMapLower = {};
-        _speciesNameList = [];
+        _speciesFamilyMap = _speciesFamilyMap || {};
+        _speciesFamilyMapLower = _speciesFamilyMapLower || {};
+        _birdCatalogMeta = _birdCatalogMeta || { regions: [], default_regions: ['NA'], total_species: 0 };
         return;
       }
       try {
@@ -3092,13 +3157,78 @@
         for (const [sp, fam] of Object.entries(map)) {
           _speciesFamilyMapLower[sp.toLowerCase()] = { canonical: sp, family: fam };
         }
-        _speciesNameList = Object.keys(map).sort((a, b) => a.localeCompare(b));
-        kdebug(`[loadSpeciesFamilyMap] loaded ${_speciesNameList.length} species`);
+        kdebug(`[loadSpeciesFamilyMap] auto-link map loaded (${Object.keys(map).length} entries)`);
       } catch (e) {
         console.warn('[loadSpeciesFamilyMap] failed:', e);
         _speciesFamilyMap = {};
         _speciesFamilyMapLower = {};
-        _speciesNameList = [];
+      }
+      // Catalog meta (regions list for settings + total catalog size for logging).
+      try {
+        if (window.pywebview?.api?.get_bird_catalog_meta) {
+          const m = await window.pywebview.api.get_bird_catalog_meta();
+          if (m && m.success) {
+            _birdCatalogMeta = {
+              regions: Array.isArray(m.regions) ? m.regions : [],
+              default_regions: Array.isArray(m.default_regions) ? m.default_regions : ['NA'],
+              total_species: typeof m.total_species === 'number' ? m.total_species : 0,
+            };
+            kdebug(`[loadSpeciesFamilyMap] bird catalog: ${_birdCatalogMeta.total_species} species across ${_birdCatalogMeta.regions.length} regions`);
+          }
+        }
+      } catch (e) {
+        console.warn('[bird catalog meta] failed:', e);
+      }
+      if (!_birdCatalogMeta) {
+        _birdCatalogMeta = { regions: [], default_regions: ['NA'], total_species: 0 };
+      }
+    }
+
+    /** Return the user's selected biogeographic regions for the combobox.
+     *  Falls back to the catalog meta's default selection (typically ``['NA']``). */
+    function _getCurrentBirdRegions() {
+      const v = getSetting('bird_regions', null);
+      if (Array.isArray(v) && v.length > 0) return v.filter(r => typeof r === 'string' && r);
+      if (_birdCatalogMeta && Array.isArray(_birdCatalogMeta.default_regions) && _birdCatalogMeta.default_regions.length) {
+        return _birdCatalogMeta.default_regions.slice();
+      }
+      return ['NA'];
+    }
+
+    /** Return whether scientific-name subtext should render under species/family pills. */
+    function _getShowSciNames() {
+      return !!getSetting('show_scientific_names', false);
+    }
+
+    /** Cache a record so subsequent pill renders can show its scientific name. */
+    function _cacheBirdRecord(rec) {
+      if (!rec || typeof rec.canonical_common_name !== 'string') return;
+      _birdRecordCache.set(rec.canonical_common_name.toLowerCase(), rec);
+    }
+
+    function _getCachedBirdRecord(name) {
+      if (!name) return null;
+      return _birdRecordCache.get(String(name).toLowerCase()) || null;
+    }
+
+    /** Resolve a list of canonical names to records by hitting ``lookup_birds``.
+     *  Already-cached names are skipped. No-op when the backend is unavailable. */
+    async function _hydrateBirdRecords(names) {
+      if (!Array.isArray(names) || !names.length) return;
+      if (!hasPywebviewApi || !window.pywebview?.api?.lookup_birds) return;
+      const need = [];
+      for (const n of names) {
+        if (typeof n !== 'string' || !n) continue;
+        if (!_birdRecordCache.has(n.toLowerCase())) need.push(n);
+      }
+      if (!need.length) return;
+      try {
+        const res = await window.pywebview.api.lookup_birds(need);
+        if (res && res.success && res.map) {
+          for (const v of Object.values(res.map)) _cacheBirdRecord(v);
+        }
+      } catch (e) {
+        kdebug('[lookup_birds] failed:', e);
       }
     }
 
@@ -3107,31 +3237,40 @@
     // the highlight; Enter commits the highlighted item (or the typed value
     // if no highlight); clicking an item commits that item.
     const SPECIES_COMBO_MAX = 12;
+    let _comboRequestSeq = 0;  // monotonically increasing -- drop stale responses
 
-    /** Filter the species list for a typed query.
-     *  Returns up to SPECIES_COMBO_MAX matches: prefix matches first, then
-     *  substring matches. Empty query returns the alphabetical head of the list. */
-    function _filterSpeciesForCombo(query) {
-      if (!_speciesNameList || _speciesNameList.length === 0) return [];
-      const q = String(query || '').trim().toLowerCase();
-      if (!q) return _speciesNameList.slice(0, SPECIES_COMBO_MAX);
-      const prefix = [];
-      const substring = [];
-      for (const name of _speciesNameList) {
-        const lower = name.toLowerCase();
-        if (lower.startsWith(q)) {
-          prefix.push(name);
-        } else if (lower.includes(q)) {
-          substring.push(name);
-        }
-        if (prefix.length >= SPECIES_COMBO_MAX) break;
+    /** Region-filtered fuzzy search via the backend bird catalog.
+     *
+     *  Resolves to a list of record dicts (caller surfaces them in the dropdown).
+     *  A monotonic request id is returned alongside the results so callers can
+     *  drop responses that arrive out-of-order after a newer keystroke.
+     */
+    async function _searchSpeciesForCombo(query) {
+      const id = ++_comboRequestSeq;
+      if (!hasPywebviewApi || !window.pywebview?.api?.search_birds) {
+        return { id, items: [] };
       }
-      return prefix.concat(substring).slice(0, SPECIES_COMBO_MAX);
+      const regions = _getCurrentBirdRegions();
+      try {
+        const res = await window.pywebview.api.search_birds(String(query || ''), regions, SPECIES_COMBO_MAX);
+        const records = (res && res.success && Array.isArray(res.results)) ? res.results : [];
+        // Cache every result so the next pill render can find scientific names.
+        for (const rec of records) _cacheBirdRecord(rec);
+        return { id, items: records };
+      } catch (e) {
+        kdebug('[search_birds] failed:', e);
+        return { id, items: [] };
+      }
     }
 
     /** Render the dropdown list inside the given container element.
-     *  Each row shows the species name and (if known) its family in muted text,
-     *  so the user can confirm the auto-link before committing. */
+     *
+     *  Each row shows the canonical common name on the left and the family
+     *  display name on the right. When the show-scientific-names toggle is on
+     *  we also render the species' Latin binomial in italics beneath the
+     *  common name, and the alpha-4 code in a small badge if one is set --
+     *  so a user typing "AMRO" sees confirmation that ``AMRO`` → American Robin.
+     */
     function _renderSpeciesComboDropdown(dropdownEl, items, highlightIdx) {
       if (!dropdownEl) return;
       if (!items || items.length === 0) {
@@ -3139,22 +3278,64 @@
         dropdownEl.style.display = 'none';
         return;
       }
-      const html = items.map((name, i) => {
-        const family = (_speciesFamilyMap && _speciesFamilyMap[name]) || '';
+      const showSci = _getShowSciNames();
+      const html = items.map((rec, i) => {
+        const name = rec.canonical_common_name || '';
+        const sci  = rec.scientific_name || '';
+        const fam  = rec.family_common || '';
+        const code = rec.alpha_4 || '';
         const cls = i === highlightIdx ? 'chip-combo-item chip-combo-item--active' : 'chip-combo-item';
-        const fam = family ? `<span class="chip-combo-family">${escapeHtml(family)}</span>` : '';
-        return `<div class="${cls}" data-combo-index="${i}"><span class="chip-combo-name">${escapeHtml(name)}</span>${fam}</div>`;
+        const sciHtml = (showSci && sci)
+          ? `<span class="chip-combo-sci"><em>${escapeHtml(sci)}</em></span>` : '';
+        const codeHtml = code ? `<span class="chip-combo-alpha">${escapeHtml(code)}</span>` : '';
+        const famHtml  = fam ? `<span class="chip-combo-family">${escapeHtml(fam)}</span>` : '';
+        return (
+          `<div class="${cls}" data-combo-index="${i}" data-combo-name="${escapeHtml(name)}">` +
+            `<div class="chip-combo-left">` +
+              `<span class="chip-combo-name">${escapeHtml(name)}</span>` +
+              sciHtml +
+            `</div>` +
+            `<div class="chip-combo-right">${codeHtml}${famHtml}</div>` +
+          `</div>`
+        );
       }).join('');
       dropdownEl.innerHTML = html;
       dropdownEl.style.display = '';
     }
 
     /** Look up the family display name for a species name (case-insensitive).
-     *  Returns { canonical, family } if matched, or null for free-form input. */
+     *  Returns { canonical, family } if matched, or null for free-form input.
+     *  Prefers the cached bird-catalog record (richer info) and falls back to
+     *  the legacy auto-link map for species not yet seen by the combobox. */
     function _lookupFamilyForSpecies(name) {
-      if (!name || !_speciesFamilyMapLower) return null;
+      if (!name) return null;
+      const cached = _getCachedBirdRecord(name);
+      if (cached) {
+        return { canonical: cached.canonical_common_name, family: cached.family_common };
+      }
+      if (!_speciesFamilyMapLower) return null;
       const hit = _speciesFamilyMapLower[String(name).trim().toLowerCase()];
       return hit || null;
+    }
+
+    /** HTML for a species or family pill with optional italicised
+     *  scientific-name subtext. ``primary`` is the visible chip label;
+     *  ``sci`` is the Latin string (binomial for species, scientific family for
+     *  family); ``removeAttr`` is the data attribute name used to wire the X
+     *  button. Pass ``inline=true`` for the scene-card variant which stacks
+     *  the subtext on a second line within the same chip. */
+    function _renderTagPillHtml(primary, sci, options) {
+      const opts = options || {};
+      const chipClass = opts.chipClass || 'chip';
+      const removeAttr = opts.removeAttr || '';
+      const showSci = !!opts.showSci && !!sci;
+      const removeBtn = removeAttr
+        ? `<span class="chip-x" data-${removeAttr}="${escapeHtml(primary)}" title="Remove '${escapeHtml(primary)}'">×</span>`
+        : '';
+      const sciHtml = showSci
+        ? `<span class="chip-sci"><em>${escapeHtml(sci)}</em></span>` : '';
+      const cls = showSci ? `${chipClass} chip--with-sci` : chipClass;
+      return `<span class="${cls}"><span class="chip-primary">${escapeHtml(primary)}</span>${sciHtml}${removeBtn}</span>`;
     }
 
     /** Add a species to the draft and, if the species is in the taxonomy map,
@@ -3187,13 +3368,34 @@
       const { species, families, approved } = collectSceneSpecies(scene.id);
       const suggestions = _computeSceneTagSuggestions(scene.id, species, families);
       const chipClass = approved ? 'chip manual-approved' : 'chip';
+      const showSci = _getShowSciNames();
+
+      // Kick off async hydration for any pills we don't already have records
+      // cached for. The first paint may show plain pills; once records arrive
+      // we re-render so the italicised scientific names appear without
+      // blocking the initial render.
+      if (showSci) {
+        const need = (species || []).filter(sp => !_getCachedBirdRecord(sp));
+        if (need.length) {
+          _hydrateBirdRecords(need).then(() => {
+            if (_activeTagInputSceneId === String(scene.id) || sceneDlg?.open) {
+              const fresh = reloadScene(scene.id) || scene;
+              renderTopbarTags(fresh);
+            }
+          });
+        }
+      }
 
       let html = '';
       // Species
       html += '<span class="scene-tag-label">Species:</span> ';
       if (species.length) {
         for (const sp of species) {
-          html += `<span class="${chipClass}">${escapeHtml(sp)}<span class="chip-x" data-remove-species="${escapeHtml(sp)}" title="Remove '${escapeHtml(sp)}'">×</span></span>`;
+          const rec = _getCachedBirdRecord(sp);
+          const sci = rec ? rec.scientific_name : '';
+          html += _renderTagPillHtml(sp, sci, {
+            chipClass, removeAttr: 'remove-species', showSci,
+          });
         }
       } else {
         html += '<span class="muted" style="font-size:11px">—</span>';
@@ -3213,7 +3415,19 @@
       html += '<span class="scene-tag-label">Family:</span> ';
       if (families.length) {
         for (const fm of families) {
-          html += `<span class="${chipClass}">${escapeHtml(fm)}<span class="chip-x" data-remove-family="${escapeHtml(fm)}" title="Remove '${escapeHtml(fm)}'">×</span></span>`;
+          // Scientific family name is the same across all species in that
+          // family, so pull it from any cached record whose family display
+          // name matches. Empty string means we don't show the subtext yet.
+          let sci = '';
+          for (const sp of species) {
+            const rec = _getCachedBirdRecord(sp);
+            if (rec && rec.family_common === fm && rec.family_sci) {
+              sci = rec.family_sci; break;
+            }
+          }
+          html += _renderTagPillHtml(fm, sci, {
+            chipClass, removeAttr: 'remove-family', showSci,
+          });
         }
       } else {
         html += '<span class="muted" style="font-size:11px">—</span>';
@@ -3369,9 +3583,15 @@
           dropdown.style.minWidth = Math.max(Math.round(rect.width), 240) + 'px';
         };
 
-        const refreshDropdown = () => {
+        const refreshDropdown = async () => {
           if (!isSpeciesInput || !dropdown) return;
-          comboItems = _filterSpeciesForCombo(inp.value);
+          // The async fetch returns its own request id; only the most recent
+          // request is allowed to repaint the dropdown, so quick typing
+          // doesn't flash older results on top of newer ones.
+          const pending = await _searchSpeciesForCombo(inp.value);
+          if (!dropdown.isConnected) return;
+          if (pending.id !== _comboRequestSeq) return;
+          comboItems = pending.items;
           comboIndex = comboItems.length > 0 ? 0 : -1;
           _renderSpeciesComboDropdown(dropdown, comboItems, comboIndex);
           if (comboItems.length > 0) positionDropdown();
@@ -3449,6 +3669,16 @@
           }
         };
 
+        // Dropdown items are full record objects; ``commit()`` accepts either a
+        // string (typed value) or a record (selected from the dropdown). This
+        // helper normalises both to the canonical common name.
+        const _comboValueOf = (item) => {
+          if (item == null) return undefined;
+          if (typeof item === 'string') return item;
+          if (typeof item.canonical_common_name === 'string') return item.canonical_common_name;
+          return undefined;
+        };
+
         inp.onkeydown = (e) => {
           if (isSpeciesInput && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
             if (!comboItems.length) return;
@@ -3458,10 +3688,11 @@
           }
           if (e.key === 'Enter') {
             e.preventDefault();
-            // If a dropdown row is highlighted, commit that. Otherwise commit
-            // the typed value (allowing free-form species like "Eurasian Wren").
+            // If a dropdown row is highlighted, commit that record's canonical
+            // name. Otherwise commit the typed value (allowing free-form
+            // species like "Eurasian Wren" if it isn't in the catalog).
             const chosen = (isSpeciesInput && comboIndex >= 0 && comboIndex < comboItems.length)
-              ? comboItems[comboIndex]
+              ? _comboValueOf(comboItems[comboIndex])
               : undefined;
             commit(chosen);
             return;
@@ -3485,7 +3716,7 @@
               e.preventDefault(); // keep input focused so blur-commit doesn't race
               const idx = parseInt(row.dataset.comboIndex || '-1', 10);
               if (idx >= 0 && idx < comboItems.length) {
-                commit(comboItems[idx]);
+                commit(_comboValueOf(comboItems[idx]));
               }
             };
           }
@@ -4737,6 +4968,33 @@
       const ectSettings = document.getElementById('settingsExposureCorrectedThumbs');
       if (ectSettings) ectSettings.checked = !!getSetting('exposure_corrected_thumbs', true);
 
+      // ── Species & Region section ─────────────────────────────────────────
+      const showSciCb = document.getElementById('showScientificNames');
+      if (showSciCb) showSciCb.checked = !!getSetting('show_scientific_names', false);
+
+      const regionsPicker = document.getElementById('birdRegionsPicker');
+      if (regionsPicker) {
+        // Make sure catalog meta is loaded before we paint checkboxes -- the
+        // load is cached so re-entering Settings is cheap.
+        try { await loadSpeciesFamilyMap(); } catch (_) { /* non-fatal */ }
+        const meta = _birdCatalogMeta || { regions: [], default_regions: ['NA'] };
+        const selected = new Set(_getCurrentBirdRegions());
+        if (!Array.isArray(meta.regions) || meta.regions.length === 0) {
+          regionsPicker.innerHTML = '<span class="muted" style="font-size:11px">Region list unavailable — defaulting to North America.</span>';
+        } else {
+          regionsPicker.innerHTML = meta.regions.map(r => {
+            const checked = selected.has(r.code) ? 'checked' : '';
+            return (
+              `<label class="inline" style="gap:6px;cursor:pointer;font-size:13px">` +
+                `<input type="checkbox" class="bird-region-cb" data-region-code="${escapeHtml(r.code)}" ${checked} />` +
+                `<span>${escapeHtml(r.label)}</span>` +
+                `<span class="muted" style="font-size:11px;margin-left:auto">${escapeHtml(r.code)}</span>` +
+              `</label>`
+            );
+          }).join('');
+        }
+      }
+
       dlg.showModal();
     }
     async function applySettings() {
@@ -4760,6 +5018,26 @@
       const rawExpEl = document.getElementById('rawExposureCorrectionDisabled');
       const rawExposureCorrectionDisabled = rawExpEl ? !!rawExpEl.checked : !!existing.raw_exposure_correction_disabled;
       const prevRawExposureDisabled = !!existing.raw_exposure_correction_disabled;
+
+      // ── Species & Region: collect region picker state + show-sci toggle ──
+      // An empty selection falls back to ``['NA']`` rather than producing an
+      // unusable combobox where no species ever surface.
+      const regionsPicker = document.getElementById('birdRegionsPicker');
+      const regionInputs = regionsPicker
+        ? regionsPicker.querySelectorAll('input.bird-region-cb')
+        : [];
+      const birdRegions = Array.from(regionInputs)
+        .filter(cb => cb.checked)
+        .map(cb => cb.dataset.regionCode)
+        .filter(c => typeof c === 'string' && c.length > 0);
+      const finalRegions = birdRegions.length > 0 ? birdRegions : ['NA'];
+      const showSciCbEl = document.getElementById('showScientificNames');
+      const showScientificNames = showSciCbEl ? !!showSciCbEl.checked : !!existing.show_scientific_names;
+      const prevRegions = Array.isArray(existing.bird_regions) ? existing.bird_regions.slice().sort().join(',') : '';
+      const nextRegions = finalRegions.slice().sort().join(',');
+      const regionsChanged = prevRegions !== nextRegions;
+      const showSciChanged = !!existing.show_scientific_names !== showScientificNames;
+
       const settings = {
         ...existing, editor, customEditorPath, treeScanDepth,
         analytics_opted_in: analyticsOptIn, analytics_consent_shown: true,
@@ -4768,6 +5046,8 @@
         auto_save_enabled: autoSaveEnabled,
         raw_exposure_correction_disabled: rawExposureCorrectionDisabled,
         exposure_corrected_thumbs: exposureCorrectedThumbs,
+        bird_regions: finalRegions,
+        show_scientific_names: showScientificNames,
       };
       _autoSaveEnabled = autoSaveEnabled;
       if (!_autoSaveEnabled) {
@@ -4792,6 +5072,16 @@
         if (sceneDlg?.open && _currentScene) {
           renderFilmstrip(_currentScene);
           await selectFilmstripImage(currentImageIndex, _currentScene, false, false);
+        }
+      }
+      // Show-scientific-names + region changes don't affect the model output,
+      // just the way pills render and which species the combobox surfaces.
+      // Repaint anything that's currently on screen so the change is visible
+      // immediately rather than waiting for the next interaction.
+      if ((showSciChanged || regionsChanged) && rows.length > 0) {
+        await renderScenes();
+        if (sceneDlg?.open && _currentScene) {
+          renderTopbarTags(_currentScene);
         }
       }
     }

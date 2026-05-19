@@ -328,12 +328,59 @@
 .chip-combo-item:hover {
   background: rgba(86, 175, 255, 0.28);
 }
+.chip-combo-left {
+  display: flex; flex-direction: column; align-items: flex-start;
+  min-width: 0; flex: 1 1 auto; overflow: hidden;
+}
+.chip-combo-right {
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+}
 .chip-combo-name { font-weight: 500; }
+.chip-combo-sci {
+  color: #9ab;
+  font-size: 11px;
+  font-style: italic;
+  margin-top: 1px;
+}
+.chip-combo-alpha {
+  background: rgba(86, 175, 255, 0.18);
+  border: 1px solid rgba(86, 175, 255, 0.4);
+  color: #cfe5ff;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
 .chip-combo-family {
   color: #9ab;
   font-size: 11px;
   font-style: italic;
   flex-shrink: 0;
+}
+
+/* Pill variant: stacks the italicised scientific name on a second row
+   under the primary chip label. Used in the scene topbar tags and the
+   timeline scene-card chips when the show-scientific-names setting is on. */
+.chip--with-sci {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 3px 10px;
+  line-height: 1.15;
+  position: relative;
+}
+.chip--with-sci .chip-primary { display: inline; }
+.chip--with-sci .chip-sci {
+  font-size: 10px;
+  font-style: italic;
+  color: #97a3b5;
+  margin-top: 1px;
+}
+.chip--with-sci .chip-x {
+  position: absolute;
+  top: 1px;
+  right: 4px;
 }
 
 /* Reviewed tags golden styling */

@@ -192,6 +192,53 @@ class TestSanitizePayload:
         assert isinstance(result, dict)
 
 
+class TestBirdRegionsSetting:
+    """Tests for ``bird_regions`` and ``show_scientific_names`` sanitisation
+    -- the new species-tagging settings introduced alongside the global
+    bird catalog."""
+
+    def test_valid_region_list_preserved(self):
+        result = _sanitize_settings_payload({"bird_regions": ["NA", "PAL"]})
+        assert "bird_regions" in result
+        assert set(result["bird_regions"]) == {"NA", "PAL"}
+
+    def test_invalid_codes_dropped(self):
+        result = _sanitize_settings_payload({"bird_regions": ["NA", "PIZZA", "AU"]})
+        assert "bird_regions" in result
+        assert set(result["bird_regions"]) == {"NA", "AU"}
+
+    def test_empty_list_falls_back_to_default(self):
+        result = _sanitize_settings_payload({"bird_regions": []})
+        assert "bird_regions" in result
+        assert result["bird_regions"] == ["NA"]
+
+    def test_all_invalid_falls_back_to_default(self):
+        result = _sanitize_settings_payload({"bird_regions": ["XYZ", "ABC"]})
+        assert result["bird_regions"] == ["NA"]
+
+    def test_duplicates_deduplicated(self):
+        result = _sanitize_settings_payload({"bird_regions": ["NA", "NA", "AU"]})
+        assert "bird_regions" in result
+        assert result["bird_regions"].count("NA") == 1
+
+    def test_non_list_resets_to_default(self):
+        result = _sanitize_settings_payload({"bird_regions": "NA"})
+        assert result["bird_regions"] == ["NA"]
+
+    def test_non_string_items_skipped(self):
+        result = _sanitize_settings_payload({"bird_regions": ["NA", 42, None, "PAL"]})
+        assert set(result["bird_regions"]) == {"NA", "PAL"}
+
+    def test_show_scientific_names_coerced(self):
+        for raw, expected in (
+            (True, True), (False, False),
+            ("true", True), ("false", False),
+            (1, True), (0, False),
+        ):
+            result = _sanitize_settings_payload({"show_scientific_names": raw})
+            assert result.get("show_scientific_names") is expected, (raw, expected)
+
+
 class TestPassthroughSetting:
     """Tests for _passthrough_setting_value (forward compat for unknown keys)."""
 
