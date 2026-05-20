@@ -772,24 +772,33 @@
   display: block;
 }
 
-/* Compact circular overflow button -- click opens .card-more-popover. */
-.chip-plus {
+/* Overflow reveal -- a regular chip pill (NOT the dashed "add new tag"
+   affordance used by .chip-add-btn / .scene-chip-add elsewhere). A down
+   chevron inside the pill signals "click to see more"; the pill base
+   keeps it visually grouped with the species chip it sits next to. The
+   .chip base is applied via class="chip chip-more", so this rule only
+   needs to reset native <button> defaults and tighten the glyph. */
+.chip-more {
   cursor: pointer;
-  background: transparent;
-  border: 1px dashed #3a84e6;
-  color: #6aa0ff;
-  border-radius: 999px;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  font-size: 14px;
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  /* Tighter padding than a regular chip since the glyph is single-char. */
+  padding: 2px 7px;
   line-height: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
   flex-shrink: 0;
+  /* Muted glyph so the chevron reads as a control hint, not as label
+     content competing with the adjacent species name. */
+  color: #97a3b5;
 }
-.chip-plus:hover { background: #1a2a44; color: #cce0ff; }
+.chip-more:hover {
+  border-color: #3a84e6;
+  color: #cce0ff;
+}
+.chip-more:focus-visible {
+  outline: 2px solid #3a84e6;
+  outline-offset: 1px;
+}
 
 /* Right-side meta -- star/quality | camera/count, no pill background. */
 .card-meta {

@@ -1699,8 +1699,11 @@
         if (overflowCount > 0) {
           const plus = document.createElement('button');
           plus.type = 'button';
-          plus.className = 'chip-plus';
-          plus.textContent = '+';
+          plus.className = 'chip chip-more';
+          // Down chevron (▾, U+25BE) signals "reveal more" without
+          // overloading the '+' affordance that other parts of the UI
+          // (scene-chip-add, chip-add-btn) use for "create new tag".
+          plus.textContent = '▾';
           plus.title = `Show ${overflowCount} more`;
           plus.setAttribute('aria-label', `Show ${overflowCount} more tags`);
           plus.addEventListener('click', (ev) => {
@@ -1717,7 +1720,12 @@
         // quality matches the user-visible precision elsewhere in the UI.
         const scoreEl = document.createElement('span');
         scoreEl.className = 'meta-score';
-        scoreEl.textContent = `★ ${s.maxQuality.toFixed(2)}`;
+        // Negative quality is the pipeline's sentinel for "no animal
+        // detected" (defaults to -1.00 in that case). Render as an em-dash
+        // pair instead of a misleading numeric score.
+        scoreEl.textContent = (s.maxQuality >= 0)
+          ? `★ ${s.maxQuality.toFixed(2)}`
+          : `★ --`;
         meta.appendChild(scoreEl);
         const metaSep = document.createElement('span');
         metaSep.className = 'meta-sep';
