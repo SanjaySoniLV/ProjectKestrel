@@ -347,6 +347,10 @@
 
     // Version counter so concurrent renderScenes calls can bail out early
     let _renderScenesVersion = 0;
+    // True while a batched bird-catalog hydration kicked off by renderScenes
+    // is still in flight, so concurrent renders don't pile up duplicate IPC
+    // calls before the first one returns and re-renders the grid.
+    let _sceneCardHydrationPending = false;
     // Version counter so loadMultipleFolders can be cancelled mid-flight
     let _loadFoldersVersion = 0;
 
@@ -1235,11 +1239,8 @@
         for (const r of arr) if (parseNumber(r.quality) > parseNumber(rep.quality)) rep = r;
 
         const computedTags = _computeSceneTagsFromRows(arr, minSpeciesConf, includeSecondary, includeFamilies);
-        let species = computedTags.species.slice();
-        if (includeFamilies) {
-          const merged = new Set([...species, ...computedTags.families]);
-          species = Array.from(merged).sort();
-        }
+        let species = computedTags.species.slice().sort();
+        let families = includeFamilies ? computedTags.families.slice().sort() : [];
 
         const maxQ = Math.max(...arr.map(a => parseNumber(a.quality)));
         const captureMsList = arr.map(a => parseCaptureTimeMs(a.capture_time)).filter(Number.isFinite);
@@ -1251,9 +1252,8 @@
         const isApproved = !!sdScene?.user_tags?.finalized;
         // If this scene has finalized user_tags, use them for species/family display
         if (isApproved) {
-          const utSpecies = (sdScene.user_tags.species || []).slice().sort();
-          const utFams = includeFamilies ? (sdScene.user_tags.families || []).slice().sort() : [];
-          species = utFams.length ? Array.from(new Set([...utSpecies, ...utFams])).sort() : utSpecies;
+          species = (sdScene.user_tags.species || []).slice().sort();
+          families = includeFamilies ? (sdScene.user_tags.families || []).slice().sort() : [];
         }
 
         list.push({
@@ -1262,6 +1262,7 @@
           representative: rep,
           imageCount: arr.length,
           species,
+          families,
           maxQuality: maxQ,
           captureTimeMs,
           sceneName,
@@ -1269,9 +1270,15 @@
         });
       }
 
-      // filter by search term
+      // Search predicate: match the typed query against any species or
+      // family term on the scene, and -- when show_scientific_names is on
+      // -- also the Latin binomial / scientific family name pulled from
+      // the bird-catalog cache. The sci-name check is gated on the toggle
+      // so the search experience matches the visible UI: if a user can't
+      // see Latin names, typing one shouldn't covertly affect results.
       const q = (searchTerm || '').trim().toLowerCase();
-      const filtered = q ? list.filter(s => s.species.some(sp => sp.toLowerCase().includes(q))) : list;
+      const sciSearch = !!q && _getShowSciNames();
+      const filtered = q ? list.filter(s => _sceneMatchesQuery(s, q, sciSearch)) : list;
 
       // sort
       const sorted = filtered.sort((a, b) => {
@@ -1417,6 +1424,39 @@
       //  - manual/verified accept-reject culling decision on any image
       //  - manual star rating on any image
       const visibleScenes = onlyReviewedScenes ? scenes.filter(isManuallyReviewedScene) : scenes;
+
+      // Batched hydration of bird-catalog records for every species pill we're
+      // about to paint when the show-scientific-names toggle is on. Collect
+      // the missing names up-front, fire one IPC call, and re-render once if
+      // any new records arrived. Without this batching the per-card loop
+      // below would fan out N requests on first paint of a large folder.
+      const _showSciOnCards = _getShowSciNames();
+      if (_showSciOnCards && !_sceneCardHydrationPending) {
+        const need = new Set();
+        for (const s of visibleScenes) {
+          // Hydrate every species and family term on the scene. The
+          // card's family-fallback scan needs a cached species record
+          // per family pill so it can borrow family_sci.
+          for (const sp of (s.species || [])) {
+            if (sp && !_isBirdRecordKnown(sp)) need.add(sp);
+          }
+          for (const fm of (s.families || [])) {
+            if (fm && !_isBirdRecordKnown(fm)) need.add(fm);
+          }
+        }
+        if (need.size > 0) {
+          _sceneCardHydrationPending = true;
+          _hydrateBirdRecords(Array.from(need)).then(() => {
+            _sceneCardHydrationPending = false;
+            // Always queue a repaint -- the cache (and miss-set) just gained
+            // entries that change what the cards show. We can't bail on a
+            // newer renderScenes call here, because that newer call was
+            // gated out of starting its own hydration by the pending flag
+            // and built its DOM against the still-empty cache.
+            requestAnimationFrame(() => { try { renderScenes(); } catch (_) {} });
+          }).catch(() => { _sceneCardHydrationPending = false; });
+        }
+      }
 
       updateStatusBar(visibleScenes);
 
@@ -1580,58 +1620,124 @@
 
         const body = document.createElement('div');
         body.className = 'body';
-        const title = document.createElement('div');
-        title.className = 'title';
-        const _localNum = String(s.id).split(':').pop();
         const _folderName = folderBaseName(s.representative?.__rootPath || '');
-        // Build the title entirely from text nodes / trusted elements — never
-        // assign to innerHTML with any user-controlled substring. The previous
-        // decodeEntities(escapeHtml(...)) pattern round-tripped the escaped
-        // string back to its raw form, which allowed a crafted scene name
-        // (e.g. from a poisoned kestrel_scenedata.json) to inject a DOM-XSS
-        // and, via the pywebview bridge, escalate to RCE. See FINDING-01.
-        if (_folderName && !showFolderHeaders) {
-          const folderEl = document.createElement('i');
-          folderEl.className = 'folder-name';
-          folderEl.textContent = _folderName;
-          title.appendChild(folderEl);
-          const sep = document.createElement('span');
-          sep.className = 'title-sep';
-          sep.textContent = ' / ';
-          title.appendChild(sep);
+
+        // Secondary title row -- only shown when the scene has a folder
+        // prefix (sub-folder name visible because group-by-folder header is
+        // off) or a user-set scene name. Otherwise the body collapses to
+        // just the chip/meta strip. ``#N`` is no longer rendered: the
+        // image and grid position carry the identity.
+        // Build any user-controlled substring with textContent only, never
+        // innerHTML, per FINDING-01.
+        const needTitleRow = !!(s.sceneName || (_folderName && !showFolderHeaders));
+        const title = needTitleRow ? document.createElement('div') : null;
+        if (title) {
+          title.className = 'title';
+          if (_folderName && !showFolderHeaders) {
+            const folderEl = document.createElement('i');
+            folderEl.className = 'folder-name';
+            folderEl.textContent = _folderName;
+            title.appendChild(folderEl);
+            if (s.sceneName) {
+              const sep = document.createElement('span');
+              sep.className = 'title-sep';
+              sep.textContent = ' / ';
+              title.appendChild(sep);
+            }
+          }
+          if (s.sceneName) {
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'name';
+            nameSpan.textContent = String(s.sceneName);
+            title.appendChild(nameSpan);
+          }
+          title.title = (s.representative?.__rootPath || String(s.id)) + (s.sceneName ? ` — ${s.sceneName}` : '');
+          body.appendChild(title);
         }
-        const idBold = document.createElement('b');
-        idBold.textContent = `#${_localNum}`;
-        title.appendChild(idBold);
-        if (s.sceneName) {
-          title.appendChild(document.createTextNode(' \u2014 '));
-          const nameSpan = document.createElement('span');
-          nameSpan.className = 'name';
-          nameSpan.textContent = String(s.sceneName);
-          title.appendChild(nameSpan);
+        if (s.isApproved) card.classList.add('scene-approved');
+
+        // Pill list -- prefer species over families. Family pills only
+        // appear on the card when the scene has no species tags at all;
+        // the dialog still surfaces both tiers. aggregateScenes is the
+        // single source of truth for the search predicate (which checks
+        // both arrays), so dropping families from the card doesn't hide
+        // matches.
+        const cardPills = (s.species && s.species.length) ? s.species : (s.families || []);
+        const firstPill = cardPills[0] || null;
+        const overflowCount = Math.max(0, cardPills.length - 1);
+
+        const metaRow = document.createElement('div');
+        metaRow.className = 'card-meta-row';
+        if (s.isApproved) metaRow.classList.add('reviewed-tags');
+
+        const pillsWrap = document.createElement('div');
+        pillsWrap.className = 'card-pills';
+        if (firstPill) {
+          const c = document.createElement('span');
+          c.className = s.isApproved ? 'chip manual-approved' : 'chip';
+          if (_showSciOnCards) c.classList.add('chip--with-sci');
+          const primary = document.createElement('span');
+          primary.className = 'chip-primary';
+          primary.textContent = firstPill;
+          c.appendChild(primary);
+          let titleStr = firstPill;
+          if (_showSciOnCards) {
+            const sciText = _resolvePillSci(firstPill, cardPills);
+            if (sciText) {
+              const sci = document.createElement('span');
+              sci.className = 'chip-sci';
+              const em = document.createElement('em');
+              em.textContent = sciText;
+              sci.appendChild(em);
+              c.appendChild(sci);
+              titleStr = `${firstPill} — ${sciText}`;
+            }
+          }
+          c.title = titleStr;
+          pillsWrap.appendChild(c);
         }
-        title.title = (s.representative?.__rootPath || String(s.id)) + (s.sceneName ? ` \u2014 ${s.sceneName}` : '');
+        if (overflowCount > 0) {
+          const plus = document.createElement('button');
+          plus.type = 'button';
+          plus.className = 'chip chip-more';
+          // Down chevron (▾, U+25BE) signals "reveal more" without
+          // overloading the '+' affordance that other parts of the UI
+          // (scene-chip-add, chip-add-btn) use for "create new tag".
+          plus.textContent = '▾';
+          plus.title = `Show ${overflowCount} more`;
+          plus.setAttribute('aria-label', `Show ${overflowCount} more tags`);
+          plus.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            _openMorePillsPopover(plus, cardPills.slice(1), _showSciOnCards, cardPills);
+          });
+          pillsWrap.appendChild(plus);
+        }
+        metaRow.appendChild(pillsWrap);
+
         const meta = document.createElement('div');
-        // Use a dedicated class for title-level badges so other .meta uses are unaffected
-        meta.className = 'meta title-badges';
-        meta.innerHTML = `<span class="score">★ ${fmt3(s.maxQuality)}</span><span>\ud83d\udcf8 ${s.imageCount}</span>`;
-        const chips = document.createElement('div');
-        chips.className = 'chips';
-        if (s.isApproved) {
-          card.classList.add('scene-approved');
-          chips.classList.add('reviewed-tags');
-        }
-        for (const sp of s.species.slice(0, 3)) {
-          const c = document.createElement('span'); c.className = s.isApproved ? 'chip manual-approved' : 'chip'; c.textContent = sp; c.title = sp; chips.appendChild(c);
-        }
-        if (s.species.length > 3) { const more = document.createElement('span'); more.className = 'chip badge'; more.textContent = `+${s.species.length - 3} more`; more.title = s.species.slice(3).join(', '); chips.appendChild(more); }
-        // Put title and badges on the same physical line: left = title, right = badges
-        const titleRow = document.createElement('div');
-        titleRow.className = 'title-row';
-        titleRow.appendChild(title);
-        titleRow.appendChild(meta);
-        body.appendChild(titleRow);
-        body.appendChild(chips);
+        meta.className = 'card-meta';
+        // Score + image count on one line, no background pill. Two-decimal
+        // quality matches the user-visible precision elsewhere in the UI.
+        const scoreEl = document.createElement('span');
+        scoreEl.className = 'meta-score';
+        // Negative quality is the pipeline's sentinel for "no animal
+        // detected" (defaults to -1.00 in that case). Render as an em-dash
+        // pair instead of a misleading numeric score.
+        scoreEl.textContent = (s.maxQuality >= 0)
+          ? `★ ${s.maxQuality.toFixed(2)}`
+          : `★ --`;
+        meta.appendChild(scoreEl);
+        const metaSep = document.createElement('span');
+        metaSep.className = 'meta-sep';
+        metaSep.textContent = ' | ';
+        meta.appendChild(metaSep);
+        const countEl = document.createElement('span');
+        countEl.className = 'meta-count';
+        countEl.textContent = `📸 ${s.imageCount}`;
+        meta.appendChild(countEl);
+        metaRow.appendChild(meta);
+
+        body.appendChild(metaRow);
         card.appendChild(body);
 
         card.addEventListener('click', (ev) => {
@@ -1807,7 +1913,7 @@
 
           const hdr = document.createElement('div');
           hdr.className = 'folder-group-header' + (collapsed ? ' collapsed' : '');
-          hdr.innerHTML = `<span class="folder-group-toggle">\u25bc</span><span class="folder-group-name">${escapeHtml(folderName)}</span><span class="folder-group-count muted">${allScenesInFolder.length} scene${allScenesInFolder.length === 1 ? '' : 's'}</span>`;
+          hdr.innerHTML = `<span class="folder-group-toggle">▼</span><span class="folder-group-name">${escapeHtml(folderName)}</span><span class="folder-group-count muted">${allScenesInFolder.length} scene${allScenesInFolder.length === 1 ? '' : 's'}</span>`;
 
           // Left-aligned secondary actions
           const leftActions = document.createElement('div');
@@ -3069,19 +3175,44 @@
     let _activeTagInputSceneId = null;
 
     // Species → family taxonomy map (loaded once from backend on startup).
-    // Used to auto-add the family chip when a recognized species is added,
-    // cascade-remove species when a family chip is X'd, and populate the
-    // species autocomplete datalist.
+    // Used to auto-add the family chip when a recognized species is added and
+    // to cascade-remove species when a family chip is X'd. Populated from the
+    // legacy ``get_species_family_map`` endpoint so the auto-link behaviour
+    // stays scoped to the 500 ML-model species the existing flow was designed
+    // for -- the combobox itself sources its candidates from the bigger
+    // regional bird catalog via ``search_birds``.
     let _speciesFamilyMap = null;        // { "American Robin": "Thrush sp.", ... } (canonical case)
     let _speciesFamilyMapLower = null;   // lowercase keys → { canonicalName, family }
-    let _speciesNameList = [];           // sorted array of canonical species names
+
+    // Bird-catalog record cache for the new regional combobox. Records arrive
+    // from the backend with ``scientific_name``, ``family_common``, ``regions``,
+    // etc. We cache them keyed by lowercase canonical name so already-applied
+    // species pills can render their italicised scientific-name subtext
+    // without an extra round-trip per pill render.
+    const _birdRecordCache = new Map();
+    // Names we've asked ``lookup_birds`` about and got no record back for
+    // (e.g. genus/family-level "sp." placeholders that aren't in the IOC
+    // catalog). Tracked separately from the record cache so the hydration
+    // loop terminates without polluting ``_lookupFamilyForSpecies`` with
+    // empty-family sentinel rows.
+    const _birdRecordMisses = new Set();
+    let _birdCatalogMeta = null;         // { regions: [...], default_regions: [...], total_species: N }
+    // family_common -> family_sci (e.g. "Hawk/Eagle/Kite sp." -> "Accipitridae").
+    // Hydrated once at startup. Mirrors the catalog's full mapping so a family
+    // pill can render its scientific-family subtext without needing a sibling
+    // species record to be cached in the same scene.
+    let _familyCommonToSci = null;       // Map or null until loaded
+    function _getFamilySci(name) {
+      if (!name || !_familyCommonToSci) return '';
+      return _familyCommonToSci.get(String(name).trim()) || '';
+    }
 
     async function loadSpeciesFamilyMap() {
-      if (_speciesFamilyMap) return;
+      if (_speciesFamilyMap && _birdCatalogMeta) return;
       if (!hasPywebviewApi || !window.pywebview?.api?.get_species_family_map) {
-        _speciesFamilyMap = {};
-        _speciesFamilyMapLower = {};
-        _speciesNameList = [];
+        _speciesFamilyMap = _speciesFamilyMap || {};
+        _speciesFamilyMapLower = _speciesFamilyMapLower || {};
+        _birdCatalogMeta = _birdCatalogMeta || { regions: [], default_regions: ['NA'], total_species: 0 };
         return;
       }
       try {
@@ -3092,13 +3223,246 @@
         for (const [sp, fam] of Object.entries(map)) {
           _speciesFamilyMapLower[sp.toLowerCase()] = { canonical: sp, family: fam };
         }
-        _speciesNameList = Object.keys(map).sort((a, b) => a.localeCompare(b));
-        kdebug(`[loadSpeciesFamilyMap] loaded ${_speciesNameList.length} species`);
+        kdebug(`[loadSpeciesFamilyMap] auto-link map loaded (${Object.keys(map).length} entries)`);
       } catch (e) {
         console.warn('[loadSpeciesFamilyMap] failed:', e);
         _speciesFamilyMap = {};
         _speciesFamilyMapLower = {};
-        _speciesNameList = [];
+      }
+      // Catalog meta (regions list for settings + total catalog size for logging).
+      try {
+        if (window.pywebview?.api?.get_bird_catalog_meta) {
+          const m = await window.pywebview.api.get_bird_catalog_meta();
+          if (m && m.success) {
+            _birdCatalogMeta = {
+              regions: Array.isArray(m.regions) ? m.regions : [],
+              default_regions: Array.isArray(m.default_regions) ? m.default_regions : ['NA'],
+              total_species: typeof m.total_species === 'number' ? m.total_species : 0,
+            };
+            kdebug(`[loadSpeciesFamilyMap] bird catalog: ${_birdCatalogMeta.total_species} species across ${_birdCatalogMeta.regions.length} regions`);
+          }
+        }
+      } catch (e) {
+        console.warn('[bird catalog meta] failed:', e);
+      }
+      if (!_birdCatalogMeta) {
+        _birdCatalogMeta = { regions: [], default_regions: ['NA'], total_species: 0 };
+      }
+      // Family-common -> family-sci direct lookup. Replaces the old
+      // sibling-species fallback: family pills can now resolve their
+      // Latin family name without needing a same-scene species record.
+      try {
+        if (window.pywebview?.api?.get_family_sci_map) {
+          const fm = await window.pywebview.api.get_family_sci_map();
+          if (fm && fm.success && fm.map) {
+            _familyCommonToSci = new Map(Object.entries(fm.map));
+            kdebug(`[loadSpeciesFamilyMap] family-sci map: ${_familyCommonToSci.size} families`);
+          }
+        }
+      } catch (e) {
+        console.warn('[family-sci map] failed:', e);
+      }
+      if (!_familyCommonToSci) _familyCommonToSci = new Map();
+    }
+
+    /** Return the user's selected biogeographic regions for the combobox.
+     *  Falls back to the catalog meta's default selection (typically ``['NA']``). */
+    function _getCurrentBirdRegions() {
+      const v = getSetting('bird_regions', null);
+      if (Array.isArray(v) && v.length > 0) return v.filter(r => typeof r === 'string' && r);
+      if (_birdCatalogMeta && Array.isArray(_birdCatalogMeta.default_regions) && _birdCatalogMeta.default_regions.length) {
+        return _birdCatalogMeta.default_regions.slice();
+      }
+      return ['NA'];
+    }
+
+    /** Return whether scientific-name subtext should render under species/family pills. */
+    function _getShowSciNames() {
+      return !!getSetting('show_scientific_names', false);
+    }
+
+    /** Match a scene against a lowercased search query.
+     *
+     *  Checks species and family terms. When includeSci is true, also
+     *  checks the Latin binomial / family_sci pulled from the cached
+     *  bird-catalog record for each species. Cache-only -- we never
+     *  trigger a hydration round-trip from inside the search predicate,
+     *  so sci-name search only works for species that have already been
+     *  seen by a render pass or the combobox.
+     */
+    function _sceneMatchesQuery(scene, lcQuery, includeSci) {
+      if (!scene || !lcQuery) return true;
+      const species = scene.species || [];
+      for (const sp of species) {
+        if (sp.toLowerCase().includes(lcQuery)) return true;
+      }
+      const families = scene.families || [];
+      for (const fm of families) {
+        if (fm.toLowerCase().includes(lcQuery)) return true;
+      }
+      if (!includeSci) return false;
+      for (const sp of species) {
+        const rec = _getCachedBirdRecord(sp);
+        if (!rec) continue;
+        if (rec.scientific_name && rec.scientific_name.toLowerCase().includes(lcQuery)) return true;
+        if (rec.family_sci && rec.family_sci.toLowerCase().includes(lcQuery)) return true;
+      }
+      return false;
+    }
+
+    /** Resolve the italicised subtext for a pill on a scene card.
+     *
+     *  Pills can be species (returns the Latin binomial) or family-tier
+     *  labels (returns the scientific family, e.g. ``Columbidae``). For
+     *  family-tier pills we scan sibling pills on the same scene for a
+     *  cached species record whose family_common matches, then borrow
+     *  its family_sci -- the same trick renderTopbarTags uses.
+     */
+    function _resolvePillSci(name, sceneTerms) {
+      if (!name) return '';
+      const rec = _getCachedBirdRecord(name);
+      if (rec && rec.scientific_name) return rec.scientific_name;
+      // Direct family lookup -- works for any family display name that the
+      // catalog knows about, regardless of what species happen to be in
+      // the same scene. This is the path that lets "Hawk/Eagle/Kite sp."
+      // surface "Accipitridae" even when no hawk species crosses the
+      // confidence threshold for the scene.
+      const famSci = _getFamilySci(name);
+      if (famSci) return famSci;
+      // Sibling-species fallback (kept for free-form user-entered family
+      // labels that aren't in the catalog's family_common index).
+      if (!Array.isArray(sceneTerms)) return '';
+      for (const other of sceneTerms) {
+        if (other === name) continue;
+        const r2 = _getCachedBirdRecord(other);
+        if (r2 && r2.family_common === name && r2.family_sci) return r2.family_sci;
+      }
+      return '';
+    }
+
+    // Currently-open + popover (one at a time). Tracking it as a module
+    // local lets clicks outside the popover dismiss it.
+    let _morePillsPopover = null;
+    function _closeMorePillsPopover() {
+      if (!_morePillsPopover) return;
+      const { el, onDocClick, onScroll } = _morePillsPopover;
+      _morePillsPopover = null;
+      document.removeEventListener('mousedown', onDocClick, true);
+      document.removeEventListener('scroll', onScroll, true);
+      el.remove();
+    }
+
+    /** Open a small popover anchored to ``anchor`` listing additional
+     *  pills the card couldn't fit. ``names`` is the list to render and
+     *  ``allTerms`` is the scene's full term list (used to derive
+     *  family_sci subtext via _resolvePillSci). Dismisses on click
+     *  outside, on Escape, or on scroll.
+     */
+    function _openMorePillsPopover(anchor, names, showSci, allTerms) {
+      _closeMorePillsPopover();
+      if (!Array.isArray(names) || !names.length) return;
+      const pop = document.createElement('div');
+      pop.className = 'card-more-popover';
+      pop.setAttribute('role', 'dialog');
+      for (const name of names) {
+        const c = document.createElement('span');
+        c.className = 'chip';
+        if (showSci) c.classList.add('chip--with-sci');
+        const primary = document.createElement('span');
+        primary.className = 'chip-primary';
+        primary.textContent = name;
+        c.appendChild(primary);
+        let titleStr = name;
+        if (showSci) {
+          const sciText = _resolvePillSci(name, allTerms);
+          if (sciText) {
+            const sci = document.createElement('span');
+            sci.className = 'chip-sci';
+            const em = document.createElement('em');
+            em.textContent = sciText;
+            sci.appendChild(em);
+            c.appendChild(sci);
+            titleStr = `${name} — ${sciText}`;
+          }
+        }
+        c.title = titleStr;
+        pop.appendChild(c);
+      }
+      document.body.appendChild(pop);
+      const rect = anchor.getBoundingClientRect();
+      const popH = pop.offsetHeight;
+      const popW = pop.offsetWidth;
+      let top = rect.bottom + 4;
+      if (top + popH > window.innerHeight - 8) top = Math.max(8, rect.top - popH - 4);
+      let left = rect.left;
+      if (left + popW > window.innerWidth - 8) left = Math.max(8, window.innerWidth - popW - 8);
+      pop.style.top = `${top}px`;
+      pop.style.left = `${left}px`;
+      const onDocClick = (ev) => {
+        if (pop.contains(ev.target) || anchor.contains(ev.target)) return;
+        _closeMorePillsPopover();
+      };
+      const onScroll = () => _closeMorePillsPopover();
+      const onKey = (ev) => { if (ev.key === 'Escape') _closeMorePillsPopover(); };
+      document.addEventListener('mousedown', onDocClick, true);
+      document.addEventListener('scroll', onScroll, true);
+      document.addEventListener('keydown', onKey, { once: true });
+      _morePillsPopover = { el: pop, onDocClick, onScroll };
+    }
+
+    /** Cache a record so subsequent pill renders can show its scientific name. */
+    function _cacheBirdRecord(rec) {
+      if (!rec || typeof rec.canonical_common_name !== 'string') return;
+      _birdRecordCache.set(rec.canonical_common_name.toLowerCase(), rec);
+    }
+
+    function _getCachedBirdRecord(name) {
+      if (!name) return null;
+      return _birdRecordCache.get(String(name).toLowerCase()) || null;
+    }
+
+    /** True if we've already resolved this name -- either to a record or to a
+     *  confirmed miss. Render-loop guards use this so that names absent from
+     *  the catalog don't re-trigger ``_hydrateBirdRecords`` on every paint. */
+    function _isBirdRecordKnown(name) {
+      if (!name) return false;
+      const key = String(name).toLowerCase();
+      return _birdRecordCache.has(key) || _birdRecordMisses.has(key);
+    }
+
+    /** Resolve a list of canonical names to records by hitting ``lookup_birds``.
+     *  Already-cached names are skipped. No-op when the backend is unavailable. */
+    async function _hydrateBirdRecords(names) {
+      if (!Array.isArray(names) || !names.length) return;
+      if (!hasPywebviewApi || !window.pywebview?.api?.lookup_birds) return;
+      const need = [];
+      for (const n of names) {
+        if (typeof n !== 'string' || !n) continue;
+        if (!_isBirdRecordKnown(n)) need.push(n);
+      }
+      if (!need.length) return;
+      try {
+        const res = await window.pywebview.api.lookup_birds(need);
+        const map = (res && res.success && res.map) ? res.map : {};
+        const resolvedKeys = new Set();
+        for (const v of Object.values(map)) {
+          _cacheBirdRecord(v);
+          if (v && typeof v.canonical_common_name === 'string') {
+            resolvedKeys.add(v.canonical_common_name.toLowerCase());
+          }
+        }
+        // Record a miss for any requested name the backend didn't return so
+        // the next renderScenes/renderTopbarTags pass doesn't request it
+        // again. Without this, genus-level "sp." labels pin the renderer in
+        // a hydrate->repaint->hydrate loop.
+        for (const n of need) {
+          const key = n.toLowerCase();
+          if (!resolvedKeys.has(key) && !_birdRecordCache.has(key)) {
+            _birdRecordMisses.add(key);
+          }
+        }
+      } catch (e) {
+        kdebug('[lookup_birds] failed:', e);
       }
     }
 
@@ -3107,31 +3471,40 @@
     // the highlight; Enter commits the highlighted item (or the typed value
     // if no highlight); clicking an item commits that item.
     const SPECIES_COMBO_MAX = 12;
+    let _comboRequestSeq = 0;  // monotonically increasing -- drop stale responses
 
-    /** Filter the species list for a typed query.
-     *  Returns up to SPECIES_COMBO_MAX matches: prefix matches first, then
-     *  substring matches. Empty query returns the alphabetical head of the list. */
-    function _filterSpeciesForCombo(query) {
-      if (!_speciesNameList || _speciesNameList.length === 0) return [];
-      const q = String(query || '').trim().toLowerCase();
-      if (!q) return _speciesNameList.slice(0, SPECIES_COMBO_MAX);
-      const prefix = [];
-      const substring = [];
-      for (const name of _speciesNameList) {
-        const lower = name.toLowerCase();
-        if (lower.startsWith(q)) {
-          prefix.push(name);
-        } else if (lower.includes(q)) {
-          substring.push(name);
-        }
-        if (prefix.length >= SPECIES_COMBO_MAX) break;
+    /** Region-filtered fuzzy search via the backend bird catalog.
+     *
+     *  Resolves to a list of record dicts (caller surfaces them in the dropdown).
+     *  A monotonic request id is returned alongside the results so callers can
+     *  drop responses that arrive out-of-order after a newer keystroke.
+     */
+    async function _searchSpeciesForCombo(query) {
+      const id = ++_comboRequestSeq;
+      if (!hasPywebviewApi || !window.pywebview?.api?.search_birds) {
+        return { id, items: [] };
       }
-      return prefix.concat(substring).slice(0, SPECIES_COMBO_MAX);
+      const regions = _getCurrentBirdRegions();
+      try {
+        const res = await window.pywebview.api.search_birds(String(query || ''), regions, SPECIES_COMBO_MAX);
+        const records = (res && res.success && Array.isArray(res.results)) ? res.results : [];
+        // Cache every result so the next pill render can find scientific names.
+        for (const rec of records) _cacheBirdRecord(rec);
+        return { id, items: records };
+      } catch (e) {
+        kdebug('[search_birds] failed:', e);
+        return { id, items: [] };
+      }
     }
 
     /** Render the dropdown list inside the given container element.
-     *  Each row shows the species name and (if known) its family in muted text,
-     *  so the user can confirm the auto-link before committing. */
+     *
+     *  Each row shows the canonical common name on the left and the family
+     *  display name on the right. When the show-scientific-names toggle is on
+     *  we also render the species' Latin binomial in italics beneath the
+     *  common name, and the alpha-4 code in a small badge if one is set --
+     *  so a user typing "AMRO" sees confirmation that ``AMRO`` → American Robin.
+     */
     function _renderSpeciesComboDropdown(dropdownEl, items, highlightIdx) {
       if (!dropdownEl) return;
       if (!items || items.length === 0) {
@@ -3139,22 +3512,64 @@
         dropdownEl.style.display = 'none';
         return;
       }
-      const html = items.map((name, i) => {
-        const family = (_speciesFamilyMap && _speciesFamilyMap[name]) || '';
+      const showSci = _getShowSciNames();
+      const html = items.map((rec, i) => {
+        const name = rec.canonical_common_name || '';
+        const sci  = rec.scientific_name || '';
+        const fam  = rec.family_common || '';
+        const code = rec.alpha_4 || '';
         const cls = i === highlightIdx ? 'chip-combo-item chip-combo-item--active' : 'chip-combo-item';
-        const fam = family ? `<span class="chip-combo-family">${escapeHtml(family)}</span>` : '';
-        return `<div class="${cls}" data-combo-index="${i}"><span class="chip-combo-name">${escapeHtml(name)}</span>${fam}</div>`;
+        const sciHtml = (showSci && sci)
+          ? `<span class="chip-combo-sci"><em>${escapeHtml(sci)}</em></span>` : '';
+        const codeHtml = code ? `<span class="chip-combo-alpha">${escapeHtml(code)}</span>` : '';
+        const famHtml  = fam ? `<span class="chip-combo-family">${escapeHtml(fam)}</span>` : '';
+        return (
+          `<div class="${cls}" data-combo-index="${i}" data-combo-name="${escapeHtml(name)}">` +
+            `<div class="chip-combo-left">` +
+              `<span class="chip-combo-name">${escapeHtml(name)}</span>` +
+              sciHtml +
+            `</div>` +
+            `<div class="chip-combo-right">${codeHtml}${famHtml}</div>` +
+          `</div>`
+        );
       }).join('');
       dropdownEl.innerHTML = html;
       dropdownEl.style.display = '';
     }
 
     /** Look up the family display name for a species name (case-insensitive).
-     *  Returns { canonical, family } if matched, or null for free-form input. */
+     *  Returns { canonical, family } if matched, or null for free-form input.
+     *  Prefers the cached bird-catalog record (richer info) and falls back to
+     *  the legacy auto-link map for species not yet seen by the combobox. */
     function _lookupFamilyForSpecies(name) {
-      if (!name || !_speciesFamilyMapLower) return null;
+      if (!name) return null;
+      const cached = _getCachedBirdRecord(name);
+      if (cached) {
+        return { canonical: cached.canonical_common_name, family: cached.family_common };
+      }
+      if (!_speciesFamilyMapLower) return null;
       const hit = _speciesFamilyMapLower[String(name).trim().toLowerCase()];
       return hit || null;
+    }
+
+    /** HTML for a species or family pill with optional italicised
+     *  scientific-name subtext. ``primary`` is the visible chip label;
+     *  ``sci`` is the Latin string (binomial for species, scientific family for
+     *  family); ``removeAttr`` is the data attribute name used to wire the X
+     *  button. Pass ``inline=true`` for the scene-card variant which stacks
+     *  the subtext on a second line within the same chip. */
+    function _renderTagPillHtml(primary, sci, options) {
+      const opts = options || {};
+      const chipClass = opts.chipClass || 'chip';
+      const removeAttr = opts.removeAttr || '';
+      const showSci = !!opts.showSci && !!sci;
+      const removeBtn = removeAttr
+        ? `<span class="chip-x" data-${removeAttr}="${escapeHtml(primary)}" title="Remove '${escapeHtml(primary)}'">×</span>`
+        : '';
+      const sciHtml = showSci
+        ? `<span class="chip-sci"><em>${escapeHtml(sci)}</em></span>` : '';
+      const cls = showSci ? `${chipClass} chip--with-sci` : chipClass;
+      return `<span class="${cls}"><span class="chip-primary">${escapeHtml(primary)}</span>${sciHtml}${removeBtn}</span>`;
     }
 
     /** Add a species to the draft and, if the species is in the taxonomy map,
@@ -3187,13 +3602,34 @@
       const { species, families, approved } = collectSceneSpecies(scene.id);
       const suggestions = _computeSceneTagSuggestions(scene.id, species, families);
       const chipClass = approved ? 'chip manual-approved' : 'chip';
+      const showSci = _getShowSciNames();
+
+      // Kick off async hydration for any pills we don't already have records
+      // cached for. The first paint may show plain pills; once records arrive
+      // we re-render so the italicised scientific names appear without
+      // blocking the initial render.
+      if (showSci) {
+        const need = (species || []).filter(sp => !_isBirdRecordKnown(sp));
+        if (need.length) {
+          _hydrateBirdRecords(need).then(() => {
+            if (_activeTagInputSceneId === String(scene.id) || sceneDlg?.open) {
+              const fresh = reloadScene(scene.id) || scene;
+              renderTopbarTags(fresh);
+            }
+          });
+        }
+      }
 
       let html = '';
       // Species
       html += '<span class="scene-tag-label">Species:</span> ';
       if (species.length) {
         for (const sp of species) {
-          html += `<span class="${chipClass}">${escapeHtml(sp)}<span class="chip-x" data-remove-species="${escapeHtml(sp)}" title="Remove '${escapeHtml(sp)}'">×</span></span>`;
+          const rec = _getCachedBirdRecord(sp);
+          const sci = rec ? rec.scientific_name : '';
+          html += _renderTagPillHtml(sp, sci, {
+            chipClass, removeAttr: 'remove-species', showSci,
+          });
         }
       } else {
         html += '<span class="muted" style="font-size:11px">—</span>';
@@ -3213,7 +3649,21 @@
       html += '<span class="scene-tag-label">Family:</span> ';
       if (families.length) {
         for (const fm of families) {
-          html += `<span class="${chipClass}">${escapeHtml(fm)}<span class="chip-x" data-remove-family="${escapeHtml(fm)}" title="Remove '${escapeHtml(fm)}'">×</span></span>`;
+          // Prefer the direct family_common -> family_sci map; fall back
+          // to scanning sibling species records (free-form user-entered
+          // family labels that aren't in the catalog).
+          let sci = _getFamilySci(fm);
+          if (!sci) {
+            for (const sp of species) {
+              const rec = _getCachedBirdRecord(sp);
+              if (rec && rec.family_common === fm && rec.family_sci) {
+                sci = rec.family_sci; break;
+              }
+            }
+          }
+          html += _renderTagPillHtml(fm, sci, {
+            chipClass, removeAttr: 'remove-family', showSci,
+          });
         }
       } else {
         html += '<span class="muted" style="font-size:11px">—</span>';
@@ -3369,9 +3819,15 @@
           dropdown.style.minWidth = Math.max(Math.round(rect.width), 240) + 'px';
         };
 
-        const refreshDropdown = () => {
+        const refreshDropdown = async () => {
           if (!isSpeciesInput || !dropdown) return;
-          comboItems = _filterSpeciesForCombo(inp.value);
+          // The async fetch returns its own request id; only the most recent
+          // request is allowed to repaint the dropdown, so quick typing
+          // doesn't flash older results on top of newer ones.
+          const pending = await _searchSpeciesForCombo(inp.value);
+          if (!dropdown.isConnected) return;
+          if (pending.id !== _comboRequestSeq) return;
+          comboItems = pending.items;
           comboIndex = comboItems.length > 0 ? 0 : -1;
           _renderSpeciesComboDropdown(dropdown, comboItems, comboIndex);
           if (comboItems.length > 0) positionDropdown();
@@ -3449,6 +3905,16 @@
           }
         };
 
+        // Dropdown items are full record objects; ``commit()`` accepts either a
+        // string (typed value) or a record (selected from the dropdown). This
+        // helper normalises both to the canonical common name.
+        const _comboValueOf = (item) => {
+          if (item == null) return undefined;
+          if (typeof item === 'string') return item;
+          if (typeof item.canonical_common_name === 'string') return item.canonical_common_name;
+          return undefined;
+        };
+
         inp.onkeydown = (e) => {
           if (isSpeciesInput && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
             if (!comboItems.length) return;
@@ -3458,10 +3924,11 @@
           }
           if (e.key === 'Enter') {
             e.preventDefault();
-            // If a dropdown row is highlighted, commit that. Otherwise commit
-            // the typed value (allowing free-form species like "Eurasian Wren").
+            // If a dropdown row is highlighted, commit that record's canonical
+            // name. Otherwise commit the typed value (allowing free-form
+            // species like "Eurasian Wren" if it isn't in the catalog).
             const chosen = (isSpeciesInput && comboIndex >= 0 && comboIndex < comboItems.length)
-              ? comboItems[comboIndex]
+              ? _comboValueOf(comboItems[comboIndex])
               : undefined;
             commit(chosen);
             return;
@@ -3485,7 +3952,7 @@
               e.preventDefault(); // keep input focused so blur-commit doesn't race
               const idx = parseInt(row.dataset.comboIndex || '-1', 10);
               if (idx >= 0 && idx < comboItems.length) {
-                commit(comboItems[idx]);
+                commit(_comboValueOf(comboItems[idx]));
               }
             };
           }
@@ -4737,6 +5204,33 @@
       const ectSettings = document.getElementById('settingsExposureCorrectedThumbs');
       if (ectSettings) ectSettings.checked = !!getSetting('exposure_corrected_thumbs', true);
 
+      // ── Species & Region section ─────────────────────────────────────────
+      const showSciCb = document.getElementById('showScientificNames');
+      if (showSciCb) showSciCb.checked = !!getSetting('show_scientific_names', false);
+
+      const regionsPicker = document.getElementById('birdRegionsPicker');
+      if (regionsPicker) {
+        // Make sure catalog meta is loaded before we paint checkboxes -- the
+        // load is cached so re-entering Settings is cheap.
+        try { await loadSpeciesFamilyMap(); } catch (_) { /* non-fatal */ }
+        const meta = _birdCatalogMeta || { regions: [], default_regions: ['NA'] };
+        const selected = new Set(_getCurrentBirdRegions());
+        if (!Array.isArray(meta.regions) || meta.regions.length === 0) {
+          regionsPicker.innerHTML = '<span class="muted" style="font-size:11px">Region list unavailable — defaulting to North America.</span>';
+        } else {
+          regionsPicker.innerHTML = meta.regions.map(r => {
+            const checked = selected.has(r.code) ? 'checked' : '';
+            return (
+              `<label class="inline" style="gap:6px;cursor:pointer;font-size:13px">` +
+                `<input type="checkbox" class="bird-region-cb" data-region-code="${escapeHtml(r.code)}" ${checked} />` +
+                `<span>${escapeHtml(r.label)}</span>` +
+                `<span class="muted" style="font-size:11px;margin-left:auto">${escapeHtml(r.code)}</span>` +
+              `</label>`
+            );
+          }).join('');
+        }
+      }
+
       dlg.showModal();
     }
     async function applySettings() {
@@ -4760,6 +5254,26 @@
       const rawExpEl = document.getElementById('rawExposureCorrectionDisabled');
       const rawExposureCorrectionDisabled = rawExpEl ? !!rawExpEl.checked : !!existing.raw_exposure_correction_disabled;
       const prevRawExposureDisabled = !!existing.raw_exposure_correction_disabled;
+
+      // ── Species & Region: collect region picker state + show-sci toggle ──
+      // An empty selection falls back to ``['NA']`` rather than producing an
+      // unusable combobox where no species ever surface.
+      const regionsPicker = document.getElementById('birdRegionsPicker');
+      const regionInputs = regionsPicker
+        ? regionsPicker.querySelectorAll('input.bird-region-cb')
+        : [];
+      const birdRegions = Array.from(regionInputs)
+        .filter(cb => cb.checked)
+        .map(cb => cb.dataset.regionCode)
+        .filter(c => typeof c === 'string' && c.length > 0);
+      const finalRegions = birdRegions.length > 0 ? birdRegions : ['NA'];
+      const showSciCbEl = document.getElementById('showScientificNames');
+      const showScientificNames = showSciCbEl ? !!showSciCbEl.checked : !!existing.show_scientific_names;
+      const prevRegions = Array.isArray(existing.bird_regions) ? existing.bird_regions.slice().sort().join(',') : '';
+      const nextRegions = finalRegions.slice().sort().join(',');
+      const regionsChanged = prevRegions !== nextRegions;
+      const showSciChanged = !!existing.show_scientific_names !== showScientificNames;
+
       const settings = {
         ...existing, editor, customEditorPath, treeScanDepth,
         analytics_opted_in: analyticsOptIn, analytics_consent_shown: true,
@@ -4768,6 +5282,8 @@
         auto_save_enabled: autoSaveEnabled,
         raw_exposure_correction_disabled: rawExposureCorrectionDisabled,
         exposure_corrected_thumbs: exposureCorrectedThumbs,
+        bird_regions: finalRegions,
+        show_scientific_names: showScientificNames,
       };
       _autoSaveEnabled = autoSaveEnabled;
       if (!_autoSaveEnabled) {
@@ -4792,6 +5308,16 @@
         if (sceneDlg?.open && _currentScene) {
           renderFilmstrip(_currentScene);
           await selectFilmstripImage(currentImageIndex, _currentScene, false, false);
+        }
+      }
+      // Show-scientific-names + region changes don't affect the model output,
+      // just the way pills render and which species the combobox surfaces.
+      // Repaint anything that's currently on screen so the change is visible
+      // immediately rather than waiting for the next interaction.
+      if ((showSciChanged || regionsChanged) && rows.length > 0) {
+        await renderScenes();
+        if (sceneDlg?.open && _currentScene) {
+          renderTopbarTags(_currentScene);
         }
       }
     }
@@ -5810,7 +6336,7 @@
 
       const icon = document.createElement('span');
       icon.className = 'tree-icon';
-      icon.textContent = node.has_kestrel ? '\uD83D\uDCC2' : '\uD83D\uDCC1';
+      icon.textContent = node.has_kestrel ? '📂' : '📁';
 
       const label = document.createElement('span');
       label.className = 'tree-label';
@@ -8954,7 +9480,7 @@
             if (res.skipped_conflicts.length > 10) {
               const li = document.createElement('li');
               li.style.cssText = 'padding:5px 8px;color:#7a90b8;';
-              li.textContent = `\u2026and ${res.skipped_conflicts.length - 10} more`;
+              li.textContent = `…and ${res.skipped_conflicts.length - 10} more`;
               conflictList.appendChild(li);
             }
             showView('wmConflictView');
@@ -9047,7 +9573,7 @@
 
     const _tutWelcomeStep = {
       title: 'Welcome to Project Kestrel!',
-      body: 'Project Kestrel uses machine learning to organize your bird photography \u2014 helping you review photos more efficiently, search through your library, and quickly find the ones you want to edit and share.<br><br>Click <b>Next</b> and we\u2019ll auto-load some <b>sample bird photos</b> so you can see Kestrel in action.',
+      body: 'Project Kestrel uses machine learning to organize your bird photography — helping you review photos more efficiently, search through your library, and quickly find the ones you want to edit and share.<br><br>Click <b>Next</b> and we’ll auto-load some <b>sample bird photos</b> so you can see Kestrel in action.',
       target: null,
       loadSamplesOnNext: true,
     };
@@ -9063,7 +9589,7 @@
 
     const _tutTryYourOwnStepBase = {
       title: 'Now try it with your own photos',
-      body: 'You\u2019re ready!<br><br>\u2022 Click <b>Analyze Folders\u2026</b> to process a new folder of photos.<br>\u2022 Click <b>Open Folder\u2026</b> (or drop into the Folder Tree) to browse photos Kestrel has already analyzed.<br><br><b>Tip:</b> open a parent folder once to load your whole library \u2014 then search across every outing, every year.',
+      body: 'You’re ready!<br><br>• Click <b>Analyze Folders…</b> to process a new folder of photos.<br>• Click <b>Open Folder…</b> (or drop into the Folder Tree) to browse photos Kestrel has already analyzed.<br><br><b>Tip:</b> open a parent folder once to load your whole library — then search across every outing, every year.',
       target: '#analyzeQueueBtn',
       position: 'right',
       highlightAlso: ['#pickFolder'],
@@ -9073,7 +9599,7 @@
       _tutWelcomeStep,
       {
         title: 'Your photos, organized by scene',
-        body: 'Kestrel organizes your photos into <b>scenes</b> \u2014 groups of similar images captured in the same burst. The scene grid shows these scenes in the order they were taken.',
+        body: 'Kestrel organizes your photos into <b>scenes</b> — groups of similar images captured in the same burst. The scene grid shows these scenes in the order they were taken.',
         nudge: 'Click on a scene to open it!',
         target: '#sceneGrid .card',
         position: 'right',
@@ -9081,7 +9607,7 @@
       },
       {
         title: 'Explore your scene',
-        body: 'Within each scene, your photos are automatically <b>sorted by quality</b> \u2014 from sharpest to blurriest. Focus your attention on the best shots first.<br><br>Click on a photo in the filmstrip to view its details.',
+        body: 'Within each scene, your photos are automatically <b>sorted by quality</b> — from sharpest to blurriest. Focus your attention on the best shots first.<br><br>Click on a photo in the filmstrip to view its details.',
         nudge: 'Click a photo in the filmstrip below!',
         target: '#imageGrid',
         position: 'top',
@@ -9090,7 +9616,7 @@
       },
       {
         title: 'Make a culling decision, then close the scene',
-        body: 'Kestrel computes <b>star ratings</b> based on each image\u2019s quality score. Click the stars to set your own. <span style="color:#6aa0ff">Blue stars</span> = AI rating \u00b7 <span style="color:#f5c542">Gold stars</span> = your manual override.<br><br>Use the <b>Accept \u00b7 Undecided \u00b7 Reject</b> buttons to make a culling decision. These decisions power the Culling Assistant later!<br><br>When you\u2019re done, close the scene to continue.',
+        body: 'Kestrel computes <b>star ratings</b> based on each image’s quality score. Click the stars to set your own. <span style="color:#6aa0ff">Blue stars</span> = AI rating · <span style="color:#f5c542">Gold stars</span> = your manual override.<br><br>Use the <b>Accept · Undecided · Reject</b> buttons to make a culling decision. These decisions power the Culling Assistant later!<br><br>When you’re done, close the scene to continue.',
         nudge: 'Mark a photo Accept/Reject, then close the scene.',
         target: '#sceneInfoBar',
         position: 'top-left',
@@ -9099,7 +9625,7 @@
       },
       {
         title: 'Search and filter',
-        body: 'Use the <b>Filter &amp; Sort</b> panel to narrow your scenes down:<br><br>\u2022 <b>Search</b> by bird species or family \u2014 the grid filters instantly.<br>\u2022 <b>Sort</b> by Capture Time, Quality, or Image Count.<br>\u2022 Toggle <b>Group by folder</b> / <b>capture time</b> to reorganize.<br><br>You can always tweak further in the options below.',
+        body: 'Use the <b>Filter &amp; Sort</b> panel to narrow your scenes down:<br><br>• <b>Search</b> by bird species or family — the grid filters instantly.<br>• <b>Sort</b> by Capture Time, Quality, or Image Count.<br>• Toggle <b>Group by folder</b> / <b>capture time</b> to reorganize.<br><br>You can always tweak further in the options below.',
         target: '.filter-panel',
         position: 'right',
       },
@@ -9119,7 +9645,7 @@
       _tutWelcomeStep,
       {
         title: 'Your photos, organized by scene',
-        body: 'Kestrel organizes your photos into <b>scenes</b> \u2014 groups of similar images captured in the same burst. The scene grid shows these scenes in the order they were taken.',
+        body: 'Kestrel organizes your photos into <b>scenes</b> — groups of similar images captured in the same burst. The scene grid shows these scenes in the order they were taken.',
         nudge: 'Click on a scene to open it!',
         target: '#sceneGrid .card',
         position: 'right',
@@ -9127,7 +9653,7 @@
       },
       {
         title: 'Explore your scene',
-        body: 'Within each scene, your photos are automatically <b>sorted by quality</b> \u2014 from sharpest to blurriest. Click on a photo in the filmstrip to view its details.',
+        body: 'Within each scene, your photos are automatically <b>sorted by quality</b> — from sharpest to blurriest. Click on a photo in the filmstrip to view its details.',
         nudge: 'Click a photo in the filmstrip below!',
         target: '#imageGrid',
         position: 'top',
@@ -9136,7 +9662,7 @@
       },
       {
         title: 'Ratings and culling decisions',
-        body: 'Kestrel computes <b>star ratings</b> based on each image\u2019s quality score. Click the stars to set your own. <span style="color:#6aa0ff">Blue stars</span> = AI rating \u00b7 <span style="color:#f5c542">Gold stars</span> = your manual override.<br><br>Use the <b>Accept \u00b7 Undecided \u00b7 Reject</b> buttons to make a culling decision for each photo. These come in handy with the Culling Assistant later!',
+        body: 'Kestrel computes <b>star ratings</b> based on each image’s quality score. Click the stars to set your own. <span style="color:#6aa0ff">Blue stars</span> = AI rating · <span style="color:#f5c542">Gold stars</span> = your manual override.<br><br>Use the <b>Accept · Undecided · Reject</b> buttons to make a culling decision for each photo. These come in handy with the Culling Assistant later!',
         nudge: 'Mark a photo as Accepted or Rejected to continue!',
         target: '#sceneInfoBar',
         position: 'top-left',
@@ -9145,7 +9671,7 @@
       },
       {
         title: 'Multiple birds in a scene? Switch crops.',
-        body: 'When a scene has more than one bird, the <b>\u25c2 / \u25b8 crop buttons</b> appear next to the filename. Click them to cycle through each bird crop.<br><br>Equivalent keyboard shortcuts:<br>\u2022 <kbd>\u2191</kbd> / <kbd>\u2193</kbd> \u2014 previous / next crop<br>\u2022 <kbd>Enter</kbd> \u2014 promote the active crop as the scene\u2019s primary bird<br><br>(If the current sample scene only has one bird, the crop buttons stay hidden.)',
+        body: 'When a scene has more than one bird, the <b>◂ / ▸ crop buttons</b> appear next to the filename. Click them to cycle through each bird crop.<br><br>Equivalent keyboard shortcuts:<br>• <kbd>↑</kbd> / <kbd>↓</kbd> — previous / next crop<br>• <kbd>Enter</kbd> — promote the active crop as the scene’s primary bird<br><br>(If the current sample scene only has one bird, the crop buttons stay hidden.)',
         target: '#sceneInfoCropNav',
         position: 'top',
         inDialog: true,
@@ -9166,7 +9692,7 @@
       },
       {
         title: 'Keyboard shortcuts',
-        body: 'Kestrel has keyboard shortcuts to make reviewing photos faster. The shortcuts are listed above \u2014 try some out before continuing!',
+        body: 'Kestrel has keyboard shortcuts to make reviewing photos faster. The shortcuts are listed above — try some out before continuing!',
         target: '#sceneShortcutLegend',
         position: 'bottom',
         inDialog: true,
@@ -9174,7 +9700,7 @@
       },
       {
         title: 'A few more scene features',
-        body: 'A few more things you can do once you\u2019re browsing your <b>own photos</b> (some won\u2019t work on the sample images):<br><br>\u2022 Edit the <b>scene name</b> and <b>tags</b> at the top<br>\u2022 Use <b>\u2702 Split Scene</b> if Kestrel accidentally merged two different scenes<br>\u2022 <b>Copy</b> (clipboard) the full image or bird crop straight from the preview<br><br>Close the scene dialog to continue.',
+        body: 'A few more things you can do once you’re browsing your <b>own photos</b> (some won’t work on the sample images):<br><br>• Edit the <b>scene name</b> and <b>tags</b> at the top<br>• Use <b>✂ Split Scene</b> if Kestrel accidentally merged two different scenes<br>• <b>Copy</b> (clipboard) the full image or bird crop straight from the preview<br><br>Close the scene dialog to continue.',
         nudge: 'Close the scene dialog to continue.',
         target: '#closeDlg',
         position: 'bottom',
@@ -9183,7 +9709,7 @@
       },
       {
         title: 'Filtering options',
-        body: '\u2022 <b>Search</b> for any bird species or family \u2014 the grid filters instantly as you type.<br>\u2022 Don\u2019t see scenes after searching? Lower the <b>Confidence</b> threshold to see more results.<br>\u2022 Enable <b>Multi-subject mode</b> if your scenes contain multiple species.<br>\u2022 <b>Sort</b> by Capture Time, Quality, Scene ID, or Image Count.<br>\u2022 Toggle <b>Group by folder</b> / <b>capture time</b> to reorganize the grid.',
+        body: '• <b>Search</b> for any bird species or family — the grid filters instantly as you type.<br>• Don’t see scenes after searching? Lower the <b>Confidence</b> threshold to see more results.<br>• Enable <b>Multi-subject mode</b> if your scenes contain multiple species.<br>• <b>Sort</b> by Capture Time, Quality, Scene ID, or Image Count.<br>• Toggle <b>Group by folder</b> / <b>capture time</b> to reorganize the grid.',
         target: '.filter-panel',
         position: 'right',
       },
@@ -9196,32 +9722,32 @@
       },
       {
         title: 'Search across your whole library',
-        body: 'Kestrel searches across <b>every loaded folder</b> by species or family.<br><br><b>Tip:</b> open a <b>parent folder</b> once (via <b>Open Folder\u2026</b> or the Folder Tree) and Kestrel loads your entire library at once \u2014 then you can search across every outing and every year without re-loading anything.',
+        body: 'Kestrel searches across <b>every loaded folder</b> by species or family.<br><br><b>Tip:</b> open a <b>parent folder</b> once (via <b>Open Folder…</b> or the Folder Tree) and Kestrel loads your entire library at once — then you can search across every outing and every year without re-loading anything.',
         target: '#search',
         position: 'right',
       },
       _tutWorkflowStep,
       {
         title: 'Write Photo Metadata',
-        body: 'Click <b>Write Photo Metadata</b> to export Kestrel\u2019s star ratings and Accept/Reject decisions into XMP sidecar files alongside your photos. These <code>.xmp</code> files are understood natively by <b>Adobe Lightroom</b>, <b>darktable</b>, <b>Capture One</b>, and other editors.<br><br>\u26a0\ufe0f <b>Write photo metadata <em>before</em> importing into your photo editor</b> \u2014 most catalogues ignore new sidecar files once a photo is already imported. If a sidecar was already created by another application, Kestrel will ask before overwriting it.',
+        body: 'Click <b>Write Photo Metadata</b> to export Kestrel’s star ratings and Accept/Reject decisions into XMP sidecar files alongside your photos. These <code>.xmp</code> files are understood natively by <b>Adobe Lightroom</b>, <b>darktable</b>, <b>Capture One</b>, and other editors.<br><br>⚠️ <b>Write photo metadata <em>before</em> importing into your photo editor</b> — most catalogues ignore new sidecar files once a photo is already imported. If a sidecar was already created by another application, Kestrel will ask before overwriting it.',
         target: '.write-metadata-btn',
         position: 'bottom',
       },
       {
         title: 'Culling Assistant',
-        body: 'The <b>Culling Assistant</b> helps you automatically assign photos as Accepted or Rejected based on star ratings \u2014 and can even move rejected photos into a dedicated folder.<br><br>Click <b>Open Culling Assistant</b> to open a dedicated Accept/Reject workspace for the folder.',
+        body: 'The <b>Culling Assistant</b> helps you automatically assign photos as Accepted or Rejected based on star ratings — and can even move rejected photos into a dedicated folder.<br><br>Click <b>Open Culling Assistant</b> to open a dedicated Accept/Reject workspace for the folder.',
         target: '.culling-assistant-btn',
         position: 'bottom',
       },
       {
         title: 'Options',
-        body: 'Click <b>Settings</b> to choose your preferred <b>photo editor</b> (Lightroom, Darktable, or system default). Opening a photo with <kbd>Space</kbd> will launch it there. You can also tweak several other options \u2014 including the experimental <b>wildlife mode</b> that detects non-bird wildlife.',
+        body: 'Click <b>Settings</b> to choose your preferred <b>photo editor</b> (Lightroom, Darktable, or system default). Opening a photo with <kbd>Space</kbd> will launch it there. You can also tweak several other options — including the experimental <b>wildlife mode</b> that detects non-bird wildlife.',
         target: '#openSettings',
         position: 'bottom',
       },
       {
-        title: 'You\u2019re all set!',
-        body: 'That\u2019s the full tour! Quick recap:<br><br>\u2022 <b>Analyze Folders</b> to process new photos<br>\u2022 <b>Open Folder</b> to browse analyzed photos<br>\u2022 <b>Click scenes</b> to view &amp; rate photos<br>\u2022 <b>Culling Assistant</b> for bulk Accept/Reject workflow<br>\u2022 <b>Write Photo Metadata</b> to export to Lightroom, darktable, etc.<br><br>\u26a0\ufe0f <b>Remember:</b> Write photo metadata <em>before</em> importing into Lightroom or Capture One for best results!<br><br>Click the <b>\uD83D\uDCD6 Tutorial</b> button anytime to replay this tour. Happy birding!',
+        title: 'You’re all set!',
+        body: 'That’s the full tour! Quick recap:<br><br>• <b>Analyze Folders</b> to process new photos<br>• <b>Open Folder</b> to browse analyzed photos<br>• <b>Click scenes</b> to view &amp; rate photos<br>• <b>Culling Assistant</b> for bulk Accept/Reject workflow<br>• <b>Write Photo Metadata</b> to export to Lightroom, darktable, etc.<br><br>⚠️ <b>Remember:</b> Write photo metadata <em>before</em> importing into Lightroom or Capture One for best results!<br><br>Click the <b>📖 Tutorial</b> button anytime to replay this tour. Happy birding!',
         target: null,
       },
       {
@@ -9351,7 +9877,7 @@
 
     function _renderTutWorkflowCard(bodyEl) {
       bodyEl.innerHTML =
-        '<div class="tut-workflow-intro">Pick the workflow that fits how you already edit \u2014 Kestrel plugs into any of them.</div>' +
+        '<div class="tut-workflow-intro">Pick the workflow that fits how you already edit — Kestrel plugs into any of them.</div>' +
         '<div class="tut-workflow-tabs" role="tablist">' +
           '<button type="button" class="tut-wf-tab active" data-tab="none">No workflow changes</button>' +
           '<button type="button" class="tut-wf-tab" data-tab="cull">Cut the blurry bulk</button>' +
@@ -9361,39 +9887,39 @@
           '<div class="tut-wf-panel active" data-panel="none">' +
             '<div class="tut-wf-flow">' +
               '<div class="tut-wf-node">Your Photos</div>' +
-              '<div class="tut-wf-arrow">\u2192</div>' +
+              '<div class="tut-wf-arrow">→</div>' +
               '<div class="tut-wf-node accent">Kestrel Analyzes</div>' +
-              '<div class="tut-wf-arrow">\u2192</div>' +
+              '<div class="tut-wf-arrow">→</div>' +
               '<div class="tut-wf-node highlight">Write Metadata</div>' +
             '</div>' +
-            '<div class="tut-wf-caption">Just export Kestrel\u2019s analysis as XMP sidecars, then browse them in the photo editor you already use.</div>' +
+            '<div class="tut-wf-caption">Just export Kestrel’s analysis as XMP sidecars, then browse them in the photo editor you already use.</div>' +
           '</div>' +
           '<div class="tut-wf-panel" data-panel="cull">' +
             '<div class="tut-wf-flow">' +
               '<div class="tut-wf-node">Your Photos</div>' +
-              '<div class="tut-wf-arrow">\u2192</div>' +
+              '<div class="tut-wf-arrow">→</div>' +
               '<div class="tut-wf-node accent">Kestrel Analyzes</div>' +
-              '<div class="tut-wf-arrow">\u2192</div>' +
+              '<div class="tut-wf-arrow">→</div>' +
               '<div class="tut-wf-node highlight">Culling Assistant</div>' +
-              '<div class="tut-wf-arrow">\u2192</div>' +
+              '<div class="tut-wf-arrow">→</div>' +
               '<div class="tut-wf-node">Accepts / Rejects</div>' +
             '</div>' +
-            '<div class="tut-wf-caption">Use the <b>Culling Assistant</b> to cut the blurry bulk \u2014 keep the sharp photos and archive the rest in one pass.</div>' +
+            '<div class="tut-wf-caption">Use the <b>Culling Assistant</b> to cut the blurry bulk — keep the sharp photos and archive the rest in one pass.</div>' +
           '</div>' +
           '<div class="tut-wf-panel" data-panel="favs">' +
             '<div class="tut-wf-flow">' +
               '<div class="tut-wf-node">Your Photos</div>' +
-              '<div class="tut-wf-arrow">\u2192</div>' +
+              '<div class="tut-wf-arrow">→</div>' +
               '<div class="tut-wf-node accent">Kestrel Analyzes</div>' +
-              '<div class="tut-wf-arrow">\u2192</div>' +
+              '<div class="tut-wf-arrow">→</div>' +
               '<div class="tut-wf-node">Pick Favorites</div>' +
-              '<div class="tut-wf-arrow">\u2192</div>' +
+              '<div class="tut-wf-arrow">→</div>' +
               '<div class="tut-wf-node highlight">Open in Editor</div>' +
             '</div>' +
-            '<div class="tut-wf-caption">Browse your scenes in Kestrel and press <kbd>Space</kbd> on the ones you love \u2014 they open straight in your photo editor.</div>' +
+            '<div class="tut-wf-caption">Browse your scenes in Kestrel and press <kbd>Space</kbd> on the ones you love — they open straight in your photo editor.</div>' +
           '</div>' +
         '</div>' +
-        '<div class="tut-workflow-hint">We\u2019ve highlighted the two buttons you\u2019ll use most: <b>Write Photo Metadata</b> and <b>Open Culling Assistant</b>.</div>';
+        '<div class="tut-workflow-hint">We’ve highlighted the two buttons you’ll use most: <b>Write Photo Metadata</b> and <b>Open Culling Assistant</b>.</div>';
 
       var tabs = bodyEl.querySelectorAll('.tut-wf-tab');
       var panels = bodyEl.querySelectorAll('.tut-wf-panel');
@@ -9421,7 +9947,7 @@
         { key: 'capture_one', label: 'Capture One' },
         { key: 'photoshop',   label: 'Adobe Photoshop' },
         { key: 'system',      label: 'System Default' },
-        { key: '__other',     label: 'Other\u2026 (open Settings)' },
+        { key: '__other',     label: 'Other… (open Settings)' },
       ];
       choices.forEach(function(c) {
         var b = document.createElement('button');
@@ -9531,7 +10057,7 @@
 
       _tutEl('#tutorialBack').disabled = (idx === 0);
       var isLast = (idx === _tutSteps.length - 1);
-      nextBtn.textContent = isLast ? 'Finish \u2713' : 'Next \u2192';
+      nextBtn.textContent = isLast ? 'Finish ✓' : 'Next →';
 
       var hasWaitFor = !!step.waitFor || !!(step.waitForChain && step.waitForChain.length);
       // customBody === 'editorPicker' manages its own advance via buttons.
@@ -9637,7 +10163,7 @@
       nextBtn.disabled = true; backBtn.disabled = true; skipBtn.disabled = true;
       var loading = document.createElement('div');
       loading.className = 'tut-loading';
-      loading.innerHTML = '<span class="tut-spinner"></span> Loading sample photos\u2026';
+      loading.innerHTML = '<span class="tut-spinner"></span> Loading sample photos…';
       bodyEl.appendChild(loading);
       try {
         await _autoLoadSamples();
@@ -9760,7 +10286,7 @@
     // `last_seen_whats_new_version` will not see the banner again.
     const WHATS_NEW = {
       version: 'nelsons-sparrow',
-      headline: "New in v(Nelson\u2019s Sparrow) \u2014 resilient analysis, smarter shutdowns!",
+      headline: "New in v(Nelson’s Sparrow) — resilient analysis, smarter shutdowns!",
       items: [
         'New <b>Resilient GPU pipeline</b> automatically falls back to CPU when your graphics driver hiccups, and a new <b>"Re-attempt analysis on errored images"</b> button re-runs just the failures without touching successful results.',
         'Faster and more accurate wildlife detection with the new <b>MegaDetector v1000-cedar</b> "Fast" model, plus a fix that <b>doubles SpeciesNet batch speed</b> by removing a duplicate inference pass.',
@@ -9771,45 +10297,45 @@
 
     const WELCOME_TIPS = [
       {
-        icon: '\uD83E\uDD8B',
+        icon: '🦋',
         title: 'Try wildlife mode',
         badge: 'New!',
         body: 'Kestrel can detect squirrels, bears, and other wildlife in addition to birds. Enable it in <b>Settings &rarr; Analysis</b>.',
         action: { label: 'Open Settings', onClick: function() { try { showSettings(); } catch (_) {} } },
       },
       {
-        icon: '\u2795',
+        icon: '➕',
         title: 'Merge scenes',
         body: 'Hold <kbd>Ctrl</kbd> and click scene cards to select multiple, then click <b>Merge selected scenes</b> to combine them into one.',
       },
       {
-        icon: '\uD83D\uDDBC\uFE0F',
+        icon: '🖼️',
         title: 'Multiple birds in one scene?',
-        body: 'Use the <b>\u25C2 / \u25B8 crop buttons</b> in the scene info bar (or <kbd>\u2191</kbd> / <kbd>\u2193</kbd>) to flip through each bird, and press <kbd>Enter</kbd> to promote one as the scene\u2019s primary.',
+        body: 'Use the <b>◂ / ▸ crop buttons</b> in the scene info bar (or <kbd>↑</kbd> / <kbd>↓</kbd>) to flip through each bird, and press <kbd>Enter</kbd> to promote one as the scene’s primary.',
       },
       {
-        icon: '\uD83D\uDCC2',
+        icon: '📂',
         title: 'Open a parent folder once',
         body: 'Kestrel searches across <b>every loaded folder</b>. Open a parent folder and browse your entire library by species or family without re-loading anything.',
       },
       {
-        icon: '\u2328\uFE0F',
+        icon: '⌨️',
         title: 'Space = open in editor',
         body: 'Press <kbd>Space</kbd> on any photo to open the original in your chosen photo editor. Set your preference in Settings.',
         action: { label: 'Open Settings', onClick: function() { try { showSettings(); } catch (_) {} } },
       },
       {
-        icon: '\uD83D\uDDD1\uFE0F',
+        icon: '🗑️',
         title: 'Cull faster with the Culling Assistant',
-        body: 'Batch Accept / Reject photos by your own quality rules \u2014 and optionally move rejects into an archive folder.',
+        body: 'Batch Accept / Reject photos by your own quality rules — and optionally move rejects into an archive folder.',
       },
       {
-        icon: '\u26A0\uFE0F',
+        icon: '⚠️',
         title: 'Write metadata before importing',
-        body: '<b>Write Photo Metadata</b> before importing into Lightroom or Capture One \u2014 most catalogues ignore sidecar files added <i>after</i> import.',
+        body: '<b>Write Photo Metadata</b> before importing into Lightroom or Capture One — most catalogues ignore sidecar files added <i>after</i> import.',
       },
       {
-        icon: '\u2B50',
+        icon: '⭐',
         title: 'Not satisfied with the star ratings?',
         body: 'Tune the rating thresholds and profile in Settings. Your manual overrides are always saved as gold stars.',
         action: { label: 'Open Settings', onClick: function() { try { showSettings(); } catch (_) {} } },
@@ -9835,7 +10361,7 @@
           '<div class="wwn-head">' +
             '<span class="wwn-badge">New</span>' +
             '<span class="wwn-title">' + WHATS_NEW.headline + '</span>' +
-            '<button type="button" class="wwn-dismiss" id="wwnDismiss" aria-label="Dismiss">\u2715</button>' +
+            '<button type="button" class="wwn-dismiss" id="wwnDismiss" aria-label="Dismiss">✕</button>' +
           '</div>' +
           '<ul class="wwn-list">' + items + '</ul>';
         banner.classList.remove('hidden');
@@ -9884,7 +10410,7 @@
       function render(i) {
         var t = WELCOME_TIPS[i];
         if (!t) return;
-        iconEl.textContent = t.icon || '\uD83D\uDCA1';
+        iconEl.textContent = t.icon || '💡';
         titleEl.innerHTML = t.title || '';
         if (t.badge) { badgeEl.textContent = t.badge; badgeEl.classList.remove('hidden'); }
         else badgeEl.classList.add('hidden');

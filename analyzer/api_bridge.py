@@ -823,6 +823,136 @@ class Api:
         self._species_family_map_cache = result
         return result
 
+    # ------------------------------------------------------------------ #
+    #  Global bird catalog (regional + fuzzy combobox)                    #
+    # ------------------------------------------------------------------ #
+
+    def _get_bird_catalog(self):
+        """Process-wide catalog singleton, cached on the bridge instance.
+
+        Returns ``None`` on load failure so callers can degrade gracefully
+        rather than 500-ing the entire combobox.
+        """
+        cached = getattr(self, '_bird_catalog_cache', None)
+        if cached is not None:
+            return cached
+        try:
+            try:
+                from kestrel_analyzer.bird_catalog import get_catalog
+            except ImportError:
+                from analyzer.kestrel_analyzer.bird_catalog import get_catalog
+            cached = get_catalog()
+        except Exception as e:
+            error(f'[API] bird catalog load error: {e}')
+            cached = None
+        self._bird_catalog_cache = cached
+        return cached
+
+    def get_bird_catalog_meta(self):
+        """Return UI metadata: region labels + default selection + catalog size.
+
+        Used by the frontend to populate the region picker in settings without
+        downloading the full catalog. Cached separately from the records.
+        """
+        try:
+            try:
+                from kestrel_analyzer.bird_catalog import (
+                    ALLOWED_REGION_CODES, REGION_LABELS, DEFAULT_REGION_SELECTION,
+                )
+            except ImportError:
+                from analyzer.kestrel_analyzer.bird_catalog import (
+                    ALLOWED_REGION_CODES, REGION_LABELS, DEFAULT_REGION_SELECTION,
+                )
+            cat = self._get_bird_catalog()
+            return {
+                'success': True,
+                'regions': [
+                    {'code': code, 'label': REGION_LABELS.get(code, code)}
+                    for code in ALLOWED_REGION_CODES
+                ],
+                'default_regions': list(DEFAULT_REGION_SELECTION),
+                'total_species': len(cat) if cat is not None else 0,
+            }
+        except Exception as e:
+            error(f'[API] get_bird_catalog_meta error: {e}')
+            return {'success': False, 'error': str(e),
+                    'regions': [], 'default_regions': ['NA'], 'total_species': 0}
+
+    def search_birds(self, query='', regions=None, limit=20):
+        """Region-filtered fuzzy search across the global bird catalog.
+
+        Parameters mirror the JS combobox: ``query`` is the text the user has
+        typed (may be empty to seed the dropdown), ``regions`` is the list of
+        biogeographic codes currently selected in Settings, and ``limit`` caps
+        the number of returned records.
+        """
+        try:
+            try:
+                from kestrel_analyzer.bird_catalog import record_to_dict
+            except ImportError:
+                from analyzer.kestrel_analyzer.bird_catalog import record_to_dict
+            cat = self._get_bird_catalog()
+            if cat is None:
+                return {'success': False, 'error': 'catalog unavailable', 'results': []}
+            q = '' if query is None else str(query)
+            sel = regions if isinstance(regions, (list, tuple)) else ['NA']
+            try:
+                n = int(limit)
+            except (TypeError, ValueError):
+                n = 20
+            n = max(1, min(100, n))
+            results = cat.search(q, sel, limit=n)
+            return {'success': True, 'results': [record_to_dict(r) for r in results]}
+        except Exception as e:
+            error(f'[API] search_birds error: {e}')
+            return {'success': False, 'error': str(e), 'results': []}
+
+    def lookup_birds(self, names=None):
+        """Resolve a list of canonical names (already-applied pills) to records.
+
+        Returns a ``{ canonical_name: record_dict }`` map so the frontend can
+        render the scientific-name subtext for pills it inherited from a
+        previous session (where the catalog wasn't yet loaded into memory).
+        Unknown names are simply omitted from the response.
+        """
+        try:
+            try:
+                from kestrel_analyzer.bird_catalog import record_to_dict
+            except ImportError:
+                from analyzer.kestrel_analyzer.bird_catalog import record_to_dict
+            cat = self._get_bird_catalog()
+            if cat is None:
+                return {'success': False, 'error': 'catalog unavailable', 'map': {}}
+            out: dict = {}
+            if isinstance(names, (list, tuple)):
+                for raw in names:
+                    if not isinstance(raw, str):
+                        continue
+                    rec = cat.lookup(raw)
+                    if rec is not None:
+                        out[rec.canonical_common_name] = record_to_dict(rec)
+            return {'success': True, 'map': out}
+        except Exception as e:
+            error(f'[API] lookup_birds error: {e}')
+            return {'success': False, 'error': str(e), 'map': {}}
+
+    def get_family_sci_map(self):
+        """Return the catalog's full ``family_common -> family_sci`` map.
+
+        Hydrated once on the JS side at startup so family-tier pills can
+        resolve their italicised scientific-family subtext directly,
+        without depending on a sibling species record being present in
+        the same scene.
+        """
+        try:
+            cat = self._get_bird_catalog()
+            if cat is None:
+                return {'success': False, 'error': 'catalog unavailable', 'map': {}}
+            return {'success': True, 'map': cat.family_sci_map}
+        except Exception as e:
+            error(f'[API] get_family_sci_map error: {e}')
+            return {'success': False, 'error': str(e), 'map': {}}
+
     def fetch_remote_version(self):
         """Fetch version.json from projectkestrel.org to bypass CORS in JS."""
         try:

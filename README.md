@@ -206,6 +206,28 @@ This project is licensed under the GPL v3 License with a Commons Clause License 
 - **rawpy** library for robust RAW image file format handling
 - **pyinstaller project** for robust python packaging and distribution solutions.
 
+### Bundled bird-catalog data
+
+The global species combobox (region-filtered, fuzzy-searchable, with optional
+italicised scientific names) is powered by data bundled in
+`analyzer/models/birds/birds_global.csv`. That CSV is built by
+`tools/build_bird_catalog.py` from these authoritative sources:
+
+- **IOC World Bird List (v15.1)** — Frank Gill, David Donsker & Pamela
+  Rasmussen (Eds). 2025. doi:[10.14344/IOC.ML.15.1](https://doi.org/10.14344/IOC.ML.15.1).
+  [worldbirdnames.org](https://www.worldbirdnames.org/). Licensed under
+  [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/). Provides common
+  names, scientific binomials, taxonomic order/family/genus, and the
+  biogeographic breeding-range codes used by the region selector.
+- **IBP-AOS Alpha Codes** — Pyle, P. and DeSante, D.F. *Four-letter (English
+  Name) and Six-letter (Scientific Name) Alpha Codes for North American
+  Birds.* The Institute for Bird Populations. [birdpop.org](https://www.birdpop.org/).
+  Per the 66th AOS Supplement (2025). Provides the 4-letter banding codes
+  surfaced in the combobox (e.g. typing `AMRO` → American Robin).
+
+See [`analyzer/models/birds/NOTICES.md`](analyzer/models/birds/NOTICES.md)
+for the full attribution.
+
 ---
 
 **Note**: This project is designed primarily for bird photography analysis. Functionality for other wildlife is in alpha stage, but will still function. Try it on your photos of wildlife!

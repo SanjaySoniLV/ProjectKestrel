@@ -46,6 +46,18 @@ _ALLOWED_RATING_PROFILES = {'very_strict', 'strict', 'balanced', 'lenient', 'ver
 _ALLOWED_EXPOSURE_QUALITY = {'lenient', 'balanced', 'aggressive'}
 _ALLOWED_WILDLIFE_MODEL_MODES = {'fast', 'accurate'}
 _ALLOWED_QUEUE_DETECTOR_NAMES = {'mdv5a', 'mdv1000-cedar'}
+# Biogeographic region codes for the species combobox. Sourced from the
+# ``bird_catalog`` module so the data layer owns the vocabulary and we only
+# import the tuple here for validation.
+try:
+    from kestrel_analyzer.bird_catalog import ALLOWED_REGION_CODES as _BIRD_REGION_CODES
+except ImportError:  # pragma: no cover - import only fails in odd test sandboxes
+    try:
+        from analyzer.kestrel_analyzer.bird_catalog import ALLOWED_REGION_CODES as _BIRD_REGION_CODES
+    except ImportError:
+        _BIRD_REGION_CODES = ('NA',)
+_ALLOWED_BIRD_REGIONS = set(_BIRD_REGION_CODES)
+_DEFAULT_BIRD_REGIONS: list[str] = ['NA']
 # Legacy detector names → current names. Applied silently at load to migrate
 # stored settings from older builds. UI semantics ("Fast"/"Accurate") are
 # preserved, so users never see a change.
@@ -444,6 +456,26 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     _set_int('thumbnail_max_width', default=1200, min_value=400, max_value=2400)
     _set_float('thumbnail_jpeg_compression', default=0.75, min_value=0.5, max_value=1.0, digits=4)
     _set_int('thumbnail_jpeg_quality', default=75, min_value=50, max_value=100)
+
+    # Bird-catalog region selection (multi-select). The list is sanitised here
+    # so a stale or malformed payload from a future/older build cannot bypass
+    # the allowlist downstream in the combobox query path.
+    if 'bird_regions' in data:
+        raw = data.get('bird_regions')
+        if isinstance(raw, list):
+            cleaned: list[str] = []
+            seen: set[str] = set()
+            for item in raw:
+                if not isinstance(item, str):
+                    continue
+                token = item.strip()
+                if token in _ALLOWED_BIRD_REGIONS and token not in seen:
+                    cleaned.append(token)
+                    seen.add(token)
+            out['bird_regions'] = cleaned if cleaned else list(_DEFAULT_BIRD_REGIONS)
+        else:
+            out['bird_regions'] = list(_DEFAULT_BIRD_REGIONS)
+    _set_bool('show_scientific_names', default=False)
 
     _set_bool('includeSecondarySpecies', default=False)
     _set_bool('groupByFolder', default=True)

@@ -484,6 +484,34 @@
       <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">How many subfolder levels to scan when
         building the folder tree (1–6). Higher values may increase scan time.</div>
 
+      <h4 style="margin:12px 0 8px;padding-top:8px;border-top:1px solid #1d2230;color:#a0a8b8;font-size:13px;text-transform:uppercase;letter-spacing:0.5px">Species &amp; Region</h4>
+
+      <div class="row" style="align-items:flex-start">
+        <label for="birdRegionsPicker" style="flex:1">Bird Regions</label>
+        <div id="birdRegionsPicker" style="display:flex;flex-direction:column;gap:4px;min-width:280px;max-height:200px;overflow-y:auto;border:1px solid #1d2230;border-radius:6px;padding:6px 8px;background:#0e1117">
+          <!-- region checkboxes populated at runtime from get_bird_catalog_meta -->
+          <span class="muted" style="font-size:11px">Loading regions…</span>
+        </div>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">
+        Selects which biogeographic regions to include in the species
+        autocomplete (Ctrl+Shift+R). Multiple regions show their union.
+        Species outside the selected regions are hidden from the combobox.
+      </div>
+
+      <div class="row">
+        <label for="showScientificNames" style="flex:1">Show scientific names</label>
+        <label class="inline" style="gap:6px">
+          <input type="checkbox" id="showScientificNames" />
+          <span class="muted">Enable</span>
+        </label>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">
+        When on, the Latin binomial appears in italics under each species
+        pill (scene dialog and timeline cards), and family pills show the
+        scientific family name.
+      </div>
+
       <h4 style="margin:12px 0 8px;padding-top:8px;border-top:1px solid #1d2230;color:#a0a8b8;font-size:13px;text-transform:uppercase;letter-spacing:0.5px">Star Rating System</h4>
 
       <div class="row">
