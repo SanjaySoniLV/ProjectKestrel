@@ -118,6 +118,7 @@ jobs:
       - name: UI probe (real visualizer.html) against frozen binary
         id: ui_probe
         continue-on-error: true
+        timeout-minutes: 3
         shell: bash
         run: |
           set -euo pipefail
