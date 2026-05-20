@@ -90,52 +90,6 @@
           <div id="folderTree"></div>
         </div>
       </div>
-      <!-- Filter panel pinned at the bottom of the sidebar, above the footer -->
-      <div class="toolbar-row filters">
-        <div class="filter-panel" aria-label="Filter and sort options">
-          <div class="filter-title">Filter &amp; Sort Options</div>
-          <input id="search" type="search" placeholder="Search by species or family" />
-          <label class="inline filter-conf-row">
-            <span class="muted">Confidence</span>
-            <input id="speciesConf" type="number" min="0" max="1" step="0.05" value="0.75" style="width:100px" />
-          </label>
-          <div class="filter-divider"></div>
-          <div class="filter-sort-row">
-            <span class="muted filter-sort-label">Sort by</span>
-            <select id="sortBy">
-              <option value="captureTime" selected>Capture Time</option>
-              <option value="sceneId">Scene ID</option>
-              <option value="maxQuality">Max Quality</option>
-              <option value="imageCount">Image Count</option>
-            </select>
-          </div>
-          <div class="filter-divider"></div>
-          <label class="inline" title="Only show scenes you've manually reviewed: user star ratings, user accept/reject culling decisions, reviewed scene tags, or renamed scene names.">
-            <input id="filterScenesManualRated" type="checkbox" />
-            <span class="muted">Only manually reviewed scenes</span>
-          </label>
-          <label class="inline">
-            <input id="includeSecondarySpecies" type="checkbox" />
-            <span class="muted">Multi-subject mode</span>
-            <span class="help-tip"
-              data-tip="If your photos have multiple subjects (eg. multiple birds in one photo), this option will improve searchability."
-              aria-label="Multi-subject mode help"
-              title="If your photos have multiple subjects (eg. multiple birds in one photo), this option will improve searchability.">?</span>
-          </label>
-          <label class="inline">
-            <input id="groupByTime" type="checkbox" />
-            <span class="muted">Group by capture time</span>
-          </label>
-          <label class="inline">
-            <input id="groupByFolder" type="checkbox" checked />
-            <span class="muted">Group by folder</span>
-          </label>
-          <label class="inline">
-            <input id="showBirdThumbs" type="checkbox" />
-            <span class="muted">Show bird thumbnails</span>
-          </label>
-        </div>
-      </div>
       <div class="spacer"></div>
       <div class="sidebar-footer" aria-label="Controls">
         <div style="display:flex;gap:2px;align-items:center;flex-shrink:0;">
@@ -153,6 +107,52 @@
 
   <main>
     <div id="mainZoom">
+      <!-- Sticky top filter/sort bar — sits above the timeline, hidden when welcome panel is shown -->
+      <div id="timelineFilterBar" class="timeline-filter-bar hidden" role="region" aria-label="Filter and sort options">
+        <input id="search" type="search" placeholder="🔍 Search by species or family" class="tfb-search" />
+        <label class="tfb-field" title="Minimum confidence threshold for species classification">
+          <span class="tfb-label">Confidence</span>
+          <input id="speciesConf" type="number" min="0" max="1" step="0.05" value="0.75" class="tfb-conf" />
+        </label>
+        <label class="tfb-field">
+          <span class="tfb-label">Sort by</span>
+          <select id="sortBy" class="tfb-sort">
+            <option value="captureTime" selected>Capture Time</option>
+            <option value="sceneId">Scene ID</option>
+            <option value="maxQuality">Max Quality</option>
+            <option value="imageCount">Image Count</option>
+          </select>
+        </label>
+        <div class="tfb-more-wrap">
+          <button id="tfbMoreBtn" type="button" class="tfb-more-btn" aria-haspopup="true" aria-expanded="false" title="More filter and grouping options">⚙ More ▾</button>
+          <div id="tfbMorePopover" class="tfb-more-popover hidden" role="menu" aria-label="Additional options">
+            <label class="tfb-popover-row" title="Only show scenes you've manually reviewed: user star ratings, user accept/reject culling decisions, reviewed scene tags, or renamed scene names.">
+              <input id="filterScenesManualRated" type="checkbox" />
+              <span>Only manually reviewed scenes</span>
+            </label>
+            <label class="tfb-popover-row">
+              <input id="includeSecondarySpecies" type="checkbox" />
+              <span>Multi-subject mode</span>
+              <span class="help-tip"
+                data-tip="If your photos have multiple subjects (eg. multiple birds in one photo), this option will improve searchability."
+                aria-label="Multi-subject mode help"
+                title="If your photos have multiple subjects (eg. multiple birds in one photo), this option will improve searchability.">?</span>
+            </label>
+            <label class="tfb-popover-row">
+              <input id="groupByTime" type="checkbox" />
+              <span>Group by capture time</span>
+            </label>
+            <label class="tfb-popover-row">
+              <input id="groupByFolder" type="checkbox" checked />
+              <span>Group by folder</span>
+            </label>
+            <label class="tfb-popover-row">
+              <input id="showBirdThumbs" type="checkbox" />
+              <span>Show bird thumbnails</span>
+            </label>
+          </div>
+        </div>
+      </div>
       <div id="compat" class="wrap hidden">
         <div class="notice">
           Desktop bridge unavailable. Project Kestrel now runs in desktop-only mode.<br />
@@ -171,23 +171,6 @@
 
         <!-- "What's New" banner (populated + gated by JS via last_seen_whats_new_version setting) -->
         <div id="welcomeWhatsNew" class="welcome-whats-new hidden" role="region" aria-label="What's new in this update"></div>
-
-        <div class="welcome-cards">
-          <div class="welcome-card">
-            <div class="welcome-card-icon">&#x1F52C;</div>
-            <div class="welcome-card-title">First time using Kestrel?</div>
-            <p>Get started by adding your photo folders to the Analysis Queue. Kestrel will automatically detect birds,
-              identify species, and score image quality across your entire library.</p>
-            <span class="welcome-action-btn" id="welcomeAnalyzeBtn">Analyze Photos&#x2026;</span>
-          </div>
-          <div class="welcome-card">
-            <div class="welcome-card-icon">&#x1F4C2;</div>
-            <div class="welcome-card-title">Returning to review your photos?</div>
-            <p>Open a folder you&rsquo;ve already analyzed with Kestrel. Use the search and filtering options on the
-              left to find specific species or sort by image quality.</p>
-            <span class="welcome-action-btn" id="welcomeOpenBtn">Open Folder&#x2026;</span>
-          </div>
-        </div>
 
         <!-- Rotating tip carousel (tip content authored in JS) -->
         <div id="welcomeTipCarousel" class="welcome-tip-carousel" role="region" aria-label="Tips and tricks">

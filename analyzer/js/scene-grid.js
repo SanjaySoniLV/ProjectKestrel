@@ -77,9 +77,12 @@
       }
       sceneGrid.innerHTML = '';
 
-      // Show welcome panel when no data is loaded; hide it once a folder is open
+      // Show welcome panel when no data is loaded; hide it once a folder is open.
+      // The timeline filter bar is the inverse: shown only when scenes exist.
       const _welcomePanel = document.getElementById('welcomePanel');
       if (_welcomePanel) _welcomePanel.classList.toggle('hidden', rows.length > 0);
+      const _tfb = document.getElementById('timelineFilterBar');
+      if (_tfb) _tfb.classList.toggle('hidden', rows.length === 0);
 
       // Flat index for shift-click range selection
       _visibleSceneOrder = visibleScenes.map(s => String(s.id));

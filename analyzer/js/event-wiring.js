@@ -348,4 +348,41 @@
         showToast('Error opening Culling Assistant', 4000);
       }
     }
-    
+
+    // ── Timeline filter bar: "More" popover ───────────────────────────────────────
+    // The set-and-forget grouping/display checkboxes live behind a popover so the
+    // top filter bar stays compact. Click the button to toggle; click outside or
+    // press Escape to close.
+    (function wireTfbMorePopover() {
+      const btn = document.getElementById('tfbMoreBtn');
+      const popover = document.getElementById('tfbMorePopover');
+      if (!btn || !popover) return;
+
+      function closePopover() {
+        popover.classList.add('hidden');
+        btn.setAttribute('aria-expanded', 'false');
+      }
+      function openPopover() {
+        popover.classList.remove('hidden');
+        btn.setAttribute('aria-expanded', 'true');
+      }
+
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (popover.classList.contains('hidden')) openPopover();
+        else closePopover();
+      });
+
+      document.addEventListener('click', (e) => {
+        if (popover.classList.contains('hidden')) return;
+        if (popover.contains(e.target) || btn.contains(e.target)) return;
+        closePopover();
+      });
+
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && !popover.classList.contains('hidden')) {
+          closePopover();
+        }
+      });
+    })();
+

@@ -60,8 +60,8 @@
       {
         title: 'Search and filter',
         body: 'Use the <b>Filter &amp; Sort</b> panel to narrow your scenes down:<br><br>• <b>Search</b> by bird species or family — the grid filters instantly.<br>• <b>Sort</b> by Capture Time, Quality, or Image Count.<br>• Toggle <b>Group by folder</b> / <b>capture time</b> to reorganize.<br><br>You can always tweak further in the options below.',
-        target: '.filter-panel',
-        position: 'right',
+        target: '#timelineFilterBar',
+        position: 'bottom',
       },
       _tutWorkflowStep,
       {
@@ -144,8 +144,8 @@
       {
         title: 'Filtering options',
         body: '• <b>Search</b> for any bird species or family — the grid filters instantly as you type.<br>• Don’t see scenes after searching? Lower the <b>Confidence</b> threshold to see more results.<br>• Enable <b>Multi-subject mode</b> if your scenes contain multiple species.<br>• <b>Sort</b> by Capture Time, Quality, Scene ID, or Image Count.<br>• Toggle <b>Group by folder</b> / <b>capture time</b> to reorganize the grid.',
-        target: '.filter-panel',
-        position: 'right',
+        target: '#timelineFilterBar',
+        position: 'bottom',
       },
       {
         title: 'Merging scenes',

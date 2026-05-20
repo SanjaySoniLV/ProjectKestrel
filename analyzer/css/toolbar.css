@@ -30,79 +30,8 @@
   font-size: 13px;
 }
 
-.toolbar-row.filters {
-  flex-direction: column;
-  align-items: stretch;
-  flex: 0 0 auto;
-  /* Filters panel is outside .toolbar so it stays pinned regardless of tree visibility */
-}
-
 .toolbar-row.status {
   justify-content: flex-start;
-}
-
-.filter-panel {
-  width: 100%;
-}
-
-.filter-panel {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  flex-wrap: wrap;
-  padding: 6px 8px;
-  border: 1px solid #1d2230;
-  border-radius: 10px;
-  background: #0e1117;
-}
-
-.filter-panel .filter-title {
-  width: 100%;
-  text-align: center;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: .5px;
-}
-
-.filter-panel .muted {
-  color: var(--text);
-}
-
-.filter-divider {
-  width: 100%;
-  height: 1px;
-  background: #1d2230;
-  margin: 2px 0;
-}
-
-/* Centre the confidence threshold row horizontally in the panel */
-.filter-conf-row {
-  width: 100%;
-  justify-content: center;
-}
-
-.filter-sort-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-}
-.filter-sort-label {
-  font-size: 12px;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-.filter-sort-row select {
-  flex: 1;
-  height: 30px;
-  font-size: 12px;
-}
-
-.filter-panel input[type="search"] {
-  flex: 1 1 100%;
-  width: 100%;
 }
 
 /* Generic form-control styling (buttons, inputs, selects) */
