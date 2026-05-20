@@ -57,49 +57,62 @@
       </h1>
       <div class="toolbar">
         <div class="toolbar-row actions">
-          <button id="pickFolder" class="primary" title="Open a folder you've already analyzed with Kestrel">
-            📂 Open Folder
-            <span class="help-tip"
-              data-tip="Open the folder that contains your bird photos after the folder is analyzed with Kestrel."
-              aria-label="Folder selection help"
-              title="Open the folder that contains your bird photos after the folder with Kestrel.">?</span>
+          <button id="analyzeQueueBtn" class="primary sidebar-cta" title="Pick folders to analyze with Kestrel's ML pipeline">
+            🔬 Analyze Folders…
           </button>
-          <div class="actions-secondary-row">
-            <button id="analyzeQueueBtn" title="Select folders to add to the analysis queue" style="flex:1">🔬 Analyze Folders…</button>
-            <button id="openSettings" title="Open Kestrel settings" style="flex:1">⚙ Settings</button>
-          </div>
           <div id="saveRevertWrap" class="hidden" style="display:flex;gap:6px">
             <button id="revertCsv" disabled title="Discard all unsaved changes" style="flex:1">Revert Changes</button>
             <button id="saveCsv" disabled style="flex:1">Save Changes</button>
           </div>
         </div>
-        <!-- Folder tree panel: always visible, greyed out until a folder is opened -->
+        <!-- Folder Tree section: unified bordered container that holds the Load
+             Folders button (top bar), recents chips, the tree itself, and the
+             Select / Clear strip (bottom bar). Phase 1 = visual scaffold;
+             existing IDs preserved so handlers keep working. treeChangeRoot
+             retained but hidden to keep csv-init.js safe. -->
         <div id="folderTreeWrap" class="folder-tree-wrap folder-tree-empty">
-          <div class="folder-tree-header">
-            <span class="tree-title">Folder Tree</span>
-            <button id="treeCheckAll" title="Check all folders" disabled>Check All</button>
-            <button id="treeCheckNone" title="Uncheck all folders" disabled>Check None</button>
-            <button id="treeChangeRoot" title="Pick a different root folder to scan" disabled>Change root…</button>
-          </div>
-          <div id="folderScanProgress" class="load-progress hidden" style="margin:8px 6px 0">
+          <button id="pickFolder" class="folder-load-btn" title="Load a folder that you've already analyzed with Kestrel">
+            <span class="folder-load-btn-plus">+ 📂</span>
+            <span class="folder-load-btn-label">Load Folders…</span>
+          </button>
+          <!-- Recents row: hidden in phase 1 (no persistence yet). Markup ready for chips. -->
+          <div id="folderRecentsRow" class="folder-recents-row hidden" aria-label="Recently loaded folders"></div>
+          <div id="folderScanProgress" class="load-progress hidden" style="margin:6px 8px 0">
             <div class="load-progress-label" id="folderScanLabel">Scanning folders…</div>
             <div class="load-progress-track">
               <div id="folderScanFill" class="load-progress-fill" style="width:0%"></div>
             </div>
           </div>
+          <!-- Empty-state hint: shown only when no folders are loaded -->
+          <div id="folderTreeEmptyHint" class="folder-tree-empty-hint">
+            No folders loaded.<br />Click <b>+ Load Folder</b> to get started.
+          </div>
           <div id="folderTree"></div>
+          <!-- Bottom segmented strip: Select All ↔ None | Clear. Hidden when tree is empty.
+               The checkbox inside the select button is purely visual (pointer-events
+               disabled in CSS); the button itself handles the click. -->
+          <div id="folderTreeFooter" class="folder-tree-footer segmented-strip">
+            <button id="treeCheckAll" class="segmented-strip-item tree-select-toggle" title="Check all loaded folders" disabled>
+              <input type="checkbox" class="tree-cb tree-select-toggle-cb" tabindex="-1" aria-hidden="true" />
+              <span class="tree-select-toggle-label">Select All</span>
+            </button>
+            <button id="treeCheckNone" class="segmented-strip-item tree-select-toggle hidden" title="Uncheck all loaded folders" disabled>
+              <input type="checkbox" class="tree-cb tree-select-toggle-cb" tabindex="-1" aria-hidden="true" checked />
+              <span class="tree-select-toggle-label">Select None</span>
+            </button>
+            <button id="treeClear" class="segmented-strip-item danger-item" title="Unload all folders and reset the tree" disabled>Clear</button>
+            <button id="treeChangeRoot" class="hidden" disabled aria-hidden="true" tabindex="-1"></button>
+          </div>
         </div>
       </div>
       <div class="spacer"></div>
-      <div class="sidebar-footer" aria-label="Controls">
-        <div style="display:flex;gap:2px;align-items:center;flex-shrink:0;">
-          <button id="zoomOut" title="Zoom out" style="padding:3px 8px;">&#x2212;</button>
-          <span style="font-size:11px;color:var(--muted);padding:0 2px;">Zoom</span>
-          <button id="zoomIn" title="Zoom in" style="padding:3px 8px;">+</button>
-        </div>
-        <button id="openFeedback" title="Send feedback, report a bug, or share a suggestion" style="font-size:11px;padding:4px 8px;">Feedback</button>
-        <button id="helpBtnMain" title="Start guided tutorial">📖 Tutorial</button>
-        <button id="donateBtnMain" class="donate-btn" title="Support Project Kestrel — Donate via PayPal">💛 Donate</button>
+      <!-- Segmented footer strip: Settings | Feedback | Tutorial | Donate.
+           Zoom moved to the bottom status bar. -->
+      <div class="sidebar-footer segmented-strip" aria-label="Controls">
+        <button id="openSettings" class="segmented-strip-item" title="Open Kestrel settings" aria-label="Settings">⚙</button>
+        <button id="openFeedback" class="segmented-strip-item" title="Send feedback, report a bug, or share a suggestion">Feedback</button>
+        <button id="helpBtnMain" class="segmented-strip-item" title="Start guided tutorial">Tutorial</button>
+        <button id="donateBtnMain" class="segmented-strip-item donate-item" title="Support Project Kestrel — Donate via PayPal">💛 Donate</button>
       </div>
     </div>
   </header>
@@ -238,6 +251,13 @@
       </div>
     </div>
     <div id="versionBadge" class="version-badge">Version: —</div>
+    <!-- Zoom widget: slider with – / + buttons. Lives in the status bar (right side).
+         IDs zoomOut / zoomIn preserved so existing handlers keep working. -->
+    <div class="status-zoom-widget" aria-label="Zoom controls">
+      <button id="zoomOut" class="status-zoom-btn" title="Zoom out" aria-label="Zoom out">&#x2212;</button>
+      <input id="zoomSlider" type="range" min="50" max="200" step="10" value="100" class="status-zoom-slider" title="Zoom" aria-label="Zoom level" />
+      <button id="zoomIn" class="status-zoom-btn" title="Zoom in" aria-label="Zoom in">+</button>
+    </div>
   </footer>
 
   <dialog id="sceneDlg">

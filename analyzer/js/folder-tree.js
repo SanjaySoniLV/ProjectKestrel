@@ -200,7 +200,13 @@
 
     // Build a single tree node DOM element.
     // flatOrder is mutated to collect visible paths in order (for range-select).
-    function buildTreeNode(node, flatOrder) {
+    // ancestorContinueFlags: array of booleans, one per ancestor depth ≥ 1.
+    //   Element i = true if the ancestor at depth i+1 has more siblings after the
+    //   current branch (the vertical line at that ancestor's column continues
+    //   downward past this row). null means "this is the root" — no rail at all.
+    // isLastSibling: whether this node is the last among its own siblings.
+    //   Determines elbow shape (└─ vs ├─).
+    function buildTreeNode(node, flatOrder, ancestorContinueFlags = null, isLastSibling = true) {
       flatOrder.push(node.path);
 
       const wrap = document.createElement('div');
@@ -219,13 +225,31 @@
       const norm = p => (p || '').replace(/\\/g, '/');
       const normPath = norm(node.path);
       const isInProgress = _inProgressFolderPaths.has(normPath);
-      
+
       const effectiveHasKestrel = subtreeHasKestrel(node) || isInProgress; // Show checkbox for in-progress too
       const outdated = isVersionOutdated(node);
       row.className = 'tree-node-row ' + (effectiveHasKestrel ? 'has-kestrel' : 'no-kestrel') + (outdated ? ' version-outdated' : '') + (isInProgress ? ' in-progress' : '');
       if (node.path === treeActivePath) row.classList.add('active');
-      if (isInProgress) row.title = 'Currently analyzing...';
-      else if (outdated) row.title = `Analyzed on Kestrel v${node.kestrel_version} (current: v${_appVersion})`;
+      // Path is always visible on hover; in-progress / outdated states append context.
+      if (isInProgress) row.title = `Currently analyzing…\n${node.path}`;
+      else if (outdated) row.title = `Analyzed on Kestrel v${node.kestrel_version} (current: v${_appVersion})\n${node.path}`;
+      else row.title = node.path;
+
+      // ── Rail: ancestor continuation lines + own elbow ──────────────────────
+      // Root (ancestorContinueFlags === null) has no rail. Every non-root row
+      // gets one slot per ancestor depth ≥ 1 (vert if branch continues, blank
+      // otherwise), then a final elbow slot at its own depth.
+      const isRoot = ancestorContinueFlags === null;
+      if (!isRoot) {
+        for (let i = 0; i < ancestorContinueFlags.length; i++) {
+          const rail = document.createElement('span');
+          rail.className = ancestorContinueFlags[i] ? 'tree-rail tree-rail-vert' : 'tree-rail tree-rail-blank';
+          row.appendChild(rail);
+        }
+        const elbow = document.createElement('span');
+        elbow.className = isLastSibling ? 'tree-rail tree-rail-elbow-last' : 'tree-rail tree-rail-elbow-mid';
+        row.appendChild(elbow);
+      }
 
       // Arrow toggle
       const arrow = document.createElement('span');
@@ -239,7 +263,30 @@
         arrow.textContent = '▶';
       }
 
-      // Checkbox for loading ANALYZED folders OR in-progress folders (blue accent)
+      // Folder icon
+      const icon = document.createElement('span');
+      icon.className = 'tree-icon';
+      icon.textContent = node.has_kestrel ? '📂' : '📁';
+
+      // Label
+      const label = document.createElement('span');
+      label.className = 'tree-label';
+      label.textContent = node.name;
+
+      // Attach path to the row for async inspection
+      row.dataset.path = node.path;
+
+      // Count placeholder (populated asynchronously)
+      const countSpan = document.createElement('span');
+      countSpan.className = 'tree-count';
+      countSpan.textContent = '';
+
+      // ── Right-side checkbox column ─────────────────────────────────────────
+      // Always present (placeholder if no checkbox) so the right edge stays
+      // aligned across analyzed and unanalyzed rows. Reserved for future
+      // per-row actions (quick-analyze, etc.) in the same column.
+      const cbCol = document.createElement('span');
+      cbCol.className = 'tree-cb-col';
       let loadCheckbox = null;
       if (node.has_kestrel || isInProgress) {
         loadCheckbox = document.createElement('input');
@@ -254,39 +301,14 @@
           _updateAutoRefreshTimers();
           debouncedAutoLoad();
         });
+        cbCol.appendChild(loadCheckbox);
       }
-
-      // Folder icon
-      const icon = document.createElement('span');
-      icon.className = 'tree-icon';
-      icon.textContent = node.has_kestrel ? '📂' : '📁';
-
-      // Label
-      const label = document.createElement('span');
-      label.className = 'tree-label';
-      label.textContent = node.name;
-      label.title = node.path;
-
-      // Attach path to the row for async inspection
-      row.dataset.path = node.path;
-
-      // Count placeholder (populated asynchronously)
-      const countSpan = document.createElement('span');
-      countSpan.className = 'tree-count';
-      countSpan.textContent = '';
 
       row.appendChild(arrow);
-      if (loadCheckbox) {
-        row.appendChild(loadCheckbox);
-      } else {
-        // Always keep a fixed-width spacer so folder icons at every level align
-        const spacer = document.createElement('span');
-        spacer.className = 'tree-cb-spacer';
-        row.appendChild(spacer);
-      }
       row.appendChild(icon);
       row.appendChild(label);
       row.appendChild(countSpan);
+      row.appendChild(cbCol);
       wrap.appendChild(row);
 
       // Children container
@@ -295,7 +317,15 @@
         childWrap = document.createElement('div');
         childWrap.className = 'tree-children';
         if (!treeExpandedPaths.has(node.path)) childWrap.classList.add('hidden');
-        node.children.forEach(child => childWrap.appendChild(buildTreeNode(child, flatOrder)));
+        // Children at depth (this.depth + 1). Their ancestorContinueFlags = our
+        // flags + a new entry at our own depth saying "this row continues if I
+        // have more siblings after me". Root passes [] (children start fresh).
+        const childAncestors = isRoot ? [] : [...ancestorContinueFlags, !isLastSibling];
+        const childCount = node.children.length;
+        node.children.forEach((child, idx) => {
+          const childIsLast = idx === childCount - 1;
+          childWrap.appendChild(buildTreeNode(child, flatOrder, childAncestors, childIsLast));
+        });
         wrap.appendChild(childWrap);
 
         arrow.addEventListener('click', (e) => {

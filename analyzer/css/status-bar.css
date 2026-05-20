@@ -89,41 +89,72 @@
   white-space: nowrap;
 }
 
+/* Sidebar footer: layout is the segmented-strip primitive (see toolbar.css).
+   This block only ensures the footer sits flush at the sidebar bottom. */
 .sidebar-footer {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  justify-content: flex-start;
-  flex-wrap: wrap;
   flex: 0 0 auto;
 }
 
-/* Circular zoom buttons */
-#zoomOut, #zoomIn {
-  width: 28px;
-  height: 28px;
-  min-width: 28px;
-  border-radius: 50%;
-  padding: 0;
+/* ── Status bar zoom widget ───────────────────────────────────────────────────
+   Slim slider with – / + buttons, lives on the right of the status bar. The
+   range input is the primary control; the buttons nudge in fixed steps. */
+.status-zoom-widget {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 1;
+  gap: 4px;
+  margin-left: 8px;
   flex-shrink: 0;
 }
 
-/* Sidebar footer: uniform small button styles */
-.sidebar-footer button {
-  height: 28px;
-  font-size: 12px;
-  padding: 0 10px;
-  border-radius: 7px;
-}
-.sidebar-footer #zoomOut,
-.sidebar-footer #zoomIn {
+.status-zoom-btn {
+  width: 22px;
+  height: 20px;
+  min-width: 22px;
   padding: 0;
-  width: 28px;
-  height: 28px;
+  font-size: 13px;
+  line-height: 1;
+  border-radius: 5px;
+  background: transparent;
+  border: 1px solid #2a3040;
+  color: #cbd2dc;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.status-zoom-btn:hover {
+  background: #1a2030;
+  color: #fff;
+}
+
+.status-zoom-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 90px;
+  height: 4px;
+  background: #1d2230;
+  border-radius: 999px;
+  outline: none;
+  cursor: pointer;
+  padding: 0;
+  margin: 0;
+  border: none;
+}
+.status-zoom-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  background: #3a84e6;
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+}
+.status-zoom-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  background: #3a84e6;
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
 }

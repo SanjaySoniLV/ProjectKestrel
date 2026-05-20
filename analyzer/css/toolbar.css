@@ -148,3 +148,119 @@ button[disabled] {
   flex: 1 1 160px;
   min-width: 0;
 }
+
+/* ── Sidebar primary CTA: Analyze Folders button ─────────────────────────────
+   The main entry point on first launch. Normal-weight type for a clean look. */
+.sidebar-cta {
+  width: 100%;
+  height: 42px;
+  font-size: 14px;
+  font-weight: 400;
+  border-radius: 10px;
+  letter-spacing: 0.1px;
+}
+
+/* ── Segmented strip: a row of click targets separated by vertical dividers.
+   Used by the sidebar footer (Settings | Feedback | Tutorial | Donate) and
+   the folder-tree footer (Select All / None | Clear). One cohesive container
+   with each child a borderless button; hover lights up the segment. */
+.segmented-strip {
+  display: flex;
+  align-items: stretch;
+  background: #0e1117;
+  border: 1px solid #2a3040;
+  border-radius: 8px;
+  overflow: hidden;
+  flex-wrap: nowrap;
+  min-height: 30px;
+}
+
+.segmented-strip-item {
+  flex: 1 1 auto;
+  height: auto;
+  padding: 0 10px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  transition: background .12s ease, color .12s ease;
+  /* Vertical divider between siblings */
+  border-left: 1px solid #1d2230;
+}
+.segmented-strip-item:first-of-type {
+  border-left: none;
+}
+.segmented-strip-item:hover:not([disabled]) {
+  background: #1a2030;
+  color: #fff;
+}
+.segmented-strip-item[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.segmented-strip-item.hidden {
+  display: none;
+}
+
+/* Donate variant: tinted to remain visually distinct without breaking the strip */
+.segmented-strip-item.donate-item {
+  color: #f5c542;
+}
+.segmented-strip-item.donate-item:hover:not([disabled]) {
+  background: rgba(245, 197, 66, 0.08);
+  color: #ffd45f;
+}
+
+/* Danger variant (e.g. Clear): warm tint to flag a destructive action. */
+.segmented-strip-item.danger-item {
+  color: #e89a5a;
+}
+.segmented-strip-item.danger-item:hover:not([disabled]) {
+  background: rgba(232, 154, 90, 0.08);
+  color: #ffb37a;
+}
+
+/* Folder-tree footer: lives flush with the container's bottom edge. Override
+   the generic .segmented-strip border/radius — we only want a top divider so
+   it reads as the container's "bottom bar". The first/last child pick up the
+   container's outer corner radius. */
+.folder-tree-footer {
+  flex: 0 0 auto;
+  border: none;
+  border-top: 1px solid #1d2230;
+  border-radius: 0 0 10px 10px;
+  background: transparent;
+  overflow: hidden;
+}
+.folder-tree-footer .segmented-strip-item {
+  font-size: 12.5px;
+  padding: 7px 8px;
+  min-height: 32px;
+}
+.folder-tree-footer .segmented-strip-item:first-of-type:not(.hidden) {
+  border-bottom-left-radius: 10px;
+}
+.folder-tree-footer .segmented-strip-item:last-of-type:not(.hidden) {
+  border-bottom-right-radius: 10px;
+}
+
+/* Visual checkbox inside the Select All / Select None button. The checkbox is
+   a real <input> so it inherits the same accent-color and rendering as the
+   tree's checkboxes — but it's purely visual; clicks pass through to the
+   parent button (which is what handles the toggle). */
+.tree-select-toggle {
+  gap: 8px;
+}
+.tree-select-toggle-cb {
+  pointer-events: none;
+  margin: 0;
+}
+.tree-select-toggle-label {
+  letter-spacing: 0.1px;
+}
