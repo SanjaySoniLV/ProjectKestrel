@@ -913,7 +913,78 @@
     <button id="versionUpdateDownloadBtn" style="width:100%;padding:10px 16px;margin-top:12px;background:#1a4a1a;color:#6ec16e;border:1px solid #6ec16e;border-radius:6px;cursor:pointer;font-size:14px;font-weight:600;text-decoration:none;display:block;text-align:center;">Download Update</button>
   </div>
 
-  <script src="visualizer.js"></script>
+  <!-- JS modules split by feature. Order matters: state/utils first, then leaf modules,
+       then features, then event-wiring/init. Each file is a classic <script> (not type=module)
+       so top-level let/const/function declarations are shared across the "Script" lexical
+       environment — equivalent to the old single visualizer.js, just split for readability. -->
+  <script src="js/state.js"></script>
+  <script src="js/image-loader.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/blob-zoom.js"></script>
+  <script src="js/species.js"></script>
+  <script src="js/crop-data.js"></script>
+  <script src="js/scenes.js"></script>
+  <script src="js/scene-grid.js"></script>
+  <script src="js/scene-zoom.js"></script>
+  <script src="js/scene-dialog.js"></script>
+  <script src="js/settings.js"></script>
+  <script src="js/feedback-donate.js"></script>
+  <script src="js/folder-tree.js"></script>
+  <script src="js/analyze-dialog.js"></script>
+  <script src="js/queue.js"></script>
+  <script src="js/multi-folder.js"></script>
+  <script src="js/csv-init.js"></script>
+  <script src="js/event-wiring.js"></script>
+  <script src="js/perch.js"></script>
+  <script src="js/cloud-compute.js"></script>
+  <script src="js/culling.js"></script>
+  <script src="js/tutorial.js"></script>
+  <script src="js/welcome.js"></script>
+
+  <!-- DevTools diagnostic: call window.__kestrelModuleCheck() in DevTools to verify
+       all modules loaded and key symbols are available. Prints a table of each
+       module's expected entry-point function and whether it's defined. -->
+  <script>
+    window.__kestrelModuleCheck = function () {
+      var checks = [
+        ['state.js',           'kdebug'],
+        ['image-loader.js',    'lazyLoadImg'],
+        ['auth.js',            'initPerchAuth'],
+        ['blob-zoom.js',       'getBlobUrlForPath'],
+        ['species.js',         'parseSecondarySpecies'],
+        ['crop-data.js',       'getRowCropRecords'],
+        ['scenes.js',          'aggregateScenes'],
+        ['scene-grid.js',      'renderScenes'],
+        ['scene-zoom.js',      'startSceneZoomPreview'],
+        ['scene-dialog.js',    'openSceneDialog'],
+        ['settings.js',        'loadSettings'],
+        ['feedback-donate.js', 'openFeedbackDialog'],
+        ['folder-tree.js',     'scanFolderTree'],
+        ['analyze-dialog.js',  'openAnalyzeDialog'],
+        ['queue.js',           'renderQueuePanel'],
+        ['multi-folder.js',    'loadMultipleFolders'],
+        ['perch.js',           '_perchOpenDialog'],
+        ['cloud-compute.js',   '_ccSubmitSelectedFolders'],
+        ['culling.js',         'openCullingAssistant'],
+        ['tutorial.js',        'startMainTutorial'],
+        ['welcome.js',         'WELCOME_TIPS']
+      ];
+      var rows = checks.map(function (c) {
+        var name = c[0], sym = c[1];
+        var found = false;
+        try { found = typeof eval(sym) !== 'undefined'; } catch (e) { found = false; }
+        return { module: name, symbol: sym, loaded: found ? 'YES' : 'MISSING' };
+      });
+      var missing = rows.filter(function (r) { return r.loaded === 'MISSING'; });
+      console.table(rows);
+      if (missing.length === 0) {
+        console.log('%c[Kestrel] All ' + rows.length + ' modules loaded.', 'color:#6ec16e;font-weight:bold;');
+      } else {
+        console.warn('[Kestrel] ' + missing.length + ' module(s) failed to load:', missing.map(function (m) { return m.module; }));
+      }
+      return { total: rows.length, missing: missing.length, rows: rows };
+    };
+  </script>
 
   <!-- Scroll position indicator: shows current folder/time section while scrolling -->
   <div id="scrollPositionIndicator" aria-hidden="true"></div>
