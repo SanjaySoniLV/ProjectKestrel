@@ -109,6 +109,102 @@ class TestModelLabelCoverage:
         assert not empty_fam, f"model labels with empty family display names: {empty_fam}"
 
 
+class TestFamilyDisplayCoverage:
+    """Family-tier labels the ML model can emit (e.g. ``Hawk/Eagle/Kite sp.``)
+    must resolve to a scientific family name -- otherwise the show-scientific-
+    names toggle leaves the family pill without subtext in the scene-card and
+    dialog topbar.
+
+    Resolution happens one of two ways:
+      * the label matches a species canonical name in the catalog (true for
+        monotypic groups where the "display name" is just the species, e.g.
+        ``Anhinga``, ``Limpkin``), OR
+      * at least one catalog record has ``family_common`` equal to the label,
+        so the JS fallback in ``_resolvePillSci`` can borrow ``family_sci``
+        from that sibling species record.
+
+    A label with neither path will silently render without sci subtext.
+    """
+
+    @pytest.fixture(scope="class")
+    def family_display_names(self) -> list[str]:
+        import csv
+        path = MODELS_DIR / "scispecies_dispname.csv"
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f)
+            names = sorted({row["Display Name"].strip()
+                            for row in reader if row.get("Display Name", "").strip()})
+        return names
+
+    @pytest.fixture(scope="class")
+    def family_common_index(self, catalog) -> dict[str, str]:
+        """Map of family_common -> family_sci, from any record that has both.
+        Mirrors what _resolvePillSci does in the JS.
+        """
+        index: dict[str, str] = {}
+        for r in catalog.records:
+            if r.family_common and r.family_sci and r.family_common not in index:
+                index[r.family_common] = r.family_sci
+        return index
+
+    def _resolve(self, name: str, catalog: BirdCatalog,
+                 family_common_index: dict[str, str]) -> str:
+        """Return the scientific name a family pill would surface, or ''."""
+        rec = catalog.lookup(name)
+        if rec and rec.scientific_name:
+            return rec.scientific_name
+        return family_common_index.get(name, "")
+
+    def test_every_family_display_name_resolves_to_scientific_name(
+        self, catalog, family_display_names, family_common_index
+    ):
+        """Data-integrity check: the catalog must contain *some* path to a
+        scientific name for every family the model can emit. This is the
+        backend invariant -- a passing result means the data exists, even
+        if the JS resolution path can't always reach it (see the runtime
+        test below)."""
+        missing = [
+            name for name in family_display_names
+            if not self._resolve(name, catalog, family_common_index)
+        ]
+        assert not missing, (
+            f"{len(missing)} of {len(family_display_names)} family display "
+            f"names have no scientific-name path. "
+            f"Missing: {missing}"
+        )
+
+    def test_every_family_resolves_without_sibling_species(
+        self, catalog, family_display_names
+    ):
+        """Runtime-reachability check: the JS path in ``_resolvePillSci``
+        now uses ``BirdCatalog.family_sci_map`` (exposed via
+        ``Api.get_family_sci_map``) for a direct family_common ->
+        family_sci lookup. That means family pills resolve their sci
+        subtext even when the same scene has no species record cached
+        -- e.g. "Hawk/Eagle/Kite sp." -> "Accipitridae" without needing
+        Cooper's Hawk to be in the scene.
+
+        For this to be true, every family display name the model can
+        emit must appear in ``family_sci_map`` (unless it's itself a
+        species canonical name, like the monotypic "Anhinga" / "Limpkin"
+        cases that resolve via the species lookup directly).
+        """
+        sci_map = catalog.family_sci_map
+        unreachable = []
+        for name in family_display_names:
+            if sci_map.get(name):
+                continue  # direct family lookup hit
+            rec = catalog.lookup(name)
+            if rec is not None and rec.scientific_name:
+                continue  # monotypic group: display name IS the species
+            unreachable.append(name)
+        assert not unreachable, (
+            f"{len(unreachable)} of {len(family_display_names)} family display "
+            f"names have no scientific name reachable via family_sci_map or "
+            f"species lookup. Names: {unreachable}"
+        )
+
+
 # ----------------------------------------------------------------------------
 # CSV invariants
 # ----------------------------------------------------------------------------

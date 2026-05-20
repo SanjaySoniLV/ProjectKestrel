@@ -3189,6 +3189,15 @@
     // empty-family sentinel rows.
     const _birdRecordMisses = new Set();
     let _birdCatalogMeta = null;         // { regions: [...], default_regions: [...], total_species: N }
+    // family_common -> family_sci (e.g. "Hawk/Eagle/Kite sp." -> "Accipitridae").
+    // Hydrated once at startup. Mirrors the catalog's full mapping so a family
+    // pill can render its scientific-family subtext without needing a sibling
+    // species record to be cached in the same scene.
+    let _familyCommonToSci = null;       // Map or null until loaded
+    function _getFamilySci(name) {
+      if (!name || !_familyCommonToSci) return '';
+      return _familyCommonToSci.get(String(name).trim()) || '';
+    }
 
     async function loadSpeciesFamilyMap() {
       if (_speciesFamilyMap && _birdCatalogMeta) return;
@@ -3231,6 +3240,21 @@
       if (!_birdCatalogMeta) {
         _birdCatalogMeta = { regions: [], default_regions: ['NA'], total_species: 0 };
       }
+      // Family-common -> family-sci direct lookup. Replaces the old
+      // sibling-species fallback: family pills can now resolve their
+      // Latin family name without needing a same-scene species record.
+      try {
+        if (window.pywebview?.api?.get_family_sci_map) {
+          const fm = await window.pywebview.api.get_family_sci_map();
+          if (fm && fm.success && fm.map) {
+            _familyCommonToSci = new Map(Object.entries(fm.map));
+            kdebug(`[loadSpeciesFamilyMap] family-sci map: ${_familyCommonToSci.size} families`);
+          }
+        }
+      } catch (e) {
+        console.warn('[family-sci map] failed:', e);
+      }
+      if (!_familyCommonToSci) _familyCommonToSci = new Map();
     }
 
     /** Return the user's selected biogeographic regions for the combobox.
@@ -3290,6 +3314,15 @@
       if (!name) return '';
       const rec = _getCachedBirdRecord(name);
       if (rec && rec.scientific_name) return rec.scientific_name;
+      // Direct family lookup -- works for any family display name that the
+      // catalog knows about, regardless of what species happen to be in
+      // the same scene. This is the path that lets "Hawk/Eagle/Kite sp."
+      // surface "Accipitridae" even when no hawk species crosses the
+      // confidence threshold for the scene.
+      const famSci = _getFamilySci(name);
+      if (famSci) return famSci;
+      // Sibling-species fallback (kept for free-form user-entered family
+      // labels that aren't in the catalog's family_common index).
       if (!Array.isArray(sceneTerms)) return '';
       for (const other of sceneTerms) {
         if (other === name) continue;
@@ -3608,14 +3641,16 @@
       html += '<span class="scene-tag-label">Family:</span> ';
       if (families.length) {
         for (const fm of families) {
-          // Scientific family name is the same across all species in that
-          // family, so pull it from any cached record whose family display
-          // name matches. Empty string means we don't show the subtext yet.
-          let sci = '';
-          for (const sp of species) {
-            const rec = _getCachedBirdRecord(sp);
-            if (rec && rec.family_common === fm && rec.family_sci) {
-              sci = rec.family_sci; break;
+          // Prefer the direct family_common -> family_sci map; fall back
+          // to scanning sibling species records (free-form user-entered
+          // family labels that aren't in the catalog).
+          let sci = _getFamilySci(fm);
+          if (!sci) {
+            for (const sp of species) {
+              const rec = _getCachedBirdRecord(sp);
+              if (rec && rec.family_common === fm && rec.family_sci) {
+                sci = rec.family_sci; break;
+              }
             }
           }
           html += _renderTagPillHtml(fm, sci, {

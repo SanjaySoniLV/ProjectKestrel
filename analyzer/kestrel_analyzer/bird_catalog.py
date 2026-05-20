@@ -261,10 +261,17 @@ class BirdCatalog:
         # Indices for O(1) exact-name lookup. Lowercased keys.
         self._by_common: dict[str, BirdRecord] = {}
         self._by_alpha: dict[str, BirdRecord] = {}
+        # Map of family display name -> scientific family. Populated from
+        # every record that has both fields so the JS layer can render
+        # family_sci subtext on a family-tier pill without needing a
+        # sibling species record to be present in the same scene.
+        self._family_common_to_sci: dict[str, str] = {}
         for r in self._records:
             self._by_common[r.canonical_common_name.lower()] = r
             if r.alpha_4:
                 self._by_alpha.setdefault(r.alpha_4.lower(), r)
+            if r.family_common and r.family_sci:
+                self._family_common_to_sci.setdefault(r.family_common, r.family_sci)
 
     @property
     def records(self) -> list[BirdRecord]:
@@ -282,6 +289,21 @@ class BirdCatalog:
         if not code or len(code) != 4:
             return None
         return self._by_alpha.get(code.strip().lower())
+
+    def family_sci_for(self, family_common: str) -> str:
+        """Return the scientific family name for a family display name, or
+        '' if no record carries that family. Used by the bridge to expose
+        a direct family_common -> family_sci lookup to the JS layer."""
+        if not family_common:
+            return ""
+        return self._family_common_to_sci.get(family_common.strip(), "")
+
+    @property
+    def family_sci_map(self) -> dict[str, str]:
+        """Full family_common -> family_sci mapping (copy, not the
+        underlying dict). The JS hydrates this once at startup so family
+        pills can resolve sci subtext directly."""
+        return dict(self._family_common_to_sci)
 
     def filter(self, regions: Iterable[str]) -> list[BirdRecord]:
         """Return records that have at least one region in ``regions``.

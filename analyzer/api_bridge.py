@@ -936,6 +936,23 @@ class Api:
             error(f'[API] lookup_birds error: {e}')
             return {'success': False, 'error': str(e), 'map': {}}
 
+    def get_family_sci_map(self):
+        """Return the catalog's full ``family_common -> family_sci`` map.
+
+        Hydrated once on the JS side at startup so family-tier pills can
+        resolve their italicised scientific-family subtext directly,
+        without depending on a sibling species record being present in
+        the same scene.
+        """
+        try:
+            cat = self._get_bird_catalog()
+            if cat is None:
+                return {'success': False, 'error': 'catalog unavailable', 'map': {}}
+            return {'success': True, 'map': cat.family_sci_map}
+        except Exception as e:
+            error(f'[API] get_family_sci_map error: {e}')
+            return {'success': False, 'error': str(e), 'map': {}}
+
     def fetch_remote_version(self):
         """Fetch version.json from projectkestrel.org to bypass CORS in JS."""
         try:
