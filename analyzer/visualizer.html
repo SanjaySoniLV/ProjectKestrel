@@ -88,19 +88,21 @@
             No folders loaded.<br />Click <b>+ Load Folder</b> to get started.
           </div>
           <div id="folderTree"></div>
-          <!-- Bottom segmented strip: Select All ↔ None | Clear. Hidden when tree is empty.
-               The checkbox inside the select button is purely visual (pointer-events
-               disabled in CSS); the button itself handles the click. -->
+          <!-- Bottom segmented strip: [Clear] [Select All ↔ Select None].
+               Clear is the wide left segment; the select toggle is a compact
+               right segment with its checkbox positioned at the far right so
+               it aligns with the row checkboxes above. The checkbox inside the
+               select button is purely visual (pointer-events: none in CSS). -->
           <div id="folderTreeFooter" class="folder-tree-footer segmented-strip">
+            <button id="treeClear" class="segmented-strip-item danger-item tree-clear-btn" title="Unload all folders and reset the tree" disabled>Clear</button>
             <button id="treeCheckAll" class="segmented-strip-item tree-select-toggle" title="Check all loaded folders" disabled>
-              <input type="checkbox" class="tree-cb tree-select-toggle-cb" tabindex="-1" aria-hidden="true" />
               <span class="tree-select-toggle-label">Select All</span>
+              <input type="checkbox" class="tree-cb tree-select-toggle-cb" tabindex="-1" aria-hidden="true" />
             </button>
             <button id="treeCheckNone" class="segmented-strip-item tree-select-toggle hidden" title="Uncheck all loaded folders" disabled>
-              <input type="checkbox" class="tree-cb tree-select-toggle-cb" tabindex="-1" aria-hidden="true" checked />
               <span class="tree-select-toggle-label">Select None</span>
+              <input type="checkbox" class="tree-cb tree-select-toggle-cb" tabindex="-1" aria-hidden="true" checked />
             </button>
-            <button id="treeClear" class="segmented-strip-item danger-item" title="Unload all folders and reset the tree" disabled>Clear</button>
             <button id="treeChangeRoot" class="hidden" disabled aria-hidden="true" tabindex="-1"></button>
           </div>
         </div>

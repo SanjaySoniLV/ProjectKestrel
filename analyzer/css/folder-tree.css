@@ -1,8 +1,7 @@
 /* Folder tree panel: a single bordered container that visually swallows the
-   Load Folder button (top bar) and the Select/Clear strip (bottom bar). Inner
-   elements (recents, tree, hint) get their own horizontal padding so they
-   don't sit flush against the side walls. Border color matches the sidebar
-   footer's segmented strip for visual consistency. */
+   Load Folder button (top bar) and the Select/Clear strip (bottom bar).
+   Border color matches the Analyze Folders primary CTA (#2b6ec8) so the
+   sidebar reads as one cohesive blue-accented unit. */
 .folder-tree-wrap {
   display: flex;
   flex-direction: column;
@@ -12,7 +11,7 @@
   overflow: hidden;
   padding: 0;
   background: #0a0d12;
-  border: 1px solid #2a3040;
+  border: 1px solid #2b6ec8;
   border-radius: 10px;
 }
 
@@ -62,7 +61,8 @@
   font-weight: 400;
   background: #1d5aa8;
   border: none;
-  border-bottom: 1px solid #2a3040;
+  /* Divider matches the wrap's outer blue border for visual continuity */
+  border-bottom: 1px solid #2b6ec8;
   border-radius: 10px 10px 0 0;
   color: #e6eef9;
   cursor: pointer;

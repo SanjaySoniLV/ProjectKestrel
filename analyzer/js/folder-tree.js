@@ -200,8 +200,12 @@
     }
 
     // Unload every root and reset tree state. Returns the tree to its empty
-    // visual state (welcome panel + recents chips visible).
+    // visual state (welcome panel + recents chips visible). Also bumps
+    // _loadFoldersVersion so any in-flight loadMultipleFolders call hits its
+    // version check at the next await and aborts — otherwise scenes from a
+    // mid-flight read_csv would still appear AFTER the user clicked Clear.
     function clearAllFolderRoots() {
+      try { ++_loadFoldersVersion; } catch (e) { /* ignore */ }
       folderTreeRootNodes.clear();
       folderTreeRootOrder = [];
       checkedFolderPaths.clear();
