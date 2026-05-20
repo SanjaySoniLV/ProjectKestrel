@@ -325,3 +325,4 @@
         setStatus('Failed to open in editor. Check Settings and Local Root.');
       }
     }
+

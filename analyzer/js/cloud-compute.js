@@ -901,7 +901,7 @@
     function cssEscape(s) {
       return String(s || '').replace(/(["\\\]\[])/g, '\\$1');
     }
-    
+
     // Custom dialog prompt for Culling Assistant save decision
     function showCullingAssistantPrompt() {
       return new Promise((resolve) => {

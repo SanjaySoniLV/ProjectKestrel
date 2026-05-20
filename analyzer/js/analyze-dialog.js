@@ -50,7 +50,7 @@
 
       const icon = document.createElement('span');
       icon.className = 'tree-icon';
-      icon.textContent = node.has_kestrel ? '\uD83D\uDCC2' : '\uD83D\uDCC1';
+      icon.textContent = node.has_kestrel ? '📂' : '📁';
 
       const label = document.createElement('span');
       label.className = 'tree-label';

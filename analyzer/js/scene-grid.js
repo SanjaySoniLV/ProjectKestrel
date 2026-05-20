@@ -31,6 +31,39 @@
       //  - manual star rating on any image
       const visibleScenes = onlyReviewedScenes ? scenes.filter(isManuallyReviewedScene) : scenes;
 
+      // Batched hydration of bird-catalog records for every species pill we're
+      // about to paint when the show-scientific-names toggle is on. Collect
+      // the missing names up-front, fire one IPC call, and re-render once if
+      // any new records arrived. Without this batching the per-card loop
+      // below would fan out N requests on first paint of a large folder.
+      const _showSciOnCards = _getShowSciNames();
+      if (_showSciOnCards && !_sceneCardHydrationPending) {
+        const need = new Set();
+        for (const s of visibleScenes) {
+          // Hydrate every species and family term on the scene. The
+          // card's family-fallback scan needs a cached species record
+          // per family pill so it can borrow family_sci.
+          for (const sp of (s.species || [])) {
+            if (sp && !_isBirdRecordKnown(sp)) need.add(sp);
+          }
+          for (const fm of (s.families || [])) {
+            if (fm && !_isBirdRecordKnown(fm)) need.add(fm);
+          }
+        }
+        if (need.size > 0) {
+          _sceneCardHydrationPending = true;
+          _hydrateBirdRecords(Array.from(need)).then(() => {
+            _sceneCardHydrationPending = false;
+            // Always queue a repaint -- the cache (and miss-set) just gained
+            // entries that change what the cards show. We can't bail on a
+            // newer renderScenes call here, because that newer call was
+            // gated out of starting its own hydration by the pending flag
+            // and built its DOM against the still-empty cache.
+            requestAnimationFrame(() => { try { renderScenes(); } catch (_) {} });
+          }).catch(() => { _sceneCardHydrationPending = false; });
+        }
+      }
+
       updateStatusBar(visibleScenes);
 
       // Prevent flash-of-empty-content: lock the grid's current height as a
@@ -193,58 +226,124 @@
 
         const body = document.createElement('div');
         body.className = 'body';
-        const title = document.createElement('div');
-        title.className = 'title';
-        const _localNum = String(s.id).split(':').pop();
         const _folderName = folderBaseName(s.representative?.__rootPath || '');
-        // Build the title entirely from text nodes / trusted elements — never
-        // assign to innerHTML with any user-controlled substring. The previous
-        // decodeEntities(escapeHtml(...)) pattern round-tripped the escaped
-        // string back to its raw form, which allowed a crafted scene name
-        // (e.g. from a poisoned kestrel_scenedata.json) to inject a DOM-XSS
-        // and, via the pywebview bridge, escalate to RCE. See FINDING-01.
-        if (_folderName && !showFolderHeaders) {
-          const folderEl = document.createElement('i');
-          folderEl.className = 'folder-name';
-          folderEl.textContent = _folderName;
-          title.appendChild(folderEl);
-          const sep = document.createElement('span');
-          sep.className = 'title-sep';
-          sep.textContent = ' / ';
-          title.appendChild(sep);
+
+        // Secondary title row -- only shown when the scene has a folder
+        // prefix (sub-folder name visible because group-by-folder header is
+        // off) or a user-set scene name. Otherwise the body collapses to
+        // just the chip/meta strip. ``#N`` is no longer rendered: the
+        // image and grid position carry the identity.
+        // Build any user-controlled substring with textContent only, never
+        // innerHTML, per FINDING-01.
+        const needTitleRow = !!(s.sceneName || (_folderName && !showFolderHeaders));
+        const title = needTitleRow ? document.createElement('div') : null;
+        if (title) {
+          title.className = 'title';
+          if (_folderName && !showFolderHeaders) {
+            const folderEl = document.createElement('i');
+            folderEl.className = 'folder-name';
+            folderEl.textContent = _folderName;
+            title.appendChild(folderEl);
+            if (s.sceneName) {
+              const sep = document.createElement('span');
+              sep.className = 'title-sep';
+              sep.textContent = ' / ';
+              title.appendChild(sep);
+            }
+          }
+          if (s.sceneName) {
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'name';
+            nameSpan.textContent = String(s.sceneName);
+            title.appendChild(nameSpan);
+          }
+          title.title = (s.representative?.__rootPath || String(s.id)) + (s.sceneName ? ` — ${s.sceneName}` : '');
+          body.appendChild(title);
         }
-        const idBold = document.createElement('b');
-        idBold.textContent = `#${_localNum}`;
-        title.appendChild(idBold);
-        if (s.sceneName) {
-          title.appendChild(document.createTextNode(' \u2014 '));
-          const nameSpan = document.createElement('span');
-          nameSpan.className = 'name';
-          nameSpan.textContent = String(s.sceneName);
-          title.appendChild(nameSpan);
+        if (s.isApproved) card.classList.add('scene-approved');
+
+        // Pill list -- prefer species over families. Family pills only
+        // appear on the card when the scene has no species tags at all;
+        // the dialog still surfaces both tiers. aggregateScenes is the
+        // single source of truth for the search predicate (which checks
+        // both arrays), so dropping families from the card doesn't hide
+        // matches.
+        const cardPills = (s.species && s.species.length) ? s.species : (s.families || []);
+        const firstPill = cardPills[0] || null;
+        const overflowCount = Math.max(0, cardPills.length - 1);
+
+        const metaRow = document.createElement('div');
+        metaRow.className = 'card-meta-row';
+        if (s.isApproved) metaRow.classList.add('reviewed-tags');
+
+        const pillsWrap = document.createElement('div');
+        pillsWrap.className = 'card-pills';
+        if (firstPill) {
+          const c = document.createElement('span');
+          c.className = s.isApproved ? 'chip manual-approved' : 'chip';
+          if (_showSciOnCards) c.classList.add('chip--with-sci');
+          const primary = document.createElement('span');
+          primary.className = 'chip-primary';
+          primary.textContent = firstPill;
+          c.appendChild(primary);
+          let titleStr = firstPill;
+          if (_showSciOnCards) {
+            const sciText = _resolvePillSci(firstPill, cardPills);
+            if (sciText) {
+              const sci = document.createElement('span');
+              sci.className = 'chip-sci';
+              const em = document.createElement('em');
+              em.textContent = sciText;
+              sci.appendChild(em);
+              c.appendChild(sci);
+              titleStr = `${firstPill} — ${sciText}`;
+            }
+          }
+          c.title = titleStr;
+          pillsWrap.appendChild(c);
         }
-        title.title = (s.representative?.__rootPath || String(s.id)) + (s.sceneName ? ` \u2014 ${s.sceneName}` : '');
+        if (overflowCount > 0) {
+          const plus = document.createElement('button');
+          plus.type = 'button';
+          plus.className = 'chip chip-more';
+          // Down chevron (▾, U+25BE) signals "reveal more" without
+          // overloading the '+' affordance that other parts of the UI
+          // (scene-chip-add, chip-add-btn) use for "create new tag".
+          plus.textContent = '▾';
+          plus.title = `Show ${overflowCount} more`;
+          plus.setAttribute('aria-label', `Show ${overflowCount} more tags`);
+          plus.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            _openMorePillsPopover(plus, cardPills.slice(1), _showSciOnCards, cardPills);
+          });
+          pillsWrap.appendChild(plus);
+        }
+        metaRow.appendChild(pillsWrap);
+
         const meta = document.createElement('div');
-        // Use a dedicated class for title-level badges so other .meta uses are unaffected
-        meta.className = 'meta title-badges';
-        meta.innerHTML = `<span class="score">★ ${fmt3(s.maxQuality)}</span><span>\ud83d\udcf8 ${s.imageCount}</span>`;
-        const chips = document.createElement('div');
-        chips.className = 'chips';
-        if (s.isApproved) {
-          card.classList.add('scene-approved');
-          chips.classList.add('reviewed-tags');
-        }
-        for (const sp of s.species.slice(0, 3)) {
-          const c = document.createElement('span'); c.className = s.isApproved ? 'chip manual-approved' : 'chip'; c.textContent = sp; c.title = sp; chips.appendChild(c);
-        }
-        if (s.species.length > 3) { const more = document.createElement('span'); more.className = 'chip badge'; more.textContent = `+${s.species.length - 3} more`; more.title = s.species.slice(3).join(', '); chips.appendChild(more); }
-        // Put title and badges on the same physical line: left = title, right = badges
-        const titleRow = document.createElement('div');
-        titleRow.className = 'title-row';
-        titleRow.appendChild(title);
-        titleRow.appendChild(meta);
-        body.appendChild(titleRow);
-        body.appendChild(chips);
+        meta.className = 'card-meta';
+        // Score + image count on one line, no background pill. Two-decimal
+        // quality matches the user-visible precision elsewhere in the UI.
+        const scoreEl = document.createElement('span');
+        scoreEl.className = 'meta-score';
+        // Negative quality is the pipeline's sentinel for "no animal
+        // detected" (defaults to -1.00 in that case). Render as an em-dash
+        // pair instead of a misleading numeric score.
+        scoreEl.textContent = (s.maxQuality >= 0)
+          ? `★ ${s.maxQuality.toFixed(2)}`
+          : `★ --`;
+        meta.appendChild(scoreEl);
+        const metaSep = document.createElement('span');
+        metaSep.className = 'meta-sep';
+        metaSep.textContent = ' | ';
+        meta.appendChild(metaSep);
+        const countEl = document.createElement('span');
+        countEl.className = 'meta-count';
+        countEl.textContent = `📸 ${s.imageCount}`;
+        meta.appendChild(countEl);
+        metaRow.appendChild(meta);
+
+        body.appendChild(metaRow);
         card.appendChild(body);
 
         card.addEventListener('click', (ev) => {
@@ -420,7 +519,7 @@
 
           const hdr = document.createElement('div');
           hdr.className = 'folder-group-header' + (collapsed ? ' collapsed' : '');
-          hdr.innerHTML = `<span class="folder-group-toggle">\u25bc</span><span class="folder-group-name">${escapeHtml(folderName)}</span><span class="folder-group-count muted">${allScenesInFolder.length} scene${allScenesInFolder.length === 1 ? '' : 's'}</span>`;
+          hdr.innerHTML = `<span class="folder-group-toggle">▼</span><span class="folder-group-name">${escapeHtml(folderName)}</span><span class="folder-group-count muted">${allScenesInFolder.length} scene${allScenesInFolder.length === 1 ? '' : 's'}</span>`;
 
           // Left-aligned secondary actions
           const leftActions = document.createElement('div');
@@ -477,57 +576,6 @@
           cullingBtn.title = 'Open the AI-assisted culling workflow for this folder';
           cullingBtn.addEventListener('click', (ev) => { ev.stopPropagation(); openCullingAssistant(fd.folderPath); });
           rightActions.appendChild(cullingBtn);
-
-          const perchBtn = document.createElement('button');
-          perchBtn.className = 'action-btn share-perch-btn';
-          perchBtn.innerHTML = '<i>🪶</i> Share with Perch';
-          perchBtn.title = 'Create an Unfinished Perch on the web with this folder\u2019s Kestrel analysis (export and crop images)';
-          perchBtn.addEventListener('click', (ev) => { ev.stopPropagation(); shareWithPerchFolder(fd.folderPath); });
-          rightActions.appendChild(perchBtn);
-
-          // Cloud Compute moved into the unified Analyze Folders dialog
-          // (destination toggle: Local / Cloud). The folder-level shortcut
-          // button has been retired so cloud and local share a single mental
-          // model and entry point.
-
-          // "Published" pill \u2014 only shown if .kestrel/perch_link.json exists.
-          // Click opens the perch URL (after stale-link verification, see 1d).
-          // Right-click \u2192 Unlink (local-only).
-          const perchPill = document.createElement('button');
-          perchPill.type = 'button';
-          perchPill.className = 'folder-perch-pill hidden';
-          perchPill.dataset.folderPath = fd.folderPath;
-          perchPill.innerHTML = '<span class="folder-perch-pill-icon"></span><span class="folder-perch-pill-label">Published</span>';
-          const _pillIcon = perchPill.querySelector('.folder-perch-pill-icon');
-          if (_pillIcon) _pillIcon.textContent = '\u{1FAB6}'; // feather emoji
-          perchPill.title = 'Folder published to Perch \u2014 click to open in browser';
-          perchPill.addEventListener('click', (ev) => {
-            ev.stopPropagation();
-            handlePerchPillClick(fd.folderPath, perchPill);
-          });
-          perchPill.addEventListener('contextmenu', (ev) => {
-            ev.preventDefault();
-            ev.stopPropagation();
-            handlePerchPillUnlink(fd.folderPath, perchPill);
-          });
-          rightActions.appendChild(perchPill);
-
-          // Phase 3 "Sync to Perch" button is temporarily hidden — the
-          // dirty/clean state detection is unreliable (the button greys out
-          // when there ARE local edits, etc.). Once that's reworked, restore
-          // by re-creating perchSyncBtn here and calling
-          // applyPerchLinkToSyncBtn from the link loader below.
-          const perchSyncBtn = null;
-
-          // Async-populate from disk; show only if the file exists.
-          (async () => {
-            try {
-              const res = await window.pywebview?.api?.read_perch_link?.(fd.folderPath);
-              if (res && res.present && res.link) {
-                applyPerchLinkToPill(perchPill, res.link);
-              }
-            } catch {}
-          })();
 
           hdr.appendChild(rightActions);
 

@@ -36,6 +36,7 @@
         // it, an out-of-date local CSV either feeds a stale resume-anchor to
         // the cloud pipeline or silently merges incompatible rows back on
         // pack-merge. See plan: cloud previously short-circuited these gates.
+        // Check for outdated-version folders not already confirmed for re-analysis
         const outdatedPaths = [];
         function findNode(node, targetPath) {
           if (node.path === targetPath) return node;
@@ -385,3 +386,4 @@
         showToast('Error opening Culling Assistant', 4000);
       }
     }
+

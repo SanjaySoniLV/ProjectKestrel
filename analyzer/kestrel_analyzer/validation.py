@@ -251,13 +251,17 @@ def _check_folder_inspection(ctx: _Ctx) -> tuple[bool, str]:
         return False, f"total={total} (need >=2 images)"
     # Cache sample image paths for downstream checks
     try:
-        from kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS
+        from kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS, is_supported_image_file
     except ImportError:
-        from analyzer.kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS  # type: ignore
+        from analyzer.kestrel_analyzer.config import (  # type: ignore
+            RAW_EXTENSIONS,
+            JPEG_EXTENSIONS,
+            is_supported_image_file,
+        )
     all_exts = set(RAW_EXTENSIONS) | set(JPEG_EXTENSIONS)
     files = sorted(
         f for f in ctx.images_dir.iterdir()
-        if f.is_file() and f.suffix.lower() in all_exts
+        if f.is_file() and is_supported_image_file(f.name, all_exts)
     )
     ctx.sample_images = files[:2]
     return True, f"total={total}, has_kestrel={result.get('has_kestrel', False)}"

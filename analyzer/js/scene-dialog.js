@@ -652,19 +652,44 @@
     let _activeTagInputSceneId = null;
 
     // Species → family taxonomy map (loaded once from backend on startup).
-    // Used to auto-add the family chip when a recognized species is added,
-    // cascade-remove species when a family chip is X'd, and populate the
-    // species autocomplete datalist.
+    // Used to auto-add the family chip when a recognized species is added and
+    // to cascade-remove species when a family chip is X'd. Populated from the
+    // legacy ``get_species_family_map`` endpoint so the auto-link behaviour
+    // stays scoped to the 500 ML-model species the existing flow was designed
+    // for -- the combobox itself sources its candidates from the bigger
+    // regional bird catalog via ``search_birds``.
     let _speciesFamilyMap = null;        // { "American Robin": "Thrush sp.", ... } (canonical case)
     let _speciesFamilyMapLower = null;   // lowercase keys → { canonicalName, family }
-    let _speciesNameList = [];           // sorted array of canonical species names
+
+    // Bird-catalog record cache for the new regional combobox. Records arrive
+    // from the backend with ``scientific_name``, ``family_common``, ``regions``,
+    // etc. We cache them keyed by lowercase canonical name so already-applied
+    // species pills can render their italicised scientific-name subtext
+    // without an extra round-trip per pill render.
+    const _birdRecordCache = new Map();
+    // Names we've asked ``lookup_birds`` about and got no record back for
+    // (e.g. genus/family-level "sp." placeholders that aren't in the IOC
+    // catalog). Tracked separately from the record cache so the hydration
+    // loop terminates without polluting ``_lookupFamilyForSpecies`` with
+    // empty-family sentinel rows.
+    const _birdRecordMisses = new Set();
+    let _birdCatalogMeta = null;         // { regions: [...], default_regions: [...], total_species: N }
+    // family_common -> family_sci (e.g. "Hawk/Eagle/Kite sp." -> "Accipitridae").
+    // Hydrated once at startup. Mirrors the catalog's full mapping so a family
+    // pill can render its scientific-family subtext without needing a sibling
+    // species record to be cached in the same scene.
+    let _familyCommonToSci = null;       // Map or null until loaded
+    function _getFamilySci(name) {
+      if (!name || !_familyCommonToSci) return '';
+      return _familyCommonToSci.get(String(name).trim()) || '';
+    }
 
     async function loadSpeciesFamilyMap() {
-      if (_speciesFamilyMap) return;
+      if (_speciesFamilyMap && _birdCatalogMeta) return;
       if (!hasPywebviewApi || !window.pywebview?.api?.get_species_family_map) {
-        _speciesFamilyMap = {};
-        _speciesFamilyMapLower = {};
-        _speciesNameList = [];
+        _speciesFamilyMap = _speciesFamilyMap || {};
+        _speciesFamilyMapLower = _speciesFamilyMapLower || {};
+        _birdCatalogMeta = _birdCatalogMeta || { regions: [], default_regions: ['NA'], total_species: 0 };
         return;
       }
       try {
@@ -675,13 +700,246 @@
         for (const [sp, fam] of Object.entries(map)) {
           _speciesFamilyMapLower[sp.toLowerCase()] = { canonical: sp, family: fam };
         }
-        _speciesNameList = Object.keys(map).sort((a, b) => a.localeCompare(b));
-        kdebug(`[loadSpeciesFamilyMap] loaded ${_speciesNameList.length} species`);
+        kdebug(`[loadSpeciesFamilyMap] auto-link map loaded (${Object.keys(map).length} entries)`);
       } catch (e) {
         console.warn('[loadSpeciesFamilyMap] failed:', e);
         _speciesFamilyMap = {};
         _speciesFamilyMapLower = {};
-        _speciesNameList = [];
+      }
+      // Catalog meta (regions list for settings + total catalog size for logging).
+      try {
+        if (window.pywebview?.api?.get_bird_catalog_meta) {
+          const m = await window.pywebview.api.get_bird_catalog_meta();
+          if (m && m.success) {
+            _birdCatalogMeta = {
+              regions: Array.isArray(m.regions) ? m.regions : [],
+              default_regions: Array.isArray(m.default_regions) ? m.default_regions : ['NA'],
+              total_species: typeof m.total_species === 'number' ? m.total_species : 0,
+            };
+            kdebug(`[loadSpeciesFamilyMap] bird catalog: ${_birdCatalogMeta.total_species} species across ${_birdCatalogMeta.regions.length} regions`);
+          }
+        }
+      } catch (e) {
+        console.warn('[bird catalog meta] failed:', e);
+      }
+      if (!_birdCatalogMeta) {
+        _birdCatalogMeta = { regions: [], default_regions: ['NA'], total_species: 0 };
+      }
+      // Family-common -> family-sci direct lookup. Replaces the old
+      // sibling-species fallback: family pills can now resolve their
+      // Latin family name without needing a same-scene species record.
+      try {
+        if (window.pywebview?.api?.get_family_sci_map) {
+          const fm = await window.pywebview.api.get_family_sci_map();
+          if (fm && fm.success && fm.map) {
+            _familyCommonToSci = new Map(Object.entries(fm.map));
+            kdebug(`[loadSpeciesFamilyMap] family-sci map: ${_familyCommonToSci.size} families`);
+          }
+        }
+      } catch (e) {
+        console.warn('[family-sci map] failed:', e);
+      }
+      if (!_familyCommonToSci) _familyCommonToSci = new Map();
+    }
+
+    /** Return the user's selected biogeographic regions for the combobox.
+     *  Falls back to the catalog meta's default selection (typically ``['NA']``). */
+    function _getCurrentBirdRegions() {
+      const v = getSetting('bird_regions', null);
+      if (Array.isArray(v) && v.length > 0) return v.filter(r => typeof r === 'string' && r);
+      if (_birdCatalogMeta && Array.isArray(_birdCatalogMeta.default_regions) && _birdCatalogMeta.default_regions.length) {
+        return _birdCatalogMeta.default_regions.slice();
+      }
+      return ['NA'];
+    }
+
+    /** Return whether scientific-name subtext should render under species/family pills. */
+    function _getShowSciNames() {
+      return !!getSetting('show_scientific_names', false);
+    }
+
+    /** Match a scene against a lowercased search query.
+     *
+     *  Checks species and family terms. When includeSci is true, also
+     *  checks the Latin binomial / family_sci pulled from the cached
+     *  bird-catalog record for each species. Cache-only -- we never
+     *  trigger a hydration round-trip from inside the search predicate,
+     *  so sci-name search only works for species that have already been
+     *  seen by a render pass or the combobox.
+     */
+    function _sceneMatchesQuery(scene, lcQuery, includeSci) {
+      if (!scene || !lcQuery) return true;
+      const species = scene.species || [];
+      for (const sp of species) {
+        if (sp.toLowerCase().includes(lcQuery)) return true;
+      }
+      const families = scene.families || [];
+      for (const fm of families) {
+        if (fm.toLowerCase().includes(lcQuery)) return true;
+      }
+      if (!includeSci) return false;
+      for (const sp of species) {
+        const rec = _getCachedBirdRecord(sp);
+        if (!rec) continue;
+        if (rec.scientific_name && rec.scientific_name.toLowerCase().includes(lcQuery)) return true;
+        if (rec.family_sci && rec.family_sci.toLowerCase().includes(lcQuery)) return true;
+      }
+      return false;
+    }
+
+    /** Resolve the italicised subtext for a pill on a scene card.
+     *
+     *  Pills can be species (returns the Latin binomial) or family-tier
+     *  labels (returns the scientific family, e.g. ``Columbidae``). For
+     *  family-tier pills we scan sibling pills on the same scene for a
+     *  cached species record whose family_common matches, then borrow
+     *  its family_sci -- the same trick renderTopbarTags uses.
+     */
+    function _resolvePillSci(name, sceneTerms) {
+      if (!name) return '';
+      const rec = _getCachedBirdRecord(name);
+      if (rec && rec.scientific_name) return rec.scientific_name;
+      // Direct family lookup -- works for any family display name that the
+      // catalog knows about, regardless of what species happen to be in
+      // the same scene. This is the path that lets "Hawk/Eagle/Kite sp."
+      // surface "Accipitridae" even when no hawk species crosses the
+      // confidence threshold for the scene.
+      const famSci = _getFamilySci(name);
+      if (famSci) return famSci;
+      // Sibling-species fallback (kept for free-form user-entered family
+      // labels that aren't in the catalog's family_common index).
+      if (!Array.isArray(sceneTerms)) return '';
+      for (const other of sceneTerms) {
+        if (other === name) continue;
+        const r2 = _getCachedBirdRecord(other);
+        if (r2 && r2.family_common === name && r2.family_sci) return r2.family_sci;
+      }
+      return '';
+    }
+
+    // Currently-open + popover (one at a time). Tracking it as a module
+    // local lets clicks outside the popover dismiss it.
+    let _morePillsPopover = null;
+    function _closeMorePillsPopover() {
+      if (!_morePillsPopover) return;
+      const { el, onDocClick, onScroll } = _morePillsPopover;
+      _morePillsPopover = null;
+      document.removeEventListener('mousedown', onDocClick, true);
+      document.removeEventListener('scroll', onScroll, true);
+      el.remove();
+    }
+
+    /** Open a small popover anchored to ``anchor`` listing additional
+     *  pills the card couldn't fit. ``names`` is the list to render and
+     *  ``allTerms`` is the scene's full term list (used to derive
+     *  family_sci subtext via _resolvePillSci). Dismisses on click
+     *  outside, on Escape, or on scroll.
+     */
+    function _openMorePillsPopover(anchor, names, showSci, allTerms) {
+      _closeMorePillsPopover();
+      if (!Array.isArray(names) || !names.length) return;
+      const pop = document.createElement('div');
+      pop.className = 'card-more-popover';
+      pop.setAttribute('role', 'dialog');
+      for (const name of names) {
+        const c = document.createElement('span');
+        c.className = 'chip';
+        if (showSci) c.classList.add('chip--with-sci');
+        const primary = document.createElement('span');
+        primary.className = 'chip-primary';
+        primary.textContent = name;
+        c.appendChild(primary);
+        let titleStr = name;
+        if (showSci) {
+          const sciText = _resolvePillSci(name, allTerms);
+          if (sciText) {
+            const sci = document.createElement('span');
+            sci.className = 'chip-sci';
+            const em = document.createElement('em');
+            em.textContent = sciText;
+            sci.appendChild(em);
+            c.appendChild(sci);
+            titleStr = `${name} — ${sciText}`;
+          }
+        }
+        c.title = titleStr;
+        pop.appendChild(c);
+      }
+      document.body.appendChild(pop);
+      const rect = anchor.getBoundingClientRect();
+      const popH = pop.offsetHeight;
+      const popW = pop.offsetWidth;
+      let top = rect.bottom + 4;
+      if (top + popH > window.innerHeight - 8) top = Math.max(8, rect.top - popH - 4);
+      let left = rect.left;
+      if (left + popW > window.innerWidth - 8) left = Math.max(8, window.innerWidth - popW - 8);
+      pop.style.top = `${top}px`;
+      pop.style.left = `${left}px`;
+      const onDocClick = (ev) => {
+        if (pop.contains(ev.target) || anchor.contains(ev.target)) return;
+        _closeMorePillsPopover();
+      };
+      const onScroll = () => _closeMorePillsPopover();
+      const onKey = (ev) => { if (ev.key === 'Escape') _closeMorePillsPopover(); };
+      document.addEventListener('mousedown', onDocClick, true);
+      document.addEventListener('scroll', onScroll, true);
+      document.addEventListener('keydown', onKey, { once: true });
+      _morePillsPopover = { el: pop, onDocClick, onScroll };
+    }
+
+    /** Cache a record so subsequent pill renders can show its scientific name. */
+    function _cacheBirdRecord(rec) {
+      if (!rec || typeof rec.canonical_common_name !== 'string') return;
+      _birdRecordCache.set(rec.canonical_common_name.toLowerCase(), rec);
+    }
+
+    function _getCachedBirdRecord(name) {
+      if (!name) return null;
+      return _birdRecordCache.get(String(name).toLowerCase()) || null;
+    }
+
+    /** True if we've already resolved this name -- either to a record or to a
+     *  confirmed miss. Render-loop guards use this so that names absent from
+     *  the catalog don't re-trigger ``_hydrateBirdRecords`` on every paint. */
+    function _isBirdRecordKnown(name) {
+      if (!name) return false;
+      const key = String(name).toLowerCase();
+      return _birdRecordCache.has(key) || _birdRecordMisses.has(key);
+    }
+
+    /** Resolve a list of canonical names to records by hitting ``lookup_birds``.
+     *  Already-cached names are skipped. No-op when the backend is unavailable. */
+    async function _hydrateBirdRecords(names) {
+      if (!Array.isArray(names) || !names.length) return;
+      if (!hasPywebviewApi || !window.pywebview?.api?.lookup_birds) return;
+      const need = [];
+      for (const n of names) {
+        if (typeof n !== 'string' || !n) continue;
+        if (!_isBirdRecordKnown(n)) need.push(n);
+      }
+      if (!need.length) return;
+      try {
+        const res = await window.pywebview.api.lookup_birds(need);
+        const map = (res && res.success && res.map) ? res.map : {};
+        const resolvedKeys = new Set();
+        for (const v of Object.values(map)) {
+          _cacheBirdRecord(v);
+          if (v && typeof v.canonical_common_name === 'string') {
+            resolvedKeys.add(v.canonical_common_name.toLowerCase());
+          }
+        }
+        // Record a miss for any requested name the backend didn't return so
+        // the next renderScenes/renderTopbarTags pass doesn't request it
+        // again. Without this, genus-level "sp." labels pin the renderer in
+        // a hydrate->repaint->hydrate loop.
+        for (const n of need) {
+          const key = n.toLowerCase();
+          if (!resolvedKeys.has(key) && !_birdRecordCache.has(key)) {
+            _birdRecordMisses.add(key);
+          }
+        }
+      } catch (e) {
+        kdebug('[lookup_birds] failed:', e);
       }
     }
 
@@ -690,31 +948,40 @@
     // the highlight; Enter commits the highlighted item (or the typed value
     // if no highlight); clicking an item commits that item.
     const SPECIES_COMBO_MAX = 12;
+    let _comboRequestSeq = 0;  // monotonically increasing -- drop stale responses
 
-    /** Filter the species list for a typed query.
-     *  Returns up to SPECIES_COMBO_MAX matches: prefix matches first, then
-     *  substring matches. Empty query returns the alphabetical head of the list. */
-    function _filterSpeciesForCombo(query) {
-      if (!_speciesNameList || _speciesNameList.length === 0) return [];
-      const q = String(query || '').trim().toLowerCase();
-      if (!q) return _speciesNameList.slice(0, SPECIES_COMBO_MAX);
-      const prefix = [];
-      const substring = [];
-      for (const name of _speciesNameList) {
-        const lower = name.toLowerCase();
-        if (lower.startsWith(q)) {
-          prefix.push(name);
-        } else if (lower.includes(q)) {
-          substring.push(name);
-        }
-        if (prefix.length >= SPECIES_COMBO_MAX) break;
+    /** Region-filtered fuzzy search via the backend bird catalog.
+     *
+     *  Resolves to a list of record dicts (caller surfaces them in the dropdown).
+     *  A monotonic request id is returned alongside the results so callers can
+     *  drop responses that arrive out-of-order after a newer keystroke.
+     */
+    async function _searchSpeciesForCombo(query) {
+      const id = ++_comboRequestSeq;
+      if (!hasPywebviewApi || !window.pywebview?.api?.search_birds) {
+        return { id, items: [] };
       }
-      return prefix.concat(substring).slice(0, SPECIES_COMBO_MAX);
+      const regions = _getCurrentBirdRegions();
+      try {
+        const res = await window.pywebview.api.search_birds(String(query || ''), regions, SPECIES_COMBO_MAX);
+        const records = (res && res.success && Array.isArray(res.results)) ? res.results : [];
+        // Cache every result so the next pill render can find scientific names.
+        for (const rec of records) _cacheBirdRecord(rec);
+        return { id, items: records };
+      } catch (e) {
+        kdebug('[search_birds] failed:', e);
+        return { id, items: [] };
+      }
     }
 
     /** Render the dropdown list inside the given container element.
-     *  Each row shows the species name and (if known) its family in muted text,
-     *  so the user can confirm the auto-link before committing. */
+     *
+     *  Each row shows the canonical common name on the left and the family
+     *  display name on the right. When the show-scientific-names toggle is on
+     *  we also render the species' Latin binomial in italics beneath the
+     *  common name, and the alpha-4 code in a small badge if one is set --
+     *  so a user typing "AMRO" sees confirmation that ``AMRO`` → American Robin.
+     */
     function _renderSpeciesComboDropdown(dropdownEl, items, highlightIdx) {
       if (!dropdownEl) return;
       if (!items || items.length === 0) {
@@ -722,22 +989,64 @@
         dropdownEl.style.display = 'none';
         return;
       }
-      const html = items.map((name, i) => {
-        const family = (_speciesFamilyMap && _speciesFamilyMap[name]) || '';
+      const showSci = _getShowSciNames();
+      const html = items.map((rec, i) => {
+        const name = rec.canonical_common_name || '';
+        const sci  = rec.scientific_name || '';
+        const fam  = rec.family_common || '';
+        const code = rec.alpha_4 || '';
         const cls = i === highlightIdx ? 'chip-combo-item chip-combo-item--active' : 'chip-combo-item';
-        const fam = family ? `<span class="chip-combo-family">${escapeHtml(family)}</span>` : '';
-        return `<div class="${cls}" data-combo-index="${i}"><span class="chip-combo-name">${escapeHtml(name)}</span>${fam}</div>`;
+        const sciHtml = (showSci && sci)
+          ? `<span class="chip-combo-sci"><em>${escapeHtml(sci)}</em></span>` : '';
+        const codeHtml = code ? `<span class="chip-combo-alpha">${escapeHtml(code)}</span>` : '';
+        const famHtml  = fam ? `<span class="chip-combo-family">${escapeHtml(fam)}</span>` : '';
+        return (
+          `<div class="${cls}" data-combo-index="${i}" data-combo-name="${escapeHtml(name)}">` +
+            `<div class="chip-combo-left">` +
+              `<span class="chip-combo-name">${escapeHtml(name)}</span>` +
+              sciHtml +
+            `</div>` +
+            `<div class="chip-combo-right">${codeHtml}${famHtml}</div>` +
+          `</div>`
+        );
       }).join('');
       dropdownEl.innerHTML = html;
       dropdownEl.style.display = '';
     }
 
     /** Look up the family display name for a species name (case-insensitive).
-     *  Returns { canonical, family } if matched, or null for free-form input. */
+     *  Returns { canonical, family } if matched, or null for free-form input.
+     *  Prefers the cached bird-catalog record (richer info) and falls back to
+     *  the legacy auto-link map for species not yet seen by the combobox. */
     function _lookupFamilyForSpecies(name) {
-      if (!name || !_speciesFamilyMapLower) return null;
+      if (!name) return null;
+      const cached = _getCachedBirdRecord(name);
+      if (cached) {
+        return { canonical: cached.canonical_common_name, family: cached.family_common };
+      }
+      if (!_speciesFamilyMapLower) return null;
       const hit = _speciesFamilyMapLower[String(name).trim().toLowerCase()];
       return hit || null;
+    }
+
+    /** HTML for a species or family pill with optional italicised
+     *  scientific-name subtext. ``primary`` is the visible chip label;
+     *  ``sci`` is the Latin string (binomial for species, scientific family for
+     *  family); ``removeAttr`` is the data attribute name used to wire the X
+     *  button. Pass ``inline=true`` for the scene-card variant which stacks
+     *  the subtext on a second line within the same chip. */
+    function _renderTagPillHtml(primary, sci, options) {
+      const opts = options || {};
+      const chipClass = opts.chipClass || 'chip';
+      const removeAttr = opts.removeAttr || '';
+      const showSci = !!opts.showSci && !!sci;
+      const removeBtn = removeAttr
+        ? `<span class="chip-x" data-${removeAttr}="${escapeHtml(primary)}" title="Remove '${escapeHtml(primary)}'">×</span>`
+        : '';
+      const sciHtml = showSci
+        ? `<span class="chip-sci"><em>${escapeHtml(sci)}</em></span>` : '';
+      const cls = showSci ? `${chipClass} chip--with-sci` : chipClass;
+      return `<span class="${cls}"><span class="chip-primary">${escapeHtml(primary)}</span>${sciHtml}${removeBtn}</span>`;
     }
 
     /** Add a species to the draft and, if the species is in the taxonomy map,
@@ -770,13 +1079,34 @@
       const { species, families, approved } = collectSceneSpecies(scene.id);
       const suggestions = _computeSceneTagSuggestions(scene.id, species, families);
       const chipClass = approved ? 'chip manual-approved' : 'chip';
+      const showSci = _getShowSciNames();
+
+      // Kick off async hydration for any pills we don't already have records
+      // cached for. The first paint may show plain pills; once records arrive
+      // we re-render so the italicised scientific names appear without
+      // blocking the initial render.
+      if (showSci) {
+        const need = (species || []).filter(sp => !_isBirdRecordKnown(sp));
+        if (need.length) {
+          _hydrateBirdRecords(need).then(() => {
+            if (_activeTagInputSceneId === String(scene.id) || sceneDlg?.open) {
+              const fresh = reloadScene(scene.id) || scene;
+              renderTopbarTags(fresh);
+            }
+          });
+        }
+      }
 
       let html = '';
       // Species
       html += '<span class="scene-tag-label">Species:</span> ';
       if (species.length) {
         for (const sp of species) {
-          html += `<span class="${chipClass}">${escapeHtml(sp)}<span class="chip-x" data-remove-species="${escapeHtml(sp)}" title="Remove '${escapeHtml(sp)}'">×</span></span>`;
+          const rec = _getCachedBirdRecord(sp);
+          const sci = rec ? rec.scientific_name : '';
+          html += _renderTagPillHtml(sp, sci, {
+            chipClass, removeAttr: 'remove-species', showSci,
+          });
         }
       } else {
         html += '<span class="muted" style="font-size:11px">—</span>';
@@ -796,7 +1126,21 @@
       html += '<span class="scene-tag-label">Family:</span> ';
       if (families.length) {
         for (const fm of families) {
-          html += `<span class="${chipClass}">${escapeHtml(fm)}<span class="chip-x" data-remove-family="${escapeHtml(fm)}" title="Remove '${escapeHtml(fm)}'">×</span></span>`;
+          // Prefer the direct family_common -> family_sci map; fall back
+          // to scanning sibling species records (free-form user-entered
+          // family labels that aren't in the catalog).
+          let sci = _getFamilySci(fm);
+          if (!sci) {
+            for (const sp of species) {
+              const rec = _getCachedBirdRecord(sp);
+              if (rec && rec.family_common === fm && rec.family_sci) {
+                sci = rec.family_sci; break;
+              }
+            }
+          }
+          html += _renderTagPillHtml(fm, sci, {
+            chipClass, removeAttr: 'remove-family', showSci,
+          });
         }
       } else {
         html += '<span class="muted" style="font-size:11px">—</span>';
@@ -952,9 +1296,15 @@
           dropdown.style.minWidth = Math.max(Math.round(rect.width), 240) + 'px';
         };
 
-        const refreshDropdown = () => {
+        const refreshDropdown = async () => {
           if (!isSpeciesInput || !dropdown) return;
-          comboItems = _filterSpeciesForCombo(inp.value);
+          // The async fetch returns its own request id; only the most recent
+          // request is allowed to repaint the dropdown, so quick typing
+          // doesn't flash older results on top of newer ones.
+          const pending = await _searchSpeciesForCombo(inp.value);
+          if (!dropdown.isConnected) return;
+          if (pending.id !== _comboRequestSeq) return;
+          comboItems = pending.items;
           comboIndex = comboItems.length > 0 ? 0 : -1;
           _renderSpeciesComboDropdown(dropdown, comboItems, comboIndex);
           if (comboItems.length > 0) positionDropdown();
@@ -1032,6 +1382,16 @@
           }
         };
 
+        // Dropdown items are full record objects; ``commit()`` accepts either a
+        // string (typed value) or a record (selected from the dropdown). This
+        // helper normalises both to the canonical common name.
+        const _comboValueOf = (item) => {
+          if (item == null) return undefined;
+          if (typeof item === 'string') return item;
+          if (typeof item.canonical_common_name === 'string') return item.canonical_common_name;
+          return undefined;
+        };
+
         inp.onkeydown = (e) => {
           if (isSpeciesInput && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
             if (!comboItems.length) return;
@@ -1041,10 +1401,11 @@
           }
           if (e.key === 'Enter') {
             e.preventDefault();
-            // If a dropdown row is highlighted, commit that. Otherwise commit
-            // the typed value (allowing free-form species like "Eurasian Wren").
+            // If a dropdown row is highlighted, commit that record's canonical
+            // name. Otherwise commit the typed value (allowing free-form
+            // species like "Eurasian Wren" if it isn't in the catalog).
             const chosen = (isSpeciesInput && comboIndex >= 0 && comboIndex < comboItems.length)
-              ? comboItems[comboIndex]
+              ? _comboValueOf(comboItems[comboIndex])
               : undefined;
             commit(chosen);
             return;
@@ -1068,7 +1429,7 @@
               e.preventDefault(); // keep input focused so blur-commit doesn't race
               const idx = parseInt(row.dataset.comboIndex || '-1', 10);
               if (idx >= 0 && idx < comboItems.length) {
-                commit(comboItems[idx]);
+                commit(_comboValueOf(comboItems[idx]));
               }
             };
           }
