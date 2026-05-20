@@ -388,6 +388,14 @@
      reserve their own indent width (16px per depth). */
 }
 
+/* Multi-root: gap between sibling root nodes inside #folderTree so two loaded
+   libraries don't visually merge. Subtle — not a hard divider. */
+#folderTree > .tree-node + .tree-node {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #1d2230;
+}
+
 .tree-cb {
   flex: 0 0 13px;
   width: 13px;

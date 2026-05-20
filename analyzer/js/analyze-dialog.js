@@ -93,11 +93,13 @@
                   // Update the node state in-memory
                   node.has_kestrel = false;
                   node.kestrel_version = '';
-                  // Re-render the dialog tree
+                  // Re-render the dialog tree from all loaded roots
                   const treeEl = document.getElementById('analyzeDlgTree');
-                  if (treeEl && folderTreeRootNode) {
+                  if (treeEl && _hasAnyRoots()) {
                     treeEl.innerHTML = '';
-                    treeEl.appendChild(buildAnalyzeDlgNode(folderTreeRootNode, _dlgSelected, onChangeCallback));
+                    for (const root of _getAllRoots()) {
+                      treeEl.appendChild(buildAnalyzeDlgNode(root, _dlgSelected, onChangeCallback));
+                    }
                     populateAnalyzeFolderCounts();
                   }
                 });
@@ -324,12 +326,21 @@
         alert('Analysis queue is only available in the desktop (pywebview) mode.\n\nRun kestrel_visualizer as a desktop app to use this feature.');
         return;
       }
-      // Make sure we have a tree to browse
-      if (!folderTreeRootNode) {
-        const fp = await window.pywebview.api.choose_directory();
-        if (!fp) return;
-        await scanFolderTree(fp);
-        if (!folderTreeRootNode) return;
+      // Make sure we have at least one root to browse. If empty, prompt the
+      // user to pick one (or several, if multi-select is available).
+      if (!_hasAnyRoots()) {
+        let pickedPaths = [];
+        if (window.pywebview?.api?.choose_directories) {
+          const res = await window.pywebview.api.choose_directories();
+          if (Array.isArray(res)) pickedPaths = res.filter(Boolean);
+          else if (typeof res === 'string' && res) pickedPaths = [res];
+        } else {
+          const single = await window.pywebview.api.choose_directory();
+          if (single) pickedPaths = [single];
+        }
+        if (pickedPaths.length === 0) return;
+        for (const p of pickedPaths) await addFolderRoot(p);
+        if (!_hasAnyRoots()) return;
       }
       // GPU is always available: DirectML (Windows) and CoreML (macOS) are bundled
       // with the frozen build, so no platform-specific hiding is needed.
@@ -355,7 +366,7 @@
         }
       }
       
-      _dlgExpandedPaths = new Set([folderTreeRootNode.path]);
+      _dlgExpandedPaths = new Set(_getAllRoots().map(r => r.path));
       _dlgReanalyze = new Set();
 
       function refreshDlg() {
@@ -403,7 +414,9 @@
 
       const treeEl = document.getElementById('analyzeDlgTree');
       treeEl.innerHTML = '';
-      treeEl.appendChild(buildAnalyzeDlgNode(folderTreeRootNode, _dlgSelected, refreshDlg));
+      for (const root of _getAllRoots()) {
+        treeEl.appendChild(buildAnalyzeDlgNode(root, _dlgSelected, refreshDlg));
+      }
       // Populate counts for dialog nodes with colors and progress bar
       populateAnalyzeFolderCounts();
       refreshDlg();

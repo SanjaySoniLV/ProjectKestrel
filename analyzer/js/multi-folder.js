@@ -24,16 +24,34 @@
     }
 
     function checkAllTreeFolders() {
-      const all = collectKestrelPaths(folderTreeRootNode);
+      // Walk every loaded root and collect every folder with .kestrel data.
+      const all = _getAllRoots().flatMap(root => collectKestrelPaths(root));
       all.forEach(p => checkedFolderPaths.add(p));
       renderFolderTree();
+      updateSelectToggleVisibility();
       debouncedAutoLoad();
     }
 
     function checkNoneTreeFolders() {
       checkedFolderPaths.clear();
       renderFolderTree();
+      updateSelectToggleVisibility();
       debouncedAutoLoad();
+    }
+
+    // Show "Select All" when nothing is checked; "Select None" otherwise.
+    // Called from every checkbox change, addFolderRoot's auto-check, Clear, etc.
+    function updateSelectToggleVisibility() {
+      const all = document.getElementById('treeCheckAll');
+      const none = document.getElementById('treeCheckNone');
+      if (!all || !none) return;
+      if (checkedFolderPaths.size > 0) {
+        all.classList.add('hidden');
+        none.classList.remove('hidden');
+      } else {
+        all.classList.remove('hidden');
+        none.classList.add('hidden');
+      }
     }
 
     // Progress bar helpers
@@ -188,7 +206,7 @@
         if (mergeBtn) mergeBtn.disabled = true; // Can't save in pywebview mode
 
         // Update active selection in tree if tree is open
-        if (folderTreeData) {
+        if (_hasAnyRoots()) {
           const loadedPath = result.root || folderPath;
           treeActivePath = loadedPath;
           checkedFolderPaths.clear();
@@ -200,7 +218,7 @@
         const errorMsg = (e.message || String(e)).replace(/^Error: /, '');
         // If the folder tree is already visible the user may have clicked a parent folder
         // intentionally (no .kestrel there). Show a soft status message instead of an alert.
-        if (folderTreeData) {
+        if (_hasAnyRoots()) {
           setStatus(`No Kestrel database in this folder — select one that shows 📂 in the tree`);
         } else {
           alert(`Could not load Kestrel database from this folder.\n\nMake sure:\n1. The folder has been analyzed with Kestrel Analyzer\n2. The .kestrel folder exists (it may be hidden on macOS)\n3. You selected the correct folder\n\nTip: On macOS, .kestrel folders are hidden by default. You can:\n• Press Cmd+Shift+. (period) to show hidden files in Finder\n• Or select the parent folder that contains the .kestrel folder\n\nError: ${errorMsg}`);
@@ -222,52 +240,70 @@
         const ready = await waitForPywebview();
         kdebug('[pickFolder] Pywebview API ready:', ready);
       }
-      // When user opens a folder, reset any checked folders in the main tree
-      // (acts like pressing "Check none") so we don't accidentally load
-      // folders from a previous root selection.
+      // Phase 2 (additive multi-root): clicking "+ 📂 Load Folders…" no longer
+      // wipes existing checked folders — it ADDS to the tree. Each picked root
+      // scans and auto-checks its analyzed descendants. Multi-select picker
+      // (choose_directories) returns N paths; fall back to single-select if
+      // the multi method isn't exposed by the bridge.
       try {
-        checkedFolderPaths.clear();
-        renderFolderTree();
-        debouncedAutoLoad(); // Unload current folder (same as Check None)
-      } catch (e) { /* ignore */ }
-
-      try {
-        // PRIORITY 1: Python API (desktop app - all platforms)
-        // When available, ALWAYS use this for consistency
-        if (hasPywebviewApi && window.pywebview?.api?.choose_directory) {
-          kdebug('[pickFolder] Using Python API for folder picker');
-          try {
-            setStatus('Opening folder picker...');
-            const folderPath = await window.pywebview.api.choose_directory();
-            if (folderPath) {
-              // Scan the selected folder as the tree root (user may have picked a parent
-              // folder with multiple analyzed sub-folders, or a leaf folder directly).
-              treeExpandedPaths.clear();
-              const treeScanned = await scanFolderTree(folderPath);
-              // Use the root_has_kestrel flag returned directly by scanFolderTree
-              // (folderTreeRootHasKestrel is set inside scanFolderTree).
-              // Only attempt CSV load if the root itself is an analyzed folder.
-              if (treeScanned && !folderTreeRootHasKestrel) {
-                // Tree scan succeeded but root has no .kestrel — it's a parent folder.
-                setStatus('Select a folder from the tree below to load its scenes');
-              } else {
-                // Either scan wasn't available, or the root itself has .kestrel — load it.
-                await loadFolderFromPath(folderPath);
-              }
-              return; // Success - Python API handled everything
-            } else {
-              setStatus('Folder selection cancelled');
-              return; // User cancelled
-            }
-          } catch (e) {
-            console.error('Python API folder picker failed:', e);
-            alert(`Desktop folder picker failed: ${e.message || e}\n\nPlease restart the application and try again.`);
-            setStatus('Folder picker failed');
-            return; // Don't fall through - Python API should always work in desktop app
-          }
+        if (!hasPywebviewApi) {
+          setStatus('Folder picker unavailable: Desktop API missing.');
+          return;
         }
-
-        setStatus('Folder picker unavailable: Desktop API missing.');
+        setStatus('Opening folder picker…');
+        let pickedPaths = [];
+        try {
+          if (window.pywebview?.api?.choose_directories) {
+            const res = await window.pywebview.api.choose_directories();
+            if (Array.isArray(res)) pickedPaths = res.filter(Boolean);
+            else if (typeof res === 'string' && res) pickedPaths = [res];
+          } else if (window.pywebview?.api?.choose_directory) {
+            const single = await window.pywebview.api.choose_directory();
+            if (single) pickedPaths = [single];
+          }
+        } catch (e) {
+          console.error('Folder picker failed:', e);
+          alert(`Desktop folder picker failed: ${e.message || e}`);
+          setStatus('Folder picker failed');
+          return;
+        }
+        if (pickedPaths.length === 0) {
+          setStatus('Folder selection cancelled');
+          return;
+        }
+        // Add each picked path as a root, sequentially (avoid hammering disk).
+        let anyAdded = false;
+        let anyAlready = false;
+        for (const p of pickedPaths) {
+          const r = await addFolderRoot(p);
+          if (r.added) anyAdded = true;
+          else if (r.alreadyLoaded) anyAlready = true;
+        }
+        // Persist recents (most-recent-first, deduped, capped via sanitizer).
+        try {
+          const s = loadSettings();
+          const existing = Array.isArray(s.folder_recents) ? s.folder_recents : [];
+          const normRoot = q => (q || '').replace(/\\/g, '/').replace(/\/+$/, '');
+          const merged = [...pickedPaths.map(normRoot), ...existing.map(normRoot)];
+          const seen = new Set();
+          const deduped = [];
+          for (const p of merged) {
+            if (!p || seen.has(p)) continue;
+            seen.add(p);
+            deduped.push(p);
+            if (deduped.length >= 8) break;
+          }
+          s.folder_recents = deduped;
+          saveSettings(s);
+          if (typeof renderFolderRecentsChips === 'function') renderFolderRecentsChips();
+        } catch (e) { /* recents persistence is best-effort */ }
+        // Trigger a single load after all roots are in (avoids per-root thrash).
+        if (anyAdded) debouncedAutoLoad();
+        if (!anyAdded && anyAlready) {
+          setStatus('Folder already loaded');
+        } else {
+          setStatus(`Loaded ${pickedPaths.length} folder${pickedPaths.length === 1 ? '' : 's'}`);
+        }
       } catch (e) {
         console.error('Unexpected error in pickFolder:', e);
         setStatus('An unexpected error occurred');

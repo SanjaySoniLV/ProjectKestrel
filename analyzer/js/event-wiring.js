@@ -45,7 +45,7 @@
         }
         for (const p of paths) {
           if (_dlgReanalyze.has(p)) continue; // already confirmed at selection time
-          const node = folderTreeRootNode ? findNode(folderTreeRootNode, p) : null;
+          const node = findNodeInAnyRoot(p);
           if (node && isVersionOutdated(node)) {
             outdatedPaths.push({ path: p, name: node.name, version: node.kestrel_version });
           }
@@ -65,7 +65,7 @@
             try {
               await window.pywebview.api.clear_kestrel_data(o.path);
               // Update in-memory node
-              const node = findNode(folderTreeRootNode, o.path);
+              const node = findNodeInAnyRoot(o.path);
               if (node) { node.has_kestrel = false; node.kestrel_version = ''; }
             } catch (e) {
               console.warn('Failed to clear kestrel data for', o.path, e);
@@ -78,7 +78,7 @@
           if (!paths.includes(p)) continue;
           try {
             await window.pywebview.api.clear_kestrel_data(p);
-            const node = folderTreeRootNode ? findNode(folderTreeRootNode, p) : null;
+            const node = findNodeInAnyRoot(p);
             if (node) { node.has_kestrel = false; node.kestrel_version = ''; }
           } catch (e) {
             console.warn('Failed to clear kestrel data for re-analyze', p, e);
@@ -157,14 +157,154 @@
       });
     }
 
-    // Analyze dialog: Change Folder button
+    // Helper: re-render the analyze dialog tree from every loaded root + refresh
+    // its counts. Used by Load Folders / Change Folder / Clear handlers.
+    async function _rerenderAnalyzeDialogTree() {
+      const treeEl = document.getElementById('analyzeDlgTree');
+      if (!treeEl) return;
+      treeEl.innerHTML = '';
+      function refreshDlg() {
+        const countEl = document.getElementById('analyzeDlgCount');
+        const addBtn = document.getElementById('analyzeDlgAdd');
+        if (countEl) countEl.textContent = _dlgSelected.size + ' folder' + (_dlgSelected.size === 1 ? '' : 's') + ' selected';
+        if (addBtn) addBtn.disabled = _dlgSelected.size === 0;
+        if (typeof _refreshAnalyzeDlgQueuePreview === 'function') _refreshAnalyzeDlgQueuePreview();
+      }
+      for (const root of _getAllRoots()) {
+        treeEl.appendChild(buildAnalyzeDlgNode(root, _dlgSelected, refreshDlg));
+      }
+      if (typeof populateAnalyzeFolderCounts === 'function') populateAnalyzeFolderCounts();
+      refreshDlg();
+    }
+
+    // Analyze dialog: + Load Folders button. Adds N roots (multi-select picker)
+    // to the main tree, then re-renders the dialog tree to mirror.
+    document.getElementById('analyzeDlgLoadFolders')?.addEventListener('click', async () => {
+      if (!hasPywebviewApi) { alert('Folder picker is only available in the desktop app.'); return; }
+      let pickedPaths = [];
+      try {
+        if (window.pywebview?.api?.choose_directories) {
+          const res = await window.pywebview.api.choose_directories();
+          if (Array.isArray(res)) pickedPaths = res.filter(Boolean);
+          else if (typeof res === 'string' && res) pickedPaths = [res];
+        } else {
+          const single = await window.pywebview.api.choose_directory();
+          if (single) pickedPaths = [single];
+        }
+      } catch (e) { console.error('Analyze dlg picker failed', e); return; }
+      if (pickedPaths.length === 0) return;
+      for (const p of pickedPaths) await addFolderRoot(p);
+      // Mirror the picked paths into recents (shared with main tree).
+      try {
+        const s = loadSettings();
+        const existing = Array.isArray(s.folder_recents) ? s.folder_recents : [];
+        const normRoot = q => (q || '').replace(/\\/g, '/').replace(/\/+$/, '');
+        const merged = [...pickedPaths.map(normRoot), ...existing.map(normRoot)];
+        const seen = new Set();
+        const deduped = [];
+        for (const p of merged) {
+          if (!p || seen.has(p)) continue;
+          seen.add(p);
+          deduped.push(p);
+          if (deduped.length >= 8) break;
+        }
+        s.folder_recents = deduped;
+        saveSettings(s);
+        if (typeof renderFolderRecentsChips === 'function') renderFolderRecentsChips();
+        if (typeof _renderAnalyzeDialogRecents === 'function') _renderAnalyzeDialogRecents();
+      } catch (e) { /* best-effort */ }
+      await _rerenderAnalyzeDialogTree();
+    });
+
+    // Analyze dialog: Clear button. Clears the shared main tree (since the
+    // dialog mirrors it). User can re-add via + Load Folders or recents chip.
+    document.getElementById('analyzeDlgClear')?.addEventListener('click', () => {
+      clearAllFolderRoots();
+      try { _dlgSelected.clear(); } catch (e) { /* ignore */ }
+      _rerenderAnalyzeDialogTree();
+    });
+
+    // Render the recents row inside the analyze dialog. Same data source as
+    // the main tree's recents (settings.folder_recents); same click behavior.
+    async function _renderAnalyzeDialogRecents() {
+      const row = document.getElementById('analyzeDlgRecentsRow');
+      if (!row) return;
+      const s = (typeof loadSettings === 'function') ? loadSettings() : {};
+      const recents = Array.isArray(s.folder_recents) ? s.folder_recents.slice(0, 8) : [];
+      if (recents.length === 0) { row.classList.add('hidden'); row.innerHTML = ''; return; }
+      let available = recents;
+      try {
+        if (hasPywebviewApi && window.pywebview?.api?.inspect_folders) {
+          const res = await window.pywebview.api.inspect_folders(recents);
+          if (res && res.success && res.results) {
+            available = recents.filter(p => {
+              const info = res.results[p];
+              return info && info.total !== undefined;
+            });
+          }
+        }
+      } catch (e) { /* best-effort */ }
+      if (available.length === 0) { row.classList.add('hidden'); row.innerHTML = ''; return; }
+      function ellipsize(p, maxLen = 28) {
+        if (!p) return '';
+        const s = p.replace(/\\/g, '/');
+        if (s.length <= maxLen) return s;
+        const parts = s.split('/').filter(Boolean);
+        if (parts.length <= 2) return s.slice(0, maxLen - 1) + '…';
+        const t = `${parts[0]}/…/${parts[parts.length - 1]}`;
+        return t.length <= maxLen ? t : (t.slice(0, maxLen - 1) + '…');
+      }
+      row.innerHTML = '';
+      for (const path of available) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'folder-recents-chip';
+        chip.title = path;
+        const plus = document.createElement('span');
+        plus.className = 'folder-recents-chip-plus';
+        plus.textContent = '+ 📂';
+        const label = document.createElement('span');
+        label.textContent = ' ' + ellipsize(path);
+        chip.appendChild(plus); chip.appendChild(label);
+        chip.addEventListener('click', async () => {
+          chip.disabled = true;
+          try {
+            const r = await addFolderRoot(path);
+            if (r && r.added) await _rerenderAnalyzeDialogTree();
+          } finally { chip.disabled = false; }
+        });
+        row.appendChild(chip);
+      }
+      row.classList.remove('hidden');
+    }
+
+    // Render the dialog recents whenever the dialog opens (hook into the
+    // existing open handler — wired via the analyze button).
+    document.getElementById('analyzeQueueBtn')?.addEventListener('click', () => {
+      setTimeout(_renderAnalyzeDialogRecents, 0);
+    });
+
+    // Analyze dialog: Change Folder button. Per Phase 2 plan the legacy button
+    // stays but now ADDS another root (additive multi-root) instead of replacing.
+    // Use choose_directories if available so the user can multi-pick.
     document.getElementById('analyzeDlgChangeRoot')?.addEventListener('click', async () => {
       if (!hasPywebviewApi) { alert('Directory browsing is only available in the desktop app.'); return; }
-      const fp = await window.pywebview.api.choose_directory();
-      if (!fp) return;
-      await scanFolderTree(fp);
-      if (!folderTreeRootNode) return;
-      _dlgExpandedPaths = new Set([folderTreeRootNode.path]);
+      let pickedPaths = [];
+      try {
+        if (window.pywebview?.api?.choose_directories) {
+          const res = await window.pywebview.api.choose_directories();
+          if (Array.isArray(res)) pickedPaths = res.filter(Boolean);
+          else if (typeof res === 'string' && res) pickedPaths = [res];
+        } else {
+          const single = await window.pywebview.api.choose_directory();
+          if (single) pickedPaths = [single];
+        }
+      } catch (e) { console.error('Change Folder picker failed', e); return; }
+      if (pickedPaths.length === 0) return;
+      for (const p of pickedPaths) await addFolderRoot(p);
+      const firstRoot = _getFirstRoot();
+      if (!firstRoot) return;
+      _dlgExpandedPaths = new Set(_getAllRoots().map(r => r.path));
       _dlgSelected.clear();
       function refreshDlg2() {
         const countEl = document.getElementById('analyzeDlgCount');
@@ -175,7 +315,9 @@
       }
       const treeEl = document.getElementById('analyzeDlgTree');
       treeEl.innerHTML = '';
-      treeEl.appendChild(buildAnalyzeDlgNode(folderTreeRootNode, _dlgSelected, refreshDlg2));
+      for (const root of _getAllRoots()) {
+        treeEl.appendChild(buildAnalyzeDlgNode(root, _dlgSelected, refreshDlg2));
+      }
       populateAnalyzeFolderCounts();
       refreshDlg2();
     });

@@ -656,14 +656,25 @@
         &nbsp;<span style="color:var(--bad);">●</span>&thinsp;has errors
         &nbsp;<span style="color:#555;font-size:11px;">● faded = no photos</span></p>
       <div class="analyze-dlg-split">
-        <!-- Left panel: folder tree -->
+        <!-- Left panel: folder tree (mirrors main tree's UX — Phase 2K).
+             Adds + Load Folders top bar, recents chips, Clear bottom button.
+             Legacy "Change Folder" button kept per user note; it now ADDS
+             another root rather than replacing. -->
         <div style="display:flex;flex-direction:column;gap:4px;min-height:0;">
           <div style="display:flex;align-items:center;gap:6px;">
             <span style="font-size:12px;color:var(--muted);font-weight:600;flex:1;">📂 Browse Folders</span>
-            <button id="analyzeDlgChangeRoot" style="font-size:11px;padding:3px 9px;flex-shrink:0;" title="Choose a different parent folder to scan">📁 Change Folder…</button>
+            <button id="analyzeDlgChangeRoot" style="font-size:11px;padding:3px 9px;flex-shrink:0;" title="Add another parent folder to scan">📁 Change Folder…</button>
           </div>
           <div class="analyze-dlg-tree-wrap">
+            <button id="analyzeDlgLoadFolders" class="folder-load-btn" title="Load a folder that you've already analyzed with Kestrel">
+              <span class="folder-load-btn-plus">+ 📂</span>
+              <span class="folder-load-btn-label">Load Folders…</span>
+            </button>
+            <div id="analyzeDlgRecentsRow" class="folder-recents-row hidden" aria-label="Recently loaded folders"></div>
             <div id="analyzeDlgTree"></div>
+            <div id="analyzeDlgFooter" class="folder-tree-footer segmented-strip">
+              <button id="analyzeDlgClear" class="segmented-strip-item danger-item" title="Unload all folders from the picker">Clear</button>
+            </div>
           </div>
           <div id="analyzeScanProgress" class="load-progress hidden" style="margin:0 6px">
             <div class="load-progress-label" id="analyzeScanLabel">Scanning folders…</div>

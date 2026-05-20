@@ -1,75 +1,208 @@
     // ── Folder Tree ──────────────────────────────────────────────────────────────
-    let folderTreeRoot = null;       // absolute path of the scanned tree root
-    let folderTreeData = null;       // raw children array from API
-    let folderTreeRootNode = null;   // synthetic root node {name, path, has_kestrel, children}
-    let folderTreeRootHasKestrel = false;
+    // Multi-root state (Phase 2): the sidebar tree can host N independent root
+    // folders side by side. The user adds roots via "+ 📂 Load Folders…" and
+    // each root scans its own subtree. Scene/data aggregation downstream is
+    // already multi-root via __rootPath / __folderSlot row tagging.
+    let folderTreeRootNodes = new Map();   // Map<rootPath, syntheticRootNode>
+    let folderTreeRootOrder = [];          // insertion order — render order
     let treeExpandedPaths = new Set();
-    let treeActivePath = null;       // currently single-loaded folder
-    let checkedFolderPaths = new Set(); // folders checked for multi-load
+    let treeActivePath = null;             // visual highlight only (last clicked)
+    let checkedFolderPaths = new Set();    // folders checked for multi-load
     let _checkedFolderPathSnapshot = new Map(); // normalized path -> original path
-    let queuedFolderPaths = new Set(); // folders queued for analysis (dialog selection)
-    let _treeFlatOrder = [];           // flat ordered list of visible tree paths for range-select
-    let _appVersion = '';              // current app version, fetched once
-    let _isFrozenApp = false;          // whether running as frozen (PyInstaller) build
-    let _appPlatform = 'windows';      // 'windows' | 'macos' | 'linux'
+    let queuedFolderPaths = new Set();     // folders queued for analysis (dialog selection)
+    let _treeFlatOrder = [];               // flat ordered list of visible tree paths for range-select
+    let _appVersion = '';                  // current app version, fetched once
+    let _isFrozenApp = false;              // whether running as frozen (PyInstaller) build
+    let _appPlatform = 'windows';          // 'windows' | 'macos' | 'linux'
 
-    async function scanFolderTree(rootPath) {
-      if (!hasPywebviewApi || !window.pywebview?.api?.list_subfolders) return false;
-      if (!rootPath) return false;
+    // ── Multi-root accessors ─────────────────────────────────────────────────────
+    function _hasAnyRoots() {
+      return folderTreeRootOrder.length > 0;
+    }
+    function _getAllRoots() {
+      return folderTreeRootOrder.map(p => folderTreeRootNodes.get(p)).filter(Boolean);
+    }
+    function _getFirstRoot() {
+      return _hasAnyRoots() ? folderTreeRootNodes.get(folderTreeRootOrder[0]) : null;
+    }
+    // Find a node by path across ALL loaded roots. Returns the matching node or null.
+    function findNodeInAnyRoot(targetPath) {
+      for (const root of _getAllRoots()) {
+        const found = _findNodeInSubtree(root, targetPath);
+        if (found) return found;
+      }
+      return null;
+    }
+    function _findNodeInSubtree(node, targetPath) {
+      if (!node) return null;
+      if (node.path === targetPath) return node;
+      if (node.children) {
+        for (const c of node.children) {
+          const f = _findNodeInSubtree(c, targetPath);
+          if (f) return f;
+        }
+      }
+      return null;
+    }
+    // Return the root node that contains (or equals) `path`, or null.
+    function _findRootContaining(targetPath) {
+      const norm = p => (p || '').replace(/\\/g, '/').replace(/\/+$/, '');
+      const t = norm(targetPath);
+      for (const root of _getAllRoots()) {
+        const r = norm(root.path);
+        if (t === r || t.startsWith(r + '/')) return root;
+      }
+      return null;
+    }
 
-      // Fetch app version once (for outdated-version detection)
+    // Normalize a path for dedup/lookup (forward slashes, no trailing slash).
+    function _normRoot(p) {
+      return (p || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    }
+
+    // Walk a node's subtree: auto-expand any folder that contains analyzed
+    // descendants (so the user sees the analyzed work without clicking) and
+    // auto-check any folder that itself has .kestrel data.
+    function _autoExpandAndCheckAnalyzedDescendants(node) {
+      if (!node) return;
+      function walk(n) {
+        if (!n) return false;
+        const selfHasKestrel = !!n.has_kestrel;
+        let descendantHas = false;
+        if (n.children) {
+          for (const c of n.children) {
+            if (walk(c)) descendantHas = true;
+          }
+        }
+        const subtreeHas = selfHasKestrel || descendantHas;
+        if (subtreeHas && n.children && n.children.length > 0) {
+          treeExpandedPaths.add(n.path);
+        }
+        if (selfHasKestrel) {
+          checkedFolderPaths.add(n.path);
+        }
+        return subtreeHas;
+      }
+      walk(node);
+    }
+
+    // Add a folder root to the tree. Additive: existing roots stay. If the
+    // root is already loaded, briefly flash its row (caller can show feedback)
+    // and return {added: false, alreadyLoaded: true}. On successful scan,
+    // auto-expands + auto-checks analyzed descendants, re-renders, and returns
+    // {added: true, rootHasKestrel: bool, node: syntheticNode}.
+    async function addFolderRoot(rootPath) {
+      if (!hasPywebviewApi || !window.pywebview?.api?.list_subfolders) return { added: false, error: 'no-bridge' };
+      if (!rootPath) return { added: false, error: 'no-path' };
+
+      const norm = _normRoot(rootPath);
+      // Dedup against existing roots
+      if (folderTreeRootNodes.has(norm)) {
+        return { added: false, alreadyLoaded: true, node: folderTreeRootNodes.get(norm) };
+      }
+
+      // Fetch app version / frozen status / platform once (legacy behavior)
       if (!_appVersion && window.pywebview?.api?.get_app_version) {
         try {
           const vr = await window.pywebview.api.get_app_version();
           if (vr && vr.success) _appVersion = vr.version || '';
         } catch (e) { /* ignore */ }
       }
-      // Fetch frozen status once
       if (!_isFrozenApp && window.pywebview?.api?.is_frozen_app) {
         try {
           const fr = await window.pywebview.api.is_frozen_app();
           _isFrozenApp = !!(fr && fr.frozen);
         } catch (e) { /* ignore */ }
       }
-      // Fetch platform once
       if (_appPlatform === 'windows') {
         try {
           _appPlatform = await getPlatformInfo();
         } catch (e) { /* ignore */ }
       }
 
-      folderTreeRoot = rootPath;
       const depth = getSetting('treeScanDepth', 3);
       setStatus('Scanning folder tree…');
       try {
-        const result = await window.pywebview.api.list_subfolders(rootPath, depth);
+        const result = await window.pywebview.api.list_subfolders(norm, depth);
         if (!result.success) {
           console.warn('[tree] list_subfolders failed:', result.error);
-          return false;
+          return { added: false, error: result.error || 'scan-failed' };
         }
-        folderTreeData = result.tree;
-        folderTreeRootHasKestrel = !!result.root_has_kestrel;
-        // Build a synthetic root node so the tree shows the top-level folder too
-        const rootName = rootPath.replace(/\\/g, '/').split('/').filter(Boolean).pop() || rootPath;
-        folderTreeRootNode = {
+        const rootHasKestrel = !!result.root_has_kestrel;
+        const rootName = norm.split('/').filter(Boolean).pop() || norm;
+        const node = {
           name: rootName,
-          path: rootPath,
-          has_kestrel: folderTreeRootHasKestrel,
+          path: norm,
+          has_kestrel: rootHasKestrel,
           kestrel_version: result.root_kestrel_version || '',
-          children: folderTreeData,
+          children: result.tree || [],
         };
-        // Auto-expand the root
-        treeExpandedPaths.add(rootPath);
+        folderTreeRootNodes.set(norm, node);
+        folderTreeRootOrder.push(norm);
+        // Auto-expand this root + walk for analyzed descendants
+        treeExpandedPaths.add(norm);
+        _autoExpandAndCheckAnalyzedDescendants(node);
         renderFolderTree();
-        // Enable folder tree controls and remove empty placeholder state
+        if (typeof updateSelectToggleVisibility === 'function') updateSelectToggleVisibility();
+        if (typeof updateEmptyHintCopy === 'function') updateEmptyHintCopy();
+        // Drop the empty-state class once at least one root exists
         const treeWrap = document.getElementById('folderTreeWrap');
-        treeWrap.classList.remove('folder-tree-empty');
-        treeWrap.querySelectorAll('button[disabled]').forEach(b => b.removeAttribute('disabled'));
-        return true;
+        if (treeWrap) {
+          treeWrap.classList.remove('folder-tree-empty');
+          treeWrap.querySelectorAll('button[disabled]').forEach(b => b.removeAttribute('disabled'));
+        }
+        return { added: true, rootHasKestrel, node };
       } catch (e) {
-        console.error('[tree] scanFolderTree error:', e);
-        return false;
+        console.error('[tree] addFolderRoot error:', e);
+        return { added: false, error: String(e) };
       }
+    }
+
+    // Remove a single root from the tree (also drops any checked/expanded paths
+    // under that root). Returns true if removed, false if it wasn't loaded.
+    function removeFolderRoot(rootPath) {
+      const norm = _normRoot(rootPath);
+      if (!folderTreeRootNodes.has(norm)) return false;
+      folderTreeRootNodes.delete(norm);
+      folderTreeRootOrder = folderTreeRootOrder.filter(p => p !== norm);
+      // Drop checks/expansions whose paths fall under this root
+      const prefix = norm + '/';
+      for (const p of Array.from(checkedFolderPaths)) {
+        if (p === norm || _normRoot(p).startsWith(prefix)) checkedFolderPaths.delete(p);
+      }
+      for (const p of Array.from(treeExpandedPaths)) {
+        if (p === norm || _normRoot(p).startsWith(prefix)) treeExpandedPaths.delete(p);
+      }
+      if (treeActivePath && (treeActivePath === norm || _normRoot(treeActivePath).startsWith(prefix))) {
+        treeActivePath = null;
+      }
+      renderFolderTree();
+      return true;
+    }
+
+    // Unload every root and reset tree state. Returns the tree to its empty
+    // visual state (welcome panel + recents chips visible).
+    function clearAllFolderRoots() {
+      folderTreeRootNodes.clear();
+      folderTreeRootOrder = [];
+      checkedFolderPaths.clear();
+      _checkedFolderPathSnapshot.clear();
+      treeExpandedPaths.clear();
+      treeActivePath = null;
+      renderFolderTree();
+      if (typeof updateSelectToggleVisibility === 'function') updateSelectToggleVisibility();
+      if (typeof updateEmptyHintCopy === 'function') updateEmptyHintCopy();
+      const treeWrap = document.getElementById('folderTreeWrap');
+      if (treeWrap) treeWrap.classList.add('folder-tree-empty');
+    }
+
+    // Legacy alias. Existing callers that historically called scanFolderTree
+    // get the new additive behavior — if a caller truly wants "replace tree"
+    // it should call clearAllFolderRoots() first. The Phase 2 plan documents
+    // each migrated caller; this alias keeps any stragglers compiling.
+    async function scanFolderTree(rootPath) {
+      const res = await addFolderRoot(rootPath);
+      return !!res.added;
     }
 
     /** Compare two semver strings. Returns -1 if a < b, 0 if equal, 1 if a > b. */
@@ -146,14 +279,17 @@
 
     function renderFolderTree() {
       const container = document.getElementById('folderTree');
-      if (!container || !folderTreeRootNode) return;
+      if (!container) return;
       // Rebuild the flat visible order for shift-range selection
       _treeFlatOrder = [];
       container.innerHTML = '';
-      container.appendChild(buildTreeNode(folderTreeRootNode, _treeFlatOrder));
-      // Note: Do NOT populate counts for main folder tree
-      // The main tree is only for selecting which analyzed folders to LOAD
-      // Colors and counts are only for the Analyze dialog tree
+      if (!_hasAnyRoots()) return;
+      // Each loaded root renders as its own top-level node. Visual spacing
+      // between roots is handled by CSS (.tree-node + .tree-node margin).
+      for (const root of _getAllRoots()) {
+        container.appendChild(buildTreeNode(root, _treeFlatOrder));
+      }
+      // Note: counts are only populated for the Analyze dialog tree.
     }
 
     /** Update a single main-folder-tree row for `path` without re-rendering whole tree.
@@ -299,6 +435,7 @@
           if (loadCheckbox.checked) checkedFolderPaths.add(node.path);
           else checkedFolderPaths.delete(node.path);
           _updateAutoRefreshTimers();
+          if (typeof updateSelectToggleVisibility === 'function') updateSelectToggleVisibility();
           debouncedAutoLoad();
         });
         cbCol.appendChild(loadCheckbox);
@@ -343,19 +480,36 @@
         });
       }
 
-      // Click label/icon to load (only if this node has kestrel data)
+      // Label/icon click toggles expand/collapse (same as clicking the chevron).
+      // Loading/unloading a folder is reserved for the checkbox per Phase 2
+      // decision — clicking the label is non-destructive.
+      const toggleExpand = (e) => {
+        e.stopPropagation();
+        treeActivePath = node.path;
+        if (!hasChildren) {
+          renderFolderTree();
+          return;
+        }
+        const open = treeExpandedPaths.has(node.path);
+        if (open) {
+          treeExpandedPaths.delete(node.path);
+          arrow.classList.remove('open');
+          if (childWrap) childWrap.classList.add('hidden');
+        } else {
+          treeExpandedPaths.add(node.path);
+          arrow.classList.add('open');
+          if (childWrap) childWrap.classList.remove('hidden');
+        }
+        // Update the active highlight without a full re-render.
+        document.querySelectorAll('#folderTree .tree-node-row.active').forEach(r => r.classList.remove('active'));
+        row.classList.add('active');
+      };
+      label.addEventListener('click', toggleExpand);
+      icon.addEventListener('click', toggleExpand);
+
+      // Right-click context menu for clearing analysis data (still gated to
+      // .kestrel folders since "clear analysis data" only applies there).
       if (node.has_kestrel) {
-        label.addEventListener('click', async () => {
-          treeActivePath = node.path;
-          renderFolderTree();
-          await loadFolderFromPath(node.path);
-        });
-        icon.addEventListener('click', async () => {
-          treeActivePath = node.path;
-          renderFolderTree();
-          await loadFolderFromPath(node.path);
-        });
-        // Right-click context menu for clearing analysis data
         row.addEventListener('contextmenu', (e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -467,17 +621,10 @@
           return false;
         }
 
-        // Helper: look up kestrel_version from tree node by path
-        function findNodeVersion(node, targetPath) {
-          if (!node) return '';
-          if (node.path === targetPath) return node.kestrel_version || '';
-          if (node.children) {
-            for (const c of node.children) {
-              const v = findNodeVersion(c, targetPath);
-              if (v) return v;
-            }
-          }
-          return '';
+        // Helper: look up kestrel_version from any loaded root by path.
+        function findNodeVersionAcrossRoots(targetPath) {
+          const node = findNodeInAnyRoot(targetPath);
+          return node ? (node.kestrel_version || '') : '';
         }
 
         for (const np of uniq) {
@@ -509,7 +656,7 @@
                 row.classList.add('analyzed-full');          // green: finished, no errors
                 // Check if analyzed on an outdated version
                 const origPath = normToOriginal.get(np) || np;
-                const nodeVer = findNodeVersion(folderTreeRootNode, origPath);
+                const nodeVer = findNodeVersionAcrossRoots(origPath);
                 if (nodeVer && _appVersion && compareVersions(nodeVer, _appVersion) < 0) {
                   row.classList.add('version-outdated');
                   row.title = `Analyzed on Kestrel v${nodeVer} (current: v${_appVersion}). Consider re-analyzing.`;

@@ -252,34 +252,33 @@
       } catch (_) { }
     })();
 
-    // Wire "Change root…" button in the tree panel
-    const treeChangeRootBtn = document.getElementById('treeChangeRoot');
-    if (treeChangeRootBtn) {
-      treeChangeRootBtn.addEventListener('click', async () => {
-        if (!hasPywebviewApi) { const ready = await waitForPywebview(); if (!ready) return; }
-        if (!window.pywebview?.api?.choose_directory) return;
-        setStatus('Opening folder picker…');
-        const folderPath = await window.pywebview.api.choose_directory();
-        if (folderPath) {
-          treeExpandedPaths.clear();
-          checkedFolderPaths.clear();
-          const treeScanned = await scanFolderTree(folderPath);
-          if (treeScanned && !folderTreeRootHasKestrel) {
-            setStatus('Select a folder from the tree below to load its scenes');
-          } else {
-            await loadFolderFromPath(folderPath);
-          }
-        } else {
-          setStatus('Folder selection cancelled');
-        }
-      });
-    }
+    // Legacy "Change root…" button — the element is now permanently hidden in
+    // HTML (kept only so this handler can't NPE on a missing element). The
+    // user-facing replacement is "+ 📂 Load Folders…" which is additive.
+    // No handler wired; intentional no-op.
 
-    // Wire "Check all / Check none" buttons
+    // Wire "Select All / Select None" toggle (one button is always hidden via
+    // .hidden — see updateSelectToggleVisibility in multi-folder.js).
     const treeCheckAllBtn = document.getElementById('treeCheckAll');
     if (treeCheckAllBtn) treeCheckAllBtn.addEventListener('click', checkAllTreeFolders);
     const treeCheckNoneBtn = document.getElementById('treeCheckNone');
     if (treeCheckNoneBtn) treeCheckNoneBtn.addEventListener('click', checkNoneTreeFolders);
+
+    // Wire Clear button — unload every root, reset scenes, return to welcome
+    // panel. Recents in settings are preserved so the user can re-click them.
+    const treeClearBtn = document.getElementById('treeClear');
+    if (treeClearBtn) {
+      treeClearBtn.addEventListener('click', () => {
+        clearAllFolderRoots();
+        // Reset loaded scenes too so the welcome panel returns.
+        try {
+          rows = [];
+          header = [];
+          if (typeof renderScenes === 'function') renderScenes();
+        } catch (e) { /* ignore */ }
+        setStatus('Idle');
+      });
+    }
 
     // Wire "Load checked" button (removed from HTML; kept as no-op guard)
     const treeLoadSelectedBtn = document.getElementById('treeLoadSelected');
@@ -287,6 +286,143 @@
       treeLoadSelectedBtn.addEventListener('click', async () => {
         if (checkedFolderPaths.size === 0) return;
         await loadMultipleFolders(Array.from(checkedFolderPaths));
+      });
+    }
+
+    // ── Recents chips (2H) + empty hint context (2I) ──────────────────────────
+    // Read folder_recents from settings on startup, probe existence via
+    // inspect_folders, render chips into #folderRecentsRow. Each chip click
+    // calls addFolderRoot for that specific path (same flow as + Load Folders).
+    function _ellipsizePathMiddle(path, maxLen = 28) {
+      if (!path) return '';
+      const p = path.replace(/\\/g, '/');
+      if (p.length <= maxLen) return p;
+      // Keep the drive/first segment + the last segment, ellipsis in the middle.
+      const parts = p.split('/').filter(Boolean);
+      if (parts.length <= 2) return p.slice(0, maxLen - 1) + '…';
+      const first = parts[0];
+      const last = parts[parts.length - 1];
+      const truncated = `${first}/…/${last}`;
+      return truncated.length <= maxLen ? truncated : (truncated.slice(0, maxLen - 1) + '…');
+    }
+
+    async function renderFolderRecentsChips() {
+      const row = document.getElementById('folderRecentsRow');
+      if (!row) return;
+      const s = (typeof loadSettings === 'function') ? loadSettings() : {};
+      const recents = Array.isArray(s.folder_recents) ? s.folder_recents.slice(0, 8) : [];
+      if (recents.length === 0) {
+        row.classList.add('hidden');
+        row.innerHTML = '';
+        updateEmptyHintCopy();
+        return;
+      }
+      // Probe existence via inspect_folders so missing-drive paths drop out.
+      let available = recents;
+      try {
+        if (hasPywebviewApi && window.pywebview?.api?.inspect_folders) {
+          const res = await window.pywebview.api.inspect_folders(recents);
+          if (res && res.success && res.results) {
+            available = recents.filter(p => {
+              const info = res.results[p];
+              return info && info.total !== undefined; // exists if inspector returned data
+            });
+          }
+        }
+      } catch (e) { /* if probe fails, just show all recents */ }
+      if (available.length === 0) {
+        row.classList.add('hidden');
+        row.innerHTML = '';
+        updateEmptyHintCopy();
+        return;
+      }
+      row.innerHTML = '';
+      for (const path of available) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'folder-recents-chip';
+        chip.title = path;
+        const plus = document.createElement('span');
+        plus.className = 'folder-recents-chip-plus';
+        plus.textContent = '+ 📂';
+        const label = document.createElement('span');
+        label.textContent = ' ' + _ellipsizePathMiddle(path);
+        chip.appendChild(plus);
+        chip.appendChild(label);
+        chip.addEventListener('click', async () => {
+          chip.disabled = true;
+          try {
+            const r = await addFolderRoot(path);
+            if (r && r.added) {
+              debouncedAutoLoad();
+              // Bump-to-top in recents on successful click.
+              try {
+                const ss = loadSettings();
+                const existing = Array.isArray(ss.folder_recents) ? ss.folder_recents : [];
+                const normRoot = q => (q || '').replace(/\\/g, '/').replace(/\/+$/, '');
+                const np = normRoot(path);
+                const filtered = existing.filter(p => normRoot(p) !== np);
+                ss.folder_recents = [np, ...filtered].slice(0, 8);
+                saveSettings(ss);
+                renderFolderRecentsChips();
+              } catch (e) { /* best-effort */ }
+            }
+          } finally {
+            chip.disabled = false;
+          }
+        });
+        row.appendChild(chip);
+      }
+      row.classList.remove('hidden');
+      updateEmptyHintCopy();
+    }
+
+    function updateEmptyHintCopy() {
+      const hint = document.getElementById('folderTreeEmptyHint');
+      if (!hint) return;
+      const row = document.getElementById('folderRecentsRow');
+      const hasRecents = row && !row.classList.contains('hidden') && row.children.length > 0;
+      hint.innerHTML = hasRecents
+        ? 'Click a recent above, or <b>+ 📂 Load Folders…</b> to pick a new one.'
+        : 'No folders loaded.<br />Click <b>+ 📂 Load Folders…</b> to get started.';
+    }
+
+    // Initial render of recents on startup.
+    renderFolderRecentsChips();
+
+    // ── Zoom slider (2J) ──────────────────────────────────────────────────────
+    // Sync the slider with the existing zoom +/- buttons. Slider value 50..200
+    // maps directly to a CSS transform scale on #mainZoom.
+    const zoomSlider = document.getElementById('zoomSlider');
+    const zoomOutBtn = document.getElementById('zoomOut');
+    const zoomInBtn = document.getElementById('zoomIn');
+    const mainZoomEl = document.getElementById('mainZoom');
+    function _applyZoom(pct) {
+      const clamped = Math.max(50, Math.min(200, Math.round(pct)));
+      if (mainZoomEl) {
+        mainZoomEl.style.transform = `scale(${clamped / 100})`;
+        mainZoomEl.style.transformOrigin = 'top left';
+        // Compensate for the scaled element's apparent size to avoid scroll overflow.
+        mainZoomEl.style.width = (100 * 100 / clamped) + '%';
+        mainZoomEl.style.height = (100 * 100 / clamped) + '%';
+      }
+      if (zoomSlider) zoomSlider.value = String(clamped);
+    }
+    if (zoomSlider) {
+      zoomSlider.addEventListener('input', (e) => {
+        _applyZoom(parseInt(e.target.value, 10) || 100);
+      });
+    }
+    if (zoomOutBtn) {
+      zoomOutBtn.addEventListener('click', () => {
+        const cur = parseInt((zoomSlider && zoomSlider.value) || '100', 10) || 100;
+        _applyZoom(cur - 10);
+      });
+    }
+    if (zoomInBtn) {
+      zoomInBtn.addEventListener('click', () => {
+        const cur = parseInt((zoomSlider && zoomSlider.value) || '100', 10) || 100;
+        _applyZoom(cur + 10);
       });
     }
 

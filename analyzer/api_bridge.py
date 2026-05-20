@@ -579,6 +579,76 @@ class Api:
             error(f'[API] choose_directory error: {e}')
             return None
 
+    def choose_directories(self):
+        """Open native folder picker dialog with multi-select support.
+
+        Returns: list[str] of selected folder paths (empty list if cancelled).
+
+        Platform-specific:
+        - macOS: osascript's "choose folder ... with multiple selections allowed"
+          is native and reliable.
+        - Windows/Linux: tkinter's askdirectory is single-select only with no
+          plural equivalent. We try pywebview's create_file_dialog with
+          allow_multiple=True first (in-process, no subprocess). If pywebview
+          isn't accessible we fall back to a single-pick loop — call
+          choose_directory once and return [path].
+        """
+        try:
+            if sys.platform == 'darwin':
+                # AppleScript returns a list of alias references separated by ", "
+                # when multiple selection is enabled. POSIX path of {…} converts
+                # each to a slash-path string.
+                script = (
+                    'set chosen to choose folder with prompt '
+                    '"Select folders containing analyzed photos" with multiple selections allowed\n'
+                    'set out to ""\n'
+                    'repeat with f in chosen\n'
+                    '    set out to out & POSIX path of f & "\\n"\n'
+                    'end repeat\n'
+                    'return out'
+                )
+                result = subprocess.run(
+                    ['osascript', '-e', script],
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
+                if result.returncode != 0:
+                    info('[API] choose_directories -> cancelled')
+                    return []
+                paths = [p.strip() for p in result.stdout.splitlines() if p.strip()]
+                info(f'[API] choose_directories (macOS) -> {len(paths)} path(s)')
+                return paths
+
+            # Try pywebview's native multi-select dialog (Windows / Linux).
+            try:
+                import webview  # noqa: F401  (only used to access the windows registry)
+                wins = getattr(webview, 'windows', None)
+                if wins:
+                    win = wins[0]
+                    result = win.create_file_dialog(
+                        webview.FOLDER_DIALOG,
+                        allow_multiple=True,
+                    )
+                    if not result:
+                        info('[API] choose_directories -> cancelled')
+                        return []
+                    # create_file_dialog returns a tuple of paths
+                    paths = [str(p) for p in result if p]
+                    info(f'[API] choose_directories (pywebview) -> {len(paths)} path(s)')
+                    return paths
+            except Exception as e:
+                # Fall through to single-pick fallback if pywebview path fails.
+                info(f'[API] choose_directories pywebview path failed ({e!r}); falling back to single-pick')
+
+            # Fallback: single-pick via tkinter. User can repeat the action if they
+            # want multiple folders — better UX than nothing.
+            single = self.choose_directory()
+            return [single] if single else []
+        except Exception as e:
+            error(f'[API] choose_directories error: {e}')
+            return []
+
     def open_file_explorer(self, folder_path):
         """Open a folder in the native file explorer."""
         root_real, err = self._validate_root_dir(folder_path, context='open_file_explorer', require_exists=True)

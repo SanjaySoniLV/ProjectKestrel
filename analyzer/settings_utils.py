@@ -493,6 +493,10 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     _set_path('rootHint')
     if 'lastQueueState' in data:
         out['lastQueueState'] = _sanitize_path_list(data.get('lastQueueState'), max_items=512)
+    if 'folder_recents' in data:
+        # Persistent most-recently-loaded root folders. Cap matches the visible
+        # chip count in the sidebar so backend and frontend stay aligned.
+        out['folder_recents'] = _sanitize_path_list(data.get('folder_recents'), max_items=8)
 
     _set_bool('main_tutorial_seen', default=False)
     if 'kestrel_donate_thresholds_shown' in data:

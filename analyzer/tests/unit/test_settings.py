@@ -192,6 +192,38 @@ class TestSanitizePayload:
         assert isinstance(result, dict)
 
 
+class TestFolderRecentsSetting:
+    """Tests for ``folder_recents`` — the persistent most-recently-loaded
+    root folders that populate the sidebar's chip row."""
+
+    def test_round_trip(self):
+        payload = {"folder_recents": ["/photos/2024", "/photos/2025"]}
+        result = _sanitize_settings_payload(payload)
+        assert "folder_recents" in result
+        assert len(result["folder_recents"]) == 2
+
+    def test_caps_at_eight(self):
+        big_list = [f"/photos/{i}" for i in range(20)]
+        result = _sanitize_settings_payload({"folder_recents": big_list})
+        assert len(result["folder_recents"]) == 8
+
+    def test_dedupes(self):
+        payload = {"folder_recents": ["/photos/a", "/photos/a", "/photos/b"]}
+        result = _sanitize_settings_payload({"folder_recents": payload["folder_recents"]})
+        # _sanitize_path_list dedupes by normalized path
+        assert len(result["folder_recents"]) == 2
+
+    def test_non_list_dropped(self):
+        result = _sanitize_settings_payload({"folder_recents": "not-a-list"})
+        # _sanitize_path_list returns [] for non-lists, which still gets stored
+        assert result.get("folder_recents") == []
+
+    def test_missing_key_omitted(self):
+        result = _sanitize_settings_payload({})
+        # Key is only present when supplied (consistent with lastQueueState pattern)
+        assert "folder_recents" not in result
+
+
 class TestBirdRegionsSetting:
     """Tests for ``bird_regions`` and ``show_scientific_names`` sanitisation
     -- the new species-tagging settings introduced alongside the global

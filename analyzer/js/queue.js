@@ -412,7 +412,17 @@
         }
       }
       if (treeRescanNeeded) {
-        setTimeout(() => { if (folderTreeRootNode) rescanFolderTree(folderTreeRootNode.path); }, 1200);
+        // Rescan only the specific root(s) whose folders just finished, not
+        // every loaded root. nowDone is the set of just-completed folder
+        // paths — find which root contains each, then rescan that root.
+        setTimeout(() => {
+          const rootsToRescan = new Set();
+          for (const p of nowDone) {
+            const root = _findRootContaining(p);
+            if (root) rootsToRescan.add(root.path);
+          }
+          for (const rp of rootsToRescan) rescanFolderRoot(rp);
+        }, 1200);
       }
       _queueLastDoneSet = nowDone;
 
@@ -448,7 +458,7 @@
           if (!prevRunningSet.has(p)) {
             setTimeout(() => {
               try {
-                if (!folderTreeRootNode) return;
+                if (!_hasAnyRoots()) return;
                 updateFolderTreeNode(p);
               } catch (e) { /* ignore */ }
             }, 500);
@@ -1024,19 +1034,27 @@
       }
     }
 
-    /** Re-scan the folder tree root without resetting the expanded/checked state. */
-    async function rescanFolderTree(rootPath) {
+    /** Re-scan a single root in place — updates only that root's node in the
+     *  Map, preserves expanded/checked state, then re-renders. Used after a
+     *  queued folder under that root finishes analyzing. */
+    async function rescanFolderRoot(rootPath) {
       if (!hasPywebviewApi || !window.pywebview?.api?.list_subfolders) return;
+      const normRoot = (rootPath || '').replace(/\\/g, '/').replace(/\/+$/, '');
+      if (!folderTreeRootNodes.has(normRoot)) return;
       try {
         const depth = getSetting('treeScanDepth', 3);
-        const result = await window.pywebview.api.list_subfolders(rootPath, depth);
+        const result = await window.pywebview.api.list_subfolders(normRoot, depth);
         if (!result.success) return;
-        folderTreeData = result.tree;
-        folderTreeRootHasKestrel = !!result.root_has_kestrel;
-        const rootName = rootPath.replace(/\\/g, '/').split('/').filter(Boolean).pop() || rootPath;
-        folderTreeRootNode = { name: rootName, path: rootPath, has_kestrel: folderTreeRootHasKestrel, children: folderTreeData };
-        // Apply any transient kestrel markings so nodes recently queued/started
-        // are shown as having kestrel until the real scan state differs.
+        const rootName = normRoot.split('/').filter(Boolean).pop() || normRoot;
+        const updated = {
+          name: rootName,
+          path: normRoot,
+          has_kestrel: !!result.root_has_kestrel,
+          kestrel_version: result.root_kestrel_version || '',
+          children: result.tree || [],
+        };
+        // Apply transient kestrel markings (folders recently queued/started
+        // should appear analyzed until the real scan state differs).
         try {
           const norm = p => (p || '').replace(/\\/g, '/');
           function applyTemp(n) {
@@ -1045,11 +1063,14 @@
             if (_tempKestrelPaths.has(p)) n.has_kestrel = true;
             (n.children || []).forEach(c => applyTemp(c));
           }
-          applyTemp(folderTreeRootNode);
+          applyTemp(updated);
         } catch (e) { /* ignore */ }
+        folderTreeRootNodes.set(normRoot, updated);
         renderFolderTree();
       } catch (_) { }
     }
+    // Legacy alias for any straggling callers.
+    const rescanFolderTree = rescanFolderRoot;
 
     /** Update UI to reflect in-progress folders with special styling and always-present checkboxes. */
     function updateInProgressFoldersInTree() {
@@ -1204,7 +1225,8 @@
       } catch (e) { console.warn('[timer] _updateAutoRefreshTimers error:', e); }
     }
 
-    /** Count how many analyzed (non-in-progress) folders exist in the tree. */
+    /** Count how many analyzed (non-in-progress) folders exist across ALL
+     *  loaded roots. */
     function countAnalyzedFolders() {
       try {
         let count = 0;
@@ -1214,7 +1236,7 @@
           if (n.has_kestrel && !_inProgressFolderPaths.has(np)) count++;
           (n.children || []).forEach(c => traverse(c));
         }
-        traverse(folderTreeRootNode);
+        for (const root of _getAllRoots()) traverse(root);
         return count;
       } catch (e) { return 0; }
     }
