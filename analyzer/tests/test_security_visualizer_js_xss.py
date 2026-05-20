@@ -1,8 +1,9 @@
 """Static regression tests for FINDING-01: stored DOM-XSS via sceneName.
 
 These tests are deliberately written as source-level lints against
-``analyzer/visualizer.js`` (and ``culling.js`` if present) so the vulnerable
-pattern cannot silently re-appear.  They don't require a JS runtime.
+``analyzer/js/*.js`` (the split-out frontend modules, previously a single
+``visualizer.js``) so the vulnerable pattern cannot silently re-appear.
+They don't require a JS runtime.
 
 What is forbidden
 -----------------
@@ -27,6 +28,7 @@ Run with::
 
 from __future__ import annotations
 
+import glob
 import os
 import re
 import unittest
@@ -42,14 +44,24 @@ def _read(path: str) -> str:
 
 
 class TestVisualizerJsXssRegression(unittest.TestCase):
-    VISUALIZER_JS = os.path.join(_ANALYZER_DIR, "visualizer.js")
+    JS_DIR = os.path.join(_ANALYZER_DIR, "js")
 
     def setUp(self) -> None:
         self.assertTrue(
-            os.path.exists(self.VISUALIZER_JS),
-            f"Missing file: {self.VISUALIZER_JS}",
+            os.path.isdir(self.JS_DIR),
+            f"Missing directory: {self.JS_DIR}",
         )
-        self.source = _read(self.VISUALIZER_JS)
+        # Concatenate all js/*.js files (sorted for stable line attribution).
+        # `self.sources` is a list of (filename, content) for per-file reporting,
+        # and `self.source` is the flat concat used by the legacy regex checks.
+        self.sources: list[tuple[str, str]] = []
+        for path in sorted(glob.glob(os.path.join(self.JS_DIR, "*.js"))):
+            self.sources.append((os.path.basename(path), _read(path)))
+        self.assertTrue(
+            self.sources,
+            f"No .js files found under {self.JS_DIR}",
+        )
+        self.source = "\n".join(content for _name, content in self.sources)
 
     def test_no_decodeEntities_of_escapeHtml(self) -> None:
         """Hard ban on the exact vulnerable pattern.  Any caller that needs
@@ -60,20 +72,21 @@ class TestVisualizerJsXssRegression(unittest.TestCase):
         reference the forbidden pattern in prose without tripping the lint.
         """
         pattern = re.compile(r"decodeEntities\s*\(\s*escapeHtml\s*\(")
-        hits: list[tuple[int, str]] = []
-        for i, line in enumerate(self.source.splitlines()):
-            if not pattern.search(line):
-                continue
-            stripped = line.lstrip()
-            # Ignore ``// ...`` comment lines — they routinely document the
-            # forbidden pattern for future maintainers.
-            if stripped.startswith("//"):
-                continue
-            hits.append((i + 1, line))
+        hits: list[tuple[str, int, str]] = []
+        for name, source in self.sources:
+            for i, line in enumerate(source.splitlines()):
+                if not pattern.search(line):
+                    continue
+                stripped = line.lstrip()
+                # Ignore ``// ...`` comment lines — they routinely document the
+                # forbidden pattern for future maintainers.
+                if stripped.startswith("//"):
+                    continue
+                hits.append((name, i + 1, line))
         self.assertFalse(
             hits,
             "Forbidden pattern decodeEntities(escapeHtml(...)) reintroduces XSS.\n"
-            + "\n".join(f"  visualizer.js:{ln}: {text.strip()}" for ln, text in hits),
+            + "\n".join(f"  js/{name}:{ln}: {text.strip()}" for name, ln, text in hits),
         )
 
     def test_scene_name_not_interpolated_into_innerHTML(self) -> None:
@@ -94,27 +107,30 @@ class TestVisualizerJsXssRegression(unittest.TestCase):
             r"\.innerHTML\s*=\s*`([^`]*)`",
             re.DOTALL,
         )
-        offenders: list[tuple[int, str]] = []
-        for m in stmt_re.finditer(self.source):
-            body = m.group(1)
-            if "sceneName" not in body and "scene_name" not in body:
-                continue
-            # Inspect each ${...} expression that references sceneName/scene_name.
-            for expr_match in re.finditer(r"\$\{([^{}]+)\}", body):
-                expr = expr_match.group(1)
-                if "sceneName" not in expr and "scene_name" not in expr:
+        offenders: list[tuple[str, int, str]] = []
+        for name, source in self.sources:
+            for m in stmt_re.finditer(source):
+                body = m.group(1)
+                if "sceneName" not in body and "scene_name" not in body:
                     continue
-                # Permit only escapeHtml(...) with no outer decodeEntities().
-                if "decodeEntities" in expr:
-                    offenders.append(_line_info(self.source, m.start(), expr))
-                    continue
-                if "escapeHtml" not in expr:
-                    offenders.append(_line_info(self.source, m.start(), expr))
+                # Inspect each ${...} expression that references sceneName/scene_name.
+                for expr_match in re.finditer(r"\$\{([^{}]+)\}", body):
+                    expr = expr_match.group(1)
+                    if "sceneName" not in expr and "scene_name" not in expr:
+                        continue
+                    # Permit only escapeHtml(...) with no outer decodeEntities().
+                    if "decodeEntities" in expr:
+                        ln, e = _line_info(source, m.start(), expr)
+                        offenders.append((name, ln, e))
+                        continue
+                    if "escapeHtml" not in expr:
+                        ln, e = _line_info(source, m.start(), expr)
+                        offenders.append((name, ln, e))
         self.assertFalse(
             offenders,
             "sceneName interpolated into innerHTML without safe escaping:\n"
             + "\n".join(
-                f"  visualizer.js:{ln}: ${{{expr}}}" for ln, expr in offenders
+                f"  js/{name}:{ln}: ${{{expr}}}" for name, ln, expr in offenders
             ),
         )
 
@@ -125,17 +141,18 @@ class TestVisualizerJsXssRegression(unittest.TestCase):
         """
         # Scan each line (and its successor, in case the assignment wraps)
         # for `.innerHTML =` AND `decodeEntities(` appearing together.
-        lines = self.source.splitlines()
-        hits: list[tuple[int, str]] = []
-        for i, line in enumerate(lines):
-            window = line + (lines[i + 1] if i + 1 < len(lines) else "")
-            if ".innerHTML" in window and "decodeEntities(" in window:
-                hits.append((i + 1, line.strip()))
+        hits: list[tuple[str, int, str]] = []
+        for name, source in self.sources:
+            lines = source.splitlines()
+            for i, line in enumerate(lines):
+                window = line + (lines[i + 1] if i + 1 < len(lines) else "")
+                if ".innerHTML" in window and "decodeEntities(" in window:
+                    hits.append((name, i + 1, line.strip()))
         self.assertFalse(
             hits,
             "decodeEntities() output used in an innerHTML assignment "
             "(re-enables the FINDING-01 XSS class):\n"
-            + "\n".join(f"  visualizer.js:{ln}: {text}" for ln, text in hits),
+            + "\n".join(f"  js/{name}:{ln}: {text}" for name, ln, text in hits),
         )
 
 
