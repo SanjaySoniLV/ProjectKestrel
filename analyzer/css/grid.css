@@ -39,7 +39,12 @@
 }
 
 .thumb {
-  aspect-ratio: 16/10;
+  /* 3:2 matches the dominant DSLR/mirrorless capture aspect (Canon, Nikon,
+     Sony 35mm/APS-C; Fuji X-Trans). At the grid's auto-fill track width
+     this gives the photo more vertical room without per-card layout
+     recalculation (the aspect is fixed, so the browser computes the
+     height once from the track width). */
+  aspect-ratio: 3/2;
   background: #0e1117;
   /* overflow:hidden is fine here — .thumb is a leaf container with no stacking
      context concerns, and it correctly clips the image to the card's top corners */
@@ -711,6 +716,112 @@
   left: auto;
   right: 8px;
 }
+
+/* Scene-card single-line meta strip: species/family pill (+ optional '+'
+   overflow button) on the left, star/quality | camera/count text on the
+   right. Replaces the older two-row title-row + chips layout for timeline
+   cards; the legacy .title-row rules below are kept for any other call
+   sites that still rely on them. */
+.card-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.card-pills {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Cap species/family pill so a long name like "Cardinal/Grosbeak/Bunting
+   sp." doesn't push the meta off the card. The chip itself shrinks; its
+   primary line ellipsizes; the optional sci subtext also ellipsizes. */
+.card-pills > .chip {
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+}
+.card-pills > .chip .chip-primary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  max-width: 100%;
+}
+.card-pills > .chip.chip--with-sci {
+  /* Re-establish the stacked layout from .chip--with-sci -- inline-flex
+     direction column -- after the inline-flex override above. */
+  flex-direction: column;
+  align-items: flex-start;
+  /* No X button on read-only card pills, so we don't need the right
+     padding that .chip--with-sci reserves elsewhere. */
+  padding: 3px 10px;
+}
+.card-pills > .chip.chip--with-sci .chip-sci {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  display: block;
+}
+
+/* Compact circular overflow button -- click opens .card-more-popover. */
+.chip-plus {
+  cursor: pointer;
+  background: transparent;
+  border: 1px dashed #3a84e6;
+  color: #6aa0ff;
+  border-radius: 999px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.chip-plus:hover { background: #1a2a44; color: #cce0ff; }
+
+/* Right-side meta -- star/quality | camera/count, no pill background. */
+.card-meta {
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
+  font-size: 11px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.card-meta .meta-score { color: #a9c9ee; }
+.card-meta .meta-sep { margin: 0 4px; color: #4a5365; }
+.card-meta .meta-count { /* slightly smaller emoji block per design */
+  font-size: 10px;
+  letter-spacing: -0.5px;
+}
+
+/* Popover for the rest of a scene's species when the user clicks '+' */
+.card-more-popover {
+  position: fixed;
+  z-index: 1000;
+  background: var(--card, #161922);
+  border: 1px solid #2a3040;
+  border-radius: 8px;
+  padding: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 320px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+.card-more-popover .chip { max-width: 100%; }
 
 /* Title-level badges (placed under title, right-aligned) */
 .title-row {
