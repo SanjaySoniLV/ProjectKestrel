@@ -1431,19 +1431,24 @@
       if (_showSciOnCards && !_sceneCardHydrationPending) {
         const need = new Set();
         for (const s of visibleScenes) {
-          for (const sp of (s.species || []).slice(0, 3)) {
-            if (sp && !_getCachedBirdRecord(sp)) need.add(sp);
+          // Hydrate all species, not just the visible 3 -- the family-tier
+          // pill fallback (which borrows ``family_sci`` from a sibling species
+          // record) scans the whole list, so a "Foo sp." family label at
+          // index 0 needs the real species at index >=3 to be cached.
+          for (const sp of (s.species || [])) {
+            if (sp && !_isBirdRecordKnown(sp)) need.add(sp);
           }
         }
         if (need.size > 0) {
           _sceneCardHydrationPending = true;
           _hydrateBirdRecords(Array.from(need)).then(() => {
             _sceneCardHydrationPending = false;
-            // Bail out if a newer renderScenes call has superseded us so we
-            // don't repaint over a stale view.
-            if (myVer === _renderScenesVersion) {
-              requestAnimationFrame(() => { try { renderScenes(); } catch (_) {} });
-            }
+            // Always queue a repaint -- the cache (and miss-set) just gained
+            // entries that change what the cards show. We can't bail on a
+            // newer renderScenes call here, because that newer call was
+            // gated out of starting its own hydration by the pending flag
+            // and built its DOM against the still-empty cache.
+            requestAnimationFrame(() => { try { renderScenes(); } catch (_) {} });
           }).catch(() => { _sceneCardHydrationPending = false; });
         }
       }
@@ -1665,15 +1670,33 @@
           c.appendChild(primary);
           let titleStr = sp;
           if (_showSciOnCards) {
+            // s.species is a merged species+family set (see aggregateScenes),
+            // so a pill may be either tier. Try the species cache first for
+            // a binomial, then fall back to scanning the scene's other pills
+            // for a cached species record whose family_common matches -- that
+            // record's family_sci is the Latin family for this pill.
             const rec = _getCachedBirdRecord(sp);
+            let sciText = '';
             if (rec && rec.scientific_name) {
+              sciText = rec.scientific_name;
+            } else {
+              for (const other of s.species) {
+                if (other === sp) continue;
+                const r2 = _getCachedBirdRecord(other);
+                if (r2 && r2.family_common === sp && r2.family_sci) {
+                  sciText = r2.family_sci;
+                  break;
+                }
+              }
+            }
+            if (sciText) {
               const sci = document.createElement('span');
               sci.className = 'chip-sci';
               const em = document.createElement('em');
-              em.textContent = rec.scientific_name;
+              em.textContent = sciText;
               sci.appendChild(em);
               c.appendChild(sci);
-              titleStr = `${sp} — ${rec.scientific_name}`;
+              titleStr = `${sp} — ${sciText}`;
             }
           }
           c.title = titleStr;
@@ -3139,6 +3162,12 @@
     // species pills can render their italicised scientific-name subtext
     // without an extra round-trip per pill render.
     const _birdRecordCache = new Map();
+    // Names we've asked ``lookup_birds`` about and got no record back for
+    // (e.g. genus/family-level "sp." placeholders that aren't in the IOC
+    // catalog). Tracked separately from the record cache so the hydration
+    // loop terminates without polluting ``_lookupFamilyForSpecies`` with
+    // empty-family sentinel rows.
+    const _birdRecordMisses = new Set();
     let _birdCatalogMeta = null;         // { regions: [...], default_regions: [...], total_species: N }
 
     async function loadSpeciesFamilyMap() {
@@ -3211,6 +3240,15 @@
       return _birdRecordCache.get(String(name).toLowerCase()) || null;
     }
 
+    /** True if we've already resolved this name -- either to a record or to a
+     *  confirmed miss. Render-loop guards use this so that names absent from
+     *  the catalog don't re-trigger ``_hydrateBirdRecords`` on every paint. */
+    function _isBirdRecordKnown(name) {
+      if (!name) return false;
+      const key = String(name).toLowerCase();
+      return _birdRecordCache.has(key) || _birdRecordMisses.has(key);
+    }
+
     /** Resolve a list of canonical names to records by hitting ``lookup_birds``.
      *  Already-cached names are skipped. No-op when the backend is unavailable. */
     async function _hydrateBirdRecords(names) {
@@ -3219,13 +3257,28 @@
       const need = [];
       for (const n of names) {
         if (typeof n !== 'string' || !n) continue;
-        if (!_birdRecordCache.has(n.toLowerCase())) need.push(n);
+        if (!_isBirdRecordKnown(n)) need.push(n);
       }
       if (!need.length) return;
       try {
         const res = await window.pywebview.api.lookup_birds(need);
-        if (res && res.success && res.map) {
-          for (const v of Object.values(res.map)) _cacheBirdRecord(v);
+        const map = (res && res.success && res.map) ? res.map : {};
+        const resolvedKeys = new Set();
+        for (const v of Object.values(map)) {
+          _cacheBirdRecord(v);
+          if (v && typeof v.canonical_common_name === 'string') {
+            resolvedKeys.add(v.canonical_common_name.toLowerCase());
+          }
+        }
+        // Record a miss for any requested name the backend didn't return so
+        // the next renderScenes/renderTopbarTags pass doesn't request it
+        // again. Without this, genus-level "sp." labels pin the renderer in
+        // a hydrate->repaint->hydrate loop.
+        for (const n of need) {
+          const key = n.toLowerCase();
+          if (!resolvedKeys.has(key) && !_birdRecordCache.has(key)) {
+            _birdRecordMisses.add(key);
+          }
         }
       } catch (e) {
         kdebug('[lookup_birds] failed:', e);
@@ -3375,7 +3428,7 @@
       // we re-render so the italicised scientific names appear without
       // blocking the initial render.
       if (showSci) {
-        const need = (species || []).filter(sp => !_getCachedBirdRecord(sp));
+        const need = (species || []).filter(sp => !_isBirdRecordKnown(sp));
         if (need.length) {
           _hydrateBirdRecords(need).then(() => {
             if (_activeTagInputSceneId === String(scene.id) || sceneDlg?.open) {
