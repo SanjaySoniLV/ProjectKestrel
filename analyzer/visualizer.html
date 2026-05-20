@@ -940,8 +940,10 @@
   <script src="js/scenes.js"></script>
   <script src="js/scene-grid.js"></script>
   <script src="js/scene-zoom.js"></script>
-  <script src="js/scene-dialog.js"></script>
+  <!-- settings.js MUST load before scene-dialog.js: scene-dialog's IIFE
+       (setupScenePreviewDivider) calls getSetting() at parse time. -->
   <script src="js/settings.js"></script>
+  <script src="js/scene-dialog.js"></script>
   <script src="js/feedback-donate.js"></script>
   <script src="js/folder-tree.js"></script>
   <script src="js/analyze-dialog.js"></script>

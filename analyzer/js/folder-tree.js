@@ -63,6 +63,11 @@
     // Walk a node's subtree: auto-expand any folder that contains analyzed
     // descendants (so the user sees the analyzed work without clicking) and
     // auto-check any folder that itself has .kestrel data.
+    //
+    // The expand condition uses `descendantHas` (NOT `subtreeHas`) because
+    // expanding an analyzed leaf to show its unanalyzed subdirs (e.g. a
+    // `_KESTREL_Rejects` or `darktable_exported` folder) is pure noise. We
+    // only expand when there's something useful below to reveal.
     function _autoExpandAndCheckAnalyzedDescendants(node) {
       if (!node) return;
       function walk(n) {
@@ -74,14 +79,13 @@
             if (walk(c)) descendantHas = true;
           }
         }
-        const subtreeHas = selfHasKestrel || descendantHas;
-        if (subtreeHas && n.children && n.children.length > 0) {
+        if (descendantHas && n.children && n.children.length > 0) {
           treeExpandedPaths.add(n.path);
         }
         if (selfHasKestrel) {
           checkedFolderPaths.add(n.path);
         }
-        return subtreeHas;
+        return selfHasKestrel || descendantHas;
       }
       walk(node);
     }
@@ -96,9 +100,24 @@
       if (!rootPath) return { added: false, error: 'no-path' };
 
       const norm = _normRoot(rootPath);
-      // Dedup against existing roots
+      // Dedup #1: exact match against existing roots.
       if (folderTreeRootNodes.has(norm)) {
-        return { added: false, alreadyLoaded: true, node: folderTreeRootNodes.get(norm) };
+        return { added: false, alreadyLoaded: true, reason: 'duplicate', node: folderTreeRootNodes.get(norm) };
+      }
+      // Dedup #2: the picked path is a SUBDIRECTORY of an already-loaded root.
+      // Reject — the user can already see/check it under the existing root.
+      for (const existing of folderTreeRootOrder) {
+        if (norm.startsWith(existing + '/')) {
+          setStatus(`Already in tree under ${existing.split('/').pop()}`);
+          return { added: false, alreadyLoaded: true, reason: 'subdir-of', containingRoot: existing };
+        }
+      }
+      // Dedup #3: the picked path is an ANCESTOR of one or more already-loaded
+      // roots. Remove those child roots first — the new ancestor will contain
+      // them, and everything gets re-loaded from the ancestor's scan anyway.
+      const childRootsToReplace = folderTreeRootOrder.filter(existing => existing.startsWith(norm + '/'));
+      for (const child of childRootsToReplace) {
+        removeFolderRoot(child);
       }
 
       // Fetch app version / frozen status / platform once (legacy behavior)

@@ -586,18 +586,19 @@ class Api:
 
         Platform-specific:
         - macOS: osascript's "choose folder ... with multiple selections allowed"
-          is native and reliable.
-        - Windows/Linux: tkinter's askdirectory is single-select only with no
-          plural equivalent. We try pywebview's create_file_dialog with
-          allow_multiple=True first (in-process, no subprocess). If pywebview
-          isn't accessible we fall back to a single-pick loop — call
-          choose_directory once and return [path].
+          is native, reliable, and avoids any pywebview involvement.
+        - Windows: pywebview's create_file_dialog uses WebView2's native
+          IFileOpenDialog with FOS_ALLOWMULTISELECT. Falls back to a single
+          tkinter pick if pywebview is unavailable (rare in a desktop build)
+          or throws — the user can click "+ Load Folders…" again for each
+          additional folder in the worst case.
+        - Linux: pywebview's GTK/Qt backend; same fallback as Windows.
         """
         try:
             if sys.platform == 'darwin':
-                # AppleScript returns a list of alias references separated by ", "
-                # when multiple selection is enabled. POSIX path of {…} converts
-                # each to a slash-path string.
+                # AppleScript returns one alias per line when "with multiple
+                # selections allowed" is used. POSIX path of {…} converts each
+                # alias to a slash-path string.
                 script = (
                     'set chosen to choose folder with prompt '
                     '"Select folders containing analyzed photos" with multiple selections allowed\n'
@@ -620,29 +621,41 @@ class Api:
                 info(f'[API] choose_directories (macOS) -> {len(paths)} path(s)')
                 return paths
 
-            # Try pywebview's native multi-select dialog (Windows / Linux).
+            # Windows/Linux: try pywebview's native multi-select dialog.
+            # Prefer the modern FileDialog.FOLDER enum (pywebview >= 5) and
+            # fall back to the deprecated FOLDER_DIALOG constant on older
+            # pywebview builds. If neither is available or the call throws,
+            # fall through to the single-pick tkinter fallback.
             try:
-                import webview  # noqa: F401  (only used to access the windows registry)
+                import webview
                 wins = getattr(webview, 'windows', None)
                 if wins:
                     win = wins[0]
-                    result = win.create_file_dialog(
-                        webview.FOLDER_DIALOG,
-                        allow_multiple=True,
-                    )
-                    if not result:
-                        info('[API] choose_directories -> cancelled')
-                        return []
-                    # create_file_dialog returns a tuple of paths
-                    paths = [str(p) for p in result if p]
-                    info(f'[API] choose_directories (pywebview) -> {len(paths)} path(s)')
-                    return paths
+                    dialog_kind = None
+                    file_dialog = getattr(webview, 'FileDialog', None)
+                    if file_dialog is not None and hasattr(file_dialog, 'FOLDER'):
+                        dialog_kind = file_dialog.FOLDER
+                    elif hasattr(webview, 'FOLDER_DIALOG'):
+                        dialog_kind = webview.FOLDER_DIALOG
+                    if dialog_kind is not None:
+                        result = win.create_file_dialog(
+                            dialog_kind,
+                            allow_multiple=True,
+                        )
+                        if not result:
+                            info('[API] choose_directories -> cancelled')
+                            return []
+                        # create_file_dialog returns a tuple of path strings
+                        paths = [str(p) for p in result if p]
+                        info(f'[API] choose_directories (pywebview) -> {len(paths)} path(s)')
+                        return paths
             except Exception as e:
-                # Fall through to single-pick fallback if pywebview path fails.
+                # Fall through to tkinter single-pick if the pywebview path
+                # fails (logged for diagnostics, not user-visible).
                 info(f'[API] choose_directories pywebview path failed ({e!r}); falling back to single-pick')
 
-            # Fallback: single-pick via tkinter. User can repeat the action if they
-            # want multiple folders — better UX than nothing.
+            # Tkinter has no native multi-folder picker, so single-pick is the
+            # safe fallback. User can click "+ Load Folders…" again for more.
             single = self.choose_directory()
             return [single] if single else []
         except Exception as e:

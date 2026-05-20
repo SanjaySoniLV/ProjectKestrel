@@ -267,15 +267,18 @@
     // Wire Clear button — unload every root, reset scenes, return to welcome
     // panel. Recents in settings are preserved so the user can re-click them.
     const treeClearBtn = document.getElementById('treeClear');
+    console.log('[clear] wiring treeClear button — element found:', !!treeClearBtn, 'disabled:', treeClearBtn?.disabled);
     if (treeClearBtn) {
       treeClearBtn.addEventListener('click', () => {
+        console.log('[clear] click — roots before:', folderTreeRootOrder.length, 'checked before:', checkedFolderPaths.size);
         clearAllFolderRoots();
+        console.log('[clear] after clearAllFolderRoots — roots:', folderTreeRootOrder.length, 'checked:', checkedFolderPaths.size);
         // Reset loaded scenes too so the welcome panel returns.
         try {
           rows = [];
           header = [];
           if (typeof renderScenes === 'function') renderScenes();
-        } catch (e) { /* ignore */ }
+        } catch (e) { console.warn('[clear] renderScenes error', e); }
         setStatus('Idle');
       });
     }
@@ -391,38 +394,24 @@
     renderFolderRecentsChips();
 
     // ── Zoom slider (2J) ──────────────────────────────────────────────────────
-    // Sync the slider with the existing zoom +/- buttons. Slider value 50..200
-    // maps directly to a CSS transform scale on #mainZoom.
-    const zoomSlider = document.getElementById('zoomSlider');
-    const zoomOutBtn = document.getElementById('zoomOut');
-    const zoomInBtn = document.getElementById('zoomIn');
-    const mainZoomEl = document.getElementById('mainZoom');
-    function _applyZoom(pct) {
-      const clamped = Math.max(50, Math.min(200, Math.round(pct)));
-      if (mainZoomEl) {
-        mainZoomEl.style.transform = `scale(${clamped / 100})`;
-        mainZoomEl.style.transformOrigin = 'top left';
-        // Compensate for the scaled element's apparent size to avoid scroll overflow.
-        mainZoomEl.style.width = (100 * 100 / clamped) + '%';
-        mainZoomEl.style.height = (100 * 100 / clamped) + '%';
-      }
-      if (zoomSlider) zoomSlider.value = String(clamped);
-    }
-    if (zoomSlider) {
-      zoomSlider.addEventListener('input', (e) => {
-        _applyZoom(parseInt(e.target.value, 10) || 100);
+    // Drives the existing uiZoom / applyZoom pipeline (blob-zoom.js) so behavior
+    // matches the +/- buttons. Slider range 70..140 mirrors the button clamps
+    // (Math.min(1.4, …) / Math.max(0.7, …) in the existing wiring above).
+    const _zoomSlider = document.getElementById('zoomSlider');
+    if (_zoomSlider) {
+      // Reflect the current uiZoom into the slider on init.
+      try { _zoomSlider.value = String(Math.round(uiZoom * 100)); } catch (e) { /* ignore */ }
+      _zoomSlider.addEventListener('input', (e) => {
+        const pct = parseInt(e.target.value, 10) || 100;
+        uiZoom = Math.max(0.7, Math.min(1.4, pct / 100));
+        applyZoom();
       });
-    }
-    if (zoomOutBtn) {
-      zoomOutBtn.addEventListener('click', () => {
-        const cur = parseInt((zoomSlider && zoomSlider.value) || '100', 10) || 100;
-        _applyZoom(cur - 10);
-      });
-    }
-    if (zoomInBtn) {
-      zoomInBtn.addEventListener('click', () => {
-        const cur = parseInt((zoomSlider && zoomSlider.value) || '100', 10) || 100;
-        _applyZoom(cur + 10);
-      });
+      // Sync slider when the existing +/- buttons fire (they update uiZoom
+      // directly, so we listen on them post-click).
+      const _syncSlider = () => {
+        try { _zoomSlider.value = String(Math.round(uiZoom * 100)); } catch (e) { /* ignore */ }
+      };
+      document.getElementById('zoomIn')?.addEventListener('click', _syncSlider);
+      document.getElementById('zoomOut')?.addEventListener('click', _syncSlider);
     }
 

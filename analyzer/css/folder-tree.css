@@ -362,13 +362,14 @@
   color: #ff6b6b;
 }
 
-.tree-node-row.no-kestrel {
+/* Non-analyzed folders: dim only the label/icon/arrow, NOT the full row —
+   keeping rail opacity at 100% so elbow connectors stay visually consistent
+   between analyzed and unanalyzed siblings. */
+.tree-node-row.no-kestrel .tree-label,
+.tree-node-row.no-kestrel .tree-icon,
+.tree-node-row.no-kestrel .tree-arrow {
   opacity: 0.5;
 }
-
-/* Non-analyzed folders: default weight (Phase 1.5 simplification — color
-   alone carries state). Light grey so the label is readable but visibly
-   demoted relative to analyzed folders. */
 .tree-node-row.no-kestrel .tree-label {
   color: #cbd2dc;
 }

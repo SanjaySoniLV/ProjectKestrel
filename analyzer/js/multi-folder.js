@@ -2,7 +2,8 @@
     // Loads a single folder. For multi-folder loading, see loadMultipleFolders().
 
     // Auto-load: fires after a short debounce whenever checkboxes change.
-    // If nothing is checked, clears the view gracefully.
+    // If nothing is checked, clears the view gracefully (and re-renders so
+    // the welcome panel comes back via scene-grid's rows.length check).
     const debouncedAutoLoad = debounce(async () => {
       await _cleanupUncheckedFolderCaches();
       if (checkedFolderPaths.size > 0) {
@@ -11,6 +12,8 @@
         ++_loadFoldersVersion; // cancel any in-progress load
         rows = []; header = []; scenes = [];
         sceneGrid.innerHTML = '';
+        // Re-render so scene-grid.js can flip the welcome panel back on.
+        try { if (typeof renderScenes === 'function') renderScenes(); } catch (_) { }
         setStatus('No folders selected — check folders in the tree to load scenes');
       }
     }, 400);
@@ -24,16 +27,20 @@
     }
 
     function checkAllTreeFolders() {
+      console.log('[tree] checkAllTreeFolders click — roots:', folderTreeRootOrder.length, 'before checked:', checkedFolderPaths.size);
       // Walk every loaded root and collect every folder with .kestrel data.
       const all = _getAllRoots().flatMap(root => collectKestrelPaths(root));
       all.forEach(p => checkedFolderPaths.add(p));
+      console.log('[tree] checkAllTreeFolders after — checked:', checkedFolderPaths.size);
       renderFolderTree();
       updateSelectToggleVisibility();
       debouncedAutoLoad();
     }
 
     function checkNoneTreeFolders() {
+      console.log('[tree] checkNoneTreeFolders click — before checked:', checkedFolderPaths.size);
       checkedFolderPaths.clear();
+      console.log('[tree] checkNoneTreeFolders after clear — checked:', checkedFolderPaths.size);
       renderFolderTree();
       updateSelectToggleVisibility();
       debouncedAutoLoad();
