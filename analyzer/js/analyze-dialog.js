@@ -53,6 +53,30 @@
       return null;
     }
 
+    // Helpers for the load-progress bar — shared between addAnalyzeDlgRoot
+    // (the slow list_subfolders call) and _inspectAndRenderAnalyzeDlg (the
+    // inspect_folders pass). Surfaces a single progress bar that walks from
+    // "Scanning folder structure…" through "Inspecting N folders…" so the
+    // user never sees a dead UI gap after clicking + Add Folders.
+    function _adlgShowProgress(label, pct) {
+      const wrap = document.getElementById('analyzeScanProgress');
+      const lbl = document.getElementById('analyzeScanLabel');
+      const fill = document.getElementById('analyzeScanFill');
+      if (wrap) wrap.classList.remove('hidden');
+      if (lbl) lbl.textContent = label;
+      if (fill) fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
+    }
+    function _adlgHideProgress(delayMs = 0) {
+      const apply = () => {
+        const wrap = document.getElementById('analyzeScanProgress');
+        const fill = document.getElementById('analyzeScanFill');
+        if (wrap) wrap.classList.add('hidden');
+        if (fill) fill.style.width = '0%';
+      };
+      if (delayMs > 0) setTimeout(apply, delayMs);
+      else apply();
+    }
+
     // ── Add / remove / clear roots (dialog-local) ───────────────────────────────
     async function addAnalyzeDlgRoot(rootPath) {
       if (!hasPywebviewApi || !window.pywebview?.api?.list_subfolders) {
@@ -76,11 +100,17 @@
       analyzeDlgRootOrder = analyzeDlgRootOrder.filter(p => !childRootsToReplace.includes(p));
 
       const depth = getSetting('treeScanDepth', 3);
+      // Show the scanning progress IMMEDIATELY (before the slow bridge call)
+      // so the user never sees a dead-UI gap after clicking + Add Folders.
+      const folderName = norm.split('/').filter(Boolean).pop() || norm;
+      _adlgShowProgress(`Scanning ${folderName}…`, 15);
       try {
         const result = await window.pywebview.api.list_subfolders(norm, depth);
         if (!result || !result.success) {
+          _adlgHideProgress();
           return { added: false, error: (result && result.error) || 'scan-failed' };
         }
+        _adlgShowProgress(`Scanning ${folderName}…`, 45);
         const rootHasKestrel = !!result.root_has_kestrel;
         const rootName = norm.split('/').filter(Boolean).pop() || norm;
         const node = {
@@ -174,8 +204,18 @@
       return false;
     }
 
-    // ── Tree rendering (rewritten — uses state pills, dialog-local state) ───────
-    function buildAnalyzeDlgNode(node, parentSiblingsLast) {
+    // ── Tree rendering — uses state pills + Phase 1.5 rails + right-side cb ──
+    //
+    // Row layout (Phase 3 polish to mirror the main tree):
+    //   [rails…] [arrow] [pill] [icon] [label] [count] [outdated-badge] [cb-col]
+    //
+    // ancestorContinueFlags: array of booleans (one per ancestor depth ≥ 1).
+    //   Element i = true if the ancestor at depth i+1 has more siblings after
+    //   the current branch — the vertical line in its rail column continues.
+    //   null = root (no rail drawn).
+    // isLastSibling: whether this node is the last of its own siblings.
+    //   Determines elbow shape (└─ vs ├─).
+    function buildAnalyzeDlgNode(node, ancestorContinueFlags = null, isLastSibling = true) {
       const wrap = document.createElement('div');
       wrap.className = 'tree-node';
 
@@ -189,7 +229,6 @@
 
       let cls = 'adlg-node-row';
       if (isChecked) cls += ' queue-sel';
-      if (node.has_kestrel) cls += ' has-kestrel';
       if (outdated) cls += ' version-outdated';
       if (noPhotosDeep) cls += ' no-photos-deep';
       row.className = cls;
@@ -198,31 +237,29 @@
         ? `Analyzed on Kestrel v${node.kestrel_version} (current: v${_appVersion}) — re-analyze to update.\n${node.path}`
         : node.path;
 
+      // ── Rails (Phase 1.5B mirror) ────────────────────────────────────────────
+      const isRoot = ancestorContinueFlags === null;
+      if (!isRoot) {
+        for (let i = 0; i < ancestorContinueFlags.length; i++) {
+          const rail = document.createElement('span');
+          rail.className = ancestorContinueFlags[i] ? 'tree-rail tree-rail-vert' : 'tree-rail tree-rail-blank';
+          row.appendChild(rail);
+        }
+        const elbow = document.createElement('span');
+        elbow.className = isLastSibling ? 'tree-rail tree-rail-elbow-last' : 'tree-rail tree-rail-elbow-mid';
+        row.appendChild(elbow);
+      }
+
       // Arrow (expand toggle). Leaf rows get a hidden arrow for alignment.
       const arrow = document.createElement('span');
       arrow.className = 'tree-arrow' + (hasChildren ? (isExpanded ? ' open' : '') : ' leaf');
       arrow.textContent = '▶';
 
-      // Checkbox: gated by "has photos to do work on". Empty/already-fully-
-      // analyzed folders can still be checked (the worker handles skip-silently
-      // and re-analysis-confirmation), but no-photos-deep is disabled.
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.className = 'adlg-cb';
-      cb.checked = isChecked;
-      if (noPhotosDeep) {
-        cb.disabled = true;
-        cb.title = 'No photos in this folder or any subfolder.';
-      }
-      cb.addEventListener('change', (e) => {
-        e.stopPropagation();
-        const norm = _adlgNormRoot(node.path);
-        if (cb.checked) analyzeDlgCheckedPaths.add(norm);
-        else analyzeDlgCheckedPaths.delete(norm);
-        // Live update — refresh just this row's pill + the column-3 summary.
-        renderAnalyzeDlgTree();
-        refreshAnalyzeDlgSummary();
-      });
+      // State pill (orthogonal color × shape — Phase 3F)
+      const pillSpec = _computeAnalyzeDlgPill(node, info, isChecked);
+      const pill = document.createElement('span');
+      pill.className = `state-pill state-pill--${pillSpec.color} state-pill--${pillSpec.shape}`;
+      pill.setAttribute('aria-hidden', 'true');
 
       // Folder icon
       const icon = document.createElement('span');
@@ -233,12 +270,6 @@
       const label = document.createElement('span');
       label.className = 'tree-label';
       label.textContent = node.name;
-
-      // State pill (orthogonal color × shape — Phase 3F)
-      const pillSpec = _computeAnalyzeDlgPill(node, info, isChecked);
-      const pill = document.createElement('span');
-      pill.className = `state-pill state-pill--${pillSpec.color} state-pill--${pillSpec.shape}`;
-      pill.setAttribute('aria-hidden', 'true');
 
       // Count text
       const countSpan = document.createElement('span');
@@ -259,13 +290,36 @@
         outdatedBadge.title = `Analyzed on v${node.kestrel_version}; current is v${_appVersion}. Will re-analyze (destructive) if checked.`;
       }
 
+      // ── Right-side checkbox column (Phase 1.5A mirror) ──────────────────────
+      // Always present (placeholder if no checkbox available) so the right
+      // edge stays aligned across all rows.
+      const cbCol = document.createElement('span');
+      cbCol.className = 'tree-cb-col';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'adlg-cb';
+      cb.checked = isChecked;
+      if (noPhotosDeep) {
+        cb.disabled = true;
+        cb.title = 'No photos in this folder or any subfolder.';
+      }
+      cb.addEventListener('change', (e) => {
+        e.stopPropagation();
+        const norm = _adlgNormRoot(node.path);
+        if (cb.checked) analyzeDlgCheckedPaths.add(norm);
+        else analyzeDlgCheckedPaths.delete(norm);
+        renderAnalyzeDlgTree();
+        refreshAnalyzeDlgSummary();
+      });
+      cbCol.appendChild(cb);
+
       row.appendChild(arrow);
-      row.appendChild(cb);
       row.appendChild(pill);
       row.appendChild(icon);
       row.appendChild(label);
       row.appendChild(countSpan);
       if (outdatedBadge) row.appendChild(outdatedBadge);
+      row.appendChild(cbCol);
 
       // Right-click: clear .kestrel data (preserved from legacy dialog)
       if (node.has_kestrel) {
@@ -279,7 +333,6 @@
               clearKestrelDataForFolder(node.path, node.name, () => {
                 node.has_kestrel = false;
                 node.kestrel_version = '';
-                // Re-inspect and re-render so the pill flips to outline.
                 _inspectAndRenderAnalyzeDlg();
               });
             },
@@ -293,7 +346,15 @@
         const childWrap = document.createElement('div');
         childWrap.className = 'tree-children';
         if (!isExpanded) childWrap.classList.add('hidden');
-        node.children.forEach(child => childWrap.appendChild(buildAnalyzeDlgNode(child)));
+        // Children's ancestor flags = our flags + a new entry at our depth
+        // saying "this row continues if I have more siblings after me". Root
+        // passes [] (children start fresh).
+        const childAncestors = isRoot ? [] : [...ancestorContinueFlags, !isLastSibling];
+        const childCount = node.children.length;
+        node.children.forEach((child, idx) => {
+          const childIsLast = idx === childCount - 1;
+          childWrap.appendChild(buildAnalyzeDlgNode(child, childAncestors, childIsLast));
+        });
         wrap.appendChild(childWrap);
         arrow.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -308,8 +369,7 @@
             childWrap.classList.remove('hidden');
           }
         });
-        // Click on label/icon also toggles expand (same as the main tree
-        // semantics — non-destructive).
+        // Click on label/icon also toggles expand (non-destructive).
         const toggleExpand = (e) => {
           e.stopPropagation();
           arrow.click();
@@ -325,15 +385,18 @@
       const treeEl = document.getElementById('analyzeDlgTree');
       const wrap = document.querySelector('.analyze-dlg-tree-wrap');
       const footer = document.getElementById('analyzeDlgFooter');
+      const emptyHint = document.getElementById('analyzeDlgTreeEmptyHint');
       if (!treeEl) return;
       treeEl.innerHTML = '';
       if (!_adlgHasAnyRoots()) {
         if (wrap) wrap.classList.remove('has-roots');
         if (footer) footer.classList.add('hidden');
+        if (emptyHint) emptyHint.style.display = '';
         return;
       }
       if (wrap) wrap.classList.add('has-roots');
       if (footer) footer.classList.remove('hidden');
+      if (emptyHint) emptyHint.style.display = 'none';
       for (const root of _adlgGetAllRoots()) {
         treeEl.appendChild(buildAnalyzeDlgNode(root));
       }
@@ -358,13 +421,8 @@
         if (n.children) for (const c of n.children) walk(c);
       }
       for (const root of _adlgGetAllRoots()) walk(root);
-      if (paths.length === 0) return;
-      const progWrap = document.getElementById('analyzeScanProgress');
-      const progFill = document.getElementById('analyzeScanFill');
-      const progLabel = document.getElementById('analyzeScanLabel');
-      if (progWrap) progWrap.classList.remove('hidden');
-      if (progLabel) progLabel.textContent = `Scanning ${paths.length} folder${paths.length === 1 ? '' : 's'}…`;
-      if (progFill) progFill.style.width = '10%';
+      if (paths.length === 0) { _adlgHideProgress(); return; }
+      _adlgShowProgress(`Inspecting ${paths.length} folder${paths.length === 1 ? '' : 's'}…`, 60);
       try {
         const res = await window.pywebview.api.inspect_folders(paths);
         if (myVer !== _analyzeDlgInspectionVersion) return; // cancelled
@@ -373,7 +431,6 @@
           // normalized-input path. Build a lookup that matches both.
           for (const inputPath of paths) {
             const inputNorm = _adlgNormRoot(inputPath);
-            // Try input-path match first, then any result key normalized.
             let info = res.results[inputPath];
             if (info === undefined) {
               for (const [resKey, val] of Object.entries(res.results)) {
@@ -383,20 +440,15 @@
             if (info !== undefined) analyzeDlgInspectionCache.set(inputNorm, info);
           }
         }
-        if (progFill) progFill.style.width = '100%';
+        _adlgShowProgress('Done.', 100);
         renderAnalyzeDlgTree();
-        // After inspection, auto-check roots that DIRECTLY have work to do
-        // (per the user's "auto-check root with direct work" decision).
         _adlgAutoCheckRootsWithDirectWork();
         renderAnalyzeDlgTree();
         refreshAnalyzeDlgSummary();
       } catch (e) {
         console.warn('[analyzeDlg] inspect_folders failed', e);
       } finally {
-        setTimeout(() => {
-          if (progWrap) progWrap.classList.add('hidden');
-          if (progFill) progFill.style.width = '0%';
-        }, 350);
+        _adlgHideProgress(400);
       }
     }
 
@@ -534,7 +586,6 @@
       const listEl = document.getElementById('analyzeDlgQueuedList');
       const unlockRow = document.getElementById('analyzeDlgReanalyzeUnlockRow');
       const startBtn = document.getElementById('analyzeDlgAdd');
-      const countEl = document.getElementById('analyzeDlgCount');
       if (!headline || !listEl || !startBtn) return;
 
       const useGpu = !!document.getElementById('analyzeUseGpu')?.checked;
@@ -547,7 +598,7 @@
       let fullyAnalyzedSkipCount = 0;       // would skip-silently
       let fullyAnalyzedWillReanalyzeCount = 0; // will lose data (unlock ON)
       let outdatedReanalyzeCount = 0;       // will lose data (outdated → always re-analyze)
-      const perFolder = []; // {name, path, info, pillSpec, willSkip, willReanalyze}
+      const perFolder = [];
       for (const norm of checkedNorms) {
         const node = _adlgFindNode(norm);
         const info = analyzeDlgInspectionCache.get(norm);
@@ -556,48 +607,118 @@
         const processed = (info && info.processed) || 0;
         const errored = (info && info.errored) || 0;
         const outdated = node ? _isOutdatedNode(node) : false;
-        const isFullyAnalyzed = total > 0 && processed >= total;
+        const isFullyAnalyzed = total > 0 && processed >= total && errored === 0;
         let willSkip = false;
         let willReanalyze = false;
+        let warningMsg = '';
+        let warningKind = ''; // '' | 'warn' | 'error'
         let imagesThisFolder = 0;
         if (outdated) {
-          // Outdated always wipes + re-analyzes.
           willReanalyze = true;
           outdatedReanalyzeCount++;
           imagesThisFolder = total;
-        } else if (isFullyAnalyzed && errored === 0) {
+          warningMsg = `Analyzed on Kestrel v${node.kestrel_version} (current: v${_appVersion}). Will erase .kestrel data and re-analyze all ${total.toLocaleString()} images.`;
+          warningKind = 'warn';
+        } else if (isFullyAnalyzed) {
           if (analyzeDlgReanalyzeUnlocked) {
             willReanalyze = true;
             fullyAnalyzedWillReanalyzeCount++;
             imagesThisFolder = total;
+            warningMsg = `Already fully analyzed. Will erase user data (ratings, decisions, scene names) and re-analyze all ${total.toLocaleString()} images.`;
+            warningKind = 'warn';
           } else {
-            // Skip silently — no work counted.
             willSkip = true;
             fullyAnalyzedSkipCount++;
           }
         } else if (errored > 0 && retryErrored) {
           imagesThisFolder = errored;
+          warningMsg = `Re-attempting ${errored} previously-errored image${errored === 1 ? '' : 's'}.`;
+          warningKind = 'error';
         } else if (errored > 0 && !retryErrored) {
-          // Errored images but retry not ticked → only NEW images counted.
           imagesThisFolder = Math.max(0, total - processed - errored);
+          warningMsg = `${errored} image${errored === 1 ? '' : 's'} previously errored — enable "Re-attempt errored images" to retry them.`;
+          warningKind = 'error';
         } else {
           imagesThisFolder = Math.max(0, total - processed);
         }
         if (!willSkip) totalImagesToProcess += imagesThisFolder;
         const pillSpec = _computeAnalyzeDlgPill(node || { path: norm }, info, true);
-        perFolder.push({ name, path: norm, info, pillSpec, willSkip, willReanalyze, imagesThisFolder });
+        perFolder.push({ name, path: norm, info, pillSpec, willSkip, willReanalyze, imagesThisFolder, warningMsg, warningKind });
       }
 
-      // Headline
+      // Per-folder list
+      listEl.innerHTML = '';
+      if (perFolder.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'analyze-dlg-queued-list-empty';
+        empty.textContent = 'No folders queued yet. Check folders in the queue builder to add them here.';
+        listEl.appendChild(empty);
+      } else {
+        for (const f of perFolder) {
+          const item = document.createElement('div');
+          let itemCls = 'analyze-dlg-queued-item';
+          if (f.willSkip) itemCls += ' will-skip';
+          if (f.warningKind === 'warn') itemCls += ' has-warning';
+          if (f.warningKind === 'error') itemCls += ' has-error';
+          item.className = itemCls;
+          item.title = f.path;
+
+          const head = document.createElement('div');
+          head.className = 'analyze-dlg-queued-item-head';
+          const pill = document.createElement('span');
+          pill.className = `state-pill state-pill--${f.pillSpec.color} state-pill--${f.pillSpec.shape}`;
+          const name = document.createElement('span');
+          name.className = 'analyze-dlg-queued-item-name';
+          name.textContent = f.name;
+          head.appendChild(pill);
+          head.appendChild(name);
+          item.appendChild(head);
+
+          const meta = document.createElement('div');
+          meta.className = 'analyze-dlg-queued-item-meta';
+          if (f.willSkip) {
+            const skip = document.createElement('span');
+            skip.className = 'meta-skip';
+            skip.textContent = 'Already analyzed — will be skipped';
+            meta.appendChild(skip);
+          } else {
+            const imgSpan = document.createElement('span');
+            imgSpan.className = 'meta-images';
+            const imgs = f.imagesThisFolder.toLocaleString();
+            imgSpan.textContent = `${imgs} image${f.imagesThisFolder === 1 ? '' : 's'}`;
+            if (f.willReanalyze) imgSpan.textContent += ' (re-analyze)';
+            meta.appendChild(imgSpan);
+            // Per-folder time estimate
+            if (f.imagesThisFolder >= _EST_MIN_IMAGES_TO_ESTIMATE) {
+              const rate = useGpu ? _EST_SECS_PER_IMG_GPU : _EST_SECS_PER_IMG_CPU;
+              const sec = f.imagesThisFolder * rate;
+              const timeSpan = document.createElement('span');
+              timeSpan.className = 'meta-time';
+              timeSpan.textContent = `· ~${_formatDuration(sec)}`;
+              meta.appendChild(timeSpan);
+            }
+          }
+          item.appendChild(meta);
+
+          if (f.warningMsg) {
+            const warn = document.createElement('div');
+            warn.className = 'analyze-dlg-queued-item-warning' + (f.warningKind === 'error' ? ' error' : '');
+            warn.textContent = (f.warningKind === 'error' ? '⚠ ' : '⚠ ') + f.warningMsg;
+            item.appendChild(warn);
+          }
+          listEl.appendChild(item);
+        }
+      }
+
+      // Headline (compact summary card)
       if (checkedCount === 0) {
         headline.innerHTML = '<span class="analyze-dlg-summary-empty">Check folders in the queue builder to add them.</span>';
       } else {
         const folderWord = checkedCount === 1 ? 'folder' : 'folders';
         const imgCount = totalImagesToProcess.toLocaleString();
         const skipNote = fullyAnalyzedSkipCount > 0
-          ? ` <span class="analyze-dlg-summary-folder-count">(${fullyAnalyzedSkipCount} will be skipped — already analyzed)</span>`
+          ? ` <span class="analyze-dlg-summary-folder-count">(${fullyAnalyzedSkipCount} will be skipped)</span>`
           : '';
-        // Time estimate
         let timeFrag = '';
         if (totalImagesToProcess >= _EST_MIN_IMAGES_TO_ESTIMATE) {
           const rate = useGpu ? _EST_SECS_PER_IMG_GPU : _EST_SECS_PER_IMG_CPU;
@@ -612,7 +733,7 @@
           timeFrag;
       }
 
-      // Warnings
+      // Aggregate warning row (above the unlock checkbox)
       const reanalyzeWithUnlockCount = fullyAnalyzedWillReanalyzeCount + outdatedReanalyzeCount;
       if (reanalyzeWithUnlockCount > 0) {
         const word = reanalyzeWithUnlockCount === 1 ? 'folder' : 'folders';
@@ -623,48 +744,10 @@
         warningsEl.innerHTML = '';
       }
 
-      // Per-folder list
-      listEl.innerHTML = '';
-      if (perFolder.length === 0) {
-        const empty = document.createElement('div');
-        empty.className = 'analyze-dlg-queued-list-empty';
-        empty.textContent = 'No folders queued yet.';
-        listEl.appendChild(empty);
-      } else {
-        for (const f of perFolder) {
-          const item = document.createElement('div');
-          item.className = 'analyze-dlg-queued-item';
-          item.title = f.path;
-          const pill = document.createElement('span');
-          pill.className = `state-pill state-pill--${f.pillSpec.color} state-pill--${f.pillSpec.shape}`;
-          const name = document.createElement('span');
-          name.className = 'analyze-dlg-queued-item-name';
-          name.textContent = f.name;
-          const count = document.createElement('span');
-          count.className = 'analyze-dlg-queued-item-count';
-          if (f.willSkip) count.textContent = 'will skip';
-          else if (f.willReanalyze) count.textContent = `${f.imagesThisFolder} (re-analyze)`;
-          else count.textContent = `${f.imagesThisFolder} img`;
-          item.appendChild(pill);
-          item.appendChild(name);
-          item.appendChild(count);
-          listEl.appendChild(item);
-        }
-      }
-
-      // Unlock row: visible only when at least one fully-analyzed-current-version
-      // folder is checked (i.e., would skip silently OR is being re-analyzed via unlock).
+      // Unlock row visible only when fully-analyzed-current-version folder(s) are checked.
       const showUnlockRow = fullyAnalyzedSkipCount > 0 || fullyAnalyzedWillReanalyzeCount > 0;
-      if (unlockRow) {
-        unlockRow.classList.toggle('hidden', !showUnlockRow);
-      }
+      if (unlockRow) unlockRow.classList.toggle('hidden', !showUnlockRow);
 
-      // Selected count + Start button enable state
-      if (countEl) {
-        countEl.textContent = `${checkedCount} folder${checkedCount === 1 ? '' : 's'} selected`;
-      }
-      // Start button enabled if there's any work to do OR any skip-silently
-      // pending (the worker handles the no-op gracefully).
       startBtn.disabled = checkedCount === 0;
     }
 
@@ -751,17 +834,34 @@
           });
         }
       }
-      // Wire GPU + retry-errored toggles to refresh summary live (they affect
-      // time estimate + image counts).
+      // Wire GPU toggle (live time-estimate refresh).
       const _gpuBox = document.getElementById('analyzeUseGpu');
       if (_gpuBox && !_gpuBox.dataset.wiredSummary) {
         _gpuBox.dataset.wiredSummary = '1';
         _gpuBox.addEventListener('change', refreshAnalyzeDlgSummary);
       }
-      const _retryBox = document.getElementById('adlgRetryErrored');
-      if (_retryBox && !_retryBox.dataset.wiredSummary) {
-        _retryBox.dataset.wiredSummary = '1';
-        _retryBox.addEventListener('change', refreshAnalyzeDlgSummary);
+      // Retry-errored has TWO instances (one in critical settings, one in
+      // More options). Keep them in sync so users see consistent state.
+      // Both refresh the queue summary (errored counts change per-folder).
+      const _retryBoxCritical = document.getElementById('adlgRetryErrored');
+      const _retryBoxMore = document.getElementById('adlgRetryErroredMore');
+      function _syncRetryBoxes(src) {
+        const checked = !!src.checked;
+        if (_retryBoxCritical && _retryBoxCritical !== src) _retryBoxCritical.checked = checked;
+        if (_retryBoxMore && _retryBoxMore !== src) _retryBoxMore.checked = checked;
+        refreshAnalyzeDlgSummary();
+      }
+      if (_retryBoxCritical && !_retryBoxCritical.dataset.wiredSummary) {
+        _retryBoxCritical.dataset.wiredSummary = '1';
+        _retryBoxCritical.addEventListener('change', () => _syncRetryBoxes(_retryBoxCritical));
+      }
+      if (_retryBoxMore && !_retryBoxMore.dataset.wiredSummary) {
+        _retryBoxMore.dataset.wiredSummary = '1';
+        _retryBoxMore.addEventListener('change', () => _syncRetryBoxes(_retryBoxMore));
+      }
+      // Mirror initial state in case settings hydration only touched one.
+      if (_retryBoxCritical && _retryBoxMore) {
+        _retryBoxMore.checked = _retryBoxCritical.checked;
       }
 
       // Render recents first (no roots yet → just shows chips). Then if the

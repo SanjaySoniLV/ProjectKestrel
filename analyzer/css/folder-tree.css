@@ -282,16 +282,9 @@
   color: var(--brand);
 }
 
-/* Mirror classes for analyze dialog rows */
-.adlg-node-row.analyzed-full .tree-label { color: var(--ok); }
-.adlg-node-row.analyzed-partial .tree-label { color: #b36bff; }
-.adlg-node-row.analyzed-none .tree-label { color: var(--brand); }
-.adlg-node-row.has-kestrel:not(.analyzed-full):not(.analyzed-partial):not(.analyzed-none) .tree-label {
-  color: var(--ok);
-}
-.adlg-node-row.has-kestrel:not(.analyzed-full):not(.analyzed-partial):not(.analyzed-none):hover .tree-label {
-  color: #c8dcf5;
-}
+/* Phase 3: legacy .adlg-node-row.has-kestrel / analyzed-* color rules removed.
+   The new analyze dialog uses pure-CSS state pills to carry per-folder state
+   instead of recoloring the label text. Labels stay default text color. */
 
 /* Outdated version styling: italic only (color inherited from analyzed-* class) */
 .tree-node-row.version-outdated .tree-label {

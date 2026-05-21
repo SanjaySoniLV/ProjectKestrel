@@ -50,6 +50,29 @@
 }
 
 /* ── Column 1: Queue Builder ─────────────────────────────────────────────── */
+.analyze-dlg-pill-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 6px 10px;
+  background: #0a0d12;
+  border: 1px solid #1d2230;
+  border-radius: 6px;
+  font-size: 10.5px;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+.analyze-dlg-pill-legend .legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  white-space: nowrap;
+}
+.analyze-dlg-pill-legend .state-pill {
+  margin: 0 2px 0 0;
+  vertical-align: middle;
+}
+
 .analyze-dlg-tree-wrap {
   display: flex;
   flex-direction: column;
@@ -170,8 +193,34 @@
 .analyze-dlg-more-body {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 14px;
   padding: 4px 12px 12px;
+}
+/* Subheading-grouped settings inside More options. */
+.adlg-subgroup {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 0 0;
+  border-top: 1px solid #1d2230;
+}
+.adlg-subgroup:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+.adlg-subgroup-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #7a8598;
+  margin-bottom: 4px;
+}
+.adlg-hint {
+  font-size: 11px;
+  line-height: 1.4;
+  margin: -2px 0 4px;
+  color: var(--muted);
 }
 
 .adlg-toggle-row {
@@ -231,38 +280,132 @@
   font-size: 12px;
 }
 
-/* ── Column 3: Queue Summary + Start ─────────────────────────────────────── */
+/* ── Column 3: Queued Folders list (top) + Summary card + action row ─────── */
 .analyze-dlg-col-summary {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  gap: 10px;
 }
-.analyze-dlg-summary-top {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  flex: 0 0 auto;
-}
-.analyze-dlg-summary-headline {
-  padding: 10px 12px;
+
+/* Folders list — the main detailed view. Each card is its own discrete unit
+   (name + pill + count + time + warnings). Scrollable. */
+.analyze-dlg-summary-list-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   background: #0a0d12;
   border: 1px solid #2a3040;
   border-radius: 10px;
+  padding: 6px;
+}
+.analyze-dlg-queued-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.analyze-dlg-queued-list-empty {
+  padding: 24px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: italic;
+  text-align: center;
+}
+.analyze-dlg-queued-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  font-size: 12px;
+  background: #10141c;
+  border: 1px solid #1d2230;
+  border-radius: 8px;
+  transition: border-color .12s ease;
+}
+.analyze-dlg-queued-item:hover { border-color: #2a3445; }
+.analyze-dlg-queued-item.will-skip { opacity: 0.7; }
+.analyze-dlg-queued-item.has-warning {
+  border-color: rgba(243, 156, 18, 0.5);
+  background: rgba(243, 156, 18, 0.04);
+}
+.analyze-dlg-queued-item.has-error {
+  border-color: rgba(231, 76, 60, 0.5);
+  background: rgba(231, 76, 60, 0.04);
+}
+.analyze-dlg-queued-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.analyze-dlg-queued-item-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: #e1e5ec;
+}
+.analyze-dlg-queued-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-left: 22px;            /* align with name (past the pill+gap) */
+  font-size: 11px;
+  color: var(--muted);
+}
+.analyze-dlg-queued-item-meta .meta-images,
+.analyze-dlg-queued-item-meta .meta-time {
+  white-space: nowrap;
+}
+.analyze-dlg-queued-item-meta .meta-skip {
+  font-style: italic;
+  color: var(--muted);
+}
+.analyze-dlg-queued-item-warning {
+  margin-left: 22px;
+  padding: 4px 8px;
+  background: rgba(243, 156, 18, 0.08);
+  border-left: 2px solid #f39c12;
+  border-radius: 0 4px 4px 0;
+  font-size: 11px;
+  color: #f5c542;
+  line-height: 1.35;
+}
+.analyze-dlg-queued-item-warning.error {
+  background: rgba(231, 76, 60, 0.08);
+  border-left-color: #e74c3c;
+  color: #ff8a7a;
+}
+
+/* Summary card — compact card sitting under the folders list, above the
+   action row. Holds the totals + destination + unlock + warnings. */
+.analyze-dlg-summary-card {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: #0a0d12;
+  border: 1px solid #2a3040;
+  border-radius: 10px;
+}
+.analyze-dlg-summary-headline {
   font-size: 13px;
-  line-height: 1.45;
+  line-height: 1.4;
 }
 .analyze-dlg-summary-empty {
   color: var(--muted);
   font-style: italic;
 }
 .analyze-dlg-summary-image-count {
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 600;
   color: #d4e4f5;
 }
 .analyze-dlg-summary-folder-count {
   font-size: 12px;
   color: var(--muted);
+  margin-top: 2px;
 }
 .analyze-dlg-summary-time {
   display: block;
@@ -272,96 +415,67 @@
 }
 
 .analyze-dlg-warnings {
-  padding: 8px 12px;
+  padding: 7px 10px;
   background: rgba(243, 156, 18, 0.08);
   border: 1px solid rgba(243, 156, 18, 0.45);
-  border-radius: 8px;
+  border-radius: 6px;
   font-size: 12px;
   color: #f5c542;
   line-height: 1.4;
 }
 .analyze-dlg-warnings.hidden { display: none; }
 
-.analyze-dlg-summary-list-wrap {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  background: #0a0d12;
-  border: 1px solid #2a3040;
-  border-radius: 8px;
-  padding: 4px 0;
-}
-.analyze-dlg-queued-list {
-  display: flex;
-  flex-direction: column;
-}
-.analyze-dlg-queued-list-empty {
-  padding: 12px;
-  color: var(--muted);
-  font-size: 12px;
-  font-style: italic;
-  text-align: center;
-}
-.analyze-dlg-queued-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 10px;
-  font-size: 12px;
-  border-bottom: 1px solid #14181f;
-}
-.analyze-dlg-queued-item:last-child { border-bottom: none; }
-.analyze-dlg-queued-item:hover { background: rgba(255,255,255,0.03); }
-.analyze-dlg-queued-item-name {
-  flex: 1 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.analyze-dlg-queued-item-count {
-  flex: 0 0 auto;
-  color: var(--muted);
-  font-size: 11px;
+.analyze-dlg-unlock-row {
+  padding: 6px 8px;
+  border: 1px solid var(--warn);
+  background: rgba(243, 156, 18, 0.06);
+  border-radius: 6px;
 }
 
-.analyze-dlg-summary-bottom {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  flex: 0 0 auto;
-  padding-top: 8px;
-}
 .analyze-dlg-compute-row {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 6px 10px;
-  background: #0a0d12;
+  padding: 6px 0 0;
+  border-top: 1px solid #1d2230;
+}
+.analyze-dlg-compute-label {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 500;
+}
+.adlg-radio-inline.disabled { opacity: 0.45; cursor: not-allowed; }
+.analyze-dlg-soon { font-size: 10px; color: var(--muted); }
+
+/* Compact action row. Cancel is a tiny X next to the primary Start button. */
+.analyze-dlg-action-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.analyze-dlg-cancel-icon {
+  flex: 0 0 36px;
+  width: 36px;
+  height: 38px;
+  font-size: 14px;
+  padding: 0;
+  background: transparent;
   border: 1px solid #2a3040;
+  color: var(--muted);
   border-radius: 8px;
 }
+.analyze-dlg-cancel-icon:hover {
+  background: #1a2030;
+  color: var(--text);
+  border-color: #3a4555;
+}
 .analyze-dlg-start-btn {
-  width: 100%;
-  height: 42px;
-  font-size: 15px;
+  flex: 1 1 auto;
+  height: 38px;
+  font-size: 14px;
   font-weight: 500;
-  border-radius: 10px;
-}
-.analyze-dlg-footer-mini {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.analyze-dlg-footer-mini button {
-  flex: 0 0 auto;
-  height: 30px;
-  font-size: 12px;
-  padding: 0 12px;
-}
-.analyze-dlg-selected-count {
-  flex: 1;
-  font-size: 11px;
-  color: var(--muted);
+  border-radius: 8px;
 }
 
 /* ── State pills (Phase 3F) ──────────────────────────────────────────────────
