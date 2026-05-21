@@ -200,7 +200,7 @@
   left: 50%;
   top: 0;
   bottom: 0;
-  border-left: 1px solid #2a3445;
+  border-left: 1px solid #4a5567;
 }
 /* .tree-rail-blank: no visual; just reserves the indent column */
 .tree-rail-elbow-mid::before {
@@ -209,7 +209,7 @@
   left: 50%;
   top: 0;
   bottom: 0;
-  border-left: 1px solid #2a3445;
+  border-left: 1px solid #4a5567;
 }
 .tree-rail-elbow-mid::after {
   content: '';
@@ -217,7 +217,7 @@
   left: 50%;
   top: 50%;
   right: 0;
-  border-top: 1px solid #2a3445;
+  border-top: 1px solid #4a5567;
 }
 .tree-rail-elbow-last::before {
   content: '';
@@ -225,7 +225,7 @@
   left: 50%;
   top: 0;
   height: 50%;
-  border-left: 1px solid #2a3445;
+  border-left: 1px solid #4a5567;
 }
 .tree-rail-elbow-last::after {
   content: '';
@@ -233,7 +233,7 @@
   left: 50%;
   top: 50%;
   right: 0;
-  border-top: 1px solid #2a3445;
+  border-top: 1px solid #4a5567;
 }
 /* Greyed-out folder: Kestrel found no supported photos */
 /* Deep: folder AND every descendant have 0 images — fade whole row */

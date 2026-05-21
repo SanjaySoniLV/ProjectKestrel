@@ -109,7 +109,7 @@
     // confirmation path.
     async function _persistAnalyzeSettingsAndStart(paths, perItemOptions, retryErrored) {
       // Read + persist advanced settings.
-      const dtVal = Math.max(0.1, Math.min(0.99, parseFloat(document.getElementById('adlgDetectionThreshold')?.value) || 0.25));
+      const dtVal = Math.max(0.1, Math.min(0.99, parseFloat(document.getElementById('adlgDetectionThreshold')?.value) || 0.15));
       const mbcRaw = parseInt(document.getElementById('adlgMaxBirdCrops')?.value, 10);
       const mbcVal = Math.max(1, Math.min(20, Number.isFinite(mbcRaw) ? mbcRaw : 10));
       const eqRaw = String(document.getElementById('adlgExposureQuality')?.value || 'balanced').toLowerCase();

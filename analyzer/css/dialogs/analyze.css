@@ -42,23 +42,24 @@
 }
 
 .analyze-dlg-col-title {
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
-  color: var(--muted);
-  letter-spacing: 0.3px;
+  color: #cbd6e4;
+  letter-spacing: 0.2px;
   flex: 0 0 auto;
+  padding-bottom: 2px;
 }
 
 /* ── Column 1: Queue Builder ─────────────────────────────────────────────── */
 .analyze-dlg-pill-legend {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 10px;
-  padding: 6px 10px;
+  gap: 4px 12px;
+  padding: 7px 11px;
   background: #0a0d12;
-  border: 1px solid #1d2230;
+  border: 1px solid #2a3040;
   border-radius: 6px;
-  font-size: 10.5px;
+  font-size: 11.5px;
   color: var(--muted);
   flex: 0 0 auto;
 }
@@ -118,28 +119,37 @@
 .analyze-dlg-settings-critical {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px;
+  gap: 10px;
+  padding: 12px 14px;
   background: #0a0d12;
   border: 1px solid #2a3040;
   border-radius: 10px;
 }
 
-/* Radio group for the wildlife model — visually heavy enough to communicate
-   it's the most important setting. */
+/* Dividers between adjacent rows in the critical settings — darker than the
+   default to read clearly without overpowering. */
+.analyze-dlg-settings-critical > * + * {
+  border-top: 1px solid #2a3445;
+  padding-top: 10px;
+}
+
+/* Radio group for the wildlife model — horizontal pair (side-by-side) for
+   compactness; reads as a single decision. */
 .adlg-radio-group {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding-bottom: 4px;
-  border-bottom: 1px solid #1d2230;
-  margin-bottom: 4px;
+  gap: 6px;
 }
 .adlg-radio-label {
-  font-size: 12px;
-  color: var(--muted);
+  font-size: 13px;
+  color: #cbd6e4;
   font-weight: 600;
-  margin-bottom: 2px;
+  margin-bottom: 4px;
+}
+.adlg-radio-horiz {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
 }
 .adlg-radio-row {
   display: flex;
@@ -147,6 +157,18 @@
   gap: 8px;
   padding: 4px 0;
   cursor: pointer;
+}
+.adlg-radio-row-horiz {
+  padding: 8px 10px;
+  background: #10141c;
+  border: 1px solid #2a3445;
+  border-radius: 6px;
+  align-items: flex-start;
+}
+.adlg-radio-row-horiz:hover { border-color: #3a4555; }
+.adlg-radio-row-horiz:has(input:checked) {
+  border-color: #2b6ec8;
+  background: rgba(43, 110, 200, 0.06);
 }
 .adlg-radio-row input[type="radio"] {
   margin-top: 3px;
@@ -156,15 +178,15 @@
 .adlg-radio-text {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
 }
-.adlg-radio-name { font-size: 13px; color: #d4d8e0; }
-.adlg-radio-hint { font-size: 11px; line-height: 1.3; }
+.adlg-radio-name { font-size: 13.5px; color: #e1e5ec; font-weight: 500; }
+.adlg-radio-hint { font-size: 12px; line-height: 1.4; }
 .adlg-radio-inline {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 12px;
+  font-size: 12.5px;
   color: #d4d8e0;
   cursor: pointer;
 }
@@ -180,11 +202,11 @@
 }
 .analyze-dlg-more-options summary {
   cursor: pointer;
-  padding: 8px 12px;
-  color: #a0a8b8;
+  padding: 10px 14px;
+  color: #cbd6e4;
   font-weight: 600;
-  font-size: 12px;
-  letter-spacing: 0.3px;
+  font-size: 13.5px;
+  letter-spacing: 0.2px;
   user-select: none;
   list-style: none;
 }
@@ -193,32 +215,34 @@
 .analyze-dlg-more-body {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 4px 12px 12px;
+  gap: 16px;
+  padding: 4px 14px 14px;
 }
-/* Subheading-grouped settings inside More options. */
+/* Subheading-grouped settings inside More options. Divider is the darker
+   #2a3445 (matches the critical-settings dividers) so the group bounds
+   read clearly without competing with the outer card border. */
 .adlg-subgroup {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 8px 0 0;
-  border-top: 1px solid #1d2230;
+  gap: 6px;
+  padding: 12px 0 0;
+  border-top: 1px solid #2a3445;
 }
 .adlg-subgroup:first-child {
   border-top: none;
   padding-top: 0;
 }
 .adlg-subgroup-title {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  color: #7a8598;
+  color: #a0afc4;
   margin-bottom: 4px;
 }
 .adlg-hint {
-  font-size: 11px;
-  line-height: 1.4;
+  font-size: 12px;
+  line-height: 1.45;
   margin: -2px 0 4px;
   color: var(--muted);
 }
@@ -237,16 +261,16 @@
 .adlg-toggle-text {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
   flex: 1;
 }
 .adlg-toggle-label {
-  font-size: 13px;
-  color: #d4d8e0;
+  font-size: 13.5px;
+  color: #e1e5ec;
 }
 .adlg-toggle-hint {
-  font-size: 11px;
-  line-height: 1.35;
+  font-size: 12px;
+  line-height: 1.4;
 }
 .adlg-tag {
   display: inline-block;
@@ -271,14 +295,29 @@
 }
 .adlg-setting-row label {
   flex: 1;
-  font-size: 13px;
+  font-size: 13.5px;
+  color: #e1e5ec;
 }
 .adlg-setting-row input[type="number"],
 .adlg-setting-row select {
   flex-shrink: 0;
-  height: 28px;
-  font-size: 12px;
+  height: 30px;
+  font-size: 12.5px;
 }
+
+/* Inline warning under specific settings (e.g., suggested detection
+   confidence). Subtle yellow tint, sits flush under the input. */
+.adlg-inline-warning {
+  padding: 6px 10px;
+  margin: 2px 0;
+  background: rgba(243, 156, 18, 0.08);
+  border-left: 2px solid #f39c12;
+  border-radius: 0 6px 6px 0;
+  font-size: 12px;
+  color: #f5c542;
+  line-height: 1.4;
+}
+.adlg-inline-warning.hidden { display: none; }
 
 /* ── Column 3: Queued Folders list (top) + Summary card + action row ─────── */
 .analyze-dlg-col-summary {
@@ -314,11 +353,11 @@
 .analyze-dlg-queued-item {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 8px 10px;
-  font-size: 12px;
+  gap: 5px;
+  padding: 9px 11px;
+  font-size: 12.5px;
   background: #10141c;
-  border: 1px solid #1d2230;
+  border: 1px solid #2a3445;
   border-radius: 8px;
   transition: border-color .12s ease;
 }
@@ -343,6 +382,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 500;
+  font-size: 13.5px;
   color: #e1e5ec;
 }
 .analyze-dlg-queued-item-meta {
@@ -350,7 +390,7 @@
   align-items: center;
   gap: 10px;
   padding-left: 22px;            /* align with name (past the pill+gap) */
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
 }
 .analyze-dlg-queued-item-meta .meta-images,
@@ -363,13 +403,13 @@
 }
 .analyze-dlg-queued-item-warning {
   margin-left: 22px;
-  padding: 4px 8px;
+  padding: 5px 9px;
   background: rgba(243, 156, 18, 0.08);
   border-left: 2px solid #f39c12;
   border-radius: 0 4px 4px 0;
-  font-size: 11px;
+  font-size: 12px;
   color: #f5c542;
-  line-height: 1.35;
+  line-height: 1.4;
 }
 .analyze-dlg-queued-item-warning.error {
   background: rgba(231, 76, 60, 0.08);
@@ -389,29 +429,55 @@
   border: 1px solid #2a3040;
   border-radius: 10px;
 }
+/* Summary headline: 3 stat blocks laid out HORIZONTALLY (images | folders |
+   estimated time). Each block has a big number on top and a small label
+   underneath. Cleaner than the prior vertically-stacked sentence. */
 .analyze-dlg-summary-headline {
-  font-size: 13px;
-  line-height: 1.4;
+  display: flex;
+  align-items: stretch;
+  gap: 0;
 }
 .analyze-dlg-summary-empty {
+  flex: 1;
   color: var(--muted);
   font-style: italic;
+  font-size: 13px;
+  padding: 4px 0;
 }
-.analyze-dlg-summary-image-count {
-  font-size: 20px;
+.analyze-dlg-stat {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 4px 8px;
+  border-right: 1px solid #2a3445;
+}
+.analyze-dlg-stat:last-child { border-right: none; }
+.analyze-dlg-stat-value {
+  font-size: 22px;
   font-weight: 600;
-  color: #d4e4f5;
+  color: #e6edf6;
+  line-height: 1.1;
+  white-space: nowrap;
 }
-.analyze-dlg-summary-folder-count {
-  font-size: 12px;
+.analyze-dlg-stat-value.dim {
   color: var(--muted);
-  margin-top: 2px;
+  font-size: 16px;
+  font-weight: 500;
 }
-.analyze-dlg-summary-time {
-  display: block;
-  margin-top: 4px;
-  font-size: 12px;
-  color: #a8b4c8;
+.analyze-dlg-stat-label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 500;
+}
+.analyze-dlg-stat-skip {
+  font-size: 11px;
+  color: var(--muted);
+  font-style: italic;
 }
 
 .analyze-dlg-warnings {
@@ -455,10 +521,10 @@
   flex: 0 0 auto;
 }
 .analyze-dlg-cancel-icon {
-  flex: 0 0 36px;
-  width: 36px;
-  height: 38px;
-  font-size: 14px;
+  flex: 0 0 40px;
+  width: 40px;
+  height: 42px;
+  font-size: 15px;
   padding: 0;
   background: transparent;
   border: 1px solid #2a3040;
@@ -472,10 +538,21 @@
 }
 .analyze-dlg-start-btn {
   flex: 1 1 auto;
-  height: 38px;
-  font-size: 14px;
-  font-weight: 500;
+  height: 42px;
+  font-size: 15px;
+  font-weight: 600;
   border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+.analyze-dlg-start-btn .start-btn-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+.analyze-dlg-start-btn .start-btn-text {
+  letter-spacing: 0.2px;
 }
 
 /* ── State pills (Phase 3F) ──────────────────────────────────────────────────
@@ -522,25 +599,28 @@
 .state-pill--orange.state-pill--half { color: #f39c12; }
 .state-pill--gray.state-pill--half   { color: #6a7585; }
 .state-pill--red.state-pill--half    { color: #e74c3c; }
+/* Errored pill: a solid red circle with a white "!" inside. CSS border-art
+   triangles don't compose reliably inside flex parents (zero-sized boxes
+   get collapsed). A filled circle is glanceable, consistent, and definitely
+   red — matches the conceptual sibling pills in shape, only color differs. */
 .state-pill--warn {
-  /* Tiny warning glyph: red triangle drawn with borders. */
-  background: transparent !important;
-  border: none !important;
-  width: 0; height: 0;
-  border-left: 6px solid transparent;
-  border-right: 6px solid transparent;
-  border-bottom: 10px solid #e74c3c;
-  border-radius: 0;
-  margin-top: -2px;
+  background: #e74c3c !important;
+  border: 1px solid #e74c3c !important;
+  border-radius: 50%;
+  position: relative;
+  width: 13px;
+  height: 13px;
 }
 .state-pill--warn::after {
   content: '!';
   position: absolute;
-  left: -2px;
-  top: 1px;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: #fff;
-  font-size: 8px;
-  font-weight: 700;
+  font-size: 10px;
+  font-weight: 800;
   line-height: 1;
 }
 
@@ -577,14 +657,25 @@
   cursor: pointer;
   accent-color: #f39c12;
 }
-/* Faded checkbox for rows that can't be queued (no photos) */
+/* Faded checkbox for rows that can't be queued (no photos). Dim only the
+   label/icon/arrow/checkbox — NOT the rails — so the tree structure stays
+   readable even when individual rows fade. Same rule as the main tree's
+   .no-kestrel handling. */
 .adlg-node-row.no-photos-deep .adlg-cb,
 .adlg-node-row.no-photos-shallow .adlg-cb {
   opacity: 0.4;
   cursor: not-allowed;
 }
-.adlg-node-row.no-photos-deep .tree-label {
+.adlg-node-row.no-photos-deep .tree-label,
+.adlg-node-row.no-photos-deep .tree-icon,
+.adlg-node-row.no-photos-deep .tree-arrow,
+.adlg-node-row.no-photos-deep .tree-count {
   opacity: 0.5;
+}
+/* Rails always fully opaque — dimming the row should never bleed into the
+   tree connector lines. */
+.adlg-node-row .tree-rail {
+  opacity: 1 !important;
 }
 
 /* ── Pre-queue confirmation modal (Phase 3H) ────────────────────────────── */

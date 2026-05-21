@@ -656,13 +656,14 @@
       </div>
       <div class="analyze-dlg-grid">
 
-        <!-- ═══ Column 1: Queue Builder ═══ -->
+        <!-- ═══ Column 1: Select Which Folders to Analyze ═══ -->
         <div class="analyze-dlg-col analyze-dlg-col-builder">
-          <div class="analyze-dlg-col-title">📂 Queue Builder</div>
-          <!-- State pill legend (Phase 3 polish): one-line key for the
-               color/shape meanings the user will see on each row. -->
+          <div class="analyze-dlg-col-title">📂 Select which folders to analyze</div>
+          <!-- State pill legend (Phase 3 polish): the color/shape meanings.
+               Color = queue state (orange checked / gray not); shape = work
+               progress (solid done / half partial / outline not started). -->
           <div class="analyze-dlg-pill-legend" aria-label="Folder status legend">
-            <span class="legend-item"><span class="state-pill state-pill--blue state-pill--solid"></span>Done</span>
+            <span class="legend-item"><span class="state-pill state-pill--orange state-pill--solid"></span>Done</span>
             <span class="legend-item"><span class="state-pill state-pill--orange state-pill--half"></span>Partial</span>
             <span class="legend-item"><span class="state-pill state-pill--orange state-pill--outline"></span>Not started</span>
             <span class="legend-item"><span class="state-pill state-pill--gray state-pill--outline"></span>Not queued</span>
@@ -691,27 +692,29 @@
           </div>
         </div>
 
-        <!-- ═══ Column 2: Settings ═══ -->
+        <!-- ═══ Column 2: Review Settings ═══ -->
         <div class="analyze-dlg-col analyze-dlg-col-settings">
-          <div class="analyze-dlg-col-title">⚙ Settings</div>
+          <div class="analyze-dlg-col-title">⚙ Review settings</div>
           <div class="analyze-dlg-settings-critical">
-            <!-- Wildlife detection model — radio pair instead of dropdown for visibility -->
+            <!-- Wildlife detection model — horizontal radio pair for compactness. -->
             <div class="adlg-radio-group">
               <div class="adlg-radio-label">Wildlife detection model</div>
-              <label class="adlg-radio-row">
-                <input type="radio" name="adlgWildlifeModelMode" id="adlgWildlifeModelModeAccurate" value="accurate" checked />
-                <div class="adlg-radio-text">
-                  <span class="adlg-radio-name">Accurate</span>
-                  <span class="adlg-radio-hint muted">Larger model with stronger recall. Slower but catches more subjects, especially distant or partially-obscured birds.</span>
-                </div>
-              </label>
-              <label class="adlg-radio-row">
-                <input type="radio" name="adlgWildlifeModelMode" id="adlgWildlifeModelModeFast" value="fast" />
-                <div class="adlg-radio-text">
-                  <span class="adlg-radio-name">Fast</span>
-                  <span class="adlg-radio-hint muted">Smaller model — significantly faster but may miss some detections. Good for quick first passes.</span>
-                </div>
-              </label>
+              <div class="adlg-radio-horiz">
+                <label class="adlg-radio-row adlg-radio-row-horiz">
+                  <input type="radio" name="adlgWildlifeModelMode" id="adlgWildlifeModelModeAccurate" value="accurate" checked />
+                  <div class="adlg-radio-text">
+                    <span class="adlg-radio-name">Accurate</span>
+                    <span class="adlg-radio-hint muted">Larger model with stronger recall. Slower but catches more subjects, especially distant or partially-obscured birds.</span>
+                  </div>
+                </label>
+                <label class="adlg-radio-row adlg-radio-row-horiz">
+                  <input type="radio" name="adlgWildlifeModelMode" id="adlgWildlifeModelModeFast" value="fast" />
+                  <div class="adlg-radio-text">
+                    <span class="adlg-radio-name">Fast</span>
+                    <span class="adlg-radio-hint muted">Smaller model — significantly faster but may miss some detections. Good for quick first passes.</span>
+                  </div>
+                </label>
+              </div>
               <!-- Legacy <select> kept hidden so settings hydrate logic that reads/writes
                    #adlgWildlifeModelMode keeps working; the radios mirror to it. -->
               <select id="adlgWildlifeModelMode" class="hidden" aria-hidden="true">
@@ -719,13 +722,6 @@
                 <option value="accurate" selected>Accurate</option>
               </select>
             </div>
-            <label class="adlg-toggle-row" id="analyzeGpuLabel">
-              <input id="analyzeUseGpu" type="checkbox" checked />
-              <div class="adlg-toggle-text">
-                <span class="adlg-toggle-label">Use GPU when available</span>
-                <span class="adlg-toggle-hint muted">Accelerates detection &amp; classification via DirectML (Windows) or CoreML (macOS). Disable if your GPU is unstable.</span>
-              </div>
-            </label>
             <label class="adlg-toggle-row">
               <input id="analyzeSpeciesDetection" type="checkbox" checked />
               <div class="adlg-toggle-text">
@@ -733,63 +729,69 @@
                 <span class="adlg-toggle-hint muted">Runs the bird species classifier on each cropped bird. Optimized for North American species — disable if shooting elsewhere. Detection &amp; quality scoring are unaffected.</span>
               </div>
             </label>
-            <label class="adlg-toggle-row" id="analyzeRetryErroredLabel">
-              <input id="adlgRetryErrored" type="checkbox" checked />
+            <div class="adlg-setting-row">
+              <label for="adlgMaxBirdCrops">Maximum subjects per image</label>
+              <input id="adlgMaxBirdCrops" type="number" min="1" max="20" step="1" value="10"
+                style="width:80px" />
+            </div>
+            <div class="adlg-hint muted">Each additional subject increases processing time. Lower this to cap the number of subjects processed per image.</div>
+            <label class="adlg-toggle-row">
+              <input id="analyzeWildlife" type="checkbox" />
               <div class="adlg-toggle-text">
-                <span class="adlg-toggle-label">Re-attempt errored images</span>
-                <span class="adlg-toggle-hint muted">For any queued folder containing images previously marked as errored, drop those rows and re-run analysis on them. Other already-analyzed images are not touched.</span>
+                <span class="adlg-toggle-label">Detect non-bird wildlife <span class="adlg-tag">experimental</span></span>
+                <span class="adlg-toggle-hint muted">Detects 1,200+ non-bird species (squirrels, deer, bears, etc.) using SpeciesNet. Adds noticeable processing time per image.</span>
               </div>
             </label>
           </div>
 
-          <!-- "More options" expanded by default per Phase 3 polish. Subheadings
-               restore the legacy grouping (Performance / Wildlife / Exposure /
-               Thumbnails) so power users can find settings by category. -->
+          <!-- "More options" expanded by default. Subheadings group settings
+               by category so power users can find them by topic. -->
           <details class="analyze-dlg-more-options" open>
             <summary>More options ▾</summary>
             <div class="analyze-dlg-more-body">
 
               <div class="adlg-subgroup">
-                <div class="adlg-subgroup-title">Performance</div>
+                <div class="adlg-subgroup-title">Performance &amp; behavior</div>
+                <label class="adlg-toggle-row" id="analyzeGpuLabel">
+                  <input id="analyzeUseGpu" type="checkbox" checked />
+                  <div class="adlg-toggle-text">
+                    <span class="adlg-toggle-label">Use GPU when available</span>
+                    <span class="adlg-toggle-hint muted">Accelerates detection &amp; classification via DirectML (Windows) or CoreML (macOS). Disable if your GPU is unstable.</span>
+                  </div>
+                </label>
                 <div class="adlg-setting-row">
                   <label for="adlgParallelPrefetch">Parallel processing</label>
                   <input id="adlgParallelPrefetch" type="number" min="1" max="5" step="1" value="3"
                     style="width:80px" />
                 </div>
                 <div class="adlg-hint muted">Number of images to read ahead to sustain the processing queue (1–5). Lower this if your computer slows down too much during analysis.</div>
-                <!-- Retry errored duplicated here per user request — same setting,
-                     synced via JS. Lives alongside other performance toggles since
-                     it's also relevant when triaging a partially-analyzed library. -->
-                <label class="adlg-toggle-row">
-                  <input id="adlgRetryErroredMore" type="checkbox" checked />
+                <label class="adlg-toggle-row" id="analyzeRetryErroredLabel">
+                  <input id="adlgRetryErrored" type="checkbox" checked />
                   <div class="adlg-toggle-text">
                     <span class="adlg-toggle-label">Re-attempt errored images</span>
-                    <span class="adlg-toggle-hint muted">Mirrors the toggle above. Drops previously-errored rows from selected folders so they get re-analyzed; untouched images are skipped as already-done.</span>
+                    <span class="adlg-toggle-hint muted">For any queued folder containing images previously marked as errored, drop those rows and re-run analysis on them. Other already-analyzed images are not touched.</span>
                   </div>
                 </label>
+                <!-- Hidden mirror retained for the dialog open code that sets
+                     both checkboxes' initial state; it just shadows
+                     #adlgRetryErrored above (same setting, synced). -->
+                <input id="adlgRetryErroredMore" type="checkbox" checked class="hidden" aria-hidden="true" />
               </div>
 
               <div class="adlg-subgroup">
                 <div class="adlg-subgroup-title">Wildlife detection</div>
                 <div class="adlg-setting-row">
                   <label for="adlgDetectionThreshold">Detection confidence</label>
-                  <input id="adlgDetectionThreshold" type="number" min="0.1" max="0.99" step="0.05" value="0.25"
+                  <input id="adlgDetectionThreshold" type="number" min="0.1" max="0.99" step="0.05" value="0.15"
                     style="width:80px" />
                 </div>
-                <div class="adlg-hint muted">Minimum MegaDetector animal confidence (0.10–0.99). Lower values find more subjects but may increase false positives.</div>
-                <div class="adlg-setting-row">
-                  <label for="adlgMaxBirdCrops">Max birds per image</label>
-                  <input id="adlgMaxBirdCrops" type="number" min="1" max="20" step="1" value="10"
-                    style="width:80px" />
+                <div class="adlg-hint muted">Minimum MegaDetector animal confidence (0.10–0.99). Lower values find more subjects.</div>
+                <!-- Live warning when the user picks a value much above the
+                     recommended baseline. Wildlife detection models are quite
+                     accurate, so high thresholds tend to miss real subjects. -->
+                <div id="adlgDetectionConfidenceWarning" class="adlg-inline-warning hidden">
+                  ⚠ Suggested value: <b>0.15</b>. Higher thresholds miss real subjects — modern wildlife detectors are calibrated for low values.
                 </div>
-                <div class="adlg-hint muted">Maximum bird (aves) and non-bird wildlife subjects saved per image (each list capped separately).</div>
-                <label class="adlg-toggle-row">
-                  <input id="analyzeWildlife" type="checkbox" />
-                  <div class="adlg-toggle-text">
-                    <span class="adlg-toggle-label">Detect non-bird wildlife <span class="adlg-tag">experimental</span></span>
-                    <span class="adlg-toggle-hint muted">Detects 1,200+ non-bird species (squirrels, deer, bears, etc.) using SpeciesNet. Adds noticeable processing time per image.</span>
-                  </div>
-                </label>
               </div>
 
               <div class="adlg-subgroup">
@@ -804,7 +806,7 @@
                 </div>
                 <div class="adlg-hint muted">Controls how strongly Kestrel corrects bird exposure in the analyzed crops. Balanced is recommended for most images.</div>
                 <div class="adlg-setting-row">
-                  <label for="adlgSceneTime">Scene grouping (sec)</label>
+                  <label for="adlgSceneTime">Scene grouping time threshold (seconds)</label>
                   <input id="adlgSceneTime" type="number" min="0" max="60" step="0.5" value="1.0"
                     style="width:80px" />
                 </div>
@@ -820,7 +822,7 @@
                 </div>
                 <div class="adlg-hint muted">Long-edge pixel width for cached analysis thumbnails. Higher values look sharper but increase .kestrel storage.</div>
                 <div class="adlg-setting-row">
-                  <label for="adlgThumbnailJpegCompression">Thumbnail compression</label>
+                  <label for="adlgThumbnailJpegCompression">Thumbnail JPEG compression</label>
                   <input id="adlgThumbnailJpegCompression" type="number" min="0.50" max="1.00" step="0.05" value="0.75"
                     style="width:80px" />
                 </div>
@@ -838,7 +840,7 @@
              destination lives INSIDE the summary card because it affects
              the total-time estimate. -->
         <div class="analyze-dlg-col analyze-dlg-col-summary">
-          <div class="analyze-dlg-col-title">📋 Queued Folders</div>
+          <div class="analyze-dlg-col-title">📋 Job preview</div>
           <div class="analyze-dlg-summary-list-wrap">
             <div id="analyzeDlgQueuedList" class="analyze-dlg-queued-list"></div>
           </div>
@@ -870,7 +872,7 @@
                small X icon button so Start Analysis is the visual primary. -->
           <div class="analyze-dlg-action-row">
             <button id="analyzeDlgCancel" class="analyze-dlg-cancel-icon" title="Cancel and close">✕</button>
-            <button id="analyzeDlgAdd" class="primary analyze-dlg-start-btn" disabled>▶ Start Analysis</button>
+            <button id="analyzeDlgAdd" class="primary analyze-dlg-start-btn" disabled><span class="start-btn-icon">▶</span><span class="start-btn-text">Start Analysis</span></button>
           </div>
           <!-- Hidden span retained as no-op so any code paths that still
                reference #analyzeDlgCount don't NPE. -->

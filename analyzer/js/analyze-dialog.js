@@ -12,8 +12,8 @@
     // live ETA during processing; this is just the PRE-queue estimate so the
     // user can gauge how much work they're about to commit. Telemetry-backed
     // local rates are deferred to a follow-up.
-    const _EST_SECS_PER_IMG_GPU = 1.2;
-    const _EST_SECS_PER_IMG_CPU = 8.0;
+    const _EST_SECS_PER_IMG_GPU = 4.0;
+    const _EST_SECS_PER_IMG_CPU = 10.0;
     const _EST_MIN_IMAGES_TO_ESTIMATE = 50;
 
     // ── Dialog-local state (NEVER shared with the main tree) ────────────────────
@@ -159,19 +159,19 @@
       if (unlockBox) unlockBox.checked = false;
     }
 
-    // ── State pill computation (Phase 3F) ───────────────────────────────────────
+    // ── State pill computation (Phase 3F polish v2) ─────────────────────────────
     //
-    // Two orthogonal axes encode every folder's status:
-    //   color = relationship to queue (blue done / orange queued / gray idle / red errored / dim no-photos)
-    //   shape = work progress (solid done / half partial / outline not-started / dot no-photos / warn errored)
-    //
-    // Returns { color, shape } for the given path. `node` is the tree node
-    // (for static metadata like has_kestrel/kestrel_version); `info` is the
-    // inspection result for that exact path (may be undefined if not yet probed).
+    // Two orthogonal axes — homogenized color scheme so colors only signal
+    // queue inclusion, never confuse the user with a "done = blue" that
+    // looks selected:
+    //   color = queue state (orange = checked-for-queue, gray = not)
+    //   shape = work progress (solid = done, half = partial, outline = not started)
+    // Red = errored (independent override).
+    // Dim dot = no photos / nothing to do.
     function _computeAnalyzeDlgPill(node, info, isChecked) {
       // Inspection not yet done → neutral outline.
       if (!info) {
-        return { color: 'dim', shape: 'outline' };
+        return { color: 'gray', shape: 'outline' };
       }
       const total = info.total || 0;
       const processed = info.processed || 0;
@@ -184,16 +184,12 @@
       if (errored > 0) {
         return { color: 'red', shape: 'warn' };
       }
+      const queueColor = isChecked ? 'orange' : 'gray';
       const isFullyAnalyzed = (processed >= total);
       const isPartial = (processed > 0 && processed < total);
-      if (isFullyAnalyzed) {
-        return { color: 'blue', shape: 'solid' };
-      }
-      if (isPartial) {
-        return { color: isChecked ? 'orange' : 'gray', shape: 'half' };
-      }
-      // Not started: outline, orange if queued, gray otherwise.
-      return { color: isChecked ? 'orange' : 'gray', shape: 'outline' };
+      if (isFullyAnalyzed) return { color: queueColor, shape: 'solid' };
+      if (isPartial)       return { color: queueColor, shape: 'half' };
+      return { color: queueColor, shape: 'outline' };
     }
 
     function _isOutdatedNode(node) {
@@ -710,27 +706,43 @@
         }
       }
 
-      // Headline (compact summary card)
+      // Headline — horizontal 3-stat layout (images | folders | est. time).
+      // Each stat is a number-on-top, label-below block separated by thin
+      // vertical dividers. Reads at a glance without parsing a sentence.
       if (checkedCount === 0) {
         headline.innerHTML = '<span class="analyze-dlg-summary-empty">Check folders in the queue builder to add them.</span>';
       } else {
-        const folderWord = checkedCount === 1 ? 'folder' : 'folders';
         const imgCount = totalImagesToProcess.toLocaleString();
-        const skipNote = fullyAnalyzedSkipCount > 0
-          ? ` <span class="analyze-dlg-summary-folder-count">(${fullyAnalyzedSkipCount} will be skipped)</span>`
+        const folderWord = checkedCount === 1 ? 'folder' : 'folders';
+        const imgLabel = totalImagesToProcess === 1 ? 'image' : 'images';
+        const skipFrag = fullyAnalyzedSkipCount > 0
+          ? `<span class="analyze-dlg-stat-skip">${fullyAnalyzedSkipCount} skipped</span>`
           : '';
-        let timeFrag = '';
+        // Time stat
+        let timeValue = '—';
+        let timeLabel = 'estimated time';
+        let timeDim = true;
         if (totalImagesToProcess >= _EST_MIN_IMAGES_TO_ESTIMATE) {
           const rate = useGpu ? _EST_SECS_PER_IMG_GPU : _EST_SECS_PER_IMG_CPU;
           const seconds = totalImagesToProcess * rate;
-          timeFrag = `<span class="analyze-dlg-summary-time">~${_formatDuration(seconds)} estimated (${useGpu ? 'GPU' : 'CPU'})</span>`;
-        } else if (totalImagesToProcess > 0) {
-          timeFrag = `<span class="analyze-dlg-summary-time">— too few images to estimate time</span>`;
+          timeValue = `~${_formatDuration(seconds)}`;
+          timeLabel = `est. time (${useGpu ? 'GPU' : 'CPU'})`;
+          timeDim = false;
         }
         headline.innerHTML =
-          `<div class="analyze-dlg-summary-image-count">${imgCount} image${totalImagesToProcess === 1 ? '' : 's'}</div>` +
-          `<div class="analyze-dlg-summary-folder-count">across ${checkedCount} ${folderWord}${skipNote}</div>` +
-          timeFrag;
+          `<div class="analyze-dlg-stat">` +
+            `<div class="analyze-dlg-stat-value">${imgCount}</div>` +
+            `<div class="analyze-dlg-stat-label">${imgLabel}</div>` +
+          `</div>` +
+          `<div class="analyze-dlg-stat">` +
+            `<div class="analyze-dlg-stat-value">${checkedCount}</div>` +
+            `<div class="analyze-dlg-stat-label">${folderWord}</div>` +
+            skipFrag +
+          `</div>` +
+          `<div class="analyze-dlg-stat">` +
+            `<div class="analyze-dlg-stat-value${timeDim ? ' dim' : ''}">${timeValue}</div>` +
+            `<div class="analyze-dlg-stat-label">${timeLabel}</div>` +
+          `</div>`;
       }
 
       // Aggregate warning row (above the unlock checkbox)
@@ -767,6 +779,17 @@
         alert('Analysis queue is only available in the desktop (pywebview) mode.\n\nRun kestrel_visualizer as a desktop app to use this feature.');
         return;
       }
+      // Fetch the app version once if not already cached — needed for the
+      // outdated-version pill badges (isVersionOutdated returns false when
+      // _appVersion is empty, so badges silently never render). The main-tree
+      // addFolderRoot also fetches this; we duplicate the guard here because
+      // the user can open the analyze dialog before touching the main tree.
+      if (!_appVersion && window.pywebview?.api?.get_app_version) {
+        try {
+          const vr = await window.pywebview.api.get_app_version();
+          if (vr && vr.success) _appVersion = vr.version || '';
+        } catch (e) { /* ignore — badges just won't show */ }
+      }
       // Hydrate critical settings from persisted values. The radios mirror to
       // the hidden #adlgWildlifeModelMode <select> so existing read/write paths
       // (event-wiring.js Start handler) keep working unchanged.
@@ -789,8 +812,11 @@
       }
 
       // Hydrate "More options" settings from persisted values (same keys as before).
+      // Default 0.15 now matches the suggested-baseline message shown by the
+      // inline warning below — modern wildlife detectors are well-calibrated
+      // for low thresholds.
       const _adlgDt = document.getElementById('adlgDetectionThreshold');
-      if (_adlgDt) _adlgDt.value = getSetting('detection_threshold', 0.25);
+      if (_adlgDt) _adlgDt.value = getSetting('detection_threshold', 0.15);
       const _adlgMbc = document.getElementById('adlgMaxBirdCrops');
       if (_adlgMbc) _adlgMbc.value = getSetting('max_bird_crops', 10);
       const _adlgEq = document.getElementById('adlgExposureQuality');
@@ -863,6 +889,24 @@
       if (_retryBoxCritical && _retryBoxMore) {
         _retryBoxMore.checked = _retryBoxCritical.checked;
       }
+
+      // Detection confidence warning — wildlife detection models are quite
+      // accurate, so high thresholds tend to miss real subjects. Show a
+      // suggestion banner when the user sets a value above 0.25.
+      const _dtBox = document.getElementById('adlgDetectionThreshold');
+      const _dtWarn = document.getElementById('adlgDetectionConfidenceWarning');
+      function _syncDetectionConfidenceWarning() {
+        if (!_dtBox || !_dtWarn) return;
+        const v = parseFloat(_dtBox.value);
+        const show = Number.isFinite(v) && v > 0.25;
+        _dtWarn.classList.toggle('hidden', !show);
+      }
+      if (_dtBox && !_dtBox.dataset.wiredWarn) {
+        _dtBox.dataset.wiredWarn = '1';
+        _dtBox.addEventListener('input', _syncDetectionConfidenceWarning);
+        _dtBox.addEventListener('change', _syncDetectionConfidenceWarning);
+      }
+      _syncDetectionConfidenceWarning();
 
       // Render recents first (no roots yet → just shows chips). Then if the
       // dialog already has roots from a prior open (we keep state across
