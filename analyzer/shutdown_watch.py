@@ -156,10 +156,18 @@ def _install_windows(callback: Callable[[], None]) -> bool:
     user32 = ctypes.WinDLL('user32', use_last_error=True)
     kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
 
+    # WNDPROC uses pointer-sized types (c_size_t / c_ssize_t) for WPARAM,
+    # LPARAM, and LRESULT so the callback works correctly on 64-bit Windows.
+    # wintypes.WPARAM / wintypes.LPARAM are defined as 32-bit c_uint / c_long
+    # in Python's ctypes, which causes an OverflowError when the OS delivers
+    # a message whose LPARAM holds a 64-bit pointer value.
     WNDPROC = ctypes.WINFUNCTYPE(
-        ctypes.c_long,
-        wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+        ctypes.c_ssize_t,   # LRESULT = LONG_PTR
+        wintypes.HWND, wintypes.UINT,
+        ctypes.c_size_t,    # WPARAM = UINT_PTR
+        ctypes.c_ssize_t,   # LPARAM = LONG_PTR
     )
+    user32.DefWindowProcW.restype = ctypes.c_ssize_t
 
     def _wnd_proc(hwnd, msg, wparam, lparam):
         if msg in (WM_QUERYENDSESSION, WM_ENDSESSION):
