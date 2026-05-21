@@ -255,6 +255,14 @@ class ProviderCoordinator:
             self._recreate_cb(True)
         except Exception as e:
             self._on_promotion_failure(reason=str(e))
+            # GPU rebuild failed — coordinator is now on CPU, but some sessions
+            # may have _session = None (set to None before the failed _build).
+            # Force a CPU rebuild so they're usable for the next image instead
+            # of causing an AttributeError cascade.
+            try:
+                self._recreate_cb(False)
+            except Exception:
+                pass  # Best-effort: per-image errors will follow on next run
             return False
         return True
 
