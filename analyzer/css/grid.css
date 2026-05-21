@@ -568,14 +568,17 @@
   margin-bottom: 4px;
 }
 
+/* Flat header band: no rounded corners, just a strong bottom divider that
+   reads as the section line under the folder name + action strips. */
 .folder-group-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 14px;
+  gap: 10px;
+  padding: 8px 14px;
   background: #161922;
-  border: 1px solid #222634;
-  border-radius: 8px;
+  border: none;
+  border-bottom: 1px solid #2b6ec8;
+  border-radius: 0;
   cursor: pointer;
   user-select: none;
   font-size: 13px;
@@ -584,7 +587,6 @@
 
 .folder-group-header:hover {
   background: #1d2230;
-  border-color: #2a3040;
 }
 
 .folder-group-toggle {
@@ -604,8 +606,9 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
-  flex: 0 1 auto; /* shrinks if needed, does not grow — spacer div handles remaining space */
+  flex: 0 1 auto;
   max-width: 320px;
+  margin-right: 4px;
 }
 
 .folder-group-count {
@@ -613,16 +616,40 @@
   font-size: 12px;
 }
 
-.folder-group-left-actions {
-  display: flex;
-  gap: 4px;
-  flex-shrink: 0;
-}
-
+/* Segmented action strips inside the folder header. No outer border — they
+   sit inline with the header band, with subtle vertical dividers between
+   buttons. Hover lights up the segment. */
+.folder-group-left-actions,
 .folder-group-right-actions {
   display: flex;
-  gap: 4px;
+  gap: 0;
   flex-shrink: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+
+/* Per-button overrides for buttons inside the folder header strips:
+   neutralize the .action-btn base border + radius so adjacent buttons
+   share a clean divider rather than each being its own pill. */
+.folder-group-left-actions .action-btn,
+.folder-group-right-actions .action-btn {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  border-left: 1px solid #2a3040;
+  padding: 6px 14px;
+  color: #cbd2dc;
+}
+.folder-group-left-actions .action-btn:first-child,
+.folder-group-right-actions .action-btn:first-child {
+  border-left: none;
+}
+.folder-group-left-actions .action-btn:hover,
+.folder-group-right-actions .action-btn:hover {
+  background: #1f2533;
+  color: #fff;
+  border-color: #2a3040;
 }
 
 .culling-btn {
