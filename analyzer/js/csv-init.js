@@ -236,7 +236,18 @@
     // Init
     loadVersionBadge();
     setStatus('Open your photo folder (the one that contains .kestrel) or select kestrel_database.csv');
-    hydrateSettingsFromServer();
+    // Hydrate from backend, then re-render recents chips. Must waitForPywebview
+    // first — at script-parse time the bridge isn't ready yet, so calling
+    // hydrateSettingsFromServer() directly bails (its first guard checks
+    // window.pywebview?.api?.get_settings) and the recents render sees an
+    // empty localStorage. Wait for the bridge, THEN hydrate + render.
+    (async () => {
+      try {
+        await waitForPywebview();
+        await hydrateSettingsFromServer();
+        if (typeof renderFolderRecentsChips === 'function') renderFolderRecentsChips();
+      } catch (e) { console.warn('[recents] init chain failed:', e); }
+    })();
 
     // If a queue was running before this page loaded (e.g. page refresh), re-attach the polling
     (async () => {
@@ -311,29 +322,49 @@
 
     async function renderFolderRecentsChips() {
       const row = document.getElementById('folderRecentsRow');
-      if (!row) return;
+      if (!row) { console.log('[recents] no row element'); return; }
       const s = (typeof loadSettings === 'function') ? loadSettings() : {};
       const recents = Array.isArray(s.folder_recents) ? s.folder_recents.slice(0, 8) : [];
+      console.log('[recents] render — settings.folder_recents:', s.folder_recents, '-> recents:', recents);
       if (recents.length === 0) {
+        console.log('[recents] empty list — hiding row');
         row.classList.add('hidden');
         row.innerHTML = '';
         updateEmptyHintCopy();
         return;
       }
       // Probe existence via inspect_folders so missing-drive paths drop out.
+      // Note: inspect_folders returns success=true ONLY if every input path is
+      // a valid existing folder (require_exists=True in _validate_root_dir).
+      // The results dict is keyed by os.path.realpath which may not match the
+      // original strings (case canonicalization etc.), so we DON'T do per-path
+      // result lookup — instead we treat success=true as "all exist, show all"
+      // and only filter when the backend gives us an explicit invalid_paths list.
       let available = recents;
       try {
         if (hasPywebviewApi && window.pywebview?.api?.inspect_folders) {
           const res = await window.pywebview.api.inspect_folders(recents);
-          if (res && res.success && res.results) {
-            available = recents.filter(p => {
-              const info = res.results[p];
-              return info && info.total !== undefined; // exists if inspector returned data
-            });
+          console.log('[recents] inspect_folders result:', res);
+          if (res && res.success) {
+            available = recents; // all valid
+          } else if (res && Array.isArray(res.invalid_paths)) {
+            const normRoot = q => (q || '').replace(/\\/g, '/').replace(/\/+$/, '');
+            const invalid = new Set(res.invalid_paths.map(normRoot));
+            available = recents.filter(p => !invalid.has(normRoot(p)));
           }
         }
-      } catch (e) { /* if probe fails, just show all recents */ }
+      } catch (e) { console.warn('[recents] inspect_folders threw:', e); }
+      // Hide chips for paths that are ALREADY loaded as roots in the tree —
+      // no point showing a "click to load" chip for a folder you already see.
+      // Comparison uses the same normalization as addFolderRoot's _normRoot.
+      try {
+        const normRoot = q => (q || '').replace(/\\/g, '/').replace(/\/+$/, '');
+        const loaded = new Set(folderTreeRootOrder.map(normRoot));
+        available = available.filter(p => !loaded.has(normRoot(p)));
+      } catch (e) { /* if folderTreeRootOrder isn't accessible, show all */ }
+      console.log('[recents] available after probe + loaded-filter:', available);
       if (available.length === 0) {
+        console.log('[recents] all filtered out — hiding row');
         row.classList.add('hidden');
         row.innerHTML = '';
         updateEmptyHintCopy();
@@ -358,7 +389,8 @@
             const r = await addFolderRoot(path);
             if (r && r.added) {
               debouncedAutoLoad();
-              // Bump-to-top in recents on successful click.
+              // Bump-to-top in recents on successful click. Push to backend
+              // too so the change survives the next hydrateSettingsFromServer.
               try {
                 const ss = loadSettings();
                 const existing = Array.isArray(ss.folder_recents) ? ss.folder_recents : [];
@@ -367,6 +399,9 @@
                 const filtered = existing.filter(p => normRoot(p) !== np);
                 ss.folder_recents = [np, ...filtered].slice(0, 8);
                 saveSettings(ss);
+                if (hasPywebviewApi && window.pywebview?.api?.save_settings_data) {
+                  try { await window.pywebview.api.save_settings_data(ss); } catch (_) { }
+                }
                 renderFolderRecentsChips();
               } catch (e) { /* best-effort */ }
             }

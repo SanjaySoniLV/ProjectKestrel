@@ -195,6 +195,8 @@
       if (pickedPaths.length === 0) return;
       for (const p of pickedPaths) await addFolderRoot(p);
       // Mirror the picked paths into recents (shared with main tree).
+      // Push to backend (save_settings_data) so hydrateSettingsFromServer on
+      // next startup doesn't wipe folder_recents from localStorage.
       try {
         const s = loadSettings();
         const existing = Array.isArray(s.folder_recents) ? s.folder_recents : [];
@@ -210,6 +212,9 @@
         }
         s.folder_recents = deduped;
         saveSettings(s);
+        if (hasPywebviewApi && window.pywebview?.api?.save_settings_data) {
+          try { await window.pywebview.api.save_settings_data(s); } catch (_) { }
+        }
         if (typeof renderFolderRecentsChips === 'function') renderFolderRecentsChips();
         if (typeof _renderAnalyzeDialogRecents === 'function') _renderAnalyzeDialogRecents();
       } catch (e) { /* best-effort */ }
@@ -236,11 +241,15 @@
       try {
         if (hasPywebviewApi && window.pywebview?.api?.inspect_folders) {
           const res = await window.pywebview.api.inspect_folders(recents);
-          if (res && res.success && res.results) {
-            available = recents.filter(p => {
-              const info = res.results[p];
-              return info && info.total !== undefined;
-            });
+          // Treat success=true as "all exist"; only filter when backend
+          // explicitly flags invalid_paths (path-string lookup against
+          // result keys is unreliable due to realpath canonicalization).
+          if (res && res.success) {
+            available = recents;
+          } else if (res && Array.isArray(res.invalid_paths)) {
+            const normRoot = q => (q || '').replace(/\\/g, '/').replace(/\/+$/, '');
+            const invalid = new Set(res.invalid_paths.map(normRoot));
+            available = recents.filter(p => !invalid.has(normRoot(p)));
           }
         }
       } catch (e) { /* best-effort */ }

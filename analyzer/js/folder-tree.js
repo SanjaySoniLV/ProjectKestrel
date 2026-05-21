@@ -164,6 +164,9 @@
         renderFolderTree();
         if (typeof updateSelectToggleVisibility === 'function') updateSelectToggleVisibility();
         if (typeof updateEmptyHintCopy === 'function') updateEmptyHintCopy();
+        // Re-render recents so the chip for this just-loaded folder disappears
+        // (loaded roots are filtered out of the chip row).
+        if (typeof renderFolderRecentsChips === 'function') renderFolderRecentsChips();
         // Drop the empty-state class once at least one root exists
         const treeWrap = document.getElementById('folderTreeWrap');
         if (treeWrap) {
@@ -196,6 +199,8 @@
         treeActivePath = null;
       }
       renderFolderTree();
+      // A removed root re-becomes a candidate for the recents chip row.
+      if (typeof renderFolderRecentsChips === 'function') renderFolderRecentsChips();
       return true;
     }
 
@@ -215,6 +220,8 @@
       renderFolderTree();
       if (typeof updateSelectToggleVisibility === 'function') updateSelectToggleVisibility();
       if (typeof updateEmptyHintCopy === 'function') updateEmptyHintCopy();
+      // Recents come back into view once their folders are no longer loaded.
+      if (typeof renderFolderRecentsChips === 'function') renderFolderRecentsChips();
       const treeWrap = document.getElementById('folderTreeWrap');
       if (treeWrap) treeWrap.classList.add('folder-tree-empty');
     }

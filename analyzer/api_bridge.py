@@ -1565,6 +1565,7 @@ class Api:
             if _telemetry is not None:
                 settings['version'] = _telemetry._read_version()
             save_persisted_settings(settings)
+            info(f'[API] get_settings -> folder_recents={settings.get("folder_recents")!r}')
             return {'success': True, 'settings': settings}
         except Exception as e:
             error(f'[API] get_settings error: {e}')
@@ -1575,12 +1576,14 @@ class Api:
         try:
             if not isinstance(settings_dict, dict):
                 return {'success': False, 'error': 'Invalid settings'}
+            info(f'[API] save_settings_data <- folder_recents={settings_dict.get("folder_recents")!r}')
             # Merge into existing persisted settings so stale/minimal frontend
             # payloads cannot drop unrelated keys (for example legal consent flags).
             existing = load_persisted_settings()
             if not isinstance(existing, dict):
                 existing = {}
             merged = {**existing, **settings_dict}
+            info(f'[API] save_settings_data merged -> folder_recents={merged.get("folder_recents")!r}')
 
             # Keep cumulative impact counters monotonic so stale UI payloads cannot
             # accidentally reset totals to a lower value.

@@ -287,6 +287,9 @@
           else if (r.alreadyLoaded) anyAlready = true;
         }
         // Persist recents (most-recent-first, deduped, capped via sanitizer).
+        // MUST push to backend via save_settings_data — saveSettings() alone
+        // only writes localStorage, which gets clobbered by hydrateSettingsFromServer
+        // on next startup. Backend is the source of truth.
         try {
           const s = loadSettings();
           const existing = Array.isArray(s.folder_recents) ? s.folder_recents : [];
@@ -302,6 +305,9 @@
           }
           s.folder_recents = deduped;
           saveSettings(s);
+          if (hasPywebviewApi && window.pywebview?.api?.save_settings_data) {
+            try { await window.pywebview.api.save_settings_data(s); } catch (_) { }
+          }
           if (typeof renderFolderRecentsChips === 'function') renderFolderRecentsChips();
         } catch (e) { /* recents persistence is best-effort */ }
         // Trigger a single load after all roots are in (avoids per-root thrash).
