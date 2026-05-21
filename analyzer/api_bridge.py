@@ -1788,7 +1788,7 @@ class Api:
     #  Analysis Queue API (called from JavaScript in pywebview mode)       #
     # ------------------------------------------------------------------ #
 
-    def start_analysis_queue(self, paths, use_gpu=True, wildlife_enabled=True, retry_errored=False, species_detection_enabled=True):
+    def start_analysis_queue(self, paths, use_gpu=True, wildlife_enabled=True, retry_errored=False, species_detection_enabled=True, per_item_options=None):
         """Enqueue folders for analysis. ``paths`` may be a JSON string or list.
 
         ``retry_errored`` (bool): when True, drop rows previously marked
@@ -1798,6 +1798,19 @@ class Api:
         ``species_detection_enabled`` (bool): when False, the bird species
         classifier is skipped and species/family fields are recorded as
         ``Unknown``. Detection, quality scoring, and culling still run.
+
+        ``per_item_options`` (dict | str | None): Phase 3 per-path option map.
+        Keys are paths (raw or post-validation; we normalize on lookup).
+        Values are dicts with optional bool flags:
+          - ``delete_kestrel_on_start``: worker wipes the folder's .kestrel
+            JUST BEFORE that folder's analysis starts (NOT at queue-build
+            time). Used by the dialog when the user explicitly unlocks
+            re-analysis of fully-analyzed or outdated folders.
+          - ``skip_if_already_done``: worker re-inspects the folder when its
+            turn comes up and silently marks it ``done`` (no pipeline call,
+            no deletion) if it's still fully analyzed with no errors. Used
+            so a user's accidental check on an already-done folder is a
+            no-op rather than destructive.
         """
         try:
             if isinstance(paths, str):
@@ -1805,8 +1818,20 @@ class Api:
             if not isinstance(paths, list):
                 return {'success': False, 'error': 'paths must be a list'}
 
+            # Coerce per_item_options if it arrived as a JSON string.
+            if isinstance(per_item_options, str):
+                try:
+                    per_item_options = json.loads(per_item_options)
+                except Exception:
+                    per_item_options = None
+            if per_item_options is not None and not isinstance(per_item_options, dict):
+                per_item_options = None
+
             validated_paths = []
             invalid_paths = []
+            # Map raw->validated so per_item_options keyed by the raw frontend
+            # path still resolves to the canonical realpath the worker uses.
+            raw_to_validated = {}
             for raw in paths:
                 if not raw:
                     continue
@@ -1816,6 +1841,7 @@ class Api:
                     continue
                 if root_real not in validated_paths:
                     validated_paths.append(root_real)
+                raw_to_validated[str(raw)] = root_real
 
             if invalid_paths:
                 self._log_security_reject(
@@ -1830,6 +1856,25 @@ class Api:
                 }
             if not validated_paths:
                 return {'success': False, 'error': 'No valid paths provided'}
+
+            # Re-key per_item_options against the validated paths so the
+            # queue manager can look up options by the same path it stores.
+            validated_per_item_options = None
+            if per_item_options:
+                validated_per_item_options = {}
+                for raw_key, opts in per_item_options.items():
+                    if not isinstance(opts, dict):
+                        continue
+                    real = raw_to_validated.get(str(raw_key))
+                    if real is None:
+                        # Maybe the frontend already sent us the realpath.
+                        if str(raw_key) in validated_paths:
+                            real = str(raw_key)
+                    if real is not None:
+                        validated_per_item_options[real] = {
+                            'delete_kestrel_on_start': bool(opts.get('delete_kestrel_on_start')),
+                            'skip_if_already_done': bool(opts.get('skip_if_already_done')),
+                        }
 
             sett = load_persisted_settings()
             detection_threshold = float(sett.get('detection_threshold', 0.25))
@@ -1873,7 +1918,8 @@ class Api:
                                           max_bird_crops=max_bird_crops,
                                           parallel_prefetch=parallel_prefetch,
                                           detector_name=detector_name,
-                                          retry_errored=bool(retry_errored))
+                                          retry_errored=bool(retry_errored),
+                                          per_item_options=validated_per_item_options)
         except Exception as e:
             error(f'[API] start_analysis_queue error: {e}')
             return {'success': False, 'error': str(e)}
@@ -1946,9 +1992,8 @@ class Api:
         except Exception as e:
             return {'success': False, 'error': str(e)}
 
-    def restore_analysis_queue(self):
-        """Restore a previous queue snapshot persisted in user settings."""
-        return _queue_manager.restore_from_persisted_state()
+    # Phase 3: restore_analysis_queue removed — feature replaced by the
+    # analyze dialog's analyze_recents chip row.
 
     def clear_recovery_state(self, clear_queue_state: bool = True):
         """Clear persisted unclean-shutdown flag and optionally queue recovery snapshot."""

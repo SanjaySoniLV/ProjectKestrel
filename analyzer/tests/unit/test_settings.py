@@ -192,6 +192,72 @@ class TestSanitizePayload:
         assert isinstance(result, dict)
 
 
+class TestAnalyzeRecentsSetting:
+    """Tests for ``analyze_recents`` — the Phase 3 Analyze Folders dialog
+    recents chip row. List of dicts ``{path, timestamp}``, cap 16."""
+
+    def test_round_trip(self):
+        payload = {"analyze_recents": [
+            {"path": "/photos/2024", "timestamp": "2026-05-20T10:30:00Z"},
+            {"path": "/photos/2025", "timestamp": "2026-05-19T10:30:00Z"},
+        ]}
+        result = _sanitize_settings_payload(payload)
+        assert "analyze_recents" in result
+        assert len(result["analyze_recents"]) == 2
+        assert result["analyze_recents"][0]["path"].endswith("2024")
+        assert result["analyze_recents"][0]["timestamp"] == "2026-05-20T10:30:00Z"
+
+    def test_caps_at_sixteen(self):
+        big_list = [
+            {"path": f"/photos/{i}", "timestamp": f"2026-05-{i:02d}T00:00:00Z"}
+            for i in range(1, 25)
+        ]
+        result = _sanitize_settings_payload({"analyze_recents": big_list})
+        assert len(result["analyze_recents"]) == 16
+
+    def test_dedupes_by_path_most_recent_wins(self):
+        # When the same path appears twice, the FIRST occurrence (most recent
+        # per input ordering) wins.
+        payload = {"analyze_recents": [
+            {"path": "/photos/a", "timestamp": "2026-05-20T10:00:00Z"},  # newer
+            {"path": "/photos/a", "timestamp": "2026-04-01T10:00:00Z"},  # older
+            {"path": "/photos/b", "timestamp": "2026-05-15T10:00:00Z"},
+        ]}
+        result = _sanitize_settings_payload(payload)
+        assert len(result["analyze_recents"]) == 2
+        a_entry = next(e for e in result["analyze_recents"] if e["path"].endswith("a"))
+        assert a_entry["timestamp"] == "2026-05-20T10:00:00Z"
+
+    def test_non_list_dropped(self):
+        result = _sanitize_settings_payload({"analyze_recents": "not-a-list"})
+        assert result.get("analyze_recents") == []
+
+    def test_non_dict_items_skipped(self):
+        payload = {"analyze_recents": [
+            {"path": "/photos/a", "timestamp": "2026-05-20T10:00:00Z"},
+            "garbage-string",
+            42,
+            None,
+            {"path": "/photos/b", "timestamp": "2026-05-19T10:00:00Z"},
+        ]}
+        result = _sanitize_settings_payload(payload)
+        assert len(result["analyze_recents"]) == 2
+
+    def test_missing_path_skipped(self):
+        payload = {"analyze_recents": [
+            {"path": "", "timestamp": "2026-05-20T10:00:00Z"},
+            {"path": "/photos/a", "timestamp": "2026-05-19T10:00:00Z"},
+            {"timestamp": "2026-05-18T10:00:00Z"},  # no path key
+        ]}
+        result = _sanitize_settings_payload(payload)
+        assert len(result["analyze_recents"]) == 1
+        assert result["analyze_recents"][0]["path"].endswith("a")
+
+    def test_missing_key_omitted(self):
+        result = _sanitize_settings_payload({})
+        assert "analyze_recents" not in result
+
+
 class TestFolderRecentsSetting:
     """Tests for ``folder_recents`` — the persistent most-recently-loaded
     root folders that populate the sidebar's chip row."""
