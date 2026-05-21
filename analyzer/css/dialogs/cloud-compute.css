@@ -350,3 +350,34 @@
   padding-top: 4px;
   border-top: 1px solid var(--border, #2a2a3a);
 }
+
+/* ── Pending queue rows ─────────────────────────────────────────────────
+   Folders that have been queued client-side but haven't claimed a cloud
+   concurrency slot yet (the user picked N folders on free tier and the
+   first one is still in flight). Visual: muted-blue background with a
+   left rail in the same color, no progress bars, no per-item controls.
+   When the slot frees, this row disappears and a real cloud-queue-item
+   takes its place at the top of the active list. */
+.cc-queue-item--pending {
+  background: rgba(43, 110, 200, 0.05);
+  border-left: 3px solid #2b6ec8;
+  opacity: 0.85;
+  padding: 8px 12px;
+}
+.cc-queue-item--pending .queue-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.cc-queue-item--pending .queue-item-name {
+  font-weight: 500;
+  color: #cbd2dc;
+}
+.cc-pending-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: #7eb8e0;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+}

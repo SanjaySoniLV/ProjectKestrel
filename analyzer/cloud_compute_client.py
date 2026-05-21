@@ -109,11 +109,25 @@ class JobInProgressError(CloudComputeError):
     """The user already has a Cloud Compute job in flight. Cloud-compute
     worker returned 403 with reason='job_in_progress' from the Auth Worker's
     concurrency gate. Carries the activeJobId so the UI can offer a deep-link
-    to MyAccount."""
+    to MyAccount, plus the richer fields ``activeJobIds`` / ``current`` /
+    ``limit`` so the desktop's auto-drain queue can decide between
+    "shelve and wait" vs "show orphan warning" without an extra round-trip
+    to the Auth Worker's entitlements endpoint."""
 
-    def __init__(self, active_job_id: str | None, message: str):
+    def __init__(
+        self,
+        active_job_id: str | None,
+        message: str,
+        *,
+        active_job_ids: list[str] | None = None,
+        current: int | None = None,
+        limit: int | None = None,
+    ):
         super().__init__(403, message)
         self.active_job_id = active_job_id
+        self.active_job_ids = list(active_job_ids) if active_job_ids else []
+        self.current = current
+        self.limit = limit
 
 
 class LegalAcceptanceRequiredError(CloudComputeError):
@@ -241,9 +255,33 @@ class CloudComputeClient:
                 except (ValueError, TypeError):
                     parsed = None
                 if isinstance(parsed, dict) and parsed.get("error") == "job_in_progress":
+                    # Worker also returns `activeJobIds[]`, `current`, `limit`
+                    # (see kestrel-cloud-compute-cloudflare-worker/src/index.ts
+                    # handleCreateJob's job_in_progress branch). Capture them
+                    # so the desktop can show "1/1 used" without a second
+                    # round-trip to /v1/me/entitlements.
+                    raw_ids = parsed.get("activeJobIds")
+                    active_ids = (
+                        [str(x) for x in raw_ids if x]
+                        if isinstance(raw_ids, list)
+                        else None
+                    )
+                    cur_val = parsed.get("current")
+                    lim_val = parsed.get("limit")
+                    try:
+                        current = int(cur_val) if cur_val is not None else None
+                    except (TypeError, ValueError):
+                        current = None
+                    try:
+                        limit = int(lim_val) if lim_val is not None else None
+                    except (TypeError, ValueError):
+                        limit = None
                     raise JobInProgressError(
                         parsed.get("activeJobId"),
                         str(parsed.get("message") or "You have a Cloud Compute job running."),
+                        active_job_ids=active_ids,
+                        current=current,
+                        limit=limit,
                     ) from e
                 # Launch item #13 — ToS / Privacy Policy gate. The worker
                 # returns the URL the system browser should open; api_bridge

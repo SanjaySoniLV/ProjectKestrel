@@ -549,6 +549,7 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     # Empty string falls back to the env var KESTREL_CC_API_BASE then the
     # hardcoded default in cloud_compute_client.default_api_base().
     _set_str('cloud_compute_api_base', default='', max_len=256)
+    _set_str('auth_api_base', default='', max_len=256)
     # Cloud-compute analysis settings are NOT a separate override block —
     # they're projected from the same advanced-analysis settings the local
     # queue uses (detection_threshold, detector_name, etc.) at submit time.

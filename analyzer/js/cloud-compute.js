@@ -24,6 +24,26 @@
     let _analyzeDestination = 'local'; // 'local' | 'cloud'
     let _cloudSpeedTestResult = null;  // { mbps, samples_uploaded, total_bytes } | null
 
+    // -- cloud-queue auto-drain state --
+    //
+    // FIFO of folders waiting for a Cloud Compute concurrency slot. Each
+    // entry: { path: string, perItemOptions: object | null }. Populated at
+    // Start Analysis time; drained event-driven from _ccRenderPanel's diff
+    // pass and re-tried each time a job's uploadComplete flips true OR its
+    // remoteStatus becomes terminal.
+    let _ccPendingSubmits = [];
+    // Set once we've surfaced the "orphan job detected" toast this session
+    // so triggers that fire repeatedly (every 4s poll tick) don't re-toast.
+    let _ccOrphanWarningShown = false;
+    // Map<jobId, {uploadComplete: bool, status: string}> snapshot of the
+    // previous poll tick, used to detect the trigger transitions.
+    let _ccPrevJobSnapshot = new Map();
+    // JS-side terminal statuses (set by api_bridge._worker terminal handler).
+    // NOT to be confused with the Worker's 'complete'|'cancelled'|'failed'|
+    // 'incomplete' set — the desktop normalises those to 'done'|'failed'|
+    // 'cancelled' before we ever see them.
+    const _CC_TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled']);
+
     function _ccPickFirstSelectedFolder() {
       // Pull the first checked folder from the Phase 3 dialog state (the
       // legacy _dlgSelected was renamed to analyzeDlgCheckedPaths in the
@@ -240,49 +260,155 @@
 
     async function _ccSubmitSelectedFolders(folderPaths) {
       // Dispatched by the analyze dialog's Add button when destination=cloud.
-      // One cloud_compute_submit_job per folder. Each job appears as a row
-      // in #cloudQueuePanel as soon as the next poll tick fires.
+      // Pushes every selected folder into _ccPendingSubmits and kicks off
+      // maybeStartNextCloudJob(), which drains as many as the user's tier
+      // allows. As each in-flight job hits uploadComplete or terminal status,
+      // the _ccRenderPanel diff pass calls maybeStartNextCloudJob() again to
+      // submit the next one. Sequential on the free tier (limit=1), parallel
+      // up to limit on paid tiers — no branches needed; the same loop does
+      // both.
       if (!Array.isArray(folderPaths) || folderPaths.length === 0) return;
       if (!window.pywebview?.api?.cloud_compute_submit_job) {
         showToast('Cloud Compute requires desktop mode', 4000);
         return;
       }
-      let successCount = 0;
-      let nothingCount = 0;
-      const errors = [];
+      // Reset orphan-warning flag per Start-Analysis click so a session that
+      // submits → finishes → submits again can re-warn if a new orphan
+      // appears later.
+      _ccOrphanWarningShown = false;
       for (const fp of folderPaths) {
-        try {
-          const r = await window.pywebview.api.cloud_compute_submit_job(fp);
-          if (r && r.ok) {
-            successCount++;
-          } else if (r && r.nothingToDo) {
-            nothingCount++;
-          } else if (r && r.ok === false && r.error === 'job_in_progress') {
-            // Stage 6 concurrency gate — one cloud job per user at a time.
-            // Not a fault; just inform the user and try the next folder.
-            const url = r.myAccountUrl || 'https://myaccount.projectkestrel.org/cloud-compute';
-            showToast(`You have a Cloud Compute job running. Visit ${url} to manage it.`, 8000);
-            continue;
-          } else {
-            errors.push(`${fp.split(/[\\/]/).pop()}: ${r?.error || 'unknown'}`);
-            if (r?.needSignIn && typeof openPerchSignInWindow === 'function') {
-              try { openPerchSignInWindow(); } catch {}
+        if (!fp) continue;
+        // Per-folder kestrel-clear has already happened synchronously in
+        // event-wiring.js before this function runs (cloud worker can't
+        // clear local .kestrel itself). Queue entries only need the path.
+        _ccPendingSubmits.push({ path: fp });
+      }
+      showToast(`Cloud Compute: queued ${folderPaths.length} folder(s).`, 4000);
+      _ccStartPolling();
+      maybeStartNextCloudJob();
+    }
+
+    // ── Cloud auto-drain queue ────────────────────────────────────────────
+    //
+    // Single entry point for "is there work to do and can we submit it?"
+    // Called from three trigger points:
+    //   1) _ccSubmitSelectedFolders (Start Analysis click — initial drain)
+    //   2) _ccRenderPanel diff pass (job's uploadComplete flipped false→true)
+    //   3) _ccRenderPanel diff pass (job's status entered terminal)
+    //
+    // Loops until either the queue is empty OR entitlements say there's no
+    // free slot (or a 403 job_in_progress comes back from a submit). On a
+    // hard error other than 403, the offending folder is dropped from the
+    // queue and a toast is shown so the user knows.
+    let _ccMaybeStartInFlight = false;
+    async function maybeStartNextCloudJob() {
+      if (_ccMaybeStartInFlight) return; // serialise overlapping triggers
+      if (_ccPendingSubmits.length === 0) return;
+      if (!window.pywebview?.api?.cloud_compute_submit_job) return;
+      _ccMaybeStartInFlight = true;
+      try {
+        // Loop: drain the queue while entitlements (or the Worker's 403)
+        // say we can fit another submit.
+        while (_ccPendingSubmits.length > 0) {
+          // Best-effort entitlement check. On failure we still try the
+          // submit and let the Worker's 403 (with rich body) tell us the
+          // truth. The entitlements path is the fast path that avoids one
+          // round-trip when we already know we're at capacity.
+          let ent = null;
+          if (window.pywebview?.api?.cloud_compute_get_entitlements) {
+            try {
+              ent = await window.pywebview.api.cloud_compute_get_entitlements();
+            } catch (e) { /* network blip — fall through */ }
+          }
+          if (ent && ent.ok) {
+            const active = Array.isArray(ent.activeJobs) ? ent.activeJobs : [];
+            const limit = Number(ent.limits?.maxConcurrentJobs);
+            // Orphan detection: if this is the first iteration of a fresh
+            // session AND entitlements show jobs in flight that aren't in
+            // our session's _cc_jobs map, surface a one-time toast.
+            if (!_ccOrphanWarningShown && active.length > 0) {
+              const knownJobIds = await _ccGetKnownJobIds();
+              const orphan = active.find(j => !knownJobIds.has(String(j.jobId)));
+              if (orphan) {
+                _ccOrphanWarningShown = true;
+                showToast(
+                  '⚠ You have an active Cloud Compute job running ' +
+                  '(maybe from another device or a previous session). ' +
+                  'Manage it at myaccount.projectkestrel.org/cloud-compute — ' +
+                  'your queue will start once that job completes.',
+                  9000,
+                );
+              }
+            }
+            if (Number.isFinite(limit) && limit > 0 && active.length >= limit) {
+              // No slot. Stop draining; the next poll-tick trigger will
+              // re-enter this function when a slot frees.
+              break;
             }
           }
-        } catch (e) {
-          errors.push(`${fp.split(/[\\/]/).pop()}: ${e?.message || e}`);
+          const next = _ccPendingSubmits.shift();
+          if (!next || !next.path) continue;
+          let r;
+          try {
+            r = await window.pywebview.api.cloud_compute_submit_job(next.path);
+          } catch (e) {
+            // Transport-level failure. Treat as transient: push back to the
+            // front of the queue and break — next trigger will retry.
+            _ccPendingSubmits.unshift(next);
+            showToast(`Cloud Compute: submit error, will retry. (${e?.message || e})`, 5000);
+            break;
+          }
+          if (r && r.ok) {
+            // Accepted; continue draining. The new job appears in the panel
+            // on the next _ccRenderPanel tick.
+            continue;
+          }
+          if (r && r.ok === false && r.error === 'job_in_progress') {
+            // Race: entitlements said we were free, but a slot was claimed
+            // between then and our submit (or entitlements was unavailable
+            // and we made a best-effort try). Push folder back and wait
+            // for the next trigger. Don't re-toast — the orphan flow above
+            // already surfaced a warning if one was warranted.
+            _ccPendingSubmits.unshift(next);
+            break;
+          }
+          if (r && r.nothingToDo) {
+            showToast(
+              `"${next.path.split(/[\\/]/).pop()}" already fully analyzed — skipped.`,
+              4000,
+            );
+            continue;
+          }
+          // Hard error (quota, legal, auth, network, etc.) — drop this
+          // folder from the queue but keep draining the rest. Surface the
+          // reason so the user can fix it without losing other queued work.
+          const name = next.path.split(/[\\/]/).pop();
+          showToast(`Cloud Compute: skipped ${name} — ${r?.error || 'unknown error'}`, 6000);
+          if (r?.needSignIn && typeof openPerchSignInWindow === 'function') {
+            try { openPerchSignInWindow(); } catch {}
+            // If sign-in is required, no further submits will succeed —
+            // bail and let the user re-trigger once signed in.
+            break;
+          }
         }
+      } finally {
+        _ccMaybeStartInFlight = false;
+        // Repaint the panel so pending-row count + active-row count match.
+        try { _ccRenderPanel(); } catch (e) { /* failsafe */ }
       }
-      if (successCount > 0) {
-        showToast(`Cloud Compute: queued ${successCount} folder(s).`, 4000);
-        _ccStartPolling();
-      }
-      if (nothingCount > 0) {
-        showToast(`${nothingCount} folder(s) were already fully analyzed — nothing to send.`, 5000);
-      }
-      if (errors.length > 0) {
-        showToast('Cloud Compute errors:\n' + errors.join('\n'), 7000);
-      }
+    }
+
+    async function _ccGetKnownJobIds() {
+      // Pull the jobIds the desktop has in this session. Use the same bridge
+      // call _ccRenderPanel uses so we share its cache; on failure return an
+      // empty set (orphan detection will trip spuriously, but that's strictly
+      // better than missing a real orphan).
+      try {
+        if (!window.pywebview?.api?.cloud_compute_list_jobs) return new Set();
+        const r = await window.pywebview.api.cloud_compute_list_jobs();
+        const jobs = (r && r.jobs) || [];
+        return new Set(jobs.map(j => String(j.jobId)).filter(Boolean));
+      } catch { return new Set(); }
     }
 
     // ── Cloud queue panel (rendering + polling) ──────────────────────────
@@ -484,13 +610,33 @@
       `;
     }
 
-    function _ccPanelBadge(jobs) {
+    function _ccPanelBadge(jobs, pendingCount) {
       const active = jobs.filter(j => !['done', 'failed', 'cancelled'].includes(j.status)).length;
       const done = jobs.filter(j => j.status === 'done').length;
       const failed = jobs.filter(j => j.status === 'failed' || j.status === 'cancelled').length;
-      if (active > 0) return `${active} active`;
-      if (done > 0 || failed > 0) return `${done + failed} done`;
-      return 'Idle';
+      const parts = [];
+      if (active > 0) parts.push(`${active} active`);
+      if (pendingCount > 0) parts.push(`${pendingCount} queued`);
+      if (parts.length === 0 && (done > 0 || failed > 0)) parts.push(`${done + failed} done`);
+      return parts.length === 0 ? 'Idle' : parts.join(' · ');
+    }
+
+    function _ccRenderPendingItem(entry) {
+      // Ghost row for a queue entry that hasn't been accepted by the Worker
+      // yet. Same outer container as a real job row (so panel layout stays
+      // consistent) but no progress bars, no per-item controls, and a
+      // distinct status badge so the user understands this folder is on
+      // deck but not yet using a concurrency slot.
+      const name = (entry.path || '').split(/[\\/]/).pop() || entry.path || '(unknown)';
+      return `
+        <div class="queue-item cloud-queue-item cc-queue-item--pending"
+             title="${escapeHtml(entry.path || '')}">
+          <div class="queue-item-header">
+            <span class="queue-item-name">${escapeHtml(name)}</span>
+            <span class="cc-pending-badge">⏳ Queued — waiting for slot</span>
+          </div>
+        </div>
+      `;
     }
 
     async function _ccRenderPanel() {
@@ -502,9 +648,14 @@
         listRes = await window.pywebview.api.cloud_compute_list_jobs();
       } catch { return; }
       const jobs = (listRes && listRes.jobs) || [];
-      if (jobs.length === 0) {
+      const pending = _ccPendingSubmits.slice(); // snapshot for this render
+      // Panel is visible when there's anything to show — accepted jobs OR
+      // pending queue entries. Hiding when only pending exists would lose
+      // the "your 5 folders are queued" affordance.
+      if (jobs.length === 0 && pending.length === 0) {
         panel.classList.add('hidden');
         body.innerHTML = '';
+        _ccPrevJobSnapshot = new Map();
         return;
       }
       panel.classList.remove('hidden');
@@ -513,15 +664,44 @@
       if (toggle) toggle.classList.toggle('open', _cloudQueuePanelExpanded);
       body.classList.toggle('hidden', !_cloudQueuePanelExpanded);
       if (controls) controls.classList.toggle('hidden', !_cloudQueuePanelExpanded);
-      // Single bridge call returns the rich descriptors directly — counters
-      // come from the backend cache populated by the per-job remote poller.
-      // No N+1 cloud_compute_get_status loop here anymore.
-      body.innerHTML = jobs.map(_ccRenderItem).join('');
-      badge.textContent = _ccPanelBadge(jobs);
+      // Active jobs first, pending ghost rows below. Pending shows the user
+      // exactly what's still ahead in their queue.
+      body.innerHTML =
+        jobs.map(_ccRenderItem).join('') +
+        pending.map(_ccRenderPendingItem).join('');
+      badge.textContent = _ccPanelBadge(jobs, pending.length);
       _ccRepositionPanel();
       _ccInstallPanelObservers();
+
+      // ── Diff pass for auto-drain triggers ──────────────────────────────
+      // Compare against the previous tick's snapshot of (uploadComplete,
+      // status) per jobId. If any job's uploadComplete flipped false→true
+      // (paid-tier slot-freeing path) OR its status entered terminal
+      // (free-tier slot-freeing path), call maybeStartNextCloudJob() to
+      // drain another folder from the queue.
+      let shouldRetryQueue = false;
+      for (const j of jobs) {
+        const prev = _ccPrevJobSnapshot.get(j.jobId);
+        if (!prev) continue;
+        const becameUploadComplete = !prev.uploadComplete && !!j.uploadComplete;
+        const becameTerminal = !_CC_TERMINAL_STATUSES.has(prev.status)
+          && _CC_TERMINAL_STATUSES.has(j.status);
+        if (becameUploadComplete || becameTerminal) { shouldRetryQueue = true; break; }
+      }
+      _ccPrevJobSnapshot = new Map(jobs.map(j => [j.jobId, {
+        uploadComplete: !!j.uploadComplete,
+        status: j.status,
+      }]));
+      if (shouldRetryQueue && _ccPendingSubmits.length > 0) {
+        // Fire-and-forget; maybeStartNextCloudJob serialises itself.
+        maybeStartNextCloudJob();
+      }
+
       // Drain pack-merged events and trigger folder rescan so new photos show
-      // in the gallery as packs arrive — same UX as local live update.
+      // in the gallery as packs arrive — same UX as local live update. Uses
+      // the multi-root _findRootContaining lookup (from folder-tree.js) so a
+      // pack landing in folder X rescans the root that contains X, not the
+      // legacy singleton folderTreeRootNode.
       try {
         if (window.pywebview?.api?.cloud_compute_get_pack_events) {
           const evRes = await window.pywebview.api.cloud_compute_get_pack_events();
@@ -529,7 +709,13 @@
           const folders = new Set();
           for (const ev of events) if (ev && ev.folderPath) folders.add(ev.folderPath);
           for (const fp of folders) {
-            try { if (typeof rescanFolderTree === 'function' && folderTreeRootNode) rescanFolderTree(folderTreeRootNode.path); } catch {}
+            try {
+              if (typeof _findRootContaining === 'function'
+                  && typeof rescanFolderRoot === 'function') {
+                const root = _findRootContaining(fp);
+                if (root) rescanFolderRoot(root.path);
+              }
+            } catch {}
             try { if (typeof scheduleAutoRefresh === 'function') scheduleAutoRefresh(fp); } catch {}
           }
         }

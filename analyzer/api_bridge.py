@@ -2719,6 +2719,57 @@ class Api:
             return None, {"ok": False, "error": str(e)}
         return client, None
 
+    def auth_get_api_base(self) -> str:
+        """Settings-aware Auth Worker base URL (no trailing slash). Mirrors
+        cloud_compute_get_api_base — the JWT bridge talks to a different
+        domain from the CC Worker, so we resolve it independently."""
+        try:
+            from auth_client import default_auth_api_base
+        except ImportError:
+            try:
+                from analyzer.auth_client import default_auth_api_base
+            except ImportError:
+                return "https://auth.projectkestrel.org"
+        try:
+            settings = self.get_settings()
+            if isinstance(settings, dict):
+                cfg = settings.get("settings") if "settings" in settings else settings
+                if isinstance(cfg, dict):
+                    s_val = str(cfg.get("auth_api_base") or "").strip()
+                    if s_val:
+                        return s_val.rstrip("/")
+        except Exception:
+            pass
+        return default_auth_api_base()
+
+    def _auth_import(self):
+        """Lazy import of auth_client. Returns the module or raises."""
+        try:
+            import auth_client as ac
+            return ac
+        except ImportError:
+            from analyzer import auth_client as ac  # type: ignore[no-redef]
+            return ac
+
+    def _auth_make_client(self):
+        """Build an authenticated AuthClient. Returns (client, error_dict)."""
+        token, dev_user, token_err = self._check_auth_token()
+        if token_err:
+            return None, token_err
+        try:
+            ac = self._auth_import()
+        except ImportError as e:
+            return None, {"ok": False, "error": f"auth_client import failed: {e}"}
+        try:
+            client = ac.AuthClient(
+                self.auth_get_api_base(),
+                token,
+                dev_user=dev_user,
+            )
+        except ValueError as e:
+            return None, {"ok": False, "error": str(e)}
+        return client, None
+
     def _cc_load_analyzed_filenames(self, folder) -> tuple[set, set]:
         """Read analyzed + errored filenames from the folder's kestrel database,
         running schema migration as needed.
@@ -2957,6 +3008,13 @@ class Api:
         "stopRequested": False,
         "controlFlags": {},
         "remoteStatus": None,
+        # Worker's upload_complete flag (POST /api/jobs/:id/complete sets this).
+        # JS layer uses the false→true flip as one of two triggers for
+        # maybeStartNextCloudJob (the other is remoteStatus → terminal). On
+        # free-tier (limit=1) this is a no-op since uploadComplete doesn't
+        # free a slot; on paid-tier (limit>=2) it lets the next folder's
+        # upload start as soon as the previous folder's upload finishes.
+        "uploadComplete": False,
         "updatedAtMs": 0,
         "failureCount": 0,
         "lastError": None,
@@ -2973,7 +3031,7 @@ class Api:
         for key in (
             "uploadedCount", "analyzedCount", "dispatchedCount", "pendingCount",
             "downloadedCount", "pack_count", "uploadPauseRequested",
-            "stopRequested", "controlFlags",
+            "stopRequested", "controlFlags", "uploadComplete",
         ):
             if key in remote and remote[key] is not None:
                 snapshot[key] = remote[key]
@@ -3177,11 +3235,17 @@ class Api:
         except ccc.JobInProgressError as e:
             # Stage 6 concurrency gate: a Cloud Compute job is already in
             # flight for this user. Not a fault — surface to JS with a
-            # MyAccount deep-link instead of an error toast.
+            # MyAccount deep-link instead of an error toast. ``activeJobIds`` /
+            # ``current`` / ``limit`` are passed through from the Worker's
+            # 403 body so the desktop's auto-drain queue can decide between
+            # "wait" and "warn about orphan" without hitting the Auth Worker.
             return {
                 "ok": False,
                 "error": "job_in_progress",
                 "activeJobId": e.active_job_id,
+                "activeJobIds": list(e.active_job_ids) if e.active_job_ids else [],
+                "current": e.current,
+                "limit": e.limit,
                 "myAccountUrl": "https://myaccount.projectkestrel.org/cloud-compute",
                 "message": str(e) or "You have a Cloud Compute job running.",
             }
@@ -3404,6 +3468,11 @@ class Api:
             "uploadPauseRequested": remote.get("uploadPauseRequested", False),
             "stopRequested": remote.get("stopRequested", False),
             "controlFlags": remote.get("controlFlags", {}),
+            # True once the desktop has called /api/jobs/:id/complete and the
+            # Worker has recorded upload_complete=1. JS uses the false→true
+            # flip to trip the auto-drain queue (relevant on paid tiers with
+            # maxConcurrentJobs>=2).
+            "uploadComplete": bool(remote.get("uploadComplete", False)),
             "remoteStatus": remote.get("remoteStatus"),
             # Staleness signals for the UI: updatedAtMs is wall-clock of last
             # successful poll (0 means "never"); failureCount is consecutive
@@ -3505,6 +3574,28 @@ class Api:
             body = client.get_usage(period=period)
         except Exception as e:
             return {"ok": False, "error": str(e)}
+        body["ok"] = True
+        return body
+
+    def cloud_compute_get_entitlements(self) -> dict:
+        """Proxy GET /v1/me/entitlements on the Auth Worker. Returns the
+        user's tier, plan limits, current-period usage, and active-job slots
+        held — same payload MyAccount's Cloud Compute dashboard renders.
+
+        Used by the analyze dialog's cloud queue logic to decide whether the
+        next folder can submit now (``activeJobs.length <
+        limits.maxConcurrentJobs``) or should wait for a slot. Failure is
+        non-fatal — JS treats absent / errored response as "unknown, try
+        anyway and let the Worker's 403 decide."""
+        client, client_err = self._auth_make_client()
+        if client is None:
+            return client_err or {"ok": False, "error": "no client"}
+        try:
+            body = client.get_my_entitlements()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        if not isinstance(body, dict):
+            return {"ok": False, "error": "auth worker returned non-object"}
         body["ok"] = True
         return body
 
