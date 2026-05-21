@@ -296,10 +296,20 @@
     //   2) _ccRenderPanel diff pass (job's uploadComplete flipped false→true)
     //   3) _ccRenderPanel diff pass (job's status entered terminal)
     //
-    // Loops until either the queue is empty OR entitlements say there's no
-    // free slot (or a 403 job_in_progress comes back from a submit). On a
-    // hard error other than 403, the offending folder is dropped from the
-    // queue and a toast is shown so the user knows.
+    // **Upload-sequential by design**: only one folder uploads at a time,
+    // even on paid tiers with maxConcurrentJobs>=2. The bottleneck is the
+    // user's outbound bandwidth, so running two uploads in parallel just
+    // halves each one's throughput. Once a job's uploadComplete flips true
+    // (Modal can start processing it server-side), the next folder's
+    // upload kicks off and the previous folder transitions to its
+    // server-side processing phase silently.
+    //
+    // We do NOT gate on the Worker's concurrency limit — local "is anyone
+    // uploading?" is the only check. If the Worker rejects with 403
+    // job_in_progress (e.g. an orphan from another device), the folder is
+    // pushed back to the head of the queue and we wait for the next
+    // trigger. Entitlements is consulted ONLY for the one-time orphan
+    // warning at the first iteration of the session.
     let _ccMaybeStartInFlight = false;
     async function maybeStartNextCloudJob() {
       if (_ccMaybeStartInFlight) return; // serialise overlapping triggers
@@ -307,68 +317,61 @@
       if (!window.pywebview?.api?.cloud_compute_submit_job) return;
       _ccMaybeStartInFlight = true;
       try {
-        // Loop: drain the queue while entitlements (or the Worker's 403)
-        // say we can fit another submit.
-        while (_ccPendingSubmits.length > 0) {
-          // Best-effort entitlement check. On failure we still try the
-          // submit and let the Worker's 403 (with rich body) tell us the
-          // truth. The entitlements path is the fast path that avoids one
-          // round-trip when we already know we're at capacity.
-          let ent = null;
-          if (window.pywebview?.api?.cloud_compute_get_entitlements) {
-            try {
-              ent = await window.pywebview.api.cloud_compute_get_entitlements();
-            } catch (e) { /* network blip — fall through */ }
-          }
-          if (ent && ent.ok) {
-            const active = Array.isArray(ent.activeJobs) ? ent.activeJobs : [];
-            const limit = Number(ent.limits?.maxConcurrentJobs);
-            // Orphan detection: if this is the first iteration of a fresh
-            // session AND entitlements show jobs in flight that aren't in
-            // our session's _cc_jobs map, surface a one-time toast.
-            if (!_ccOrphanWarningShown && active.length > 0) {
-              const knownJobIds = await _ccGetKnownJobIds();
-              const orphan = active.find(j => !knownJobIds.has(String(j.jobId)));
-              if (orphan) {
-                _ccOrphanWarningShown = true;
-                showToast(
-                  '⚠ You have an active Cloud Compute job running ' +
-                  '(maybe from another device or a previous session). ' +
-                  'Manage it at myaccount.projectkestrel.org/cloud-compute — ' +
-                  'your queue will start once that job completes.',
-                  9000,
-                );
+        // One-time-per-session orphan warning. Skipped after we've shown
+        // it once (or if there's no entitlements endpoint). The actual
+        // gating logic below is independent of this check — orphan
+        // jobs from another device will manifest as 403 job_in_progress
+        // on the first submit, and we handle that path too.
+        if (!_ccOrphanWarningShown && window.pywebview?.api?.cloud_compute_get_entitlements) {
+          try {
+            const ent = await window.pywebview.api.cloud_compute_get_entitlements();
+            if (ent && ent.ok) {
+              const active = Array.isArray(ent.activeJobs) ? ent.activeJobs : [];
+              if (active.length > 0) {
+                const knownJobIds = await _ccGetKnownJobIds();
+                const orphan = active.find(j => !knownJobIds.has(String(j.jobId)));
+                if (orphan) {
+                  _ccOrphanWarningShown = true;
+                  showToast(
+                    '⚠ You have an active Cloud Compute job running ' +
+                    '(maybe from another device or a previous session). ' +
+                    'Manage it at myaccount.projectkestrel.org/cloud-compute — ' +
+                    'your queue will start once that job completes.',
+                    9000,
+                  );
+                }
               }
             }
-            if (Number.isFinite(limit) && limit > 0 && active.length >= limit) {
-              // No slot. Stop draining; the next poll-tick trigger will
-              // re-enter this function when a slot frees.
-              break;
-            }
-          }
+          } catch (e) { /* failsafe */ }
+        }
+
+        // Drain loop. On every iteration we check whether any local job is
+        // currently uploading; if so, bail and wait for the uploadComplete
+        // trigger. If not, try to submit the next folder. On nothingToDo
+        // and hard errors we continue draining (no upload was started, so
+        // bandwidth isn't tied up). On success we break — the just-started
+        // upload now holds the pipe.
+        while (_ccPendingSubmits.length > 0) {
+          if (await _ccHasActiveLocalUpload()) break;
           const next = _ccPendingSubmits.shift();
           if (!next || !next.path) continue;
           let r;
           try {
             r = await window.pywebview.api.cloud_compute_submit_job(next.path);
           } catch (e) {
-            // Transport-level failure. Treat as transient: push back to the
-            // front of the queue and break — next trigger will retry.
             _ccPendingSubmits.unshift(next);
             showToast(`Cloud Compute: submit error, will retry. (${e?.message || e})`, 5000);
             break;
           }
           if (r && r.ok) {
-            // Accepted; continue draining. The new job appears in the panel
-            // on the next _ccRenderPanel tick.
-            continue;
+            // Upload started. Wait for uploadComplete (or terminal) before
+            // submitting the next folder — bandwidth is the constraint.
+            break;
           }
           if (r && r.ok === false && r.error === 'job_in_progress') {
-            // Race: entitlements said we were free, but a slot was claimed
-            // between then and our submit (or entitlements was unavailable
-            // and we made a best-effort try). Push folder back and wait
-            // for the next trigger. Don't re-toast — the orphan flow above
-            // already surfaced a warning if one was warranted.
+            // Worker says a slot is held (orphan from another device, or
+            // a race with another session). Push back and wait for the
+            // next trigger.
             _ccPendingSubmits.unshift(next);
             break;
           }
@@ -396,6 +399,24 @@
         // Repaint the panel so pending-row count + active-row count match.
         try { _ccRenderPanel(); } catch (e) { /* failsafe */ }
       }
+    }
+
+    async function _ccHasActiveLocalUpload() {
+      // True if any session job is currently uploading from this machine.
+      // "Uploading" means non-terminal status AND uploadComplete not yet
+      // observed on the cached remote snapshot. Once the desktop has
+      // called /api/jobs/:id/complete and the next poll picks up
+      // uploadComplete=true, the slot frees for the next upload to start —
+      // the previous job continues its server-side processing without
+      // holding our bandwidth.
+      if (!window.pywebview?.api?.cloud_compute_list_jobs) return false;
+      try {
+        const r = await window.pywebview.api.cloud_compute_list_jobs();
+        const jobs = (r && r.jobs) || [];
+        return jobs.some(j =>
+          !_CC_TERMINAL_STATUSES.has(j.status) && !j.uploadComplete
+        );
+      } catch { return false; }
     }
 
     async function _ccGetKnownJobIds() {
