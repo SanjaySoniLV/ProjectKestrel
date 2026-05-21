@@ -59,9 +59,18 @@ class ResilientOnnxSession:
         current provider list. Called by the wrapper's ``recreate_sessions``
         path. Releasing the old session first matters for DML/CoreML, which
         hold device memory only as long as the C++ session object lives.
+
+        The old session is restored if the build fails so that subsequent
+        ``run()`` calls surface the original ONNX error rather than an
+        uninformative ``AttributeError: 'NoneType' object has no attribute 'run'``.
         """
-        self._session = None
-        self._build()
+        old = self._session
+        self._session = None  # Release so DML/CoreML can free device memory
+        try:
+            self._build()
+        except Exception:
+            self._session = old  # Restore: keeps run() errors meaningful
+            raise
 
     # ---- pass-through API mirroring ort.InferenceSession ----
 
