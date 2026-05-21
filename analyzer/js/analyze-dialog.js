@@ -57,6 +57,52 @@
       return el;
     }
 
+    // Cloud destination est. time:
+    //   max(upload_seconds, analysis_floor_seconds)
+    // where analysis_floor = images × 0.5s (sustained 2 imgs/sec on Modal),
+    // and upload_seconds is computed from the speed-test result if present.
+    // Returns null when destination=cloud and no speed test has run yet.
+    const _CLOUD_ANALYSIS_FLOOR_SECS_PER_IMG = 0.5; // 2 imgs/sec sustained
+
+    function _getCloudEstSeconds(totalImages) {
+      const result = (typeof _cloudSpeedTestResult !== 'undefined') ? _cloudSpeedTestResult : null;
+      const analysisSecs = totalImages * _CLOUD_ANALYSIS_FLOOR_SECS_PER_IMG;
+      if (!result || !(result.mbps > 0) || !(result.samples_uploaded > 0)) {
+        return { secs: null, analysisSecs, uploadSecs: null, hasTest: false };
+      }
+      const avgBytes = Number(result.total_bytes || 0) / Number(result.samples_uploaded || 1);
+      if (!(avgBytes > 0)) return { secs: null, analysisSecs, uploadSecs: null, hasTest: true };
+      const totalMB = (totalImages * avgBytes) / 1_048_576;
+      const uploadSecs = totalMB / Number(result.mbps);
+      return {
+        secs: Math.max(analysisSecs, uploadSecs),
+        analysisSecs,
+        uploadSecs,
+        hasTest: true,
+      };
+    }
+
+    // Always-on "?" badge for cloud est. time. Phrasing differs from the local
+    // baseline badge — the cloud "?" stays permanent because the estimate is
+    // beta and depends on transfer speed + Modal worker availability.
+    function _buildCloudUncertainBadge() {
+      const tip =
+        'Cloud Compute is in beta. Estimates use the higher of (a) projected ' +
+        'upload time and (b) a 2-images-per-second analysis floor. Actual time ' +
+        'depends on transfer speed and Modal worker availability.';
+      const el = document.createElement('span');
+      el.className = 'est-time-uncertain est-time-uncertain--cloud';
+      el.setAttribute('title', tip);
+      el.setAttribute('aria-label', tip);
+      el.textContent = '?';
+      return el;
+    }
+
+    function _isCloudDestination() {
+      try { return typeof _analyzeDestination !== 'undefined' && _analyzeDestination === 'cloud'; }
+      catch { return false; }
+    }
+
     // ── Dialog-local state (NEVER shared with the main tree) ────────────────────
     let analyzeDlgRootNodes = new Map();      // Map<rootPath, syntheticRootNode>
     let analyzeDlgRootOrder = [];             // insertion order (render order)
@@ -727,13 +773,26 @@
             meta.appendChild(imgSpan);
             // Per-folder time estimate
             if (f.imagesThisFolder >= _EST_MIN_IMAGES_TO_ESTIMATE) {
-              const { rate, source, sampledImgs } = _getEstRate(useGpu);
-              const sec = f.imagesThisFolder * rate;
-              const timeSpan = document.createElement('span');
-              timeSpan.className = 'meta-time';
-              timeSpan.textContent = `· ~${_formatDuration(sec)}`;
-              meta.appendChild(timeSpan);
-              if (source === 'baseline') meta.appendChild(_buildUncertainBadge(sampledImgs));
+              if (_isCloudDestination()) {
+                const { secs } = _getCloudEstSeconds(f.imagesThisFolder);
+                if (secs != null) {
+                  const timeSpan = document.createElement('span');
+                  timeSpan.className = 'meta-time';
+                  timeSpan.textContent = `· ~${_formatDuration(secs)}`;
+                  meta.appendChild(timeSpan);
+                  meta.appendChild(_buildCloudUncertainBadge());
+                }
+                // Pre-speed-test cloud: no per-folder estimate; the panel
+                // below the headline carries the "?" + run-test affordance.
+              } else {
+                const { rate, source, sampledImgs } = _getEstRate(useGpu);
+                const sec = f.imagesThisFolder * rate;
+                const timeSpan = document.createElement('span');
+                timeSpan.className = 'meta-time';
+                timeSpan.textContent = `· ~${_formatDuration(sec)}`;
+                meta.appendChild(timeSpan);
+                if (source === 'baseline') meta.appendChild(_buildUncertainBadge(sampledImgs));
+              }
             }
           }
           item.appendChild(meta);
@@ -760,20 +819,43 @@
         const skipFrag = fullyAnalyzedSkipCount > 0
           ? `<span class="analyze-dlg-stat-skip">${fullyAnalyzedSkipCount} skipped</span>`
           : '';
-        // Time stat
+        // Time stat — destination-dependent.
+        //   Local: existing baseline-or-local logic with optional "?" badge.
+        //   Cloud: "?" until a speed test has run, then max(upload, 2-img/sec
+        //          floor) with a permanent "?" + beta affordance underneath.
         let timeValue = '—';
         let timeLabel = 'estimated time';
         let timeDim = true;
-        let timeRateSource = 'baseline';
-        let timeRateSampledImgs = 0;
-        if (totalImagesToProcess >= _EST_MIN_IMAGES_TO_ESTIMATE) {
+        let timeBadgeKind = null; // null | 'local-baseline' | 'cloud'
+        let timeBadgeSampledImgs = 0;
+        const isCloud = _isCloudDestination();
+        if (isCloud) {
+          if (totalImagesToProcess >= _EST_MIN_IMAGES_TO_ESTIMATE) {
+            const { secs, hasTest } = _getCloudEstSeconds(totalImagesToProcess);
+            if (secs != null) {
+              timeValue = `~${_formatDuration(secs)}`;
+              timeLabel = 'est. time (cloud · beta)';
+              timeDim = false;
+              timeBadgeKind = 'cloud';
+            } else {
+              // Cloud destination, no speed test yet — show "?" prominently
+              // and let the panel below host the Run Speed Test button.
+              timeValue = '?';
+              timeLabel = 'est. time (cloud · beta)';
+              timeDim = false; // we want the "?" to read clearly, not muted
+              timeBadgeKind = null; // value IS the "?"; no separate badge
+            }
+          }
+        } else if (totalImagesToProcess >= _EST_MIN_IMAGES_TO_ESTIMATE) {
           const { rate, source, sampledImgs } = _getEstRate(useGpu);
           const seconds = totalImagesToProcess * rate;
           timeValue = `~${_formatDuration(seconds)}`;
           timeLabel = `est. time (${useGpu ? 'GPU' : 'CPU'}${source === 'local' ? ' · local' : ''})`;
           timeDim = false;
-          timeRateSource = source;
-          timeRateSampledImgs = sampledImgs;
+          if (source === 'baseline') {
+            timeBadgeKind = 'local-baseline';
+            timeBadgeSampledImgs = sampledImgs;
+          }
         }
         headline.innerHTML =
           `<div class="analyze-dlg-stat">` +
@@ -789,12 +871,44 @@
             `<div class="analyze-dlg-stat-value${timeDim ? ' dim' : ''}" id="_analyzeDlgTimeStatValue">${timeValue}</div>` +
             `<div class="analyze-dlg-stat-label">${timeLabel}</div>` +
           `</div>`;
-        // Append the ? badge in the time-value cell when we're showing a
-        // baseline estimate (i.e. not enough local samples yet). Done via DOM
-        // append so the title attribute and aria-label survive verbatim.
-        if (!timeDim && timeRateSource === 'baseline') {
+        if (timeBadgeKind === 'local-baseline') {
           const valueEl = headline.querySelector('#_analyzeDlgTimeStatValue');
-          if (valueEl) valueEl.appendChild(_buildUncertainBadge(timeRateSampledImgs));
+          if (valueEl) valueEl.appendChild(_buildUncertainBadge(timeBadgeSampledImgs));
+        } else if (timeBadgeKind === 'cloud') {
+          const valueEl = headline.querySelector('#_analyzeDlgTimeStatValue');
+          if (valueEl) valueEl.appendChild(_buildCloudUncertainBadge());
+        }
+      }
+
+      // Toggle the cloud-only affordances panel under the headline. Speed-test
+      // button is enabled iff at least one folder is checked. When a speed test
+      // has already run, the button reads "Re-run upload speed test" and the
+      // status line surfaces the measured mbps for transparency.
+      const cloudPanel = document.getElementById('analyzeDlgCloudEstPanel');
+      if (cloudPanel) {
+        const showCloudPanel = _isCloudDestination();
+        cloudPanel.classList.toggle('hidden', !showCloudPanel);
+        if (showCloudPanel) {
+          const runBtn = document.getElementById('analyzeDlgRunSpeedTest');
+          const statusEl = document.getElementById('analyzeDlgCloudSpeedStatus');
+          const hasResult = !!(typeof _cloudSpeedTestResult !== 'undefined' && _cloudSpeedTestResult);
+          if (runBtn) {
+            runBtn.disabled = checkedCount === 0;
+            const labelText = hasResult ? ' Re-run upload speed test' : ' Run Upload Speed Test';
+            // Keep the leading lightning icon span intact.
+            const iconHtml = '<span class="adlg-cloud-speed-btn-icon">⚡</span>';
+            runBtn.innerHTML = iconHtml + labelText;
+          }
+          if (statusEl) {
+            if (hasResult) {
+              const mbps = Number(_cloudSpeedTestResult.mbps || 0).toFixed(1);
+              statusEl.textContent = `Measured upload: ${mbps} MB/s`;
+              statusEl.classList.remove('hidden', 'error');
+              statusEl.classList.add('success');
+            } else {
+              statusEl.classList.add('hidden');
+            }
+          }
         }
       }
 
@@ -972,6 +1086,12 @@
         renderAnalyzeDlgTree();
       }
       refreshAnalyzeDlgSummary();
+      // Wire the Local/Cloud destination cards + reset destination state.
+      // _ccWireDestinationDialog is idempotent (sentinel on the Local card),
+      // so safe to call on every open. Without this the cards are inert.
+      if (typeof _ccResetDestinationOnDialogOpen === 'function') {
+        try { await _ccResetDestinationOnDialogOpen(); } catch (e) { console.warn('[cc] reset failed', e); }
+      }
       document.getElementById('analyzeQueueDlg').showModal();
     }
 

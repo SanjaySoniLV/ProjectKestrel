@@ -991,3 +991,94 @@
   color: #c8d0db;
   border-color: #8a93a3;
 }
+
+/* ── Cloud destination affordances under the summary headline ─────────── */
+/* Hidden by default (destination=local); shown only when the user picks the
+   Cloud destination card. The speed-test button is the gateway from "?" to a
+   computed estimate; the beta notice + Learn more link stay visible after the
+   test so the user remembers the estimate is approximate. */
+.analyze-dlg-cloud-est-panel {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: rgba(43, 110, 200, 0.06);
+  border: 1px solid #1f3656;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.analyze-dlg-cloud-est-panel.hidden { display: none; }
+
+.adlg-cloud-speed-btn {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: #1f3656;
+  color: #cfe2ff;
+  border: 1px solid #2b6ec8;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.adlg-cloud-speed-btn:hover:not(:disabled) {
+  background: #2b6ec8;
+  color: #fff;
+  border-color: #4a8edc;
+}
+.adlg-cloud-speed-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.adlg-cloud-speed-btn-icon { font-size: 12px; }
+
+.adlg-cloud-speed-status {
+  font-size: 11px;
+  color: var(--muted);
+}
+.adlg-cloud-speed-status.success { color: var(--ok); }
+.adlg-cloud-speed-status.error { color: #e07c7c; }
+.adlg-cloud-speed-status.hidden { display: none; }
+
+.adlg-cloud-beta-note {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.adlg-beta-badge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #ffd57a;
+  background: rgba(255, 213, 122, 0.12);
+  border: 1px solid rgba(255, 213, 122, 0.4);
+  padding: 1px 5px;
+  border-radius: 3px;
+  margin-right: 6px;
+  vertical-align: 1px;
+}
+.adlg-cloud-learn-more {
+  color: #7eb8e0;
+  text-decoration: none;
+  margin-left: 4px;
+}
+.adlg-cloud-learn-more:hover {
+  text-decoration: underline;
+  color: #cfe2ff;
+}
+
+/* Cloud "?" badge variant — same visual as the local-baseline badge but
+   with a slight blue tint so the two contexts read distinctly when both
+   appear in proximity (e.g. switching destinations rapidly). */
+.est-time-uncertain--cloud {
+  border-color: #4a8edc;
+  color: #7eb8e0;
+}
+.est-time-uncertain--cloud:hover {
+  color: #cfe2ff;
+  border-color: #7eb8e0;
+}

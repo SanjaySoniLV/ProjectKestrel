@@ -25,11 +25,13 @@
     let _cloudSpeedTestResult = null;  // { mbps, samples_uploaded, total_bytes } | null
 
     function _ccPickFirstSelectedFolder() {
-      // Reuses the analyze-dialog selection set populated by the folder tree.
-      // Returns the first selected path (alphabetical) or null.
+      // Pull the first checked folder from the Phase 3 dialog state (the
+      // legacy _dlgSelected was renamed to analyzeDlgCheckedPaths in the
+      // dialog redesign). Returns the first selected path (alphabetical) or
+      // null when nothing is checked.
       try {
-        if (typeof _dlgSelected === 'object' && _dlgSelected && _dlgSelected.size > 0) {
-          const arr = Array.from(_dlgSelected).sort();
+        if (typeof analyzeDlgCheckedPaths === 'object' && analyzeDlgCheckedPaths && analyzeDlgCheckedPaths.size > 0) {
+          const arr = Array.from(analyzeDlgCheckedPaths).sort();
           return arr[0] || null;
         }
       } catch (_) { /* ignore */ }
@@ -60,6 +62,11 @@
       if (_analyzeDestination === 'cloud') {
         _ccRefreshUsage();
       }
+      // Re-render the summary so the est. time stat + cloud panel match the
+      // new destination immediately (button label, beta notice, "?" badge).
+      if (typeof refreshAnalyzeDlgSummary === 'function') {
+        try { refreshAnalyzeDlgSummary(); } catch (e) { /* failsafe */ }
+      }
     }
 
     async function _ccCheckSignedIn() {
@@ -74,59 +81,94 @@
     }
 
     async function _ccApplySignInGate() {
+      // Show/hide the sign-in overlay based on auth state, but DO NOT mark the
+      // card as .disabled — selection should always be possible so the user
+      // sees the "?" est. time and beta affordances even before signing in.
+      // The actual sign-in requirement is enforced at speed-test + submit time.
       const overlay = document.getElementById('cloudDestSignInOverlay');
-      const card = document.getElementById('analyzeDestCloud');
-      if (!overlay || !card) return;
-      const signedIn = await _ccCheckSignedIn();
-      overlay.classList.toggle('hidden', signedIn);
-      card.classList.toggle('disabled', !signedIn);
+      if (!overlay) return;
+      try {
+        const signedIn = await _ccCheckSignedIn();
+        overlay.classList.toggle('hidden', signedIn);
+      } catch {
+        // If the bridge call hangs/fails, default to showing the overlay
+        // (safer: prompts sign-in rather than letting submit fail later).
+        overlay.classList.remove('hidden');
+      }
     }
 
     async function _ccRefreshUsage() {
+      // Race the bridge call against a 3s timeout so the "Loading usage…"
+      // line never gets stuck when the API hangs (e.g. user not signed in,
+      // network down, or worker slow to respond).
       const el = document.getElementById('cloudDestUsage');
-      if (!el || !window.pywebview?.api?.cloud_compute_get_usage) return;
+      if (!el) return;
+      if (!window.pywebview?.api?.cloud_compute_get_usage) {
+        el.textContent = 'Usage unavailable.';
+        return;
+      }
+      const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve({ __timedOut: true }), 3000));
+      let r;
       try {
-        const r = await window.pywebview.api.cloud_compute_get_usage();
-        if (r && r.ok && r.usage) {
-          const u = r.usage;
-          if (u.remainingImages == null) {
-            el.textContent = 'Usage metering not configured yet.';
-          } else {
-            el.textContent = `Remaining cloud images: ${u.remainingImages}`;
-          }
-        } else {
-          el.textContent = 'Usage unavailable.';
-        }
+        r = await Promise.race([window.pywebview.api.cloud_compute_get_usage(), timeoutPromise]);
       } catch {
+        r = null;
+      }
+      if (r && r.__timedOut) {
+        el.textContent = 'Usage unavailable (timed out).';
+        return;
+      }
+      if (r && r.ok && r.usage) {
+        const u = r.usage;
+        if (u.remainingImages == null) {
+          el.textContent = 'Usage metering not configured yet.';
+        } else {
+          el.textContent = `Remaining cloud images: ${u.remainingImages}`;
+        }
+      } else {
         el.textContent = 'Usage unavailable.';
       }
     }
 
-    function _ccUpdateSpeedTestButtonEnable() {
-      const btn = document.getElementById('cloudDestSpeedTestBtn');
-      if (!btn) return;
-      const folder = _ccPickFirstSelectedFolder();
-      btn.disabled = !folder;
-      btn.title = folder
-        ? `Upload 10 images from ${folder.split(/[\\/]/).pop()} to measure throughput`
-        : 'Pick at least one folder to enable the speed test';
-    }
-
     async function _ccRunSpeedTest() {
-      const status = document.getElementById('cloudDestStatus');
-      const btn = document.getElementById('cloudDestSpeedTestBtn');
+      // Speed-test button now lives in the est. time panel (analyze-dialog.js
+      // markup #analyzeDlgRunSpeedTest), not on the destination card. The
+      // status line under the button shows progress + final mbps.
+      const btn = document.getElementById('analyzeDlgRunSpeedTest');
+      const status = document.getElementById('analyzeDlgCloudSpeedStatus');
       const folder = _ccPickFirstSelectedFolder();
-      if (!folder || !status || !btn) return;
-      if (!window.pywebview?.api?.cloud_compute_upload_test) return;
+      if (!btn || !status) return;
+      if (!folder) {
+        status.classList.remove('hidden', 'success');
+        status.classList.add('error');
+        status.textContent = 'Pick at least one folder before running the speed test.';
+        return;
+      }
+      if (!window.pywebview?.api?.cloud_compute_upload_test) {
+        status.classList.remove('hidden', 'success');
+        status.classList.add('error');
+        status.textContent = 'Speed test unavailable in this build.';
+        return;
+      }
+      // Sign-in gate happens here, not at card-click, so the user can browse
+      // the cloud destination's est. time affordances before authenticating.
+      const signedIn = await _ccCheckSignedIn();
+      if (!signedIn) {
+        status.classList.remove('hidden', 'success');
+        status.classList.add('error');
+        status.textContent = 'Sign in to Perch to run the upload speed test.';
+        if (typeof openPerchSignInWindow === 'function') {
+          try { openPerchSignInWindow(); } catch {}
+        }
+        return;
+      }
       btn.disabled = true;
-      status.classList.remove('success', 'error');
-      status.textContent = 'Running speed test… 0/10';
-      // The bridge call is blocking; we can't get per-file progress without a
-      // side channel. Animate the status line with a coarse spinner instead.
+      status.classList.remove('hidden', 'success', 'error');
+      status.textContent = 'Running speed test…';
       let dots = 0;
       const tick = setInterval(() => {
         dots = (dots + 1) % 4;
-        status.textContent = `Running speed test… ${'.'.repeat(dots).padEnd(3, ' ')}`;
+        status.textContent = `Running speed test${'.'.repeat(dots).padEnd(3, ' ')}`;
       }, 500);
       let r;
       try {
@@ -142,8 +184,6 @@
       btn.disabled = false;
       if (!r || !r.ok) {
         status.classList.add('error');
-        // Worker returns `file_too_large` as the error string when the cap
-        // is hit; surface a user-friendly message.
         if (r && r.error && String(r.error).indexOf('file_too_large') !== -1) {
           status.textContent = 'Some files exceed the 200 MB cap. Try a folder with smaller files.';
         } else {
@@ -153,61 +193,49 @@
       }
       _cloudSpeedTestResult = r;
       const mbps = Number(r.mbps || 0);
-      const samples = Number(r.samples_uploaded || 0);
-      const avgBytes = samples > 0 ? Number(r.total_bytes || 0) / samples : 0;
-      // Best-effort full-folder estimate: pick the first selected folder's
-      // file count from the analyzeDlg's tree-derived selection state if
-      // available; otherwise just report the throughput.
-      let estLine = '';
-      try {
-        const folderInfo = window._lastAnalyzeFolderInfos?.[folder];
-        const totalFiles = folderInfo?.total || 0;
-        const newFiles = Math.max(0, totalFiles - (folderInfo?.processed || 0));
-        if (newFiles > 0 && avgBytes > 0 && mbps > 0) {
-          const totalMB = (newFiles * avgBytes) / 1_048_576;
-          const seconds = totalMB / mbps;
-          const mins = Math.ceil(seconds / 60);
-          estLine = ` — est. ~${mins} min for ${newFiles} image(s)`;
-        }
-      } catch {}
       status.classList.add('success');
-      status.textContent = `Avg ${mbps.toFixed(1)} MB/s${estLine}`;
+      status.textContent = `Measured upload: ${mbps.toFixed(1)} MB/s`;
+      // Recompute est. time + per-folder estimates against the new rate.
+      if (typeof refreshAnalyzeDlgSummary === 'function') {
+        try { refreshAnalyzeDlgSummary(); } catch (e) { /* failsafe */ }
+      }
     }
 
     function _ccWireDestinationDialog() {
       const local = document.getElementById('analyzeDestLocal');
       const cloud = document.getElementById('analyzeDestCloud');
-      const speedBtn = document.getElementById('cloudDestSpeedTestBtn');
+      const speedBtn = document.getElementById('analyzeDlgRunSpeedTest');
       if (!local || !cloud || local._ccWired) return;
       local._ccWired = true;
       const pickLocal = () => _ccSetDestination('local');
-      const pickCloud = async () => {
-        // Block if not signed in. The overlay is already showing in that case.
-        if (cloud.classList.contains('disabled')) {
-          showToast('Sign into Perch to use Cloud Compute.', 4000);
-          return;
-        }
-        _ccSetDestination('cloud');
-      };
+      const pickCloud = () => _ccSetDestination('cloud');
       local.addEventListener('click', pickLocal);
       cloud.addEventListener('click', pickCloud);
       local.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pickLocal(); } });
       cloud.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pickCloud(); } });
-      if (speedBtn) speedBtn.addEventListener('click', _ccRunSpeedTest);
+      if (speedBtn && !speedBtn._ccWired) {
+        speedBtn._ccWired = true;
+        speedBtn.addEventListener('click', _ccRunSpeedTest);
+      }
     }
 
     async function _ccResetDestinationOnDialogOpen() {
       _ccWireDestinationDialog();
       _ccSetDestination('local');
       _cloudSpeedTestResult = null;
-      const status = document.getElementById('cloudDestStatus');
-      if (status) {
-        status.classList.remove('success', 'error');
-        status.textContent = 'Speed test not run';
+      const speedStatus = document.getElementById('analyzeDlgCloudSpeedStatus');
+      if (speedStatus) {
+        speedStatus.classList.add('hidden');
+        speedStatus.classList.remove('success', 'error');
+        speedStatus.textContent = '';
       }
-      _ccUpdateSpeedTestButtonEnable();
       await _ccApplySignInGate();
       _ccRefreshUsage();
+      // Repaint the summary so the cloud panel reflects the freshly-reset
+      // state (e.g. button label flips back to "Run Upload Speed Test").
+      if (typeof refreshAnalyzeDlgSummary === 'function') {
+        try { refreshAnalyzeDlgSummary(); } catch (e) { /* failsafe */ }
+      }
     }
 
     async function _ccSubmitSelectedFolders(folderPaths) {
