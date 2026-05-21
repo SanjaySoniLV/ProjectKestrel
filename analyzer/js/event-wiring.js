@@ -154,10 +154,6 @@
         // submit each folder via the cloud-compute bridge. Local destination
         // falls through to start_analysis_queue with per-item options so the
         // queue worker handles .kestrel deletion just-in-time.
-        // TODO(est-time-cloud): replace the dialog's local-rate estimate with
-        // an upload-speed-test-aware estimate when destination=cloud. Local
-        // perf_samples_gpu/cpu reflect compute time, not transfer time, and
-        // are misleading here. Defer until upload-speed test lands.
         if (typeof _analyzeDestination !== 'undefined' && _analyzeDestination === 'cloud') {
           for (const p of paths) {
             const opts = (perItemOptions || {})[p] || {};
