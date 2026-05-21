@@ -907,6 +907,36 @@
     </div>
   </dialog>
 
+  <!-- Clear Kestrel Analysis Data confirmation dialog. Reached only via the
+       Folder Actions dropdown in the scene-grid folder header. Mirrors the
+       visual language of #analyzeConfirmDlg above so the destructive flow
+       feels consistent — explicit Cancel-default + red Delete button, no
+       auto-confirm-on-Enter. -->
+  <dialog id="clearKestrelConfirmDlg" class="dlg-compact analyze-confirm-dlg">
+    <div class="analyze-confirm-body">
+      <h3 style="margin:0 0 8px;color:var(--warn);">⚠ Delete Kestrel analysis data?</h3>
+      <p style="margin:0 0 10px;font-size:13px;line-height:1.45;">
+        The following data will be permanently deleted from
+        <b id="clearKestrelFolderName">this folder</b>'s
+        <code>.kestrel/</code> directory:
+      </p>
+      <ul class="analyze-confirm-list" style="margin:0 0 10px;">
+        <li>Star ratings</li>
+        <li>Accept / Reject culling decisions</li>
+        <li>Scene names</li>
+        <li>Exported derivatives and thumbnails</li>
+      </ul>
+      <p style="margin:0 0 10px;font-size:12px;color:var(--muted);" id="clearKestrelFolderPath"></p>
+      <p style="margin:0 0 12px;font-size:12px;color:var(--muted);">
+        This cannot be undone. Photos in the folder are not touched.
+      </p>
+      <div class="analyze-confirm-actions">
+        <button id="clearKestrelCancel">Cancel</button>
+        <button id="clearKestrelProceed" class="analyze-confirm-danger">Delete analysis data</button>
+      </div>
+    </div>
+  </dialog>
+
   <!-- Feedback / Bug Report dialog -->
   <dialog id="feedbackDlg" style="width:min(640px,96vw);height:fit-content;max-height:92vh;overflow-x:hidden;overflow-y:auto;">
     <div class="feedback-dlg">

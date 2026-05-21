@@ -968,3 +968,26 @@
   padding: 3px 8px 5px;
   text-align: right;
 }
+
+/* Est. time uncertainty badge — appears next to baseline-derived estimates */
+/* (i.e. when there aren't yet ~100 locally-sampled images for this mode). */
+.est-time-uncertain {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 6px;
+  border-radius: 50%;
+  border: 1px solid #6a7585;
+  color: #8a93a3;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: help;
+  vertical-align: middle;
+}
+.est-time-uncertain:hover {
+  color: #c8d0db;
+  border-color: #8a93a3;
+}

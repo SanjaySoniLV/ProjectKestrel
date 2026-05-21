@@ -227,6 +227,27 @@ def _sanitize_analyze_recents(value: Any, max_items: int = 16) -> list[dict]:
     return out
 
 
+def _sanitize_perf_samples(value: Any, max_items: int = 50) -> list[dict]:
+    """Validate the perf_samples_gpu / perf_samples_cpu lists used by the
+    Analyze Folders dialog's local-rate time estimate. Each entry is a dict
+    ``{'imgs': int, 'secs': float, 'ts': str}``. Drops malformed entries
+    silently. Returns the last ``max_items`` valid entries (the worker only
+    appends, so trailing entries are the most recent)."""
+    if not isinstance(value, list):
+        return []
+    out: list[dict] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        imgs = _coerce_int(item.get('imgs'), 0, min_value=0, max_value=1_000_000)
+        secs = _coerce_float(item.get('secs'), 0.0, min_value=0.0, max_value=10_000_000.0)
+        if imgs <= 0 or secs <= 0.0:
+            continue
+        ts = _coerce_string(item.get('ts'), default='', max_len=32)
+        out.append({'imgs': imgs, 'secs': round(secs, 1), 'ts': ts})
+    return out[-max_items:]
+
+
 def _sanitize_int_list(value: Any, max_items: int = 128, min_value: int = 0, max_value: int = 1_000_000_000) -> list[int]:
     if not isinstance(value, list):
         return []
@@ -492,6 +513,16 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
         # Separate from folder_recents — the dialog's mental model is "recently
         # queued but not yet fully analyzed", independent of the main tree.
         out['analyze_recents'] = _sanitize_analyze_recents(data.get('analyze_recents'), max_items=16)
+
+    # Local performance samples for the Analyze Folders dialog's time estimate.
+    # The queue worker appends one entry per completed folder run; the dialog
+    # averages them to display per-machine time estimates instead of hardcoded
+    # baselines. GPU and CPU runs are bucketed separately because rates differ
+    # 2-3×. See plan: Est. Time System.
+    if 'perf_samples_gpu' in data:
+        out['perf_samples_gpu'] = _sanitize_perf_samples(data.get('perf_samples_gpu'), max_items=50)
+    if 'perf_samples_cpu' in data:
+        out['perf_samples_cpu'] = _sanitize_perf_samples(data.get('perf_samples_cpu'), max_items=50)
 
     _set_bool('main_tutorial_seen', default=False)
     if 'kestrel_donate_thresholds_shown' in data:

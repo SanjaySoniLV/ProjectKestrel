@@ -7,14 +7,55 @@
     // makes "what am I viewing" (main) and "what am I queueing for analysis"
     // (dialog) two cleanly-separable mental models.
 
-    // ── Time estimation constants (Phase 3I) ────────────────────────────────────
-    // Hardcoded baseline for now. The runtime "analyzing" badge already shows
-    // live ETA during processing; this is just the PRE-queue estimate so the
-    // user can gauge how much work they're about to commit. Telemetry-backed
-    // local rates are deferred to a follow-up.
-    const _EST_SECS_PER_IMG_GPU = 4.0;
-    const _EST_SECS_PER_IMG_CPU = 10.0;
-    const _EST_MIN_IMAGES_TO_ESTIMATE = 50;
+    // ── Time estimation ────────────────────────────────────────────────────────
+    // Baseline rates for fresh installs (release-tunable). Local samples from
+    // the queue worker (perf_samples_gpu / perf_samples_cpu in settings.json)
+    // override these once the per-mode total crosses _EST_MIN_SAMPLED_IMAGES_FOR_LOCAL.
+    const _EST_BASELINE_SECS_PER_IMG_GPU = 4.0;
+    const _EST_BASELINE_SECS_PER_IMG_CPU = 10.0;
+    const _EST_MIN_IMAGES_TO_ESTIMATE = 50;       // min queued imgs before any estimate is shown
+    const _EST_MIN_SAMPLED_IMAGES_FOR_LOCAL = 100; // switchover threshold for local rate
+
+    // Returns { rate, source, sampledImgs } where source is 'local' or 'baseline'.
+    function _getEstRate(useGpu) {
+      try {
+        const key = useGpu ? 'perf_samples_gpu' : 'perf_samples_cpu';
+        const samples = (typeof getSetting === 'function' ? getSetting(key, []) : []) || [];
+        let totalImgs = 0, totalSecs = 0;
+        for (const s of samples) {
+          const i = Number(s && s.imgs);
+          const t = Number(s && s.secs);
+          if (i > 0 && t > 0) { totalImgs += i; totalSecs += t; }
+        }
+        if (totalImgs >= _EST_MIN_SAMPLED_IMAGES_FOR_LOCAL) {
+          return { rate: totalSecs / totalImgs, source: 'local', sampledImgs: totalImgs };
+        }
+        return {
+          rate: useGpu ? _EST_BASELINE_SECS_PER_IMG_GPU : _EST_BASELINE_SECS_PER_IMG_CPU,
+          source: 'baseline',
+          sampledImgs: totalImgs,
+        };
+      } catch (_e) {
+        return {
+          rate: useGpu ? _EST_BASELINE_SECS_PER_IMG_GPU : _EST_BASELINE_SECS_PER_IMG_CPU,
+          source: 'baseline',
+          sampledImgs: 0,
+        };
+      }
+    }
+
+    function _buildUncertainBadge(sampledImgs) {
+      const tip =
+        'Estimate is based on average hardware. Kestrel will refine this once ' +
+        `you've analyzed ~${_EST_MIN_SAMPLED_IMAGES_FOR_LOCAL} images on this ` +
+        `machine (currently: ${sampledImgs}).`;
+      const el = document.createElement('span');
+      el.className = 'est-time-uncertain';
+      el.setAttribute('title', tip);
+      el.setAttribute('aria-label', tip);
+      el.textContent = '?';
+      return el;
+    }
 
     // ── Dialog-local state (NEVER shared with the main tree) ────────────────────
     let analyzeDlgRootNodes = new Map();      // Map<rootPath, syntheticRootNode>
@@ -686,12 +727,13 @@
             meta.appendChild(imgSpan);
             // Per-folder time estimate
             if (f.imagesThisFolder >= _EST_MIN_IMAGES_TO_ESTIMATE) {
-              const rate = useGpu ? _EST_SECS_PER_IMG_GPU : _EST_SECS_PER_IMG_CPU;
+              const { rate, source, sampledImgs } = _getEstRate(useGpu);
               const sec = f.imagesThisFolder * rate;
               const timeSpan = document.createElement('span');
               timeSpan.className = 'meta-time';
               timeSpan.textContent = `· ~${_formatDuration(sec)}`;
               meta.appendChild(timeSpan);
+              if (source === 'baseline') meta.appendChild(_buildUncertainBadge(sampledImgs));
             }
           }
           item.appendChild(meta);
@@ -722,12 +764,16 @@
         let timeValue = '—';
         let timeLabel = 'estimated time';
         let timeDim = true;
+        let timeRateSource = 'baseline';
+        let timeRateSampledImgs = 0;
         if (totalImagesToProcess >= _EST_MIN_IMAGES_TO_ESTIMATE) {
-          const rate = useGpu ? _EST_SECS_PER_IMG_GPU : _EST_SECS_PER_IMG_CPU;
+          const { rate, source, sampledImgs } = _getEstRate(useGpu);
           const seconds = totalImagesToProcess * rate;
           timeValue = `~${_formatDuration(seconds)}`;
-          timeLabel = `est. time (${useGpu ? 'GPU' : 'CPU'})`;
+          timeLabel = `est. time (${useGpu ? 'GPU' : 'CPU'}${source === 'local' ? ' · local' : ''})`;
           timeDim = false;
+          timeRateSource = source;
+          timeRateSampledImgs = sampledImgs;
         }
         headline.innerHTML =
           `<div class="analyze-dlg-stat">` +
@@ -740,9 +786,16 @@
             skipFrag +
           `</div>` +
           `<div class="analyze-dlg-stat">` +
-            `<div class="analyze-dlg-stat-value${timeDim ? ' dim' : ''}">${timeValue}</div>` +
+            `<div class="analyze-dlg-stat-value${timeDim ? ' dim' : ''}" id="_analyzeDlgTimeStatValue">${timeValue}</div>` +
             `<div class="analyze-dlg-stat-label">${timeLabel}</div>` +
           `</div>`;
+        // Append the ? badge in the time-value cell when we're showing a
+        // baseline estimate (i.e. not enough local samples yet). Done via DOM
+        // append so the title attribute and aria-label survive verbatim.
+        if (!timeDim && timeRateSource === 'baseline') {
+          const valueEl = headline.querySelector('#_analyzeDlgTimeStatValue');
+          if (valueEl) valueEl.appendChild(_buildUncertainBadge(timeRateSampledImgs));
+        }
       }
 
       // Aggregate warning row (above the unlock checkbox)

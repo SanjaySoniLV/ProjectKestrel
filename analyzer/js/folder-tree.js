@@ -286,25 +286,59 @@
       if (old) old.remove();
     }
 
-    /** Clear kestrel analysis data for a folder (with confirmation). */
+    /** Clear kestrel analysis data for a folder. Surfaces a styled WebView
+     *  confirmation dialog (#clearKestrelConfirmDlg) so the destructive flow
+     *  is visually consistent with the rest of the app and harder to misclick
+     *  than the previous native confirm()/alert() prompts. */
     async function clearKestrelDataForFolder(folderPath, folderName, refreshCallback) {
-      const confirmed = confirm(
-        `Are you sure you want to delete all Kestrel analysis data for "${folderName}"?\n\n` +
-        `This will permanently remove the .kestrel folder and all its contents (database, exports, thumbnails) ` +
-        `in:\n${folderPath}\n\nThis action cannot be undone.`
-      );
-      if (!confirmed) return;
-      try {
-        const result = await window.pywebview.api.clear_kestrel_data(folderPath);
-        if (result && result.success) {
-          showToast('Kestrel analysis data cleared for ' + folderName);
-          if (refreshCallback) refreshCallback();
-        } else {
-          alert('Failed to clear analysis data:\n\n' + (result?.error || 'Unknown error'));
-        }
-      } catch (e) {
-        alert('Failed to clear analysis data:\n\n' + (e.message || e));
+      const dlg = document.getElementById('clearKestrelConfirmDlg');
+      const cancelBtn = document.getElementById('clearKestrelCancel');
+      const proceedBtn = document.getElementById('clearKestrelProceed');
+      const nameEl = document.getElementById('clearKestrelFolderName');
+      const pathEl = document.getElementById('clearKestrelFolderPath');
+      if (!dlg || !cancelBtn || !proceedBtn) {
+        // Fallback for environments where the modal markup is missing.
+        console.error('[clearKestrelDataForFolder] missing #clearKestrelConfirmDlg markup');
+        return;
       }
+
+      if (nameEl) nameEl.textContent = folderName || folderPath || 'this folder';
+      if (pathEl) pathEl.textContent = folderPath || '';
+
+      // Bind one-shot handlers so we don't accumulate listeners across calls.
+      const close = () => { try { dlg.close(); } catch (_) {} };
+      const onCancel = () => { cleanup(); close(); };
+      const onProceed = async () => {
+        cleanup();
+        close();
+        try {
+          const result = await window.pywebview.api.clear_kestrel_data(folderPath);
+          if (result && result.success) {
+            if (typeof showToast === 'function') {
+              showToast('Kestrel analysis data cleared for ' + (folderName || folderPath));
+            }
+            if (refreshCallback) refreshCallback();
+          } else if (typeof showToast === 'function') {
+            showToast('Failed to clear analysis data: ' + (result?.error || 'Unknown error'));
+          }
+        } catch (e) {
+          if (typeof showToast === 'function') {
+            showToast('Failed to clear analysis data: ' + (e.message || e));
+          }
+        }
+      };
+      function cleanup() {
+        cancelBtn.removeEventListener('click', onCancel);
+        proceedBtn.removeEventListener('click', onProceed);
+        dlg.removeEventListener('cancel', onCancel);
+      }
+      cancelBtn.addEventListener('click', onCancel);
+      proceedBtn.addEventListener('click', onProceed);
+      dlg.addEventListener('cancel', onCancel);
+
+      try { dlg.showModal(); } catch (_) { dlg.show(); }
+      // Default-focus the Cancel button so Enter doesn't auto-confirm.
+      try { cancelBtn.focus(); } catch (_) {}
     }
 
     function renderFolderTree() {
@@ -537,27 +571,9 @@
       label.addEventListener('click', toggleExpand);
       icon.addEventListener('click', toggleExpand);
 
-      // Right-click context menu for clearing analysis data (still gated to
-      // .kestrel folders since "clear analysis data" only applies there).
-      if (node.has_kestrel) {
-        row.addEventListener('contextmenu', (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          showContextMenu(e.clientX, e.clientY, [
-            {
-              label: '🗑 Clear Kestrel Analysis Data',
-              danger: true,
-              action: () => {
-                clearKestrelDataForFolder(node.path, node.name, () => {
-                  node.has_kestrel = false;
-                  node.kestrel_version = '';
-                  renderFolderTree();
-                });
-              }
-            }
-          ]);
-        });
-      }
+      // (Right-click "Clear Kestrel Analysis Data" context menu removed —
+      // the action now lives in the per-folder Folder Actions dropdown in
+      // the scene-grid header. Discoverable, single entry point.)
 
       return wrap;
     }

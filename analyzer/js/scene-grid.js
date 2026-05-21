@@ -1,3 +1,69 @@
+    // Folder Actions dropdown — module-scoped state so only one menu is open
+    // at a time across multiple folder groups. The trigger element is tracked
+    // so re-clicking the same trigger closes (toggle behavior).
+    let _openFolderActionsMenu = null;
+    let _openFolderActionsTrigger = null;
+
+    function _closeFolderActionsMenu() {
+      if (_openFolderActionsMenu && _openFolderActionsMenu.parentNode) {
+        _openFolderActionsMenu.parentNode.removeChild(_openFolderActionsMenu);
+      }
+      _openFolderActionsMenu = null;
+      _openFolderActionsTrigger = null;
+    }
+
+    // One-time global listeners for outside-click and Escape.
+    document.addEventListener('mousedown', (ev) => {
+      if (!_openFolderActionsMenu) return;
+      if (_openFolderActionsMenu.contains(ev.target)) return;
+      if (_openFolderActionsTrigger && _openFolderActionsTrigger.contains(ev.target)) return;
+      _closeFolderActionsMenu();
+    });
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape' && _openFolderActionsMenu) _closeFolderActionsMenu();
+    });
+
+    function _buildFolderActionsMenu(folderPath, refreshCallback) {
+      const menu = document.createElement('div');
+      menu.className = 'folder-group-actions-menu';
+
+      const items = [
+        { icon: '📂', label: 'Open in File Explorer',
+          run: () => window.pywebview.api.open_file_explorer(folderPath) },
+        { icon: '⏱', label: 'Adjust Capture Time',
+          run: () => showAdjustCaptureTimeDialog(folderPath) },
+        { icon: '↺', label: 'Reset Culling Decisions',
+          run: () => showFolderOptionsDialog(folderPath) },
+        { icon: '📝', label: 'Write Photo Metadata',
+          run: () => writeMetadataForFolder(folderPath) },
+        { divider: true },
+        { icon: '🗑', label: 'Clear Kestrel Analysis Data', danger: true,
+          run: () => {
+            const folderName = (folderPath || '').split(/[\\/]/).filter(Boolean).pop() || folderPath;
+            clearKestrelDataForFolder(folderPath, folderName, refreshCallback);
+          } },
+      ];
+
+      for (const it of items) {
+        if (it.divider) {
+          const d = document.createElement('div');
+          d.className = 'folder-group-actions-divider';
+          menu.appendChild(d);
+          continue;
+        }
+        const row = document.createElement('div');
+        row.className = 'folder-group-actions-item' + (it.danger ? ' folder-group-actions-item--danger' : '');
+        row.innerHTML = `<i>${it.icon}</i> ${it.label}`;
+        row.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          _closeFolderActionsMenu();
+          try { it.run(); } catch (e) { console.error('[folder-actions]', it.label, e); }
+        });
+        menu.appendChild(row);
+      }
+      return menu;
+    }
+
     async function renderScenes() {
       const myVer = ++_renderScenesVersion;
       const minC = parseFloat(el('#speciesConf').value) || 0;
@@ -524,54 +590,51 @@
           hdr.className = 'folder-group-header' + (collapsed ? ' collapsed' : '');
           hdr.innerHTML = `<span class="folder-group-toggle">▼</span><span class="folder-group-name">${escapeHtml(folderName)}</span><span class="folder-group-count muted">${allScenesInFolder.length} scene${allScenesInFolder.length === 1 ? '' : 's'}</span>`;
 
-          // Left-aligned secondary actions
-          const leftActions = document.createElement('div');
-          leftActions.className = 'folder-group-left-actions';
-
-          const explorerBtn = document.createElement('button');
-          explorerBtn.className = 'action-btn';
-          explorerBtn.innerHTML = '<i>📂</i> Open';
-          explorerBtn.title = 'Open this folder in File Explorer';
-          explorerBtn.addEventListener('click', (ev) => { ev.stopPropagation(); window.pywebview.api.open_file_explorer(fd.folderPath); });
-          leftActions.appendChild(explorerBtn);
-
-          const folderOptionsBtn = document.createElement('button');
-          folderOptionsBtn.className = 'action-btn';
-          folderOptionsBtn.innerHTML = '<i>↺</i> Reset Culling Decisions';
-          folderOptionsBtn.title = 'Reset Accept/Reject culling decisions for this folder';
-          folderOptionsBtn.addEventListener('click', (ev) => { ev.stopPropagation(); showFolderOptionsDialog(fd.folderPath); });
-          leftActions.appendChild(folderOptionsBtn);
-
-          // Adjust Capture Time — shifts every row's capture_time by a
-          // user-supplied offset (hours). Useful when the camera clock was
-          // set to the wrong time zone or drifted relative to another body.
-          const adjustTimeBtn = document.createElement('button');
-          adjustTimeBtn.className = 'action-btn';
-          adjustTimeBtn.innerHTML = '<i>⏱</i> Adjust Capture Time';
-          adjustTimeBtn.title = 'Shift capture timestamps for every image in this folder by a fixed offset (useful for syncing between camera bodies)';
-          adjustTimeBtn.addEventListener('click', (ev) => {
-            ev.stopPropagation();
-            showAdjustCaptureTimeDialog(fd.folderPath);
-          });
-          leftActions.appendChild(adjustTimeBtn);
-
-          hdr.appendChild(leftActions);
-
-          // Spacer pushes right actions to the far right
+          // Spacer pushes the action group to the right
           const spacer = document.createElement('div');
           spacer.style.flex = '1';
           hdr.appendChild(spacer);
 
-          // Right-aligned primary actions
+          // Action group: Folder Actions dropdown + Culling Assistant (primary).
           const rightActions = document.createElement('div');
           rightActions.className = 'folder-group-right-actions';
 
-          const writeMetaBtn = document.createElement('button');
-          writeMetaBtn.className = 'action-btn write-metadata-btn';
-          writeMetaBtn.innerHTML = '<i>📝</i> Write Photo Metadata';
-          writeMetaBtn.title = 'Write XMP sidecar files alongside your photos — carries star ratings, Accept/Reject decisions, and species tags. Readable by Lightroom, Capture One, darktable, and other editors.';
-          writeMetaBtn.addEventListener('click', (ev) => { ev.stopPropagation(); writeMetadataForFolder(fd.folderPath); });
-          rightActions.appendChild(writeMetaBtn);
+          // Folder Actions dropdown trigger — collapses the legacy 4 inline
+          // buttons (Open, Adjust Capture Time, Reset Culling Decisions,
+          // Write Photo Metadata) plus the new Clear Kestrel Analysis Data
+          // item behind a single segmented entry. Position the menu relative
+          // to this wrapper.
+          const actionsWrap = document.createElement('div');
+          actionsWrap.className = 'folder-group-actions-wrap';
+          actionsWrap.style.position = 'relative';
+
+          const actionsTrigger = document.createElement('button');
+          actionsTrigger.className = 'action-btn folder-group-actions-trigger';
+          actionsTrigger.innerHTML = '<i>⋯</i> Folder Actions <span class="caret">▾</span>';
+          actionsTrigger.title = 'More actions for this folder';
+          const _folderPathForMenu = fd.folderPath;
+          actionsTrigger.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            // Toggle: re-clicking the same trigger closes.
+            if (_openFolderActionsTrigger === actionsTrigger) {
+              _closeFolderActionsMenu();
+              return;
+            }
+            _closeFolderActionsMenu();
+            const refreshCb = () => {
+              // Conservative refresh: tell the scene grid to re-render and
+              // also recompute the tree. clearKestrelDataForFolder already
+              // toggles node.has_kestrel; renderFolderTree picks that up.
+              try { if (typeof renderFolderTree === 'function') renderFolderTree(); } catch (_) {}
+              try { if (typeof renderScenes === 'function') renderScenes(); } catch (_) {}
+            };
+            const menu = _buildFolderActionsMenu(_folderPathForMenu, refreshCb);
+            actionsWrap.appendChild(menu);
+            _openFolderActionsMenu = menu;
+            _openFolderActionsTrigger = actionsTrigger;
+          });
+          actionsWrap.appendChild(actionsTrigger);
+          rightActions.appendChild(actionsWrap);
 
           const cullingBtn = document.createElement('button');
           cullingBtn.className = 'action-btn culling-assistant-btn';

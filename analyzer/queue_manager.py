@@ -10,7 +10,7 @@ import os
 import sys
 import threading
 import time as _time_mod
-from datetime import datetime
+from datetime import datetime, timezone
 
 from settings_utils import load_persisted_settings, save_persisted_settings, debug, info, warn, error, log
 
@@ -651,6 +651,27 @@ class QueueManager:
             settings['kestrel_impact_total_seconds'] = round(
                 settings.get('kestrel_impact_total_seconds', 0.0) + elapsed, 1
             )
+
+            # Local perf sample, bucketed by compute mode. Used by the Analyze
+            # dialog to swap the hardcoded baseline estimate for a per-machine
+            # rolling average once enough samples have accrued. Discards small
+            # or implausibly-slow runs to avoid poisoning the average:
+            #   - imgs < 10: first-folder model-load dominates wall time
+            #   - secs/img > 120: something went wrong (e.g. model load failure)
+            if files_this_session >= 10 and elapsed > 0:
+                secs_per_img = elapsed / files_this_session
+                if secs_per_img <= 120.0:
+                    mode_key = 'perf_samples_gpu' if self._use_gpu else 'perf_samples_cpu'
+                    samples = settings.get(mode_key) or []
+                    if not isinstance(samples, list):
+                        samples = []
+                    samples.append({
+                        'imgs': int(files_this_session),
+                        'secs': round(float(elapsed), 1),
+                        'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                    })
+                    settings[mode_key] = samples[-50:]
+
             save_persisted_settings(settings)
 
             was_cancelled = (item.status == 'cancelled')

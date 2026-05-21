@@ -916,3 +916,69 @@
   transition: opacity 0.25s ease;
   box-shadow: 0 3px 12px rgba(0,0,0,0.5);
 }
+
+/* Folder Actions dropdown — collapses 4 secondary actions + Clear Kestrel
+   into a single segmented trigger. Sits inside .folder-group-right-actions
+   alongside the Culling Assistant button. */
+
+/* The trigger button is the first segment in the right-actions strip when
+   .folder-group-actions-wrap is rendered (which it always is now). Strip its
+   border-left so the visual matches the previous first-child behavior. */
+.folder-group-right-actions .folder-group-actions-wrap:first-child .action-btn {
+  border-left: none;
+}
+
+.folder-group-actions-trigger .caret {
+  margin-left: 4px;
+  font-size: 9px;
+  color: #8a93a3;
+}
+
+/* The popup menu, anchored to the trigger via the wrap's position:relative. */
+.folder-group-actions-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 1000;
+  min-width: 220px;
+  padding: 4px 0;
+  background: #181c26;
+  border: 1px solid #2a3040;
+  border-radius: 4px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  color: #cbd2dc;
+  font-size: 13px;
+}
+
+.folder-group-actions-item {
+  padding: 8px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.folder-group-actions-item i {
+  font-style: normal;
+  width: 18px;
+  display: inline-block;
+  text-align: center;
+}
+.folder-group-actions-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: #fff;
+}
+
+.folder-group-actions-divider {
+  height: 1px;
+  background: #2a3040;
+  margin: 4px 0;
+}
+
+.folder-group-actions-item--danger {
+  color: #e07c7c;
+}
+.folder-group-actions-item--danger:hover {
+  background: rgba(231, 76, 60, 0.10);
+  color: #ff8e8e;
+}

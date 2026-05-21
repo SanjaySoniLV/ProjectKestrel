@@ -290,6 +290,88 @@ class TestFolderRecentsSetting:
         assert "folder_recents" not in result
 
 
+class TestPerfSamplesSetting:
+    """Tests for ``perf_samples_gpu`` / ``perf_samples_cpu`` — the rolling
+    window of per-folder analysis runs used by the Analyze Folders dialog's
+    time estimate. List of dicts ``{imgs: int, secs: float, ts: str}``, cap 50."""
+
+    def test_round_trip(self):
+        payload = {
+            "perf_samples_gpu": [
+                {"imgs": 234, "secs": 712.4, "ts": "2026-05-20T15:42:18Z"},
+                {"imgs": 56, "secs": 198.1, "ts": "2026-05-21T09:11:03Z"},
+            ]
+        }
+        result = _sanitize_settings_payload(payload)
+        assert "perf_samples_gpu" in result
+        assert len(result["perf_samples_gpu"]) == 2
+        assert result["perf_samples_gpu"][0] == {
+            "imgs": 234, "secs": 712.4, "ts": "2026-05-20T15:42:18Z",
+        }
+
+    def test_caps_at_fifty_keeps_last(self):
+        big_list = [{"imgs": i, "secs": float(i) * 4.0, "ts": ""} for i in range(1, 81)]
+        result = _sanitize_settings_payload({"perf_samples_gpu": big_list})
+        # Cap at 50, retain the *last* 50 (most recent appended)
+        assert len(result["perf_samples_gpu"]) == 50
+        assert result["perf_samples_gpu"][0]["imgs"] == 31  # 80 - 50 + 1
+        assert result["perf_samples_gpu"][-1]["imgs"] == 80
+
+    def test_drops_malformed_entries(self):
+        payload = {"perf_samples_gpu": [
+            {"imgs": 100, "secs": 400.0, "ts": "2026-05-20T00:00:00Z"},
+            "not-a-dict",
+            42,
+            None,
+            {"imgs": 0, "secs": 100.0},  # imgs <= 0 → dropped
+            {"imgs": 50, "secs": 0.0},   # secs <= 0 → dropped
+            {"imgs": 50},                # missing secs → dropped
+            {"imgs": 80, "secs": 320.0, "ts": "2026-05-21T00:00:00Z"},
+        ]}
+        result = _sanitize_settings_payload(payload)
+        assert len(result["perf_samples_gpu"]) == 2
+        assert result["perf_samples_gpu"][0]["imgs"] == 100
+        assert result["perf_samples_gpu"][1]["imgs"] == 80
+
+    def test_oversized_values_clamped(self):
+        payload = {"perf_samples_gpu": [
+            {"imgs": 999_999_999, "secs": 1e20, "ts": "2026-05-20T00:00:00Z"},
+        ]}
+        result = _sanitize_settings_payload(payload)
+        assert len(result["perf_samples_gpu"]) == 1
+        sample = result["perf_samples_gpu"][0]
+        assert 0 < sample["imgs"] <= 1_000_000
+        assert 0 < sample["secs"] <= 10_000_000.0
+
+    def test_non_list_dropped(self):
+        result = _sanitize_settings_payload({"perf_samples_gpu": "not-a-list"})
+        assert result.get("perf_samples_gpu") == []
+
+    def test_missing_key_omitted(self):
+        result = _sanitize_settings_payload({})
+        assert "perf_samples_gpu" not in result
+        assert "perf_samples_cpu" not in result
+
+    def test_gpu_and_cpu_independent(self):
+        payload = {
+            "perf_samples_gpu": [{"imgs": 100, "secs": 400.0, "ts": ""}],
+            "perf_samples_cpu": [
+                {"imgs": 50, "secs": 500.0, "ts": ""},
+                {"imgs": 60, "secs": 600.0, "ts": ""},
+            ],
+        }
+        result = _sanitize_settings_payload(payload)
+        assert len(result["perf_samples_gpu"]) == 1
+        assert len(result["perf_samples_cpu"]) == 2
+
+    def test_ts_truncated(self):
+        payload = {"perf_samples_gpu": [
+            {"imgs": 100, "secs": 400.0, "ts": "x" * 500},
+        ]}
+        result = _sanitize_settings_payload(payload)
+        assert len(result["perf_samples_gpu"][0]["ts"]) <= 32
+
+
 class TestBirdRegionsSetting:
     """Tests for ``bird_regions`` and ``show_scientific_names`` sanitisation
     -- the new species-tagging settings introduced alongside the global
