@@ -1,8 +1,8 @@
-/* ── Analyze Folders dialog ──────────────────────────────────── */
+/* ── Analyze Folders dialog (Phase 3: 3-column layout) ─────────────────────── */
 .analyze-dlg {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   padding: 16px;
   width: min(96vw, calc(100vw - 80px));
   height: min(88vh, calc(100vh - 80px));
@@ -15,214 +15,180 @@
   font-size: 16px;
 }
 
-/* Split layout: folder tree (left) + queue preview (right) */
-.analyze-dlg-split {
+.analyze-dlg-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Three-column grid: Queue Builder | Settings | Queue Summary + Start */
+.analyze-dlg-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  grid-template-columns: minmax(300px, 1fr) minmax(280px, 1fr) minmax(320px, 1fr);
+  gap: 14px;
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
 }
-/* Stack on narrow screens */
-@media (max-width: 640px) {
-  .analyze-dlg-split { grid-template-columns: 1fr; }
-  .analyze-dlg { width: min(520px, 96vw); }
+@media (max-width: 980px) {
+  .analyze-dlg-grid { grid-template-columns: 1fr; overflow: auto; }
 }
 
+.analyze-dlg-col {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 8px;
+}
+
+.analyze-dlg-col-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.3px;
+  flex: 0 0 auto;
+}
+
+/* ── Column 1: Queue Builder ─────────────────────────────────────────────── */
 .analyze-dlg-tree-wrap {
   display: flex;
   flex-direction: column;
   overflow: hidden;
   background: #0a0d12;
-  border: 1px solid #2a3040;
-  border-radius: 8px;
+  border: 1px solid #2b6ec8;
+  border-radius: 10px;
   padding: 0;
   min-height: 0;
+  flex: 1 1 auto;
 }
-/* + Load Folders button inside the analyze dialog: same flush-top treatment
-   as the main sidebar (Phase 2K mirror). */
 .analyze-dlg-tree-wrap .folder-load-btn {
-  border-radius: 8px 8px 0 0;
-  height: 34px;
-  font-size: 12.5px;
+  border-radius: 10px 10px 0 0;
+  height: 36px;
+  font-size: 13px;
 }
 .analyze-dlg-tree-wrap #analyzeDlgRecentsRow {
   padding: 6px 8px 4px;
 }
+.analyze-dlg-tree-wrap #analyzeDlgTreeEmptyHint {
+  padding: 18px 14px;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+  font-style: italic;
+  line-height: 1.5;
+}
+.analyze-dlg-tree-wrap.has-roots #analyzeDlgTreeEmptyHint { display: none; }
 .analyze-dlg-tree-wrap #analyzeDlgTree {
   flex: 1 1 auto;
   overflow-y: auto;
   padding: 4px 6px;
 }
 .analyze-dlg-tree-wrap .folder-tree-footer {
-  border-radius: 0 0 8px 8px;
+  border-radius: 0 0 10px 10px;
+  border-top: 1px solid #2a3040;
 }
 
-/* Right panel: queue preview */
-.analyze-dlg-queue-wrap {
+/* ── Column 2: Settings ──────────────────────────────────────────────────── */
+.analyze-dlg-col-settings {
+  overflow-y: auto;
+}
+.analyze-dlg-settings-critical {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  overflow: auto;
-  background: #0a0d12;
-  border: 1px solid #1d2230;
-  border-radius: 8px;
-  padding: 8px;
-  min-height: 0;
-}
-
-.analyze-dlg-queue-wrap h4 {
-  margin: 0;
-  font-size: 13px;
-  color: var(--muted);
-  font-weight: 600;
-}
-
-.adlg-queue-section { margin-bottom: 6px; }
-.adlg-queue-section-title {
-  font-size: 11px;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-bottom: 4px;
-  font-weight: 600;
-}
-
-.adlg-queue-item {
-  display: flex;
-  align-items: center;
   gap: 6px;
-  padding: 3px 6px;
-  border-radius: 4px;
-  font-size: 12px;
-}
-.adlg-queue-item:hover { background: rgba(255,255,255,.04); }
-
-.adlg-queue-item .adlg-qi-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  padding: 10px 12px;
+  background: #0a0d12;
+  border: 1px solid #2a3040;
+  border-radius: 10px;
 }
 
-.adlg-queue-item .adlg-qi-status {
-  font-size: 10px;
-  color: var(--muted);
-  flex-shrink: 0;
-}
-
-.adlg-queue-item .adlg-qi-remove {
-  flex-shrink: 0;
-  background: none;
-  border: none;
-  color: #e74c3c;
-  cursor: pointer;
-  font-size: 11px;
-  padding: 1px 4px;
-  border-radius: 3px;
-  opacity: 0.6;
-}
-.adlg-queue-item .adlg-qi-remove:hover { opacity: 1; background: rgba(231,76,60,.12); }
-
-/* Drag-and-drop for pending queue items */
-.adlg-queue-item[draggable="true"] { cursor: grab; }
-.adlg-queue-item[draggable="true"]:active { cursor: grabbing; }
-.adlg-queue-item.drag-over { border-top: 2px solid var(--brand); margin-top: -2px; }
-.adlg-queue-item.dragging { opacity: 0.35; }
-.adlg-qi-grip {
-  flex-shrink: 0;
-  color: #555;
-  font-size: 11px;
-  cursor: grab;
-  user-select: none;
-  padding: 0 2px;
-}
-
-.adlg-queue-empty {
-  color: var(--muted);
-  font-size: 12px;
-  font-style: italic;
-  padding: 12px 6px;
-  text-align: center;
-}
-
-.analyze-dlg-options {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  font-size: 13px;
-}
-
-/* Advanced Analysis Settings (collapsible) */
-.analyze-dlg-advanced {
-  border: 1px solid #1d2230;
-  border-radius: 8px;
-  background: #0d1017;
-  font-size: 13px;
-}
-
-.analyze-dlg-advanced summary {
-  cursor: pointer;
-  padding: 7px 12px;
-  color: #a0a8b8;
-  font-weight: 600;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  user-select: none;
-}
-.analyze-dlg-advanced summary:hover { color: #c8cdd8; }
-
-.analyze-dlg-advanced-body {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: 12px;
-  padding: 4px 12px 12px;
-  align-items: start;
-}
-
-@media (max-width: 780px) {
-  .analyze-dlg-advanced-body {
-    grid-template-columns: 1fr;
-  }
-}
-
-.adlg-group {
+/* Radio group for the wildlife model — visually heavy enough to communicate
+   it's the most important setting. */
+.adlg-radio-group {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 10px 12px;
-  border: 1px solid #161a24;
-  border-radius: 6px;
-  background: #0a0d13;
-}
-
-.adlg-group-title {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
-  color: #7a8598;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #1d2230;
   margin-bottom: 4px;
+}
+.adlg-radio-label {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.adlg-radio-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 0;
+  cursor: pointer;
+}
+.adlg-radio-row input[type="radio"] {
+  margin-top: 3px;
+  flex-shrink: 0;
+  accent-color: #2b6ec8;
+}
+.adlg-radio-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.adlg-radio-name { font-size: 13px; color: #d4d8e0; }
+.adlg-radio-hint { font-size: 11px; line-height: 1.3; }
+.adlg-radio-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #d4d8e0;
+  cursor: pointer;
+}
+.adlg-radio-inline input[type="radio"] { accent-color: #2b6ec8; }
+
+/* "More options" collapsible — flat list of less-critical settings. */
+.analyze-dlg-more-options {
+  border: 1px solid #2a3040;
+  border-radius: 8px;
+  background: #0a0d12;
+  font-size: 13px;
+  flex: 0 0 auto;
+}
+.analyze-dlg-more-options summary {
+  cursor: pointer;
+  padding: 8px 12px;
+  color: #a0a8b8;
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.3px;
+  user-select: none;
+  list-style: none;
+}
+.analyze-dlg-more-options summary::-webkit-details-marker { display: none; }
+.analyze-dlg-more-options summary:hover { color: #c8cdd8; }
+.analyze-dlg-more-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 12px 12px;
 }
 
 .adlg-toggle-row {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 6px 0;
+  padding: 4px 0;
   cursor: pointer;
 }
 .adlg-toggle-row input[type="checkbox"] {
-  margin-top: 2px;
+  margin-top: 3px;
   flex-shrink: 0;
 }
 .adlg-toggle-text {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
   flex: 1;
 }
 .adlg-toggle-label {
@@ -252,7 +218,7 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-top: 4px;
+  padding: 2px 0;
 }
 .adlg-setting-row label {
   flex: 1;
@@ -261,26 +227,234 @@
 .adlg-setting-row input[type="number"],
 .adlg-setting-row select {
   flex-shrink: 0;
-}
-.adlg-hint {
-  font-size: 11px;
-  margin-top: -2px;
-  line-height: 1.35;
+  height: 28px;
+  font-size: 12px;
 }
 
-.analyze-dlg-footer {
+/* ── Column 3: Queue Summary + Start ─────────────────────────────────────── */
+.analyze-dlg-col-summary {
   display: flex;
-  gap: 8px;
-  align-items: center;
+  flex-direction: column;
+  min-height: 0;
 }
-
-.analyze-dlg-selected-count {
-  flex: 1;
+.analyze-dlg-summary-top {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.analyze-dlg-summary-headline {
+  padding: 10px 12px;
+  background: #0a0d12;
+  border: 1px solid #2a3040;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.analyze-dlg-summary-empty {
+  color: var(--muted);
+  font-style: italic;
+}
+.analyze-dlg-summary-image-count {
+  font-size: 18px;
+  font-weight: 600;
+  color: #d4e4f5;
+}
+.analyze-dlg-summary-folder-count {
   font-size: 12px;
   color: var(--muted);
 }
+.analyze-dlg-summary-time {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: #a8b4c8;
+}
 
-/* Queue checkboxes in the analyze dialog (amber accent) */
+.analyze-dlg-warnings {
+  padding: 8px 12px;
+  background: rgba(243, 156, 18, 0.08);
+  border: 1px solid rgba(243, 156, 18, 0.45);
+  border-radius: 8px;
+  font-size: 12px;
+  color: #f5c542;
+  line-height: 1.4;
+}
+.analyze-dlg-warnings.hidden { display: none; }
+
+.analyze-dlg-summary-list-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  background: #0a0d12;
+  border: 1px solid #2a3040;
+  border-radius: 8px;
+  padding: 4px 0;
+}
+.analyze-dlg-queued-list {
+  display: flex;
+  flex-direction: column;
+}
+.analyze-dlg-queued-list-empty {
+  padding: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: italic;
+  text-align: center;
+}
+.analyze-dlg-queued-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  font-size: 12px;
+  border-bottom: 1px solid #14181f;
+}
+.analyze-dlg-queued-item:last-child { border-bottom: none; }
+.analyze-dlg-queued-item:hover { background: rgba(255,255,255,0.03); }
+.analyze-dlg-queued-item-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.analyze-dlg-queued-item-count {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.analyze-dlg-summary-bottom {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding-top: 8px;
+}
+.analyze-dlg-compute-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  background: #0a0d12;
+  border: 1px solid #2a3040;
+  border-radius: 8px;
+}
+.analyze-dlg-start-btn {
+  width: 100%;
+  height: 42px;
+  font-size: 15px;
+  font-weight: 500;
+  border-radius: 10px;
+}
+.analyze-dlg-footer-mini {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.analyze-dlg-footer-mini button {
+  flex: 0 0 auto;
+  height: 30px;
+  font-size: 12px;
+  padding: 0 12px;
+}
+.analyze-dlg-selected-count {
+  flex: 1;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* ── State pills (Phase 3F) ──────────────────────────────────────────────────
+   Two orthogonal CSS axes encode folder status in the queue builder:
+     color = relationship to queue (blue/orange/gray/red/dim)
+     shape = work progress (solid/half/outline/dot/warn)
+   Composed as <span class="state-pill state-pill--{color} state-pill--{shape}">.
+   Pure CSS — no SVG/Unicode/font glyphs that vary across platforms. */
+.state-pill {
+  display: inline-block;
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  margin: 0 6px 0 4px;
+  position: relative;
+  vertical-align: middle;
+}
+/* Colors */
+.state-pill--blue   { background: #3a84e6; border: 1px solid #3a84e6; }
+.state-pill--orange { background: #f39c12; border: 1px solid #f39c12; }
+.state-pill--gray   { background: #6a7585; border: 1px solid #6a7585; }
+.state-pill--red    { background: #e74c3c; border: 1px solid #e74c3c; }
+.state-pill--dim    { background: transparent; border: 1px solid #3a3f4d; }
+/* Shapes — these OVERRIDE color background for outline/half/dot/warn variants */
+.state-pill--outline {
+  background: transparent !important;
+}
+.state-pill--solid { /* default: keep color background */ }
+.state-pill--dot {
+  width: 6px;
+  height: 6px;
+  background: #3a3f4d !important;
+  border: none !important;
+  margin-left: 7px;
+  margin-right: 9px;
+}
+.state-pill--half {
+  /* Left half filled (color), right half transparent. The base background-color
+     is reused as the gradient stop; the border stays solid for definition. */
+  background: linear-gradient(to right, currentColor 0%, currentColor 50%, transparent 50%, transparent 100%) !important;
+}
+.state-pill--blue.state-pill--half   { color: #3a84e6; }
+.state-pill--orange.state-pill--half { color: #f39c12; }
+.state-pill--gray.state-pill--half   { color: #6a7585; }
+.state-pill--red.state-pill--half    { color: #e74c3c; }
+.state-pill--warn {
+  /* Tiny warning glyph: red triangle drawn with borders. */
+  background: transparent !important;
+  border: none !important;
+  width: 0; height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-bottom: 10px solid #e74c3c;
+  border-radius: 0;
+  margin-top: -2px;
+}
+.state-pill--warn::after {
+  content: '!';
+  position: absolute;
+  left: -2px;
+  top: 1px;
+  color: #fff;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* Outdated-version badge — small, sits AFTER the count in a tree row. */
+.adlg-outdated-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 4px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: #f5c542;
+  background: rgba(245, 197, 66, 0.08);
+  border: 1px solid rgba(245, 197, 66, 0.35);
+  border-radius: 3px;
+  vertical-align: middle;
+  line-height: 1.4;
+}
+.adlg-outdated-badge.warning {
+  /* When the folder is queued for re-analysis AND outdated, surface as warning. */
+  color: #ffb37a;
+  background: rgba(232, 154, 90, 0.12);
+  border-color: rgba(232, 154, 90, 0.55);
+}
+
+/* Queue-builder checkbox: orange-ish accent so it visually distinguishes
+   from the main tree's blue accent — these are queue selections, not
+   "load this folder for viewing" selections. */
 .adlg-cb {
   flex: 0 0 13px;
   width: 13px;
@@ -289,13 +463,62 @@
   cursor: pointer;
   accent-color: #f39c12;
 }
-
-.adlg-node-row.queue-sel {
-  background: rgba(243, 156, 18, .1) !important;
+/* Faded checkbox for rows that can't be queued (no photos) */
+.adlg-node-row.no-photos-deep .adlg-cb,
+.adlg-node-row.no-photos-shallow .adlg-cb {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.adlg-node-row.no-photos-deep .tree-label {
+  opacity: 0.5;
 }
 
-.adlg-node-row.queue-sel .tree-label {
-  color: #f5c542 !important;
+/* ── Pre-queue confirmation modal (Phase 3H) ────────────────────────────── */
+.analyze-confirm-dlg {
+  padding: 0;
+  border: 2px solid var(--warn);
+  border-radius: 12px;
+  background: #161922;
+  width: min(540px, 92vw);
+  color: var(--text);
+  box-shadow: 0 20px 64px rgba(0, 0, 0, 0.7);
+}
+.analyze-confirm-dlg::backdrop {
+  background: rgba(0, 0, 0, 0.6);
+}
+.analyze-confirm-body {
+  padding: 20px 22px;
+}
+.analyze-confirm-list {
+  margin: 6px 0 12px;
+  padding: 8px 12px 8px 28px;
+  background: #0a0d12;
+  border: 1px solid #2a3040;
+  border-radius: 6px;
+  max-height: 200px;
+  overflow-y: auto;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.analyze-confirm-list li {
+  color: #d4d8e0;
+  word-break: break-all;
+}
+.analyze-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+.analyze-confirm-danger {
+  background: #6e1f1a;
+  border-color: #a33028;
+  color: #fff5f4;
+  font-weight: 500;
+}
+.analyze-confirm-danger:hover {
+  background: #8c2a22;
+  border-color: #c43d32;
 }
 
 /* ── Analysis Queue floating notification panel ────────────────── */

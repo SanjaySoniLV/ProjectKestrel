@@ -479,8 +479,10 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
         out['sortBy'] = sort_by
 
     _set_path('rootHint')
-    if 'lastQueueState' in data:
-        out['lastQueueState'] = _sanitize_path_list(data.get('lastQueueState'), max_items=512)
+    # Phase 3: lastQueueState removed — was used by the dialog's "Restore Queue?"
+    # button to persist the user's most-recent selection. Replaced by the
+    # analyze_recents settings key (separate timestamp-based history per the
+    # Phase 3 dialog redesign). Existing values fall through to passthrough.
     if 'folder_recents' in data:
         # Persistent most-recently-loaded root folders. Cap matches the visible
         # chip count in the sidebar so backend and frontend stay aligned.

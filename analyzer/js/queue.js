@@ -61,12 +61,8 @@
       return window.pywebview.api.get_recovery_status();
     }
 
-    async function apiRestoreRecoveryQueue() {
-      if (!window.pywebview?.api?.restore_analysis_queue) {
-        throw new Error('Desktop API unavailable: restore_analysis_queue');
-      }
-      return window.pywebview.api.restore_analysis_queue();
-    }
+    // Phase 3: apiRestoreRecoveryQueue removed — queue-restore feature
+    // replaced by the analyze dialog's analyze_recents chip row.
 
     async function apiClearRecoveryState(clearQueueState = true) {
       if (!window.pywebview?.api?.clear_recovery_state) {
@@ -84,6 +80,10 @@
 
     let _startupRecoveryHandled = false;
 
+    // Phase 3: queue-restore branch removed. This function now only handles
+    // the unclean-shutdown crash-report prompt. Interrupted queues now
+    // surface as recents in the Analyze Folders dialog (analyze_recents
+    // settings key) instead of a startup modal.
     async function maybeHandleStartupRecovery() {
       if (_startupRecoveryHandled) return;
       _startupRecoveryHandled = true;
@@ -98,70 +98,35 @@
       }
       if (!recovery || recovery.success === false) return;
 
-      const restorePaths = Array.isArray(recovery.queue_recovery?.restore_paths)
-        ? recovery.queue_recovery.restore_paths
-        : [];
-      const hasQueueRecovery = restorePaths.length > 0;
       const exitReason = String(recovery.exit_reason || '').toLowerCase();
       // 'os_shutdown' (PC reboot/logoff) and 'clean' never warrant a dialog.
       // 'crash' is a real unhandled exception. 'unknown' is ambiguous
       // (SIGKILL, power loss, or pre-upgrade install) and gets a soft prompt.
       const hadUncleanShutdown = !!recovery.unclean_shutdown
         && (exitReason === 'crash' || exitReason === 'unknown' || exitReason === '');
-      if (!hasQueueRecovery && !hadUncleanShutdown) return;
+      if (!hadUncleanShutdown) return;
 
-      let queueDismissed = false;
-      if (hasQueueRecovery) {
-        const doRestore = confirm(
-          `Kestrel detected an interrupted analysis queue with ${restorePaths.length} folder${restorePaths.length === 1 ? '' : 's'}.\n\nRestore it now?`
-        );
-        if (doRestore) {
-          try {
-            const restoreResult = await apiRestoreRecoveryQueue();
-            if (restoreResult && restoreResult.success !== false) {
-              startPollingQueue();
-              const status = await apiGetQueueStatus();
-              renderQueuePanel(status);
-              setStatus(`Recovered previous analysis queue (${restoreResult.restored || restorePaths.length} folder(s)).`);
-            } else {
-              const msg = restoreResult?.error || 'Unknown error';
-              alert('Could not restore the previous queue:\n\n' + msg);
-              queueDismissed = true;
-            }
-          } catch (e) {
-            alert('Could not restore the previous queue:\n\n' + (e.message || e));
-            queueDismissed = true;
+      const promptText = exitReason === 'crash'
+        ? 'Kestrel detected that the previous session crashed.\n\nSend a crash report now?'
+        : 'Kestrel did not exit cleanly. This is sometimes caused by a system shutdown or power loss — would you still like to send a report?';
+      const sendReport = confirm(promptText);
+      if (sendReport) {
+        try {
+          const reportResult = await apiSendRecoveryCrashReport();
+          if (reportResult && reportResult.success === false) {
+            alert('Could not send crash report:\n\n' + (reportResult.error || 'Unknown error'));
+          } else {
+            showToast('Crash report sent. Thank you.', 3500);
           }
-        } else {
-          queueDismissed = true;
-        }
-      }
-
-      if (hadUncleanShutdown) {
-        const promptText = exitReason === 'crash'
-          ? 'Kestrel detected that the previous session crashed.\n\nSend a crash report now?'
-          : 'Kestrel did not exit cleanly. This is sometimes caused by a system shutdown or power loss — would you still like to send a report?';
-        const sendReport = confirm(promptText);
-        if (sendReport) {
-          try {
-            const reportResult = await apiSendRecoveryCrashReport();
-            if (reportResult && reportResult.success === false) {
-              alert('Could not send crash report:\n\n' + (reportResult.error || 'Unknown error'));
-            } else {
-              showToast('Crash report sent. Thank you.', 3500);
-            }
-          } catch (e) {
-            alert('Could not send crash report:\n\n' + (e.message || e));
-          }
+        } catch (e) {
+          alert('Could not send crash report:\n\n' + (e.message || e));
         }
       }
 
       try {
-        if (queueDismissed) {
-          await apiClearRecoveryState(true);
-        } else if (hadUncleanShutdown) {
-          await apiClearRecoveryState(false);
-        }
+        // Clear only the unclean-shutdown timestamp; we no longer persist
+        // queue recovery state so the `false` arg is a no-op there.
+        await apiClearRecoveryState(false);
       } catch (_) { }
     }
 

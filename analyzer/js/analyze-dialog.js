@@ -1,111 +1,289 @@
-    // ── Analyze Folders Dialog ───────────────────────────────────────────────────
+    // ── Analyze Folders Dialog (Phase 3 — completely independent state) ──────────
+    //
+    // The dialog tree no longer reads or writes the main sidebar tree's state
+    // (folderTreeRootNodes / folderTreeRootOrder / checkedFolderPaths). It has
+    // its own Map, its own checked set, its own expanded set, its own recents
+    // settings key (analyze_recents). The two trees never share state. This
+    // makes "what am I viewing" (main) and "what am I queueing for analysis"
+    // (dialog) two cleanly-separable mental models.
 
-    let _dlgSelected = new Set();
-    let _dlgExpandedPaths = new Set();
-    let _dlgReanalyze = new Set(); // paths confirmed for re-analysis (fully analyzed folders)
+    // ── Time estimation constants (Phase 3I) ────────────────────────────────────
+    // Hardcoded baseline for now. The runtime "analyzing" badge already shows
+    // live ETA during processing; this is just the PRE-queue estimate so the
+    // user can gauge how much work they're about to commit. Telemetry-backed
+    // local rates are deferred to a follow-up.
+    const _EST_SECS_PER_IMG_GPU = 1.2;
+    const _EST_SECS_PER_IMG_CPU = 8.0;
+    const _EST_MIN_IMAGES_TO_ESTIMATE = 50;
 
-    /** Build a tree node for the Analyze dialog (amber checkboxes, no load-cb). */
-    function buildAnalyzeDlgNode(node, selectedSet, onChangeCallback) {
+    // ── Dialog-local state (NEVER shared with the main tree) ────────────────────
+    let analyzeDlgRootNodes = new Map();      // Map<rootPath, syntheticRootNode>
+    let analyzeDlgRootOrder = [];             // insertion order (render order)
+    let analyzeDlgExpandedPaths = new Set();
+    let analyzeDlgCheckedPaths = new Set();   // queue-builder selections
+    let analyzeDlgInspectionCache = new Map();// Map<path, {total, processed, errored, has_kestrel, kestrel_version}>
+    let analyzeDlgReanalyzeUnlocked = false;  // gates the "re-analyze fully-analyzed" path
+    let _analyzeDlgInspectionVersion = 0;     // bumped on each scan to cancel stale callbacks
+
+    // ── Multi-root accessors (dialog-scoped mirror of folder-tree.js helpers) ────
+    function _adlgHasAnyRoots() { return analyzeDlgRootOrder.length > 0; }
+    function _adlgGetAllRoots() {
+      return analyzeDlgRootOrder.map(p => analyzeDlgRootNodes.get(p)).filter(Boolean);
+    }
+    function _adlgNormRoot(p) {
+      return (p || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    }
+    function _adlgFindNode(targetPath) {
+      const target = _adlgNormRoot(targetPath);
+      for (const root of _adlgGetAllRoots()) {
+        const found = _adlgFindNodeInSubtree(root, target);
+        if (found) return found;
+      }
+      return null;
+    }
+    function _adlgFindNodeInSubtree(node, targetNorm) {
+      if (!node) return null;
+      if (_adlgNormRoot(node.path) === targetNorm) return node;
+      if (node.children) {
+        for (const c of node.children) {
+          const f = _adlgFindNodeInSubtree(c, targetNorm);
+          if (f) return f;
+        }
+      }
+      return null;
+    }
+
+    // ── Add / remove / clear roots (dialog-local) ───────────────────────────────
+    async function addAnalyzeDlgRoot(rootPath) {
+      if (!hasPywebviewApi || !window.pywebview?.api?.list_subfolders) {
+        return { added: false, error: 'no-bridge' };
+      }
+      if (!rootPath) return { added: false, error: 'no-path' };
+      const norm = _adlgNormRoot(rootPath);
+      if (analyzeDlgRootNodes.has(norm)) {
+        return { added: false, alreadyLoaded: true, node: analyzeDlgRootNodes.get(norm) };
+      }
+      // Subdir / ancestor overlap rejection — same policy as the main tree.
+      for (const existing of analyzeDlgRootOrder) {
+        if (norm.startsWith(existing + '/')) {
+          return { added: false, alreadyLoaded: true, reason: 'subdir-of', containingRoot: existing };
+        }
+      }
+      const childRootsToReplace = analyzeDlgRootOrder.filter(existing => existing.startsWith(norm + '/'));
+      for (const child of childRootsToReplace) {
+        analyzeDlgRootNodes.delete(child);
+      }
+      analyzeDlgRootOrder = analyzeDlgRootOrder.filter(p => !childRootsToReplace.includes(p));
+
+      const depth = getSetting('treeScanDepth', 3);
+      try {
+        const result = await window.pywebview.api.list_subfolders(norm, depth);
+        if (!result || !result.success) {
+          return { added: false, error: (result && result.error) || 'scan-failed' };
+        }
+        const rootHasKestrel = !!result.root_has_kestrel;
+        const rootName = norm.split('/').filter(Boolean).pop() || norm;
+        const node = {
+          name: rootName,
+          path: norm,
+          has_kestrel: rootHasKestrel,
+          kestrel_version: result.root_kestrel_version || '',
+          children: result.tree || [],
+        };
+        analyzeDlgRootNodes.set(norm, node);
+        analyzeDlgRootOrder.push(norm);
+        analyzeDlgExpandedPaths.add(norm);
+        // Expand visible non-greyed subtrees so the user can see what's
+        // inside the picked parent — but don't auto-check anything yet
+        // (auto-check happens AFTER inspection resolves).
+        _adlgAutoExpandVisible(node);
+        return { added: true, rootHasKestrel, node };
+      } catch (e) {
+        console.error('[analyzeDlg] addAnalyzeDlgRoot error', e);
+        return { added: false, error: String(e) };
+      }
+    }
+
+    // Expand any non-greyed descendant that has children. "Greyed" status
+    // is determined post-inspection (no-photos folders fade), so during the
+    // initial expand we conservatively expand every container — the post-
+    // inspection re-render will keep the layout stable.
+    function _adlgAutoExpandVisible(node) {
+      if (!node || !node.children || node.children.length === 0) return;
+      for (const c of node.children) {
+        if (c.children && c.children.length > 0) {
+          analyzeDlgExpandedPaths.add(c.path);
+          _adlgAutoExpandVisible(c);
+        }
+      }
+    }
+
+    function clearAnalyzeDlgRoots() {
+      analyzeDlgRootNodes.clear();
+      analyzeDlgRootOrder = [];
+      analyzeDlgExpandedPaths.clear();
+      analyzeDlgCheckedPaths.clear();
+      analyzeDlgInspectionCache.clear();
+      analyzeDlgReanalyzeUnlocked = false;
+      const unlockBox = document.getElementById('analyzeDlgReanalyzeUnlock');
+      if (unlockBox) unlockBox.checked = false;
+    }
+
+    // ── State pill computation (Phase 3F) ───────────────────────────────────────
+    //
+    // Two orthogonal axes encode every folder's status:
+    //   color = relationship to queue (blue done / orange queued / gray idle / red errored / dim no-photos)
+    //   shape = work progress (solid done / half partial / outline not-started / dot no-photos / warn errored)
+    //
+    // Returns { color, shape } for the given path. `node` is the tree node
+    // (for static metadata like has_kestrel/kestrel_version); `info` is the
+    // inspection result for that exact path (may be undefined if not yet probed).
+    function _computeAnalyzeDlgPill(node, info, isChecked) {
+      // Inspection not yet done → neutral outline.
+      if (!info) {
+        return { color: 'dim', shape: 'outline' };
+      }
+      const total = info.total || 0;
+      const processed = info.processed || 0;
+      const errored = info.errored || 0;
+      // No photos at all → dim dot (parent folders, exports dirs, etc.)
+      if (total === 0) {
+        return { color: 'dim', shape: 'dot' };
+      }
+      // Errored images → red warn (regardless of queue state).
+      if (errored > 0) {
+        return { color: 'red', shape: 'warn' };
+      }
+      const isFullyAnalyzed = (processed >= total);
+      const isPartial = (processed > 0 && processed < total);
+      if (isFullyAnalyzed) {
+        return { color: 'blue', shape: 'solid' };
+      }
+      if (isPartial) {
+        return { color: isChecked ? 'orange' : 'gray', shape: 'half' };
+      }
+      // Not started: outline, orange if queued, gray otherwise.
+      return { color: isChecked ? 'orange' : 'gray', shape: 'outline' };
+    }
+
+    function _isOutdatedNode(node) {
+      // Reuse the main tree's version-compare helper if available.
+      if (typeof isVersionOutdated === 'function') {
+        try { return isVersionOutdated(node); } catch (e) { /* fall through */ }
+      }
+      return false;
+    }
+
+    // ── Tree rendering (rewritten — uses state pills, dialog-local state) ───────
+    function buildAnalyzeDlgNode(node, parentSiblingsLast) {
       const wrap = document.createElement('div');
       wrap.className = 'tree-node';
 
       const row = document.createElement('div');
       const hasChildren = node.children && node.children.length > 0;
-      const isExpanded = _dlgExpandedPaths.has(node.path);
-      const outdated = isVersionOutdated(node);
-      row.className = 'adlg-node-row' + (selectedSet.has(node.path) ? ' queue-sel' : '') + (node.has_kestrel ? ' has-kestrel' : '') + (outdated ? ' version-outdated' : '');
-      if (outdated) {
-        row.title = `Analyzed on Kestrel v${node.kestrel_version} (current: v${_appVersion}). Consider re-analyzing.`;
-      }
+      const isExpanded = analyzeDlgExpandedPaths.has(node.path);
+      const isChecked = analyzeDlgCheckedPaths.has(_adlgNormRoot(node.path));
+      const info = analyzeDlgInspectionCache.get(_adlgNormRoot(node.path));
+      const outdated = _isOutdatedNode(node);
+      const noPhotosDeep = info && info.total === 0;
 
+      let cls = 'adlg-node-row';
+      if (isChecked) cls += ' queue-sel';
+      if (node.has_kestrel) cls += ' has-kestrel';
+      if (outdated) cls += ' version-outdated';
+      if (noPhotosDeep) cls += ' no-photos-deep';
+      row.className = cls;
+      row.dataset.path = node.path;
+      row.title = outdated
+        ? `Analyzed on Kestrel v${node.kestrel_version} (current: v${_appVersion}) — re-analyze to update.\n${node.path}`
+        : node.path;
+
+      // Arrow (expand toggle). Leaf rows get a hidden arrow for alignment.
       const arrow = document.createElement('span');
       arrow.className = 'tree-arrow' + (hasChildren ? (isExpanded ? ' open' : '') : ' leaf');
-      arrow.textContent = hasChildren ? '▶' : '';
+      arrow.textContent = '▶';
 
+      // Checkbox: gated by "has photos to do work on". Empty/already-fully-
+      // analyzed folders can still be checked (the worker handles skip-silently
+      // and re-analysis-confirmation), but no-photos-deep is disabled.
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.className = 'adlg-cb';
-      cb.checked = selectedSet.has(node.path);
+      cb.checked = isChecked;
+      if (noPhotosDeep) {
+        cb.disabled = true;
+        cb.title = 'No photos in this folder or any subfolder.';
+      }
       cb.addEventListener('change', (e) => {
         e.stopPropagation();
-        if (cb.checked) {
-          // Prompt before re-queuing a fully analyzed folder
-          if (row.classList.contains('analyzed-full')) {
-            const confirmed = confirm(
-              `"${node.name}" has already been fully analyzed.\n\n` +
-              `Re-analyzing will delete the existing analysis data (.kestrel folder) and process it again.\n\n` +
-              `Continue?`
-            );
-            if (!confirmed) { cb.checked = false; return; }
-            _dlgReanalyze.add(node.path);
-          }
-          selectedSet.add(node.path);
-        } else {
-          selectedSet.delete(node.path);
-          _dlgReanalyze.delete(node.path);
-        }
-        row.classList.toggle('queue-sel', cb.checked);
-        onChangeCallback();
+        const norm = _adlgNormRoot(node.path);
+        if (cb.checked) analyzeDlgCheckedPaths.add(norm);
+        else analyzeDlgCheckedPaths.delete(norm);
+        // Live update — refresh just this row's pill + the column-3 summary.
+        renderAnalyzeDlgTree();
+        refreshAnalyzeDlgSummary();
       });
 
+      // Folder icon
       const icon = document.createElement('span');
       icon.className = 'tree-icon';
       icon.textContent = node.has_kestrel ? '📂' : '📁';
 
+      // Label
       const label = document.createElement('span');
       label.className = 'tree-label';
       label.textContent = node.name;
-      if (!outdated) label.title = node.path;
-      else label.title = `v${node.kestrel_version} → v${_appVersion} (outdated)`;
 
-      // Version badge for outdated folders
-      const versionBadge = document.createElement('span');
-      if (outdated) {
-        versionBadge.style.cssText = 'font-size:10px;color:var(--ok);opacity:0.7;margin-left:4px;font-style:italic;';
-        versionBadge.textContent = `v${node.kestrel_version}`;
-      }
+      // State pill (orthogonal color × shape — Phase 3F)
+      const pillSpec = _computeAnalyzeDlgPill(node, info, isChecked);
+      const pill = document.createElement('span');
+      pill.className = `state-pill state-pill--${pillSpec.color} state-pill--${pillSpec.shape}`;
+      pill.setAttribute('aria-hidden', 'true');
 
-      // Attach path for async inspection and add count placeholder
-      row.dataset.path = node.path;
+      // Count text
       const countSpan = document.createElement('span');
       countSpan.className = 'tree-count';
-      countSpan.textContent = '';
+      if (info && info.total > 0) {
+        const erroredFrag = info.errored > 0 ? ` (${info.errored} errored)` : '';
+        countSpan.textContent = ` ${info.processed}/${info.total}${erroredFrag}`;
+      } else {
+        countSpan.textContent = '';
+      }
+
+      // Outdated badge (Phase 3F — orthogonal to the pill).
+      let outdatedBadge = null;
+      if (outdated) {
+        outdatedBadge = document.createElement('span');
+        outdatedBadge.className = 'adlg-outdated-badge' + (isChecked ? ' warning' : '');
+        outdatedBadge.textContent = `v↑ ${node.kestrel_version || ''}`.trim();
+        outdatedBadge.title = `Analyzed on v${node.kestrel_version}; current is v${_appVersion}. Will re-analyze (destructive) if checked.`;
+      }
 
       row.appendChild(arrow);
       row.appendChild(cb);
+      row.appendChild(pill);
       row.appendChild(icon);
       row.appendChild(label);
-      if (outdated) row.appendChild(versionBadge);
       row.appendChild(countSpan);
+      if (outdatedBadge) row.appendChild(outdatedBadge);
 
-      // Right-click context menu for clearing analysis data
+      // Right-click: clear .kestrel data (preserved from legacy dialog)
       if (node.has_kestrel) {
         row.addEventListener('contextmenu', (e) => {
           e.preventDefault();
           e.stopPropagation();
-          const folderName = node.name;
-          showContextMenu(e.clientX, e.clientY, [
-            {
-              label: '🗑 Clear Kestrel Analysis Data',
-              danger: true,
-              action: () => {
-                clearKestrelDataForFolder(node.path, folderName, () => {
-                  // Update the node state in-memory
-                  node.has_kestrel = false;
-                  node.kestrel_version = '';
-                  // Re-render the dialog tree from all loaded roots
-                  const treeEl = document.getElementById('analyzeDlgTree');
-                  if (treeEl && _hasAnyRoots()) {
-                    treeEl.innerHTML = '';
-                    for (const root of _getAllRoots()) {
-                      treeEl.appendChild(buildAnalyzeDlgNode(root, _dlgSelected, onChangeCallback));
-                    }
-                    populateAnalyzeFolderCounts();
-                  }
-                });
-              }
-            }
-          ]);
+          showContextMenu(e.clientX, e.clientY, [{
+            label: '🗑 Clear Kestrel Analysis Data',
+            danger: true,
+            action: () => {
+              clearKestrelDataForFolder(node.path, node.name, () => {
+                node.has_kestrel = false;
+                node.kestrel_version = '';
+                // Re-inspect and re-render so the pill flips to outline.
+                _inspectAndRenderAnalyzeDlg();
+              });
+            },
+          }]);
         });
       }
 
@@ -115,269 +293,419 @@
         const childWrap = document.createElement('div');
         childWrap.className = 'tree-children';
         if (!isExpanded) childWrap.classList.add('hidden');
-        node.children.forEach(child => childWrap.appendChild(buildAnalyzeDlgNode(child, selectedSet, onChangeCallback)));
+        node.children.forEach(child => childWrap.appendChild(buildAnalyzeDlgNode(child)));
         wrap.appendChild(childWrap);
-
         arrow.addEventListener('click', (e) => {
           e.stopPropagation();
-          const open = _dlgExpandedPaths.has(node.path);
-          if (open) { _dlgExpandedPaths.delete(node.path); arrow.classList.remove('open'); childWrap.classList.add('hidden'); }
-          else { _dlgExpandedPaths.add(node.path); arrow.classList.add('open'); childWrap.classList.remove('hidden'); }
+          const open = analyzeDlgExpandedPaths.has(node.path);
+          if (open) {
+            analyzeDlgExpandedPaths.delete(node.path);
+            arrow.classList.remove('open');
+            childWrap.classList.add('hidden');
+          } else {
+            analyzeDlgExpandedPaths.add(node.path);
+            arrow.classList.add('open');
+            childWrap.classList.remove('hidden');
+          }
         });
+        // Click on label/icon also toggles expand (same as the main tree
+        // semantics — non-destructive).
+        const toggleExpand = (e) => {
+          e.stopPropagation();
+          arrow.click();
+        };
+        label.addEventListener('click', toggleExpand);
+        icon.addEventListener('click', toggleExpand);
       }
       return wrap;
     }
 
-    /** Render the right-side queue preview panel in the Analyze dialog.
-     *  Shows: running items, pending items (draggable + removable), and "will be added" selection. */
-    function _refreshAnalyzeDlgQueuePreview() {
-      const runningEl = document.getElementById('adlgQueueRunning');
-      const willAddEl = document.getElementById('adlgQueueWillAdd');
-      const emptyEl = document.getElementById('adlgQueueEmpty');
-      if (!runningEl || !willAddEl || !emptyEl) return;
+    // ── Tree render dispatcher ──────────────────────────────────────────────────
+    function renderAnalyzeDlgTree() {
+      const treeEl = document.getElementById('analyzeDlgTree');
+      const wrap = document.querySelector('.analyze-dlg-tree-wrap');
+      const footer = document.getElementById('analyzeDlgFooter');
+      if (!treeEl) return;
+      treeEl.innerHTML = '';
+      if (!_adlgHasAnyRoots()) {
+        if (wrap) wrap.classList.remove('has-roots');
+        if (footer) footer.classList.add('hidden');
+        return;
+      }
+      if (wrap) wrap.classList.add('has-roots');
+      if (footer) footer.classList.remove('hidden');
+      for (const root of _adlgGetAllRoots()) {
+        treeEl.appendChild(buildAnalyzeDlgNode(root));
+      }
+    }
 
-      runningEl.innerHTML = '';
-      willAddEl.innerHTML = '';
-
-      let hasActiveQueue = false;
-
+    // ── Folder inspection (Phase 3F — populates the pill cache) ─────────────────
+    //
+    // Walks every visible row in the dialog tree, batch-calls inspect_folders,
+    // populates analyzeDlgInspectionCache keyed by normalized path, then
+    // re-renders so pills update from "neutral outline" to their real state.
+    async function _inspectAndRenderAnalyzeDlg() {
+      const myVer = ++_analyzeDlgInspectionVersion;
+      renderAnalyzeDlgTree(); // immediate render with whatever cache we have
+      if (!hasPywebviewApi || !window.pywebview?.api?.inspect_folders) return;
+      // Collect every node path currently in our dialog state.
+      const paths = [];
+      const seen = new Set();
+      function walk(n) {
+        if (!n) return;
+        const norm = _adlgNormRoot(n.path);
+        if (!seen.has(norm)) { seen.add(norm); paths.push(n.path); }
+        if (n.children) for (const c of n.children) walk(c);
+      }
+      for (const root of _adlgGetAllRoots()) walk(root);
+      if (paths.length === 0) return;
+      const progWrap = document.getElementById('analyzeScanProgress');
+      const progFill = document.getElementById('analyzeScanFill');
+      const progLabel = document.getElementById('analyzeScanLabel');
+      if (progWrap) progWrap.classList.remove('hidden');
+      if (progLabel) progLabel.textContent = `Scanning ${paths.length} folder${paths.length === 1 ? '' : 's'}…`;
+      if (progFill) progFill.style.width = '10%';
       try {
-        const status = window._lastQueueStatus;
-        if (status && status.items && status.items.length > 0) {
-          const runningItems = status.items.filter(i => i.status === 'running');
-          const pendingItems = status.items.filter(i => i.status === 'pending');
-
-          // ── Running items ──
-          if (runningItems.length > 0) {
-            hasActiveQueue = true;
-            const title = document.createElement('div');
-            title.className = 'adlg-queue-section-title';
-            title.textContent = '⚙ Analyzing';
-            runningEl.appendChild(title);
-            for (const item of runningItems) {
-              const row = document.createElement('div');
-              row.className = 'adlg-queue-item';
-              const nameEl = document.createElement('span');
-              nameEl.className = 'adlg-qi-name';
-              nameEl.textContent = item.name;
-              nameEl.title = item.path;
-              const statusEl = document.createElement('span');
-              statusEl.className = 'adlg-qi-status';
-              statusEl.textContent = item.total > 0 ? `${item.processed}/${item.total}` : 'starting…';
-              row.appendChild(nameEl);
-              row.appendChild(statusEl);
-              runningEl.appendChild(row);
-            }
-          }
-
-          // ── Pending items (drag-to-reorder + cancel) ──
-          if (pendingItems.length > 0) {
-            hasActiveQueue = true;
-            const pendTitle = document.createElement('div');
-            pendTitle.className = 'adlg-queue-section-title';
-            pendTitle.textContent = `⏳ In Queue (${pendingItems.length})`;
-            runningEl.appendChild(pendTitle);
-
-            let _dragSrcPath = null;
-            const pendContainer = document.createElement('div');
-            pendContainer.dataset.role = 'pending-list';
-
-            for (const item of pendingItems) {
-              const row = document.createElement('div');
-              row.className = 'adlg-queue-item';
-              row.draggable = true;
-              row.dataset.queuePath = item.path;
-
-              const grip = document.createElement('span');
-              grip.className = 'adlg-qi-grip';
-              grip.textContent = '⠿';
-              grip.title = 'Drag to reorder';
-
-              const nameEl = document.createElement('span');
-              nameEl.className = 'adlg-qi-name';
-              nameEl.textContent = item.name;
-              nameEl.title = item.path;
-
-              const statusEl = document.createElement('span');
-              statusEl.className = 'adlg-qi-status';
-              statusEl.textContent = 'pending';
-
-              const removeBtn = document.createElement('button');
-              removeBtn.className = 'adlg-qi-remove';
-              removeBtn.textContent = '✕';
-              removeBtn.title = 'Remove from queue';
-              removeBtn.addEventListener('click', async (e) => {
-                e.stopPropagation();
-                if (hasPywebviewApi && window.pywebview?.api?.remove_queue_item) {
-                  await window.pywebview.api.remove_queue_item(item.path);
-                  const s = await apiGetQueueStatus();
-                  renderQueuePanel(s);
-                  _refreshAnalyzeDlgQueuePreview();
-                }
-              });
-
-              // Drag events
-              row.addEventListener('dragstart', (e) => {
-                _dragSrcPath = item.path;
-                row.classList.add('dragging');
-                e.dataTransfer.effectAllowed = 'move';
-                e.dataTransfer.setData('text/plain', item.path);
-              });
-              row.addEventListener('dragend', () => {
-                _dragSrcPath = null;
-                row.classList.remove('dragging');
-                pendContainer.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
-              });
-              row.addEventListener('dragover', (e) => {
-                e.preventDefault();
-                e.dataTransfer.dropEffect = 'move';
-                if (row.dataset.queuePath !== _dragSrcPath) {
-                  row.classList.add('drag-over');
-                }
-              });
-              row.addEventListener('dragleave', () => {
-                row.classList.remove('drag-over');
-              });
-              row.addEventListener('drop', async (e) => {
-                e.preventDefault();
-                row.classList.remove('drag-over');
-                const srcPath = e.dataTransfer.getData('text/plain');
-                if (!srcPath || srcPath === item.path) return;
-                const currentOrder = Array.from(pendContainer.querySelectorAll('[data-queue-path]'))
-                  .map(el => el.dataset.queuePath);
-                const filtered = currentOrder.filter(p => p !== srcPath);
-                const targetIdx = filtered.indexOf(item.path);
-                filtered.splice(targetIdx, 0, srcPath);
-                if (hasPywebviewApi && window.pywebview?.api?.reorder_queue) {
-                  await window.pywebview.api.reorder_queue(JSON.stringify(filtered));
-                  const s = await apiGetQueueStatus();
-                  renderQueuePanel(s);
-                  _refreshAnalyzeDlgQueuePreview();
-                }
-              });
-
-              row.appendChild(grip);
-              row.appendChild(nameEl);
-              row.appendChild(statusEl);
-              row.appendChild(removeBtn);
-              pendContainer.appendChild(row);
-            }
-            runningEl.appendChild(pendContainer);
-          }
-        }
-      } catch (_) { }
-
-      // ── Will be added (selected but not yet queued) ──
-      const selected = Array.from(_dlgSelected);
-      if (selected.length > 0) {
-        const title = document.createElement('div');
-        title.className = 'adlg-queue-section-title';
-        title.textContent = `➕ Will Be Added (${selected.length})`;
-        willAddEl.appendChild(title);
-        for (const path of selected) {
-          const name = path.replace(/\\/g, '/').split('/').pop() || path;
-          const row = document.createElement('div');
-          row.className = 'adlg-queue-item';
-          const nameEl = document.createElement('span');
-          nameEl.className = 'adlg-qi-name';
-          nameEl.textContent = name;
-          nameEl.title = path;
-          const removeBtn = document.createElement('button');
-          removeBtn.className = 'adlg-qi-remove';
-          removeBtn.textContent = '✕';
-          removeBtn.title = 'Remove from selection';
-          removeBtn.addEventListener('click', () => {
-            _dlgSelected.delete(path);
-            _dlgReanalyze.delete(path);
-            const treeRows = document.querySelectorAll('#analyzeDlgTree .adlg-node-row');
-            for (const r of treeRows) {
-              if (r.dataset.path === path) {
-                const cb = r.querySelector('.adlg-cb');
-                if (cb) cb.checked = false;
-                r.classList.remove('queue-sel');
+        const res = await window.pywebview.api.inspect_folders(paths);
+        if (myVer !== _analyzeDlgInspectionVersion) return; // cancelled
+        if (res && res.success && res.results) {
+          // inspect_folders keys results by realpath; we key the cache by
+          // normalized-input path. Build a lookup that matches both.
+          for (const inputPath of paths) {
+            const inputNorm = _adlgNormRoot(inputPath);
+            // Try input-path match first, then any result key normalized.
+            let info = res.results[inputPath];
+            if (info === undefined) {
+              for (const [resKey, val] of Object.entries(res.results)) {
+                if (_adlgNormRoot(resKey) === inputNorm) { info = val; break; }
               }
             }
-            const countEl = document.getElementById('analyzeDlgCount');
-            const addBtn = document.getElementById('analyzeDlgAdd');
-            if (countEl) countEl.textContent = _dlgSelected.size + ' folder' + (_dlgSelected.size === 1 ? '' : 's') + ' selected';
-            if (addBtn) addBtn.disabled = _dlgSelected.size === 0;
-            _refreshAnalyzeDlgQueuePreview();
-          });
-          row.appendChild(nameEl);
-          if (_dlgReanalyze.has(path)) {
-            const badge = document.createElement('span');
-            badge.className = 'adlg-qi-status';
-            badge.style.color = '#f0a040';
-            badge.style.fontStyle = 'italic';
-            badge.textContent = 'Will be Re-analyzed';
-            row.appendChild(badge);
+            if (info !== undefined) analyzeDlgInspectionCache.set(inputNorm, info);
           }
-          row.appendChild(removeBtn);
-          willAddEl.appendChild(row);
+        }
+        if (progFill) progFill.style.width = '100%';
+        renderAnalyzeDlgTree();
+        // After inspection, auto-check roots that DIRECTLY have work to do
+        // (per the user's "auto-check root with direct work" decision).
+        _adlgAutoCheckRootsWithDirectWork();
+        renderAnalyzeDlgTree();
+        refreshAnalyzeDlgSummary();
+      } catch (e) {
+        console.warn('[analyzeDlg] inspect_folders failed', e);
+      } finally {
+        setTimeout(() => {
+          if (progWrap) progWrap.classList.add('hidden');
+          if (progFill) progFill.style.width = '0%';
+        }, 350);
+      }
+    }
+
+    // Auto-check any root that directly contains photos with work to do.
+    // Subdirectories are NEVER auto-checked (per user: avoid auto-queueing
+    // darktable_exports etc.). Only the root itself gets the convenience.
+    function _adlgAutoCheckRootsWithDirectWork() {
+      for (const root of _adlgGetAllRoots()) {
+        const norm = _adlgNormRoot(root.path);
+        const info = analyzeDlgInspectionCache.get(norm);
+        if (!info) continue;
+        const total = info.total || 0;
+        const processed = info.processed || 0;
+        const errored = info.errored || 0;
+        // "Has direct work" = photos exist AND (not yet fully done OR has errors).
+        const hasDirectWork = total > 0 && (processed < total || errored > 0);
+        if (hasDirectWork) analyzeDlgCheckedPaths.add(norm);
+      }
+    }
+
+    // ── Recents chips (Phase 3G — independent from main tree's folder_recents) ──
+    async function renderAnalyzeDlgRecentsChips() {
+      const row = document.getElementById('analyzeDlgRecentsRow');
+      if (!row) return;
+      const s = (typeof loadSettings === 'function') ? loadSettings() : {};
+      const recents = Array.isArray(s.analyze_recents) ? s.analyze_recents.slice(0, 16) : [];
+      if (recents.length === 0) {
+        row.classList.add('hidden');
+        row.innerHTML = '';
+        return;
+      }
+      // Probe existence + still-has-work via inspect_folders.
+      const paths = recents.map(r => r.path).filter(Boolean);
+      let available = paths;
+      let workMap = new Map(); // path-norm -> info
+      try {
+        if (hasPywebviewApi && window.pywebview?.api?.inspect_folders && paths.length > 0) {
+          const res = await window.pywebview.api.inspect_folders(paths);
+          if (res && res.success) {
+            // Keep paths that have work remaining OR errored images.
+            available = paths.filter(p => {
+              const norm = _adlgNormRoot(p);
+              let info = res.results && res.results[p];
+              if (info === undefined && res.results) {
+                for (const [k, v] of Object.entries(res.results)) {
+                  if (_adlgNormRoot(k) === norm) { info = v; break; }
+                }
+              }
+              if (!info) return false;
+              workMap.set(norm, info);
+              const total = info.total || 0;
+              const processed = info.processed || 0;
+              const errored = info.errored || 0;
+              return total === 0 || processed < total || errored > 0;
+            });
+          } else if (res && Array.isArray(res.invalid_paths)) {
+            const invalid = new Set(res.invalid_paths.map(_adlgNormRoot));
+            available = paths.filter(p => !invalid.has(_adlgNormRoot(p)));
+          }
+        }
+      } catch (e) { /* best-effort */ }
+      // Hide chips for paths already loaded in the dialog tree.
+      const loaded = new Set(analyzeDlgRootOrder);
+      available = available.filter(p => !loaded.has(_adlgNormRoot(p)));
+      if (available.length === 0) {
+        row.classList.add('hidden');
+        row.innerHTML = '';
+        return;
+      }
+      function ellipsize(p, maxLen = 28) {
+        if (!p) return '';
+        const s = p.replace(/\\/g, '/');
+        if (s.length <= maxLen) return s;
+        const parts = s.split('/').filter(Boolean);
+        if (parts.length <= 2) return s.slice(0, maxLen - 1) + '…';
+        const t = `${parts[0]}/…/${parts[parts.length - 1]}`;
+        return t.length <= maxLen ? t : (t.slice(0, maxLen - 1) + '…');
+      }
+      row.innerHTML = '';
+      for (const path of available) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'folder-recents-chip';
+        chip.title = path;
+        const plus = document.createElement('span');
+        plus.className = 'folder-recents-chip-plus';
+        plus.textContent = '+ 📂';
+        const label = document.createElement('span');
+        label.textContent = ' ' + ellipsize(path);
+        chip.appendChild(plus); chip.appendChild(label);
+        chip.addEventListener('click', async () => {
+          chip.disabled = true;
+          try {
+            const r = await addAnalyzeDlgRoot(path);
+            if (r && r.added) {
+              // Bump-to-top in analyze_recents + persist.
+              await _persistAnalyzeRecentsBump(path);
+              await renderAnalyzeDlgRecentsChips();
+              await _inspectAndRenderAnalyzeDlg();
+            }
+          } finally { chip.disabled = false; }
+        });
+        row.appendChild(chip);
+      }
+      row.classList.remove('hidden');
+    }
+
+    async function _persistAnalyzeRecentsBump(path) {
+      try {
+        const s = loadSettings();
+        const existing = Array.isArray(s.analyze_recents) ? s.analyze_recents : [];
+        const np = _adlgNormRoot(path);
+        const filtered = existing.filter(e => e && _adlgNormRoot(e.path) !== np);
+        const ts = new Date().toISOString();
+        s.analyze_recents = [{ path: np, timestamp: ts }, ...filtered].slice(0, 16);
+        saveSettings(s);
+        if (hasPywebviewApi && window.pywebview?.api?.save_settings_data) {
+          try { await window.pywebview.api.save_settings_data(s); } catch (_) { }
+        }
+      } catch (e) { /* best-effort */ }
+    }
+
+    // ── Queue summary computation (Phase 3I) ────────────────────────────────────
+    //
+    // Reads analyzeDlgCheckedPaths + analyzeDlgInspectionCache. Computes:
+    //   - total images to process (skips already-fully-analyzed unless unlock is on)
+    //   - total folders
+    //   - per-folder list (name + image count + pill)
+    //   - estimated time (hardcoded baseline; "—" if too few images)
+    //   - warning summary if any folders will lose user data
+    //   - shows/hides the "Re-analyze fully-analyzed" unlock row
+    function refreshAnalyzeDlgSummary() {
+      const headline = document.getElementById('analyzeDlgSummaryHeadline');
+      const warningsEl = document.getElementById('analyzeDlgWarnings');
+      const listEl = document.getElementById('analyzeDlgQueuedList');
+      const unlockRow = document.getElementById('analyzeDlgReanalyzeUnlockRow');
+      const startBtn = document.getElementById('analyzeDlgAdd');
+      const countEl = document.getElementById('analyzeDlgCount');
+      if (!headline || !listEl || !startBtn) return;
+
+      const useGpu = !!document.getElementById('analyzeUseGpu')?.checked;
+      const retryErrored = !!document.getElementById('adlgRetryErrored')?.checked;
+      const checkedNorms = Array.from(analyzeDlgCheckedPaths);
+      const checkedCount = checkedNorms.length;
+
+      // Classify each checked folder.
+      let totalImagesToProcess = 0;
+      let fullyAnalyzedSkipCount = 0;       // would skip-silently
+      let fullyAnalyzedWillReanalyzeCount = 0; // will lose data (unlock ON)
+      let outdatedReanalyzeCount = 0;       // will lose data (outdated → always re-analyze)
+      const perFolder = []; // {name, path, info, pillSpec, willSkip, willReanalyze}
+      for (const norm of checkedNorms) {
+        const node = _adlgFindNode(norm);
+        const info = analyzeDlgInspectionCache.get(norm);
+        const name = node ? node.name : (norm.split('/').filter(Boolean).pop() || norm);
+        const total = (info && info.total) || 0;
+        const processed = (info && info.processed) || 0;
+        const errored = (info && info.errored) || 0;
+        const outdated = node ? _isOutdatedNode(node) : false;
+        const isFullyAnalyzed = total > 0 && processed >= total;
+        let willSkip = false;
+        let willReanalyze = false;
+        let imagesThisFolder = 0;
+        if (outdated) {
+          // Outdated always wipes + re-analyzes.
+          willReanalyze = true;
+          outdatedReanalyzeCount++;
+          imagesThisFolder = total;
+        } else if (isFullyAnalyzed && errored === 0) {
+          if (analyzeDlgReanalyzeUnlocked) {
+            willReanalyze = true;
+            fullyAnalyzedWillReanalyzeCount++;
+            imagesThisFolder = total;
+          } else {
+            // Skip silently — no work counted.
+            willSkip = true;
+            fullyAnalyzedSkipCount++;
+          }
+        } else if (errored > 0 && retryErrored) {
+          imagesThisFolder = errored;
+        } else if (errored > 0 && !retryErrored) {
+          // Errored images but retry not ticked → only NEW images counted.
+          imagesThisFolder = Math.max(0, total - processed - errored);
+        } else {
+          imagesThisFolder = Math.max(0, total - processed);
+        }
+        if (!willSkip) totalImagesToProcess += imagesThisFolder;
+        const pillSpec = _computeAnalyzeDlgPill(node || { path: norm }, info, true);
+        perFolder.push({ name, path: norm, info, pillSpec, willSkip, willReanalyze, imagesThisFolder });
+      }
+
+      // Headline
+      if (checkedCount === 0) {
+        headline.innerHTML = '<span class="analyze-dlg-summary-empty">Check folders in the queue builder to add them.</span>';
+      } else {
+        const folderWord = checkedCount === 1 ? 'folder' : 'folders';
+        const imgCount = totalImagesToProcess.toLocaleString();
+        const skipNote = fullyAnalyzedSkipCount > 0
+          ? ` <span class="analyze-dlg-summary-folder-count">(${fullyAnalyzedSkipCount} will be skipped — already analyzed)</span>`
+          : '';
+        // Time estimate
+        let timeFrag = '';
+        if (totalImagesToProcess >= _EST_MIN_IMAGES_TO_ESTIMATE) {
+          const rate = useGpu ? _EST_SECS_PER_IMG_GPU : _EST_SECS_PER_IMG_CPU;
+          const seconds = totalImagesToProcess * rate;
+          timeFrag = `<span class="analyze-dlg-summary-time">~${_formatDuration(seconds)} estimated (${useGpu ? 'GPU' : 'CPU'})</span>`;
+        } else if (totalImagesToProcess > 0) {
+          timeFrag = `<span class="analyze-dlg-summary-time">— too few images to estimate time</span>`;
+        }
+        headline.innerHTML =
+          `<div class="analyze-dlg-summary-image-count">${imgCount} image${totalImagesToProcess === 1 ? '' : 's'}</div>` +
+          `<div class="analyze-dlg-summary-folder-count">across ${checkedCount} ${folderWord}${skipNote}</div>` +
+          timeFrag;
+      }
+
+      // Warnings
+      const reanalyzeWithUnlockCount = fullyAnalyzedWillReanalyzeCount + outdatedReanalyzeCount;
+      if (reanalyzeWithUnlockCount > 0) {
+        const word = reanalyzeWithUnlockCount === 1 ? 'folder' : 'folders';
+        warningsEl.innerHTML = `⚠ ${reanalyzeWithUnlockCount} ${word} will lose user data on re-analysis (ratings, decisions, scene names).`;
+        warningsEl.classList.remove('hidden');
+      } else {
+        warningsEl.classList.add('hidden');
+        warningsEl.innerHTML = '';
+      }
+
+      // Per-folder list
+      listEl.innerHTML = '';
+      if (perFolder.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'analyze-dlg-queued-list-empty';
+        empty.textContent = 'No folders queued yet.';
+        listEl.appendChild(empty);
+      } else {
+        for (const f of perFolder) {
+          const item = document.createElement('div');
+          item.className = 'analyze-dlg-queued-item';
+          item.title = f.path;
+          const pill = document.createElement('span');
+          pill.className = `state-pill state-pill--${f.pillSpec.color} state-pill--${f.pillSpec.shape}`;
+          const name = document.createElement('span');
+          name.className = 'analyze-dlg-queued-item-name';
+          name.textContent = f.name;
+          const count = document.createElement('span');
+          count.className = 'analyze-dlg-queued-item-count';
+          if (f.willSkip) count.textContent = 'will skip';
+          else if (f.willReanalyze) count.textContent = `${f.imagesThisFolder} (re-analyze)`;
+          else count.textContent = `${f.imagesThisFolder} img`;
+          item.appendChild(pill);
+          item.appendChild(name);
+          item.appendChild(count);
+          listEl.appendChild(item);
         }
       }
 
-      emptyEl.classList.toggle('hidden', hasActiveQueue || selected.length > 0);
+      // Unlock row: visible only when at least one fully-analyzed-current-version
+      // folder is checked (i.e., would skip silently OR is being re-analyzed via unlock).
+      const showUnlockRow = fullyAnalyzedSkipCount > 0 || fullyAnalyzedWillReanalyzeCount > 0;
+      if (unlockRow) {
+        unlockRow.classList.toggle('hidden', !showUnlockRow);
+      }
+
+      // Selected count + Start button enable state
+      if (countEl) {
+        countEl.textContent = `${checkedCount} folder${checkedCount === 1 ? '' : 's'} selected`;
+      }
+      // Start button enabled if there's any work to do OR any skip-silently
+      // pending (the worker handles the no-op gracefully).
+      startBtn.disabled = checkedCount === 0;
     }
 
-    /** Open the 'Analyze Folders…' dialog. */
+    function _formatDuration(seconds) {
+      if (!isFinite(seconds) || seconds <= 0) return '—';
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = Math.round(seconds % 60);
+      if (h > 0) return `${h}h ${m}m`;
+      if (m > 0) return `${m}m ${s}s`;
+      return `${s}s`;
+    }
+
+    // ── Dialog open / settings hydration ────────────────────────────────────────
     async function openAnalyzeDialog() {
       if (!hasPywebviewApi) {
         alert('Analysis queue is only available in the desktop (pywebview) mode.\n\nRun kestrel_visualizer as a desktop app to use this feature.');
         return;
       }
-      // Make sure we have at least one root to browse. If empty, prompt the
-      // user to pick one (or several, if multi-select is available).
-      if (!_hasAnyRoots()) {
-        let pickedPaths = [];
-        if (window.pywebview?.api?.choose_directories) {
-          const res = await window.pywebview.api.choose_directories();
-          if (Array.isArray(res)) pickedPaths = res.filter(Boolean);
-          else if (typeof res === 'string' && res) pickedPaths = [res];
-        } else {
-          const single = await window.pywebview.api.choose_directory();
-          if (single) pickedPaths = [single];
-        }
-        if (pickedPaths.length === 0) return;
-        for (const p of pickedPaths) await addFolderRoot(p);
-        if (!_hasAnyRoots()) return;
-      }
-      // GPU is always available: DirectML (Windows) and CoreML (macOS) are bundled
-      // with the frozen build, so no platform-specific hiding is needed.
-      // Seed the dialog's selected set from any previously-queued paths
-      _dlgSelected = new Set(queuedFolderPaths);
-      
-      // Try to restore last queue state if available
-      const savedQueue = getSetting('lastQueueState', null);
-      if (savedQueue && Array.isArray(savedQueue) && savedQueue.length > 0) {
-        const restoreBtn = document.getElementById('analyzeDlgRestoreQueue');
-        if (restoreBtn) {
-          restoreBtn.style.display = '';
-          restoreBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            _dlgSelected = new Set(savedQueue);
-            // Restore queue in settings so it looks restored
-            const s = loadSettings();
-            delete s.lastQueueState;
-            saveSettings(s);
-            restoreBtn.style.display = 'none';
-            refreshDlg();
-          }, { once: true }); // only trigger once per dialog open
-        }
-      }
-      
-      _dlgExpandedPaths = new Set(_getAllRoots().map(r => r.path));
-      _dlgReanalyze = new Set();
-
-      function refreshDlg() {
-        const countEl = document.getElementById('analyzeDlgCount');
-        const addBtn = document.getElementById('analyzeDlgAdd');
-        if (countEl) countEl.textContent = _dlgSelected.size + ' folder' + (_dlgSelected.size === 1 ? '' : 's') + ' selected';
-        if (addBtn) addBtn.disabled = _dlgSelected.size === 0;
-        _refreshAnalyzeDlgQueuePreview();
+      // Hydrate critical settings from persisted values. The radios mirror to
+      // the hidden #adlgWildlifeModelMode <select> so existing read/write paths
+      // (event-wiring.js Start handler) keep working unchanged.
+      const _hiddenModelSelect = document.getElementById('adlgWildlifeModelMode');
+      const savedMode = String(getSetting('wildlife_model_mode', 'accurate') || 'accurate').toLowerCase();
+      const modeFinal = (savedMode === 'fast') ? 'fast' : 'accurate';
+      if (_hiddenModelSelect) _hiddenModelSelect.value = modeFinal;
+      const _modeAccurate = document.getElementById('adlgWildlifeModelModeAccurate');
+      const _modeFast = document.getElementById('adlgWildlifeModelModeFast');
+      if (_modeAccurate && _modeFast) {
+        _modeAccurate.checked = (modeFinal === 'accurate');
+        _modeFast.checked = (modeFinal === 'fast');
+        // Mirror radio change → hidden select (so the existing read path works).
+        const _syncModeRadios = () => {
+          const v = _modeAccurate.checked ? 'accurate' : 'fast';
+          if (_hiddenModelSelect) _hiddenModelSelect.value = v;
+        };
+        _modeAccurate.addEventListener('change', _syncModeRadios);
+        _modeFast.addEventListener('change', _syncModeRadios);
       }
 
-      // Hydrate advanced analysis settings from persisted values
+      // Hydrate "More options" settings from persisted values (same keys as before).
       const _adlgDt = document.getElementById('adlgDetectionThreshold');
       if (_adlgDt) _adlgDt.value = getSetting('detection_threshold', 0.25);
       const _adlgMbc = document.getElementById('adlgMaxBirdCrops');
@@ -386,11 +714,6 @@
       if (_adlgEq) {
         const savedEq = String(getSetting('exposure_quality', 'balanced') || 'balanced').toLowerCase();
         _adlgEq.value = ['lenient', 'balanced', 'aggressive'].includes(savedEq) ? savedEq : 'balanced';
-      }
-      const _adlgModelMode = document.getElementById('adlgWildlifeModelMode');
-      if (_adlgModelMode) {
-        const savedMode = String(getSetting('wildlife_model_mode', 'accurate') || 'accurate').toLowerCase();
-        _adlgModelMode.value = (savedMode === 'fast') ? 'fast' : 'accurate';
       }
       const _adlgSt = document.getElementById('adlgSceneTime');
       if (_adlgSt) _adlgSt.value = getSetting('scene_time_threshold', 1.0);
@@ -412,14 +735,46 @@
         _adlgThumbComp.value = compression.toFixed(2);
       }
 
-      const treeEl = document.getElementById('analyzeDlgTree');
-      treeEl.innerHTML = '';
-      for (const root of _getAllRoots()) {
-        treeEl.appendChild(buildAnalyzeDlgNode(root, _dlgSelected, refreshDlg));
+      // Unlock checkbox state — reset every open. User must explicitly re-tick
+      // it to unlock destructive re-analysis on each queue.
+      const unlockBox = document.getElementById('analyzeDlgReanalyzeUnlock');
+      if (unlockBox) {
+        unlockBox.checked = false;
+        analyzeDlgReanalyzeUnlocked = false;
+        // Wire the change handler (idempotent — multiple openAnalyzeDialog calls
+        // would add multiple listeners; gate with a sentinel).
+        if (!unlockBox.dataset.wired) {
+          unlockBox.dataset.wired = '1';
+          unlockBox.addEventListener('change', () => {
+            analyzeDlgReanalyzeUnlocked = !!unlockBox.checked;
+            refreshAnalyzeDlgSummary();
+          });
+        }
       }
-      // Populate counts for dialog nodes with colors and progress bar
-      populateAnalyzeFolderCounts();
-      refreshDlg();
+      // Wire GPU + retry-errored toggles to refresh summary live (they affect
+      // time estimate + image counts).
+      const _gpuBox = document.getElementById('analyzeUseGpu');
+      if (_gpuBox && !_gpuBox.dataset.wiredSummary) {
+        _gpuBox.dataset.wiredSummary = '1';
+        _gpuBox.addEventListener('change', refreshAnalyzeDlgSummary);
+      }
+      const _retryBox = document.getElementById('adlgRetryErrored');
+      if (_retryBox && !_retryBox.dataset.wiredSummary) {
+        _retryBox.dataset.wiredSummary = '1';
+        _retryBox.addEventListener('change', refreshAnalyzeDlgSummary);
+      }
+
+      // Render recents first (no roots yet → just shows chips). Then if the
+      // dialog already has roots from a prior open (we keep state across
+      // opens until Clear), inspect + render the tree.
+      await renderAnalyzeDlgRecentsChips();
+      if (_adlgHasAnyRoots()) {
+        renderAnalyzeDlgTree();
+        await _inspectAndRenderAnalyzeDlg();
+      } else {
+        renderAnalyzeDlgTree();
+      }
+      refreshAnalyzeDlgSummary();
       document.getElementById('analyzeQueueDlg').showModal();
     }
 
