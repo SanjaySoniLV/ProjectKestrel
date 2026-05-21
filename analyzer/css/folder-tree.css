@@ -1,47 +1,126 @@
-/* Folder tree panel */
+/* Folder tree panel: a single bordered container that visually swallows the
+   Load Folder button (top bar) and the Select/Clear strip (bottom bar).
+   Border color matches the Analyze Folders primary CTA (#2b6ec8) so the
+   sidebar reads as one cohesive blue-accented unit. */
 .folder-tree-wrap {
-  border-top: 1px solid #1d2230;
-  padding-top: 8px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 0;
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
+  padding: 0;
+  background: #0a0d12;
+  border: 1px solid #2b6ec8;
+  border-radius: 10px;
 }
 
-/* Empty state: tree visible but greyed out before any folder is opened */
-.folder-tree-wrap.folder-tree-empty {
+/* Empty state: only the tree contents are dimmed/disabled, NOT the whole
+   wrapper — the + Load Folder button at the top must remain clickable. */
+.folder-tree-wrap.folder-tree-empty #folderTree {
   opacity: 0.45;
   pointer-events: none;
 }
-.folder-tree-wrap.folder-tree-empty #folderTree::before {
-  content: 'Open a folder to see the tree';
-  display: block;
-  padding: 12px 8px;
-  font-size: 11px;
+
+/* Empty-state hint copy shown above the (empty) tree when no folders loaded.
+   Hidden by .folder-tree-wrap:not(.folder-tree-empty) once anything loads.
+   No own border — it sits inside the unified container. */
+.folder-tree-empty-hint {
+  padding: 18px 14px;
+  font-size: 12px;
   color: var(--muted);
   text-align: center;
   font-style: italic;
+  line-height: 1.5;
+}
+.folder-tree-wrap:not(.folder-tree-empty) .folder-tree-empty-hint {
+  display: none;
+}
+.folder-tree-wrap.folder-tree-empty #folderTree {
+  /* Collapse the tree's visual footprint while empty so the hint is the focal point */
+  display: none;
+}
+.folder-tree-wrap.folder-tree-empty .folder-tree-footer {
+  /* Hide Select / Clear strip when there's nothing in the tree */
+  display: none;
 }
 
-.folder-tree-header {
+/* ── "+ 📂 Load Folders…" — top bar of the unified folder-tree container. ────
+   Background matches the Analyze CTA's primary blue so the two main entry
+   points feel like a pair. Top corners rounded to match the container's outer
+   radius; bottom divider matches the container border. */
+.folder-load-btn {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
+  width: 100%;
+  height: 38px;
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 400;
+  background: #1d5aa8;
+  border: none;
+  /* Divider matches the wrap's outer blue border for visual continuity */
+  border-bottom: 1px solid #2b6ec8;
+  border-radius: 10px 10px 0 0;
+  color: #e6eef9;
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease;
+  flex: 0 0 auto;
+}
+.folder-load-btn:hover {
+  background: #1f63b8;
+  color: #fff;
+}
+.folder-load-btn-plus {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1;
+  color: #cfe2ff;
+}
+.folder-load-btn-label {
+  letter-spacing: 0.1px;
 }
 
-.folder-tree-header .tree-title {
-  font-size: 12px;
-  color: var(--muted);
-  letter-spacing: .3px;
-  flex: 1 1 auto;
+/* ── Recents row ──────────────────────────────────────────────────────────────
+   Horizontal flex of chips matching species/family chip styling. Hidden when
+   empty. Phase 2 will populate this. Internal horizontal padding because the
+   parent container's padding is zero (load button + footer sit flush). */
+.folder-recents-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 8px 8px 4px;
 }
-
-.folder-tree-header button {
-  padding: 2px 7px;
+.folder-recents-row.hidden {
+  display: none;
+}
+.folder-recents-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
   font-size: 11px;
-  height: auto;
+  background: #14202f;
+  border: 1px solid #25394e;
+  border-radius: 999px;
+  color: #cbd6e2;
+  cursor: pointer;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background .12s ease, border-color .12s ease;
+}
+.folder-recents-chip:hover {
+  background: #1c2c42;
+  border-color: #3a5573;
+  color: #fff;
+}
+.folder-recents-chip-plus {
+  color: #8fbaf0;
+  font-weight: 700;
 }
 
 #folderTree {
@@ -50,10 +129,9 @@
   max-height: none;
   overflow-x: hidden;
   overflow-y: auto;
-  background: #0a0d12;
-  border: 1px solid #1d2230;
-  border-radius: 8px;
-  padding: 4px 2px;
+  /* Background/border now lives on .folder-tree-wrap (the unified container).
+     Internal padding gives the tree some breathing room from the side walls. */
+  padding: 6px 6px;
 }
 
 /* Lock the sidebar width so long folder names can't blow it out */
@@ -68,8 +146,8 @@
   gap: 3px;
   padding: 2px 5px;
   border-radius: 4px;
-  cursor: default;
-  min-height: 20px;
+  cursor: pointer;            /* every row is clickable (expand / load) */
+  min-height: 22px;
 }
 .tree-node-row:hover { background: rgba(255,255,255,.04); }
 .adlg-node-row:hover { background: rgba(255,255,255,.04); }
@@ -89,8 +167,74 @@
 .tree-arrow.leaf { visibility: hidden; cursor: default; }
 /* Folder icon: alignment anchor */
 .tree-icon { flex: 0 0 18px; font-size: 14px; text-align: center; }
-/* Invisible spacer matching tree-cb width (sidebar rows without a checkbox) */
-.tree-cb-spacer { flex: 0 0 13px; width: 13px; height: 1px; display: inline-block; }
+
+/* ── Right-side checkbox column ───────────────────────────────────────────────
+   Pinned at the right edge of every row; present unconditionally so the right
+   edge stays aligned. Holds the load checkbox when available; reserved for
+   future per-row actions (quick-analyze icon, etc.). */
+.tree-cb-col {
+  flex: 0 0 24px;
+  width: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 4px;
+}
+
+/* ── Tree rail: ancestor lines + elbow connectors ─────────────────────────────
+   Each non-root row prepends N+1 rail spans: N ancestor slots (vert or blank)
+   then one elbow slot at its own depth (mid ├─ or last └─). Lines drawn via
+   ::before/::after with borders — no Unicode box chars, so alignment is
+   pixel-perfect across platforms. */
+.tree-rail {
+  flex: 0 0 16px;
+  width: 16px;
+  align-self: stretch;        /* row height drives rail height */
+  position: relative;
+  display: inline-block;
+  pointer-events: none;       /* clicks fall through to the row */
+}
+.tree-rail-vert::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid #4a5567;
+}
+/* .tree-rail-blank: no visual; just reserves the indent column */
+.tree-rail-elbow-mid::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid #4a5567;
+}
+.tree-rail-elbow-mid::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  right: 0;
+  border-top: 1px solid #4a5567;
+}
+.tree-rail-elbow-last::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  height: 50%;
+  border-left: 1px solid #4a5567;
+}
+.tree-rail-elbow-last::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  right: 0;
+  border-top: 1px solid #4a5567;
+}
 /* Greyed-out folder: Kestrel found no supported photos */
 /* Deep: folder AND every descendant have 0 images — fade whole row */
 .adlg-node-row.no-photos-deep { opacity: 0.38; }
@@ -117,72 +261,36 @@
   flex-shrink: 0;
 }
 
+/* ── State encoding (simplified Phase 1.5) ────────────────────────────────────
+   Bold weight is no longer used for state — color alone carries the at-a-glance
+   signal. Italic is reserved for outdated + in-progress (subtle visual cue).
+   Bold is preserved for the future so when something IS bold, it actually pops. */
 .tree-node-row.has-kestrel:not(.analyzed-full):not(.analyzed-partial):not(.analyzed-none) .tree-label {
   color: var(--ok);
-  cursor: pointer;
-  font-weight: 600;
 }
-
 .tree-node-row.has-kestrel:not(.analyzed-full):not(.analyzed-partial):not(.analyzed-none):hover .tree-label {
   color: #c8dcf5;
 }
 
-/* Analysis completion states */
 .tree-node-row.analyzed-full .tree-label {
   color: var(--ok);
-  cursor: pointer;
-  font-weight: 700;
 }
-
 .tree-node-row.analyzed-partial .tree-label {
   color: #b36bff;
-  cursor: pointer;
-  font-weight: 700;
 }
-
 .tree-node-row.analyzed-none .tree-label {
   color: var(--brand);
-  cursor: pointer;
-  font-weight: 700;
 }
 
-/* Mirror classes for analyze dialog rows */
-.adlg-node-row.analyzed-full .tree-label {
-  color: var(--ok);
-  font-weight: 700;
-}
+/* Phase 3: legacy .adlg-node-row.has-kestrel / analyzed-* color rules removed.
+   The new analyze dialog uses pure-CSS state pills to carry per-folder state
+   instead of recoloring the label text. Labels stay default text color. */
 
-.adlg-node-row.analyzed-partial .tree-label {
-  color: #b36bff;
-  font-weight: 700;
-}
-
-.adlg-node-row.analyzed-none .tree-label {
-  color: var(--brand);
-  font-weight: 700;
-}
-
-/* Mirror has-kestrel styling for analyze dialog rows */
-.adlg-node-row.has-kestrel:not(.analyzed-full):not(.analyzed-partial):not(.analyzed-none) .tree-label {
-  color: var(--ok);
-  cursor: pointer;
-  font-weight: 600;
-}
-
-.adlg-node-row.has-kestrel:not(.analyzed-full):not(.analyzed-partial):not(.analyzed-none):hover .tree-label {
-  color: #c8dcf5;
-}
-
-/* Outdated version styling (analyzed on an earlier Kestrel version) */
+/* Outdated version styling: italic only (color inherited from analyzed-* class) */
 .tree-node-row.version-outdated .tree-label {
-  color: var(--ok);
-  cursor: pointer;
-  font-weight: 600;
   font-style: italic;
 }
 .adlg-node-row.version-outdated .tree-label {
-  color: var(--ok);
-  font-weight: 600;
   font-style: italic;
 }
 
@@ -209,7 +317,6 @@
 .tree-node-row.in-progress .tree-label {
   color: #d4a3ff !important;
   font-style: italic;
-  font-weight: 700;
 }
 .tree-node-row.in-progress .tree-label::after {
   content: ' (analysis in progress)';
@@ -248,30 +355,39 @@
   color: #ff6b6b;
 }
 
-.tree-node-row.no-kestrel {
-  opacity: 0.38;
+/* Non-analyzed folders: dim only the label/icon/arrow, NOT the full row —
+   keeping rail opacity at 100% so elbow connectors stay visually consistent
+   between analyzed and unanalyzed siblings. */
+.tree-node-row.no-kestrel .tree-label,
+.tree-node-row.no-kestrel .tree-icon,
+.tree-node-row.no-kestrel .tree-arrow {
+  opacity: 0.5;
 }
-
-/* Bold non-analyzed folder labels for better visibility on all platforms */
 .tree-node-row.no-kestrel .tree-label {
-  font-weight: 700 !important;
-  color: #cbd2dc !important;
+  color: #cbd2dc;
 }
 
 .tree-node-row.active .tree-label {
   color: #fff;
-  font-weight: 700;
 }
 
 .tree-node-row.active {
   background: #10293d;
 }
 
-/* Visual connector lines from parent to children */
+/* Indented child container. Hierarchy lines are now drawn per-row via
+   .tree-rail spans (Phase 1.5), not by a border on this container. */
 .tree-children {
-  padding-left: 12px;
-  border-left: 1px solid #1e2840;
-  margin-left: 8px;
+  /* No padding-left or border-left — the rail spans on each child row
+     reserve their own indent width (16px per depth). */
+}
+
+/* Multi-root: gap between sibling root nodes inside #folderTree so two loaded
+   libraries don't visually merge. Subtle — not a hard divider. */
+#folderTree > .tree-node + .tree-node {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #1d2230;
 }
 
 .tree-cb {

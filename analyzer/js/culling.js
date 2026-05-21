@@ -442,7 +442,7 @@
             if (res.skipped_conflicts.length > 10) {
               const li = document.createElement('li');
               li.style.cssText = 'padding:5px 8px;color:#7a90b8;';
-              li.textContent = `\u2026and ${res.skipped_conflicts.length - 10} more`;
+              li.textContent = `…and ${res.skipped_conflicts.length - 10} more`;
               conflictList.appendChild(li);
             }
             showView('wmConflictView');

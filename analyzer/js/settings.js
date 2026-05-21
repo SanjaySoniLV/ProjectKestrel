@@ -114,6 +114,33 @@
       const ectSettings = document.getElementById('settingsExposureCorrectedThumbs');
       if (ectSettings) ectSettings.checked = !!getSetting('exposure_corrected_thumbs', true);
 
+      // ── Species & Region section ─────────────────────────────────────────
+      const showSciCb = document.getElementById('showScientificNames');
+      if (showSciCb) showSciCb.checked = !!getSetting('show_scientific_names', false);
+
+      const regionsPicker = document.getElementById('birdRegionsPicker');
+      if (regionsPicker) {
+        // Make sure catalog meta is loaded before we paint checkboxes -- the
+        // load is cached so re-entering Settings is cheap.
+        try { await loadSpeciesFamilyMap(); } catch (_) { /* non-fatal */ }
+        const meta = _birdCatalogMeta || { regions: [], default_regions: ['NA'] };
+        const selected = new Set(_getCurrentBirdRegions());
+        if (!Array.isArray(meta.regions) || meta.regions.length === 0) {
+          regionsPicker.innerHTML = '<span class="muted" style="font-size:11px">Region list unavailable — defaulting to North America.</span>';
+        } else {
+          regionsPicker.innerHTML = meta.regions.map(r => {
+            const checked = selected.has(r.code) ? 'checked' : '';
+            return (
+              `<label class="inline" style="gap:6px;cursor:pointer;font-size:13px">` +
+                `<input type="checkbox" class="bird-region-cb" data-region-code="${escapeHtml(r.code)}" ${checked} />` +
+                `<span>${escapeHtml(r.label)}</span>` +
+                `<span class="muted" style="font-size:11px;margin-left:auto">${escapeHtml(r.code)}</span>` +
+              `</label>`
+            );
+          }).join('');
+        }
+      }
+
       dlg.showModal();
     }
     async function applySettings() {
@@ -137,6 +164,26 @@
       const rawExpEl = document.getElementById('rawExposureCorrectionDisabled');
       const rawExposureCorrectionDisabled = rawExpEl ? !!rawExpEl.checked : !!existing.raw_exposure_correction_disabled;
       const prevRawExposureDisabled = !!existing.raw_exposure_correction_disabled;
+
+      // ── Species & Region: collect region picker state + show-sci toggle ──
+      // An empty selection falls back to ``['NA']`` rather than producing an
+      // unusable combobox where no species ever surface.
+      const regionsPicker = document.getElementById('birdRegionsPicker');
+      const regionInputs = regionsPicker
+        ? regionsPicker.querySelectorAll('input.bird-region-cb')
+        : [];
+      const birdRegions = Array.from(regionInputs)
+        .filter(cb => cb.checked)
+        .map(cb => cb.dataset.regionCode)
+        .filter(c => typeof c === 'string' && c.length > 0);
+      const finalRegions = birdRegions.length > 0 ? birdRegions : ['NA'];
+      const showSciCbEl = document.getElementById('showScientificNames');
+      const showScientificNames = showSciCbEl ? !!showSciCbEl.checked : !!existing.show_scientific_names;
+      const prevRegions = Array.isArray(existing.bird_regions) ? existing.bird_regions.slice().sort().join(',') : '';
+      const nextRegions = finalRegions.slice().sort().join(',');
+      const regionsChanged = prevRegions !== nextRegions;
+      const showSciChanged = !!existing.show_scientific_names !== showScientificNames;
+
       const settings = {
         ...existing, editor, customEditorPath, treeScanDepth,
         analytics_opted_in: analyticsOptIn, analytics_consent_shown: true,
@@ -145,6 +192,8 @@
         auto_save_enabled: autoSaveEnabled,
         raw_exposure_correction_disabled: rawExposureCorrectionDisabled,
         exposure_corrected_thumbs: exposureCorrectedThumbs,
+        bird_regions: finalRegions,
+        show_scientific_names: showScientificNames,
       };
       _autoSaveEnabled = autoSaveEnabled;
       if (!_autoSaveEnabled) {
@@ -169,6 +218,16 @@
         if (sceneDlg?.open && _currentScene) {
           renderFilmstrip(_currentScene);
           await selectFilmstripImage(currentImageIndex, _currentScene, false, false);
+        }
+      }
+      // Show-scientific-names + region changes don't affect the model output,
+      // just the way pills render and which species the combobox surfaces.
+      // Repaint anything that's currently on screen so the change is visible
+      // immediately rather than waiting for the next interaction.
+      if ((showSciChanged || regionsChanged) && rows.length > 0) {
+        await renderScenes();
+        if (sceneDlg?.open && _currentScene) {
+          renderTopbarTags(_currentScene);
         }
       }
     }

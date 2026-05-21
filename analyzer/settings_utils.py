@@ -46,6 +46,18 @@ _ALLOWED_RATING_PROFILES = {'very_strict', 'strict', 'balanced', 'lenient', 'ver
 _ALLOWED_EXPOSURE_QUALITY = {'lenient', 'balanced', 'aggressive'}
 _ALLOWED_WILDLIFE_MODEL_MODES = {'fast', 'accurate'}
 _ALLOWED_QUEUE_DETECTOR_NAMES = {'mdv5a', 'mdv1000-cedar'}
+# Biogeographic region codes for the species combobox. Sourced from the
+# ``bird_catalog`` module so the data layer owns the vocabulary and we only
+# import the tuple here for validation.
+try:
+    from kestrel_analyzer.bird_catalog import ALLOWED_REGION_CODES as _BIRD_REGION_CODES
+except ImportError:  # pragma: no cover - import only fails in odd test sandboxes
+    try:
+        from analyzer.kestrel_analyzer.bird_catalog import ALLOWED_REGION_CODES as _BIRD_REGION_CODES
+    except ImportError:
+        _BIRD_REGION_CODES = ('NA',)
+_ALLOWED_BIRD_REGIONS = set(_BIRD_REGION_CODES)
+_DEFAULT_BIRD_REGIONS: list[str] = ['NA']
 # Legacy detector names → current names. Applied silently at load to migrate
 # stored settings from older builds. UI semantics ("Fast"/"Accurate") are
 # preserved, so users never see a change.
@@ -180,6 +192,62 @@ def _sanitize_path_list(value: Any, max_items: int = 256) -> list[str]:
     return out
 
 
+def _sanitize_analyze_recents(value: Any, max_items: int = 16) -> list[dict]:
+    """Validate the analyze_recents settings field — list of recently-queued
+    folders that haven't been fully analyzed yet. Each entry is a dict
+    ``{'path': str, 'timestamp': str}``. Deduped by normalized path
+    (most recent timestamp wins on duplicate). Capped at ``max_items``.
+
+    Designed for the Phase 3 Analyze Folders dialog's chip row, which is
+    intentionally independent from the main tree's ``folder_recents``.
+    """
+    if not isinstance(value, list):
+        return []
+    # Build dedup map first so the most-recent timestamp wins, then preserve
+    # the input order (most-recent-first from the frontend).
+    by_path: dict[str, dict] = {}
+    order: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        p = _coerce_path(item.get('path'))
+        if not p:
+            continue
+        ts = _coerce_string(item.get('timestamp'), default='', max_len=32)
+        if p not in by_path:
+            order.append(p)
+        # Keep the first occurrence's timestamp (input is expected to be
+        # most-recent-first; first occurrence == most recent).
+        by_path.setdefault(p, {'path': p, 'timestamp': ts})
+    out: list[dict] = []
+    for p in order:
+        out.append(by_path[p])
+        if len(out) >= max_items:
+            break
+    return out
+
+
+def _sanitize_perf_samples(value: Any, max_items: int = 50) -> list[dict]:
+    """Validate the perf_samples_gpu / perf_samples_cpu lists used by the
+    Analyze Folders dialog's local-rate time estimate. Each entry is a dict
+    ``{'imgs': int, 'secs': float, 'ts': str}``. Drops malformed entries
+    silently. Returns the last ``max_items`` valid entries (the worker only
+    appends, so trailing entries are the most recent)."""
+    if not isinstance(value, list):
+        return []
+    out: list[dict] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        imgs = _coerce_int(item.get('imgs'), 0, min_value=0, max_value=1_000_000)
+        secs = _coerce_float(item.get('secs'), 0.0, min_value=0.0, max_value=10_000_000.0)
+        if imgs <= 0 or secs <= 0.0:
+            continue
+        ts = _coerce_string(item.get('ts'), default='', max_len=32)
+        out.append({'imgs': imgs, 'secs': round(secs, 1), 'ts': ts})
+    return out[-max_items:]
+
+
 def _sanitize_int_list(value: Any, max_items: int = 128, min_value: int = 0, max_value: int = 1_000_000_000) -> list[int]:
     if not isinstance(value, list):
         return []
@@ -244,59 +312,12 @@ def _sanitize_pending_analytics(value: Any) -> dict | None:
     return payload
 
 
-def _sanitize_queue_recovery_state(value: Any) -> dict | None:
-    if not isinstance(value, dict):
-        return None
-
-    state: dict[str, Any] = {
-        'updated_utc': _coerce_string(value.get('updated_utc', ''), max_len=64),
-        'running': _coerce_bool(value.get('running', False), default=False),
-        'paused': _coerce_bool(value.get('paused', False), default=False),
-        'restore_paths': _sanitize_path_list(value.get('restore_paths'), max_items=512),
-    }
-
-    opts = value.get('options') if isinstance(value.get('options'), dict) else {}
-    state['options'] = {
-        'use_gpu': _coerce_bool(opts.get('use_gpu', True), default=True),
-        'wildlife_enabled': _coerce_bool(opts.get('wildlife_enabled', True), default=True),
-        'species_detection_enabled': _coerce_bool(opts.get('species_detection_enabled', True), default=True),
-        'detector_name': _coerce_enum(
-            _migrate_legacy_detector_name(opts.get('detector_name', 'mdv5a')),
-            _ALLOWED_QUEUE_DETECTOR_NAMES,
-            default='mdv5a',
-        ),
-        'detection_threshold': _coerce_float(opts.get('detection_threshold', 0.25), 0.25, min_value=0.1, max_value=0.99),
-        'scene_time_threshold': _coerce_float(opts.get('scene_time_threshold', 1.0), 1.0, min_value=0.0, max_value=60.0),
-        'mask_threshold': _coerce_float(opts.get('mask_threshold', 0.5), 0.5, min_value=0.5, max_value=0.95),
-        'max_bird_crops': _coerce_int(opts.get('max_bird_crops', 10), 10, min_value=1, max_value=20),
-        'parallel_prefetch': _coerce_int(opts.get('parallel_prefetch', 3), 3, min_value=1, max_value=5),
-        'exposure_corrected_thumbs': _coerce_bool(opts.get('exposure_corrected_thumbs', True), default=True),
-    }
-
-    items_out: list[dict[str, Any]] = []
-    items_raw = value.get('items') if isinstance(value.get('items'), list) else []
-    for entry in items_raw:
-        if not isinstance(entry, dict):
-            continue
-        path = _coerce_path(entry.get('path', ''))
-        if not path:
-            continue
-        status = _coerce_string(entry.get('status', 'pending'), default='pending', max_len=16).lower()
-        if status not in _ALLOWED_QUEUE_ITEM_STATUSES:
-            status = 'pending'
-        items_out.append(
-            {
-                'path': path,
-                'name': _coerce_string(entry.get('name', ''), max_len=512),
-                'status': status,
-                'processed': _coerce_int(entry.get('processed', 0), 0, min_value=0, max_value=1_000_000_000),
-                'total': _coerce_int(entry.get('total', 0), 0, min_value=0, max_value=1_000_000_000),
-            }
-        )
-        if len(items_out) >= 2000:
-            break
-    state['items'] = items_out
-    return state
+# Phase 3: _sanitize_queue_recovery_state removed — queue-restore feature
+# replaced by the analyze dialog's analyze_recents chip row. Existing user
+# settings files may still contain a 'queue_recovery_state' key; it falls
+# through to the passthrough handler at the end of _sanitize_settings_payload
+# and is silently dropped on next save since the explicit allowlist no
+# longer mentions it.
 
 
 def _passthrough_setting_value(value: Any, depth: int = 0) -> Any | None:
@@ -445,6 +466,26 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     _set_float('thumbnail_jpeg_compression', default=0.75, min_value=0.5, max_value=1.0, digits=4)
     _set_int('thumbnail_jpeg_quality', default=75, min_value=50, max_value=100)
 
+    # Bird-catalog region selection (multi-select). The list is sanitised here
+    # so a stale or malformed payload from a future/older build cannot bypass
+    # the allowlist downstream in the combobox query path.
+    if 'bird_regions' in data:
+        raw = data.get('bird_regions')
+        if isinstance(raw, list):
+            cleaned: list[str] = []
+            seen: set[str] = set()
+            for item in raw:
+                if not isinstance(item, str):
+                    continue
+                token = item.strip()
+                if token in _ALLOWED_BIRD_REGIONS and token not in seen:
+                    cleaned.append(token)
+                    seen.add(token)
+            out['bird_regions'] = cleaned if cleaned else list(_DEFAULT_BIRD_REGIONS)
+        else:
+            out['bird_regions'] = list(_DEFAULT_BIRD_REGIONS)
+    _set_bool('show_scientific_names', default=False)
+
     _set_bool('includeSecondarySpecies', default=False)
     _set_bool('groupByFolder', default=True)
     _set_bool('groupByTime', default=True)
@@ -459,8 +500,29 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
         out['sortBy'] = sort_by
 
     _set_path('rootHint')
-    if 'lastQueueState' in data:
-        out['lastQueueState'] = _sanitize_path_list(data.get('lastQueueState'), max_items=512)
+    # Phase 3: lastQueueState removed — was used by the dialog's "Restore Queue?"
+    # button to persist the user's most-recent selection. Replaced by the
+    # analyze_recents settings key (separate timestamp-based history per the
+    # Phase 3 dialog redesign). Existing values fall through to passthrough.
+    if 'folder_recents' in data:
+        # Persistent most-recently-loaded root folders. Cap matches the visible
+        # chip count in the sidebar so backend and frontend stay aligned.
+        out['folder_recents'] = _sanitize_path_list(data.get('folder_recents'), max_items=8)
+    if 'analyze_recents' in data:
+        # Phase 3: Analyze Folders dialog's own recents (list of {path, timestamp}).
+        # Separate from folder_recents — the dialog's mental model is "recently
+        # queued but not yet fully analyzed", independent of the main tree.
+        out['analyze_recents'] = _sanitize_analyze_recents(data.get('analyze_recents'), max_items=16)
+
+    # Local performance samples for the Analyze Folders dialog's time estimate.
+    # The queue worker appends one entry per completed folder run; the dialog
+    # averages them to display per-machine time estimates instead of hardcoded
+    # baselines. GPU and CPU runs are bucketed separately because rates differ
+    # 2-3×. See plan: Est. Time System.
+    if 'perf_samples_gpu' in data:
+        out['perf_samples_gpu'] = _sanitize_perf_samples(data.get('perf_samples_gpu'), max_items=50)
+    if 'perf_samples_cpu' in data:
+        out['perf_samples_cpu'] = _sanitize_perf_samples(data.get('perf_samples_cpu'), max_items=50)
 
     _set_bool('main_tutorial_seen', default=False)
     if 'kestrel_donate_thresholds_shown' in data:
@@ -500,10 +562,9 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     _set_str('last_session_closed_utc', max_len=64)
     _set_str('last_unclean_shutdown_utc', max_len=64)
 
-    if 'queue_recovery_state' in data:
-        queue_state = _sanitize_queue_recovery_state(data.get('queue_recovery_state'))
-        if queue_state is not None:
-            out['queue_recovery_state'] = queue_state
+    # Phase 3: queue_recovery_state allowlist entry removed. Any pre-existing
+    # value in user settings files falls through to passthrough and is dropped
+    # on the next save (the analyze_recents mechanism replaces this feature).
 
     if 'pending_analytics' in data:
         pending = _sanitize_pending_analytics(data.get('pending_analytics'))

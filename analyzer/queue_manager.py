@@ -10,7 +10,7 @@ import os
 import sys
 import threading
 import time as _time_mod
-from datetime import datetime
+from datetime import datetime, timezone
 
 from settings_utils import load_persisted_settings, save_persisted_settings, debug, info, warn, error, log
 
@@ -111,7 +111,10 @@ class _QueueItem:
                  'current_filename', 'current_export_path', 'current_status_msg',
                  'current_overlay_rel', 'current_crops_rel', 'current_detections',
                  'current_quality_results', 'current_species_results',
-                 'initial_processed')
+                 'initial_processed',
+                 # Phase 3 per-item options (set at enqueue time by the analyze
+                 # dialog; honored by the worker just-before processing).
+                 'delete_kestrel_on_start', 'skip_if_already_done')
 
     def __init__(self, path: str, name: str):
         self.path = path
@@ -133,6 +136,10 @@ class _QueueItem:
         self.current_quality_results: list = []
         self.current_species_results: list = []
         self.initial_processed: int = 0  # files already done before this session
+        # Phase 3: per-item flags set by the analyze dialog via enqueue's
+        # per_item_options. Default False so legacy callers behave unchanged.
+        self.delete_kestrel_on_start: bool = False
+        self.skip_if_already_done: bool = False
 
     def to_dict(self) -> dict:
         elapsed = 0.0
@@ -185,146 +192,23 @@ class QueueManager:
         self._detector_name = _DEFAULT_DETECTOR_NAME
         self._retry_errored = False
 
-    def _collect_restore_paths_locked(self) -> list:
-        restore_statuses = {'pending', 'running', 'cancelled'}
-        seen = set()
-        restore_paths = []
-        for it in self._items:
-            if it.status not in restore_statuses:
-                continue
-            p = str(it.path or '').strip()
-            if not p or p in seen:
-                continue
-            seen.add(p)
-            restore_paths.append(p)
-        return restore_paths
-
-    def _build_recovery_state_locked(self) -> dict:
-        return {
-            'updated_utc': _utc_timestamp(),
-            'running': self.is_running,
-            'paused': self.is_paused,
-            'restore_paths': self._collect_restore_paths_locked(),
-            'options': {
-                'use_gpu': bool(self._use_gpu),
-                'wildlife_enabled': bool(self._wildlife_enabled),
-                'species_detection_enabled': bool(self._species_detection_enabled),
-                'detector_name': str(self._detector_name),
-                'detection_threshold': float(self._detection_threshold),
-                'scene_time_threshold': float(self._scene_time_threshold),
-                'mask_threshold': float(self._mask_threshold),
-                'max_bird_crops': int(self._max_bird_crops),
-                'parallel_prefetch': int(self._parallel_prefetch),
-            },
-            'items': [
-                {
-                    'path': it.path,
-                    'name': it.name,
-                    'status': it.status,
-                    'processed': int(it.processed or 0),
-                    'total': int(it.total or 0),
-                }
-                for it in self._items
-            ],
-        }
-
+    # Phase 3: queue-restore feature deleted (replaced by analyze_recents in
+    # the dialog). _collect_restore_paths_locked, _build_recovery_state_locked,
+    # _persist_recovery_state, get_persisted_recovery_state,
+    # restore_from_persisted_state, and clear_persisted_recovery_state all
+    # removed. Their call sites in this file have been swapped for no-op
+    # `_persist_recovery_state()` placeholder (kept as a stub to minimise the
+    # diff at call sites) — see below.
     def _persist_recovery_state(self) -> None:
-        try:
-            with self._lock:
-                state = self._build_recovery_state_locked()
-            settings = load_persisted_settings()
-            if state.get('restore_paths'):
-                settings['queue_recovery_state'] = state
-            else:
-                settings.pop('queue_recovery_state', None)
-            save_persisted_settings(settings)
-        except Exception:
-            pass
+        # Intentional no-op. Kept so existing call sites compile; will be
+        # removed once those call sites are also stripped (Phase 3K).
+        return
 
     def get_persisted_recovery_state(self) -> dict:
-        try:
-            settings = load_persisted_settings()
-            state = settings.get('queue_recovery_state')
-            return state if isinstance(state, dict) else {}
-        except Exception:
-            return {}
-
-    def restore_from_persisted_state(self) -> dict:
-        if self.is_running:
-            return {'success': False, 'error': 'Queue is already running'}
-
-        def _safe_float(val, default):
-            try:
-                return float(val)
-            except (TypeError, ValueError):
-                return float(default)
-
-        def _safe_int(val, default, min_value=1, max_value=20):
-            try:
-                num = int(float(val))
-            except (TypeError, ValueError):
-                num = int(default)
-            if num < min_value:
-                return min_value
-            if num > max_value:
-                return max_value
-            return num
-
-        state = self.get_persisted_recovery_state()
-        if not state:
-            return {'success': False, 'error': 'No persisted queue recovery state found'}
-
-        raw_paths = state.get('restore_paths')
-        if not isinstance(raw_paths, list):
-            return {'success': False, 'error': 'Persisted queue recovery state is invalid'}
-
-        restore_paths = []
-        missing_paths = []
-        seen = set()
-        for p in raw_paths:
-            path = str(p or '').strip()
-            if not path or path in seen:
-                continue
-            seen.add(path)
-            if os.path.isdir(path):
-                restore_paths.append(path)
-            else:
-                missing_paths.append(path)
-
-        if not restore_paths:
-            return {
-                'success': False,
-                'error': 'No valid folders found for queue recovery',
-                'missing_paths': missing_paths,
-            }
-
-        options = state.get('options') if isinstance(state.get('options'), dict) else {}
-        result = self.enqueue(
-            restore_paths,
-            use_gpu=bool(options.get('use_gpu', True)),
-            wildlife_enabled=bool(options.get('wildlife_enabled', True)),
-            species_detection_enabled=bool(options.get('species_detection_enabled', True)),
-            detector_name=_coerce_detector_name(options.get('detector_name', _DEFAULT_DETECTOR_NAME)),
-            detection_threshold=_safe_float(options.get('detection_threshold', 0.25), 0.25),
-            scene_time_threshold=_safe_float(options.get('scene_time_threshold', 1.0), 1.0),
-            mask_threshold=_safe_float(options.get('mask_threshold', 0.5), 0.5),
-            max_bird_crops=_safe_int(options.get('max_bird_crops', 10), 10),
-            parallel_prefetch=_safe_int(options.get('parallel_prefetch', 3), 3, min_value=1, max_value=5),
-        )
-        if result.get('success'):
-            result['restored'] = len(restore_paths)
-            if missing_paths:
-                result['missing_paths'] = missing_paths
-        return result
-
-    def clear_persisted_recovery_state(self) -> dict:
-        try:
-            settings = load_persisted_settings()
-            settings.pop('queue_recovery_state', None)
-            save_persisted_settings(settings)
-            return {'success': True}
-        except Exception as exc:
-            return {'success': False, 'error': str(exc)}
+        # No-op stub. Phase 3 removed the queue-restore feature; this returns
+        # an empty dict so api_bridge.get_recovery_status (which still surfaces
+        # the unclean-shutdown timestamp for telemetry) keeps working.
+        return {}
 
     # ---- public read-only properties ----
 
@@ -361,14 +245,22 @@ class QueueManager:
         max_bird_crops: int = 10,
         parallel_prefetch: int = 3,
         retry_errored: bool = False,
+        # Phase 3: per-path option map. Keys: path. Values: dict with optional
+        # 'delete_kestrel_on_start' and 'skip_if_already_done' booleans.
+        # Used by the analyze dialog to defer .kestrel deletion to just-before
+        # the worker reaches that folder, and to silently-skip folders the
+        # user accidentally queued that are already fully analyzed.
+        per_item_options: dict | None = None,
     ) -> dict:
         if not _PIPELINE_AVAILABLE:
             return {'success': False, 'error': f'Analyzer unavailable: {_pipeline_import_error}'}
+        per_item_options = per_item_options or {}
         with self._lock:
             path_to_item = {it.path: it for it in self._items}
             added = 0
             for p in paths:
                 existing_item = path_to_item.get(p)
+                opts = per_item_options.get(p, {}) if isinstance(per_item_options, dict) else {}
                 if existing_item is not None:
                     if existing_item.status in ('done', 'error', 'cancelled'):
                         # Reset finalized item so it can be re-processed
@@ -389,11 +281,15 @@ class QueueManager:
                         existing_item.current_quality_results = []
                         existing_item.current_species_results = []
                         existing_item.initial_processed = 0
+                        existing_item.delete_kestrel_on_start = bool(opts.get('delete_kestrel_on_start'))
+                        existing_item.skip_if_already_done = bool(opts.get('skip_if_already_done'))
                         added += 1
-                    # If already pending/running, leave it alone
+                    # If already pending/running, leave it alone (don't clobber flags either)
                 else:
                     name = os.path.basename(p.rstrip('/\\')) or p
                     new_item = _QueueItem(p, name)
+                    new_item.delete_kestrel_on_start = bool(opts.get('delete_kestrel_on_start'))
+                    new_item.skip_if_already_done = bool(opts.get('skip_if_already_done'))
                     self._items.append(new_item)
                     added += 1
         if not self.is_running:
@@ -534,6 +430,52 @@ class QueueManager:
                 item.start_time = _time_mod.time()
                 item.initial_processed = 0
             self._persist_recovery_state()
+
+            # ── Phase 3: per-item gates BEFORE the heavy pipeline call ────────
+            # 1. skip_if_already_done — silently mark done without touching
+            #    .kestrel if the folder is still fully analyzed with no errors.
+            #    Re-inspect now (not at queue-build time) because state might
+            #    have changed between dialog confirmation and the worker
+            #    reaching this folder.
+            if item.skip_if_already_done and not self._retry_errored:
+                try:
+                    import folder_inspector as _inspector
+                except Exception:
+                    try:
+                        from analyzer import folder_inspector as _inspector  # type: ignore[no-redef]
+                    except Exception:
+                        _inspector = None  # type: ignore[assignment]
+                if _inspector is not None:
+                    try:
+                        info_dict = _inspector.inspect_folder(item.path)
+                        total = int(info_dict.get('total') or 0)
+                        processed = int(info_dict.get('processed') or 0)
+                        errored = int(info_dict.get('errored') or 0)
+                        if total > 0 and processed >= total and errored == 0:
+                            info(f'[queue] Skipping {item.name!r}: already fully analyzed, no errors.')
+                            with self._lock:
+                                item.status = 'done'
+                                item.end_time = _time_mod.time()
+                                item.processed = processed
+                                item.total = total
+                                item.current_status_msg = 'Already analyzed — no work to do'
+                            self._persist_recovery_state()
+                            continue
+                    except Exception as e:
+                        warn(f'[queue] skip_if_already_done inspector failed for {item.path!r}: {e}; proceeding with analysis')
+
+            # 2. delete_kestrel_on_start — wipe .kestrel JUST BEFORE this
+            #    folder's analysis begins (NOT at queue-build time). If the
+            #    user cancels mid-queue, later folders keep their .kestrel.
+            if item.delete_kestrel_on_start:
+                try:
+                    import shutil as _shutil
+                    kestrel_dir = os.path.join(item.path, '.kestrel')
+                    if os.path.isdir(kestrel_dir):
+                        _shutil.rmtree(kestrel_dir, ignore_errors=True)
+                        info(f'[queue] Deleted .kestrel for {item.name!r} (per-item flag)')
+                except Exception as e:
+                    error(f'[queue] Failed to delete .kestrel for {item.path!r}: {e}')
 
             try:
                 current_settings = load_persisted_settings()
@@ -709,6 +651,27 @@ class QueueManager:
             settings['kestrel_impact_total_seconds'] = round(
                 settings.get('kestrel_impact_total_seconds', 0.0) + elapsed, 1
             )
+
+            # Local perf sample, bucketed by compute mode. Used by the Analyze
+            # dialog to swap the hardcoded baseline estimate for a per-machine
+            # rolling average once enough samples have accrued. Discards small
+            # or implausibly-slow runs to avoid poisoning the average:
+            #   - imgs < 10: first-folder model-load dominates wall time
+            #   - secs/img > 120: something went wrong (e.g. model load failure)
+            if files_this_session >= 10 and elapsed > 0:
+                secs_per_img = elapsed / files_this_session
+                if secs_per_img <= 120.0:
+                    mode_key = 'perf_samples_gpu' if self._use_gpu else 'perf_samples_cpu'
+                    samples = settings.get(mode_key) or []
+                    if not isinstance(samples, list):
+                        samples = []
+                    samples.append({
+                        'imgs': int(files_this_session),
+                        'secs': round(float(elapsed), 1),
+                        'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                    })
+                    settings[mode_key] = samples[-50:]
+
             save_persisted_settings(settings)
 
             was_cancelled = (item.status == 'cancelled')

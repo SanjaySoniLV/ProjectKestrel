@@ -61,12 +61,8 @@
       return window.pywebview.api.get_recovery_status();
     }
 
-    async function apiRestoreRecoveryQueue() {
-      if (!window.pywebview?.api?.restore_analysis_queue) {
-        throw new Error('Desktop API unavailable: restore_analysis_queue');
-      }
-      return window.pywebview.api.restore_analysis_queue();
-    }
+    // Phase 3: apiRestoreRecoveryQueue removed — queue-restore feature
+    // replaced by the analyze dialog's analyze_recents chip row.
 
     async function apiClearRecoveryState(clearQueueState = true) {
       if (!window.pywebview?.api?.clear_recovery_state) {
@@ -84,6 +80,10 @@
 
     let _startupRecoveryHandled = false;
 
+    // Phase 3: queue-restore branch removed. This function now only handles
+    // the unclean-shutdown crash-report prompt. Interrupted queues now
+    // surface as recents in the Analyze Folders dialog (analyze_recents
+    // settings key) instead of a startup modal.
     async function maybeHandleStartupRecovery() {
       if (_startupRecoveryHandled) return;
       _startupRecoveryHandled = true;
@@ -98,70 +98,35 @@
       }
       if (!recovery || recovery.success === false) return;
 
-      const restorePaths = Array.isArray(recovery.queue_recovery?.restore_paths)
-        ? recovery.queue_recovery.restore_paths
-        : [];
-      const hasQueueRecovery = restorePaths.length > 0;
       const exitReason = String(recovery.exit_reason || '').toLowerCase();
       // 'os_shutdown' (PC reboot/logoff) and 'clean' never warrant a dialog.
       // 'crash' is a real unhandled exception. 'unknown' is ambiguous
       // (SIGKILL, power loss, or pre-upgrade install) and gets a soft prompt.
       const hadUncleanShutdown = !!recovery.unclean_shutdown
         && (exitReason === 'crash' || exitReason === 'unknown' || exitReason === '');
-      if (!hasQueueRecovery && !hadUncleanShutdown) return;
+      if (!hadUncleanShutdown) return;
 
-      let queueDismissed = false;
-      if (hasQueueRecovery) {
-        const doRestore = confirm(
-          `Kestrel detected an interrupted analysis queue with ${restorePaths.length} folder${restorePaths.length === 1 ? '' : 's'}.\n\nRestore it now?`
-        );
-        if (doRestore) {
-          try {
-            const restoreResult = await apiRestoreRecoveryQueue();
-            if (restoreResult && restoreResult.success !== false) {
-              startPollingQueue();
-              const status = await apiGetQueueStatus();
-              renderQueuePanel(status);
-              setStatus(`Recovered previous analysis queue (${restoreResult.restored || restorePaths.length} folder(s)).`);
-            } else {
-              const msg = restoreResult?.error || 'Unknown error';
-              alert('Could not restore the previous queue:\n\n' + msg);
-              queueDismissed = true;
-            }
-          } catch (e) {
-            alert('Could not restore the previous queue:\n\n' + (e.message || e));
-            queueDismissed = true;
+      const promptText = exitReason === 'crash'
+        ? 'Kestrel detected that the previous session crashed.\n\nSend a crash report now?'
+        : 'Kestrel did not exit cleanly. This is sometimes caused by a system shutdown or power loss — would you still like to send a report?';
+      const sendReport = confirm(promptText);
+      if (sendReport) {
+        try {
+          const reportResult = await apiSendRecoveryCrashReport();
+          if (reportResult && reportResult.success === false) {
+            alert('Could not send crash report:\n\n' + (reportResult.error || 'Unknown error'));
+          } else {
+            showToast('Crash report sent. Thank you.', 3500);
           }
-        } else {
-          queueDismissed = true;
-        }
-      }
-
-      if (hadUncleanShutdown) {
-        const promptText = exitReason === 'crash'
-          ? 'Kestrel detected that the previous session crashed.\n\nSend a crash report now?'
-          : 'Kestrel did not exit cleanly. This is sometimes caused by a system shutdown or power loss — would you still like to send a report?';
-        const sendReport = confirm(promptText);
-        if (sendReport) {
-          try {
-            const reportResult = await apiSendRecoveryCrashReport();
-            if (reportResult && reportResult.success === false) {
-              alert('Could not send crash report:\n\n' + (reportResult.error || 'Unknown error'));
-            } else {
-              showToast('Crash report sent. Thank you.', 3500);
-            }
-          } catch (e) {
-            alert('Could not send crash report:\n\n' + (e.message || e));
-          }
+        } catch (e) {
+          alert('Could not send crash report:\n\n' + (e.message || e));
         }
       }
 
       try {
-        if (queueDismissed) {
-          await apiClearRecoveryState(true);
-        } else if (hadUncleanShutdown) {
-          await apiClearRecoveryState(false);
-        }
+        // Clear only the unclean-shutdown timestamp; we no longer persist
+        // queue recovery state so the `false` arg is a no-op there.
+        await apiClearRecoveryState(false);
       } catch (_) { }
     }
 
@@ -412,7 +377,17 @@
         }
       }
       if (treeRescanNeeded) {
-        setTimeout(() => { if (folderTreeRootNode) rescanFolderTree(folderTreeRootNode.path); }, 1200);
+        // Rescan only the specific root(s) whose folders just finished, not
+        // every loaded root. nowDone is the set of just-completed folder
+        // paths — find which root contains each, then rescan that root.
+        setTimeout(() => {
+          const rootsToRescan = new Set();
+          for (const p of nowDone) {
+            const root = _findRootContaining(p);
+            if (root) rootsToRescan.add(root.path);
+          }
+          for (const rp of rootsToRescan) rescanFolderRoot(rp);
+        }, 1200);
       }
       _queueLastDoneSet = nowDone;
 
@@ -448,7 +423,7 @@
           if (!prevRunningSet.has(p)) {
             setTimeout(() => {
               try {
-                if (!folderTreeRootNode) return;
+                if (!_hasAnyRoots()) return;
                 updateFolderTreeNode(p);
               } catch (e) { /* ignore */ }
             }, 500);
@@ -1024,19 +999,27 @@
       }
     }
 
-    /** Re-scan the folder tree root without resetting the expanded/checked state. */
-    async function rescanFolderTree(rootPath) {
+    /** Re-scan a single root in place — updates only that root's node in the
+     *  Map, preserves expanded/checked state, then re-renders. Used after a
+     *  queued folder under that root finishes analyzing. */
+    async function rescanFolderRoot(rootPath) {
       if (!hasPywebviewApi || !window.pywebview?.api?.list_subfolders) return;
+      const normRoot = (rootPath || '').replace(/\\/g, '/').replace(/\/+$/, '');
+      if (!folderTreeRootNodes.has(normRoot)) return;
       try {
         const depth = getSetting('treeScanDepth', 3);
-        const result = await window.pywebview.api.list_subfolders(rootPath, depth);
+        const result = await window.pywebview.api.list_subfolders(normRoot, depth);
         if (!result.success) return;
-        folderTreeData = result.tree;
-        folderTreeRootHasKestrel = !!result.root_has_kestrel;
-        const rootName = rootPath.replace(/\\/g, '/').split('/').filter(Boolean).pop() || rootPath;
-        folderTreeRootNode = { name: rootName, path: rootPath, has_kestrel: folderTreeRootHasKestrel, children: folderTreeData };
-        // Apply any transient kestrel markings so nodes recently queued/started
-        // are shown as having kestrel until the real scan state differs.
+        const rootName = normRoot.split('/').filter(Boolean).pop() || normRoot;
+        const updated = {
+          name: rootName,
+          path: normRoot,
+          has_kestrel: !!result.root_has_kestrel,
+          kestrel_version: result.root_kestrel_version || '',
+          children: result.tree || [],
+        };
+        // Apply transient kestrel markings (folders recently queued/started
+        // should appear analyzed until the real scan state differs).
         try {
           const norm = p => (p || '').replace(/\\/g, '/');
           function applyTemp(n) {
@@ -1045,11 +1028,14 @@
             if (_tempKestrelPaths.has(p)) n.has_kestrel = true;
             (n.children || []).forEach(c => applyTemp(c));
           }
-          applyTemp(folderTreeRootNode);
+          applyTemp(updated);
         } catch (e) { /* ignore */ }
+        folderTreeRootNodes.set(normRoot, updated);
         renderFolderTree();
       } catch (_) { }
     }
+    // Legacy alias for any straggling callers.
+    const rescanFolderTree = rescanFolderRoot;
 
     /** Update UI to reflect in-progress folders with special styling and always-present checkboxes. */
     function updateInProgressFoldersInTree() {
@@ -1204,7 +1190,8 @@
       } catch (e) { console.warn('[timer] _updateAutoRefreshTimers error:', e); }
     }
 
-    /** Count how many analyzed (non-in-progress) folders exist in the tree. */
+    /** Count how many analyzed (non-in-progress) folders exist across ALL
+     *  loaded roots. */
     function countAnalyzedFolders() {
       try {
         let count = 0;
@@ -1214,7 +1201,7 @@
           if (n.has_kestrel && !_inProgressFolderPaths.has(np)) count++;
           (n.children || []).forEach(c => traverse(c));
         }
-        traverse(folderTreeRootNode);
+        for (const root of _getAllRoots()) traverse(root);
         return count;
       } catch (e) { return 0; }
     }
@@ -1237,3 +1224,4 @@
     }
 
     // ── End Analysis Queue ────────────────────────────────────────────────────────
+

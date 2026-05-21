@@ -23,46 +23,6 @@
   margin: -12px 0 0;
 }
 
-.welcome-cards {
-  display: flex;
-  gap: 20px;
-  flex-wrap: wrap;
-  justify-content: center;
-  max-width: 840px;
-  width: 100%;
-}
-
-.welcome-card {
-  background: var(--card);
-  border: 1px solid var(--card-border);
-  border-radius: 14px;
-  padding: 22px 22px 18px;
-  max-width: 390px;
-  flex: 1 1 280px;
-  text-align: left;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.welcome-card-icon {
-  font-size: 26px;
-  line-height: 1;
-}
-
-.welcome-card-title {
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.welcome-card p {
-  font-size: 13px;
-  color: var(--muted);
-  line-height: 1.55;
-  margin: 0;
-  flex: 1 1 auto;
-}
-
 .welcome-action-btn {
   display: inline-flex;
   align-items: center;

@@ -68,95 +68,64 @@
       </h1>
       <div class="toolbar">
         <div class="toolbar-row actions">
-          <button id="pickFolder" class="primary" title="Open a folder you've already analyzed with Kestrel">
-            📂 Open Folder
-            <span class="help-tip"
-              data-tip="Open the folder that contains your bird photos after the folder is analyzed with Kestrel."
-              aria-label="Folder selection help"
-              title="Open the folder that contains your bird photos after the folder with Kestrel.">?</span>
+          <button id="analyzeQueueBtn" class="primary sidebar-cta" title="Pick folders to analyze with Kestrel's ML pipeline">
+            🔬 Analyze Folders…
           </button>
-          <div class="actions-secondary-row">
-            <button id="analyzeQueueBtn" title="Select folders to add to the analysis queue" style="flex:1">🔬 Analyze Folders…</button>
-            <button id="openSettings" title="Open Kestrel settings" style="flex:1">⚙ Settings</button>
-          </div>
           <div id="saveRevertWrap" class="hidden" style="display:flex;gap:6px">
             <button id="revertCsv" disabled title="Discard all unsaved changes" style="flex:1">Revert Changes</button>
             <button id="saveCsv" disabled style="flex:1">Save Changes</button>
           </div>
         </div>
-        <!-- Folder tree panel: always visible, greyed out until a folder is opened -->
+        <!-- Folder Tree section: unified bordered container that holds the Load
+             Folders button (top bar), recents chips, the tree itself, and the
+             Select / Clear strip (bottom bar). Phase 1 = visual scaffold;
+             existing IDs preserved so handlers keep working. treeChangeRoot
+             retained but hidden to keep csv-init.js safe. -->
         <div id="folderTreeWrap" class="folder-tree-wrap folder-tree-empty">
-          <div class="folder-tree-header">
-            <span class="tree-title">Folder Tree</span>
-            <button id="treeCheckAll" title="Check all folders" disabled>Check All</button>
-            <button id="treeCheckNone" title="Uncheck all folders" disabled>Check None</button>
-            <button id="treeChangeRoot" title="Pick a different root folder to scan" disabled>Change root…</button>
-          </div>
-          <div id="folderScanProgress" class="load-progress hidden" style="margin:8px 6px 0">
+          <button id="pickFolder" class="folder-load-btn" title="Load a folder that you've already analyzed with Kestrel">
+            <span class="folder-load-btn-plus">+ 📂</span>
+            <span class="folder-load-btn-label">Load Folders…</span>
+          </button>
+          <!-- Recents row: hidden in phase 1 (no persistence yet). Markup ready for chips. -->
+          <div id="folderRecentsRow" class="folder-recents-row hidden" aria-label="Recently loaded folders"></div>
+          <div id="folderScanProgress" class="load-progress hidden" style="margin:6px 8px 0">
             <div class="load-progress-label" id="folderScanLabel">Scanning folders…</div>
             <div class="load-progress-track">
               <div id="folderScanFill" class="load-progress-fill" style="width:0%"></div>
             </div>
           </div>
-          <div id="folderTree"></div>
-        </div>
-      </div>
-      <!-- Filter panel pinned at the bottom of the sidebar, above the footer -->
-      <div class="toolbar-row filters">
-        <div class="filter-panel" aria-label="Filter and sort options">
-          <div class="filter-title">Filter &amp; Sort Options</div>
-          <input id="search" type="search" placeholder="Search by species or family" />
-          <label class="inline filter-conf-row">
-            <span class="muted">Confidence</span>
-            <input id="speciesConf" type="number" min="0" max="1" step="0.05" value="0.75" style="width:100px" />
-          </label>
-          <div class="filter-divider"></div>
-          <div class="filter-sort-row">
-            <span class="muted filter-sort-label">Sort by</span>
-            <select id="sortBy">
-              <option value="captureTime" selected>Capture Time</option>
-              <option value="sceneId">Scene ID</option>
-              <option value="maxQuality">Max Quality</option>
-              <option value="imageCount">Image Count</option>
-            </select>
+          <!-- Empty-state hint: shown only when no folders are loaded -->
+          <div id="folderTreeEmptyHint" class="folder-tree-empty-hint">
+            No folders loaded.<br />Click <b>+ Load Folder</b> to get started.
           </div>
-          <div class="filter-divider"></div>
-          <label class="inline" title="Only show scenes you've manually reviewed: user star ratings, user accept/reject culling decisions, reviewed scene tags, or renamed scene names.">
-            <input id="filterScenesManualRated" type="checkbox" />
-            <span class="muted">Only manually reviewed scenes</span>
-          </label>
-          <label class="inline">
-            <input id="includeSecondarySpecies" type="checkbox" />
-            <span class="muted">Multi-subject mode</span>
-            <span class="help-tip"
-              data-tip="If your photos have multiple subjects (eg. multiple birds in one photo), this option will improve searchability."
-              aria-label="Multi-subject mode help"
-              title="If your photos have multiple subjects (eg. multiple birds in one photo), this option will improve searchability.">?</span>
-          </label>
-          <label class="inline">
-            <input id="groupByTime" type="checkbox" />
-            <span class="muted">Group by capture time</span>
-          </label>
-          <label class="inline">
-            <input id="groupByFolder" type="checkbox" checked />
-            <span class="muted">Group by folder</span>
-          </label>
-          <label class="inline">
-            <input id="showBirdThumbs" type="checkbox" />
-            <span class="muted">Show bird thumbnails</span>
-          </label>
+          <div id="folderTree"></div>
+          <!-- Bottom segmented strip: [Clear] [Select All ↔ Select None].
+               Clear is the wide left segment; the select toggle is a compact
+               right segment with its checkbox positioned at the far right so
+               it aligns with the row checkboxes above. The checkbox inside the
+               select button is purely visual (pointer-events: none in CSS). -->
+          <div id="folderTreeFooter" class="folder-tree-footer segmented-strip">
+            <button id="treeClear" class="segmented-strip-item danger-item tree-clear-btn" title="Unload all folders and reset the tree" disabled>Clear</button>
+            <button id="treeCheckAll" class="segmented-strip-item tree-select-toggle" title="Check all loaded folders" disabled>
+              <span class="tree-select-toggle-label">Select All</span>
+              <input type="checkbox" class="tree-cb tree-select-toggle-cb" tabindex="-1" aria-hidden="true" />
+            </button>
+            <button id="treeCheckNone" class="segmented-strip-item tree-select-toggle hidden" title="Uncheck all loaded folders" disabled>
+              <span class="tree-select-toggle-label">Select None</span>
+              <input type="checkbox" class="tree-cb tree-select-toggle-cb" tabindex="-1" aria-hidden="true" checked />
+            </button>
+            <button id="treeChangeRoot" class="hidden" disabled aria-hidden="true" tabindex="-1"></button>
+          </div>
         </div>
       </div>
       <div class="spacer"></div>
-      <div class="sidebar-footer" aria-label="Controls">
-        <div style="display:flex;gap:2px;align-items:center;flex-shrink:0;">
-          <button id="zoomOut" title="Zoom out" style="padding:3px 8px;">&#x2212;</button>
-          <span style="font-size:11px;color:var(--muted);padding:0 2px;">Zoom</span>
-          <button id="zoomIn" title="Zoom in" style="padding:3px 8px;">+</button>
-        </div>
-        <button id="openFeedback" title="Send feedback, report a bug, or share a suggestion" style="font-size:11px;padding:4px 8px;">Feedback</button>
-        <button id="helpBtnMain" title="Start guided tutorial">📖 Tutorial</button>
-        <button id="donateBtnMain" class="donate-btn" title="Support Project Kestrel — Donate via PayPal">💛 Donate</button>
+      <!-- Segmented footer strip: Settings | Feedback | Tutorial | Donate.
+           Zoom moved to the bottom status bar. -->
+      <div class="sidebar-footer segmented-strip" aria-label="Controls">
+        <button id="openSettings" class="segmented-strip-item" title="Open Kestrel settings" aria-label="Settings">⚙</button>
+        <button id="openFeedback" class="segmented-strip-item" title="Send feedback, report a bug, or share a suggestion">Feedback</button>
+        <button id="helpBtnMain" class="segmented-strip-item" title="Start guided tutorial">Tutorial</button>
+        <button id="donateBtnMain" class="segmented-strip-item donate-item" title="Support Project Kestrel — Donate via PayPal">💛 Donate</button>
       </div>
     </div>
   </header>
@@ -164,6 +133,52 @@
 
   <main>
     <div id="mainZoom">
+      <!-- Sticky top filter/sort bar — sits above the timeline, hidden when welcome panel is shown -->
+      <div id="timelineFilterBar" class="timeline-filter-bar hidden" role="region" aria-label="Filter and sort options">
+        <input id="search" type="search" placeholder="🔍 Search by species or family" class="tfb-search" />
+        <label class="tfb-field" title="Minimum confidence threshold for species classification">
+          <span class="tfb-label">Confidence</span>
+          <input id="speciesConf" type="number" min="0" max="1" step="0.05" value="0.75" class="tfb-conf" />
+        </label>
+        <label class="tfb-field">
+          <span class="tfb-label">Sort by</span>
+          <select id="sortBy" class="tfb-sort">
+            <option value="captureTime" selected>Capture Time</option>
+            <option value="sceneId">Scene ID</option>
+            <option value="maxQuality">Max Quality</option>
+            <option value="imageCount">Image Count</option>
+          </select>
+        </label>
+        <div class="tfb-more-wrap">
+          <button id="tfbMoreBtn" type="button" class="tfb-more-btn" aria-haspopup="true" aria-expanded="false" title="More filter and grouping options">⚙ More ▾</button>
+          <div id="tfbMorePopover" class="tfb-more-popover hidden" role="menu" aria-label="Additional options">
+            <label class="tfb-popover-row" title="Only show scenes you've manually reviewed: user star ratings, user accept/reject culling decisions, reviewed scene tags, or renamed scene names.">
+              <input id="filterScenesManualRated" type="checkbox" />
+              <span>Only manually reviewed scenes</span>
+            </label>
+            <label class="tfb-popover-row">
+              <input id="includeSecondarySpecies" type="checkbox" />
+              <span>Multi-subject mode</span>
+              <span class="help-tip"
+                data-tip="If your photos have multiple subjects (eg. multiple birds in one photo), this option will improve searchability."
+                aria-label="Multi-subject mode help"
+                title="If your photos have multiple subjects (eg. multiple birds in one photo), this option will improve searchability.">?</span>
+            </label>
+            <label class="tfb-popover-row">
+              <input id="groupByTime" type="checkbox" />
+              <span>Group by capture time</span>
+            </label>
+            <label class="tfb-popover-row">
+              <input id="groupByFolder" type="checkbox" checked />
+              <span>Group by folder</span>
+            </label>
+            <label class="tfb-popover-row">
+              <input id="showBirdThumbs" type="checkbox" />
+              <span>Show bird thumbnails</span>
+            </label>
+          </div>
+        </div>
+      </div>
       <div id="compat" class="wrap hidden">
         <div class="notice">
           Desktop bridge unavailable. Project Kestrel now runs in desktop-only mode.<br />
@@ -182,23 +197,6 @@
 
         <!-- "What's New" banner (populated + gated by JS via last_seen_whats_new_version setting) -->
         <div id="welcomeWhatsNew" class="welcome-whats-new hidden" role="region" aria-label="What's new in this update"></div>
-
-        <div class="welcome-cards">
-          <div class="welcome-card">
-            <div class="welcome-card-icon">&#x1F52C;</div>
-            <div class="welcome-card-title">First time using Kestrel?</div>
-            <p>Get started by adding your photo folders to the Analysis Queue. Kestrel will automatically detect birds,
-              identify species, and score image quality across your entire library.</p>
-            <span class="welcome-action-btn" id="welcomeAnalyzeBtn">Analyze Photos&#x2026;</span>
-          </div>
-          <div class="welcome-card">
-            <div class="welcome-card-icon">&#x1F4C2;</div>
-            <div class="welcome-card-title">Returning to review your photos?</div>
-            <p>Open a folder you&rsquo;ve already analyzed with Kestrel. Use the search and filtering options on the
-              left to find specific species or sort by image quality.</p>
-            <span class="welcome-action-btn" id="welcomeOpenBtn">Open Folder&#x2026;</span>
-          </div>
-        </div>
 
         <!-- Rotating tip carousel (tip content authored in JS) -->
         <div id="welcomeTipCarousel" class="welcome-tip-carousel" role="region" aria-label="Tips and tricks">
@@ -297,6 +295,13 @@
       </div>
     </div>
     <div id="versionBadge" class="version-badge">Version: —</div>
+    <!-- Zoom widget: slider with – / + buttons. Lives in the status bar (right side).
+         IDs zoomOut / zoomIn preserved so existing handlers keep working. -->
+    <div class="status-zoom-widget" aria-label="Zoom controls">
+      <button id="zoomOut" class="status-zoom-btn" title="Zoom out" aria-label="Zoom out">&#x2212;</button>
+      <input id="zoomSlider" type="range" min="50" max="200" step="10" value="100" class="status-zoom-slider" title="Zoom" aria-label="Zoom level" />
+      <button id="zoomIn" class="status-zoom-btn" title="Zoom in" aria-label="Zoom in">+</button>
+    </div>
   </footer>
 
   <dialog id="sceneDlg">
@@ -670,6 +675,34 @@
       <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">How many subfolder levels to scan when
         building the folder tree (1–6). Higher values may increase scan time.</div>
 
+      <h4 style="margin:12px 0 8px;padding-top:8px;border-top:1px solid #1d2230;color:#a0a8b8;font-size:13px;text-transform:uppercase;letter-spacing:0.5px">Species &amp; Region</h4>
+
+      <div class="row" style="align-items:flex-start">
+        <label for="birdRegionsPicker" style="flex:1">Bird Regions</label>
+        <div id="birdRegionsPicker" style="display:flex;flex-direction:column;gap:4px;min-width:280px;max-height:200px;overflow-y:auto;border:1px solid #1d2230;border-radius:6px;padding:6px 8px;background:#0e1117">
+          <!-- region checkboxes populated at runtime from get_bird_catalog_meta -->
+          <span class="muted" style="font-size:11px">Loading regions…</span>
+        </div>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">
+        Selects which biogeographic regions to include in the species
+        autocomplete (Ctrl+Shift+R). Multiple regions show their union.
+        Species outside the selected regions are hidden from the combobox.
+      </div>
+
+      <div class="row">
+        <label for="showScientificNames" style="flex:1">Show scientific names</label>
+        <label class="inline" style="gap:6px">
+          <input type="checkbox" id="showScientificNames" />
+          <span class="muted">Enable</span>
+        </label>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">
+        When on, the Latin binomial appears in italics under each species
+        pill (scene dialog and timeline cards), and family pills show the
+        scientific family name.
+      </div>
+
       <h4 style="margin:12px 0 8px;padding-top:8px;border-top:1px solid #1d2230;color:#a0a8b8;font-size:13px;text-transform:uppercase;letter-spacing:0.5px">Star Rating System</h4>
 
       <div class="row">
@@ -797,176 +830,264 @@
     </div>
   </dialog>
 
-  <!-- Analyze Folders dialog -->
+  <!-- Analyze Folders dialog (Phase 3: 3-column layout).
+       Col 1: Queue Builder — + Add Folders, recents chips, dialog-local tree, Clear.
+       Col 2: Settings — critical tier always visible + collapsed "More options".
+       Col 3: Queue Summary + Start — live counts, warnings, per-folder list, Start.
+       Dialog state is FULLY INDEPENDENT from the main sidebar tree. -->
   <dialog id="analyzeQueueDlg" class="dlg-compact">
     <div class="analyze-dlg">
-      <div style="display:flex;align-items:center;gap:8px;">
+      <div class="analyze-dlg-header">
         <h3 style="margin:0;flex:1;">🔬 Analyze Folders</h3>
       </div>
-      <p style="margin:0;font-size:12px;color:var(--muted)">Check folders to add to the analysis queue.
-        <span style="color:var(--ok);">●</span>&thinsp;finished
-        &nbsp;<span style="color:var(--ok);font-style:italic;">●</span>&thinsp;<i>outdated version</i>
-        &nbsp;<span style="color:#b36bff;">●</span>&thinsp;in progress
-        &nbsp;<span style="color:var(--brand);">●</span>&thinsp;not started
-        &nbsp;<span style="color:var(--bad);">●</span>&thinsp;has errors
-        &nbsp;<span style="color:#555;font-size:11px;">● faded = no photos</span></p>
-      <div class="analyze-dlg-split">
-        <!-- Left panel: folder tree -->
-        <div style="display:flex;flex-direction:column;gap:4px;min-height:0;">
-          <div style="display:flex;align-items:center;gap:6px;">
-            <span style="font-size:12px;color:var(--muted);font-weight:600;flex:1;">📂 Browse Folders</span>
-            <button id="analyzeDlgChangeRoot" style="font-size:11px;padding:3px 9px;flex-shrink:0;" title="Choose a different parent folder to scan">📁 Change Folder…</button>
+      <div class="analyze-dlg-grid">
+
+        <!-- ═══ Column 1: Select Which Folders to Analyze ═══ -->
+        <div class="analyze-dlg-col analyze-dlg-col-builder">
+          <div class="analyze-dlg-col-title">📂 Select which folders to analyze</div>
+          <!-- State pill legend (Phase 3 polish): the color/shape meanings.
+               Color = queue state (orange checked / gray not); shape = work
+               progress (solid done / half partial / outline not started). -->
+          <div class="analyze-dlg-pill-legend" aria-label="Folder status legend">
+            <span class="legend-item"><span class="state-pill state-pill--orange state-pill--solid"></span>Done</span>
+            <span class="legend-item"><span class="state-pill state-pill--orange state-pill--half"></span>Partial</span>
+            <span class="legend-item"><span class="state-pill state-pill--orange state-pill--outline"></span>Not started</span>
+            <span class="legend-item"><span class="state-pill state-pill--gray state-pill--outline"></span>Not queued</span>
+            <span class="legend-item"><span class="state-pill state-pill--red state-pill--warn"></span>Errored</span>
+            <span class="legend-item"><span class="state-pill state-pill--dim state-pill--dot"></span>No photos</span>
           </div>
           <div class="analyze-dlg-tree-wrap">
+            <button id="analyzeDlgLoadFolders" class="folder-load-btn" title="Add a folder to scan for analysis">
+              <span class="folder-load-btn-plus">+ 📂</span>
+              <span class="folder-load-btn-label">Add Folders…</span>
+            </button>
+            <div id="analyzeDlgRecentsRow" class="folder-recents-row hidden" aria-label="Recently queued folders"></div>
+            <div id="analyzeDlgTreeEmptyHint" class="folder-tree-empty-hint">
+              No folders added.<br />Click <b>+ 📂 Add Folders…</b> or pick a recent above.
+            </div>
             <div id="analyzeDlgTree"></div>
+            <div id="analyzeDlgFooter" class="folder-tree-footer segmented-strip hidden">
+              <button id="analyzeDlgClear" class="segmented-strip-item danger-item tree-clear-btn" title="Unload all folders from the picker">Clear</button>
+            </div>
           </div>
-          <div id="analyzeScanProgress" class="load-progress hidden" style="margin:0 6px">
+          <div id="analyzeScanProgress" class="load-progress hidden" style="margin:6px 0 0">
             <div class="load-progress-label" id="analyzeScanLabel">Scanning folders…</div>
             <div class="load-progress-track">
               <div id="analyzeScanFill" class="load-progress-fill" style="width:0%"></div>
             </div>
           </div>
         </div>
-        <!-- Right panel: queue preview -->
-        <div class="analyze-dlg-queue-wrap">
-          <h4>📋 Queue Preview</h4>
-          <div class="adlg-queue-section" id="adlgQueueRunning"></div>
-          <div class="adlg-queue-section" id="adlgQueueWillAdd"></div>
-          <div class="adlg-queue-empty" id="adlgQueueEmpty">Check folders on the left to queue them for analysis.</div>
-        </div>
-      </div>
-      <details class="analyze-dlg-advanced" id="analyzeAdvancedDetails">
-        <summary>Advanced Analysis Settings</summary>
-        <div class="analyze-dlg-advanced-body">
-          <div class="adlg-group">
-            <div class="adlg-group-title">Performance</div>
-            <label class="adlg-toggle-row" id="analyzeGpuLabel">
-              <input id="analyzeUseGpu" type="checkbox" checked />
-              <div class="adlg-toggle-text">
-                <span class="adlg-toggle-label">Use GPU when available</span>
-                <span class="adlg-toggle-hint muted">Accelerates detection and classification via DirectML (Windows) or CoreML (macOS).</span>
-              </div>
-            </label>
-            <label class="adlg-toggle-row" id="analyzeRetryErroredLabel">
-              <input id="adlgRetryErrored" type="checkbox" checked />
-              <div class="adlg-toggle-text">
-                <span class="adlg-toggle-label">Re-attempt errored images</span>
-                <span class="adlg-toggle-hint muted">For any selected folder that contains images previously marked as errored, drop those rows and re-run analysis on them. Reuses similarity values that were already computed before the error; otherwise compares against the alphabetically-prior image. Other already-analyzed images are not touched.</span>
-              </div>
-            </label>
-            <div class="adlg-setting-row">
-              <label for="adlgParallelPrefetch">Parallel Processing</label>
-              <input id="adlgParallelPrefetch" type="number" min="1" max="5" step="1" value="3"
-                style="width:80px" title="Number of images to read ahead in parallel (1–5)" />
-            </div>
-            <div class="adlg-hint muted">Number of images to read ahead to sustain the processing queue (1–5). Lower this if your computer slows down too much during analysis.</div>
-          </div>
 
-          <div class="adlg-group">
-            <div class="adlg-group-title">Wildlife Detection</div>
-            <div class="adlg-setting-row">
-              <label for="adlgWildlifeModelMode">Wildlife Detection Model</label>
-              <select id="adlgWildlifeModelMode" style="width:130px" title="Fast uses a smaller model. Accurate uses a larger model with stronger recall.">
+        <!-- ═══ Column 2: Review Settings ═══ -->
+        <div class="analyze-dlg-col analyze-dlg-col-settings">
+          <div class="analyze-dlg-col-title">⚙ Review settings</div>
+          <div class="analyze-dlg-settings-critical">
+            <!-- Wildlife detection model — horizontal radio pair for compactness. -->
+            <div class="adlg-radio-group">
+              <div class="adlg-radio-label">Wildlife detection model</div>
+              <div class="adlg-radio-horiz">
+                <label class="adlg-radio-row adlg-radio-row-horiz">
+                  <input type="radio" name="adlgWildlifeModelMode" id="adlgWildlifeModelModeAccurate" value="accurate" checked />
+                  <div class="adlg-radio-text">
+                    <span class="adlg-radio-name">Accurate</span>
+                    <span class="adlg-radio-hint muted">Larger model with stronger recall. Slower but catches more subjects, especially distant or partially-obscured birds.</span>
+                  </div>
+                </label>
+                <label class="adlg-radio-row adlg-radio-row-horiz">
+                  <input type="radio" name="adlgWildlifeModelMode" id="adlgWildlifeModelModeFast" value="fast" />
+                  <div class="adlg-radio-text">
+                    <span class="adlg-radio-name">Fast</span>
+                    <span class="adlg-radio-hint muted">Smaller model — significantly faster but may miss some detections. Good for quick first passes.</span>
+                  </div>
+                </label>
+              </div>
+              <!-- Legacy <select> kept hidden so settings hydrate logic that reads/writes
+                   #adlgWildlifeModelMode keeps working; the radios mirror to it. -->
+              <select id="adlgWildlifeModelMode" class="hidden" aria-hidden="true">
                 <option value="fast">Fast</option>
                 <option value="accurate" selected>Accurate</option>
               </select>
             </div>
-            <div class="adlg-hint muted">Fast uses a smaller model that may miss some detections. Accurate uses a larger model with stronger recall.</div>
-            <div class="adlg-setting-row">
-              <label for="adlgDetectionThreshold">Animal Detection Confidence</label>
-              <input id="adlgDetectionThreshold" type="number" min="0.1" max="0.99" step="0.05" value="0.25"
-                style="width:80px" title="Minimum MegaDetector animal confidence (0.10–0.99)" />
-            </div>
-            <div class="adlg-hint muted">Minimum confidence score (0.10–0.99) for animal detections. Lower values may increase false positives.</div>
-            <div class="adlg-setting-row">
-              <label for="adlgMaxBirdCrops">Max Birds Detected Per Image</label>
-              <input id="adlgMaxBirdCrops" type="number" min="1" max="20" step="1" value="10"
-                style="width:80px" title="Maximum number of bird/wildlife subjects saved per image (1–20)" />
-            </div>
-            <div class="adlg-hint muted">Maximum bird (aves) and non-bird wildlife subjects saved per image (each list capped separately).</div>
-            <label class="adlg-toggle-row">
-              <input id="analyzeWildlife" type="checkbox" />
-              <div class="adlg-toggle-text">
-                <span class="adlg-toggle-label">Check for other wildlife species in addition to birds <span class="adlg-tag">experimental</span></span>
-                <span class="adlg-toggle-hint muted">Detects 1,200+ non-bird species (squirrels, deer, bears, etc.) using SpeciesNet.</span>
-              </div>
-            </label>
             <label class="adlg-toggle-row">
               <input id="analyzeSpeciesDetection" type="checkbox" checked />
               <div class="adlg-toggle-text">
                 <span class="adlg-toggle-label">Identify bird species &amp; family</span>
-                <span class="adlg-toggle-hint muted">Runs the bird species classifier on each cropped bird. Optimized for North American species — disable if you photograph birds outside North America. Detection, quality scoring, and culling are unaffected.</span>
+                <span class="adlg-toggle-hint muted">Runs the bird species classifier on each cropped bird. Optimized for North American species — disable if shooting elsewhere. Detection &amp; quality scoring are unaffected.</span>
+              </div>
+            </label>
+            <div class="adlg-setting-row">
+              <label for="adlgMaxBirdCrops">Maximum subjects per image</label>
+              <input id="adlgMaxBirdCrops" type="number" min="1" max="20" step="1" value="10"
+                style="width:80px" />
+            </div>
+            <div class="adlg-hint muted">Each additional subject increases processing time. Lower this to cap the number of subjects processed per image.</div>
+            <label class="adlg-toggle-row">
+              <input id="analyzeWildlife" type="checkbox" />
+              <div class="adlg-toggle-text">
+                <span class="adlg-toggle-label">Detect non-bird wildlife <span class="adlg-tag">experimental</span></span>
+                <span class="adlg-toggle-hint muted">Detects 1,200+ non-bird species (squirrels, deer, bears, etc.) using SpeciesNet. Adds noticeable processing time per image.</span>
               </div>
             </label>
           </div>
 
-          <div class="adlg-group">
-            <div class="adlg-group-title">Exposure/Grouping</div>
-            <div class="adlg-setting-row">
-              <label for="adlgExposureQuality">Exposure Compensation Quality</label>
-              <select id="adlgExposureQuality" style="flex:1;max-width:340px">
-                <option value="lenient">Lenient &mdash; gentle 50% nudge, up to &plusmn;3 stops</option>
-                <option value="balanced" selected>Balanced &mdash; 75% correction, up to &plusmn;5 stops</option>
-                <option value="aggressive">Aggressive &mdash; full 100%, up to &plusmn;8 stops</option>
-              </select>
+          <!-- "More options" expanded by default. Subheadings group settings
+               by category so power users can find them by topic. -->
+          <details class="analyze-dlg-more-options" open>
+            <summary>More options ▾</summary>
+            <div class="analyze-dlg-more-body">
+
+              <div class="adlg-subgroup">
+                <div class="adlg-subgroup-title">Performance &amp; behavior</div>
+                <label class="adlg-toggle-row" id="analyzeGpuLabel">
+                  <input id="analyzeUseGpu" type="checkbox" checked />
+                  <div class="adlg-toggle-text">
+                    <span class="adlg-toggle-label">Use GPU when available</span>
+                    <span class="adlg-toggle-hint muted">Accelerates detection &amp; classification via DirectML (Windows) or CoreML (macOS). Disable if your GPU is unstable.</span>
+                  </div>
+                </label>
+                <div class="adlg-setting-row">
+                  <label for="adlgParallelPrefetch">Parallel processing</label>
+                  <input id="adlgParallelPrefetch" type="number" min="1" max="5" step="1" value="3"
+                    style="width:80px" />
+                </div>
+                <div class="adlg-hint muted">Number of images to read ahead to sustain the processing queue (1–5). Lower this if your computer slows down too much during analysis.</div>
+                <label class="adlg-toggle-row" id="analyzeRetryErroredLabel">
+                  <input id="adlgRetryErrored" type="checkbox" checked />
+                  <div class="adlg-toggle-text">
+                    <span class="adlg-toggle-label">Re-attempt errored images</span>
+                    <span class="adlg-toggle-hint muted">For any queued folder containing images previously marked as errored, drop those rows and re-run analysis on them. Other already-analyzed images are not touched.</span>
+                  </div>
+                </label>
+                <!-- Hidden mirror retained for the dialog open code that sets
+                     both checkboxes' initial state; it just shadows
+                     #adlgRetryErrored above (same setting, synced). -->
+                <input id="adlgRetryErroredMore" type="checkbox" checked class="hidden" aria-hidden="true" />
+              </div>
+
+              <div class="adlg-subgroup">
+                <div class="adlg-subgroup-title">Wildlife detection</div>
+                <div class="adlg-setting-row">
+                  <label for="adlgDetectionThreshold">Detection confidence</label>
+                  <input id="adlgDetectionThreshold" type="number" min="0.1" max="0.99" step="0.05" value="0.15"
+                    style="width:80px" />
+                </div>
+                <div class="adlg-hint muted">Minimum MegaDetector animal confidence (0.10–0.99). Lower values find more subjects.</div>
+                <!-- Live warning when the user picks a value much above the
+                     recommended baseline. Wildlife detection models are quite
+                     accurate, so high thresholds tend to miss real subjects. -->
+                <div id="adlgDetectionConfidenceWarning" class="adlg-inline-warning hidden">
+                  ⚠ Suggested value: <b>0.15</b>. Higher thresholds miss real subjects — modern wildlife detectors are calibrated for low values.
+                </div>
+              </div>
+
+              <div class="adlg-subgroup">
+                <div class="adlg-subgroup-title">Exposure &amp; grouping</div>
+                <div class="adlg-setting-row">
+                  <label for="adlgExposureQuality">Exposure correction</label>
+                  <select id="adlgExposureQuality" style="flex:1;max-width:200px">
+                    <option value="lenient">Lenient (±3 stops)</option>
+                    <option value="balanced" selected>Balanced (±5 stops)</option>
+                    <option value="aggressive">Aggressive (±8 stops)</option>
+                  </select>
+                </div>
+                <div class="adlg-hint muted">Controls how strongly Kestrel corrects bird exposure in the analyzed crops. Balanced is recommended for most images.</div>
+                <div class="adlg-setting-row">
+                  <label for="adlgSceneTime">Scene grouping time threshold (seconds)</label>
+                  <input id="adlgSceneTime" type="number" min="0" max="60" step="0.5" value="1.0"
+                    style="width:80px" />
+                </div>
+                <div class="adlg-hint muted">Images captured within this many seconds of each other are treated as the same burst/scene.</div>
+              </div>
+
+              <div class="adlg-subgroup">
+                <div class="adlg-subgroup-title">Thumbnails</div>
+                <div class="adlg-setting-row">
+                  <label for="adlgThumbnailMaxWidth">Thumbnail width (px)</label>
+                  <input id="adlgThumbnailMaxWidth" type="number" min="400" max="2400" step="100" value="1200"
+                    style="width:90px" />
+                </div>
+                <div class="adlg-hint muted">Long-edge pixel width for cached analysis thumbnails. Higher values look sharper but increase .kestrel storage.</div>
+                <div class="adlg-setting-row">
+                  <label for="adlgThumbnailJpegCompression">Thumbnail JPEG compression</label>
+                  <input id="adlgThumbnailJpegCompression" type="number" min="0.50" max="1.00" step="0.05" value="0.75"
+                    style="width:80px" />
+                </div>
+                <div class="adlg-hint muted">0.75 means 75% JPEG quality. Lower values reduce file size with more visible compression artifacts.</div>
+              </div>
+
             </div>
-            <div class="adlg-hint muted">Controls how strongly Kestrel corrects bird exposure. Balanced is recommended for most images.</div>
-            <div class="adlg-setting-row">
-              <label for="adlgSceneTime">Scene Grouping Time (seconds)</label>
-              <input id="adlgSceneTime" type="number" min="0" max="60" step="0.5" value="1.0"
-                style="width:80px" title="Images within this many seconds are grouped as one scene burst" />
-            </div>
-            <div class="adlg-hint muted">Images captured within this many seconds of each other are treated as the same burst/scene.</div>
+          </details>
+        </div>
+
+        <!-- ═══ Column 3: Queued Folders (top) + Summary card (bottom) ═══
+             Reordered per Phase 3 polish: detailed per-folder cards live on
+             top (the actionable work view); a compact summary card at the
+             bottom is what you check just before Start Analysis. Compute
+             destination lives INSIDE the summary card because it affects
+             the total-time estimate. -->
+        <div class="analyze-dlg-col analyze-dlg-col-summary">
+          <div class="analyze-dlg-col-title">📋 Job preview</div>
+          <div class="analyze-dlg-summary-list-wrap">
+            <div id="analyzeDlgQueuedList" class="analyze-dlg-queued-list"></div>
           </div>
 
-          <div class="adlg-group">
-            <div class="adlg-group-title">Thumbnails</div>
-            <div class="adlg-setting-row">
-              <label for="adlgThumbnailMaxWidth">Thumbnail Width (px)</label>
-              <input id="adlgThumbnailMaxWidth" type="number" min="400" max="2400" step="100" value="1200"
-                style="width:90px" title="Long-edge width for cached analysis thumbnails (400–2400 px)" />
+          <!-- Compact summary card: the headline numbers the user double-checks
+               before clicking Start. Sits between the folder list and the
+               action row so it's the last thing read top-to-bottom. -->
+          <div class="analyze-dlg-summary-card">
+            <div id="analyzeDlgSummaryHeadline" class="analyze-dlg-summary-headline">
+              <span class="analyze-dlg-summary-empty">Check folders in the queue builder to add them.</span>
             </div>
-            <div class="adlg-hint muted">Long-edge pixel width for cached analysis thumbnails. Higher values look sharper but increase .kestrel storage.</div>
-            <div class="adlg-setting-row">
-              <label for="adlgThumbnailJpegCompression">Thumbnail JPEG Compression</label>
-              <input id="adlgThumbnailJpegCompression" type="number" min="0.50" max="1.00" step="0.05" value="0.75"
-                style="width:90px" title="Compression/quality factor for thumbnail JPEG export (0.50–1.00)" />
+            <div id="analyzeDlgWarnings" class="analyze-dlg-warnings hidden"></div>
+            <label id="analyzeDlgReanalyzeUnlockRow" class="adlg-toggle-row analyze-dlg-unlock-row hidden">
+              <input id="analyzeDlgReanalyzeUnlock" type="checkbox" />
+              <div class="adlg-toggle-text">
+                <span class="adlg-toggle-label">Re-analyze fully-analyzed folders</span>
+                <span class="adlg-toggle-hint muted">Will <b>erase user data</b> (ratings, decisions, scene names) for those folders.</span>
+              </div>
+            </label>
+            <!-- Destination cards. Default = Local. Selecting Cloud activates
+                 the speed-test / usage chrome and changes the Add button label.
+                 The full cloud-compute behaviour lives in cloud-compute.js;
+                 element IDs are referenced by id from there. -->
+            <div class="analyze-dlg-destination-row" id="analyzeDlgDestinationRow" role="radiogroup" aria-label="Destination">
+              <div class="analyze-dlg-destination-card selected" id="analyzeDestLocal"
+                   data-destination="local" role="radio" aria-checked="true" tabindex="0">
+                <div class="dest-card-title">💻 Local Analysis</div>
+                <div class="dest-card-desc">Run on this machine. Uses your GPU when available.</div>
+              </div>
+              <div class="analyze-dlg-destination-card" id="analyzeDestCloud"
+                   data-destination="cloud" role="radio" aria-checked="false" tabindex="0">
+                <div class="dest-card-title">☁ Cloud Analysis
+                  <a href="https://projectkestrel.org/cloud-compute" target="_blank" rel="noopener"
+                     id="cloudDestHelpLink" class="dest-card-help"
+                     title="Learn more about cloud compute">(?)</a>
+                </div>
+                <div class="dest-card-status" id="cloudDestStatus">Speed test not run</div>
+                <button id="cloudDestSpeedTestBtn" class="dest-card-speed-btn" type="button"
+                        disabled title="Pick at least one folder to enable the speed test">
+                  Run Upload Speed Test
+                </button>
+                <div class="dest-card-usage" id="cloudDestUsage">Loading usage…</div>
+                <div class="dest-card-signin-overlay hidden" id="cloudDestSignInOverlay">
+                  Sign in to Perch to use Cloud Compute.
+                </div>
+              </div>
             </div>
-            <div class="adlg-hint muted">0.75 means 75% JPEG quality. Lower values reduce file size with more visible compression artifacts.</div>
           </div>
-        </div>
-      </details>
-      <!-- Destination cards. Default = Local. Selecting Cloud activates the
-           speed-test / usage chrome and changes the Add button label. -->
-      <div class="analyze-dlg-destination-row" id="analyzeDlgDestinationRow" role="radiogroup" aria-label="Destination">
-        <div class="analyze-dlg-destination-card selected" id="analyzeDestLocal"
-             data-destination="local" role="radio" aria-checked="true" tabindex="0">
-          <div class="dest-card-title">💻 Local Analysis</div>
-          <div class="dest-card-desc">Run on this machine. Uses your GPU when available.</div>
-        </div>
-        <div class="analyze-dlg-destination-card" id="analyzeDestCloud"
-             data-destination="cloud" role="radio" aria-checked="false" tabindex="0">
-          <div class="dest-card-title">☁ Cloud Analysis
-            <a href="https://projectkestrel.org/cloud-compute" target="_blank" rel="noopener"
-               id="cloudDestHelpLink" class="dest-card-help"
-               title="Learn more about cloud compute">(?)</a>
+
+          <!-- Compact action row. No more "1 folder selected" text — the
+               per-folder list above shows what's queued. Cancel becomes a
+               small X icon button so Start Analysis is the visual primary. -->
+          <div class="analyze-dlg-action-row">
+            <button id="analyzeDlgCancel" class="analyze-dlg-cancel-icon" title="Cancel and close">✕</button>
+            <button id="analyzeDlgAdd" class="primary analyze-dlg-start-btn" disabled><span class="start-btn-icon">▶</span><span class="start-btn-text">Start Analysis</span></button>
           </div>
-          <div class="dest-card-status" id="cloudDestStatus">Speed test not run</div>
-          <button id="cloudDestSpeedTestBtn" class="dest-card-speed-btn" type="button"
-                  disabled title="Pick at least one folder to enable the speed test">
-            Run Upload Speed Test
-          </button>
-          <div class="dest-card-usage" id="cloudDestUsage">Loading usage…</div>
-          <div class="dest-card-signin-overlay hidden" id="cloudDestSignInOverlay">
-            Sign in to Perch to use Cloud Compute.
-          </div>
+          <!-- Hidden span retained as no-op so any code paths that still
+               reference #analyzeDlgCount don't NPE. -->
+          <span id="analyzeDlgCount" class="hidden" aria-hidden="true"></span>
         </div>
-      </div>
-      <div class="analyze-dlg-footer">
-        <span class="analyze-dlg-selected-count" id="analyzeDlgCount">0 folders selected</span>
-        <button id="analyzeDlgRestoreQueue" style="display:none;font-size:11px;padding:4px 8px;background:#5a4a7a;color:#d0b8ff;border:1px solid #7a6a9a;" title="Restore the queue from last time you cancelled">🔄 Restore Queue?</button>
-        <button id="analyzeDlgCancel">Cancel</button>
-        <button id="analyzeDlgAdd" class="primary" disabled>➕ Add to Local Analysis Queue</button>
+
       </div>
     </div>
   </dialog>
@@ -983,6 +1104,57 @@
         <button id="cloudResumeLater">Later</button>
         <button id="cloudResumeSelected">Download Selected</button>
         <button id="cloudResumeAll" class="primary">Download All</button>
+
+  <!-- Pre-queue confirmation modal (Phase 3H). Lives at top level — opened
+       AFTER the user clicks Start Analysis when at least one folder is
+       flagged for destructive re-analysis. Lists affected folders and
+       requires explicit confirmation before .kestrel deletion happens. -->
+  <dialog id="analyzeConfirmDlg" class="dlg-compact analyze-confirm-dlg">
+    <div class="analyze-confirm-body">
+      <h3 style="margin:0 0 8px;color:var(--warn);">⚠ Confirm destructive re-analysis</h3>
+      <p style="margin:0 0 10px;font-size:13px;line-height:1.45;">
+        The following folder<span id="analyzeConfirmFolderPlural">s</span> will have
+        <b>.kestrel data permanently deleted</b> before re-analysis. This wipes all
+        user-written data (ratings, accept/reject decisions, scene names) for
+        the affected folders.
+      </p>
+      <ul id="analyzeConfirmFolderList" class="analyze-confirm-list"></ul>
+      <p style="margin:0 0 12px;font-size:12px;color:var(--muted);">
+        This cannot be undone. Other queued folders (that don't need re-analysis) are unaffected.
+      </p>
+      <div class="analyze-confirm-actions">
+        <button id="analyzeConfirmCancel">Cancel</button>
+        <button id="analyzeConfirmProceed" class="analyze-confirm-danger">Erase data &amp; analyze</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Clear Kestrel Analysis Data confirmation dialog. Reached only via the
+       Folder Actions dropdown in the scene-grid folder header. Mirrors the
+       visual language of #analyzeConfirmDlg above so the destructive flow
+       feels consistent — explicit Cancel-default + red Delete button, no
+       auto-confirm-on-Enter. -->
+  <dialog id="clearKestrelConfirmDlg" class="dlg-compact analyze-confirm-dlg">
+    <div class="analyze-confirm-body">
+      <h3 style="margin:0 0 8px;color:var(--warn);">⚠ Delete Kestrel analysis data?</h3>
+      <p style="margin:0 0 10px;font-size:13px;line-height:1.45;">
+        The following data will be permanently deleted from
+        <b id="clearKestrelFolderName">this folder</b>'s
+        <code>.kestrel/</code> directory:
+      </p>
+      <ul class="analyze-confirm-list" style="margin:0 0 10px;">
+        <li>Star ratings</li>
+        <li>Accept / Reject culling decisions</li>
+        <li>Scene names</li>
+        <li>Exported derivatives and thumbnails</li>
+      </ul>
+      <p style="margin:0 0 10px;font-size:12px;color:var(--muted);" id="clearKestrelFolderPath"></p>
+      <p style="margin:0 0 12px;font-size:12px;color:var(--muted);">
+        This cannot be undone. Photos in the folder are not touched.
+      </p>
+      <div class="analyze-confirm-actions">
+        <button id="clearKestrelCancel">Cancel</button>
+        <button id="clearKestrelProceed" class="analyze-confirm-danger">Delete analysis data</button>
       </div>
     </div>
   </dialog>
@@ -1126,8 +1298,10 @@
   <script src="js/scenes.js"></script>
   <script src="js/scene-grid.js"></script>
   <script src="js/scene-zoom.js"></script>
-  <script src="js/scene-dialog.js"></script>
+  <!-- settings.js MUST load before scene-dialog.js: scene-dialog's IIFE
+       (setupScenePreviewDivider) calls getSetting() at parse time. -->
   <script src="js/settings.js"></script>
+  <script src="js/scene-dialog.js"></script>
   <script src="js/feedback-donate.js"></script>
   <script src="js/folder-tree.js"></script>
   <script src="js/analyze-dialog.js"></script>

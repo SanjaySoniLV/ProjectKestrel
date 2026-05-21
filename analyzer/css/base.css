@@ -53,6 +53,34 @@ body {
   font-size: 13px;
 }
 
+/* ── Dark scrollbar theme (global) ─────────────────────────────────────────
+   Matches the app's dark palette. Applies to every scrollable container
+   (folder tree, main timeline, dialogs, queue panel, etc.) via WebKit's
+   ::-webkit-scrollbar pseudo-elements. Firefox uses the scrollbar-color
+   property as a fallback. */
+* {
+  scrollbar-width: thin;                  /* Firefox */
+  scrollbar-color: #2a3445 #0a0d12;       /* Firefox: thumb + track */
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: #0a0d12;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a3445;
+  border-radius: 5px;
+  border: 2px solid #0a0d12;              /* inset look */
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3a4a6d;
+}
+::-webkit-scrollbar-corner {
+  background: #0a0d12;
+}
+
 .footer {
   display: flex;
   gap: 8px;

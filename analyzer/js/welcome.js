@@ -6,7 +6,7 @@
     // `last_seen_whats_new_version` will not see the banner again.
     const WHATS_NEW = {
       version: 'nelsons-sparrow',
-      headline: "New in v(Nelson\u2019s Sparrow) \u2014 resilient analysis, smarter shutdowns!",
+      headline: "New in v(Nelson’s Sparrow) — resilient analysis, smarter shutdowns!",
       items: [
         'New <b>Resilient GPU pipeline</b> automatically falls back to CPU when your graphics driver hiccups, and a new <b>"Re-attempt analysis on errored images"</b> button re-runs just the failures without touching successful results.',
         'Faster and more accurate wildlife detection with the new <b>MegaDetector v1000-cedar</b> "Fast" model, plus a fix that <b>doubles SpeciesNet batch speed</b> by removing a duplicate inference pass.',
@@ -17,45 +17,45 @@
 
     const WELCOME_TIPS = [
       {
-        icon: '\uD83E\uDD8B',
+        icon: '🦋',
         title: 'Try wildlife mode',
         badge: 'New!',
         body: 'Kestrel can detect squirrels, bears, and other wildlife in addition to birds. Enable it in <b>Settings &rarr; Analysis</b>.',
         action: { label: 'Open Settings', onClick: function() { try { showSettings(); } catch (_) {} } },
       },
       {
-        icon: '\u2795',
+        icon: '➕',
         title: 'Merge scenes',
         body: 'Hold <kbd>Ctrl</kbd> and click scene cards to select multiple, then click <b>Merge selected scenes</b> to combine them into one.',
       },
       {
-        icon: '\uD83D\uDDBC\uFE0F',
+        icon: '🖼️',
         title: 'Multiple birds in one scene?',
-        body: 'Use the <b>\u25C2 / \u25B8 crop buttons</b> in the scene info bar (or <kbd>\u2191</kbd> / <kbd>\u2193</kbd>) to flip through each bird, and press <kbd>Enter</kbd> to promote one as the scene\u2019s primary.',
+        body: 'Use the <b>◂ / ▸ crop buttons</b> in the scene info bar (or <kbd>↑</kbd> / <kbd>↓</kbd>) to flip through each bird, and press <kbd>Enter</kbd> to promote one as the scene’s primary.',
       },
       {
-        icon: '\uD83D\uDCC2',
+        icon: '📂',
         title: 'Open a parent folder once',
         body: 'Kestrel searches across <b>every loaded folder</b>. Open a parent folder and browse your entire library by species or family without re-loading anything.',
       },
       {
-        icon: '\u2328\uFE0F',
+        icon: '⌨️',
         title: 'Space = open in editor',
         body: 'Press <kbd>Space</kbd> on any photo to open the original in your chosen photo editor. Set your preference in Settings.',
         action: { label: 'Open Settings', onClick: function() { try { showSettings(); } catch (_) {} } },
       },
       {
-        icon: '\uD83D\uDDD1\uFE0F',
+        icon: '🗑️',
         title: 'Cull faster with the Culling Assistant',
-        body: 'Batch Accept / Reject photos by your own quality rules \u2014 and optionally move rejects into an archive folder.',
+        body: 'Batch Accept / Reject photos by your own quality rules — and optionally move rejects into an archive folder.',
       },
       {
-        icon: '\u26A0\uFE0F',
+        icon: '⚠️',
         title: 'Write metadata before importing',
-        body: '<b>Write Photo Metadata</b> before importing into Lightroom or Capture One \u2014 most catalogues ignore sidecar files added <i>after</i> import.',
+        body: '<b>Write Photo Metadata</b> before importing into Lightroom or Capture One — most catalogues ignore sidecar files added <i>after</i> import.',
       },
       {
-        icon: '\u2B50',
+        icon: '⭐',
         title: 'Not satisfied with the star ratings?',
         body: 'Tune the rating thresholds and profile in Settings. Your manual overrides are always saved as gold stars.',
         action: { label: 'Open Settings', onClick: function() { try { showSettings(); } catch (_) {} } },
@@ -81,7 +81,7 @@
           '<div class="wwn-head">' +
             '<span class="wwn-badge">New</span>' +
             '<span class="wwn-title">' + WHATS_NEW.headline + '</span>' +
-            '<button type="button" class="wwn-dismiss" id="wwnDismiss" aria-label="Dismiss">\u2715</button>' +
+            '<button type="button" class="wwn-dismiss" id="wwnDismiss" aria-label="Dismiss">✕</button>' +
           '</div>' +
           '<ul class="wwn-list">' + items + '</ul>';
         banner.classList.remove('hidden');
@@ -130,7 +130,7 @@
       function render(i) {
         var t = WELCOME_TIPS[i];
         if (!t) return;
-        iconEl.textContent = t.icon || '\uD83D\uDCA1';
+        iconEl.textContent = t.icon || '💡';
         titleEl.innerHTML = t.title || '';
         if (t.badge) { badgeEl.textContent = t.badge; badgeEl.classList.remove('hidden'); }
         else badgeEl.classList.add('hidden');

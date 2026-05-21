@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Iterable
 
 VERSION = "2.0.4"
 
@@ -63,6 +64,34 @@ RAW_EXTENSIONS = [
     ".mrw",                 # Minolta / Konica Minolta
 ]
 JPEG_EXTENSIONS = [".jpg", ".jpeg", ".png", '.tiff', '.tif']
+
+
+def is_supported_image_file(name: str, allowed_exts: Iterable[str]) -> bool:
+    """True if ``name`` is a real image filename that should be processed.
+
+    Filters out:
+      * Hidden files (anything starting with ``.``), including macOS
+        ``.DS_Store`` and dot-prefixed app metadata.
+      * macOS AppleDouble companion files (``._<filename>``), which are
+        created automatically when macOS writes to a non-HFS/APFS volume
+        (exFAT/NTFS external drives, SMB shares) to preserve extended
+        attributes. They carry the same extension as the real file
+        (e.g. ``._IMG_0142.ARW``) so an extension-only filter lets them
+        through, but they contain ~4 KB of metadata — not image data —
+        so LibRaw rejects every one of them with "Unsupported file
+        format or not RAW file". Both prefixes are covered by the
+        leading-dot test.
+
+    Pass ``allowed_exts`` as an iterable of lowercase extensions
+    (including the leading dot), e.g. ``RAW_EXTENSIONS`` or
+    ``set(RAW_EXTENSIONS) | set(JPEG_EXTENSIONS)``.
+    """
+    if not name or name[0] == '.':
+        return False
+    dot = name.rfind('.')
+    if dot < 0:
+        return False
+    return name[dot:].lower() in allowed_exts
 
 DATABASE_NAME = "kestrel_database.csv"
 METADATA_FILENAME = "kestrel_metadata.json"

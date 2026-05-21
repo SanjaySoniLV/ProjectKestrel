@@ -39,7 +39,12 @@
 }
 
 .thumb {
-  aspect-ratio: 16/10;
+  /* 3:2 matches the dominant DSLR/mirrorless capture aspect (Canon, Nikon,
+     Sony 35mm/APS-C; Fuji X-Trans). At the grid's auto-fill track width
+     this gives the photo more vertical room without per-card layout
+     recalculation (the aspect is fixed, so the browser computes the
+     height once from the track width). */
+  aspect-ratio: 3/2;
   background: #0e1117;
   /* overflow:hidden is fine here — .thumb is a leaf container with no stacking
      context concerns, and it correctly clips the image to the card's top corners */
@@ -328,12 +333,63 @@
 .chip-combo-item:hover {
   background: rgba(86, 175, 255, 0.28);
 }
+.chip-combo-left {
+  display: flex; flex-direction: column; align-items: flex-start;
+  min-width: 0; flex: 1 1 auto; overflow: hidden;
+}
+.chip-combo-right {
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+}
 .chip-combo-name { font-weight: 500; }
+.chip-combo-sci {
+  color: #9ab;
+  font-size: 11px;
+  font-style: italic;
+  margin-top: 1px;
+}
+.chip-combo-alpha {
+  background: rgba(86, 175, 255, 0.18);
+  border: 1px solid rgba(86, 175, 255, 0.4);
+  color: #cfe5ff;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
 .chip-combo-family {
   color: #9ab;
   font-size: 11px;
   font-style: italic;
   flex-shrink: 0;
+}
+
+/* Pill variant: stacks the italicised scientific name on a second row
+   under the primary chip label. Used in the scene topbar tags and the
+   timeline scene-card chips when the show-scientific-names setting is on.
+   Padding-right reserves space for the absolutely-positioned X button so
+   it doesn't overlap the trailing characters of longer names. */
+.chip--with-sci {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 3px 18px 3px 10px;
+  line-height: 1.15;
+  position: relative;
+}
+.chip--with-sci .chip-primary { display: inline; }
+.chip--with-sci .chip-sci {
+  font-size: 10px;
+  font-style: italic;
+  color: #97a3b5;
+  margin-top: 1px;
+}
+.chip--with-sci .chip-x {
+  position: absolute;
+  top: 2px;
+  right: 5px;
+  font-size: 11px;
+  line-height: 1;
 }
 
 /* Reviewed tags golden styling */
@@ -512,14 +568,17 @@
   margin-bottom: 4px;
 }
 
+/* Flat header band: no rounded corners, just a strong bottom divider that
+   reads as the section line under the folder name + action strips. */
 .folder-group-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 14px;
+  gap: 10px;
+  padding: 8px 14px;
   background: #161922;
-  border: 1px solid #222634;
-  border-radius: 8px;
+  border: none;
+  border-bottom: 1px solid #2b6ec8;
+  border-radius: 0;
   cursor: pointer;
   user-select: none;
   font-size: 13px;
@@ -528,7 +587,6 @@
 
 .folder-group-header:hover {
   background: #1d2230;
-  border-color: #2a3040;
 }
 
 .folder-group-toggle {
@@ -548,8 +606,9 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
-  flex: 0 1 auto; /* shrinks if needed, does not grow — spacer div handles remaining space */
+  flex: 0 1 auto;
   max-width: 320px;
+  margin-right: 4px;
 }
 
 .folder-group-count {
@@ -557,16 +616,40 @@
   font-size: 12px;
 }
 
-.folder-group-left-actions {
-  display: flex;
-  gap: 4px;
-  flex-shrink: 0;
-}
-
+/* Segmented action strips inside the folder header. No outer border — they
+   sit inline with the header band, with subtle vertical dividers between
+   buttons. Hover lights up the segment. */
+.folder-group-left-actions,
 .folder-group-right-actions {
   display: flex;
-  gap: 4px;
+  gap: 0;
   flex-shrink: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+
+/* Per-button overrides for buttons inside the folder header strips:
+   neutralize the .action-btn base border + radius so adjacent buttons
+   share a clean divider rather than each being its own pill. */
+.folder-group-left-actions .action-btn,
+.folder-group-right-actions .action-btn {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  border-left: 1px solid #2a3040;
+  padding: 6px 14px;
+  color: #cbd2dc;
+}
+.folder-group-left-actions .action-btn:first-child,
+.folder-group-right-actions .action-btn:first-child {
+  border-left: none;
+}
+.folder-group-left-actions .action-btn:hover,
+.folder-group-right-actions .action-btn:hover {
+  background: #1f2533;
+  color: #fff;
+  border-color: #2a3040;
 }
 
 .culling-btn {
@@ -661,6 +744,121 @@
   right: 8px;
 }
 
+/* Scene-card single-line meta strip: species/family pill (+ optional '+'
+   overflow button) on the left, star/quality | camera/count text on the
+   right. Replaces the older two-row title-row + chips layout for timeline
+   cards; the legacy .title-row rules below are kept for any other call
+   sites that still rely on them. */
+.card-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.card-pills {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Cap species/family pill so a long name like "Cardinal/Grosbeak/Bunting
+   sp." doesn't push the meta off the card. The chip itself shrinks; its
+   primary line ellipsizes; the optional sci subtext also ellipsizes. */
+.card-pills > .chip {
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+}
+.card-pills > .chip .chip-primary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  max-width: 100%;
+}
+.card-pills > .chip.chip--with-sci {
+  /* Re-establish the stacked layout from .chip--with-sci -- inline-flex
+     direction column -- after the inline-flex override above. */
+  flex-direction: column;
+  align-items: flex-start;
+  /* No X button on read-only card pills, so we don't need the right
+     padding that .chip--with-sci reserves elsewhere. */
+  padding: 3px 10px;
+}
+.card-pills > .chip.chip--with-sci .chip-sci {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  display: block;
+}
+
+/* Overflow reveal -- a regular chip pill (NOT the dashed "add new tag"
+   affordance used by .chip-add-btn / .scene-chip-add elsewhere). A down
+   chevron inside the pill signals "click to see more"; the pill base
+   keeps it visually grouped with the species chip it sits next to. The
+   .chip base is applied via class="chip chip-more", so this rule only
+   needs to reset native <button> defaults and tighten the glyph. */
+.chip-more {
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  /* Tighter padding than a regular chip since the glyph is single-char. */
+  padding: 2px 7px;
+  line-height: 1;
+  flex-shrink: 0;
+  /* Muted glyph so the chevron reads as a control hint, not as label
+     content competing with the adjacent species name. */
+  color: #97a3b5;
+}
+.chip-more:hover {
+  border-color: #3a84e6;
+  color: #cce0ff;
+}
+.chip-more:focus-visible {
+  outline: 2px solid #3a84e6;
+  outline-offset: 1px;
+}
+
+/* Right-side meta -- star/quality | camera/count, no pill background. */
+.card-meta {
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
+  font-size: 11px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.card-meta .meta-score { color: #a9c9ee; }
+.card-meta .meta-sep { margin: 0 4px; color: #4a5365; }
+.card-meta .meta-count { /* slightly smaller emoji block per design */
+  font-size: 10px;
+  letter-spacing: -0.5px;
+}
+
+/* Popover for the rest of a scene's species when the user clicks '+' */
+.card-more-popover {
+  position: fixed;
+  z-index: 1000;
+  background: var(--card, #161922);
+  border: 1px solid #2a3040;
+  border-radius: 8px;
+  padding: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 320px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+.card-more-popover .chip { max-width: 100%; }
+
 /* Title-level badges (placed under title, right-aligned) */
 .title-row {
   display: flex;
@@ -717,4 +915,70 @@
   z-index: 9000;
   transition: opacity 0.25s ease;
   box-shadow: 0 3px 12px rgba(0,0,0,0.5);
+}
+
+/* Folder Actions dropdown — collapses 4 secondary actions + Clear Kestrel
+   into a single segmented trigger. Sits inside .folder-group-right-actions
+   alongside the Culling Assistant button. */
+
+/* The trigger button is the first segment in the right-actions strip when
+   .folder-group-actions-wrap is rendered (which it always is now). Strip its
+   border-left so the visual matches the previous first-child behavior. */
+.folder-group-right-actions .folder-group-actions-wrap:first-child .action-btn {
+  border-left: none;
+}
+
+.folder-group-actions-trigger .caret {
+  margin-left: 4px;
+  font-size: 9px;
+  color: #8a93a3;
+}
+
+/* The popup menu, anchored to the trigger via the wrap's position:relative. */
+.folder-group-actions-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 1000;
+  min-width: 220px;
+  padding: 4px 0;
+  background: #181c26;
+  border: 1px solid #2a3040;
+  border-radius: 4px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  color: #cbd2dc;
+  font-size: 13px;
+}
+
+.folder-group-actions-item {
+  padding: 8px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.folder-group-actions-item i {
+  font-style: normal;
+  width: 18px;
+  display: inline-block;
+  text-align: center;
+}
+.folder-group-actions-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: #fff;
+}
+
+.folder-group-actions-divider {
+  height: 1px;
+  background: #2a3040;
+  margin: 4px 0;
+}
+
+.folder-group-actions-item--danger {
+  color: #e07c7c;
+}
+.folder-group-actions-item--danger:hover {
+  background: rgba(231, 76, 60, 0.10);
+  color: #ff8e8e;
 }

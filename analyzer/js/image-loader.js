@@ -49,6 +49,10 @@
 
     // Version counter so concurrent renderScenes calls can bail out early
     let _renderScenesVersion = 0;
+    // True while a batched bird-catalog hydration kicked off by renderScenes
+    // is still in flight, so concurrent renders don't pile up duplicate IPC
+    // calls before the first one returns and re-renders the grid.
+    let _sceneCardHydrationPending = false;
     // Version counter so loadMultipleFolders can be cancelled mid-flight
     let _loadFoldersVersion = 0;
 

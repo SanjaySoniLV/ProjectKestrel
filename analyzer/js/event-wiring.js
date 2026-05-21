@@ -6,200 +6,253 @@
       analyzeQueueBtn.addEventListener('click', openAnalyzeDialog);
     }
 
-    // Analyze dialog Cancel
-    const analyzeDlgCancel = document.getElementById('analyzeDlgCancel');
-    if (analyzeDlgCancel) {
-      analyzeDlgCancel.addEventListener('click', () => {
-        // Save the current selection so user can restore it on next dialog open
-        if (_dlgSelected && _dlgSelected.size > 0) {
-          const s = loadSettings();
-          s.lastQueueState = Array.from(_dlgSelected);
-          saveSettings(s);
-        }
-        document.getElementById('analyzeQueueDlg').close();
-      });
-    }
+    // ── Phase 3 Analyze Folders dialog event wiring ─────────────────────────────
+    // The dialog has fully independent state (analyzeDlgRootNodes /
+    // analyzeDlgCheckedPaths / analyzeDlgInspectionCache). All persistence and
+    // .kestrel deletion happens in the queue worker (per-item flags).
 
-    // Analyze dialog Add to Queue
+    // Cancel: just close. State persists across opens until Clear is clicked.
+    document.getElementById('analyzeDlgCancel')?.addEventListener('click', () => {
+      document.getElementById('analyzeQueueDlg').close();
+    });
+
+    // + Add Folders: multi-select picker → addAnalyzeDlgRoot per pick →
+    // persist each to analyze_recents → re-inspect + render.
+    document.getElementById('analyzeDlgLoadFolders')?.addEventListener('click', async () => {
+      if (!hasPywebviewApi) { alert('Folder picker is only available in the desktop app.'); return; }
+      let pickedPaths = [];
+      try {
+        if (window.pywebview?.api?.choose_directories) {
+          const res = await window.pywebview.api.choose_directories();
+          if (Array.isArray(res)) pickedPaths = res.filter(Boolean);
+          else if (typeof res === 'string' && res) pickedPaths = [res];
+        } else {
+          const single = await window.pywebview.api.choose_directory();
+          if (single) pickedPaths = [single];
+        }
+      } catch (e) { console.error('Analyze dlg picker failed', e); return; }
+      if (pickedPaths.length === 0) return;
+      for (const p of pickedPaths) {
+        const r = await addAnalyzeDlgRoot(p);
+        if (r && r.added) await _persistAnalyzeRecentsBump(p);
+      }
+      await renderAnalyzeDlgRecentsChips();
+      await _inspectAndRenderAnalyzeDlg();
+    });
+
+    // Clear: drop ALL dialog state (roots, checks, expansions). analyze_recents
+    // is preserved so the user can re-click chips to rebuild.
+    document.getElementById('analyzeDlgClear')?.addEventListener('click', () => {
+      clearAnalyzeDlgRoots();
+      renderAnalyzeDlgTree();
+      refreshAnalyzeDlgSummary();
+      renderAnalyzeDlgRecentsChips();
+    });
+
+    // ── Start Analysis (Phase 3H) ────────────────────────────────────────────
+    // Compute per-item flags from the dialog state. If any folder will lose
+    // user data, open the confirmation modal. Otherwise start immediately.
     const analyzeDlgAdd = document.getElementById('analyzeDlgAdd');
     if (analyzeDlgAdd) {
       analyzeDlgAdd.addEventListener('click', async () => {
-        const paths = Array.from(_dlgSelected);
-        if (paths.length === 0) return;
-        const useGpu = document.getElementById('analyzeUseGpu')?.checked ?? true;
-        const wildlifeEnabled = document.getElementById('analyzeWildlife')?.checked ?? false;
-        const speciesDetectionEnabled = document.getElementById('analyzeSpeciesDetection')?.checked ?? true;
+        const checkedNorms = Array.from(analyzeDlgCheckedPaths);
+        if (checkedNorms.length === 0) return;
         const retryErrored = document.getElementById('adlgRetryErrored')?.checked ?? true;
 
-        // Outdated-version + re-analyze gates run for BOTH destinations. Cloud
-        // jobs need the same .kestrel/ clearing as local before submit — without
-        // it, an out-of-date local CSV either feeds a stale resume-anchor to
-        // the cloud pipeline or silently merges incompatible rows back on
-        // pack-merge. See plan: cloud previously short-circuited these gates.
-        const outdatedPaths = [];
-        function findNode(node, targetPath) {
-          if (node.path === targetPath) return node;
-          if (node.children) {
-            for (const c of node.children) {
-              const found = findNode(c, targetPath);
-              if (found) return found;
+        // Compute per-item options and classify each folder.
+        const perItemOptions = {};
+        const destructive = []; // [{path, name, reason}]
+        for (const norm of checkedNorms) {
+          const node = _adlgFindNode(norm);
+          const info = analyzeDlgInspectionCache.get(norm);
+          const name = node ? node.name : (norm.split('/').filter(Boolean).pop() || norm);
+          const total = (info && info.total) || 0;
+          const processed = (info && info.processed) || 0;
+          const errored = (info && info.errored) || 0;
+          const outdated = node ? (typeof isVersionOutdated === 'function' && isVersionOutdated(node)) : false;
+          const isFullyAnalyzed = total > 0 && processed >= total && errored === 0;
+
+          const opts = {};
+          if (outdated) {
+            // Outdated always wipes + re-analyzes (the user picked a folder
+            // analyzed on an older Kestrel; the new pipeline can't safely
+            // resume from old artifacts).
+            opts.delete_kestrel_on_start = true;
+            destructive.push({ path: norm, name, reason: `outdated (v${node.kestrel_version} → v${_appVersion})` });
+          } else if (isFullyAnalyzed) {
+            if (analyzeDlgReanalyzeUnlocked) {
+              opts.delete_kestrel_on_start = true;
+              destructive.push({ path: norm, name, reason: 'fully analyzed — will erase data' });
+            } else {
+              // Worker re-inspects + silently marks done with no .kestrel touch.
+              opts.skip_if_already_done = true;
             }
           }
-          return null;
-        }
-        for (const p of paths) {
-          if (_dlgReanalyze.has(p)) continue; // already confirmed at selection time
-          const node = folderTreeRootNode ? findNode(folderTreeRootNode, p) : null;
-          if (node && isVersionOutdated(node)) {
-            outdatedPaths.push({ path: p, name: node.name, version: node.kestrel_version });
-          }
+          // Errored-only folders (partial + errored > 0) don't need wipe;
+          // the pipeline's retry_errored logic handles them in-place.
+          perItemOptions[norm] = opts;
         }
 
-        if (outdatedPaths.length > 0) {
-          const names = outdatedPaths.map(o => `  • ${o.name} (v${o.version})`).join('\n');
-          const confirmed = confirm(
-            `The following folder(s) were analyzed on an older version of Kestrel:\n\n${names}\n\n` +
-            `Current version: v${_appVersion}\n\n` +
-            `Re-analyzing will DELETE existing analysis data (.kestrel folder) before proceeding.\n\n` +
-            `Continue?`
-          );
-          if (!confirmed) return;
-          // Clear .kestrel for outdated folders before re-analysis
-          for (const o of outdatedPaths) {
-            try {
-              await window.pywebview.api.clear_kestrel_data(o.path);
-              // Update in-memory node
-              const node = findNode(folderTreeRootNode, o.path);
-              if (node) { node.has_kestrel = false; node.kestrel_version = ''; }
-            } catch (e) {
-              console.warn('Failed to clear kestrel data for', o.path, e);
-            }
-          }
-        }
-
-        // Clear .kestrel for fully-analyzed re-queue folders (confirmed at selection time)
-        for (const p of _dlgReanalyze) {
-          if (!paths.includes(p)) continue;
-          try {
-            await window.pywebview.api.clear_kestrel_data(p);
-            const node = folderTreeRootNode ? findNode(folderTreeRootNode, p) : null;
-            if (node) { node.has_kestrel = false; node.kestrel_version = ''; }
-          } catch (e) {
-            console.warn('Failed to clear kestrel data for re-analyze', p, e);
-          }
-        }
-
-        // Cloud destination: branch here so the outdated/re-analyze gates above
-        // ran (clearing .kestrel/ on user confirm) before submission. Local
-        // settings persistence + start_analysis_queue do not apply to cloud.
-        if (_analyzeDestination === 'cloud') {
-          document.getElementById('analyzeQueueDlg').close();
-          analyzeDlgAdd.disabled = true;
-          try {
-            await _ccSubmitSelectedFolders(paths);
-            _dlgSelected.clear();
-            _dlgReanalyze.clear();
-          } finally {
-            analyzeDlgAdd.disabled = false;
-            _ccUpdateAddButtonLabel();
-          }
+        // If any destructive flags are set, open the confirmation modal.
+        if (destructive.length > 0) {
+          _openAnalyzeConfirmModal(destructive, async () => {
+            await _persistAnalyzeSettingsAndStart(checkedNorms, perItemOptions, retryErrored);
+          });
           return;
         }
-
-        // Persist advanced analysis settings before starting the queue
-        {
-          const dtVal = Math.max(0.1, Math.min(0.99, parseFloat(document.getElementById('adlgDetectionThreshold')?.value) || 0.25));
-          const mbcRaw = parseInt(document.getElementById('adlgMaxBirdCrops')?.value, 10);
-          const mbcVal = Math.max(1, Math.min(20, Number.isFinite(mbcRaw) ? mbcRaw : 10));
-          const eqRaw = String(document.getElementById('adlgExposureQuality')?.value || 'balanced').toLowerCase();
-          const eqVal = ['lenient', 'balanced', 'aggressive'].includes(eqRaw) ? eqRaw : 'balanced';
-          const modelRaw = String(document.getElementById('adlgWildlifeModelMode')?.value || 'fast').toLowerCase();
-          const modelVal = modelRaw === 'accurate' ? 'accurate' : 'fast';
-          const detectorName = modelVal === 'accurate' ? 'mdv5a' : 'mdv1000-cedar';
-          const stVal = Math.max(0, parseFloat(document.getElementById('adlgSceneTime')?.value) || 1.0);
-          const ppRaw = parseInt(document.getElementById('adlgParallelPrefetch')?.value, 10);
-          const ppVal = Math.max(1, Math.min(5, Number.isFinite(ppRaw) ? ppRaw : 3));
-          const twRaw = parseInt(document.getElementById('adlgThumbnailMaxWidth')?.value, 10);
-          const twVal = Math.max(400, Math.min(2400, Number.isFinite(twRaw) ? twRaw : 1200));
-          const tcRaw = parseFloat(document.getElementById('adlgThumbnailJpegCompression')?.value);
-          const tcVal = Math.max(0.5, Math.min(1.0, Number.isFinite(tcRaw) ? tcRaw : 0.75));
-          const tqVal = Math.max(50, Math.min(100, Math.round(tcVal * 100)));
-          const adlgSettings = loadSettings();
-          adlgSettings.detection_threshold = dtVal;
-          adlgSettings.max_bird_crops = mbcVal;
-          adlgSettings.exposure_quality = eqVal;
-          adlgSettings.wildlife_model_mode = modelVal;
-          adlgSettings.detector_name = detectorName;
-          adlgSettings.scene_time_threshold = stVal;
-          adlgSettings.parallel_prefetch = ppVal;
-          adlgSettings.thumbnail_max_width = twVal;
-          adlgSettings.thumbnail_jpeg_compression = tcVal;
-          adlgSettings.thumbnail_jpeg_quality = tqVal;
-          saveSettings(adlgSettings);
-          if (hasPywebviewApi && window.pywebview?.api?.save_settings_data) {
-            try { await window.pywebview.api.save_settings_data(adlgSettings); } catch (_) { }
-          }
-        }
-
-        document.getElementById('analyzeQueueDlg').close();
-        analyzeDlgAdd.disabled = true;
-        try {
-          // Show loading overlay while analyzer imports models (lazy-load)
-          showLoadingAnalyzer();
-          const result = await apiStartQueue(paths, useGpu, wildlifeEnabled, retryErrored, speciesDetectionEnabled);
-          if (result && result.success) {
-            queuedFolderPaths.clear();
-            _dlgSelected.clear();
-            _isFirstQueueStart = true; // reset for Case 1 logic on next queue start
-            // Clear saved queue state since we're starting a new queue
-            const s = loadSettings();
-            delete s.lastQueueState;
-            saveSettings(s);
-            // Clear session state for new queue start, so ETA calculations use fresh folder inspections
-            _queueSessionStartState.clear();
-            _queueFolderInspections.clear();
-            startPollingQueue();
-            const status = await apiGetQueueStatus();
-            renderQueuePanel(status);
-            setStatus(`Analysis queue started — ${result.added || paths.length} folder(s) queued`);
-            // Start polling; renderQueuePanel will hide the loader when processing begins.
-            // As a safety, hide the loader after 30s if nothing starts.
-            setTimeout(() => { try { hideLoadingAnalyzer(); } catch (e) { } }, 30000);
-          } else {
-            hideLoadingAnalyzer();
-            alert('Failed to start analysis queue:\n\n' + (result?.error || 'Unknown error'));
-          }
-        } catch (e) {
-          hideLoadingAnalyzer();
-          alert('Failed to start analysis queue:\n\n' + (e.message || e));
-        } finally {
-          analyzeDlgAdd.disabled = false;
-        }
+        await _persistAnalyzeSettingsAndStart(checkedNorms, perItemOptions, retryErrored);
       });
     }
 
-    // Analyze dialog: Change Folder button
-    document.getElementById('analyzeDlgChangeRoot')?.addEventListener('click', async () => {
-      if (!hasPywebviewApi) { alert('Directory browsing is only available in the desktop app.'); return; }
-      const fp = await window.pywebview.api.choose_directory();
-      if (!fp) return;
-      await scanFolderTree(fp);
-      if (!folderTreeRootNode) return;
-      _dlgExpandedPaths = new Set([folderTreeRootNode.path]);
-      _dlgSelected.clear();
-      function refreshDlg2() {
-        const countEl = document.getElementById('analyzeDlgCount');
-        const addBtn = document.getElementById('analyzeDlgAdd');
-        if (countEl) countEl.textContent = _dlgSelected.size + ' folder' + (_dlgSelected.size === 1 ? '' : 's') + ' selected';
-        if (addBtn) addBtn.disabled = _dlgSelected.size === 0;
-        _refreshAnalyzeDlgQueuePreview();
+    // Persist advanced settings, then call start_analysis_queue. Used by
+    // both the direct-start path (no destructive flags) and the post-
+    // confirmation path.
+    async function _persistAnalyzeSettingsAndStart(paths, perItemOptions, retryErrored) {
+      // Read + persist advanced settings.
+      const dtVal = Math.max(0.1, Math.min(0.99, parseFloat(document.getElementById('adlgDetectionThreshold')?.value) || 0.15));
+      const mbcRaw = parseInt(document.getElementById('adlgMaxBirdCrops')?.value, 10);
+      const mbcVal = Math.max(1, Math.min(20, Number.isFinite(mbcRaw) ? mbcRaw : 10));
+      const eqRaw = String(document.getElementById('adlgExposureQuality')?.value || 'balanced').toLowerCase();
+      const eqVal = ['lenient', 'balanced', 'aggressive'].includes(eqRaw) ? eqRaw : 'balanced';
+      const modelRaw = String(document.getElementById('adlgWildlifeModelMode')?.value || 'accurate').toLowerCase();
+      const modelVal = modelRaw === 'accurate' ? 'accurate' : 'fast';
+      const detectorName = modelVal === 'accurate' ? 'mdv5a' : 'mdv1000-cedar';
+      const stVal = Math.max(0, parseFloat(document.getElementById('adlgSceneTime')?.value) || 1.0);
+      const ppRaw = parseInt(document.getElementById('adlgParallelPrefetch')?.value, 10);
+      const ppVal = Math.max(1, Math.min(5, Number.isFinite(ppRaw) ? ppRaw : 3));
+      const twRaw = parseInt(document.getElementById('adlgThumbnailMaxWidth')?.value, 10);
+      const twVal = Math.max(400, Math.min(2400, Number.isFinite(twRaw) ? twRaw : 1200));
+      const tcRaw = parseFloat(document.getElementById('adlgThumbnailJpegCompression')?.value);
+      const tcVal = Math.max(0.5, Math.min(1.0, Number.isFinite(tcRaw) ? tcRaw : 0.75));
+      const tqVal = Math.max(50, Math.min(100, Math.round(tcVal * 100)));
+      const adlgSettings = loadSettings();
+      adlgSettings.detection_threshold = dtVal;
+      adlgSettings.max_bird_crops = mbcVal;
+      adlgSettings.exposure_quality = eqVal;
+      adlgSettings.wildlife_model_mode = modelVal;
+      adlgSettings.detector_name = detectorName;
+      adlgSettings.scene_time_threshold = stVal;
+      adlgSettings.parallel_prefetch = ppVal;
+      adlgSettings.thumbnail_max_width = twVal;
+      adlgSettings.thumbnail_jpeg_compression = tcVal;
+      adlgSettings.thumbnail_jpeg_quality = tqVal;
+      saveSettings(adlgSettings);
+      if (hasPywebviewApi && window.pywebview?.api?.save_settings_data) {
+        try { await window.pywebview.api.save_settings_data(adlgSettings); } catch (_) { }
       }
-      const treeEl = document.getElementById('analyzeDlgTree');
-      treeEl.innerHTML = '';
-      treeEl.appendChild(buildAnalyzeDlgNode(folderTreeRootNode, _dlgSelected, refreshDlg2));
-      populateAnalyzeFolderCounts();
-      refreshDlg2();
-    });
+
+      const useGpu = document.getElementById('analyzeUseGpu')?.checked ?? true;
+      const wildlifeEnabled = document.getElementById('analyzeWildlife')?.checked ?? false;
+      const speciesDetectionEnabled = document.getElementById('analyzeSpeciesDetection')?.checked ?? true;
+
+      const startBtn = document.getElementById('analyzeDlgAdd');
+      if (startBtn) startBtn.disabled = true;
+      document.getElementById('analyzeQueueDlg').close();
+      try {
+        // Cloud destination: clear .kestrel synchronously for any destructive
+        // items (the cloud worker doesn't see local .kestrel state), then
+        // submit each folder via the cloud-compute bridge. Local destination
+        // falls through to start_analysis_queue with per-item options so the
+        // queue worker handles .kestrel deletion just-in-time.
+        // TODO(est-time-cloud): replace the dialog's local-rate estimate with
+        // an upload-speed-test-aware estimate when destination=cloud. Local
+        // perf_samples_gpu/cpu reflect compute time, not transfer time, and
+        // are misleading here. Defer until upload-speed test lands.
+        if (typeof _analyzeDestination !== 'undefined' && _analyzeDestination === 'cloud') {
+          for (const p of paths) {
+            const opts = (perItemOptions || {})[p] || {};
+            if (opts.delete_kestrel_on_start) {
+              try { await window.pywebview.api.clear_kestrel_data(p); } catch (e) {
+                console.warn('[cloud] clear_kestrel_data failed', p, e);
+              }
+            }
+          }
+          await _ccSubmitSelectedFolders(paths);
+          if (typeof _ccUpdateAddButtonLabel === 'function') _ccUpdateAddButtonLabel();
+          return;
+        }
+
+        showLoadingAnalyzer();
+        const result = await window.pywebview.api.start_analysis_queue(
+          paths,
+          useGpu,
+          wildlifeEnabled,
+          retryErrored,
+          speciesDetectionEnabled,
+          perItemOptions || {},
+        );
+        if (result && result.success) {
+          _isFirstQueueStart = true;
+          _queueSessionStartState.clear();
+          _queueFolderInspections.clear();
+          startPollingQueue();
+          const status = await apiGetQueueStatus();
+          renderQueuePanel(status);
+          setStatus(`Analysis queue started — ${result.added || paths.length} folder(s) queued`);
+          setTimeout(() => { try { hideLoadingAnalyzer(); } catch (e) { } }, 30000);
+        } else {
+          hideLoadingAnalyzer();
+          alert('Failed to start analysis queue:\n\n' + (result?.error || 'Unknown error'));
+        }
+      } catch (e) {
+        hideLoadingAnalyzer();
+        alert('Failed to start analysis queue:\n\n' + (e.message || e));
+      } finally {
+        if (startBtn) startBtn.disabled = false;
+      }
+    }
+
+    // Pre-queue confirmation modal (Phase 3H). Lists destructive folders,
+    // forces an explicit click before .kestrel deletion happens.
+    function _openAnalyzeConfirmModal(destructive, onProceed) {
+      const dlg = document.getElementById('analyzeConfirmDlg');
+      const list = document.getElementById('analyzeConfirmFolderList');
+      const plural = document.getElementById('analyzeConfirmFolderPlural');
+      const cancelBtn = document.getElementById('analyzeConfirmCancel');
+      const proceedBtn = document.getElementById('analyzeConfirmProceed');
+      if (!dlg || !list || !proceedBtn || !cancelBtn) {
+        // Modal missing — fall back to a native confirm so the user isn't
+        // silently bypassed past the destructive gate.
+        const names = destructive.map(d => `  • ${d.name} (${d.reason})`).join('\n');
+        if (!confirm(`The following folder(s) will lose all user data:\n\n${names}\n\nContinue?`)) return;
+        onProceed();
+        return;
+      }
+      if (plural) plural.textContent = destructive.length === 1 ? '' : 's';
+      list.innerHTML = '';
+      for (const d of destructive) {
+        const li = document.createElement('li');
+        const nameSpan = document.createElement('strong');
+        nameSpan.textContent = d.name;
+        const reasonSpan = document.createElement('span');
+        reasonSpan.style.color = 'var(--muted)';
+        reasonSpan.textContent = ` — ${d.reason}`;
+        li.appendChild(nameSpan);
+        li.appendChild(reasonSpan);
+        list.appendChild(li);
+      }
+      // Make the parent dialog inert while the confirm is open so focus is
+      // trapped in the modal.
+      const parentDlg = document.getElementById('analyzeQueueDlg');
+      if (parentDlg && 'inert' in parentDlg) parentDlg.inert = true;
+      const handleCancel = () => {
+        cleanup();
+        dlg.close();
+      };
+      const handleProceed = async () => {
+        cleanup();
+        dlg.close();
+        try { await onProceed(); } catch (e) { console.error('analyze confirm proceed error', e); }
+      };
+      function cleanup() {
+        cancelBtn.removeEventListener('click', handleCancel);
+        proceedBtn.removeEventListener('click', handleProceed);
+        if (parentDlg && 'inert' in parentDlg) parentDlg.inert = false;
+      }
+      cancelBtn.addEventListener('click', handleCancel);
+      proceedBtn.addEventListener('click', handleProceed);
+      dlg.showModal();
+    }
 
     // ── Welcome Panel action wiring ──────────────────────────────────────────────
 
@@ -385,3 +438,41 @@
         showToast('Error opening Culling Assistant', 4000);
       }
     }
+
+    // ── Timeline filter bar: "More" popover ───────────────────────────────────────
+    // The set-and-forget grouping/display checkboxes live behind a popover so the
+    // top filter bar stays compact. Click the button to toggle; click outside or
+    // press Escape to close.
+    (function wireTfbMorePopover() {
+      const btn = document.getElementById('tfbMoreBtn');
+      const popover = document.getElementById('tfbMorePopover');
+      if (!btn || !popover) return;
+
+      function closePopover() {
+        popover.classList.add('hidden');
+        btn.setAttribute('aria-expanded', 'false');
+      }
+      function openPopover() {
+        popover.classList.remove('hidden');
+        btn.setAttribute('aria-expanded', 'true');
+      }
+
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (popover.classList.contains('hidden')) openPopover();
+        else closePopover();
+      });
+
+      document.addEventListener('click', (e) => {
+        if (popover.classList.contains('hidden')) return;
+        if (popover.contains(e.target) || btn.contains(e.target)) return;
+        closePopover();
+      });
+
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && !popover.classList.contains('hidden')) {
+          closePopover();
+        }
+      });
+    })();
+

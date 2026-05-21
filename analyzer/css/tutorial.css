@@ -144,30 +144,6 @@
   50%      { opacity: 1; }
 }
 .tutorial-nudge::before { content: '\203A\00A0'; font-size: 14px; }
-#helpBtnMain {
-  padding: 6px 10px;
-  height: auto;
-  width: auto;
-  border-radius: 6px;
-  border: 1px solid var(--muted);
-  background: rgba(74, 163, 255, 0.08);
-  color: var(--brand);
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  flex-shrink: 0;
-  transition: all .15s;
-}
-#helpBtnMain:hover {
-  background: rgba(74, 163, 255, 0.15);
-  border-color: var(--brand);
-  color: var(--brand);
-}
-
 /* ═══ Tutorial: custom-body cards (workflow + editor picker) ═══ */
 #tutorialCard.tut-card-workflow {
   width: 560px;

@@ -793,6 +793,89 @@ class Api:
             error(f'[API] choose_directory error: {e}')
             return None
 
+    def choose_directories(self):
+        """Open native folder picker dialog with multi-select support.
+
+        Returns: list[str] of selected folder paths (empty list if cancelled).
+
+        Platform-specific:
+        - macOS: osascript's "choose folder ... with multiple selections allowed"
+          is native, reliable, and avoids any pywebview involvement.
+        - Windows: pywebview's create_file_dialog uses WebView2's native
+          IFileOpenDialog with FOS_ALLOWMULTISELECT. Falls back to a single
+          tkinter pick if pywebview is unavailable (rare in a desktop build)
+          or throws — the user can click "+ Load Folders…" again for each
+          additional folder in the worst case.
+        - Linux: pywebview's GTK/Qt backend; same fallback as Windows.
+        """
+        try:
+            if sys.platform == 'darwin':
+                # AppleScript returns one alias per line when "with multiple
+                # selections allowed" is used. POSIX path of {…} converts each
+                # alias to a slash-path string.
+                script = (
+                    'set chosen to choose folder with prompt '
+                    '"Select folders containing analyzed photos" with multiple selections allowed\n'
+                    'set out to ""\n'
+                    'repeat with f in chosen\n'
+                    '    set out to out & POSIX path of f & "\\n"\n'
+                    'end repeat\n'
+                    'return out'
+                )
+                result = subprocess.run(
+                    ['osascript', '-e', script],
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
+                if result.returncode != 0:
+                    info('[API] choose_directories -> cancelled')
+                    return []
+                paths = [p.strip() for p in result.stdout.splitlines() if p.strip()]
+                info(f'[API] choose_directories (macOS) -> {len(paths)} path(s)')
+                return paths
+
+            # Windows/Linux: try pywebview's native multi-select dialog.
+            # Prefer the modern FileDialog.FOLDER enum (pywebview >= 5) and
+            # fall back to the deprecated FOLDER_DIALOG constant on older
+            # pywebview builds. If neither is available or the call throws,
+            # fall through to the single-pick tkinter fallback.
+            try:
+                import webview
+                wins = getattr(webview, 'windows', None)
+                if wins:
+                    win = wins[0]
+                    dialog_kind = None
+                    file_dialog = getattr(webview, 'FileDialog', None)
+                    if file_dialog is not None and hasattr(file_dialog, 'FOLDER'):
+                        dialog_kind = file_dialog.FOLDER
+                    elif hasattr(webview, 'FOLDER_DIALOG'):
+                        dialog_kind = webview.FOLDER_DIALOG
+                    if dialog_kind is not None:
+                        result = win.create_file_dialog(
+                            dialog_kind,
+                            allow_multiple=True,
+                        )
+                        if not result:
+                            info('[API] choose_directories -> cancelled')
+                            return []
+                        # create_file_dialog returns a tuple of path strings
+                        paths = [str(p) for p in result if p]
+                        info(f'[API] choose_directories (pywebview) -> {len(paths)} path(s)')
+                        return paths
+            except Exception as e:
+                # Fall through to tkinter single-pick if the pywebview path
+                # fails (logged for diagnostics, not user-visible).
+                info(f'[API] choose_directories pywebview path failed ({e!r}); falling back to single-pick')
+
+            # Tkinter has no native multi-folder picker, so single-pick is the
+            # safe fallback. User can click "+ Load Folders…" again for more.
+            single = self.choose_directory()
+            return [single] if single else []
+        except Exception as e:
+            error(f'[API] choose_directories error: {e}')
+            return []
+
     def open_file_explorer(self, folder_path):
         """Open a folder in the native file explorer."""
         root_real, err = self._validate_root_dir(folder_path, context='open_file_explorer', require_exists=True)
@@ -1036,6 +1119,136 @@ class Api:
             result = {'success': False, 'error': str(e), 'map': {}}
         self._species_family_map_cache = result
         return result
+
+    # ------------------------------------------------------------------ #
+    #  Global bird catalog (regional + fuzzy combobox)                    #
+    # ------------------------------------------------------------------ #
+
+    def _get_bird_catalog(self):
+        """Process-wide catalog singleton, cached on the bridge instance.
+
+        Returns ``None`` on load failure so callers can degrade gracefully
+        rather than 500-ing the entire combobox.
+        """
+        cached = getattr(self, '_bird_catalog_cache', None)
+        if cached is not None:
+            return cached
+        try:
+            try:
+                from kestrel_analyzer.bird_catalog import get_catalog
+            except ImportError:
+                from analyzer.kestrel_analyzer.bird_catalog import get_catalog
+            cached = get_catalog()
+        except Exception as e:
+            error(f'[API] bird catalog load error: {e}')
+            cached = None
+        self._bird_catalog_cache = cached
+        return cached
+
+    def get_bird_catalog_meta(self):
+        """Return UI metadata: region labels + default selection + catalog size.
+
+        Used by the frontend to populate the region picker in settings without
+        downloading the full catalog. Cached separately from the records.
+        """
+        try:
+            try:
+                from kestrel_analyzer.bird_catalog import (
+                    ALLOWED_REGION_CODES, REGION_LABELS, DEFAULT_REGION_SELECTION,
+                )
+            except ImportError:
+                from analyzer.kestrel_analyzer.bird_catalog import (
+                    ALLOWED_REGION_CODES, REGION_LABELS, DEFAULT_REGION_SELECTION,
+                )
+            cat = self._get_bird_catalog()
+            return {
+                'success': True,
+                'regions': [
+                    {'code': code, 'label': REGION_LABELS.get(code, code)}
+                    for code in ALLOWED_REGION_CODES
+                ],
+                'default_regions': list(DEFAULT_REGION_SELECTION),
+                'total_species': len(cat) if cat is not None else 0,
+            }
+        except Exception as e:
+            error(f'[API] get_bird_catalog_meta error: {e}')
+            return {'success': False, 'error': str(e),
+                    'regions': [], 'default_regions': ['NA'], 'total_species': 0}
+
+    def search_birds(self, query='', regions=None, limit=20):
+        """Region-filtered fuzzy search across the global bird catalog.
+
+        Parameters mirror the JS combobox: ``query`` is the text the user has
+        typed (may be empty to seed the dropdown), ``regions`` is the list of
+        biogeographic codes currently selected in Settings, and ``limit`` caps
+        the number of returned records.
+        """
+        try:
+            try:
+                from kestrel_analyzer.bird_catalog import record_to_dict
+            except ImportError:
+                from analyzer.kestrel_analyzer.bird_catalog import record_to_dict
+            cat = self._get_bird_catalog()
+            if cat is None:
+                return {'success': False, 'error': 'catalog unavailable', 'results': []}
+            q = '' if query is None else str(query)
+            sel = regions if isinstance(regions, (list, tuple)) else ['NA']
+            try:
+                n = int(limit)
+            except (TypeError, ValueError):
+                n = 20
+            n = max(1, min(100, n))
+            results = cat.search(q, sel, limit=n)
+            return {'success': True, 'results': [record_to_dict(r) for r in results]}
+        except Exception as e:
+            error(f'[API] search_birds error: {e}')
+            return {'success': False, 'error': str(e), 'results': []}
+
+    def lookup_birds(self, names=None):
+        """Resolve a list of canonical names (already-applied pills) to records.
+
+        Returns a ``{ canonical_name: record_dict }`` map so the frontend can
+        render the scientific-name subtext for pills it inherited from a
+        previous session (where the catalog wasn't yet loaded into memory).
+        Unknown names are simply omitted from the response.
+        """
+        try:
+            try:
+                from kestrel_analyzer.bird_catalog import record_to_dict
+            except ImportError:
+                from analyzer.kestrel_analyzer.bird_catalog import record_to_dict
+            cat = self._get_bird_catalog()
+            if cat is None:
+                return {'success': False, 'error': 'catalog unavailable', 'map': {}}
+            out: dict = {}
+            if isinstance(names, (list, tuple)):
+                for raw in names:
+                    if not isinstance(raw, str):
+                        continue
+                    rec = cat.lookup(raw)
+                    if rec is not None:
+                        out[rec.canonical_common_name] = record_to_dict(rec)
+            return {'success': True, 'map': out}
+        except Exception as e:
+            error(f'[API] lookup_birds error: {e}')
+            return {'success': False, 'error': str(e), 'map': {}}
+
+    def get_family_sci_map(self):
+        """Return the catalog's full ``family_common -> family_sci`` map.
+
+        Hydrated once on the JS side at startup so family-tier pills can
+        resolve their italicised scientific-family subtext directly,
+        without depending on a sibling species record being present in
+        the same scene.
+        """
+        try:
+            cat = self._get_bird_catalog()
+            if cat is None:
+                return {'success': False, 'error': 'catalog unavailable', 'map': {}}
+            return {'success': True, 'map': cat.family_sci_map}
+        except Exception as e:
+            error(f'[API] get_family_sci_map error: {e}')
+            return {'success': False, 'error': str(e), 'map': {}}
 
     def fetch_remote_version(self):
         """Fetch version.json from projectkestrel.org to bypass CORS in JS."""
@@ -1786,7 +1999,7 @@ class Api:
     #  Analysis Queue API (called from JavaScript in pywebview mode)       #
     # ------------------------------------------------------------------ #
 
-    def start_analysis_queue(self, paths, use_gpu=True, wildlife_enabled=True, retry_errored=False, species_detection_enabled=True):
+    def start_analysis_queue(self, paths, use_gpu=True, wildlife_enabled=True, retry_errored=False, species_detection_enabled=True, per_item_options=None):
         """Enqueue folders for analysis. ``paths`` may be a JSON string or list.
 
         ``retry_errored`` (bool): when True, drop rows previously marked
@@ -1796,6 +2009,19 @@ class Api:
         ``species_detection_enabled`` (bool): when False, the bird species
         classifier is skipped and species/family fields are recorded as
         ``Unknown``. Detection, quality scoring, and culling still run.
+
+        ``per_item_options`` (dict | str | None): Phase 3 per-path option map.
+        Keys are paths (raw or post-validation; we normalize on lookup).
+        Values are dicts with optional bool flags:
+          - ``delete_kestrel_on_start``: worker wipes the folder's .kestrel
+            JUST BEFORE that folder's analysis starts (NOT at queue-build
+            time). Used by the dialog when the user explicitly unlocks
+            re-analysis of fully-analyzed or outdated folders.
+          - ``skip_if_already_done``: worker re-inspects the folder when its
+            turn comes up and silently marks it ``done`` (no pipeline call,
+            no deletion) if it's still fully analyzed with no errors. Used
+            so a user's accidental check on an already-done folder is a
+            no-op rather than destructive.
         """
         try:
             if isinstance(paths, str):
@@ -1803,8 +2029,20 @@ class Api:
             if not isinstance(paths, list):
                 return {'success': False, 'error': 'paths must be a list'}
 
+            # Coerce per_item_options if it arrived as a JSON string.
+            if isinstance(per_item_options, str):
+                try:
+                    per_item_options = json.loads(per_item_options)
+                except Exception:
+                    per_item_options = None
+            if per_item_options is not None and not isinstance(per_item_options, dict):
+                per_item_options = None
+
             validated_paths = []
             invalid_paths = []
+            # Map raw->validated so per_item_options keyed by the raw frontend
+            # path still resolves to the canonical realpath the worker uses.
+            raw_to_validated = {}
             for raw in paths:
                 if not raw:
                     continue
@@ -1814,6 +2052,7 @@ class Api:
                     continue
                 if root_real not in validated_paths:
                     validated_paths.append(root_real)
+                raw_to_validated[str(raw)] = root_real
 
             if invalid_paths:
                 self._log_security_reject(
@@ -1828,6 +2067,25 @@ class Api:
                 }
             if not validated_paths:
                 return {'success': False, 'error': 'No valid paths provided'}
+
+            # Re-key per_item_options against the validated paths so the
+            # queue manager can look up options by the same path it stores.
+            validated_per_item_options = None
+            if per_item_options:
+                validated_per_item_options = {}
+                for raw_key, opts in per_item_options.items():
+                    if not isinstance(opts, dict):
+                        continue
+                    real = raw_to_validated.get(str(raw_key))
+                    if real is None:
+                        # Maybe the frontend already sent us the realpath.
+                        if str(raw_key) in validated_paths:
+                            real = str(raw_key)
+                    if real is not None:
+                        validated_per_item_options[real] = {
+                            'delete_kestrel_on_start': bool(opts.get('delete_kestrel_on_start')),
+                            'skip_if_already_done': bool(opts.get('skip_if_already_done')),
+                        }
 
             sett = load_persisted_settings()
             detection_threshold = float(sett.get('detection_threshold', 0.25))
@@ -1871,7 +2129,8 @@ class Api:
                                           max_bird_crops=max_bird_crops,
                                           parallel_prefetch=parallel_prefetch,
                                           detector_name=detector_name,
-                                          retry_errored=bool(retry_errored))
+                                          retry_errored=bool(retry_errored),
+                                          per_item_options=validated_per_item_options)
         except Exception as e:
             error(f'[API] start_analysis_queue error: {e}')
             return {'success': False, 'error': str(e)}
@@ -1944,9 +2203,8 @@ class Api:
         except Exception as e:
             return {'success': False, 'error': str(e)}
 
-    def restore_analysis_queue(self):
-        """Restore a previous queue snapshot persisted in user settings."""
-        return _queue_manager.restore_from_persisted_state()
+    # Phase 3: restore_analysis_queue removed — feature replaced by the
+    # analyze dialog's analyze_recents chip row.
 
     def clear_recovery_state(self, clear_queue_state: bool = True):
         """Clear persisted unclean-shutdown flag and optionally queue recovery snapshot."""

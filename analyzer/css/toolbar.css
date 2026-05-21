@@ -30,79 +30,8 @@
   font-size: 13px;
 }
 
-.toolbar-row.filters {
-  flex-direction: column;
-  align-items: stretch;
-  flex: 0 0 auto;
-  /* Filters panel is outside .toolbar so it stays pinned regardless of tree visibility */
-}
-
 .toolbar-row.status {
   justify-content: flex-start;
-}
-
-.filter-panel {
-  width: 100%;
-}
-
-.filter-panel {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  flex-wrap: wrap;
-  padding: 6px 8px;
-  border: 1px solid #1d2230;
-  border-radius: 10px;
-  background: #0e1117;
-}
-
-.filter-panel .filter-title {
-  width: 100%;
-  text-align: center;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: .5px;
-}
-
-.filter-panel .muted {
-  color: var(--text);
-}
-
-.filter-divider {
-  width: 100%;
-  height: 1px;
-  background: #1d2230;
-  margin: 2px 0;
-}
-
-/* Centre the confidence threshold row horizontally in the panel */
-.filter-conf-row {
-  width: 100%;
-  justify-content: center;
-}
-
-.filter-sort-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-}
-.filter-sort-label {
-  font-size: 12px;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-.filter-sort-row select {
-  flex: 1;
-  height: 30px;
-  font-size: 12px;
-}
-
-.filter-panel input[type="search"] {
-  flex: 1 1 100%;
-  width: 100%;
 }
 
 /* Generic form-control styling (buttons, inputs, selects) */
@@ -218,4 +147,147 @@ button[disabled] {
   height: 30px;
   flex: 1 1 160px;
   min-width: 0;
+}
+
+/* ── Sidebar primary CTA: Analyze Folders button ─────────────────────────────
+   The main entry point on first launch. Normal-weight type for a clean look. */
+.sidebar-cta {
+  width: 100%;
+  height: 42px;
+  font-size: 14px;
+  font-weight: 400;
+  border-radius: 10px;
+  letter-spacing: 0.1px;
+}
+
+/* ── Segmented strip: a row of click targets separated by vertical dividers.
+   Used by the sidebar footer (Settings | Feedback | Tutorial | Donate) and
+   the folder-tree footer (Select All / None | Clear). One cohesive container
+   with each child a borderless button; hover lights up the segment. */
+.segmented-strip {
+  display: flex;
+  align-items: stretch;
+  background: #0e1117;
+  border: 1px solid #2a3040;
+  border-radius: 10px;
+  overflow: hidden;
+  flex-wrap: nowrap;
+  min-height: 30px;
+}
+
+.segmented-strip-item {
+  flex: 1 1 auto;
+  height: auto;
+  padding: 0 10px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  transition: background .12s ease, color .12s ease, box-shadow .12s ease;
+  /* Vertical divider between siblings — kept subtle. */
+  border-left: 1px solid #1d2230;
+}
+.segmented-strip-item:first-of-type {
+  border-left: none;
+}
+/* Hover: highlight the segment symmetrically. box-shadow inset draws blue
+   tracks on BOTH the left and right inner edges of the segment so the
+   highlight reads as "this segment is hot", not "this divider lit up".
+   Using box-shadow (not border-color) avoids layout shift and avoids the
+   base button:hover rule recolouring just the existing border-left. */
+.segmented-strip-item:hover:not([disabled]) {
+  background: #1a2030;
+  color: #fff;
+  border-left-color: #2b6ec8;
+  box-shadow: inset -1px 0 0 #2b6ec8;
+}
+/* First-of-type has no border-left to recolour — give it an inset blue
+   highlight on the left side for symmetry. */
+.segmented-strip-item:first-of-type:hover:not([disabled]) {
+  box-shadow: inset 1px 0 0 #2b6ec8, inset -1px 0 0 #2b6ec8;
+}
+.segmented-strip-item[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.segmented-strip-item.hidden {
+  display: none;
+}
+
+/* Donate variant: tinted to remain visually distinct without breaking the strip */
+.segmented-strip-item.donate-item {
+  color: #f5c542;
+}
+.segmented-strip-item.donate-item:hover:not([disabled]) {
+  background: rgba(245, 197, 66, 0.08);
+  color: #ffd45f;
+}
+
+/* Danger variant (e.g. Clear): warm tint to flag a destructive action. */
+.segmented-strip-item.danger-item {
+  color: #e89a5a;
+}
+.segmented-strip-item.danger-item:hover:not([disabled]) {
+  background: rgba(232, 154, 90, 0.08);
+  color: #ffb37a;
+}
+
+/* Folder-tree footer: lives flush with the container's bottom edge. Override
+   the generic .segmented-strip border/radius — we only want a top divider so
+   it reads as the container's "bottom bar". The divider is gray (NOT the
+   wrap's blue outer border) so it doesn't compete with the wrap's accent. */
+.folder-tree-footer {
+  flex: 0 0 auto;
+  border: none;
+  border-top: 1px solid #2a3040;
+  border-radius: 0 0 10px 10px;
+  background: transparent;
+  overflow: hidden;
+}
+.folder-tree-footer .segmented-strip-item {
+  font-size: 12px;
+  padding: 7px 10px;
+  min-height: 32px;
+  line-height: 1.2;
+}
+.folder-tree-footer .segmented-strip-item:first-of-type:not(.hidden) {
+  border-bottom-left-radius: 10px;
+}
+.folder-tree-footer .segmented-strip-item:last-of-type:not(.hidden) {
+  border-bottom-right-radius: 10px;
+}
+
+/* Clear is the wide left segment — flex-grows to consume most of the strip
+   so the action is prominent (matches the user's "Clear should be bigger"). */
+.folder-tree-footer .tree-clear-btn {
+  flex: 1 1 auto;
+}
+
+/* Select All / Select None: compact right segment. Label-then-checkbox
+   ordering puts the checkbox at the FAR right of the strip, aligning
+   vertically with the row checkboxes above (.tree-cb-col, 24px wide with
+   a centered 13px checkbox → ~5.5px from right edge). Padding-right tuned
+   to land the checkbox at that same x-position. */
+.folder-tree-footer .tree-select-toggle {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 7px 6px 7px 10px;
+}
+.tree-select-toggle-cb {
+  pointer-events: none;
+  margin: 0;
+}
+.tree-select-toggle-label {
+  /* Explicit font-size so the label matches Clear exactly (avoids any
+     inherited rendering quirks that made the toggle look heavier). */
+  font-size: 12px;
+  line-height: 1.2;
+  letter-spacing: 0.1px;
 }

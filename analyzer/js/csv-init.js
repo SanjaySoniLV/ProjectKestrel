@@ -237,7 +237,18 @@
     loadVersionBadge();
     initPerchAuth();
     setStatus('Open your photo folder (the one that contains .kestrel) or select kestrel_database.csv');
-    hydrateSettingsFromServer();
+    // Hydrate from backend, then re-render recents chips. Must waitForPywebview
+    // first — at script-parse time the bridge isn't ready yet, so calling
+    // hydrateSettingsFromServer() directly bails (its first guard checks
+    // window.pywebview?.api?.get_settings) and the recents render sees an
+    // empty localStorage. Wait for the bridge, THEN hydrate + render.
+    (async () => {
+      try {
+        await waitForPywebview();
+        await hydrateSettingsFromServer();
+        if (typeof renderFolderRecentsChips === 'function') renderFolderRecentsChips();
+      } catch (e) { console.warn('[recents] init chain failed:', e); }
+    })();
 
     // If a queue was running before this page loaded (e.g. page refresh), re-attach the polling
     (async () => {
@@ -253,34 +264,36 @@
       } catch (_) { }
     })();
 
-    // Wire "Change root…" button in the tree panel
-    const treeChangeRootBtn = document.getElementById('treeChangeRoot');
-    if (treeChangeRootBtn) {
-      treeChangeRootBtn.addEventListener('click', async () => {
-        if (!hasPywebviewApi) { const ready = await waitForPywebview(); if (!ready) return; }
-        if (!window.pywebview?.api?.choose_directory) return;
-        setStatus('Opening folder picker…');
-        const folderPath = await window.pywebview.api.choose_directory();
-        if (folderPath) {
-          treeExpandedPaths.clear();
-          checkedFolderPaths.clear();
-          const treeScanned = await scanFolderTree(folderPath);
-          if (treeScanned && !folderTreeRootHasKestrel) {
-            setStatus('Select a folder from the tree below to load its scenes');
-          } else {
-            await loadFolderFromPath(folderPath);
-          }
-        } else {
-          setStatus('Folder selection cancelled');
-        }
-      });
-    }
+    // Legacy "Change root…" button — the element is now permanently hidden in
+    // HTML (kept only so this handler can't NPE on a missing element). The
+    // user-facing replacement is "+ 📂 Load Folders…" which is additive.
+    // No handler wired; intentional no-op.
 
-    // Wire "Check all / Check none" buttons
+    // Wire "Select All / Select None" toggle (one button is always hidden via
+    // .hidden — see updateSelectToggleVisibility in multi-folder.js).
     const treeCheckAllBtn = document.getElementById('treeCheckAll');
     if (treeCheckAllBtn) treeCheckAllBtn.addEventListener('click', checkAllTreeFolders);
     const treeCheckNoneBtn = document.getElementById('treeCheckNone');
     if (treeCheckNoneBtn) treeCheckNoneBtn.addEventListener('click', checkNoneTreeFolders);
+
+    // Wire Clear button — unload every root, reset scenes, return to welcome
+    // panel. Recents in settings are preserved so the user can re-click them.
+    const treeClearBtn = document.getElementById('treeClear');
+    console.log('[clear] wiring treeClear button — element found:', !!treeClearBtn, 'disabled:', treeClearBtn?.disabled);
+    if (treeClearBtn) {
+      treeClearBtn.addEventListener('click', () => {
+        console.log('[clear] click — roots before:', folderTreeRootOrder.length, 'checked before:', checkedFolderPaths.size);
+        clearAllFolderRoots();
+        console.log('[clear] after clearAllFolderRoots — roots:', folderTreeRootOrder.length, 'checked:', checkedFolderPaths.size);
+        // Reset loaded scenes too so the welcome panel returns.
+        try {
+          rows = [];
+          header = [];
+          if (typeof renderScenes === 'function') renderScenes();
+        } catch (e) { console.warn('[clear] renderScenes error', e); }
+        setStatus('Idle');
+      });
+    }
 
     // Wire "Load checked" button (removed from HTML; kept as no-op guard)
     const treeLoadSelectedBtn = document.getElementById('treeLoadSelected');
@@ -289,5 +302,152 @@
         if (checkedFolderPaths.size === 0) return;
         await loadMultipleFolders(Array.from(checkedFolderPaths));
       });
+    }
+
+    // ── Recents chips (2H) + empty hint context (2I) ──────────────────────────
+    // Read folder_recents from settings on startup, probe existence via
+    // inspect_folders, render chips into #folderRecentsRow. Each chip click
+    // calls addFolderRoot for that specific path (same flow as + Load Folders).
+    function _ellipsizePathMiddle(path, maxLen = 28) {
+      if (!path) return '';
+      const p = path.replace(/\\/g, '/');
+      if (p.length <= maxLen) return p;
+      // Keep the drive/first segment + the last segment, ellipsis in the middle.
+      const parts = p.split('/').filter(Boolean);
+      if (parts.length <= 2) return p.slice(0, maxLen - 1) + '…';
+      const first = parts[0];
+      const last = parts[parts.length - 1];
+      const truncated = `${first}/…/${last}`;
+      return truncated.length <= maxLen ? truncated : (truncated.slice(0, maxLen - 1) + '…');
+    }
+
+    async function renderFolderRecentsChips() {
+      const row = document.getElementById('folderRecentsRow');
+      if (!row) { console.log('[recents] no row element'); return; }
+      const s = (typeof loadSettings === 'function') ? loadSettings() : {};
+      const recents = Array.isArray(s.folder_recents) ? s.folder_recents.slice(0, 8) : [];
+      console.log('[recents] render — settings.folder_recents:', s.folder_recents, '-> recents:', recents);
+      if (recents.length === 0) {
+        console.log('[recents] empty list — hiding row');
+        row.classList.add('hidden');
+        row.innerHTML = '';
+        updateEmptyHintCopy();
+        return;
+      }
+      // Probe existence via inspect_folders so missing-drive paths drop out.
+      // Note: inspect_folders returns success=true ONLY if every input path is
+      // a valid existing folder (require_exists=True in _validate_root_dir).
+      // The results dict is keyed by os.path.realpath which may not match the
+      // original strings (case canonicalization etc.), so we DON'T do per-path
+      // result lookup — instead we treat success=true as "all exist, show all"
+      // and only filter when the backend gives us an explicit invalid_paths list.
+      let available = recents;
+      try {
+        if (hasPywebviewApi && window.pywebview?.api?.inspect_folders) {
+          const res = await window.pywebview.api.inspect_folders(recents);
+          console.log('[recents] inspect_folders result:', res);
+          if (res && res.success) {
+            available = recents; // all valid
+          } else if (res && Array.isArray(res.invalid_paths)) {
+            const normRoot = q => (q || '').replace(/\\/g, '/').replace(/\/+$/, '');
+            const invalid = new Set(res.invalid_paths.map(normRoot));
+            available = recents.filter(p => !invalid.has(normRoot(p)));
+          }
+        }
+      } catch (e) { console.warn('[recents] inspect_folders threw:', e); }
+      // Hide chips for paths that are ALREADY loaded as roots in the tree —
+      // no point showing a "click to load" chip for a folder you already see.
+      // Comparison uses the same normalization as addFolderRoot's _normRoot.
+      try {
+        const normRoot = q => (q || '').replace(/\\/g, '/').replace(/\/+$/, '');
+        const loaded = new Set(folderTreeRootOrder.map(normRoot));
+        available = available.filter(p => !loaded.has(normRoot(p)));
+      } catch (e) { /* if folderTreeRootOrder isn't accessible, show all */ }
+      console.log('[recents] available after probe + loaded-filter:', available);
+      if (available.length === 0) {
+        console.log('[recents] all filtered out — hiding row');
+        row.classList.add('hidden');
+        row.innerHTML = '';
+        updateEmptyHintCopy();
+        return;
+      }
+      row.innerHTML = '';
+      for (const path of available) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'folder-recents-chip';
+        chip.title = path;
+        const plus = document.createElement('span');
+        plus.className = 'folder-recents-chip-plus';
+        plus.textContent = '+ 📂';
+        const label = document.createElement('span');
+        label.textContent = ' ' + _ellipsizePathMiddle(path);
+        chip.appendChild(plus);
+        chip.appendChild(label);
+        chip.addEventListener('click', async () => {
+          chip.disabled = true;
+          try {
+            const r = await addFolderRoot(path);
+            if (r && r.added) {
+              debouncedAutoLoad();
+              // Bump-to-top in recents on successful click. Push to backend
+              // too so the change survives the next hydrateSettingsFromServer.
+              try {
+                const ss = loadSettings();
+                const existing = Array.isArray(ss.folder_recents) ? ss.folder_recents : [];
+                const normRoot = q => (q || '').replace(/\\/g, '/').replace(/\/+$/, '');
+                const np = normRoot(path);
+                const filtered = existing.filter(p => normRoot(p) !== np);
+                ss.folder_recents = [np, ...filtered].slice(0, 8);
+                saveSettings(ss);
+                if (hasPywebviewApi && window.pywebview?.api?.save_settings_data) {
+                  try { await window.pywebview.api.save_settings_data(ss); } catch (_) { }
+                }
+                renderFolderRecentsChips();
+              } catch (e) { /* best-effort */ }
+            }
+          } finally {
+            chip.disabled = false;
+          }
+        });
+        row.appendChild(chip);
+      }
+      row.classList.remove('hidden');
+      updateEmptyHintCopy();
+    }
+
+    function updateEmptyHintCopy() {
+      const hint = document.getElementById('folderTreeEmptyHint');
+      if (!hint) return;
+      const row = document.getElementById('folderRecentsRow');
+      const hasRecents = row && !row.classList.contains('hidden') && row.children.length > 0;
+      hint.innerHTML = hasRecents
+        ? 'Click a recent above, or <b>+ 📂 Load Folders…</b> to pick a new one.'
+        : 'No folders loaded.<br />Click <b>+ 📂 Load Folders…</b> to get started.';
+    }
+
+    // Initial render of recents on startup.
+    renderFolderRecentsChips();
+
+    // ── Zoom slider (2J) ──────────────────────────────────────────────────────
+    // Drives the existing uiZoom / applyZoom pipeline (blob-zoom.js) so behavior
+    // matches the +/- buttons. Slider range 70..140 mirrors the button clamps
+    // (Math.min(1.4, …) / Math.max(0.7, …) in the existing wiring above).
+    const _zoomSlider = document.getElementById('zoomSlider');
+    if (_zoomSlider) {
+      // Reflect the current uiZoom into the slider on init.
+      try { _zoomSlider.value = String(Math.round(uiZoom * 100)); } catch (e) { /* ignore */ }
+      _zoomSlider.addEventListener('input', (e) => {
+        const pct = parseInt(e.target.value, 10) || 100;
+        uiZoom = Math.max(0.7, Math.min(1.4, pct / 100));
+        applyZoom();
+      });
+      // Sync slider when the existing +/- buttons fire (they update uiZoom
+      // directly, so we listen on them post-click).
+      const _syncSlider = () => {
+        try { _zoomSlider.value = String(Math.round(uiZoom * 100)); } catch (e) { /* ignore */ }
+      };
+      document.getElementById('zoomIn')?.addEventListener('click', _syncSlider);
+      document.getElementById('zoomOut')?.addEventListener('click', _syncSlider);
     }
 

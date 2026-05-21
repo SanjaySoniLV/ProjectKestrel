@@ -14,6 +14,7 @@ from kestrel_analyzer.config import (
     DETECTOR_ONNX_PATHS,
     JPEG_EXTENSIONS,
     RAW_EXTENSIONS,
+    is_supported_image_file,
 )
 
 
@@ -187,15 +188,15 @@ def _find_first_image(folder: str) -> str | None:
     files = [
         f
         for f in os.listdir(folder)
-        if os.path.isfile(os.path.join(folder, f))
-        and os.path.splitext(f)[1].lower() in RAW_EXTENSIONS
+        if is_supported_image_file(f, RAW_EXTENSIONS)
+        and os.path.isfile(os.path.join(folder, f))
     ]
     if not files:
         files = [
             f
             for f in os.listdir(folder)
-            if os.path.isfile(os.path.join(folder, f))
-            and os.path.splitext(f)[1].lower() in JPEG_EXTENSIONS
+            if is_supported_image_file(f, JPEG_EXTENSIONS)
+            and os.path.isfile(os.path.join(folder, f))
         ]
     files.sort()
     if not files:

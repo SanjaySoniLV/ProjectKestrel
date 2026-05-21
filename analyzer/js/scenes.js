@@ -34,11 +34,8 @@
         for (const r of arr) if (parseNumber(r.quality) > parseNumber(rep.quality)) rep = r;
 
         const computedTags = _computeSceneTagsFromRows(arr, minSpeciesConf, includeSecondary, includeFamilies);
-        let species = computedTags.species.slice();
-        if (includeFamilies) {
-          const merged = new Set([...species, ...computedTags.families]);
-          species = Array.from(merged).sort();
-        }
+        let species = computedTags.species.slice().sort();
+        let families = includeFamilies ? computedTags.families.slice().sort() : [];
 
         const maxQ = Math.max(...arr.map(a => parseNumber(a.quality)));
         const captureMsList = arr.map(a => parseCaptureTimeMs(a.capture_time)).filter(Number.isFinite);
@@ -50,9 +47,8 @@
         const isApproved = !!sdScene?.user_tags?.finalized;
         // If this scene has finalized user_tags, use them for species/family display
         if (isApproved) {
-          const utSpecies = (sdScene.user_tags.species || []).slice().sort();
-          const utFams = includeFamilies ? (sdScene.user_tags.families || []).slice().sort() : [];
-          species = utFams.length ? Array.from(new Set([...utSpecies, ...utFams])).sort() : utSpecies;
+          species = (sdScene.user_tags.species || []).slice().sort();
+          families = includeFamilies ? (sdScene.user_tags.families || []).slice().sort() : [];
         }
 
         list.push({
@@ -61,6 +57,7 @@
           representative: rep,
           imageCount: arr.length,
           species,
+          families,
           maxQuality: maxQ,
           captureTimeMs,
           sceneName,
@@ -68,9 +65,15 @@
         });
       }
 
-      // filter by search term
+      // Search predicate: match the typed query against any species or
+      // family term on the scene, and -- when show_scientific_names is on
+      // -- also the Latin binomial / scientific family name pulled from
+      // the bird-catalog cache. The sci-name check is gated on the toggle
+      // so the search experience matches the visible UI: if a user can't
+      // see Latin names, typing one shouldn't covertly affect results.
       const q = (searchTerm || '').trim().toLowerCase();
-      const filtered = q ? list.filter(s => s.species.some(sp => sp.toLowerCase().includes(q))) : list;
+      const sciSearch = !!q && _getShowSciNames();
+      const filtered = q ? list.filter(s => _sceneMatchesQuery(s, q, sciSearch)) : list;
 
       // sort
       const sorted = filtered.sort((a, b) => {

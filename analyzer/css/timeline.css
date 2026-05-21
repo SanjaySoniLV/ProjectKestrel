@@ -132,3 +132,110 @@
 .timeline-grid {
   gap: 10px;
 }
+
+/* -------------------------------------------------------------------------
+   Timeline filter bar — sticky strip above the scene timeline that hosts
+   search, confidence threshold, sort, and a "More" popover for the
+   set-and-forget grouping/display checkboxes. Lives inside <main> (the
+   scroll container) so position:sticky pins it to the main viewport edge.
+   ------------------------------------------------------------------------- */
+.timeline-filter-bar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 16px;
+  background: rgba(14, 17, 23, 0.95);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid #1d2230;
+}
+
+.timeline-filter-bar.hidden {
+  display: none;
+}
+
+.tfb-search {
+  flex: 1 1 240px;
+  min-width: 200px;
+  height: 32px;
+  font-size: 13px;
+}
+
+.tfb-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+.tfb-label {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.tfb-conf {
+  width: 70px;
+  height: 30px;
+  font-size: 12px;
+  padding: 0 8px;
+}
+
+.tfb-sort {
+  height: 30px;
+  font-size: 12px;
+  padding: 0 8px;
+}
+
+.tfb-more-wrap {
+  position: relative;
+}
+
+.tfb-more-btn {
+  height: 30px;
+  font-size: 12px;
+  padding: 0 12px;
+  background: #0e1117;
+  border: 1px solid #2a3040;
+}
+
+.tfb-more-btn[aria-expanded="true"] {
+  background: #173253;
+  border-color: #214c7d;
+}
+
+.tfb-more-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  min-width: 260px;
+  padding: 10px 12px;
+  background: #0e1117;
+  border: 1px solid #2a3040;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tfb-more-popover.hidden {
+  display: none;
+}
+
+.tfb-popover-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.tfb-popover-row input[type="checkbox"] {
+  margin: 0;
+}
