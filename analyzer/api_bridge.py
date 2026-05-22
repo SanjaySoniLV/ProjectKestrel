@@ -1457,6 +1457,9 @@ class Api:
                     full = entry.path
                     has_kestrel = os.path.isfile(os.path.join(full, '.kestrel', 'kestrel_database.csv'))
                     kestrel_version = ''
+                    has_perch_link = has_kestrel and os.path.isfile(
+                        os.path.join(full, '.kestrel', 'perch_link.json')
+                    )
                     if has_kestrel:
                         try:
                             meta_path = os.path.join(full, '.kestrel', 'kestrel_metadata.json')
@@ -1470,6 +1473,7 @@ class Api:
                         'name': name,
                         'path': full,
                         'has_kestrel': has_kestrel,
+                        'has_perch_link': has_perch_link,
                         'kestrel_version': kestrel_version,
                         'children': children,
                     })
@@ -1477,6 +1481,9 @@ class Api:
 
             tree = _scan(root_path, max_depth)
             root_has_kestrel = os.path.isfile(os.path.join(root_path, '.kestrel', 'kestrel_database.csv'))
+            root_has_perch_link = root_has_kestrel and os.path.isfile(
+                os.path.join(root_path, '.kestrel', 'perch_link.json')
+            )
             root_kestrel_version = ''
             if root_has_kestrel:
                 try:
@@ -1490,6 +1497,7 @@ class Api:
                 'success': True,
                 'tree': tree,
                 'root_has_kestrel': root_has_kestrel,
+                'root_has_perch_link': root_has_perch_link,
                 'root_kestrel_version': root_kestrel_version,
                 'error': '',
                 'nodes': node_count[0],
@@ -2570,6 +2578,10 @@ class Api:
                     "totalBytes": s.total_bytes,
                     "topQuality": s.top_quality,
                     "thumbnailPath": s.thumbnail_rel,
+                    "reviewed": bool(s.reviewed),
+                    "rejectedSkipped": int(s.rejected_skipped),
+                    "species": list(s.species),
+                    "families": list(s.families),
                 }
                 for s in pre.scenes
             ],
@@ -4510,6 +4522,116 @@ class Api:
             "error": f"HTTP {r.status_code}",
             "perch_id": perch_id,
             "link": link,
+        }
+
+    def get_perch_status(self, perch_id: str) -> dict:
+        """Fetch live status of one perch from the Perch Worker.
+
+        Hits two endpoints sequentially with the same auth header:
+          - GET /v1/perches/{id} — visibility, publicSlug, commentsPermission,
+            publishedAt, owner. Treat 404 as "perch deleted on server".
+          - GET /v1/me/perches — lightweight list. Find entry where id matches
+            to pick up actualBytes + assetCount + imageCount.
+
+        Returns:
+          {"ok": True, "status": {
+              "title", "visibility", "status" ("draft"|"published"),
+              "publicUrl", "commentsPermission",
+              "publishedAt" (unix seconds or None), "createdAt" (unix seconds),
+              "actualBytes", "imageCount", "assetCount", "uploadState",
+          }}
+        On failure:
+          {"ok": False, "error": "not_found" | "unauthorized" | "forbidden" |
+                                  "unreachable" | "no_auth"}
+
+        Callers treat this as advisory — the local perch_link.json is still
+        authoritative for whether the dialog is in linked state. On
+        "not_found" the caller is expected to clear the link locally.
+        """
+        pid = str(perch_id or "").strip()
+        if not pid:
+            return {"ok": False, "error": "missing_id"}
+
+        token, dev_user, terr = self._check_auth_token()
+        if terr:
+            return {"ok": False, "error": "no_auth"}
+
+        try:
+            import requests as _req
+        except Exception as e:
+            return {"ok": False, "error": f"requests_unavailable: {e}"}
+
+        headers: dict = {}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        if dev_user:
+            headers["x-dev-user-id"] = str(dev_user)
+        base = self.get_perch_api_base()
+
+        try:
+            r_detail = _req.get(f"{base}/v1/perches/{pid}", headers=headers, timeout=15)
+        except Exception as e:
+            return {"ok": False, "error": "unreachable", "detail": str(e)}
+        if r_detail.status_code == 404:
+            return {"ok": False, "error": "not_found"}
+        if r_detail.status_code == 401:
+            return {"ok": False, "error": "unauthorized"}
+        if r_detail.status_code == 403:
+            return {"ok": False, "error": "forbidden"}
+        if r_detail.status_code != 200:
+            return {"ok": False, "error": f"http_{r_detail.status_code}"}
+        try:
+            detail = r_detail.json()
+        except Exception as e:
+            return {"ok": False, "error": f"bad_json: {e}"}
+
+        perch_obj = detail.get("perch") if isinstance(detail, dict) else None
+        if not isinstance(perch_obj, dict):
+            # Shape mismatch — surface as unreachable so UI shows cached info.
+            return {"ok": False, "error": "bad_shape"}
+
+        # Second call: lightweight list for byte counts. Don't fail the whole
+        # response if this 500s or 401s — we still got the detail; show what
+        # we have and let bytes show "—".
+        actual_bytes = None
+        asset_count = None
+        image_count = None
+        upload_state = None
+        try:
+            r_list = _req.get(f"{base}/v1/me/perches", headers=headers, timeout=15)
+            if r_list.status_code == 200:
+                list_payload = r_list.json()
+                items = list_payload.get("perches") if isinstance(list_payload, dict) else None
+                if not isinstance(items, list):
+                    items = list_payload if isinstance(list_payload, list) else []
+                for it in items:
+                    if not isinstance(it, dict):
+                        continue
+                    if str(it.get("id") or "") == pid:
+                        actual_bytes = it.get("actualBytes")
+                        asset_count = it.get("assetCount")
+                        image_count = it.get("imageCount")
+                        upload_state = it.get("uploadState")
+                        break
+        except Exception:
+            pass  # advisory only
+
+        return {
+            "ok": True,
+            "status": {
+                "title": perch_obj.get("title"),
+                "visibility": perch_obj.get("visibility"),
+                "status": perch_obj.get("status"),
+                "publicSlug": perch_obj.get("publicSlug"),
+                "publicUrl": perch_obj.get("publicUrl"),
+                "commentsPermission": perch_obj.get("commentsPermission"),
+                "publishedAt": perch_obj.get("publishedAt"),
+                "createdAt": perch_obj.get("createdAt"),
+                "actualBytes": actual_bytes,
+                "imageCount": image_count,
+                "assetCount": asset_count,
+                "uploadState": upload_state,
+            },
         }
 
     # ─── Resumable upload helpers (Phase 2) ────────────────────────────────

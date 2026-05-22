@@ -1026,3 +1026,486 @@ dialog.perch-upload-dlg[open] {
 .perch-upload-card-cta.warn:hover {
   background: rgba(245, 197, 66, .25);
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Perch full-screen dialog (post-consolidation) — adopts the Analyze Folders
+   sizing pattern. The dialog branches at runtime between linked-state
+   takeover (#perchDlgLinkedView) and the upload form (#perchDlgSignedIn).
+   ───────────────────────────────────────────────────────────────────────── */
+
+.perch-upload-dlg {
+  width: min(96vw, calc(100vw - 80px));
+  height: min(88vh, calc(100vh - 80px));
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  border: 1px solid #2a3040;
+  border-radius: 10px;
+  background: #14171f;
+  color: #e8f0f8;
+  box-sizing: border-box;
+}
+/* Only apply flex column layout when open — keep browser's display:none
+   for closed <dialog> intact. Mirrors the dlg-settings[open] pattern. */
+dialog.perch-upload-dlg[open] {
+  display: flex;
+  flex-direction: column;
+}
+.perch-upload-dlg .perch-upload-dlg-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.perch-upload-dlg .perch-upload-footer {
+  height: 56px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid #2a3040;
+  background: #0f1219;
+  box-sizing: border-box;
+}
+
+/* Folder-header button (replaces .share-perch-btn, .folder-perch-pill, .folder-perch-sync) */
+.folder-perch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.folder-perch-btn .folder-perch-btn-label { font-weight: 500; }
+.folder-perch-btn.is-linked {
+  background: linear-gradient(180deg, #2c5282 0%, #1e3a5f 100%);
+  border-color: #3a6ea5;
+  color: #e8f0f8;
+}
+.folder-perch-btn.is-linked:hover {
+  background: linear-gradient(180deg, #3565a0 0%, #25497a 100%);
+}
+.folder-perch-btn.is-linked i { color: #9ec5f0; }
+
+/* Folder-tree feather indicator */
+.tree-icon.has-perch { position: relative; }
+.tree-perch-feather {
+  font-size: 11px;
+  margin-left: 1px;
+  margin-right: 3px;
+  display: inline-block;
+  line-height: 1;
+  vertical-align: middle;
+  opacity: 0.85;
+}
+
+/* ── Linked-state takeover (visibility, storage, photos, comments) ───── */
+.perch-linked {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 8px 4px;
+}
+.perch-linked.hidden { display: none !important; }
+.perch-linked-hero {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  background: linear-gradient(180deg, #1a2030 0%, #131822 100%);
+  border: 1px solid #2a3550;
+  border-radius: 8px;
+}
+.perch-linked-hero-icon {
+  font-size: 32px;
+  line-height: 1;
+}
+.perch-linked-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+}
+.perch-linked-sub {
+  font-size: 13px;
+  color: var(--muted, #8b96a7);
+  margin-top: 2px;
+}
+
+.perch-status-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+@media (max-width: 800px) {
+  .perch-status-grid { grid-template-columns: repeat(2, 1fr); }
+}
+.perch-status-cell {
+  background: #0f1320;
+  border: 1px solid #232a3d;
+  border-radius: 6px;
+  padding: 10px 12px;
+  min-height: 56px;
+}
+.perch-status-label {
+  font-size: 11px;
+  color: var(--muted, #8b96a7);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-bottom: 4px;
+}
+.perch-status-value {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.perch-linked-share {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #0f1320;
+  border: 1px solid #232a3d;
+  border-radius: 6px;
+}
+.perch-linked-share.hidden { display: none !important; }
+.perch-linked-share-label {
+  font-size: 12px;
+  color: var(--muted, #8b96a7);
+  white-space: nowrap;
+}
+.perch-linked-share-url {
+  flex: 1 1 auto;
+  background: #060810;
+  color: #cbd6e4;
+  border: 1px solid #2a3040;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+}
+.perch-linked-share-copy {
+  background: #2c5282;
+  border: 1px solid #3a6ea5;
+  color: #e8f0f8;
+  border-radius: 4px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.perch-linked-share-copy:hover { background: #3565a0; }
+
+.perch-linked-warn {
+  padding: 10px 12px;
+  background: rgba(245, 197, 66, .1);
+  border: 1px solid rgba(245, 197, 66, .35);
+  border-radius: 6px;
+  color: #f5c542;
+  font-size: 13px;
+}
+.perch-linked-warn.hidden { display: none !important; }
+
+.perch-linked-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+.perch-linked-note {
+  font-size: 12px;
+  color: var(--muted, #8b96a7);
+  line-height: 1.5;
+}
+
+/* ── Upload form: 2/3 timeline + 1/3 sidebar grid ─────────────────────── */
+.perch-dlg-grid {
+  display: grid;
+  grid-template-columns: 2fr minmax(320px, 1fr);
+  gap: 14px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+@media (max-width: 1000px) {
+  .perch-dlg-grid { grid-template-columns: 1fr; overflow: auto; }
+}
+
+.perch-dlg-timeline-col {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 8px;
+}
+.perch-dlg-timeline-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 0 4px 6px 4px;
+  border-bottom: 1px solid #232a3d;
+  flex: 0 0 auto;
+}
+.perch-dlg-timeline-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #cbd6e4;
+}
+.perch-dlg-timeline-summary {
+  font-size: 12px;
+  color: var(--muted, #8b96a7);
+}
+.perch-dlg-timeline-actions {
+  margin-left: auto;
+  font-size: 12px;
+}
+.perch-link-btn {
+  background: none;
+  border: none;
+  color: #6c9ff0;
+  cursor: pointer;
+  padding: 0 2px;
+  font: inherit;
+}
+.perch-link-btn:hover { text-decoration: underline; }
+.perch-sep { color: var(--muted, #8b96a7); margin: 0 2px; }
+
+.perch-dlg-timeline {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px;
+}
+
+.perch-day-banner {
+  font-size: 13px;
+  font-weight: 600;
+  color: #cbd6e4;
+  padding: 12px 4px 6px 4px;
+  border-bottom: 1px solid #232a3d;
+  margin-bottom: 10px;
+}
+.perch-day-banner:first-child { padding-top: 4px; }
+.perch-day-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+/* ── Perch-mode scene card (uses .card + .scene-approved from grid.css) ── */
+.perch-card {
+  position: relative;
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  flex-direction: column;
+  background: #0f1320;
+  border: 1px solid #232a3d;
+  border-radius: 6px;
+  padding: 8px;
+  transition: transform 0.08s ease, border-color 0.15s ease;
+}
+.perch-card:hover { border-color: #3a4565; transform: translateY(-1px); }
+.perch-card .card-thumb {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  width: 100%;
+  background: #060810;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+.perch-card .card-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.perch-card .card-thumb.no-image::before {
+  content: '\1FAB6';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  opacity: 0.3;
+}
+.perch-card .card-perch-overlay {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(0, 0, 0, .75);
+  color: #f0a542;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 4px;
+  letter-spacing: 0.3px;
+  display: none;
+  pointer-events: none;
+}
+.perch-card.is-perch-excluded .card-perch-overlay { display: block; }
+.perch-card.is-perch-excluded .card-thumb img { opacity: 0.4; filter: grayscale(0.5); }
+.perch-card.is-perch-excluded .perch-card-title { text-decoration: line-through; color: var(--muted, #8b96a7); }
+.perch-card.is-perch-excluded { border-color: #3a3025; background: #14110c; }
+
+.perch-card.scene-approved {
+  border-color: rgba(245, 197, 66, 0.55);
+  box-shadow: 0 0 0 1px rgba(245, 197, 66, 0.18) inset;
+}
+
+.perch-card-title {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #e8f0f8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.perch-card-meta {
+  font-size: 11px;
+  color: var(--muted, #8b96a7);
+  margin-top: 2px;
+}
+.perch-card-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 5px;
+}
+.perch-card-chips .chip {
+  font-size: 10.5px;
+  padding: 1px 6px;
+  background: #1c2233;
+  border: 1px solid #2c3550;
+  border-radius: 999px;
+  color: #cbd6e4;
+}
+.perch-card-chips .chip.manual-approved {
+  background: rgba(245, 197, 66, 0.12);
+  border-color: rgba(245, 197, 66, 0.4);
+  color: #f0d088;
+}
+.perch-card-chips .chip.more {
+  background: transparent;
+  border-color: #2c3550;
+  color: var(--muted, #8b96a7);
+}
+.card-perch-metrics {
+  font-size: 11px;
+  color: var(--muted, #8b96a7);
+  margin-top: 6px;
+  padding-top: 5px;
+  border-top: 1px solid #1f2638;
+}
+
+/* ── Sidebar (right column of upload form) ────────────────────────────── */
+.perch-dlg-sidebar-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+.perch-checklist-heading {
+  margin: 6px 0 2px 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #cbd6e4;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.perch-check-panel {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  background: #0f1320;
+  border: 1px solid #232a3d;
+  border-radius: 6px;
+}
+.perch-check-thumb {
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  background: #060810;
+  border-radius: 4px;
+  flex: 0 0 auto;
+}
+.perch-check-thumb.no-image {
+  background: #060810 url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23445'><path d='M12 2 9 7l-7 .5L7 12l-1.5 7L12 16l6.5 3L17 12l5-4.5L15 7z'/></svg>") center/24px no-repeat;
+}
+.perch-check-icon {
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0a0d16;
+  border-radius: 4px;
+  font-size: 22px;
+  color: #6c9ff0;
+  flex: 0 0 auto;
+}
+.perch-check-panel.is-all-reviewed .perch-check-icon {
+  background: rgba(245, 197, 66, 0.12);
+  color: #f0d088;
+}
+.perch-check-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.perch-check-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: #e8f0f8;
+}
+.perch-check-text {
+  font-size: 11.5px;
+  color: var(--muted, #8b96a7);
+  margin-top: 2px;
+  line-height: 1.4;
+}
+.perch-check-btn {
+  background: #1c2233;
+  border: 1px solid #2c3550;
+  color: #cbd6e4;
+  border-radius: 4px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 11.5px;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.perch-check-btn:hover { background: #25304a; border-color: #3a4565; }
+
+.perch-beta-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  background: rgba(245, 197, 66, .08);
+  border: 1px solid rgba(245, 197, 66, .35);
+  border-radius: 6px;
+  margin-top: 4px;
+}
+.perch-beta-icon {
+  font-size: 16px;
+  color: #f5c542;
+  flex: 0 0 auto;
+}
+.perch-beta-body { flex: 1 1 auto; }
+.perch-beta-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #f5c542;
+  margin-bottom: 3px;
+}
+.perch-beta-text {
+  font-size: 11.5px;
+  color: #d4c890;
+  line-height: 1.5;
+}

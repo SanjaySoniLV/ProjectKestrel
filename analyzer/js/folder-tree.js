@@ -465,8 +465,16 @@
 
       // Folder icon
       const icon = document.createElement('span');
-      icon.className = 'tree-icon';
+      icon.className = 'tree-icon' + (node.has_perch_link ? ' has-perch' : '');
       icon.textContent = node.has_kestrel ? '📂' : '📁';
+
+      // Feather overlay — surfaces "this folder is on Perch" at a glance.
+      const perchFeather = node.has_perch_link ? document.createElement('span') : null;
+      if (perchFeather) {
+        perchFeather.className = 'tree-perch-feather';
+        perchFeather.textContent = '\u{1FAB6}';
+        perchFeather.title = 'Published to Perch';
+      }
 
       // Label
       const label = document.createElement('span');
@@ -507,6 +515,7 @@
 
       row.appendChild(arrow);
       row.appendChild(icon);
+      if (perchFeather) row.appendChild(perchFeather);
       row.appendChild(label);
       row.appendChild(countSpan);
       row.appendChild(cbCol);

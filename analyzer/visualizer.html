@@ -484,24 +484,58 @@
   </dialog>
 
   <!-- Share with Perch — pre-upload dialog -->
-  <dialog id="perchUploadDlg" class="dlg-settings perch-upload-dlg" aria-labelledby="perchUploadDlgTitle">
-    <div class="settings-body perch-upload-dlg-body">
+  <dialog id="perchUploadDlg" class="perch-upload-dlg" aria-labelledby="perchUploadDlgTitle">
+    <div class="perch-upload-dlg-body">
       <div class="perch-upload-dlg-header">
         <h3 id="perchUploadDlgTitle" style="margin:0;font-size:16px">🪶 Share with Perch</h3>
         <button type="button" class="perch-upload-dlg-close" id="perchUploadDlgClose" title="Close">✕</button>
       </div>
 
-      <!-- Already-published banner — shown only when verify_perch_link returns "alive". -->
-      <div id="perchAlreadyPublishedBanner" class="perch-already-published hidden">
-        <div class="perch-already-published-icon">🪶</div>
-        <div class="perch-already-published-body">
-          <div class="perch-already-published-title">This folder is already published</div>
-          <div class="perch-already-published-text" id="perchAlreadyPublishedSubtitle">Already on Perch.</div>
+      <!-- Linked-state takeover: shown when this folder has a perch_link.json.
+           Replaces the upload form entirely; user must Unlink to re-upload. -->
+      <div id="perchDlgLinkedView" class="hidden perch-linked">
+        <div class="perch-linked-hero">
+          <div class="perch-linked-hero-icon">🪶</div>
+          <div class="perch-linked-hero-body">
+            <h3 class="perch-linked-title" id="perchLinkedTitle">—</h3>
+            <div class="perch-linked-sub" id="perchLinkedSub">Loading status…</div>
+          </div>
         </div>
-        <div class="perch-already-published-actions">
-          <button type="button" class="perch-cta-secondary" id="perchAlreadyPublishedOpenBtn">Open existing →</button>
-          <button type="button" class="perch-cta-secondary hidden" id="perchAlreadyPublishedSyncBtn">🔄 Sync Changes with Perch</button>
-          <button type="button" class="perch-cta-secondary perch-cta-warn" id="perchAlreadyPublishedNewBtn">Create a new perch</button>
+
+        <div class="perch-status-grid" id="perchStatusGrid">
+          <div class="perch-status-cell">
+            <div class="perch-status-label">Visibility</div>
+            <div class="perch-status-value" id="perchStatusVisibility">—</div>
+          </div>
+          <div class="perch-status-cell">
+            <div class="perch-status-label">Storage used</div>
+            <div class="perch-status-value" id="perchStatusBytes">—</div>
+          </div>
+          <div class="perch-status-cell">
+            <div class="perch-status-label">Photos</div>
+            <div class="perch-status-value" id="perchStatusPhotos">—</div>
+          </div>
+          <div class="perch-status-cell">
+            <div class="perch-status-label">Comments</div>
+            <div class="perch-status-value" id="perchStatusComments">—</div>
+          </div>
+        </div>
+
+        <div class="perch-linked-share hidden" id="perchLinkedShareRow">
+          <div class="perch-linked-share-label">Share URL</div>
+          <input type="text" readonly class="perch-linked-share-url" id="perchLinkedShareUrl">
+          <button type="button" class="perch-linked-share-copy" id="perchLinkedShareCopy">Copy</button>
+        </div>
+
+        <div class="perch-linked-warn hidden" id="perchLinkedWarn"></div>
+
+        <div class="perch-linked-actions">
+          <button type="button" id="perchLinkedOpenBtn" class="perch-cta">Open in browser →</button>
+          <button type="button" id="perchLinkedUnlinkBtn" class="perch-cta-secondary">Unlink</button>
+        </div>
+        <div class="perch-linked-note">
+          Unlink removes the local link between this folder and the perch. The perch
+          on projectkestrel.org is <strong>not deleted</strong> — manage or delete it there.
         </div>
       </div>
 
@@ -536,94 +570,81 @@
         <p class="perch-explainer-ready" id="perchDlgReadyLine"></p>
       </div>
 
-      <!-- ── Signed-in body: upload preview ─────────────────────────── -->
-      <div id="perchDlgSignedIn" class="hidden">
-        <div class="perch-stat-block" id="perchStatBlock">
-          <div class="perch-stat">
-            <div class="perch-stat-num" id="perchStatScenes">—</div>
-            <div class="perch-stat-label">Scenes</div>
+      <!-- ── Signed-in body: 2/3 timeline + 1/3 sidebar ───────────────── -->
+      <div id="perchDlgSignedIn" class="hidden perch-dlg-grid">
+        <!-- Left column: timeline of scene cards (2fr) -->
+        <div class="perch-dlg-timeline-col">
+          <div class="perch-dlg-timeline-header">
+            <div class="perch-dlg-timeline-title">Scenes to upload</div>
+            <div class="perch-dlg-timeline-summary" id="perchTimelineSummary">— scenes · — photos · —</div>
+            <div class="perch-dlg-timeline-actions">
+              <button type="button" class="perch-link-btn" id="perchSelectAllBtn">Include all</button>
+              <span class="perch-sep">·</span>
+              <button type="button" class="perch-link-btn" id="perchDeselectAllBtn">Exclude all</button>
+            </div>
           </div>
-          <div class="perch-stat">
-            <div class="perch-stat-num" id="perchStatPhotos">—</div>
-            <div class="perch-stat-label">Photos</div>
-          </div>
-          <div class="perch-stat">
-            <div class="perch-stat-num" id="perchStatBytes">—</div>
-            <div class="perch-stat-label">Size</div>
-          </div>
-        </div>
-        <div class="perch-stat-sub" id="perchStatSub">— exports + — crops · — files</div>
-
-        <div class="perch-account-row" id="perchAccountRow">
-          <div class="perch-account-avatar" id="perchAccountAvatar">·</div>
-          <div class="perch-account-info">
-            <div class="perch-account-name" id="perchAccountName">Loading account…</div>
-            <div class="perch-account-meta" id="perchAccountMeta">—</div>
-          </div>
-        </div>
-        <div class="perch-usage-row" id="perchUsageRow">Loading usage…</div>
-
-        <div class="perch-tip">
-          <div class="perch-tip-icon">💡</div>
-          <div class="perch-tip-body">
-            <div class="perch-tip-title">Want to share a tighter set?</div>
-            <div class="perch-tip-text">Run the Culling Assistant first to remove rejects — fewer photos means a faster upload and less storage used.</div>
-          </div>
-          <button type="button" class="perch-tip-btn" id="perchOpenCullingBtn">Open Culling Assistant</button>
+          <div class="perch-dlg-timeline" id="perchDlgTimeline"></div>
         </div>
 
-        <label class="perch-reject-toggle" id="perchRejectToggleRow">
-          <input type="checkbox" id="perchRejectToggleCb" checked>
-          <span class="perch-reject-toggle-label" id="perchRejectToggleLabel">Skip rejected photos</span>
-          <span class="perch-reject-toggle-hint" id="perchRejectToggleHint"></span>
-        </label>
-
-        <div class="perch-time-warn">
-          <div class="perch-time-warn-icon">⏱</div>
-          <div class="perch-time-warn-body">
-            <div class="perch-time-warn-title">Verify capture times before uploading</div>
-            <div class="perch-time-warn-text">Capture timestamps drive scene order on Perch. If your camera clock was wrong (e.g. wrong time zone), fix it now — re-uploading later costs storage.</div>
+        <!-- Right column: sidebar (1fr) -->
+        <div class="perch-dlg-sidebar-col">
+          <div class="perch-account-row" id="perchAccountRow">
+            <div class="perch-account-avatar" id="perchAccountAvatar">·</div>
+            <div class="perch-account-info">
+              <div class="perch-account-name" id="perchAccountName">Loading account…</div>
+              <div class="perch-account-meta" id="perchAccountMeta">—</div>
+            </div>
           </div>
-          <button type="button" class="perch-time-warn-btn" id="perchAdjustTimeBtn">Adjust Capture Time</button>
-        </div>
+          <div class="perch-usage-row" id="perchUsageRow">Loading usage…</div>
 
-        <details class="perch-scenes-details" id="perchScenesDetails" open>
-          <summary class="perch-scenes-summary">
-            <span>Scenes</span>
-            <span class="perch-scenes-actions">
-              <a href="#" id="perchSelectAllBtn">Select all</a>
-              <span class="perch-scenes-sep">·</span>
-              <a href="#" id="perchDeselectAllBtn">Deselect all</a>
-            </span>
-          </summary>
-          <div class="perch-scene-list" id="perchSceneList"></div>
-        </details>
+          <h4 class="perch-checklist-heading">Before you upload</h4>
+
+          <div class="perch-check-panel" id="perchCheckFirstPhoto">
+            <img class="perch-check-thumb" id="perchFirstPhotoThumb" alt="">
+            <div class="perch-check-body">
+              <div class="perch-check-title">First photo captured</div>
+              <div class="perch-check-text" id="perchFirstPhotoTime">—</div>
+            </div>
+            <button type="button" class="perch-check-btn" id="perchAdjustTimeBtn">Adjust Capture Time</button>
+          </div>
+
+          <div class="perch-check-panel" id="perchCheckReview">
+            <div class="perch-check-icon">✓</div>
+            <div class="perch-check-body">
+              <div class="perch-check-title" id="perchReviewTitle">— of — scenes reviewed</div>
+              <div class="perch-check-text">Reviewed scenes appear with a gold border. Confirm Kestrel's tags before sharing.</div>
+            </div>
+            <button type="button" class="perch-check-btn" id="perchOpenCullingBtn">Open Culling Assistant</button>
+          </div>
+
+          <label class="perch-reject-toggle" id="perchRejectToggleRow">
+            <input type="checkbox" id="perchRejectToggleCb" checked>
+            <span class="perch-reject-toggle-label" id="perchRejectToggleLabel">Skip rejected photos</span>
+            <span class="perch-reject-toggle-hint" id="perchRejectToggleHint"></span>
+          </label>
+
+          <div class="perch-beta-card">
+            <div class="perch-beta-icon">⚠</div>
+            <div class="perch-beta-body">
+              <div class="perch-beta-title">Perch is in beta</div>
+              <div class="perch-beta-text">Once you share to Perch, you won't be able to add new photos to this perch or sync edits like family/species tags. To make changes, you'd unlink and re-upload.</div>
+            </div>
+          </div>
+
+          <!-- Hidden compat shells: existing _perchUpdateDialogTotals targets these
+               by ID. Kept invisible so the timeline summary stays the visible totals. -->
+          <span id="perchStatScenes" hidden></span>
+          <span id="perchStatPhotos" hidden></span>
+          <span id="perchStatBytes" hidden></span>
+          <span id="perchStatSub" hidden></span>
+        </div>
       </div>
     </div>
 
-    <div class="settings-footer perch-upload-footer">
+    <div class="perch-upload-footer">
       <button type="button" id="perchUploadCancelBtn">Cancel</button>
       <button type="button" id="perchUploadSignInBtn" class="perch-cta hidden">Sign in to Perch</button>
       <button type="button" id="perchUploadSubmitBtn" class="perch-cta hidden" disabled>📤 Upload</button>
-    </div>
-  </dialog>
-
-  <!-- Phase 3: Sync to Perch — diff preview dialog -->
-  <dialog id="perchSyncDlg" class="dlg-settings perch-upload-dlg" aria-labelledby="perchSyncDlgTitle">
-    <div class="settings-body perch-upload-dlg-body">
-      <div class="perch-upload-dlg-header">
-        <h3 id="perchSyncDlgTitle" style="margin:0;font-size:16px">🔄 Sync to Perch</h3>
-        <button type="button" class="perch-upload-dlg-close" id="perchSyncDlgClose" title="Close">✕</button>
-      </div>
-      <div id="perchSyncDlgLoading" class="perch-dlg-loading">
-        <div class="perch-dlg-loading-spinner"></div>
-        <div class="perch-dlg-loading-text">Computing diff against Perch…</div>
-      </div>
-      <div id="perchSyncDlgBody" class="hidden"></div>
-    </div>
-    <div class="settings-footer perch-upload-footer">
-      <button type="button" id="perchSyncDlgCancelBtn">Cancel</button>
-      <button type="button" id="perchSyncDlgSubmitBtn" class="perch-cta" disabled>Sync now</button>
     </div>
   </dialog>
 

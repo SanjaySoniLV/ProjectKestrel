@@ -644,55 +644,32 @@
           rightActions.appendChild(cullingBtn);
 
           const perchBtn = document.createElement('button');
-          perchBtn.className = 'action-btn share-perch-btn';
-          perchBtn.innerHTML = '<i>🪶</i> Share with Perch';
-          perchBtn.title = 'Create an Unfinished Perch on the web with this folder\u2019s Kestrel analysis (export and crop images)';
-          perchBtn.addEventListener('click', (ev) => { ev.stopPropagation(); shareWithPerchFolder(fd.folderPath); });
+          perchBtn.type = 'button';
+          perchBtn.className = 'action-btn folder-perch-btn';
+          perchBtn.dataset.folderPath = fd.folderPath;
+          perchBtn.innerHTML = '<i>\u{1FAB6}</i> <span class="folder-perch-btn-label">Share with Perch</span>';
+          perchBtn.title = 'Share this folder to Perch (or manage existing perch)';
+          perchBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            openPerchDialog(fd.folderPath);
+          });
           rightActions.appendChild(perchBtn);
 
-          // Cloud Compute moved into the unified Analyze Folders dialog
-          // (destination toggle: Local / Cloud). The folder-level shortcut
-          // button has been retired so cloud and local share a single mental
-          // model and entry point.
-
-          // "Published" pill \u2014 only shown if .kestrel/perch_link.json exists.
-          // Click opens the perch URL (after stale-link verification, see 1d).
-          // Right-click \u2192 Unlink (local-only).
-          const perchPill = document.createElement('button');
-          perchPill.type = 'button';
-          perchPill.className = 'folder-perch-pill hidden';
-          perchPill.dataset.folderPath = fd.folderPath;
-          perchPill.innerHTML = '<span class="folder-perch-pill-icon"></span><span class="folder-perch-pill-label">Published</span>';
-          const _pillIcon = perchPill.querySelector('.folder-perch-pill-icon');
-          if (_pillIcon) _pillIcon.textContent = '\u{1FAB6}'; // feather emoji
-          perchPill.title = 'Folder published to Perch \u2014 click to open in browser';
-          perchPill.addEventListener('click', (ev) => {
-            ev.stopPropagation();
-            handlePerchPillClick(fd.folderPath, perchPill);
-          });
-          perchPill.addEventListener('contextmenu', (ev) => {
-            ev.preventDefault();
-            ev.stopPropagation();
-            handlePerchPillUnlink(fd.folderPath, perchPill);
-          });
-          rightActions.appendChild(perchPill);
-
-          // Phase 3 "Sync to Perch" button is temporarily hidden — the
-          // dirty/clean state detection is unreliable (the button greys out
-          // when there ARE local edits, etc.). Once that's reworked, restore
-          // by re-creating perchSyncBtn here and calling
-          // applyPerchLinkToSyncBtn from the link loader below.
-          const perchSyncBtn = null;
-
-          // Async-populate from disk; show only if the file exists.
+          // Async-populate linked-state from disk; flip class + label if linked.
+          // Cloud Compute lives in the Analyze Folders dialog now, not here.
           (async () => {
             try {
               const res = await window.pywebview?.api?.read_perch_link?.(fd.folderPath);
               if (res && res.present && res.link) {
-                applyPerchLinkToPill(perchPill, res.link);
+                perchBtn.classList.add('is-linked');
+                const lbl = perchBtn.querySelector('.folder-perch-btn-label');
+                if (lbl) lbl.textContent = 'On Perch';
+                perchBtn.dataset.perchUrl = String(res.link.perch_url || '');
+                perchBtn.title = 'This folder is published to Perch (click to manage)';
               }
             } catch {}
           })();
+
 
           hdr.appendChild(rightActions);
 

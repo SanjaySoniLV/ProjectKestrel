@@ -344,6 +344,10 @@ class PerchPreflightScene:
     total_bytes: int
     top_quality: Optional[float]
     thumbnail_rel: Optional[str] = None  # session-relative export path of the highest-quality export, for UI preview
+    reviewed: bool = False               # user_tags.finalized — drives the gold border in the Perch dialog timeline
+    rejected_skipped: int = 0            # rows in this scene dropped by skip_rejected — shown as "+ N hidden" on the scene card
+    species: List[str] = field(default_factory=list)   # user_tags.species — for scene-card pills
+    families: List[str] = field(default_factory=list)  # user_tags.families — for scene-card pills
 
 
 @dataclass
@@ -486,19 +490,23 @@ class PerchKestrelUploader:
         df = pd.read_csv(csv_path)
         rows: List[_RowUpload] = []
         rejected_skipped = 0
+        rejected_per_scene: Dict[str, int] = {}
         for _, row in df.iterrows():
+            # Parse scene_count first so we can attribute rejection counts to
+            # the right scene bucket (the timeline shows "+ N hidden" per scene).
+            sc_val = row.get("scene_count", 0) if "scene_count" in df.columns else 0
+            try:
+                sc = str(int(float(sc_val)))
+            except (TypeError, ValueError):
+                sc = str(sc_val) if sc_val is not None else "0"
             if skip_rejected and "culled" in df.columns:
                 culled_val = row.get("culled")
                 if culled_val is not None and pd.notna(culled_val):
                     cv = str(culled_val).strip().lower()
                     if cv in ("true", "reject", "1", "yes"):
                         rejected_skipped += 1
+                        rejected_per_scene[sc] = rejected_per_scene.get(sc, 0) + 1
                         continue
-            sc_val = row.get("scene_count", 0) if "scene_count" in df.columns else 0
-            try:
-                sc = str(int(float(sc_val)))
-            except (TypeError, ValueError):
-                sc = str(sc_val) if sc_val is not None else "0"
             cap_ms = _parse_capture(row, df)
             sec_obj = {
                 "secondary_species_list": row.get("secondary_species_list"),
@@ -667,6 +675,10 @@ class PerchKestrelUploader:
                 title = f"Scene {sid}"
             # image_count = export count when exports exist; otherwise distinct row count
             image_count = b["export_count"] if b["export_count"] > 0 else len(b["row_indices"])
+            user_tags = sd.get("user_tags") if isinstance(sd, dict) else None
+            user_tags = user_tags if isinstance(user_tags, dict) else {}
+            ut_species = user_tags.get("species") or []
+            ut_families = user_tags.get("families") or []
             scenes.append(
                 PerchPreflightScene(
                     scene_id=str(sid),
@@ -678,6 +690,10 @@ class PerchKestrelUploader:
                     total_bytes=b["total_bytes"],
                     top_quality=b["top_quality"],
                     thumbnail_rel=b["thumbnail_rel"],
+                    reviewed=bool(user_tags.get("finalized") is True),
+                    rejected_skipped=int(rejected_per_scene.get(str(sid), 0)),
+                    species=[str(x) for x in ut_species if isinstance(x, (str, int))],
+                    families=[str(x) for x in ut_families if isinstance(x, (str, int))],
                 )
             )
         # Chronological order; scenes without timestamps sort last.

@@ -1090,47 +1090,6 @@
       setTimeout(() => { if (window.pywebview?.api && !_ccPollingTimer) _ccBootstrap(); }, 3000);
     }
 
-    async function shareWithPerchFolder(rootPath) {
-      if (!window.pywebview?.api) {
-        showToast('Share with Perch requires desktop mode', 4000);
-        return;
-      }
-      if (_perchActiveJobId) {
-        showToast('A Perch upload is already running.', 4000);
-        return;
-      }
-      if (dirty) {
-        const userChoice = await showCullingAssistantPrompt();
-        if (userChoice === 'cancel') return;
-        if (userChoice === 'save') await saveCsv();
-      }
-      _perchWirePerchDialogOnce();
-
-      // Stale-link gate: if perch_link.json exists, verify the perch is still
-      // alive on the server BEFORE opening the dialog. The dialog gets a banner
-      // that lets the user open the existing perch or start a fresh upload.
-      let verify = null;
-      try { verify = await window.pywebview.api.verify_perch_link(rootPath); } catch {}
-      const status = verify?.status;
-      if (status === 'unauthorized') {
-        showToast('Sign in to Perch first (use the account button at top-right).', 5000);
-        return;
-      }
-      if (status === 'forbidden') {
-        showToast('This folder was published from a different Perch account. Right-click the Published pill to unlink locally.', 7000);
-        return;
-      }
-      if (status === 'deleted') {
-        showToast('The previously linked Perch was deleted — proceeding with a fresh upload.', 5500);
-        // Hide the pill on the matching folder card if rendered.
-        document.querySelectorAll(`.folder-perch-pill[data-folder-path="${cssEscape(rootPath)}"]`)
-          .forEach(el => el.classList.add('hidden'));
-      }
-      // For 'alive' — open the dialog, then show the banner via _perchOpenDialog.
-      // For 'missing'/'unreachable'/null — open dialog as normal.
-      _perchOpenDialog(rootPath, verify);
-    }
-
     /** Minimal CSS-attribute-value escape — avoids needing a polyfill for
      *  CSS.escape on older webviews. We only use it for paths in selectors. */
     function cssEscape(s) {
