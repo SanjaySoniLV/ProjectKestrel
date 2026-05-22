@@ -1,12 +1,14 @@
-/* ── Live Analysis Details dialog ───────────────────────────────────── */
+/* ── Live Analysis Details dialog ─────────────────────────────────────
+   Outer sizing comes from .kdlg--lg on the parent <dialog>. This inner
+   container is the grid layout for the live-analysis content. */
 .live-dlg {
   display: grid;
   grid-template-columns: 2.2fr 0.8fr;
   grid-template-rows: auto auto 1fr;
   gap: 12px;
   padding: 16px;
-  width: min(96vw, calc(100vw - 80px));
-  height: min(88vh, calc(100vh - 80px));
+  flex: 1 1 auto;
+  min-height: 0;
   box-sizing: border-box;
   overflow: hidden;
 }

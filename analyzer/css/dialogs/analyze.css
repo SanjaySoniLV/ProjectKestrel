@@ -1,12 +1,13 @@
 /* ── Analyze Folders dialog (Phase 3: 3-column layout) ─────────────────────── */
 .analyze-dlg {
+  /* Sizing comes from .kdlg--lg on the parent <dialog>; this is the inner
+     layout container so it just fills the available flex slot. */
   display: flex;
   flex-direction: column;
   gap: 12px;
   padding: 16px;
-  width: min(96vw, calc(100vw - 80px));
-  height: min(88vh, calc(100vh - 80px));
-  max-height: none;
+  flex: 1 1 auto;
+  min-height: 0;
   box-sizing: border-box;
 }
 
@@ -678,13 +679,12 @@
   opacity: 1 !important;
 }
 
-/* ── Pre-queue confirmation modal (Phase 3H) ────────────────────────────── */
+/* ── Pre-queue confirmation modal (Phase 3H) ──────────────────────────────
+   Sizing comes from .kdlg--sm on the parent <dialog>. */
 .analyze-confirm-dlg {
-  padding: 0;
   border: 2px solid var(--warn);
   border-radius: 12px;
   background: #161922;
-  width: min(540px, 92vw);
   color: var(--text);
   box-shadow: 0 20px 64px rgba(0, 0, 0, 0.7);
 }

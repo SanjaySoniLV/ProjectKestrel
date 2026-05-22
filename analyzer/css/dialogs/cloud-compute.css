@@ -249,13 +249,13 @@
 
 /* ── #cloudResumeDlg ──────────────────────────────────────────────────────── */
 
+/* Outer sizing comes from .kdlg--md on the parent <dialog>. */
 .cloud-resume-dlg {
   display: flex;
   flex-direction: column;
   gap: 10px;
   padding: 14px;
-  min-width: 480px;
-  max-width: 640px;
+  flex: 1 1 auto;
 }
 
 .cloud-resume-dlg h3 {

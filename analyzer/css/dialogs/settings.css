@@ -1,19 +1,6 @@
-/* Settings dialog: larger, flex column with sticky footer */
-dialog.dlg-settings {
-  width: min(660px, 96vw);
-  max-width: min(660px, 96vw);
-  height: min(860px, 90vh);
-  max-height: min(860px, 90vh);
-  overflow: hidden;
-  padding: 0;
-}
-/* Only apply flex layout when the dialog is actually open —
-   otherwise display:flex overrides the browser's native display:none
-   that keeps closed <dialog> elements hidden. */
-dialog.dlg-settings[open] {
-  display: flex;
-  flex-direction: column;
-}
+/* NOTE: sizing + flex-column layout for #settingsDlg are now driven by
+   the .kdlg classes in kdlg.css (kdlg--md + kdlg--tall + kdlg--flex).
+   This file keeps the inner-content styles (.settings-body etc.). */
 
 .settings-body {
   flex: 1 1 auto;
@@ -45,11 +32,16 @@ dialog.dlg-settings[open] {
 }
 
 /* Reuse dialog styling for settings */
+/* Generic inner wrapper for merge/info dialogs. Outer sizing comes from
+   .kdlg classes on the parent <dialog>. */
 .settings {
   display: grid;
   gap: 10px;
   padding: 12px;
-  width: min(560px, 96vw);
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  box-sizing: border-box;
 }
 
 .row {

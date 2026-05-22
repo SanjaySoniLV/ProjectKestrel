@@ -26,6 +26,7 @@
   <link rel="stylesheet" href="css/timeline.css" />
   <link rel="stylesheet" href="css/legal-banner.css" />
   <link rel="stylesheet" href="css/dialogs/base.css" />
+  <link rel="stylesheet" href="css/dialogs/kdlg.css" />
   <link rel="stylesheet" href="css/dialogs/scene.css" />
   <link rel="stylesheet" href="css/dialogs/settings.css" />
   <link rel="stylesheet" href="css/dialogs/analyze.css" />
@@ -304,7 +305,7 @@
     </div>
   </footer>
 
-  <dialog id="sceneDlg">
+  <dialog id="sceneDlg" class="kdlg kdlg--fullscreen">
     <div class="scene-filmstrip-layout">
       <!-- ═══ TOP BAR: Scene info + tags + actions ═══ -->
       <div class="scene-topbar">
@@ -457,7 +458,7 @@
   </div>
 
   <!-- Tutorial chooser dialog (opened by the Tutorial button & welcome Start Tutorial) -->
-  <dialog id="tutorialChooserDlg" class="dlg-compact tut-chooser-dlg">
+  <dialog id="tutorialChooserDlg" class="kdlg kdlg--md kdlg--flex tut-chooser-dlg">
     <div class="tut-chooser-body">
       <h3 class="tut-chooser-title">Which version of the tutorial would you like?</h3>
       <p class="tut-chooser-sub">You can replay either one anytime from the <b>&#x1F4D6; Tutorial</b> button.</p>
@@ -484,7 +485,7 @@
   </dialog>
 
   <!-- Share with Perch — pre-upload dialog -->
-  <dialog id="perchUploadDlg" class="perch-upload-dlg" aria-labelledby="perchUploadDlgTitle">
+  <dialog id="perchUploadDlg" class="kdlg kdlg--lg kdlg--flex perch-upload-dlg" aria-labelledby="perchUploadDlgTitle">
     <div class="perch-upload-dlg-body">
       <div class="perch-upload-dlg-header">
         <h3 id="perchUploadDlgTitle" style="margin:0;font-size:16px">🪶 Share with Perch</h3>
@@ -649,7 +650,7 @@
   </dialog>
 
   <!-- Settings dialog -->
-  <dialog id="settingsDlg" class="dlg-settings">
+  <dialog id="settingsDlg" class="kdlg kdlg--md kdlg--tall kdlg--flex">
     <div class="settings-body">
       <h3 style="margin:0">Settings</h3>
 
@@ -807,8 +808,8 @@
   </dialog>
 
   <!-- Merge scenes dialog -->
-  <dialog id="mergeDlg">
-    <div class="settings" style="width:min(720px,96vw)">
+  <dialog id="mergeDlg" class="kdlg kdlg--md kdlg--flex">
+    <div class="settings">
       <h3 style="margin:0">Merge Scenes</h3>
       <div class="row" style="align-items:flex-start">
         <label style="margin-top:6px">Select scenes</label>
@@ -839,8 +840,8 @@
   </dialog>
 
   <!-- Info dialog -->
-  <dialog id="infoDlg">
-    <div class="settings" style="width:min(560px,96vw)">
+  <dialog id="infoDlg" class="kdlg kdlg--md kdlg--flex">
+    <div class="settings">
       <h3 style="margin:0">Kestrel Database Info</h3>
       <div id="infoNotice" class="notice hidden" style="margin:0 0 8px"></div>
       <div id="infoContent" class="detail"
@@ -856,7 +857,7 @@
        Col 2: Settings — critical tier always visible + collapsed "More options".
        Col 3: Queue Summary + Start — live counts, warnings, per-folder list, Start.
        Dialog state is FULLY INDEPENDENT from the main sidebar tree. -->
-  <dialog id="analyzeQueueDlg" class="dlg-compact">
+  <dialog id="analyzeQueueDlg" class="kdlg kdlg--lg kdlg--flex">
     <div class="analyze-dlg">
       <div class="analyze-dlg-header">
         <h3 style="margin:0;flex:1;">🔬 Analyze Folders</h3>
@@ -1125,7 +1126,7 @@
   <!-- Cloud Compute resume dialog. Opens on startup when there are finished
        cloud jobs whose result packs haven't all been merged locally yet
        (e.g. the desktop was closed while a job finished on its own). -->
-  <dialog id="cloudResumeDlg" style="width:min(640px,96vw);height:fit-content;max-height:92vh;">
+  <dialog id="cloudResumeDlg" class="kdlg kdlg--md kdlg--flex">
     <div class="cloud-resume-dlg">
       <h3>☁ Cloud Analysis Results Available</h3>
       <p id="cloudResumeIntro">You have finished cloud analysis jobs ready to download.</p>
@@ -1134,12 +1135,15 @@
         <button id="cloudResumeLater">Later</button>
         <button id="cloudResumeSelected">Download Selected</button>
         <button id="cloudResumeAll" class="primary">Download All</button>
+      </div>
+    </div>
+  </dialog>
 
   <!-- Pre-queue confirmation modal (Phase 3H). Lives at top level — opened
        AFTER the user clicks Start Analysis when at least one folder is
        flagged for destructive re-analysis. Lists affected folders and
        requires explicit confirmation before .kestrel deletion happens. -->
-  <dialog id="analyzeConfirmDlg" class="dlg-compact analyze-confirm-dlg">
+  <dialog id="analyzeConfirmDlg" class="kdlg kdlg--sm kdlg--flex analyze-confirm-dlg">
     <div class="analyze-confirm-body">
       <h3 style="margin:0 0 8px;color:var(--warn);">⚠ Confirm destructive re-analysis</h3>
       <p style="margin:0 0 10px;font-size:13px;line-height:1.45;">
@@ -1164,7 +1168,7 @@
        visual language of #analyzeConfirmDlg above so the destructive flow
        feels consistent — explicit Cancel-default + red Delete button, no
        auto-confirm-on-Enter. -->
-  <dialog id="clearKestrelConfirmDlg" class="dlg-compact analyze-confirm-dlg">
+  <dialog id="clearKestrelConfirmDlg" class="kdlg kdlg--sm kdlg--flex analyze-confirm-dlg">
     <div class="analyze-confirm-body">
       <h3 style="margin:0 0 8px;color:var(--warn);">⚠ Delete Kestrel analysis data?</h3>
       <p style="margin:0 0 10px;font-size:13px;line-height:1.45;">
@@ -1190,7 +1194,7 @@
   </dialog>
 
   <!-- Feedback / Bug Report dialog -->
-  <dialog id="feedbackDlg" style="width:min(640px,96vw);height:fit-content;max-height:92vh;overflow-x:hidden;overflow-y:auto;">
+  <dialog id="feedbackDlg" class="kdlg kdlg--md kdlg--flex">
     <div class="feedback-dlg">
       <h3>💬 Send Feedback</h3>
       <div>
@@ -1232,8 +1236,7 @@
   </dialog>
 
   <!-- Analytics Consent dialog (shown once after first successful analysis) -->
-  <dialog id="analyticsConsentDlg"
-    style="width:min(560px,96vw);height:fit-content;max-height:88vh;overflow-x:hidden;overflow-y:auto;">
+  <dialog id="analyticsConsentDlg" class="kdlg kdlg--md kdlg--flex">
     <div class="analytics-dlg">
       <h3>📊 Help Improve Project Kestrel</h3>
       <p>Would you like to share anonymous usage data to help improve the app? This is completely optional and you can
@@ -1260,7 +1263,7 @@
   </dialog>
 
   <!-- Live Analysis Details dialog -->
-  <dialog id="liveAnalysisDlg" class="dlg-compact">
+  <dialog id="liveAnalysisDlg" class="kdlg kdlg--lg kdlg--flex">
     <div class="live-dlg">
       <div class="live-dlg-hdr">
         <span class="live-dlg-title">👁 Live Analysis: <span id="liveDlgFolderName">–</span></span>
@@ -1287,7 +1290,7 @@
 
 
   <!-- Donation / Support dialog -->
-  <dialog id="donateDlg">
+  <dialog id="donateDlg" class="kdlg kdlg--sm kdlg--flex">
     <div class="donate-dlg">
       <div class="donate-dlg-icon"><img src="logo.png" alt="Kestrel Logo" /></div>
       <h3>Kestrel has analyzed over <span id="donateCountDisplay">many</span> photos!</h3>

@@ -1,0 +1,112 @@
+/* ═══ Kestrel unified dialog system ═══════════════════════════════════════
+   One taxonomy for every <dialog> in the app. Sizing and layout are
+   orthogonal so you compose what you need without bespoke per-dialog rules.
+
+   Sizing:
+     .kdlg                  — base; resets to predictable state, no dimensions
+     .kdlg--sm              — small (fit-content, capped at 540px)
+     .kdlg--md              — medium (660 × 860)
+     .kdlg--lg              — large (96vw × 88vh)
+     .kdlg--fullscreen      — fullscreen (calc(100% - 60px))
+
+   Layout (gated on [open] so closed dialogs stay hidden):
+     .kdlg--flex            — flex column with sticky footer
+     .kdlg--grid            — same flex shell; body slot hosts custom grid
+
+   Inner wrappers:
+     .kdlg-body             — flexible scrolling content area
+     .kdlg-body--grid       — body that hosts a custom grid (no scroll)
+     .kdlg-body--flush      — body without padding (caller paints it)
+     .kdlg-footer           — fixed bottom action row
+
+   Cascade: every selector here is `dialog.kdlg` (specificity 0,0,1,1) so it
+   cleanly beats the base `dialog { … }` defaults in base.css without
+   needing !important.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+dialog.kdlg {
+  padding: 0;
+  /* Reset base.css defaults; per-size class re-applies them */
+  width: auto;
+  max-width: none;
+  height: auto;
+  max-height: none;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+/* ── Size modifiers ───────────────────────────────────────────────────── */
+/* --sm / --md set width only; height fits the content (capped at 92vh).
+   For a dialog that wants fixed scrolling height (e.g. Settings), compose
+   with --tall. */
+dialog.kdlg.kdlg--sm {
+  width: min(480px, 96vw);
+  max-width: min(480px, 96vw);
+  height: fit-content;
+  max-height: 92vh;
+}
+
+dialog.kdlg.kdlg--md {
+  width: min(660px, 96vw);
+  max-width: min(660px, 96vw);
+  height: fit-content;
+  max-height: 92vh;
+}
+
+dialog.kdlg.kdlg--lg {
+  width: min(96vw, calc(100vw - 60px));
+  max-width: none;
+  height: min(88vh, calc(100vh - 60px));
+  max-height: none;
+}
+
+dialog.kdlg.kdlg--fullscreen {
+  width: calc(100% - 60px);
+  max-width: none;
+  height: calc(100% - 60px);
+  max-height: none;
+}
+
+/* Compose with --sm or --md when the dialog has lots of vertical content
+   and needs a fixed (scrollable) height instead of fitting to content. */
+dialog.kdlg.kdlg--tall {
+  height: min(860px, 90vh);
+  max-height: min(860px, 90vh);
+}
+
+/* ── Layout modifiers (only active when open) ─────────────────────────── */
+/* Closed <dialog> needs display:none from UA stylesheet; gate on [open]. */
+dialog.kdlg.kdlg--flex[open],
+dialog.kdlg.kdlg--grid[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Inner wrappers ───────────────────────────────────────────────────── */
+.kdlg-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+  box-sizing: border-box;
+}
+
+.kdlg-body--grid {
+  overflow: hidden;
+  display: grid;
+}
+
+.kdlg-body--flush {
+  padding: 0;
+}
+
+.kdlg-footer {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid #1d2230;
+  background: #0f1219;
+  box-sizing: border-box;
+}

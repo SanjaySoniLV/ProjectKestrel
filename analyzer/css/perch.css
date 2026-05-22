@@ -234,22 +234,17 @@
 
 /* ─── Share-with-Perch dialog ───────────────────────────────────── */
 
-dialog.perch-upload-dlg {
-  width: min(560px, 96vw);
-  max-width: min(560px, 96vw);
-  height: auto;
-  max-height: 90vh;
-}
-dialog.perch-upload-dlg[open] {
-  display: flex;
-  flex-direction: column;
-}
-
+/* Sizing + flex layout for #perchUploadDlg are now driven by .kdlg classes
+   (kdlg--lg + kdlg--flex). Inner-body styling below is layout-agnostic. */
 .perch-upload-dlg-body {
   display: flex;
   flex-direction: column;
   gap: 14px;
   padding: 16px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 
 .perch-upload-dlg-header {
@@ -1033,35 +1028,11 @@ dialog.perch-upload-dlg[open] {
    takeover (#perchDlgLinkedView) and the upload form (#perchDlgSignedIn).
    ───────────────────────────────────────────────────────────────────────── */
 
-.perch-upload-dlg {
-  width: min(96vw, calc(100vw - 80px));
-  height: min(88vh, calc(100vh - 80px));
-  max-width: none;
-  max-height: none;
-  padding: 0;
-  border: 1px solid #2a3040;
-  border-radius: 10px;
-  background: #14171f;
-  color: #e8f0f8;
-  box-sizing: border-box;
-}
-/* Only apply flex column layout when open — keep browser's display:none
-   for closed <dialog> intact. Mirrors the dlg-settings[open] pattern. */
-dialog.perch-upload-dlg[open] {
-  display: flex;
-  flex-direction: column;
-}
-.perch-upload-dlg .perch-upload-dlg-body {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 16px;
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: hidden;
-  box-sizing: border-box;
-}
-.perch-upload-dlg .perch-upload-footer {
+/* Dialog sizing + flex layout come from kdlg.css (.kdlg--lg + .kdlg--flex).
+   Footer cosmetic styling (border-top, background) below; size/layout
+   moved to .kdlg-footer in kdlg.css, but this dialog still uses the
+   bespoke .perch-upload-footer class for its border/background tone. */
+.perch-upload-footer {
   height: 56px;
   display: flex;
   justify-content: flex-end;
@@ -1070,6 +1041,7 @@ dialog.perch-upload-dlg[open] {
   border-top: 1px solid #2a3040;
   background: #0f1219;
   box-sizing: border-box;
+  flex: 0 0 auto;
 }
 
 /* Folder-header button (replaces .share-perch-btn, .folder-perch-pill, .folder-perch-sync) */
