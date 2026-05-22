@@ -577,7 +577,6 @@
         <div class="perch-dlg-timeline-col">
           <div class="perch-dlg-timeline-header">
             <div class="perch-dlg-timeline-title">Scenes to upload</div>
-            <div class="perch-dlg-timeline-summary" id="perchTimelineSummary">— scenes · — photos · —</div>
             <div class="perch-dlg-timeline-actions">
               <button type="button" class="perch-link-btn" id="perchSelectAllBtn">Include all</button>
               <span class="perch-sep">·</span>
@@ -589,40 +588,70 @@
 
         <!-- Right column: sidebar (1fr) -->
         <div class="perch-dlg-sidebar-col">
-          <div class="perch-account-row" id="perchAccountRow">
-            <div class="perch-account-avatar" id="perchAccountAvatar">·</div>
-            <div class="perch-account-info">
-              <div class="perch-account-name" id="perchAccountName">Loading account…</div>
-              <div class="perch-account-meta" id="perchAccountMeta">—</div>
+          <div class="perch-usage-card" id="perchUsageCard">
+            <div class="perch-usage-left">
+              <div class="perch-usage-label">Perch Usage</div>
+              <div class="perch-usage-bar" id="perchUsageBar" title="">
+                <div class="perch-usage-bar-used" id="perchUsageBarUsed"></div>
+                <div class="perch-usage-bar-pending" id="perchUsageBarPending"></div>
+              </div>
+              <div class="perch-usage-text" id="perchUsageText">Loading usage…</div>
+            </div>
+            <div class="perch-usage-right" id="perchAccountRow">
+              <div class="perch-account-avatar" id="perchAccountAvatar">·</div>
+              <div class="perch-account-info">
+                <div class="perch-account-name" id="perchAccountName">Loading…</div>
+                <div class="perch-account-meta" id="perchAccountMeta">—</div>
+              </div>
             </div>
           </div>
-          <div class="perch-usage-row" id="perchUsageRow">Loading usage…</div>
 
           <h4 class="perch-checklist-heading">Before you upload</h4>
 
           <div class="perch-check-panel" id="perchCheckFirstPhoto">
-            <img class="perch-check-thumb" id="perchFirstPhotoThumb" alt="">
+            <img class="perch-check-thumb perch-check-thumb--big" id="perchFirstPhotoThumb" alt="">
             <div class="perch-check-body">
-              <div class="perch-check-title">First photo captured</div>
-              <div class="perch-check-text" id="perchFirstPhotoTime">—</div>
+              <div class="perch-check-title">Check photo capture time</div>
+              <div class="perch-check-text">The first photo was captured at <strong id="perchFirstPhotoTime">—</strong>. If this is not correct, adjust the capture time for this folder.</div>
+              <button type="button" class="perch-check-btn perch-check-btn--inline" id="perchAdjustTimeBtn">Adjust Capture Time</button>
             </div>
-            <button type="button" class="perch-check-btn" id="perchAdjustTimeBtn">Adjust Capture Time</button>
           </div>
 
           <div class="perch-check-panel" id="perchCheckReview">
             <div class="perch-check-icon">✓</div>
             <div class="perch-check-body">
-              <div class="perch-check-title" id="perchReviewTitle">— of — scenes reviewed</div>
-              <div class="perch-check-text">Reviewed scenes appear with a gold border. Confirm Kestrel's tags before sharing.</div>
+              <div class="perch-check-title">Review Species Tags</div>
+              <div class="perch-check-text">Review each scene's species and family so viewers can search your perch by what you saw. Reviewed scenes appear with a gold border in the timeline. <strong id="perchReviewCount">— of — scenes reviewed.</strong></div>
+              <button type="button" class="perch-check-btn perch-check-btn--inline" id="perchOpenCullingBtn">Open Culling Assistant</button>
             </div>
-            <button type="button" class="perch-check-btn" id="perchOpenCullingBtn">Open Culling Assistant</button>
           </div>
 
-          <label class="perch-reject-toggle" id="perchRejectToggleRow">
-            <input type="checkbox" id="perchRejectToggleCb" checked>
-            <span class="perch-reject-toggle-label" id="perchRejectToggleLabel">Skip rejected photos</span>
-            <span class="perch-reject-toggle-hint" id="perchRejectToggleHint"></span>
-          </label>
+          <div class="perch-check-panel perch-check-totals" id="perchCheckTotals">
+            <div class="perch-check-title">Review Total Usage</div>
+            <div class="perch-totals-grid">
+              <div class="perch-totals-cell">
+                <div class="perch-totals-num" id="perchTotalsScenes">—</div>
+                <div class="perch-totals-label">Scenes</div>
+              </div>
+              <div class="perch-totals-cell">
+                <div class="perch-totals-num" id="perchTotalsPhotos">—</div>
+                <div class="perch-totals-label">Images</div>
+              </div>
+              <div class="perch-totals-cell">
+                <div class="perch-totals-num" id="perchTotalsBytes">—</div>
+                <div class="perch-totals-label" id="perchTotalsBytesPct">Size</div>
+              </div>
+            </div>
+            <label class="perch-reject-toggle" id="perchRejectToggleRow">
+              <input type="checkbox" id="perchRejectToggleCb" checked>
+              <span class="perch-reject-toggle-label" id="perchRejectToggleLabel">Don't upload rejected images</span>
+              <span class="perch-reject-toggle-hint" id="perchRejectToggleHint"></span>
+            </label>
+            <div class="perch-culling-tip">
+              <div class="perch-culling-tip-text">Use your perch storage efficiently by running the culling assistant first.</div>
+              <button type="button" class="perch-check-btn perch-check-btn--inline" id="perchOpenCullingBtnB">Open Culling Assistant</button>
+            </div>
+          </div>
 
           <div class="perch-beta-card">
             <div class="perch-beta-icon">⚠</div>

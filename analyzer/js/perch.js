@@ -54,8 +54,8 @@
         elSubmit.textContent = label;
         elSubmit.disabled = (t.photos === 0);
       }
-      // Timeline-column summary + sidebar panels (defined further down).
-      if (typeof _perchUpdateTimelineSummary === 'function') _perchUpdateTimelineSummary();
+      // Sidebar panel updates (totals card replaces the old timeline-summary).
+      if (typeof _perchUpdateTotalsCard === 'function') _perchUpdateTotalsCard();
       if (typeof _perchUpdateFirstPhotoPanel === 'function') _perchUpdateFirstPhotoPanel();
       if (typeof _perchUpdateReviewPanel === 'function') _perchUpdateReviewPanel();
     }
@@ -327,18 +327,90 @@
       container.appendChild(body);
     }
 
-    function _perchUpdateTimelineSummary() {
-      const el = document.getElementById('perchTimelineSummary');
-      if (!el) return;
+    // Latest entitlements snapshot (limits + currentUsage). Lazy-loaded by
+    // _perchLoadAccountAndUsage so the usage bar can render absolute %.
+    let _perchEntitlements = null;
+
+    /** Update the Review Total Usage card: scenes/images/bytes plus the % of
+     *  this perch's bytes against the user's maxTotalStorageMB. */
+    function _perchUpdateTotalsCard() {
       const t = _perchSelectedTotals();
       const totalScenes = (_perchDlgState.preflight?.scenes || []).length;
-      el.textContent = `${t.scenes.toLocaleString()}/${totalScenes.toLocaleString()} scenes · `
-        + `${t.photos.toLocaleString()} photo${t.photos === 1 ? '' : 's'} · `
-        + formatPerchBytes(t.bytes);
+      const totalPhotos = (_perchDlgState.preflight?.scenes || [])
+        .reduce((acc, s) => acc + Number(s.imageCount || 0), 0);
+      const elScenes = document.getElementById('perchTotalsScenes');
+      const elPhotos = document.getElementById('perchTotalsPhotos');
+      const elBytes = document.getElementById('perchTotalsBytes');
+      const elPct = document.getElementById('perchTotalsBytesPct');
+      if (elScenes) {
+        elScenes.textContent = t.scenes === totalScenes
+          ? t.scenes.toLocaleString()
+          : `${t.scenes.toLocaleString()} / ${totalScenes.toLocaleString()}`;
+      }
+      if (elPhotos) elPhotos.textContent = `${t.photos.toLocaleString()} / ${totalPhotos.toLocaleString()}`;
+      if (elBytes) elBytes.textContent = formatPerchBytes(t.bytes);
+      // Compute % of plan storage if we have entitlements.
+      const limitMB = Number(_perchEntitlements?.limits?.maxTotalStorageMB || 0);
+      if (elPct) {
+        if (limitMB > 0 && t.bytes > 0) {
+          const pct = (t.bytes / (limitMB * 1024 * 1024)) * 100;
+          const formatted = pct < 0.1 ? '<0.1' : pct < 10 ? pct.toFixed(1) : Math.round(pct);
+          elPct.textContent = `${formatted}% of plan`;
+        } else {
+          elPct.textContent = 'Size';
+        }
+      }
+      // Also push to the usage bar's pending segment so it reflects current selection.
+      _perchUpdateUsageBar(t.bytes);
     }
 
-    /** Refresh the "First photo" sidebar panel — first non-excluded scene
-     *  with a capture time, with its thumbnail. */
+    /** Update the usage bar's pending segment (this perch's contribution).
+     *  Used: total currently consumed on the server. Pending: t.bytes from
+     *  the current dialog selection. */
+    function _perchUpdateUsageBar(pendingBytes) {
+      const barUsed = document.getElementById('perchUsageBarUsed');
+      const barPending = document.getElementById('perchUsageBarPending');
+      const txtEl = document.getElementById('perchUsageText');
+      const barEl = document.getElementById('perchUsageBar');
+      const limitMB = Number(_perchEntitlements?.limits?.maxTotalStorageMB || 0);
+      const usedBytes = Number(_perchEntitlements?.currentUsage?.totalStorageBytes
+        ?? _perchDlgState._usageTotalBytes
+        ?? 0);
+      if (limitMB <= 0) {
+        // No plan info — hide bar fill, just show absolute numbers.
+        if (barUsed) barUsed.style.width = '0%';
+        if (barPending) barPending.style.width = '0%';
+        if (txtEl) {
+          txtEl.textContent = pendingBytes > 0
+            ? `${formatPerchBytes(usedBytes)} used · +${formatPerchBytes(pendingBytes)} this perch`
+            : `${formatPerchBytes(usedBytes)} used`;
+        }
+        return;
+      }
+      const limitBytes = limitMB * 1024 * 1024;
+      const usedPct = Math.max(0, Math.min(100, (usedBytes / limitBytes) * 100));
+      const pendingPct = Math.max(0, Math.min(100 - usedPct, (pendingBytes / limitBytes) * 100));
+      if (barUsed) barUsed.style.width = usedPct + '%';
+      if (barPending) {
+        barPending.style.width = pendingPct + '%';
+        barPending.style.left = usedPct + '%';
+      }
+      if (txtEl) {
+        const usedTxt = formatPerchBytes(usedBytes);
+        const limitTxt = formatPerchBytes(limitBytes);
+        txtEl.textContent = pendingBytes > 0
+          ? `${usedTxt} used · +${formatPerchBytes(pendingBytes)} this perch · ${limitTxt} total`
+          : `${usedTxt} of ${limitTxt} used`;
+      }
+      if (barEl) {
+        barEl.title = `${formatPerchBytes(usedBytes)} used of ${formatPerchBytes(limitBytes)} plan limit`
+          + (pendingBytes > 0 ? ` · +${formatPerchBytes(pendingBytes)} pending this upload` : '');
+      }
+    }
+
+    /** Refresh the "Check photo capture time" panel — first non-excluded
+     *  scene with a capture time + its thumbnail. The time is written into
+     *  the inline <strong id="perchFirstPhotoTime"> inside the description. */
     function _perchUpdateFirstPhotoPanel() {
       const thumbEl = document.getElementById('perchFirstPhotoThumb');
       const timeEl = document.getElementById('perchFirstPhotoTime');
@@ -348,15 +420,13 @@
         if (timeEl) timeEl.textContent = '—';
         return;
       }
-      // Scenes are already chronologically sorted by the backend; find the
-      // first one that's both included and has a timestamp.
       const firstIncluded = pre.scenes.find(s =>
         !_perchDlgState.deselected.has(String(s.sceneId))
         && Number.isFinite(Number(s.captureTimeMs))
         && Number(s.captureTimeMs) > 0
       );
       if (!firstIncluded) {
-        if (timeEl) timeEl.textContent = 'No included scene with a timestamp';
+        if (timeEl) timeEl.textContent = 'an unknown time';
         if (thumbEl) { thumbEl.removeAttribute('src'); thumbEl.classList.add('no-image'); }
         return;
       }
@@ -369,17 +439,16 @@
       }
     }
 
-    /** Refresh the "X of Y scenes reviewed" sidebar panel. Counts against
-     *  included scenes only — exclude-toggle changes the denominator. */
+    /** Refresh the Review Species Tags panel's inline count. */
     function _perchUpdateReviewPanel() {
-      const titleEl = document.getElementById('perchReviewTitle');
+      const countEl = document.getElementById('perchReviewCount');
       const panelEl = document.getElementById('perchCheckReview');
-      if (!titleEl) return;
+      if (!countEl) return;
       const pre = _perchDlgState.preflight;
-      if (!pre || !pre.scenes) { titleEl.textContent = '— of — scenes reviewed'; return; }
+      if (!pre || !pre.scenes) { countEl.textContent = '— of — scenes reviewed.'; return; }
       const included = pre.scenes.filter(s => !_perchDlgState.deselected.has(String(s.sceneId)));
       const reviewed = included.filter(s => !!s.reviewed).length;
-      titleEl.textContent = `${reviewed.toLocaleString()} of ${included.length.toLocaleString()} scene${included.length === 1 ? '' : 's'} reviewed`;
+      countEl.textContent = `${reviewed.toLocaleString()} of ${included.length.toLocaleString()} scene${included.length === 1 ? '' : 's'} reviewed.`;
       if (panelEl) panelEl.classList.toggle('is-all-reviewed', reviewed === included.length && included.length > 0);
     }
 
@@ -387,7 +456,7 @@
       const elName = document.getElementById('perchAccountName');
       const elMeta = document.getElementById('perchAccountMeta');
       const elAvatar = document.getElementById('perchAccountAvatar');
-      const elUsage = document.getElementById('perchUsageRow');
+      // Account info (avatar + name + handle)
       try {
         const res = await window.pywebview.api.get_perch_account();
         if (res && res.success && res.account) {
@@ -401,17 +470,32 @@
           elName.textContent = 'Signed in';
         }
       } catch { if (elName) elName.textContent = 'Signed in'; }
+      // Current Perch usage (used for the bar's "used" segment fallback when
+      // entitlements don't include currentUsage).
       try {
         const res = await window.pywebview.api.get_perch_usage();
         if (res && res.success && res.usage) {
-          const u = res.usage;
-          const photos = Number(u.totalImages || 0);
-          const bytes = Number(u.totalBytes || 0);
-          if (elUsage) elUsage.textContent = `Currently using ${formatPerchBytes(bytes)} across ${photos.toLocaleString()} photo${photos === 1 ? '' : 's'}.`;
-        } else if (elUsage) {
-          elUsage.textContent = '';
+          _perchDlgState._usageTotalBytes = Number(res.usage.totalBytes || 0);
         }
-      } catch { if (elUsage) elUsage.textContent = ''; }
+      } catch {}
+      // Entitlements — gives us maxTotalStorageMB for the usage-bar limit
+      // and totals card percentage. Reuses the same /v1/me/entitlements
+      // endpoint that MyAccount + Cloud Compute already call.
+      try {
+        if (window.pywebview?.api?.cloud_compute_get_entitlements) {
+          const r = await window.pywebview.api.cloud_compute_get_entitlements();
+          if (r && r.ok) {
+            // Bridge returns {ok, tier, limits, currentUsage, activeJobs}
+            _perchEntitlements = {
+              tier: r.tier,
+              limits: r.limits || {},
+              currentUsage: r.currentUsage || {},
+            };
+          }
+        }
+      } catch {}
+      // Initial paint of the usage bar — pending=0 until totals card update.
+      _perchUpdateUsageBar(0);
     }
 
     function _perchClosePerchDialog() {
@@ -1062,11 +1146,14 @@
         } catch {}
         _perchClosePerchDialog();
       });
-      if (cullBtn) cullBtn.addEventListener('click', () => {
+      const cullHandler = () => {
         const root = _perchDlgState.rootPath;
         _perchClosePerchDialog();
         if (root) openCullingAssistant(root);
-      });
+      };
+      if (cullBtn) cullBtn.addEventListener('click', cullHandler);
+      const cullBtnB = document.getElementById('perchOpenCullingBtnB');
+      if (cullBtnB) cullBtnB.addEventListener('click', cullHandler);
       const adjBtn = document.getElementById('perchAdjustTimeBtn');
       if (adjBtn) adjBtn.addEventListener('click', () => {
         const root = _perchDlgState.rootPath;
