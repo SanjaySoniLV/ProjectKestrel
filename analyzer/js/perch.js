@@ -442,14 +442,12 @@
     /** Refresh the Review Species Tags panel's inline count. */
     function _perchUpdateReviewPanel() {
       const countEl = document.getElementById('perchReviewCount');
-      const panelEl = document.getElementById('perchCheckReview');
       if (!countEl) return;
       const pre = _perchDlgState.preflight;
       if (!pre || !pre.scenes) { countEl.textContent = '— of — scenes reviewed.'; return; }
       const included = pre.scenes.filter(s => !_perchDlgState.deselected.has(String(s.sceneId)));
       const reviewed = included.filter(s => !!s.reviewed).length;
       countEl.textContent = `${reviewed.toLocaleString()} of ${included.length.toLocaleString()} scene${included.length === 1 ? '' : 's'} reviewed.`;
-      if (panelEl) panelEl.classList.toggle('is-all-reviewed', reviewed === included.length && included.length > 0);
     }
 
     async function _perchLoadAccountAndUsage() {
@@ -1146,14 +1144,11 @@
         } catch {}
         _perchClosePerchDialog();
       });
-      const cullHandler = () => {
+      if (cullBtn) cullBtn.addEventListener('click', () => {
         const root = _perchDlgState.rootPath;
         _perchClosePerchDialog();
         if (root) openCullingAssistant(root);
-      };
-      if (cullBtn) cullBtn.addEventListener('click', cullHandler);
-      const cullBtnB = document.getElementById('perchOpenCullingBtnB');
-      if (cullBtnB) cullBtnB.addEventListener('click', cullHandler);
+      });
       const adjBtn = document.getElementById('perchAdjustTimeBtn');
       if (adjBtn) adjBtn.addEventListener('click', () => {
         const root = _perchDlgState.rootPath;
