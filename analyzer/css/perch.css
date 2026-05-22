@@ -1248,20 +1248,22 @@
   padding: 4px;
 }
 
-.perch-day-banner {
-  font-size: 13px;
-  font-weight: 600;
-  color: #cbd6e4;
-  padding: 12px 4px 6px 4px;
-  border-bottom: 1px solid #232a3d;
-  margin-bottom: 10px;
+/* Perch timeline uses the main timeline's CSS classes (.timeline-day-banner,
+   .timeline-node, .timeline-rail-col, etc.) but lives inside a dialog scroll
+   container, not under the folder-group-header. Override the sticky offset
+   so the day banner pins to the top of the dialog timeline area. */
+.perch-timeline .timeline-day-banner {
+  top: 0;
 }
-.perch-day-banner:first-child { padding-top: 4px; }
-.perch-day-grid {
+.perch-timeline .timeline-body {
+  padding: 0;
+}
+/* Scene-card grid inside each cluster — denser than the folder grid since
+   cards have no name/timestamp and just show the thumbnail + metrics. */
+.perch-cluster-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
   gap: 10px;
-  margin-bottom: 18px;
 }
 
 /* ── Perch-mode scene card (uses .card + .scene-approved from grid.css) ── */
@@ -1280,7 +1282,7 @@
 .perch-card:hover { border-color: #3a4565; transform: translateY(-1px); }
 .perch-card .card-thumb {
   position: relative;
-  aspect-ratio: 4 / 3;
+  aspect-ratio: 3 / 2;
   width: 100%;
   background: #060810;
   border-radius: 4px;
@@ -1320,7 +1322,6 @@
 }
 .perch-card.is-perch-excluded .card-perch-overlay { display: block; }
 .perch-card.is-perch-excluded .card-thumb img { opacity: 0.4; filter: grayscale(0.5); }
-.perch-card.is-perch-excluded .perch-card-title { text-decoration: line-through; color: var(--muted, #8b96a7); }
 .perch-card.is-perch-excluded { border-color: #3a3025; background: #14110c; }
 
 .perch-card.scene-approved {
@@ -1328,19 +1329,6 @@
   box-shadow: 0 0 0 1px rgba(245, 197, 66, 0.18) inset;
 }
 
-.perch-card-title {
-  font-size: 12.5px;
-  font-weight: 500;
-  color: #e8f0f8;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.perch-card-meta {
-  font-size: 11px;
-  color: var(--muted, #8b96a7);
-  margin-top: 2px;
-}
 .perch-card-chips {
   display: flex;
   flex-wrap: wrap;

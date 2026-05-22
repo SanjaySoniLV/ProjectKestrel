@@ -60,30 +60,89 @@
       if (typeof _perchUpdateReviewPanel === 'function') _perchUpdateReviewPanel();
     }
 
-    // Group scenes by local-calendar day. Returns [{dayLabel, scenes[]}, ...]
-    // in chronological order (scenes without a timestamp land in a trailing "Undated" bucket).
-    function _perchGroupScenesByDay(scenes) {
-      const buckets = new Map();
-      const undated = [];
-      for (const s of scenes || []) {
-        const ms = Number(s.captureTimeMs);
-        if (!Number.isFinite(ms) || ms <= 0) { undated.push(s); continue; }
-        const d = new Date(ms);
-        const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-        let bucket = buckets.get(key);
-        if (!bucket) {
-          let label;
-          try {
-            label = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
-          } catch { label = key; }
-          bucket = { dayLabel: label, sortKey: ms, scenes: [] };
-          buckets.set(key, bucket);
-        }
-        bucket.scenes.push(s);
+    // Mirror of scene-grid.js:buildTimeClusters/computeDynamicClusterGapMs —
+    // groups scenes into time-adjacent clusters so the Perch timeline reads
+    // the same as the main folder timeline (bursts cluster together,
+    // long gaps create new nodes).
+    const _PERCH_CLUSTER_GAP_FALLBACK_MS = 15 * 60 * 1000;
+    const _PERCH_CLUSTER_GAP_MULTIPLIER = 8;
+    const _PERCH_CLUSTER_GAP_MIN_MS = 90 * 1000;
+    const _PERCH_CLUSTER_GAP_MAX_MS = 4 * 60 * 60 * 1000;
+
+    function _perchComputeClusterGapMs(scenes) {
+      const times = [];
+      for (const s of scenes) {
+        if (Number.isFinite(s.captureTimeMs)) times.push(s.captureTimeMs);
       }
-      const ordered = [...buckets.values()].sort((a, b) => a.sortKey - b.sortKey);
-      if (undated.length) ordered.push({ dayLabel: 'Undated', sortKey: Infinity, scenes: undated });
-      return ordered;
+      if (times.length < 3) return _PERCH_CLUSTER_GAP_FALLBACK_MS;
+      times.sort((a, b) => a - b);
+      const gaps = [];
+      for (let i = 1; i < times.length; i++) {
+        const g = times[i] - times[i - 1];
+        if (g > 0) gaps.push(g);
+      }
+      if (!gaps.length) return _PERCH_CLUSTER_GAP_FALLBACK_MS;
+      gaps.sort((a, b) => a - b);
+      const median = gaps[Math.floor(gaps.length / 2)];
+      const threshold = median * _PERCH_CLUSTER_GAP_MULTIPLIER;
+      return Math.max(_PERCH_CLUSTER_GAP_MIN_MS, Math.min(_PERCH_CLUSTER_GAP_MAX_MS, threshold));
+    }
+
+    function _perchBuildTimeClusters(scenes, gapMs) {
+      const timed = [];
+      const untimed = [];
+      for (const s of scenes || []) {
+        if (Number.isFinite(s.captureTimeMs)) timed.push(s);
+        else untimed.push(s);
+      }
+      timed.sort((a, b) => a.captureTimeMs - b.captureTimeMs);
+      const clusters = [];
+      for (const s of timed) {
+        const last = clusters[clusters.length - 1];
+        if (!last || s.captureTimeMs - last.endMs > gapMs) {
+          clusters.push({ scenes: [s], startMs: s.captureTimeMs, endMs: s.captureTimeMs, untimed: false });
+        } else {
+          last.scenes.push(s);
+          if (s.captureTimeMs > last.endMs) last.endMs = s.captureTimeMs;
+        }
+      }
+      if (untimed.length) {
+        clusters.push({ scenes: untimed, startMs: null, endMs: null, untimed: true });
+      }
+      return clusters;
+    }
+
+    function _perchDayKey(ms) {
+      if (!Number.isFinite(ms)) return '';
+      const d = new Date(ms);
+      if (isNaN(d)) return '';
+      const p2 = (n) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+    }
+    function _perchFormatClusterTime(ms) {
+      if (!Number.isFinite(ms)) return '';
+      try {
+        return new Date(ms).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+      } catch { return ''; }
+    }
+    function _perchFormatClusterDay(ms) {
+      if (!Number.isFinite(ms)) return '';
+      try {
+        return new Date(ms).toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+      } catch { return ''; }
+    }
+    function _perchClusterImageCount(cluster) {
+      let n = 0;
+      for (const s of cluster.scenes) n += Number(s.imageCount || 0);
+      return n;
+    }
+    function _perchDotSizePx(imgCount, maxInFolder) {
+      // Mirrors scene-grid.js dot-sizing intent: log-ish scale, 8-22px.
+      if (!Number.isFinite(imgCount) || imgCount <= 0) return 8;
+      const minPx = 8, maxPx = 22;
+      if (maxInFolder <= 1) return minPx;
+      const t = Math.log(1 + imgCount) / Math.log(1 + maxInFolder);
+      return Math.round(minPx + t * (maxPx - minPx));
     }
 
     /** Build one scene card for the Perch timeline. Mirrors the visual treatment
@@ -119,20 +178,6 @@
         thumbWrap.classList.add('no-image');
       }
 
-      // Title (scene name) + capture time
-      const titleEl = document.createElement('div');
-      titleEl.className = 'perch-card-title';
-      titleEl.textContent = scene.title || `Scene ${sid}`;
-      card.appendChild(titleEl);
-
-      const stamp = _perchFormatTimestamp(scene.captureTimeMs);
-      if (stamp) {
-        const meta = document.createElement('div');
-        meta.className = 'perch-card-meta';
-        meta.textContent = stamp;
-        card.appendChild(meta);
-      }
-
       // Species/family chips (limit to first 3 so cards stay compact)
       const tagBag = [...(scene.species || []), ...(scene.families || [])];
       if (tagBag.length) {
@@ -154,7 +199,7 @@
         card.appendChild(chipRow);
       }
 
-      // Metrics row: "12 photos · 24 MB · 2 hidden"
+      // Metrics row: "12 photos · 24 MB" (+ "· N hidden" when skip-rejected drops some)
       const metrics = document.createElement('div');
       metrics.className = 'card-perch-metrics';
       _perchUpdateCardMetrics(metrics, scene);
@@ -187,7 +232,9 @@
       metricsEl.textContent = parts.join(' · ');
     }
 
-    /** Render the timeline of scene cards grouped by day. */
+    /** Render the timeline of scene cards. Mirrors the main folder timeline:
+     *  gap-based clusters, rail dot per cluster (sized by image count), time
+     *  header per cluster, day banners between calendar-date changes. */
     function _perchRenderTimeline() {
       const container = document.getElementById('perchDlgTimeline');
       if (!container) return;
@@ -201,19 +248,83 @@
         container.appendChild(empty);
         return;
       }
-      const groups = _perchGroupScenesByDay(pre.scenes);
-      for (const g of groups) {
-        const banner = document.createElement('div');
-        banner.className = 'timeline-day-banner perch-day-banner';
-        banner.textContent = g.dayLabel;
-        container.appendChild(banner);
+      const body = document.createElement('div');
+      body.className = 'timeline-body perch-timeline';
+      const gapMs = _perchComputeClusterGapMs(pre.scenes);
+      const clusters = _perchBuildTimeClusters(pre.scenes, gapMs);
+      let maxImg = 1;
+      for (const c of clusters) {
+        const n = _perchClusterImageCount(c);
+        if (n > maxImg) maxImg = n;
+      }
+      let prevDay = null;
+      for (let i = 0; i < clusters.length; i++) {
+        const cluster = clusters[i];
+        const isLast = i === clusters.length - 1;
+        const thisDay = cluster.untimed ? '' : _perchDayKey(cluster.startMs);
+
+        if (thisDay && thisDay !== prevDay) {
+          const banner = document.createElement('div');
+          banner.className = 'timeline-day-banner';
+          banner.textContent = _perchFormatClusterDay(cluster.startMs);
+          body.appendChild(banner);
+          prevDay = thisDay;
+        }
+
+        const node = document.createElement('div');
+        node.className = 'timeline-node' + (cluster.untimed ? ' timeline-node-untimed' : '');
+
+        // Rail column: dot (sized by image count) + connecting line
+        const rail = document.createElement('div');
+        rail.className = 'timeline-rail-col';
+        const dot = document.createElement('div');
+        dot.className = 'timeline-dot';
+        const imgCount = _perchClusterImageCount(cluster);
+        const dotSize = _perchDotSizePx(imgCount, maxImg);
+        dot.style.width = dotSize + 'px';
+        dot.style.height = dotSize + 'px';
+        dot.title = `${cluster.scenes.length} scene${cluster.scenes.length === 1 ? '' : 's'} · ${imgCount} image${imgCount === 1 ? '' : 's'}`;
+        const line = document.createElement('div');
+        line.className = 'timeline-line' + (isLast ? ' last' : '');
+        rail.appendChild(dot);
+        rail.appendChild(line);
+
+        // Content column: header (time + count) + grid of scene cards
+        const content = document.createElement('div');
+        content.className = 'timeline-content-col';
+
+        const hdr = document.createElement('div');
+        hdr.className = 'timeline-node-header';
+        const timeSpan = document.createElement('span');
+        timeSpan.className = 'timeline-node-time';
+        if (cluster.untimed) {
+          timeSpan.textContent = 'Unknown time';
+        } else {
+          const spanMs = cluster.endMs - cluster.startMs;
+          timeSpan.textContent = spanMs < 2 * 60 * 1000
+            ? _perchFormatClusterTime(cluster.startMs)
+            : `${_perchFormatClusterTime(cluster.startMs)} – ${_perchFormatClusterTime(cluster.endMs)}`;
+        }
+        hdr.appendChild(timeSpan);
+        const countSpan = document.createElement('span');
+        countSpan.className = 'timeline-node-count muted';
+        countSpan.textContent =
+          `${cluster.scenes.length} scene${cluster.scenes.length === 1 ? '' : 's'} · ${imgCount} image${imgCount === 1 ? '' : 's'}`;
+        hdr.appendChild(countSpan);
+        content.appendChild(hdr);
+
         const grid = document.createElement('div');
-        grid.className = 'timeline-grid perch-day-grid';
-        for (const s of g.scenes) {
+        grid.className = 'grid timeline-grid perch-cluster-grid';
+        for (const s of cluster.scenes) {
           grid.appendChild(_perchBuildSceneCard(s, rootPath));
         }
-        container.appendChild(grid);
+        content.appendChild(grid);
+
+        node.appendChild(rail);
+        node.appendChild(content);
+        body.appendChild(node);
       }
+      container.appendChild(body);
     }
 
     function _perchUpdateTimelineSummary() {
