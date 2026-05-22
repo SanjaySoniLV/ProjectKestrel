@@ -442,6 +442,7 @@ class PerchKestrelUploader:
         self._cached_scenedata: Dict[str, Any] = {}
         self._cached_preflight: Optional[PerchPreflight] = None
         self._cached_skip_rejected: Optional[bool] = None
+        self._catalog = None
 
     def _new_session(self) -> requests.Session:
         s = requests.Session()
@@ -1251,6 +1252,12 @@ class PerchKestrelUploader:
                     changes["species"] = ru.species or None
                 if not self._strs_equal(server_row.get("family"), ru.family):
                     changes["family"] = ru.family or None
+                # scientific species / family — resolved from the bird catalog
+                sci_sp, sci_fa = self._resolve_scientific(ru.species, ru.family)
+                if not self._strs_equal(server_row.get("speciesScientific"), sci_sp):
+                    changes["speciesScientific"] = sci_sp or None
+                if not self._strs_equal(server_row.get("familyScientific"), sci_fa):
+                    changes["familyScientific"] = sci_fa or None
                 # quality, capture time
                 if not self._floats_equal(server_row.get("quality"), ru.quality):
                     changes["quality"] = ru.quality
@@ -1475,6 +1482,35 @@ class PerchKestrelUploader:
             return "image/webp"
         return "image/jpeg"
 
+    def _resolve_scientific(
+        self,
+        common_species: Optional[str],
+        common_family: Optional[str],
+    ) -> tuple[str, str]:
+        """Resolve (scientific_species, scientific_family) from the bundled bird
+        catalog. Returns empty strings when nothing matches; never raises."""
+        if self._catalog is None:
+            try:
+                try:
+                    from kestrel_analyzer.bird_catalog import get_catalog
+                except ImportError:
+                    from analyzer.kestrel_analyzer.bird_catalog import get_catalog
+                self._catalog = get_catalog()
+            except Exception:
+                self._catalog = False  # type: ignore[assignment]  # sentinel: catalog unavailable
+        if not self._catalog:
+            return "", ""
+        sci_sp = ""
+        sci_fa = ""
+        if common_species:
+            rec = self._catalog.lookup(common_species)
+            if rec:
+                sci_sp = rec.scientific_name or ""
+                sci_fa = rec.family_sci or ""
+        if common_family and not sci_fa:
+            sci_fa = self._catalog.family_sci_for(common_family) or ""
+        return sci_sp, sci_fa
+
     def _build_scene_presign_payload(
         self,
         rows: List["_RowUpload"],
@@ -1528,6 +1564,7 @@ class PerchKestrelUploader:
                         byte_len = path.stat().st_size
                     except OSError:
                         byte_len = 0
+                    sci_sp_ex, sci_fa_ex = self._resolve_scientific(ru.species, ru.family)
                     assets_payload.append({
                         "kind": "export",
                         "filename": path.name,
@@ -1538,6 +1575,8 @@ class PerchKestrelUploader:
                         "speciesConfidence": ru.species_confidence,
                         "family": ru.family,
                         "familyConfidence": ru.family_confidence,
+                        "speciesScientific": sci_sp_ex or None,
+                        "familyScientific": sci_fa_ex or None,
                         "captureTimeMs": ru.capture_time_ms,
                         "cropsJson": crops_body or None,
                         "secondaryJson": ru.secondary_json or None,
@@ -1560,6 +1599,9 @@ class PerchKestrelUploader:
                         byte_len = path.stat().st_size
                     except OSError:
                         byte_len = 0
+                    crop_species = cd.get("species", ru.species)
+                    crop_family = cd.get("family", ru.family)
+                    sci_sp_cr, sci_fa_cr = self._resolve_scientific(crop_species, crop_family)
                     assets_payload.append({
                         "kind": "crop",
                         "filename": path.name,
@@ -1567,10 +1609,12 @@ class PerchKestrelUploader:
                         "sortInScene": export_sort_in_scene + 1000 + ci,
                         "parentSortInScene": export_sort_in_scene,
                         "quality": cd.get("quality", ru.quality),
-                        "species": cd.get("species", ru.species),
+                        "species": crop_species,
                         "speciesConfidence": cd.get("species_confidence", ru.species_confidence),
-                        "family": cd.get("family", ru.family),
+                        "family": crop_family,
                         "familyConfidence": cd.get("family_confidence", ru.family_confidence),
+                        "speciesScientific": sci_sp_cr or None,
+                        "familyScientific": sci_fa_cr or None,
                         "captureTimeMs": ru.capture_time_ms,
                         "cropsJson": crops_body or None,
                         "secondaryJson": ru.secondary_json or None,
