@@ -21,11 +21,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 import uuid
 from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
@@ -116,15 +118,48 @@ def _opt_str_csv(row, col: str) -> Optional[str]:
 
 
 def _parse_capture(row, df) -> Optional[int]:
-    for col in ("capture_time_ms", "captureTimeMs", "capture_time"):
-        if col in df.columns:
-            v = row.get(col)
-            if v is None or (pd is not None and pd.isna(v)):
-                continue
+    """Parse a CSV row's capture-time cell into Unix-ms.
+
+    Kestrel writes ISO-8601 strings (`2025-05-22T15:30:00` or `... +00:00`),
+    which is the dominant case. The numeric branches handle older fixtures
+    and any direct-from-EXIF integer columns.
+    """
+    for key in ("capture_time", "Capture Time", "capture time",
+                "capture_time_ms", "captureTimeMs"):
+        if key not in row.index:
+            continue
+        v = row.get(key)
+        if v is None or (pd is not None and pd.isna(v)):
+            continue
+        # ISO-8601 string (most common shape from the Kestrel CSV).
+        if isinstance(v, str):
+            s = v.strip()
+            if re.match(r"^\d{4}-\d{2}-\d{2}[T ]\d{1,2}:\d{2}:\d{2}", s):
+                try:
+                    dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+                    return int(dt.timestamp() * 1000)
+                except (ValueError, OSError):
+                    pass
+            # Numeric-as-string fallback (e.g. "1734789123000").
             try:
-                return int(float(v))
+                num = int(float(s))
             except (TypeError, ValueError):
-                pass
+                continue
+            if num > 1_000_000_000_000:
+                return num
+            if num > 1_000_000_000:
+                return num * 1000
+            continue
+        # Numeric cell — detect ms vs s by magnitude.
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            try:
+                num = int(v)
+            except (TypeError, ValueError):
+                continue
+            if num > 1_000_000_000_000:
+                return num
+            if num > 1_000_000_000:
+                return num * 1000
     return None
 
 

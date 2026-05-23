@@ -18,6 +18,10 @@ import time
 import webbrowser
 
 from settings_utils import load_persisted_settings, save_persisted_settings, debug, info, warn, error
+# Several long-standing call sites use `log(...)` as a catch-all logger.
+# Bind it to `error` so error-path handlers don't NameError mid-cleanup
+# (which masks the real exception that triggered them).
+log = error
 from queue_manager import _queue_manager
 
 try:
