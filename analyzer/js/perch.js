@@ -824,14 +824,12 @@
 
     async function kickShareJob(rootPath, excludedSceneIds, skipRejected, resumeOpts) {
       let res;
-      const existingPerchId = (resumeOpts && resumeOpts.existingPerchId) || null;
       const idempotencyKey = (resumeOpts && resumeOpts.idempotencyKey) || null;
       try {
         res = await window.pywebview.api.share_with_perch(
           rootPath,
           excludedSceneIds || [],
           skipRejected !== false,
-          existingPerchId,
           idempotencyKey,
         );
       } catch (e) {

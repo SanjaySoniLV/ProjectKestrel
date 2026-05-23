@@ -4164,7 +4164,6 @@ class Api:
         root_path: str,
         excluded_scene_ids=None,
         skip_rejected: bool = True,
-        existing_perch_id: str | None = None,
         idempotency_key: str | None = None,
     ) -> dict:
         """Kick off an async upload. Returns immediately with `{job_id}`.
@@ -4177,10 +4176,10 @@ class Api:
         omitted from the upload. The dialog defaults this to True; the user
         can uncheck "Skip rejected photos" in the dialog to override.
 
-        ``existing_perch_id`` / ``idempotency_key`` (Phase 2 resume): when set,
-        the uploader reuses the given perch instead of creating a new one and
-        skips R2 PUTs for assets the server already reports as committed. The
-        client passes both from a stored ``perch_upload_manifest.json``.
+        ``idempotency_key``: optional — if a previous call crashed between
+        receiving the perch id and the success response, the JS layer can
+        replay with the same key to dedupe. Server matches on
+        ``(owner_id, idempotency_key)`` and returns the same perch row.
         """
         try:
             from perch_uploader import (
@@ -4248,7 +4247,6 @@ class Api:
                     progress_callback=_on_progress,
                     cancel_event=cancel_event,
                     skip_rejected=bool(skip_rejected),
-                    existing_perch_id=(str(existing_perch_id) if existing_perch_id else None),
                     idempotency_key=(str(idempotency_key) if idempotency_key else None),
                 )
                 # Persist `.kestrel/perch_link.json` only on a fully-successful
@@ -4502,13 +4500,9 @@ class Api:
         if r.status_code == 200:
             return {"status": "alive", "perch_id": perch_id, "link": link}
         if r.status_code == 404:
-            # Definite delete — clear local link AND any pending upload manifest.
+            # Definite delete — clear local link.
             try:
                 link_path.unlink()
-            except OSError:
-                pass
-            try:
-                self._perch_manifest_path(str(root_real)).unlink()
             except OSError:
                 pass
             return {"status": "deleted", "perch_id": perch_id, "cleared_local": True}
@@ -4633,332 +4627,6 @@ class Api:
                 "uploadState": upload_state,
             },
         }
-
-    # ─── Resumable upload helpers (Phase 2) ────────────────────────────────
-
-    @staticmethod
-    def _perch_manifest_path(folder_path: str) -> "Path":
-        from pathlib import Path as _P
-        return _P(folder_path) / ".kestrel" / "perch_upload_manifest.json"
-
-    def detect_resumable_upload(self, folder_path: str) -> dict:
-        """Inspect ``.kestrel/perch_upload_manifest.json`` and reconcile against
-        the server's authoritative upload state.
-
-        Returns one of:
-          {"present": False}                                  — no manifest
-          {"present": True, "status": "deleted"}              — server 404; manifest cleared
-          {"present": True, "status": "unauthorized"}         — 401; left alone
-          {"present": True, "status": "forbidden"}            — 403; left alone
-          {"present": True, "status": "unreachable", "error"} — network error
-          {"present": True, "status": "complete", ...}        — everything committed
-          {"present": True, "status": "resumable", "perch_id", "perch_url",
-           "idempotency_key", "title", "total", "committed", "pending"}
-        """
-        root_real, err = self._validate_root_dir(
-            folder_path, context="detect_resumable_upload", require_exists=True
-        )
-        if err:
-            return {"present": False, "error": err}
-        manifest_path = self._perch_manifest_path(str(root_real))
-        if not manifest_path.is_file():
-            return {"present": False}
-
-        import json as _json
-        try:
-            with open(manifest_path, "r", encoding="utf-8") as f:
-                manifest = _json.load(f)
-        except Exception as e:
-            return {"present": False, "error": f"manifest unreadable: {e}"}
-
-        perch_id = str((manifest or {}).get("perch_id") or "").strip()
-        if not perch_id:
-            return {"present": False, "error": "manifest has no perch_id"}
-
-        token, dev_user, terr = self._check_auth_token()
-        if terr:
-            return {"present": True, "status": "unauthorized", "manifest": manifest}
-
-        try:
-            import requests as _req
-            headers: dict = {}
-            if token:
-                headers["Authorization"] = f"Bearer {token}"
-            if dev_user:
-                headers["x-dev-user-id"] = str(dev_user)
-            r = _req.get(
-                f"{self.get_perch_api_base()}/v1/perches/{perch_id}/upload-state",
-                headers=headers,
-                timeout=15,
-            )
-        except Exception as e:
-            return {"present": True, "status": "unreachable", "error": str(e), "manifest": manifest}
-
-        if r.status_code == 404:
-            try:
-                manifest_path.unlink()
-            except OSError:
-                pass
-            return {"present": True, "status": "deleted", "perch_id": perch_id}
-        if r.status_code == 401:
-            return {"present": True, "status": "unauthorized", "manifest": manifest}
-        if r.status_code == 403:
-            return {"present": True, "status": "forbidden", "manifest": manifest}
-        if not r.ok:
-            return {
-                "present": True, "status": "unreachable",
-                "error": f"HTTP {r.status_code}", "manifest": manifest,
-            }
-
-        body = r.json()
-        server_assets = body.get("assets") or []
-        committed = sum(1 for a in server_assets if a.get("uploadState") == "committed")
-        pending = sum(1 for a in server_assets if a.get("uploadState") == "pending")
-        total = committed + pending
-
-        if total > 0 and pending == 0:
-            return {
-                "present": True,
-                "status": "complete",
-                "perch_id": perch_id,
-                "perch_url": str(manifest.get("perch_url") or ""),
-                "total": total,
-                "committed": committed,
-                "pending": 0,
-            }
-        return {
-            "present": True,
-            "status": "resumable",
-            "perch_id": perch_id,
-            "perch_url": str(manifest.get("perch_url") or ""),
-            "idempotency_key": str(manifest.get("idempotency_key") or ""),
-            "title": str(manifest.get("title") or ""),
-            "total": total,
-            "committed": committed,
-            "pending": pending,
-        }
-
-    def discard_resumable_upload(self, folder_path: str) -> dict:
-        """Delete the local manifest AND ``DELETE`` the partial perch on the
-        server — used by the dialog's "Start over" button. Best-effort: if the
-        Worker call fails the manifest is still removed so the user isn't stuck."""
-        root_real, err = self._validate_root_dir(
-            folder_path, context="discard_resumable_upload", require_exists=True
-        )
-        if err:
-            return {"success": False, "error": err}
-        manifest_path = self._perch_manifest_path(str(root_real))
-        if not manifest_path.is_file():
-            return {"success": True, "removed": False}
-        import json as _json
-        perch_id = ""
-        try:
-            with open(manifest_path, "r", encoding="utf-8") as f:
-                manifest = _json.load(f)
-            perch_id = str((manifest or {}).get("perch_id") or "").strip()
-        except Exception:
-            pass
-
-        worker_error: Optional[str] = None
-        if perch_id:
-            token, dev_user, terr = self._check_auth_token()
-            if terr is None:
-                try:
-                    import requests as _req
-                    headers: dict = {}
-                    if token:
-                        headers["Authorization"] = f"Bearer {token}"
-                    if dev_user:
-                        headers["x-dev-user-id"] = str(dev_user)
-                    dr = _req.delete(
-                        f"{self.get_perch_api_base()}/v1/perches/{perch_id}",
-                        headers=headers,
-                        timeout=15,
-                    )
-                    if not dr.ok and dr.status_code != 404:
-                        worker_error = f"HTTP {dr.status_code}"
-                except Exception as e:
-                    worker_error = str(e)
-
-        try:
-            manifest_path.unlink()
-        except OSError as e:
-            return {"success": False, "error": f"manifest unlink failed: {e}", "worker_error": worker_error}
-
-        return {"success": True, "removed": True, "perch_id": perch_id, "worker_error": worker_error}
-
-    # ─── Sync (Phase 3) ────────────────────────────────────────────────
-
-    def compute_state_hash(self, folder_path: str) -> dict:
-        """Hash kestrel_database.csv + kestrel_scenedata.json. JS uses this to
-        decide whether the Sync button should be greyed out (clean) or not."""
-        root_real, err = self._validate_root_dir(folder_path, context="compute_state_hash", require_exists=True)
-        if err:
-            return {"success": False, "error": err}
-        h = self._hash_kestrel_state(str(root_real))
-        return {"success": True, "hash": h}
-
-    def compute_sync_diff(self, folder_path: str) -> dict:
-        """Read-only preview for the Sync modal. Returns the diff between the
-        local folder and the server perch without applying anything.
-
-        Errors surface with the same shape as ``share_with_perch`` failures
-        so the JS layer can branch on `error: 'perch_deleted'` etc.
-        """
-        try:
-            from perch_uploader import PerchKestrelUploader, _PerchDeleted
-        except ImportError:
-            try:
-                from analyzer.perch_uploader import PerchKestrelUploader, _PerchDeleted
-            except ImportError as e:
-                return {"success": False, "error": f"uploader import failed: {e}"}
-
-        token, dev_user, terr = self._check_auth_token()
-        if terr:
-            return terr
-
-        root_real, verr = self._validate_root_dir(
-            folder_path, context="compute_sync_diff", require_exists=True
-        )
-        if verr:
-            return {"success": False, "error": verr}
-
-        try:
-            uploader = PerchKestrelUploader(
-                self.get_perch_api_base(),
-                str(token) if token else None,
-                dev_user=dev_user,
-            )
-            diff = uploader.compute_sync_diff(str(root_real))
-        except _PerchDeleted as e:
-            # Server says the perch is gone — clear local state so the folder
-            # card flips back to its un-published affordance.
-            try:
-                self._perch_link_path(str(root_real)).unlink()
-            except OSError:
-                pass
-            try:
-                self._perch_manifest_path(str(root_real)).unlink()
-            except OSError:
-                pass
-            return {"success": False, "error": "perch_deleted", "perch_id": e.perch_id}
-        except FileNotFoundError as e:
-            return {"success": False, "error": str(e)}
-        except Exception as e:
-            log(f"compute_sync_diff: {e}")
-            return {"success": False, "error": str(e)}
-
-        return {"success": True, "diff": diff}
-
-    def sync_to_perch(self, folder_path: str) -> dict:
-        """Kick off an async sync job. Returns immediately with `{job_id}`.
-        JS polls via the same ``get_share_progress`` infrastructure used for
-        uploads, so the in-flight Perch-uploads card pattern is reused.
-        """
-        try:
-            from perch_uploader import PerchKestrelUploader, _PerchDeleted
-        except ImportError:
-            try:
-                from analyzer.perch_uploader import PerchKestrelUploader, _PerchDeleted
-            except ImportError as e:
-                return {"success": False, "error": f"uploader import failed: {e}"}
-
-        token, dev_user, terr = self._check_auth_token()
-        if terr:
-            return terr
-
-        root_real, verr = self._validate_root_dir(
-            folder_path, context="sync_to_perch", require_exists=True
-        )
-        if verr:
-            return {"success": False, "error": verr}
-
-        lock = self._ensure_share_lock()
-        with lock:
-            if self._active_share_job is not None:
-                return {
-                    "success": False,
-                    "error": "already_running",
-                    "active_job_id": self._active_share_job,
-                }
-            import threading as _t
-            import uuid as _uuid
-            job_id = str(_uuid.uuid4())
-            cancel_event = _t.Event()
-            self._share_jobs[job_id] = {
-                "progress": {"phase": "starting", "kind": "sync"},
-                "cancel_event": cancel_event,
-                "thread": None,
-            }
-            self._active_share_job = job_id
-
-        def _on_progress(payload: dict) -> None:
-            with lock:
-                if job_id in self._share_jobs:
-                    p = dict(payload)
-                    p["kind"] = "sync"  # tag the job kind so JS can branch
-                    self._share_jobs[job_id]["progress"] = p
-
-        def _runner() -> None:
-            try:
-                uploader = PerchKestrelUploader(
-                    self.get_perch_api_base(),
-                    str(token) if token else None,
-                    dev_user=dev_user,
-                )
-                result = uploader.sync_to_perch(
-                    str(root_real),
-                    progress_callback=_on_progress,
-                    cancel_event=cancel_event,
-                )
-                # On a successful (full or partial) sync, refresh the link's
-                # state hash so the Sync button greys out "Up to date" until
-                # the next local edit.
-                if result and result.get("ok") and not result.get("canceled"):
-                    try:
-                        link_path = self._perch_link_path(str(root_real))
-                        if link_path.is_file():
-                            with open(link_path, "r", encoding="utf-8") as f:
-                                import json as _json
-                                link = _json.load(f)
-                            link["state_hash_at_upload"] = self._hash_kestrel_state(str(root_real))
-                            link["last_synced_at_ms"] = int(time.time() * 1000)
-                            tmp = link_path.with_suffix(".json.tmp")
-                            with open(tmp, "w", encoding="utf-8") as f:
-                                _json.dump(link, f, indent=2)
-                            os.replace(tmp, link_path)
-                    except Exception as up_err:
-                        log(f"sync_to_perch: link update failed: {up_err}")
-            except _PerchDeleted as e:
-                try:
-                    self._perch_link_path(str(root_real)).unlink()
-                except OSError:
-                    pass
-                try:
-                    self._perch_manifest_path(str(root_real)).unlink()
-                except OSError:
-                    pass
-                _on_progress({"phase": "error", "message": "perch_deleted", "perch_id": e.perch_id})
-            except Exception as e:
-                log(f"sync_to_perch: {e}")
-                import traceback as _tb
-                log(_tb.format_exc())
-                _on_progress({"phase": "error", "message": str(e)})
-            finally:
-                with lock:
-                    if self._active_share_job == job_id:
-                        self._active_share_job = None
-                # Sync may have changed asset metadata — invalidate caches.
-                self._perch_usage_cache = None
-                self._perch_usage_cache_at = 0.0
-
-        import threading as _t
-        thread = _t.Thread(target=_runner, name=f"PerchSync-{job_id[:8]}", daemon=True)
-        with lock:
-            self._share_jobs[job_id]["thread"] = thread
-        thread.start()
-
-        return {"success": True, "job_id": job_id}
 
     # ── OAuth 2.0 + PKCE sign-in / refresh / sign-out ────────────────────
 
