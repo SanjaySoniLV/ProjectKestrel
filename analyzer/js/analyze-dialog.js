@@ -553,6 +553,68 @@
     }
 
     // ── Recents chips (Phase 3G — independent from main tree's folder_recents) ──
+
+    /** Build a single recents chip DOM node. Shared by sync + async paths. */
+    function _adlgBuildRecentsChip(path) {
+      function ellipsize(p, maxLen = 28) {
+        if (!p) return '';
+        const s = p.replace(/\\/g, '/');
+        if (s.length <= maxLen) return s;
+        const parts = s.split('/').filter(Boolean);
+        if (parts.length <= 2) return s.slice(0, maxLen - 1) + '…';
+        const t = `${parts[0]}/…/${parts[parts.length - 1]}`;
+        return t.length <= maxLen ? t : (t.slice(0, maxLen - 1) + '…');
+      }
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'folder-recents-chip';
+      chip.title = path;
+      chip.dataset.path = path;
+      const plus = document.createElement('span');
+      plus.className = 'folder-recents-chip-plus';
+      plus.textContent = '+ \u{1F4C2}';
+      const label = document.createElement('span');
+      label.textContent = ' ' + ellipsize(path);
+      chip.appendChild(plus); chip.appendChild(label);
+      chip.addEventListener('click', async () => {
+        chip.disabled = true;
+        try {
+          const r = await addAnalyzeDlgRoot(path);
+          if (r && r.added) {
+            await _persistAnalyzeRecentsBump(path);
+            _renderAnalyzeDlgRecentsChipsSync();
+            renderAnalyzeDlgRecentsChips().catch(() => {});
+            _inspectAndRenderAnalyzeDlg().catch(() => {});
+          }
+        } finally { chip.disabled = false; }
+      });
+      return chip;
+    }
+
+    /** Instant sync render from settings — no IPC. Shows every recent that
+     *  isn't already loaded in the dialog tree. Called before showModal() so
+     *  the chips appear without waiting for inspect_folders. The async
+     *  renderAnalyzeDlgRecentsChips() then refines this by removing chips
+     *  whose paths are invalid or have no work remaining. */
+    function _renderAnalyzeDlgRecentsChipsSync() {
+      const row = document.getElementById('analyzeDlgRecentsRow');
+      if (!row) return;
+      const s = (typeof loadSettings === 'function') ? loadSettings() : {};
+      const recents = Array.isArray(s.analyze_recents) ? s.analyze_recents.slice(0, 16) : [];
+      const loaded = new Set(analyzeDlgRootOrder);
+      const available = recents
+        .map(r => r && r.path)
+        .filter(p => p && !loaded.has(_adlgNormRoot(p)));
+      if (available.length === 0) {
+        row.classList.add('hidden');
+        row.innerHTML = '';
+        return;
+      }
+      row.innerHTML = '';
+      for (const path of available) row.appendChild(_adlgBuildRecentsChip(path));
+      row.classList.remove('hidden');
+    }
+
     async function renderAnalyzeDlgRecentsChips() {
       const row = document.getElementById('analyzeDlgRecentsRow');
       if (!row) return;
@@ -601,41 +663,8 @@
         row.innerHTML = '';
         return;
       }
-      function ellipsize(p, maxLen = 28) {
-        if (!p) return '';
-        const s = p.replace(/\\/g, '/');
-        if (s.length <= maxLen) return s;
-        const parts = s.split('/').filter(Boolean);
-        if (parts.length <= 2) return s.slice(0, maxLen - 1) + '…';
-        const t = `${parts[0]}/…/${parts[parts.length - 1]}`;
-        return t.length <= maxLen ? t : (t.slice(0, maxLen - 1) + '…');
-      }
       row.innerHTML = '';
-      for (const path of available) {
-        const chip = document.createElement('button');
-        chip.type = 'button';
-        chip.className = 'folder-recents-chip';
-        chip.title = path;
-        const plus = document.createElement('span');
-        plus.className = 'folder-recents-chip-plus';
-        plus.textContent = '+ 📂';
-        const label = document.createElement('span');
-        label.textContent = ' ' + ellipsize(path);
-        chip.appendChild(plus); chip.appendChild(label);
-        chip.addEventListener('click', async () => {
-          chip.disabled = true;
-          try {
-            const r = await addAnalyzeDlgRoot(path);
-            if (r && r.added) {
-              // Bump-to-top in analyze_recents + persist.
-              await _persistAnalyzeRecentsBump(path);
-              await renderAnalyzeDlgRecentsChips();
-              await _inspectAndRenderAnalyzeDlg();
-            }
-          } finally { chip.disabled = false; }
-        });
-        row.appendChild(chip);
-      }
+      for (const path of available) row.appendChild(_adlgBuildRecentsChip(path));
       row.classList.remove('hidden');
     }
 
@@ -946,16 +975,16 @@
         alert('Analysis queue is only available in the desktop (pywebview) mode.\n\nRun kestrel_visualizer as a desktop app to use this feature.');
         return;
       }
-      // Fetch the app version once if not already cached — needed for the
-      // outdated-version pill badges (isVersionOutdated returns false when
-      // _appVersion is empty, so badges silently never render). The main-tree
-      // addFolderRoot also fetches this; we duplicate the guard here because
-      // the user can open the analyze dialog before touching the main tree.
+      // App-version fetch is needed for the outdated-version pill badges, but
+      // it's a non-blocking concern — fire it without awaiting so the dialog
+      // opens instantly. When it lands, re-render the tree so badges appear.
       if (!_appVersion && window.pywebview?.api?.get_app_version) {
-        try {
-          const vr = await window.pywebview.api.get_app_version();
-          if (vr && vr.success) _appVersion = vr.version || '';
-        } catch (e) { /* ignore — badges just won't show */ }
+        window.pywebview.api.get_app_version().then(vr => {
+          if (vr && vr.success && vr.version) {
+            _appVersion = vr.version;
+            if (typeof renderAnalyzeDlgTree === 'function') renderAnalyzeDlgTree();
+          }
+        }).catch(() => {});
       }
       // Hydrate critical settings from persisted values. The radios mirror to
       // the hidden #adlgWildlifeModelMode <select> so existing read/write paths
@@ -1075,23 +1104,25 @@
       }
       _syncDetectionConfidenceWarning();
 
-      // Render recents first (no roots yet → just shows chips). Then if the
-      // dialog already has roots from a prior open (we keep state across
-      // opens until Clear), inspect + render the tree.
-      await renderAnalyzeDlgRecentsChips();
-      if (_adlgHasAnyRoots()) {
-        renderAnalyzeDlgTree();
-        await _inspectAndRenderAnalyzeDlg();
-      } else {
-        renderAnalyzeDlgTree();
-      }
+      // Sync render passes — fast, no IPC. These paint a usable dialog
+      // immediately. Background tasks below refine the data when ready.
+      _renderAnalyzeDlgRecentsChipsSync();
+      renderAnalyzeDlgTree();
       refreshAnalyzeDlgSummary();
-      // Wire the Local/Cloud destination cards + reset destination state.
-      // _ccWireDestinationDialog is idempotent (sentinel on the Local card),
-      // so safe to call on every open. Without this the cards are inert.
-      if (typeof _ccResetDestinationOnDialogOpen === 'function') {
-        try { await _ccResetDestinationOnDialogOpen(); } catch (e) { console.warn('[cc] reset failed', e); }
-      }
+
+      // Open the dialog NOW. Everything below is background work that
+      // updates the UI in-place when results arrive.
       document.getElementById('analyzeQueueDlg').showModal();
+
+      // Async refinement (fire-and-forget): inspect_folders on recents to
+      // filter out invalid/already-done paths; on roots to populate per-folder
+      // counts. _ccResetDestinationOnDialogOpen wires the cloud card + auth gate.
+      renderAnalyzeDlgRecentsChips().catch(e => console.warn('[adlg] recents refresh failed', e));
+      if (_adlgHasAnyRoots()) {
+        _inspectAndRenderAnalyzeDlg().catch(e => console.warn('[adlg] inspect failed', e));
+      }
+      if (typeof _ccResetDestinationOnDialogOpen === 'function') {
+        _ccResetDestinationOnDialogOpen().catch(e => console.warn('[cc] reset failed', e));
+      }
     }
 
