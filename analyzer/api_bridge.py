@@ -1208,6 +1208,29 @@ class Api:
             error(f'[API] search_birds error: {e}')
             return {'success': False, 'error': str(e), 'results': []}
 
+    def search_families(self, query='', regions=None, limit=20):
+        """Region-filtered fuzzy search across unique bird families."""
+        try:
+            try:
+                from kestrel_analyzer.bird_catalog import family_entry_to_dict
+            except ImportError:
+                from analyzer.kestrel_analyzer.bird_catalog import family_entry_to_dict
+            cat = self._get_bird_catalog()
+            if cat is None:
+                return {'success': False, 'error': 'catalog unavailable', 'results': []}
+            q = '' if query is None else str(query)
+            sel = regions if isinstance(regions, (list, tuple)) else ['NA']
+            try:
+                n = int(limit)
+            except (TypeError, ValueError):
+                n = 20
+            n = max(1, min(100, n))
+            results = cat.search_families(q, sel, limit=n)
+            return {'success': True, 'results': [family_entry_to_dict(f) for f in results]}
+        except Exception as e:
+            error(f'[API] search_families error: {e}')
+            return {'success': False, 'error': str(e), 'results': []}
+
     def lookup_birds(self, names=None):
         """Resolve a list of canonical names (already-applied pills) to records.
 
