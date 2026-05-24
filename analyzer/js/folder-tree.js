@@ -424,7 +424,8 @@
 
       const norm = p => (p || '').replace(/\\/g, '/');
       const normPath = norm(node.path);
-      const isInProgress = _inProgressFolderPaths.has(normPath);
+      const isInProgress = _inProgressFolderPaths.has(normPath)
+        || (window._ccInProgressFolderPaths && window._ccInProgressFolderPaths.has(normPath));
 
       const effectiveHasKestrel = subtreeHasKestrel(node) || isInProgress; // Show checkbox for in-progress too
       const outdated = isVersionOutdated(node);

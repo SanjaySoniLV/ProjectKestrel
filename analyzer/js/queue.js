@@ -1044,7 +1044,8 @@
         const rows = Array.from(document.querySelectorAll('#folderTree .tree-node-row'));
         for (const row of rows) {
           const rp = norm(row.dataset.path || '');
-          const isNowInProgress = _inProgressFolderPaths.has(rp);
+          const isNowInProgress = _inProgressFolderPaths.has(rp)
+            || (window._ccInProgressFolderPaths && window._ccInProgressFolderPaths.has(rp));
 
           if (isNowInProgress) {
             row.classList.add('in-progress');
@@ -1055,9 +1056,10 @@
               hg.className = 'tree-in-progress-hourglass';
               hg.textContent = '⏳';
               hg.title = 'Analysis in progress';
-              const iconEl = row.querySelector('.tree-icon');
-              if (iconEl && iconEl.nextSibling) iconEl.parentNode.insertBefore(hg, iconEl.nextSibling);
-              else if (iconEl) iconEl.parentNode.appendChild(hg);
+              const featherEl = row.querySelector('.tree-perch-feather');
+              const anchorEl = featherEl || row.querySelector('.tree-icon');
+              if (anchorEl && anchorEl.nextSibling) anchorEl.parentNode.insertBefore(hg, anchorEl.nextSibling);
+              else if (anchorEl) anchorEl.parentNode.appendChild(hg);
             }
 
             if (!row.querySelector('.tree-cb')) {
@@ -1176,16 +1178,18 @@
           return;
         }
         
+        const ccPaths = window._ccInProgressFolderPaths || new Set();
         for (const [path, timerId] of _autoRefreshTimers.entries()) {
-          const isStillInProgress = _inProgressFolderPaths.has(path);
+          const isStillInProgress = _inProgressFolderPaths.has(path) || ccPaths.has(path);
           const isStillChecked = _isPathChecked(path);
           if (!isStillInProgress || !isStillChecked) {
             clearInterval(timerId);
             _autoRefreshTimers.delete(path);
           }
         }
-        
-        for (const inProgPath of _inProgressFolderPaths) {
+
+        const allInProgress = new Set([..._inProgressFolderPaths, ...ccPaths]);
+        for (const inProgPath of allInProgress) {
           if (_isPathChecked(inProgPath) && !_autoRefreshTimers.has(inProgPath)) {
             const capturedPath = inProgPath;
             const timerId = setInterval(async () => {
@@ -1208,7 +1212,8 @@
         function traverse(n) {
           if (!n) return;
           const np = (n.path || '').replace(/\\/g, '/');
-          if (n.has_kestrel && !_inProgressFolderPaths.has(np)) count++;
+          const ccPaths = window._ccInProgressFolderPaths || new Set();
+          if (n.has_kestrel && !_inProgressFolderPaths.has(np) && !ccPaths.has(np)) count++;
           (n.children || []).forEach(c => traverse(c));
         }
         for (const root of _getAllRoots()) traverse(root);
