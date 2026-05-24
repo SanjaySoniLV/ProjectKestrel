@@ -1037,22 +1037,29 @@
     // Legacy alias for any straggling callers.
     const rescanFolderTree = rescanFolderRoot;
 
-    /** Update UI to reflect in-progress folders with special styling and always-present checkboxes. */
+    /** Update UI to reflect in-progress folders with hourglass indicator and checkboxes. */
     function updateInProgressFoldersInTree() {
       try {
         const norm = p => (p || '').replace(/\\/g, '/');
-        for (const inProgPath of _inProgressFolderPaths) {
-          const normPath = norm(inProgPath);
-          const rows = Array.from(document.querySelectorAll('#folderTree .tree-node-row'));
-          for (const row of rows) {
-            const rp = norm(row.dataset.path || '');
-            if (rp !== normPath) continue;
-            
-            // Mark as in-progress with purple styling
+        const rows = Array.from(document.querySelectorAll('#folderTree .tree-node-row'));
+        for (const row of rows) {
+          const rp = norm(row.dataset.path || '');
+          const isNowInProgress = _inProgressFolderPaths.has(rp);
+
+          if (isNowInProgress) {
             row.classList.add('in-progress');
-            _tempKestrelPaths.add(normPath); // prevent checkbox removal on next rescan
-            
-            // Ensure checkbox exists (even if .kestrel doesn't)
+            _tempKestrelPaths.add(rp);
+
+            if (!row.querySelector('.tree-in-progress-hourglass')) {
+              const hg = document.createElement('span');
+              hg.className = 'tree-in-progress-hourglass';
+              hg.textContent = '⏳';
+              hg.title = 'Analysis in progress';
+              const iconEl = row.querySelector('.tree-icon');
+              if (iconEl && iconEl.nextSibling) iconEl.parentNode.insertBefore(hg, iconEl.nextSibling);
+              else if (iconEl) iconEl.parentNode.appendChild(hg);
+            }
+
             if (!row.querySelector('.tree-cb')) {
               const cb = document.createElement('input');
               cb.type = 'checkbox';
@@ -1066,11 +1073,14 @@
                 _updateAutoRefreshTimers();
                 debouncedAutoLoad();
               });
-              // Find icon and insert before it
               const icon = row.querySelector('.tree-icon');
               if (icon && icon.parentNode) icon.parentNode.insertBefore(cb, icon);
               else row.insertBefore(cb, row.firstChild);
             }
+          } else if (row.classList.contains('in-progress')) {
+            row.classList.remove('in-progress');
+            const hg = row.querySelector('.tree-in-progress-hourglass');
+            if (hg) hg.remove();
           }
         }
       } catch (e) { console.warn('[tree] updateInProgressFoldersInTree error:', e); }
