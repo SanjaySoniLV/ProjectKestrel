@@ -1014,6 +1014,54 @@
       dropdownEl.style.display = '';
     }
 
+    const FAMILY_COMBO_MAX = 12;
+    let _familyComboRequestSeq = 0;
+
+    async function _searchFamiliesForCombo(query) {
+      const id = ++_familyComboRequestSeq;
+      if (!hasPywebviewApi || !window.pywebview?.api?.search_families) {
+        return { id, items: [] };
+      }
+      const regions = _getCurrentBirdRegions();
+      try {
+        const res = await window.pywebview.api.search_families(String(query || ''), regions, FAMILY_COMBO_MAX);
+        const items = (res && res.success && Array.isArray(res.results)) ? res.results : [];
+        return { id, items };
+      } catch (e) {
+        kdebug('[search_families] failed:', e);
+        return { id, items: [] };
+      }
+    }
+
+    function _renderFamilyComboDropdown(dropdownEl, items, highlightIdx) {
+      if (!dropdownEl) return;
+      if (!items || items.length === 0) {
+        dropdownEl.innerHTML = '';
+        dropdownEl.style.display = 'none';
+        return;
+      }
+      const html = items.map((entry, i) => {
+        const name = entry.family_common || '';
+        const sci  = entry.family_sci || '';
+        const order = entry.order || '';
+        const cls = i === highlightIdx ? 'chip-combo-item chip-combo-item--active' : 'chip-combo-item';
+        const sciHtml = sci
+          ? `<span class="chip-combo-sci"><em>${escapeHtml(sci)}</em></span>` : '';
+        const orderHtml = order ? `<span class="chip-combo-family">${escapeHtml(order)}</span>` : '';
+        return (
+          `<div class="${cls}" data-combo-index="${i}" data-combo-name="${escapeHtml(name)}">` +
+            `<div class="chip-combo-left">` +
+              `<span class="chip-combo-name">${escapeHtml(name)}</span>` +
+              sciHtml +
+            `</div>` +
+            `<div class="chip-combo-right">${orderHtml}</div>` +
+          `</div>`
+        );
+      }).join('');
+      dropdownEl.innerHTML = html;
+      dropdownEl.style.display = '';
+    }
+
     /** Look up the family display name for a species name (case-insensitive).
      *  Returns { canonical, family } if matched, or null for free-form input.
      *  Prefers the cached bird-catalog record (richer info) and falls back to
@@ -1149,7 +1197,7 @@
         html += _buildSuggestedTagButton('family', suggestions.family);
       }
       if (_activeTagInputType === 'family' && _activeTagInputSceneId === String(scene.id)) {
-        html += `<span class="chip-input-wrap"><input type="text" class="chip-input" id="inlineTagInput" placeholder="Family..." /><button class="chip-commit-btn" title="Save">✓</button></span>`;
+        html += `<span class="chip-input-wrap chip-input-wrap--family"><input type="text" class="chip-input" id="inlineTagInput" placeholder="Family..." autocomplete="off" /><button class="chip-commit-btn" title="Save">✓</button><div class="chip-input-dropdown" id="inlineTagDropdown" style="display:none"></div></span>`;
       } else {
         html += `<button class="scene-chip-add" data-add-type="family" title="Add family tag">+</button>`;
       }
@@ -1277,12 +1325,13 @@
         };
       }
 
-      // Wire inline input (with combobox behavior for species)
+      // Wire inline input (with combobox behavior for species and family)
       const inp = el('#inlineTagInput');
       if (inp) {
         const dropdown = tagsEl.querySelector('#inlineTagDropdown');
         const isSpeciesInput = _activeTagInputType === 'species';
-        // Combobox state — only meaningful for species inputs.
+        const isFamilyInput = _activeTagInputType === 'family';
+        const hasCombo = (isSpeciesInput || isFamilyInput) && !!dropdown;
         let comboItems = [];
         let comboIndex = -1;
 
@@ -1291,31 +1340,34 @@
           const rect = inp.getBoundingClientRect();
           dropdown.style.left = Math.round(rect.left) + 'px';
           dropdown.style.top = Math.round(rect.bottom + 4) + 'px';
-          // Width: at least the input's width, but allow it to grow up to the
-          // CSS max-width for longer species names.
           dropdown.style.minWidth = Math.max(Math.round(rect.width), 240) + 'px';
         };
 
         const refreshDropdown = async () => {
-          if (!isSpeciesInput || !dropdown) return;
-          // The async fetch returns its own request id; only the most recent
-          // request is allowed to repaint the dropdown, so quick typing
-          // doesn't flash older results on top of newer ones.
-          const pending = await _searchSpeciesForCombo(inp.value);
+          if (!hasCombo) return;
+          const pending = isSpeciesInput
+            ? await _searchSpeciesForCombo(inp.value)
+            : await _searchFamiliesForCombo(inp.value);
           if (!dropdown.isConnected) return;
-          if (pending.id !== _comboRequestSeq) return;
+          const seqRef = isSpeciesInput ? _comboRequestSeq : _familyComboRequestSeq;
+          if (pending.id !== seqRef) return;
           comboItems = pending.items;
           comboIndex = comboItems.length > 0 ? 0 : -1;
-          _renderSpeciesComboDropdown(dropdown, comboItems, comboIndex);
+          const renderFn = isSpeciesInput ? _renderSpeciesComboDropdown : _renderFamilyComboDropdown;
+          renderFn(dropdown, comboItems, comboIndex);
           if (comboItems.length > 0) positionDropdown();
+        };
+
+        const renderCombo = () => {
+          const renderFn = isSpeciesInput ? _renderSpeciesComboDropdown : _renderFamilyComboDropdown;
+          renderFn(dropdown, comboItems, comboIndex);
         };
 
         const updateHighlight = (newIdx) => {
           if (!comboItems.length) return;
           const n = comboItems.length;
           comboIndex = ((newIdx % n) + n) % n;
-          _renderSpeciesComboDropdown(dropdown, comboItems, comboIndex);
-          // Scroll the active row into view if the dropdown is scrollable.
+          renderCombo();
           const active = dropdown?.querySelector('.chip-combo-item--active');
           if (active && active.scrollIntoView) {
             active.scrollIntoView({ block: 'nearest' });
@@ -1382,18 +1434,16 @@
           }
         };
 
-        // Dropdown items are full record objects; ``commit()`` accepts either a
-        // string (typed value) or a record (selected from the dropdown). This
-        // helper normalises both to the canonical common name.
         const _comboValueOf = (item) => {
           if (item == null) return undefined;
           if (typeof item === 'string') return item;
           if (typeof item.canonical_common_name === 'string') return item.canonical_common_name;
+          if (typeof item.family_common === 'string') return item.family_common;
           return undefined;
         };
 
         inp.onkeydown = (e) => {
-          if (isSpeciesInput && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+          if (hasCombo && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
             if (!comboItems.length) return;
             e.preventDefault();
             updateHighlight(comboIndex + (e.key === 'ArrowDown' ? 1 : -1));
@@ -1401,10 +1451,7 @@
           }
           if (e.key === 'Enter') {
             e.preventDefault();
-            // If a dropdown row is highlighted, commit that record's canonical
-            // name. Otherwise commit the typed value (allowing free-form
-            // species like "Eurasian Wren" if it isn't in the catalog).
-            const chosen = (isSpeciesInput && comboIndex >= 0 && comboIndex < comboItems.length)
+            const chosen = (hasCombo && comboIndex >= 0 && comboIndex < comboItems.length)
               ? _comboValueOf(comboItems[comboIndex])
               : undefined;
             commit(chosen);
@@ -1417,23 +1464,20 @@
             renderTopbarTags(scene);
           }
         };
-        if (isSpeciesInput) {
+        if (hasCombo) {
           inp.oninput = () => { refreshDropdown(); };
           inp.onfocus = () => { refreshDropdown(); };
-          // Mousedown (not click) so the selection registers BEFORE the input
-          // loses focus and the blur-commit timer has a chance to fire.
           if (dropdown) {
             dropdown.onmousedown = (e) => {
               const row = e.target.closest('.chip-combo-item');
               if (!row) return;
-              e.preventDefault(); // keep input focused so blur-commit doesn't race
+              e.preventDefault();
               const idx = parseInt(row.dataset.comboIndex || '-1', 10);
               if (idx >= 0 && idx < comboItems.length) {
                 commit(_comboValueOf(comboItems[idx]));
               }
             };
           }
-          // Initial population on render.
           refreshDropdown();
         }
         inp.onblur = (e) => {

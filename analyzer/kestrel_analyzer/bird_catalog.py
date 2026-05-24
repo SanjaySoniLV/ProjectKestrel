@@ -77,6 +77,21 @@ class BirdRecord:
         return not selected.isdisjoint(self.regions)
 
 
+@dataclass(frozen=True)
+class FamilyEntry:
+    family_common: str
+    family_sci: str
+    order: str
+    regions: frozenset[str]
+
+    def matches_any_region(self, selected: frozenset[str]) -> bool:
+        if not selected:
+            return False
+        if "Worldwide" in self.regions:
+            return True
+        return not selected.isdisjoint(self.regions)
+
+
 def _parse_regions(s: str) -> frozenset[str]:
     if not s:
         return frozenset()
@@ -253,6 +268,43 @@ def score_record(query: str, rec: BirdRecord) -> int:
     return 0
 
 
+def score_family(query: str, entry: FamilyEntry) -> int:
+    """Score a family entry against a search query. Same tier logic as
+    ``score_record`` but limited to family_common and family_sci fields."""
+    q = (query or "").strip().lower()
+    if not q:
+        return 0
+
+    common = entry.family_common.lower()
+    sci = entry.family_sci.lower()
+
+    if q == common:
+        return _SCORE_COMMON_EXACT
+    if q == sci:
+        return _SCORE_SCI_EXACT
+
+    if common.startswith(q):
+        return _SCORE_COMMON_PREFIX
+    if sci.startswith(q):
+        return _SCORE_SCI_PREFIX
+
+    qt = _tokens(q)
+    if qt and _token_prefix_match(qt, _tokens(common)):
+        return _SCORE_TOKEN_PREFIX
+
+    common_compact = "".join(c for c in common if c.isalnum() or c == "'")
+    q_compact = "".join(c for c in q if c.isalnum() or c == "'")
+    if q_compact and _is_subsequence(q_compact, common_compact):
+        return _SCORE_SUBSEQUENCE
+
+    if q in common:
+        return _SCORE_SUBSTRING
+    if q in sci:
+        return _SCORE_SCI_SUBSTRING
+
+    return 0
+
+
 class BirdCatalog:
     """In-memory catalog wrapper with region filtering and ranked search."""
 
@@ -266,12 +318,27 @@ class BirdCatalog:
         # family_sci subtext on a family-tier pill without needing a
         # sibling species record to be present in the same scene.
         self._family_common_to_sci: dict[str, str] = {}
+        # Aggregated family entries for the family combobox search.
+        _fam_regions: dict[str, set[str]] = {}
+        _fam_order: dict[str, str] = {}
         for r in self._records:
             self._by_common[r.canonical_common_name.lower()] = r
             if r.alpha_4:
                 self._by_alpha.setdefault(r.alpha_4.lower(), r)
             if r.family_common and r.family_sci:
                 self._family_common_to_sci.setdefault(r.family_common, r.family_sci)
+            if r.family_common:
+                _fam_regions.setdefault(r.family_common, set()).update(r.regions)
+                if r.order:
+                    _fam_order.setdefault(r.family_common, r.order)
+        self._families: list[FamilyEntry] = []
+        for fc, sci in self._family_common_to_sci.items():
+            self._families.append(FamilyEntry(
+                family_common=fc,
+                family_sci=sci,
+                order=_fam_order.get(fc, ""),
+                regions=frozenset(_fam_regions.get(fc, ())),
+            ))
 
     @property
     def records(self) -> list[BirdRecord]:
@@ -343,6 +410,27 @@ class BirdCatalog:
         scored.sort(key=lambda t: (-t[0], t[1]))
         return [rec for _, _, rec in scored[:limit]]
 
+    def search_families(self, query: str, regions: Iterable[str], limit: int = 20) -> list[FamilyEntry]:
+        """Region-filtered fuzzy search across unique families."""
+        sel = frozenset(r for r in regions if r)
+        if not sel:
+            return []
+        q = (query or "").strip()
+        if not q:
+            in_region = [f for f in self._families if f.matches_any_region(sel)]
+            in_region.sort(key=lambda f: f.family_common.lower())
+            return in_region[:limit]
+
+        scored: list[tuple[int, str, FamilyEntry]] = []
+        for entry in self._families:
+            if not entry.matches_any_region(sel):
+                continue
+            s = score_family(q, entry)
+            if s > 0:
+                scored.append((s, entry.family_common.lower(), entry))
+        scored.sort(key=lambda t: (-t[0], t[1]))
+        return [entry for _, _, entry in scored[:limit]]
+
 
 _catalog_singleton: BirdCatalog | None = None
 
@@ -367,4 +455,14 @@ def record_to_dict(rec: BirdRecord) -> dict:
         "alpha_4": rec.alpha_4,
         "aliases": list(rec.aliases),
         "is_model_species": rec.is_model_species,
+    }
+
+
+def family_entry_to_dict(entry: FamilyEntry) -> dict:
+    """JSON-serializable representation of a family entry."""
+    return {
+        "family_common": entry.family_common,
+        "family_sci": entry.family_sci,
+        "order": entry.order,
+        "regions": sorted(entry.regions),
     }

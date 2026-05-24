@@ -304,7 +304,8 @@
    Uses position: fixed (instead of absolute relative to .chip-input-wrap)
    to escape the overflow-x: auto clipping on .scene-topbar-tags. The
    coordinates are set in JS via getBoundingClientRect on the input. */
-.chip-input-wrap--species { position: relative; }
+.chip-input-wrap--species,
+.chip-input-wrap--family { position: relative; }
 .chip-input-dropdown {
   position: fixed;
   background: #1a2a44;
