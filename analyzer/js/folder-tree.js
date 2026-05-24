@@ -468,6 +468,14 @@
       icon.className = 'tree-icon';
       icon.textContent = node.has_kestrel ? '📂' : '📁';
 
+      // Hourglass overlay — surfaces "this folder is being analyzed" at a glance.
+      const inProgressHourglass = isInProgress ? document.createElement('span') : null;
+      if (inProgressHourglass) {
+        inProgressHourglass.className = 'tree-in-progress-hourglass';
+        inProgressHourglass.textContent = '⏳';
+        inProgressHourglass.title = 'Analysis in progress';
+      }
+
       // Label
       const label = document.createElement('span');
       label.className = 'tree-label';
@@ -507,6 +515,7 @@
 
       row.appendChild(arrow);
       row.appendChild(icon);
+      if (inProgressHourglass) row.appendChild(inProgressHourglass);
       row.appendChild(label);
       row.appendChild(countSpan);
       row.appendChild(cbCol);

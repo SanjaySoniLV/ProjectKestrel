@@ -308,20 +308,14 @@
   color: var(--bad);
 }
 
-/* In-progress analysis styling (subtle purple indicator with text) */
-.tree-node-row.in-progress {
-  background: rgba(179, 153, 204, 0.08);
-  border-left: 3px solid #b399cc;
-  padding-left: 6px;
-}
-.tree-node-row.in-progress .tree-label {
-  color: #d4a3ff !important;
-  font-style: italic;
-}
-.tree-node-row.in-progress .tree-label::after {
-  content: ' (analysis in progress)';
-  margin-left: 6px;
-  font-size: 0.9em;
+/* In-progress hourglass indicator (mirrors .tree-perch-feather pattern) */
+.tree-in-progress-hourglass {
+  font-size: 11px;
+  margin-left: 1px;
+  margin-right: 3px;
+  display: inline-block;
+  line-height: 1;
+  vertical-align: middle;
   opacity: 0.85;
 }
 
