@@ -43,6 +43,7 @@
     // 'incomplete' set — the desktop normalises those to 'done'|'failed'|
     // 'cancelled' before we ever see them.
     const _CC_TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled']);
+    window._ccInProgressFolderPaths = new Set();
 
     function _ccPickFirstSelectedFolder() {
       // Pull the first checked folder from the Phase 3 dialog state (the
@@ -677,6 +678,12 @@
         panel.classList.add('hidden');
         body.innerHTML = '';
         _ccPrevJobSnapshot = new Map();
+        if (window._ccInProgressFolderPaths && window._ccInProgressFolderPaths.size > 0) {
+          window._ccInProgressFolderPaths = new Set();
+          try {
+            if (typeof updateInProgressFoldersInTree === 'function') updateInProgressFoldersInTree();
+          } catch {}
+        }
         return;
       }
       panel.classList.remove('hidden');
@@ -717,6 +724,23 @@
         // Fire-and-forget; maybeStartNextCloudJob serialises itself.
         maybeStartNextCloudJob();
       }
+
+      // ── Update cloud in-progress folder set for tree hourglass indicators ─
+      const norm = p => (p || '').replace(/\\/g, '/');
+      const ccInProg = new Set();
+      for (const j of jobs) {
+        if (!_CC_TERMINAL_STATUSES.has(j.status) && j.folderPath) ccInProg.add(norm(j.folderPath));
+      }
+      for (const p of pending) {
+        if (p.path) ccInProg.add(norm(p.path));
+      }
+      window._ccInProgressFolderPaths = ccInProg;
+      try {
+        if (typeof updateInProgressFoldersInTree === 'function') {
+          updateInProgressFoldersInTree();
+          if (typeof _updateAutoRefreshTimers === 'function') _updateAutoRefreshTimers();
+        }
+      } catch {}
 
       // Drain pack-merged events and trigger folder rescan so new photos show
       // in the gallery as packs arrive — same UX as local live update. Uses

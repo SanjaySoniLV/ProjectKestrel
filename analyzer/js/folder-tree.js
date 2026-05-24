@@ -424,7 +424,8 @@
 
       const norm = p => (p || '').replace(/\\/g, '/');
       const normPath = norm(node.path);
-      const isInProgress = _inProgressFolderPaths.has(normPath);
+      const isInProgress = _inProgressFolderPaths.has(normPath)
+        || (window._ccInProgressFolderPaths && window._ccInProgressFolderPaths.has(normPath));
 
       const effectiveHasKestrel = subtreeHasKestrel(node) || isInProgress; // Show checkbox for in-progress too
       const outdated = isVersionOutdated(node);
@@ -476,6 +477,14 @@
         perchFeather.title = 'Published to Perch';
       }
 
+      // Hourglass overlay — surfaces "this folder is being analyzed" at a glance.
+      const inProgressHourglass = isInProgress ? document.createElement('span') : null;
+      if (inProgressHourglass) {
+        inProgressHourglass.className = 'tree-in-progress-hourglass';
+        inProgressHourglass.textContent = '⏳';
+        inProgressHourglass.title = 'Analysis in progress';
+      }
+
       // Label
       const label = document.createElement('span');
       label.className = 'tree-label';
@@ -516,6 +525,7 @@
       row.appendChild(arrow);
       row.appendChild(icon);
       if (perchFeather) row.appendChild(perchFeather);
+      if (inProgressHourglass) row.appendChild(inProgressHourglass);
       row.appendChild(label);
       row.appendChild(countSpan);
       row.appendChild(cbCol);

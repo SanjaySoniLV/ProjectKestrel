@@ -1037,22 +1037,31 @@
     // Legacy alias for any straggling callers.
     const rescanFolderTree = rescanFolderRoot;
 
-    /** Update UI to reflect in-progress folders with special styling and always-present checkboxes. */
+    /** Update UI to reflect in-progress folders with hourglass indicator and checkboxes. */
     function updateInProgressFoldersInTree() {
       try {
         const norm = p => (p || '').replace(/\\/g, '/');
-        for (const inProgPath of _inProgressFolderPaths) {
-          const normPath = norm(inProgPath);
-          const rows = Array.from(document.querySelectorAll('#folderTree .tree-node-row'));
-          for (const row of rows) {
-            const rp = norm(row.dataset.path || '');
-            if (rp !== normPath) continue;
-            
-            // Mark as in-progress with purple styling
+        const rows = Array.from(document.querySelectorAll('#folderTree .tree-node-row'));
+        for (const row of rows) {
+          const rp = norm(row.dataset.path || '');
+          const isNowInProgress = _inProgressFolderPaths.has(rp)
+            || (window._ccInProgressFolderPaths && window._ccInProgressFolderPaths.has(rp));
+
+          if (isNowInProgress) {
             row.classList.add('in-progress');
-            _tempKestrelPaths.add(normPath); // prevent checkbox removal on next rescan
-            
-            // Ensure checkbox exists (even if .kestrel doesn't)
+            _tempKestrelPaths.add(rp);
+
+            if (!row.querySelector('.tree-in-progress-hourglass')) {
+              const hg = document.createElement('span');
+              hg.className = 'tree-in-progress-hourglass';
+              hg.textContent = '⏳';
+              hg.title = 'Analysis in progress';
+              const featherEl = row.querySelector('.tree-perch-feather');
+              const anchorEl = featherEl || row.querySelector('.tree-icon');
+              if (anchorEl && anchorEl.nextSibling) anchorEl.parentNode.insertBefore(hg, anchorEl.nextSibling);
+              else if (anchorEl) anchorEl.parentNode.appendChild(hg);
+            }
+
             if (!row.querySelector('.tree-cb')) {
               const cb = document.createElement('input');
               cb.type = 'checkbox';
@@ -1066,11 +1075,14 @@
                 _updateAutoRefreshTimers();
                 debouncedAutoLoad();
               });
-              // Find icon and insert before it
               const icon = row.querySelector('.tree-icon');
               if (icon && icon.parentNode) icon.parentNode.insertBefore(cb, icon);
               else row.insertBefore(cb, row.firstChild);
             }
+          } else if (row.classList.contains('in-progress')) {
+            row.classList.remove('in-progress');
+            const hg = row.querySelector('.tree-in-progress-hourglass');
+            if (hg) hg.remove();
           }
         }
       } catch (e) { console.warn('[tree] updateInProgressFoldersInTree error:', e); }
@@ -1166,16 +1178,18 @@
           return;
         }
         
+        const ccPaths = window._ccInProgressFolderPaths || new Set();
         for (const [path, timerId] of _autoRefreshTimers.entries()) {
-          const isStillInProgress = _inProgressFolderPaths.has(path);
+          const isStillInProgress = _inProgressFolderPaths.has(path) || ccPaths.has(path);
           const isStillChecked = _isPathChecked(path);
           if (!isStillInProgress || !isStillChecked) {
             clearInterval(timerId);
             _autoRefreshTimers.delete(path);
           }
         }
-        
-        for (const inProgPath of _inProgressFolderPaths) {
+
+        const allInProgress = new Set([..._inProgressFolderPaths, ...ccPaths]);
+        for (const inProgPath of allInProgress) {
           if (_isPathChecked(inProgPath) && !_autoRefreshTimers.has(inProgPath)) {
             const capturedPath = inProgPath;
             const timerId = setInterval(async () => {
@@ -1198,7 +1212,8 @@
         function traverse(n) {
           if (!n) return;
           const np = (n.path || '').replace(/\\/g, '/');
-          if (n.has_kestrel && !_inProgressFolderPaths.has(np)) count++;
+          const ccPaths = window._ccInProgressFolderPaths || new Set();
+          if (n.has_kestrel && !_inProgressFolderPaths.has(np) && !ccPaths.has(np)) count++;
           (n.children || []).forEach(c => traverse(c));
         }
         for (const root of _getAllRoots()) traverse(root);
