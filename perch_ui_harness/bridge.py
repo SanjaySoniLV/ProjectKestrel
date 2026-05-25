@@ -53,6 +53,9 @@ class KestrelUIBridge:
         self._browser = None
         self._page = None
         self._playwright = None
+        self._console_logs: list[dict] = []
+        self._python_logs: list[str] = []
+        self._log_capture_active = False
 
     @property
     def page(self):
@@ -139,7 +142,71 @@ class KestrelUIBridge:
         )
         self._page = await self._browser.new_page(
             viewport={'width': 1440, 'height': 900})
+
+        self._page.on('console', self._on_console_message)
+        self._page.on('pageerror', self._on_page_error)
+        self._start_python_log_capture()
         print('[bridge] Chromium launched')
+
+    def _on_console_message(self, msg):
+        entry = {
+            'type': msg.type,
+            'text': msg.text,
+            'url': msg.location.get('url', '') if msg.location else '',
+            'line': msg.location.get('lineNumber', 0) if msg.location else 0,
+        }
+        self._console_logs.append(entry)
+        if len(self._console_logs) > 5000:
+            self._console_logs = self._console_logs[-3000:]
+
+    def _on_page_error(self, error):
+        self._console_logs.append({
+            'type': 'pageerror',
+            'text': str(error),
+            'url': '',
+            'line': 0,
+        })
+
+    def _start_python_log_capture(self):
+        """Intercept Python print/log output from the analyzer modules."""
+        if self._log_capture_active:
+            return
+        self._log_capture_active = True
+        bridge_ref = self
+
+        class _LogTee:
+            def __init__(self, original):
+                self._original = original
+                self.encoding = getattr(original, 'encoding', 'utf-8')
+                self.errors = getattr(original, 'errors', 'replace')
+
+            def write(self, data):
+                if data and data.strip():
+                    bridge_ref._python_logs.append(data.rstrip('\n'))
+                    if len(bridge_ref._python_logs) > 5000:
+                        bridge_ref._python_logs = bridge_ref._python_logs[-3000:]
+                try:
+                    self._original.write(data)
+                except Exception:
+                    pass
+                return len(data) if data else 0
+
+            def flush(self):
+                try:
+                    self._original.flush()
+                except Exception:
+                    pass
+
+            def isatty(self):
+                return False
+
+            def fileno(self):
+                return self._original.fileno()
+
+            def __getattr__(self, name):
+                return getattr(self._original, name)
+
+        sys.stderr = _LogTee(sys.stderr)
 
     async def _inject_bridge(self):
         from api_bridge import Api
@@ -215,6 +282,26 @@ class KestrelUIBridge:
             print('[bridge] App ready')
         except Exception as e:
             print(f'[bridge] App ready wait: {e}')
+
+    def get_console_logs(self, since=0, level=None):
+        """Return browser console logs. Optionally filter by type."""
+        logs = self._console_logs[since:]
+        if level:
+            levels = set(level.split(','))
+            logs = [l for l in logs if l['type'] in levels]
+        return logs
+
+    def get_python_logs(self, since=0, pattern=None):
+        """Return Python-side logs. Optionally filter by substring."""
+        logs = self._python_logs[since:]
+        if pattern:
+            logs = [l for l in logs if pattern.lower() in l.lower()]
+        return logs
+
+    def clear_logs(self):
+        """Clear both log buffers."""
+        self._console_logs.clear()
+        self._python_logs.clear()
 
     # ── Public interaction API ──────────────────────────────────────────
 

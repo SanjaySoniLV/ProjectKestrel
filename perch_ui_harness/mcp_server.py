@@ -576,6 +576,136 @@ async def ui_stop() -> dict:
         return _error_context(e)
 
 
+# ── Log / debug tools ──────────────────────────────────────────────────
+
+_LOG_INLINE_LIMIT = 200
+_LOG_DIR = Path(os.environ.get('PERCH_SCREENSHOTS_DIR', '/tmp/kestrel_screenshots'))
+
+
+def _format_log_result(logs: list, label: str) -> dict:
+    """Return logs inline if small, or write to a file if large."""
+    if len(logs) <= _LOG_INLINE_LIMIT:
+        return {'success': True, 'count': len(logs), label: logs}
+    _LOG_DIR.mkdir(parents=True, exist_ok=True)
+    path = _LOG_DIR / f'{label}_{len(logs)}.json'
+    with open(path, 'w') as f:
+        json.dump(logs, f, indent=1, default=str)
+    return {
+        'success': True,
+        'count': len(logs),
+        'truncated_to': _LOG_INLINE_LIMIT,
+        label: logs[-_LOG_INLINE_LIMIT:],
+        'full_log_file': str(path),
+        'hint': f'Full {len(logs)} entries written to {path}. '
+                f'Showing last {_LOG_INLINE_LIMIT} inline.',
+    }
+
+
+@mcp.tool()
+async def ui_get_browser_logs(
+    level: str = '',
+    since: int = 0,
+    last: int = 0,
+) -> dict:
+    """Get browser console logs (JS errors, warnings, debug output).
+
+    Args:
+        level: Filter by type: 'error', 'warning', 'log', 'info', 'debug',
+               'pageerror'. Comma-separate for multiple (e.g. 'error,warning').
+               Empty = all levels.
+        since: Return only entries after this index (use count from a previous
+               call to get new entries since last check).
+        last: Return only the N most recent entries (0 = all).
+
+    Logs are captured automatically from Chromium's console. Includes JS
+    exceptions, console.error/warn/log calls, and unhandled page errors.
+    Large results are saved to a file and the path is returned.
+    """
+    try:
+        bridge = await _ensure_bridge()
+        logs = bridge.get_console_logs(since=since, level=level or None)
+        if last > 0:
+            logs = logs[-last:]
+        return _format_log_result(logs, 'browser_logs')
+    except Exception as e:
+        return _error_context(e)
+
+
+@mcp.tool()
+async def ui_get_python_logs(
+    pattern: str = '',
+    since: int = 0,
+    last: int = 0,
+) -> dict:
+    """Get Python-side logs (analysis pipeline, queue manager, API bridge).
+
+    Args:
+        pattern: Filter logs containing this substring (case-insensitive).
+                 e.g. 'error', 'queue', 'pipeline', 'ONNX'.
+        since: Return only entries after this index.
+        last: Return only the N most recent entries (0 = all).
+
+    Captures all Python print/log output from the analyzer modules:
+    pipeline progress, model loading, ONNX warnings, queue state changes,
+    API bridge calls, etc. Invaluable for debugging analysis failures.
+    Large results are saved to a file and the path is returned.
+    """
+    try:
+        bridge = await _ensure_bridge()
+        logs = bridge.get_python_logs(since=since, pattern=pattern or None)
+        if last > 0:
+            logs = logs[-last:]
+        return _format_log_result(logs, 'python_logs')
+    except Exception as e:
+        return _error_context(e)
+
+
+@mcp.tool()
+async def ui_get_errors(last: int = 50) -> dict:
+    """Get recent errors from both browser and Python logs.
+
+    Args:
+        last: Number of recent error entries to return (default 50).
+
+    Convenience tool that filters for error-level entries from both sources.
+    Use this first when something goes wrong — it surfaces JS exceptions,
+    Python tracebacks, ONNX failures, and API bridge errors in one call.
+    """
+    try:
+        bridge = await _ensure_bridge()
+        browser_errors = bridge.get_console_logs(level='error,pageerror')
+        python_errors = bridge.get_python_logs(pattern='error')
+        python_errors += bridge.get_python_logs(pattern='traceback')
+        python_errors += bridge.get_python_logs(pattern='exception')
+        # Deduplicate python errors
+        seen = set()
+        unique_py = []
+        for line in python_errors:
+            if line not in seen:
+                seen.add(line)
+                unique_py.append(line)
+
+        combined = {
+            'browser_errors': browser_errors[-last:] if last else browser_errors,
+            'python_errors': unique_py[-last:] if last else unique_py,
+        }
+        total = len(combined['browser_errors']) + len(combined['python_errors'])
+        return {'success': True, 'total_errors': total, **combined}
+    except Exception as e:
+        return _error_context(e)
+
+
+@mcp.tool()
+async def ui_clear_logs() -> dict:
+    """Clear all captured log buffers (browser + Python)."""
+    try:
+        bridge = await _ensure_bridge()
+        bridge.clear_logs()
+        return {'success': True, 'message': 'All log buffers cleared'}
+    except Exception as e:
+        return _error_context(e)
+
+
 if __name__ == '__main__':
     import logging
     logging.getLogger('mcp').setLevel(logging.WARNING)

@@ -88,6 +88,19 @@ get the actual return value.
 | `ui_get_queue_status()` | Get running/items/processed/total from Python backend |
 | `ui_wait_for_analysis(target_processed?, timeout?, poll_interval?)` | Wait for N images processed or completion |
 
+### Logs & debugging
+| Tool | Purpose |
+|------|---------|
+| `ui_get_browser_logs(level?, since?, last?)` | Browser console logs (JS errors, warnings, debug). Filter by level: `error`, `warning`, `log`, `info`, `pageerror`. |
+| `ui_get_python_logs(pattern?, since?, last?)` | Python-side logs (pipeline, queue, ONNX, API bridge). Filter by substring. |
+| `ui_get_errors(last?)` | Combined error view — JS exceptions + Python tracebacks in one call. **Use this first when debugging.** |
+| `ui_clear_logs()` | Clear all log buffers |
+
+Logs accumulate automatically from the moment the app starts. Large results
+(>200 entries) are written to a file and the path is returned alongside the
+most recent entries inline. Use `since=<count>` to get only new entries since
+your last check (incremental polling).
+
 ## Key UI Selectors
 
 | Element | Selector |
