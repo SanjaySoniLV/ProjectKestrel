@@ -11,14 +11,15 @@ Desktop app for analyzing bird photos using ML. Built with pywebview (Python) + 
 - `analyzer/kestrel_analyzer/` — ML pipeline (ONNX models, image processing)
 - `analyzer/models/` — ONNX model files (some are Git LFS)
 
-## UI Automation (Perch UI Bridge)
+## UI Automation (Kestrel UI Testing)
 
-See `.claude/skills/perch-ui.md` for instructions on interacting with the real app UI
-via the Playwright-based bridge in `perch_ui_harness/`.
+See `.claude/skills/kestrel-ui-testing.md` for instructions on interacting with
+the real app UI via the Playwright-based MCP server in `perch_ui_harness/`.
 
 Quick start:
 ```bash
-xvfb-run -a python3 perch_ui_harness/bridge.py --folder test_imgs --timeout 300
+bash perch_ui_harness/setup.sh          # one-time: install deps, download models
+xvfb-run -a python3 perch_ui_harness/mcp_server.py   # start MCP server
 ```
 
 ## Development
