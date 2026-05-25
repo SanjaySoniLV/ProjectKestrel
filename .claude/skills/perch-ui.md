@@ -3,11 +3,37 @@
 ## What This Is
 
 A Playwright-based bridge that lets you interact with the real Project Kestrel
-UI in a headless environment. You can click buttons, take screenshots, fill
-inputs, and run JavaScript — all through the actual app interface running in
-headless Chromium with Xvfb.
+UI in a headless environment. Available as both an **MCP server** (preferred —
+interactive, persistent) and a standalone script.
 
-The bridge works by:
+### MCP Server (Preferred)
+
+When configured in `.claude/settings.local.json`, the `perch-ui` MCP server
+exposes tools like `ui_screenshot`, `ui_click`, `ui_type`, `ui_evaluate`, etc.
+The app starts lazily on first tool call and stays running for the session.
+
+**Available MCP tools:**
+- `ui_start` / `ui_stop` — start or restart the app
+- `ui_screenshot` — capture current viewport
+- `ui_click(selector=..., text=...)` — click elements
+- `ui_type(selector, value)` — fill input fields
+- `ui_hover(selector)` — hover for tooltips/dropdowns
+- `ui_select(selector, value)` — select dropdown options
+- `ui_checkbox(selector, checked)` — toggle checkboxes
+- `ui_get_text(selector)` — read element text
+- `ui_get_elements(selector)` — list matching elements with attributes
+- `ui_evaluate(js_code)` — run arbitrary JavaScript
+- `ui_wait_for(selector, text, state, timeout)` — wait for conditions
+- `ui_dismiss_overlays` — clear legal/tutorial/consent dialogs
+- `ui_set_folder(path)` — set folder for dialog intercepts
+- `ui_get_queue_status` — check analysis queue progress
+- `ui_wait_for_analysis(target_processed, timeout)` — wait for analysis milestones
+- `ui_get_visible_dialogs` — list open dialogs/overlays
+- `ui_scroll(selector, direction, amount)` — scroll page/elements
+
+### How It Works
+
+Both modes work by:
 1. Starting the app's HTTP server (serves the same HTML/CSS/JS)
 2. Launching headless Chromium via Playwright
 3. Injecting a fake `window.pywebview.api` that routes JS calls to the real

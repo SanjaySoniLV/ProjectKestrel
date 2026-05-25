@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "perch-ui": {
+      "type": "stdio",
+      "command": "xvfb-run",
+      "args": ["-a", "python3", "/home/user/ProjectKestrel/perch_ui_harness/mcp_server.py"],
+      "env": {
+        "PERCH_TEST_FOLDER": "/home/user/ProjectKestrel/test_imgs",
+        "PERCH_SCREENSHOTS_DIR": "/tmp/kestrel_screenshots"
+      }
+    }
+  }
+}
