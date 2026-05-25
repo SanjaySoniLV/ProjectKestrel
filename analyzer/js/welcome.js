@@ -5,13 +5,14 @@
     // Bump this whenever you author a new changelog. Clients with a matching
     // `last_seen_whats_new_version` will not see the banner again.
     const WHATS_NEW = {
-      version: 'nelsons-sparrow',
-      headline: "New in v(Nelson’s Sparrow) — resilient analysis, smarter shutdowns!",
+      version: 'great-horned-owl',
+      headline: "New in v(Great-Horned Owl) — Auto-Complete Bird Tags, cleaner UI, crash fixes!",
       items: [
-        'New <b>Resilient GPU pipeline</b> automatically falls back to CPU when your graphics driver hiccups, and a new <b>"Re-attempt analysis on errored images"</b> button re-runs just the failures without touching successful results.',
-        'Faster and more accurate wildlife detection with the new <b>MegaDetector v1000-cedar</b> "Fast" model, plus a fix that <b>doubles SpeciesNet batch speed</b> by removing a duplicate inference pass.',
-        'Kestrel now <b>tells the difference between a real crash and a normal PC shutdown</b>, so reboots and logoffs no longer trigger the alarming "did not shut down cleanly" dialog.',
-        'New <b>quality normalization curve (v3)</b> rebalances star ratings across your library, and the <b>command-line interface</b> now exposes every Advanced Analysis Setting for power users and scripted workflows.',
+        'New <b>regional bird catalog</b> covers ~11,250 species (up from 500). Type a name, partial, or <b>4-letter alpha code</b> (AMGO, NOCA) into the species or family box — region-filterable and fuzzy-matched. Toggle <b>Show scientific names</b> in Settings to see the Latin binomial under each pill.',
+        'Completely <b>redesigned Analyze Folders dialog</b> with a 3-column layout — queue builder, settings, and live queue summary + analysis time estimates.',
+        'Redesigned homepage with a focus on simplicity and intuitiveness.',
+        'Bug Fixes for MacOS and Windows, particularly for users analyzing on external drives, and for MacOS users using GPU support.',
+        '📣 <b>A NOTE FROM THE DEVELOPER:</b> Hello! Project Kestrel is moving towards the launch of <b>Perch</b>, a new sharing platform that lets others view your entire birding outing on the web, and <b>Cloud Compute</b>, a Kestrel add-on for faster analysis powered by cloud GPUs. (I’m especially excited about Perch! Take a sneak peek by visiting <a href="https://perch.projectkestrel.org/" target="_blank" rel="noopener noreferrer">this link</a>.) <b>I need beta testers!</b> If you love Project Kestrel and would be willing to test and provide feedback on these new platforms, please contact me via the in-app "Feedback" form!',
       ],
     };
 
