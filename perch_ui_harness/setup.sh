@@ -17,8 +17,10 @@ echo "[setup] Installing Python dependencies..."
 pip3 install -q \
   mcp playwright \
   opencv-python-headless onnxruntime numpy pandas \
-  pillow exifread rawpy pywebview bottle proxy_tools \
+  pillow exifread rawpy pywebview bottle \
   2>&1 | tail -3
+# proxy_tools has build issues on some setuptools versions; skip if already present
+python3 -c "import proxy_tools" 2>/dev/null || pip3 install -q proxy_tools 2>&1 | tail -3
 
 # ── 2. Playwright browser ──────────────────────────────────────────────
 
@@ -63,21 +65,32 @@ done
 # app starts in a signed-in state. This enables cloud compute / Perch
 # upload testing without interactive OAuth.
 
-if [ -n "${KESTREL_AUTH_TOKEN:-}" ]; then
+_KESTREL_TOKEN="${KESTREL_AUTH_TOKEN:-${KESTREL_ACCESS_TOKEN:-}}"
+if [ -n "$_KESTREL_TOKEN" ]; then
   AUTH_DIR="$HOME/.local/share/project-kestrel"
   AUTH_FILE="$AUTH_DIR/auth.json"
   mkdir -p "$AUTH_DIR"
+  chmod 0700 "$AUTH_DIR"
   python3 -c "
-import json, time, os, sys
-token = os.environ['KESTREL_AUTH_TOKEN']
-bundle = {'access_token': token, 'refresh_token': '', 'expires_at': time.time() + 86400 * 30}
+import json, time, os
+token     = os.environ.get('KESTREL_AUTH_TOKEN') or os.environ['KESTREL_ACCESS_TOKEN']
+exp_raw   = os.environ.get('KESTREL_TOKEN_EXPIRES_AT', '')
+expires   = float(exp_raw) if exp_raw else time.time() + 86400 * 30
+bundle = {
+    'access_token':  token,
+    'refresh_token': '',
+    'expires_at':    expires,
+    'token_type':    os.environ.get('KESTREL_TOKEN_TYPE', 'Bearer'),
+    'scope':         os.environ.get('KESTREL_TOKEN_SCOPE', ''),
+    'obtained_at':   time.time(),
+}
 with open('$AUTH_FILE', 'w') as f:
     json.dump(bundle, f)
 os.chmod('$AUTH_FILE', 0o600)
-print('[setup] Auth token written to $AUTH_FILE')
+print(f'[setup] Auth token written to $AUTH_FILE (expires_at={expires})')
 "
 else
-  echo "[setup] No KESTREL_AUTH_TOKEN set — skipping auth injection"
+  echo "[setup] No KESTREL_AUTH_TOKEN or KESTREL_ACCESS_TOKEN set — skipping auth injection"
 fi
 
 # ── 6. Verify ───────────────────────────────────────────────────────────
