@@ -2331,7 +2331,18 @@ class Api:
         return self._oauth_lock
 
     def _load_token_bundle(self) -> dict | None:
-        """Read the OAuth bundle from keychain. Returns None if missing or stale-schema."""
+        """Read the OAuth bundle from keychain or KESTREL_ACCESS_TOKEN env var.
+
+        Environment variable takes precedence over keyring — useful for CI,
+        headless environments, and cloud agent sessions.
+        """
+        env_token = os.environ.get("KESTREL_ACCESS_TOKEN", "").strip()
+        if env_token:
+            return {
+                "access_token": env_token,
+                "refresh_token": "",
+                "expires_at": 0,
+            }
         data = _keyring_load()
         if not data or not isinstance(data, dict):
             return None

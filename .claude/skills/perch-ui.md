@@ -3,116 +3,181 @@
 ## What This Is
 
 A Playwright-based bridge that lets you interact with the real Project Kestrel
-UI in a headless environment. Available as both an **MCP server** (preferred —
+UI in a headless environment. Available as an **MCP server** (preferred —
 interactive, persistent) and a standalone script.
 
-### MCP Server (Preferred)
+The app starts lazily on the first tool call and stays running for the session.
 
-When configured in `.claude/settings.local.json`, the `perch-ui` MCP server
-exposes tools like `ui_screenshot`, `ui_click`, `ui_type`, `ui_evaluate`, etc.
-The app starts lazily on first tool call and stays running for the session.
+## Response Format
 
-**Available MCP tools:**
-- `ui_start` / `ui_stop` — start or restart the app
-- `ui_screenshot` — capture current viewport
-- `ui_click(selector=..., text=...)` — click elements
-- `ui_type(selector, value)` — fill input fields
-- `ui_hover(selector)` — hover for tooltips/dropdowns
-- `ui_select(selector, value)` — select dropdown options
-- `ui_checkbox(selector, checked)` — toggle checkboxes
-- `ui_get_text(selector)` — read element text
-- `ui_get_elements(selector)` — list matching elements with attributes
-- `ui_evaluate(js_code)` — run arbitrary JavaScript
-- `ui_wait_for(selector, text, state, timeout)` — wait for conditions
-- `ui_dismiss_overlays` — clear legal/tutorial/consent dialogs
-- `ui_set_folder(path)` — set folder for dialog intercepts
-- `ui_get_queue_status` — check analysis queue progress
-- `ui_wait_for_analysis(target_processed, timeout)` — wait for analysis milestones
-- `ui_get_visible_dialogs` — list open dialogs/overlays
-- `ui_scroll(selector, direction, amount)` — scroll page/elements
+**Every interaction tool** returns a consistent response with three fields:
 
-### How It Works
+```json
+{
+  "success": true,
+  "action": "Clicked button '#analyzeQueueBtn' with text \"Analyze Folders...\"",
+  "screenshot": "/tmp/kestrel_screenshots/005_click_Analyze.png"
+}
+```
 
-Both modes work by:
-1. Starting the app's HTTP server (serves the same HTML/CSS/JS)
-2. Launching headless Chromium via Playwright
-3. Injecting a fake `window.pywebview.api` that routes JS calls to the real
-   Python `Api` class from `analyzer/api_bridge.py`
-4. Intercepting native OS dialogs (folder picker) and returning pre-configured paths
+- **`action`** — Human-readable description of exactly what happened: what
+  element was interacted with, its tag, its `#id`, and its visible text content.
+- **`screenshot`** — Absolute path to a PNG taken **1 second after** the
+  interaction, giving the UI time to settle.
+
+**After every interaction, read the returned screenshot** to confirm the
+action had the expected effect before deciding what to do next.
+
+### Error responses
+
+```json
+{
+  "success": false,
+  "error": "Timeout 10000ms exceeded",
+  "type": "TimeoutError",
+  "hint": "Element not found within timeout. Try: 1) Take a screenshot..."
+}
+```
+
+Errors include a `hint` field with suggested recovery steps.
+
+## Available Tools
+
+### Starting & Stopping
+- `ui_start(folder_path?)` — Start the app (auto-dismisses legal/tutorial overlays)
+- `ui_stop()` — Stop the app and close browser
+
+### Interacting (all return `action` + `screenshot`)
+- `ui_click(selector?, text?, timeout?)` — Click by CSS selector or visible text
+- `ui_type(selector, value)` — Type into an input field
+- `ui_hover(selector)` — Hover for tooltips/dropdowns
+- `ui_select(selector, value)` — Select a dropdown option
+- `ui_checkbox(selector, checked?)` — Toggle a checkbox
+- `ui_scroll(selector?, direction?, amount?)` — Scroll page or element
+- `ui_dismiss_overlays()` — Clear legal/tutorial/consent dialogs
+
+### Observing
+- `ui_screenshot(label?)` — Capture current viewport
+- `ui_wait_and_screenshot(seconds?, label?)` — Wait N seconds (1-120) then screenshot
+- `ui_get_text(selector)` — Read element text content
+- `ui_get_elements(selector)` — List matching elements with attributes
+- `ui_evaluate(js_code)` — Run arbitrary JavaScript
+- `ui_wait_for(selector?, text?, state?, timeout?)` — Wait for a condition
+- `ui_get_visible_dialogs()` — List open dialogs/overlays
+
+### Managing State
+- `ui_set_folder(folder_path)` — Set folder for dialog intercepts
+- `ui_get_queue_status()` — Check analysis queue progress
+- `ui_wait_for_analysis(target_processed?, timeout?)` — Wait for analysis milestones
+
+## Clicking by Text — Disambiguation
+
+`ui_click(text="...")` searches for visible interactive elements containing
+that text. There are three possible outcomes:
+
+### 1. Single match — clicks immediately
+
+```json
+{
+  "success": true,
+  "action": "Clicked button '#analyzeQueueBtn' with text \"Analyze Folders...\"",
+  "screenshot": "/tmp/kestrel_screenshots/005_click_Analyze.png"
+}
+```
+
+### 2. Multiple matches — returns candidates (no click happens)
+
+```json
+{
+  "success": false,
+  "needs_disambiguation": true,
+  "message": "Found 3 elements matching \"Analyze\". Call ui_click(selector=...) with one of these selectors:",
+  "candidates": [
+    {"index": 0, "tag": "button", "id": "analyzeQueueBtn", "text": "Analyze Folders...", "selector": "#analyzeQueueBtn", "disabled": false},
+    {"index": 1, "tag": "button", "id": "analyzeDlgAdd", "text": "Analyze Selected", "selector": "#analyzeDlgAdd", "disabled": true},
+    {"index": 2, "tag": "a", "id": null, "text": "Learn about Analysis", "selector": "a.help-link:nth-child(3)", "disabled": false}
+  ]
+}
+```
+
+**What to do:** Read the candidates, pick the correct one by examining its
+text/id/disabled state, and re-call `ui_click(selector="...")` with its
+`selector` field.
+
+**Exception:** If exactly one candidate is an *exact* text match (ignoring
+case), it clicks that one automatically even when there are other partial
+matches.
+
+### 3. Zero matches — error with screenshot
+
+```json
+{
+  "success": false,
+  "error": "No visible interactive elements found matching \"Analyze\"",
+  "screenshot": "/tmp/kestrel_screenshots/006_click_no_match.png",
+  "hint": "Use ui_get_elements(\"button\") or ui_screenshot to see what's on screen."
+}
+```
+
+**What to do:** Read the screenshot to see the current UI state. The element
+may not be visible yet, or its text may differ from what you expected.
+
+## Cookbook — Full Analysis Flow
+
+Follow these steps to analyze a folder of bird photos. After every step,
+read the returned screenshot before proceeding.
+
+```
+1. ui_start()
+   -> Confirm you see the main Kestrel UI with sidebar.
+
+2. ui_click(text="Analyze Folders")
+   -> Confirm the analyze dialog opened.
+   -> If disambiguation: pick the button with id "analyzeQueueBtn".
+
+3. ui_click(selector="#analyzeDlgLoadFolders")
+   -> This triggers the folder picker (auto-intercepted).
+   -> Folders should appear in the dialog tree.
+
+4. ui_wait_and_screenshot(seconds=3)
+   -> Confirm folder checkboxes are visible in the dialog.
+
+5. Enable all checkboxes and the Start button via JS:
+   ui_evaluate('(() => {
+     document.querySelectorAll("#analyzeDlgTree input[type=checkbox]")
+       .forEach(cb => {
+         cb.checked = true;
+         cb.dispatchEvent(new Event("change", {bubbles: true}));
+       });
+     const btn = document.getElementById("analyzeDlgAdd");
+     if (btn) btn.disabled = false;
+   })()')
+
+6. ui_click(selector="#analyzeDlgAdd")
+   -> Confirm analysis has started (status bar should update).
+
+7. Wait for analysis to complete:
+   ui_wait_for_analysis(timeout=300)
+   -> Or poll manually: ui_wait_and_screenshot(seconds=30) in a loop,
+      checking ui_get_queue_status() each time.
+
+8. ui_screenshot(label="final_results")
+   -> Capture the final state with results.
+
+9. ui_stop()
+```
+
+**Key principle:** After every interaction, read the returned screenshot
+before deciding what to do next. Don't assume the UI state — verify it.
 
 ## Prerequisites
 
 These must be available in the environment:
 - `xvfb-run` (Xvfb virtual framebuffer)
-- `playwright` with Chromium installed (`python3 -m playwright install chromium`)
+- `playwright` + Chromium (`pip install playwright && python3 -m playwright install chromium`)
+- `mcp` Python library (`pip install mcp`)
 - All Project Kestrel Python dependencies (opencv, onnxruntime, numpy, etc.)
-- Git LFS models must be real files (not pointers). If models are LFS pointers,
-  download them:
-  ```bash
-  curl -L -o analyzer/models/speciesnet/mdv5a.onnx \
-    https://github.com/SanjaySoniLV/ProjectKestrel/raw/main/analyzer/models/speciesnet/mdv5a.onnx
-  # ... repeat for all .onnx files in analyzer/models/speciesnet/ and analyzer/models/quality.onnx
-  ```
-
-## Quick Start — Run Full Analysis
-
-```bash
-cd /home/user/ProjectKestrel
-xvfb-run -a python3 perch_ui_harness/bridge.py \
-    --folder /home/user/ProjectKestrel/test_imgs \
-    --screenshots /tmp/kestrel_screenshots \
-    --timeout 300
-```
-
-This runs the complete flow: load app → dismiss overlays → open Analyze dialog →
-add folder → start analysis → poll until complete. Screenshots are saved at every step.
-
-## Programmatic Usage (Async Python)
-
-```python
-import asyncio
-from perch_ui_harness.bridge import KestrelUIBridge
-
-async def main():
-    bridge = KestrelUIBridge(
-        folder_override='/path/to/images',
-        screenshots_dir='/tmp/screenshots',
-    )
-    await bridge.start()
-
-    # Dismiss legal banner + tutorial
-    await bridge.dismiss_overlays()
-
-    # Take screenshots
-    await bridge.screenshot('my_label')
-
-    # Click by CSS selector
-    await bridge.click(selector='#analyzeQueueBtn')
-
-    # Click by visible text
-    await bridge.click(text='Start Tutorial')
-
-    # Fill inputs
-    await bridge.fill('#adlgDetectionThreshold', '0.2')
-
-    # Run JavaScript
-    result = await bridge.evaluate('document.title')
-
-    # Change folder for next dialog intercept
-    await bridge.set_folder_override('/new/path')
-
-    # Check analysis queue status
-    info = bridge.get_queue_info()
-    # -> {'running': True, 'items': [{'status': 'running', 'processed': 5, 'total': 14, ...}]}
-
-    # Access the raw Playwright page for advanced interactions
-    page = bridge.page
-    await page.locator('.some-element').hover()
-
-    await bridge.stop()
-
-asyncio.run(main())
-```
+- Git LFS models must be real files (not pointers)
 
 ## Key UI Element Selectors
 
@@ -136,32 +201,16 @@ asyncio.run(main())
 ## How the Folder Dialog Intercept Works
 
 When JS calls `window.pywebview.api.choose_directory()` or
-`choose_directories()`, instead of opening a native OS dialog, the bridge
-returns whatever path is set in `bridge.folder_override`. Change it with:
-
-```python
-await bridge.set_folder_override('/new/folder/path')
-```
-
-## Running Within Xvfb
-
-The bridge uses headless Chromium, but Xvfb is required because some
-Chromium operations need an X display. Always wrap with `xvfb-run -a`:
-
-```bash
-xvfb-run -a python3 -c "
-import asyncio
-from perch_ui_harness.bridge import KestrelUIBridge
-# ... your code
-"
-```
+`choose_directories()`, the bridge returns the configured folder override
+instead of opening a native OS dialog. Change it with
+`ui_set_folder("/new/folder/path")`.
 
 ## Screenshot Output
 
 Screenshots are saved as PNG files with sequential numbering:
-- `001_app_loaded.png`
-- `002_ready.png`
-- `003_analyze_dialog.png`
-- etc.
+- `001_started.png`
+- `002_click_Analyze_Folders.png`
+- `003_typed.png`
+- `004_wait_5s.png`
 
-After running, view screenshots with the Read tool to inspect the UI state.
+Read screenshots with the Read tool to inspect UI state at each step.

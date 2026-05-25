@@ -67,7 +67,7 @@ def _get_hint(e: Exception) -> str:
                 '3) Use a different selector.')
     if 'intercepts pointer' in msg:
         return ('An overlay is blocking clicks. Try: '
-                '1) dismiss_overlays() to clear known overlays. '
+                '1) ui_dismiss_overlays() to clear known overlays. '
                 '2) Take a screenshot to identify what\'s blocking. '
                 '3) Use ui_evaluate to remove the overlay via JS.')
     if 'not attached' in msg or 'detached' in msg:
@@ -75,7 +75,103 @@ def _get_hint(e: Exception) -> str:
     return ''
 
 
-# ── Core interaction tools ──────────────────────────────────────────────
+# ── Response helpers ───────────────────────────────────────────────────
+
+async def _get_element_info(bridge, selector):
+    """Get details about a DOM element by CSS selector."""
+    return await bridge.evaluate(f"""
+        (() => {{
+            const el = document.querySelector({json.dumps(selector)});
+            if (!el) return null;
+            return {{
+                tag: el.tagName.toLowerCase(),
+                id: el.id || null,
+                text: (el.textContent || el.value || '').trim().slice(0, 100),
+                classes: (typeof el.className === 'string'
+                          ? el.className : '') || '',
+                type: el.type || null,
+            }};
+        }})()
+    """)
+
+
+def _describe_element(info, action='Clicked'):
+    """Build a human-readable description from element info."""
+    if not info:
+        return f'{action} element'
+    tag = info.get('tag', '?')
+    eid = info.get('id')
+    text = info.get('text', '')
+    parts = [action, tag]
+    if eid:
+        parts.append(f"'#{eid}'")
+    if text:
+        display = text[:60] + ('...' if len(text) > 60 else '')
+        parts.append(f'with text "{display}"')
+    return ' '.join(parts)
+
+
+async def _find_elements_by_text(bridge, text):
+    """Find visible interactive elements whose text contains the query."""
+    return await bridge.evaluate(f"""
+        (() => {{
+            const searchText = {json.dumps(text)}.toLowerCase();
+            const matches = [];
+            const candidates = document.querySelectorAll(
+                'button, a, [role="button"], input[type="submit"], '
+                + 'input[type="button"], [onclick], label, .btn');
+
+            function getSelector(el) {{
+                if (el.id) return '#' + CSS.escape(el.id);
+                let path = el.tagName.toLowerCase();
+                if (el.className && typeof el.className === 'string') {{
+                    const cls = el.className.trim().split(/\\s+/)
+                        .map(c => CSS.escape(c)).join('.');
+                    if (cls) path += '.' + cls;
+                }}
+                if (document.querySelectorAll(path).length === 1) return path;
+                const parent = el.parentElement;
+                if (parent) {{
+                    const siblings = Array.from(parent.children);
+                    const index = siblings.indexOf(el) + 1;
+                    path += ':nth-child(' + index + ')';
+                }}
+                return path;
+            }}
+
+            candidates.forEach(el => {{
+                const content = (el.textContent || el.value || '').trim();
+                if (content.toLowerCase().includes(searchText)
+                    && el.offsetParent !== null) {{
+                    matches.push({{
+                        index: matches.length,
+                        tag: el.tagName.toLowerCase(),
+                        id: el.id || null,
+                        text: content.slice(0, 100),
+                        classes: (typeof el.className === 'string'
+                                  ? el.className : '') || '',
+                        selector: getSelector(el),
+                        disabled: el.disabled || false,
+                    }});
+                }}
+            }});
+            return matches;
+        }})()
+    """)
+
+
+async def _post_interaction(bridge, description, label):
+    """Standard post-interaction: wait 1s, screenshot, return response."""
+    await asyncio.sleep(1)
+    path = await bridge.screenshot(label)
+    return {
+        'success': True,
+        'action': description,
+        'screenshot': path,
+    }
+
+
+# ── Core interaction tools ─────────────────────────────────────────────
 
 @mcp.tool()
 async def ui_start(folder_path: str = '') -> dict:
@@ -84,8 +180,8 @@ async def ui_start(folder_path: str = '') -> dict:
     Args:
         folder_path: Default folder for dialog intercepts (defaults to test_imgs)
 
-    Returns dict with success status. The app dismisses legal/tutorial
-    overlays automatically on start.
+    Returns screenshot after startup. Legal/tutorial overlays are
+    dismissed automatically.
     """
     global _bridge
     try:
@@ -100,7 +196,7 @@ async def ui_start(folder_path: str = '') -> dict:
         path = await bridge.screenshot('started')
         return {
             'success': True,
-            'message': 'Kestrel UI started and ready',
+            'action': 'Kestrel UI started and ready',
             'screenshot': path,
         }
     except Exception as e:
@@ -114,12 +210,16 @@ async def ui_screenshot(label: str = '') -> dict:
     Args:
         label: Optional label for the screenshot filename
 
-    Returns dict with the screenshot file path.
+    Returns the screenshot file path.
     """
     try:
         bridge = await _ensure_bridge()
         path = await bridge.screenshot(label or 'capture')
-        return {'success': True, 'path': path}
+        return {
+            'success': True,
+            'action': 'Screenshot captured',
+            'screenshot': path,
+        }
     except Exception as e:
         return _error_context(e)
 
@@ -134,26 +234,70 @@ async def ui_click(
 
     Args:
         selector: CSS selector (e.g. '#analyzeQueueBtn', '.primary')
-        text: Visible button/link text to click (e.g. 'Start Analysis')
+        text: Visible button/link text to click (e.g. 'Analyze Folders')
         timeout: Max wait time in ms (default 10000)
 
-    Provide either selector OR text, not both. Returns a screenshot
-    taken after the click, plus error diagnostics if it fails.
+    Provide either selector OR text, not both.
+
+    When using text: if multiple elements match, returns a disambiguation
+    list with selectors instead of clicking. Re-call with the desired
+    selector. If exactly one element is an exact text match among multiple
+    partial matches, it clicks that one automatically.
+
+    Returns: action description of exactly what was clicked + screenshot.
     """
     if not selector and not text:
         return {'success': False, 'error': 'Provide selector or text'}
     try:
         bridge = await _ensure_bridge()
-        label = text or selector.replace('#', '').replace('.', '')
-        path = await bridge.click(
-            selector=selector or None,
-            text=text or None,
-            label=f'click_{label[:30]}',
-            timeout=timeout,
-        )
-        return {'success': True, 'screenshot': path}
+
+        if text:
+            matches = await _find_elements_by_text(bridge, text)
+
+            if len(matches) == 0:
+                err_path = await bridge.screenshot('click_no_match')
+                return {
+                    'success': False,
+                    'error': (f'No visible interactive elements found '
+                              f'matching "{text}"'),
+                    'screenshot': err_path,
+                    'hint': ('Use ui_get_elements("button") or '
+                             'ui_screenshot to see what\'s on screen.'),
+                }
+
+            if len(matches) > 1:
+                exact = [m for m in matches
+                         if m['text'].strip().lower() == text.strip().lower()]
+                if len(exact) == 1:
+                    match = exact[0]
+                else:
+                    return {
+                        'success': False,
+                        'needs_disambiguation': True,
+                        'message': (
+                            f'Found {len(matches)} elements matching '
+                            f'"{text}". Call ui_click(selector=...) '
+                            f'with one of these selectors:'),
+                        'candidates': matches,
+                    }
+            else:
+                match = matches[0]
+
+            target_selector = match['selector']
+            await bridge.page.click(target_selector, timeout=timeout)
+            description = _describe_element(match, 'Clicked')
+            return await _post_interaction(
+                bridge, description, f'click_{text[:30]}')
+
+        else:
+            info = await _get_element_info(bridge, selector)
+            await bridge.page.click(selector, timeout=timeout)
+            description = _describe_element(info, 'Clicked')
+            label = selector.replace('#', '').replace('.', '')[:30]
+            return await _post_interaction(
+                bridge, description, f'click_{label}')
+
     except Exception as e:
-        # Take a screenshot showing what went wrong
         try:
             bridge = await _ensure_bridge()
             err_path = await bridge.screenshot('click_failed')
@@ -171,12 +315,15 @@ async def ui_type(selector: str, value: str) -> dict:
     Args:
         selector: CSS selector for the input (e.g. '#adlgDetectionThreshold')
         value: Text to type
+
+    Returns action description and screenshot after typing.
     """
     try:
         bridge = await _ensure_bridge()
+        info = await _get_element_info(bridge, selector)
         await bridge.fill(selector, value)
-        path = await bridge.screenshot('typed')
-        return {'success': True, 'screenshot': path}
+        desc = _describe_element(info, f'Typed "{value}" into')
+        return await _post_interaction(bridge, desc, 'typed')
     except Exception as e:
         return _error_context(e)
 
@@ -187,13 +334,15 @@ async def ui_hover(selector: str) -> dict:
 
     Args:
         selector: CSS selector to hover over
+
+    Returns action description and screenshot after hover.
     """
     try:
         bridge = await _ensure_bridge()
+        info = await _get_element_info(bridge, selector)
         await bridge.page.hover(selector)
-        await asyncio.sleep(0.3)
-        path = await bridge.screenshot('hover')
-        return {'success': True, 'screenshot': path}
+        desc = _describe_element(info, 'Hovered over')
+        return await _post_interaction(bridge, desc, 'hover')
     except Exception as e:
         return _error_context(e)
 
@@ -205,12 +354,15 @@ async def ui_select(selector: str, value: str) -> dict:
     Args:
         selector: CSS selector for the <select> element
         value: Option value to select
+
+    Returns action description and screenshot after selection.
     """
     try:
         bridge = await _ensure_bridge()
+        info = await _get_element_info(bridge, selector)
         await bridge.page.select_option(selector, value)
-        path = await bridge.screenshot('selected')
-        return {'success': True, 'screenshot': path}
+        desc = _describe_element(info, f'Selected "{value}" in')
+        return await _post_interaction(bridge, desc, 'selected')
     except Exception as e:
         return _error_context(e)
 
@@ -222,20 +374,24 @@ async def ui_checkbox(selector: str, checked: bool = True) -> dict:
     Args:
         selector: CSS selector for the checkbox
         checked: True to check, False to uncheck
+
+    Returns action description and screenshot after toggling.
     """
     try:
         bridge = await _ensure_bridge()
+        info = await _get_element_info(bridge, selector)
         if checked:
             await bridge.page.check(selector)
         else:
             await bridge.page.uncheck(selector)
-        path = await bridge.screenshot('checkbox')
-        return {'success': True, 'screenshot': path}
+        action = 'Checked' if checked else 'Unchecked'
+        desc = _describe_element(info, action)
+        return await _post_interaction(bridge, desc, 'checkbox')
     except Exception as e:
         return _error_context(e)
 
 
-# ── Page inspection tools ───────────────────────────────────────────────
+# ── Page inspection tools ──────────────────────────────────────────────
 
 @mcp.tool()
 async def ui_get_text(selector: str) -> dict:
@@ -272,7 +428,8 @@ async def ui_get_elements(selector: str) -> dict:
                     id: el.id || null,
                     text: (el.textContent || '').trim().slice(0, 100),
                     classes: el.className || '',
-                    visible: el.offsetParent !== null || el.style.display !== 'none',
+                    visible: el.offsetParent !== null
+                             || el.style.display !== 'none',
                     disabled: el.disabled || false,
                     checked: el.checked || false,
                     type: el.type || null,
@@ -324,32 +481,36 @@ async def ui_wait_for(
         if selector:
             await bridge.page.wait_for_selector(
                 selector, state=state, timeout=timeout)
+            desc = f'Element "{selector}" is now {state}'
         elif text:
             await bridge.page.wait_for_function(
                 f'document.body.innerText.includes({json.dumps(text)})',
                 timeout=timeout)
+            desc = f'Text "{text}" appeared on page'
         else:
             return {'success': False, 'error': 'Provide selector or text'}
         path = await bridge.screenshot('wait_done')
-        return {'success': True, 'screenshot': path}
+        return {'success': True, 'action': desc, 'screenshot': path}
     except Exception as e:
         return _error_context(e)
 
 
-# ── Dialog & overlay management ─────────────────────────────────────────
+# ── Dialog & overlay management ────────────────────────────────────────
 
 @mcp.tool()
 async def ui_dismiss_overlays() -> dict:
     """Dismiss any known overlay: legal banner, tutorial, feedback consent.
 
     Call this when clicks are being blocked by overlays.
+    Returns screenshot after dismissal.
     """
     try:
         bridge = await _ensure_bridge()
         await bridge.dismiss_overlays()
         await bridge.dismiss_feedback_consent()
-        path = await bridge.screenshot('overlays_dismissed')
-        return {'success': True, 'screenshot': path}
+        return await _post_interaction(
+            bridge, 'Dismissed overlays (legal/tutorial/consent)',
+            'overlays_dismissed')
     except Exception as e:
         return _error_context(e)
 
@@ -367,12 +528,15 @@ async def ui_set_folder(folder_path: str) -> dict:
     try:
         bridge = await _ensure_bridge()
         await bridge.set_folder_override(folder_path)
-        return {'success': True, 'folder': folder_path}
+        return {
+            'success': True,
+            'action': f'Folder override set to {folder_path}',
+        }
     except Exception as e:
         return _error_context(e)
 
 
-# ── Analysis queue tools ────────────────────────────────────────────────
+# ── Analysis queue tools ───────────────────────────────────────────────
 
 @mcp.tool()
 async def ui_get_queue_status() -> dict:
@@ -420,20 +584,22 @@ async def ui_wait_for_analysis(
                     f'reached_{total_processed}_of_{total_total}')
                 return {
                     'success': True,
+                    'action': (f'Reached {total_processed}/{total_total} '
+                               'processed'),
                     'processed': total_processed,
                     'total': total_total,
                     'screenshot': path,
-                    'message': f'Reached {total_processed}/{total_total}',
                 }
 
             if target_processed == 0 and not running and total_total > 0:
                 path = await bridge.screenshot('analysis_complete')
                 return {
                     'success': True,
+                    'action': (f'Analysis complete: '
+                               f'{total_processed}/{total_total}'),
                     'processed': total_processed,
                     'total': total_total,
                     'screenshot': path,
-                    'message': f'Analysis complete: {total_processed}/{total_total}',
                 }
 
             await bridge.dismiss_feedback_consent()
@@ -453,7 +619,35 @@ async def ui_wait_for_analysis(
         return _error_context(e)
 
 
-# ── Utility tools ───────────────────────────────────────────────────────
+# ── Utility tools ──────────────────────────────────────────────────────
+
+@mcp.tool()
+async def ui_wait_and_screenshot(
+    seconds: int = 5,
+    label: str = '',
+) -> dict:
+    """Wait a specified number of seconds, then take a screenshot.
+
+    Args:
+        seconds: Seconds to wait (1-120, default 5)
+        label: Optional label for the screenshot filename
+
+    Use after triggering async operations (analysis start, loading,
+    animations) to let the UI settle before capturing state.
+    """
+    try:
+        bridge = await _ensure_bridge()
+        seconds = max(1, min(120, seconds))
+        await asyncio.sleep(seconds)
+        path = await bridge.screenshot(label or f'wait_{seconds}s')
+        return {
+            'success': True,
+            'action': f'Waited {seconds}s',
+            'screenshot': path,
+        }
+    except Exception as e:
+        return _error_context(e)
+
 
 @mcp.tool()
 async def ui_get_visible_dialogs() -> dict:
@@ -466,14 +660,12 @@ async def ui_get_visible_dialogs() -> dict:
         dialogs = await bridge.evaluate("""
             (() => {
                 const results = [];
-                // Check <dialog> elements
                 document.querySelectorAll('dialog').forEach(d => {
                     if (d.open) results.push({
                         type: 'dialog', id: d.id,
                         text: (d.textContent || '').trim().slice(0, 200)
                     });
                 });
-                // Check overlay-style divs
                 ['tutorialOverlay', 'legalNotice', 'analyticsConsent',
                  'feedbackConsentDlg'].forEach(id => {
                     const el = document.getElementById(id);
@@ -487,7 +679,6 @@ async def ui_get_visible_dialogs() -> dict:
                         });
                     }
                 });
-                // Check for any element with high z-index covering the viewport
                 const center = document.elementFromPoint(
                     window.innerWidth / 2, window.innerHeight / 2);
                 if (center && center !== document.body &&
@@ -500,7 +691,8 @@ async def ui_get_visible_dialogs() -> dict:
                             id: center.id,
                             classes: center.className,
                             zIndex: z,
-                            text: (center.textContent || '').trim().slice(0, 100),
+                            text: (center.textContent || '')
+                                  .trim().slice(0, 100),
                         });
                     }
                 }
@@ -524,6 +716,8 @@ async def ui_scroll(
         selector: CSS selector to scroll within (empty = whole page)
         direction: 'up', 'down', 'left', or 'right'
         amount: Pixels to scroll
+
+    Returns action description and screenshot after scrolling.
     """
     try:
         bridge = await _ensure_bridge()
@@ -538,12 +732,12 @@ async def ui_scroll(
                 document.querySelector({json.dumps(selector)})
                     ?.scrollBy({dx}, {dy})
             """)
+            desc = f'Scrolled {direction} {amount}px in "{selector}"'
         else:
             await bridge.evaluate(f'window.scrollBy({dx}, {dy})')
+            desc = f'Scrolled {direction} {amount}px on page'
 
-        await asyncio.sleep(0.2)
-        path = await bridge.screenshot('scrolled')
-        return {'success': True, 'screenshot': path}
+        return await _post_interaction(bridge, desc, 'scrolled')
     except Exception as e:
         return _error_context(e)
 
@@ -557,7 +751,7 @@ async def ui_stop() -> dict:
             if _bridge:
                 await _bridge.stop()
                 _bridge = None
-        return {'success': True, 'message': 'Kestrel UI stopped'}
+        return {'success': True, 'action': 'Kestrel UI stopped'}
     except Exception as e:
         return _error_context(e)
 
