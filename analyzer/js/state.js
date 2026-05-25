@@ -282,12 +282,8 @@
       } catch (e) { console.warn('showToast failed', e); }
     }
 
-    function showLoadingAnalyzer() {
-      const o = document.getElementById('loadingOverlay'); if (!o) return; o.classList.remove('hidden'); o.style.pointerEvents = 'auto';
-    }
-    function hideLoadingAnalyzer() {
-      const o = document.getElementById('loadingOverlay'); if (!o) return; o.classList.add('hidden'); o.style.pointerEvents = 'none';
-    }
+    function showLoadingAnalyzer() { }
+    function hideLoadingAnalyzer() { }
 
     async function _waitForPipelineReady(timeoutMs = 30000) {
       const start = Date.now();
