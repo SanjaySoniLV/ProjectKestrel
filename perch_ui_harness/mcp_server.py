@@ -15,6 +15,20 @@ import sys
 import traceback
 from pathlib import Path
 
+# Redirect all print/log output to stderr so stdout stays clean for JSON-RPC.
+# The MCP protocol uses stdout exclusively; any non-JSON line breaks clients.
+_real_stderr = sys.stderr
+class _StderrPrint:
+    """Replacement for builtins.print that always writes to stderr."""
+    def __call__(self, *args, **kwargs):
+        kwargs['file'] = _real_stderr
+        __builtins__['print'](*args, **kwargs) if isinstance(__builtins__, dict) else _orig_print(*args, **kwargs)
+
+_orig_print = print
+def print(*args, **kwargs):
+    kwargs.setdefault('file', _real_stderr)
+    _orig_print(*args, **kwargs)
+
 _ANALYZER_DIR = str(Path(__file__).resolve().parent.parent / 'analyzer')
 if _ANALYZER_DIR not in sys.path:
     sys.path.insert(0, _ANALYZER_DIR)
@@ -23,7 +37,7 @@ from mcp.server.fastmcp import FastMCP
 
 from bridge import KestrelUIBridge
 
-mcp = FastMCP("perch-ui")
+mcp = FastMCP("kestrel-ui-testing")
 
 _bridge: KestrelUIBridge | None = None
 _bridge_lock = asyncio.Lock()
@@ -563,4 +577,7 @@ async def ui_stop() -> dict:
 
 
 if __name__ == '__main__':
+    import logging
+    logging.getLogger('mcp').setLevel(logging.WARNING)
+    logging.getLogger('uvicorn').setLevel(logging.WARNING)
     mcp.run(transport='stdio')
