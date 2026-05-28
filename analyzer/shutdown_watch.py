@@ -160,13 +160,21 @@ def _install_windows(callback: Callable[[], None]) -> bool:
     # LPARAM, and LRESULT so the callback works correctly on 64-bit Windows.
     # wintypes.WPARAM / wintypes.LPARAM are defined as 32-bit c_uint / c_long
     # in Python's ctypes, which causes an OverflowError when the OS delivers
-    # a message whose LPARAM holds a 64-bit pointer value.
+    # a message whose LPARAM holds a 64-bit pointer value. The same pointer-
+    # sized types must also be declared on DefWindowProcW — without an
+    # explicit argtypes ctypes falls back to c_int for integer arguments,
+    # so forwarding a 64-bit lparam still overflows on the outbound call.
     WNDPROC = ctypes.WINFUNCTYPE(
         ctypes.c_ssize_t,   # LRESULT = LONG_PTR
         wintypes.HWND, wintypes.UINT,
         ctypes.c_size_t,    # WPARAM = UINT_PTR
         ctypes.c_ssize_t,   # LPARAM = LONG_PTR
     )
+    user32.DefWindowProcW.argtypes = [
+        wintypes.HWND, wintypes.UINT,
+        ctypes.c_size_t,    # WPARAM = UINT_PTR
+        ctypes.c_ssize_t,   # LPARAM = LONG_PTR
+    ]
     user32.DefWindowProcW.restype = ctypes.c_ssize_t
 
     def _wnd_proc(hwnd, msg, wparam, lparam):
