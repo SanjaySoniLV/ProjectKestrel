@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -190,39 +191,6 @@ def _keyring_save(data: dict) -> None:
         os.chmod(fallback_path, 0o600)
     except OSError:
         pass
-
-
-def _auth_debug_jwt_enabled() -> bool:
-    return os.environ.get("AUTH_DEBUG_JWT", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
-
-
-def _auth_debug_log_token(where: str, token: str | None) -> None:
-    """Log non-secret JWT metadata (iss, aud, exp) and a short token fingerprint."""
-    if not _auth_debug_jwt_enabled():
-        return
-    if not token:
-        log(f"[Auth debug] {where}: (no token)")
-        return
-    t = str(token).strip()
-    parts = t.split(".")
-    payload: dict = {}
-    if len(parts) >= 2:
-        try:
-            seg = parts[1] + "=" * (-len(parts[1]) % 4)
-            payload = json.loads(base64.urlsafe_b64decode(seg))
-        except Exception as ex:  # pragma: no cover
-            payload = {"_decode_error": str(ex)}
-    head = t[:24] if len(t) > 24 else t
-    tail = t[-16:] if len(t) > 16 else ""
-    log(
-        f"[Auth debug] {where}: len={len(t)} fingerprint={head!r}…{tail!r} "
-        f"iss={payload.get('iss')!r} aud={payload.get('aud')!r} "
-        f"exp={payload.get('exp')} sub={payload.get('sub')!r}"
-    )
 
 
 def _auth_jwt_exp_unverified(token: str) -> float | None:
@@ -2398,9 +2366,6 @@ class Api:
             if resp.get("error"):
                 # invalid_grant => refresh token revoked / aged out / rotated past.
                 if resp.get("error") == "invalid_grant":
-                    _auth_debug_log_token(
-                        "refresh: invalid_grant — clearing keychain", None
-                    )
                     self._clear_keychain_auth()
                     self._perch_account_cache = None
                     self._perch_account_cache_at = 0.0
@@ -2408,9 +2373,6 @@ class Api:
                     self._perch_usage_cache_at = 0.0
                     return None
                 # Network / 5xx — keep old bundle, downstream will surface stale.
-                _auth_debug_log_token(
-                    f"refresh: transient error {resp.get('error')!r}", None
-                )
                 return current or bundle
 
             new_bundle = _oauth.build_bundle(resp)
@@ -2418,12 +2380,8 @@ class Api:
             if not new_bundle.get("refresh_token"):
                 new_bundle["refresh_token"] = refresh_token
             if not new_bundle.get("access_token"):
-                _auth_debug_log_token("refresh: response missing access_token", None)
                 return current or bundle
             _keyring_save(new_bundle)
-            _auth_debug_log_token(
-                "refresh: rotated access token", new_bundle.get("access_token")
-            )
             # Caches were keyed on the now-rotated access token.
             self._perch_account_cache = None
             self._perch_account_cache_at = 0.0
@@ -2443,7 +2401,6 @@ class Api:
         try:
             bundle = self._load_token_bundle()
             if not bundle:
-                _auth_debug_log_token("get_auth_token: keyring empty", None)
                 return {"success": True, "token": None}
             bundle = self._refresh_if_needed(bundle)
             if bundle is None:
@@ -2455,10 +2412,6 @@ class Api:
             if ttl is None or ttl < 60:
                 # Token is past its useful life and refresh didn't (or couldn't)
                 # extend it — surface signed-out so the UI prompts re-auth.
-                _auth_debug_log_token(
-                    "get_auth_token: token unusable after refresh attempt",
-                    access_token,
-                )
                 return {"success": True, "token": None}
             exp_out = _auth_jwt_exp_unverified(str(access_token))
             if exp_out is None:
@@ -2466,7 +2419,6 @@ class Api:
                     exp_out = float(bundle.get("expires_at") or 0)
                 except (TypeError, ValueError):
                     exp_out = 0.0
-            _auth_debug_log_token("get_auth_token: returning token", access_token)
             return {"success": True, "token": access_token, "expiry": exp_out}
         except Exception as e:
             print(f"[API] get_auth_token() -> Error: {e}", flush=True)
@@ -2690,6 +2642,29 @@ class Api:
     # Reuses the Perch JWT (same Clerk identity). The cloud-compute Worker
     # validates the JWT and calls Perch internally for entitlement + usage
     # accrual; the desktop app does not need to know about that handshake.
+
+    @staticmethod
+    def _sanitize_cloud_error_message(msg: str) -> str:
+        """Strip credentials from Worker error bodies before surfacing to JS.
+
+        Worker error responses are forwarded verbatim into the analyzer UI; a
+        misbehaving upstream (or a future logging-the-request-body bug) could
+        echo back the user's Bearer token / JWT. Redact those patterns and
+        cap the payload so a flood of HTML / stack trace can't crowd out the
+        actionable error.
+        """
+        if not msg:
+            return ""
+        text = str(msg)
+        text = re.sub(r"Bearer\s+[A-Za-z0-9._\-]+", "Bearer [REDACTED]", text)
+        text = re.sub(
+            r"\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\b",
+            "[REDACTED_JWT]",
+            text,
+        )
+        if len(text) > 300:
+            text = text[:300] + "…"
+        return text
 
     def _ensure_cc_lock(self) -> "threading.Lock":
         import threading as _t
@@ -3311,7 +3286,7 @@ class Api:
         except ccc.CloudComputeError as e:
             return {
                 "ok": False,
-                "error": e.message,
+                "error": self._sanitize_cloud_error_message(e.message),
                 "status": e.status,
                 "needSignIn": e.status == 401,
             }
@@ -3778,7 +3753,11 @@ class Api:
         try:
             result = client.upload_test(_Path(root_real), sample_count=sample_count)
         except ccc.CloudComputeError as e:
-            return {"ok": False, "error": e.message, "status": e.status}
+            return {
+                "ok": False,
+                "error": self._sanitize_cloud_error_message(e.message),
+                "status": e.status,
+            }
         except ValueError as e:
             return {"ok": False, "error": str(e)}
         except Exception as e:
@@ -4710,13 +4689,11 @@ class Api:
                 err = str(result.get("error") or "unknown")
                 desc = str(result.get("error_description") or "")
                 print(f"[API] OAuth flow failed: {err} ({desc})", flush=True)
-                _auth_debug_log_token(f"oauth: failed err={err!r}", None)
                 self._notify_js_sign_in_failed(err, desc)
                 return
 
             bundle = result["bundle"]
             _keyring_save(bundle)
-            _auth_debug_log_token("oauth: signed in", bundle.get("access_token"))
             # Caches were keyed on the previous (now-stale) identity.
             self._perch_account_cache = None
             self._perch_account_cache_at = 0.0

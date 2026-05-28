@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import concurrent.futures
 import csv
+import hashlib
+import hmac
 import json
 import os
 import shutil
@@ -430,7 +432,13 @@ class CloudComputeClient:
         return {"deleted": deleted, "failed": failed}
 
     def download_pack(self, job_id: str, filename: str, dest: Path) -> Path:
-        """Stream a result-pack zip from the Worker (NOT direct R2)."""
+        """Stream a result-pack zip from the Worker (NOT direct R2).
+
+        Verifies the pack against the X-Pack-SHA256 header (set by Worker
+        from job_packs.pack_sha256, which Modal reports at upload time). The
+        header is absent on legacy packs and on segment packs; verification
+        is skipped silently in that case.
+        """
         url = f"{self.api_base}/api/jobs/{job_id}/results/{filename}"
         headers = {
             "User-Agent": "KestrelDesktop/CloudCompute/1.0",
@@ -439,8 +447,20 @@ class CloudComputeClient:
         req = urllib.request.Request(url, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                expected_sha = resp.headers.get("X-Pack-SHA256") or ""
+                data = resp.read()
+                if expected_sha:
+                    actual_sha = hashlib.sha256(data).hexdigest()
+                    if not hmac.compare_digest(
+                        actual_sha.lower(), expected_sha.strip().lower()
+                    ):
+                        raise CloudComputeError(
+                            0,
+                            f"Pack integrity check failed for {filename}: "
+                            f"expected sha256={expected_sha}, got {actual_sha}",
+                        )
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(resp.read())
+                dest.write_bytes(data)
                 return dest
         except urllib.error.HTTPError as e:
             text = e.read().decode("utf-8", errors="replace")
@@ -887,6 +907,18 @@ def merge_pack_into_kestrel(
     with tempfile.TemporaryDirectory(prefix="kestrel-cc-pack-") as tmp:
         tmp_path = Path(tmp)
         with zipfile.ZipFile(pack_path, "r") as zf:
+            # Zip-Slip guard: refuse any member whose resolved target would
+            # escape tmp_path. Worker/Modal should never emit such entries,
+            # but the desktop should not trust the server side here.
+            extract_root = tmp_path.resolve()
+            for info in zf.infolist():
+                target = (extract_root / info.filename).resolve()
+                if target != extract_root and not str(target).startswith(
+                    str(extract_root) + os.sep
+                ):
+                    raise RuntimeError(
+                        f"Zip member escapes extraction root: {info.filename!r}"
+                    )
             zf.extractall(tmp_path)
 
         src_kestrel = tmp_path / ".kestrel"

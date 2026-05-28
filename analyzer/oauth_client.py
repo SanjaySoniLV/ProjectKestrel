@@ -272,8 +272,8 @@ def _token_request(url: str, form: dict, timeout: float = 15.0) -> dict:
             or body_snippet
             or str(e)
         )
-        # Echo to stderr for the desktop log — _auth_debug_log_token paths only
-        # see access tokens, not error bodies, so this is our only trace.
+        # Echo to stderr for the desktop log — this error path doesn't carry
+        # token contents, only the failure body, so it's safe to print.
         try:
             print(
                 f"[oauth] token endpoint error: HTTP {e.code} url={url} "
