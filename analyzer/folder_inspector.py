@@ -14,28 +14,20 @@ except Exception:
     pd = None
 
 from kestrel_analyzer.config import (
-    RAW_EXTENSIONS,
-    JPEG_EXTENSIONS,
     KESTREL_DIR_NAME,
     DATABASE_NAME,
-    is_supported_image_file,
+    select_camera_images,
 )
 from kestrel_analyzer.database import load_database
 
 
 def _list_images_in_folder(folder: str) -> list:
     try:
-        files = [
-            f for f in os.listdir(folder)
-            if is_supported_image_file(f, RAW_EXTENSIONS)
-            and os.path.isfile(os.path.join(folder, f))
+        entries = [
+            name for name in os.listdir(folder)
+            if os.path.isfile(os.path.join(folder, name))
         ]
-        if not files:
-            files = [
-                f for f in os.listdir(folder)
-                if is_supported_image_file(f, JPEG_EXTENSIONS)
-                and os.path.isfile(os.path.join(folder, f))
-            ]
+        files = select_camera_images(entries)
         files.sort()
         return files
     except Exception:
