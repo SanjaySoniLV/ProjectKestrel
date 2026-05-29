@@ -68,6 +68,28 @@
         }
       }
 
+      // Cold-start retry: on Windows, the keyring read backing
+      // get_perch_account can momentarily race the OS Credential Manager
+      // warming up, so the first call after launch sometimes returns
+      // success:false (or no account). Without this retry the indicator
+      // sticks on the generic "Signed in" label until the next sign-in or
+      // app restart, even though the token is valid. Try once more after a
+      // short delay before painting the label.
+      if (signedIn && !accountObj && window.pywebview?.api?.get_perch_account) {
+        await new Promise(r => setTimeout(r, 1500));
+        try {
+          const accountRes = await window.pywebview.api.get_perch_account();
+          if (accountRes?.success && accountRes.account) {
+            accountObj = accountRes.account;
+          } else if (accountRes?.error === 'auth_token_expired') {
+            expired = true;
+            signedIn = false;
+          }
+        } catch (e) {
+          console.warn('Perch account retry failed:', e);
+        }
+      }
+
       const labelEl = el('#accountBtnLabel');
       if (signedIn) {
         accountBtn.classList.add('signed-in');

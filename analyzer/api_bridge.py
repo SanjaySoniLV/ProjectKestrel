@@ -3132,8 +3132,6 @@ class Api:
                     state = self._cc_jobs.get(job_id)
                     if state is None:
                         return
-                    if state.get("status") in ("done", "failed", "cancelled"):
-                        return
                     cancel_ev = state.get("cancel_event")
                 if cancel_ev is not None and cancel_ev.is_set():
                     return
@@ -3173,6 +3171,18 @@ class Api:
                         fc = int(((st.get("remote") or {}).get("failureCount")) or 0)
                     if fc == 1 or fc % 5 == 0:
                         warn(f"[cloud-compute] poller {job_id}: failure #{fc}: {e}")
+                # Terminal-status check AFTER the refresh, not before. The tick
+                # that observes done/failed/cancelled then also captures any
+                # final remote bump (e.g. Modal's /progress lands within the
+                # same poll window as the local 'done' flip from the download
+                # worker, but on the prior arrangement we'd exit before the
+                # refresh and freeze analyzedCount one tick stale).
+                with self._ensure_cc_lock():
+                    state = self._cc_jobs.get(job_id)
+                    if state is None:
+                        return
+                    if state.get("status") in ("done", "failed", "cancelled"):
+                        return
                 _time.sleep(_CC_POLL_INTERVAL_SEC)
 
         thread = _t.Thread(target=_poller, name=f"cc-poll-{job_id}", daemon=True)

@@ -242,11 +242,29 @@
     // hydrateSettingsFromServer() directly bails (its first guard checks
     // window.pywebview?.api?.get_settings) and the recents render sees an
     // empty localStorage. Wait for the bridge, THEN hydrate + render.
+    //
+    // Cold-start retry: hydrateSettingsFromServer silently no-ops on any
+    // failure (bridge not fully wired yet, slow first get_settings call).
+    // When that happens localStorage stays empty, renderFolderRecentsChips
+    // sees no recents, and the row hides until the next app launch. One
+    // retry catches the transient case without spamming on the steady-state
+    // empty-recents path.
     (async () => {
       try {
         await waitForPywebview();
         await hydrateSettingsFromServer();
         if (typeof renderFolderRecentsChips === 'function') renderFolderRecentsChips();
+        const hasRecents = (() => {
+          try {
+            const s = (typeof loadSettings === 'function') ? loadSettings() : {};
+            return Array.isArray(s.folder_recents) && s.folder_recents.length > 0;
+          } catch { return false; }
+        })();
+        if (!hasRecents) {
+          await new Promise(r => setTimeout(r, 1500));
+          await hydrateSettingsFromServer();
+          if (typeof renderFolderRecentsChips === 'function') renderFolderRecentsChips();
+        }
       } catch (e) { console.warn('[recents] init chain failed:', e); }
     })();
 
