@@ -3240,6 +3240,17 @@ class Api:
                 "nothingToDo": True,
             }
 
+        # The Worker stamps a dense image_index in the EXACT order we send
+        # fileNames, and that index is now the canonical processing order for
+        # the whole cloud pipeline (manifests, container ranges, scaling, scene
+        # continuity). Sort by name so the index order is the natural lexical
+        # order regardless of how _cc_select_upload_files arranged anchors /
+        # errored-predecessors (it prepends them). The same sorted list backs
+        # both submit_job (presigned-URL order) and run_full_job (upload order),
+        # so indices, URLs, and uploads stay aligned. (Time-domain/capture-time
+        # ordering is a deferred future change; lexical matches today's order.)
+        files = sorted(files, key=lambda p: p.name)
+
         # Log file-selection details so the user can see if files are being reused
         # or re-analyzed (mirrors the local pipeline's "Picking up where Kestrel
         # left off" message via the queue manager logs).

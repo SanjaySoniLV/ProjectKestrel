@@ -313,8 +313,50 @@ class CloudComputeClient:
             timeout=_NOTIFY_TIMEOUT_SEC,
         )
 
-    def mark_complete(self, job_id: str) -> dict:
-        return self._request("POST", f"/api/jobs/{job_id}/complete", {})
+    def notify_failed(self, job_id: str, filenames: list[str], attempts: int = 6) -> bool:
+        """Tell the Worker an upload permanently failed (R2 PUT never
+        succeeded). Retries until acked because a missing upload_failed signal
+        would leave the index as a permanent un-uploaded hole that blocks the
+        analysis frontier. Returns True on ack, False if all attempts failed
+        (the Worker's /complete reconciliation + cron vanished-client backstop
+        are the final safety nets). 4xx (other than transient) is treated as a
+        terminal non-retry."""
+        for attempt in range(1, attempts + 1):
+            try:
+                self._request(
+                    "POST",
+                    f"/api/jobs/{job_id}/images/failed",
+                    {"filenames": filenames},
+                    timeout=_NOTIFY_TIMEOUT_SEC,
+                )
+                return True
+            except CloudComputeNetworkError:
+                pass  # transport failure — retry
+            except CloudComputeError as e:
+                # 5xx is transient; 4xx (e.g. job not found) won't fix itself.
+                if e.status and e.status < 500:
+                    return False
+            if attempt < attempts:
+                time.sleep(min(2 ** (attempt - 1), 10))
+        return False
+
+    def mark_complete(
+        self,
+        job_id: str,
+        succeeded: Optional[list[str]] = None,
+        failed: Optional[list[str]] = None,
+    ) -> dict:
+        """Signal all uploads are done. ``succeeded`` are filenames whose R2
+        PUT landed but whose per-file /notify did not confirm (so the Worker
+        reconciles them upload_pending -> uploaded); ``failed`` are filenames
+        whose upload permanently failed. The Worker also sweeps any remaining
+        upload_pending rows to upload_failed so no hole survives."""
+        body: dict = {}
+        if succeeded:
+            body["succeeded"] = succeeded
+        if failed:
+            body["failed"] = failed
+        return self._request("POST", f"/api/jobs/{job_id}/complete", body)
 
     def pause_job(self, job_id: str) -> dict:
         """POST /api/jobs/{jobId}/pause — upload-side pause. Modal keeps
@@ -469,20 +511,37 @@ class CloudComputeClient:
     # ─── Direct-to-R2 upload ─────────────────────────────────────────────
 
     @staticmethod
-    def _put_file(url: str, file_path: Path) -> int:
-        """PUT a single file to its presigned R2 URL. Returns HTTP status."""
+    def _put_file(url: str, file_path: Path, attempts: int = 3) -> int:
+        """PUT a single file to its presigned R2 URL. Returns the HTTP status
+        (or 0 on a transport failure that never produced a response).
+
+        Retries transient failures (network errors, 5xx) up to ``attempts``
+        times with exponential backoff. 4xx responses are NOT retried — a
+        client error (e.g. an expired presign) won't fix itself. The caller
+        treats any final status >= 400 (or 0) as a permanent upload failure and
+        notifies the Worker via /images/failed so the index can't wedge the
+        analysis frontier."""
         data = file_path.read_bytes()
-        req = urllib.request.Request(
-            url,
-            data=data,
-            method="PUT",
-            headers={"Content-Type": "application/octet-stream"},
-        )
-        try:
-            with urllib.request.urlopen(req) as resp:
-                return resp.status
-        except urllib.error.HTTPError as e:
-            return e.code
+        last_status = 0
+        for attempt in range(1, attempts + 1):
+            req = urllib.request.Request(
+                url,
+                data=data,
+                method="PUT",
+                headers={"Content-Type": "application/octet-stream"},
+            )
+            try:
+                with urllib.request.urlopen(req) as resp:
+                    return resp.status
+            except urllib.error.HTTPError as e:
+                last_status = e.code
+                if e.code < 500:
+                    return e.code  # client error — retrying won't help
+            except (urllib.error.URLError, TimeoutError, ConnectionError, socket.timeout):
+                last_status = 0  # transport failure, no HTTP status
+            if attempt < attempts:
+                time.sleep(min(2 ** (attempt - 1), 5))
+        return last_status
 
     # ─── Upload speed test ───────────────────────────────────────────────
 
@@ -774,7 +833,8 @@ class CloudComputeClient:
         # 3) Concurrent uploads + per-file notify (runs alongside the poller)
         notified_lock = threading.Lock()
         notified_count = 0
-        failed_uploads: list[str] = []
+        failed_uploads: list[str] = []        # R2 PUT failed (after retries)
+        notify_unconfirmed: list[str] = []    # PUT ok but /notify didn't land
 
         def _upload_and_notify(item: dict, file_path: Path) -> None:
             nonlocal notified_count
@@ -788,15 +848,24 @@ class CloudComputeClient:
                     if pause_event.wait(timeout=1.0):
                         break
             status = self._put_file(item["url"], file_path)
-            if status >= 400:
+            if status >= 400 or status == 0:
                 with notified_lock:
                     failed_uploads.append(file_path.name)
                 _emit("upload_failed", filename=file_path.name, status=status)
+                # Authoritatively tell the Worker the upload failed (retry until
+                # acked). Without this, the never-arriving image would block the
+                # analysis frontier until the cron's vanished-client backstop.
+                if not self.notify_failed(job_id, [file_path.name]):
+                    _emit("notify_failed_unacked", filename=file_path.name)
                 return
             try:
                 self.notify_uploaded(job_id, [file_path.name])
             except CloudComputeError as e:
-                # /complete will catch stragglers — don't abort the whole job.
+                # PUT succeeded but /notify didn't land. Don't abort the job —
+                # record it so mark_complete reconciles this straggler to
+                # 'uploaded' (closes the silent-stranding bug).
+                with notified_lock:
+                    notify_unconfirmed.append(file_path.name)
                 _emit("notify_failed", filename=file_path.name, error=str(e))
                 return
             with notified_lock:
@@ -818,9 +887,16 @@ class CloudComputeClient:
                     _check_cancel()
                     fut.result()  # propagate exceptions
 
-            # 4) Mark uploads complete (also dispatches stragglers on the Worker)
+            # 4) Mark uploads complete. Pass the reconciliation lists so the
+            # Worker can confirm PUT-ok-but-unnotified stragglers as 'uploaded'
+            # and finalize failed uploads; it also sweeps any remaining
+            # upload_pending to upload_failed so no hole survives.
             _emit("uploads_done", failed=len(failed_uploads))
-            self.mark_complete(job_id)
+            self.mark_complete(
+                job_id,
+                succeeded=list(notify_unconfirmed),
+                failed=list(failed_uploads),
+            )
         except Exception:
             # If uploads failed or were cancelled, make sure the poller exits
             # before we re-raise — otherwise we'd leak the thread.
