@@ -11,6 +11,7 @@ from kestrel_analyzer.config import (
     JPEG_EXTENSIONS,
     RAW_EXTENSIONS,
     is_supported_image_file,
+    select_camera_images,
 )
 
 
@@ -75,3 +76,74 @@ class TestIsSupportedImageFile:
         """Filenames with extra dots like 'IMG.2026.05.16.ARW' should pass
         as long as the leading character isn't a dot."""
         assert is_supported_image_file("IMG.2026.05.16.ARW", RAW_EXTENSIONS)
+
+
+class TestSelectCameraImages:
+    """RAW+JPG dedup: prefer RAW, keep orphan JPEGs."""
+
+    def test_raw_only(self):
+        assert select_camera_images(["IMG_001.CR3", "IMG_002.CR3"]) == [
+            "IMG_001.CR3", "IMG_002.CR3",
+        ]
+
+    def test_jpeg_only(self):
+        assert select_camera_images(["DSC_001.JPG", "DSC_002.JPG"]) == [
+            "DSC_001.JPG", "DSC_002.JPG",
+        ]
+
+    def test_paired_jpeg_dropped(self):
+        result = select_camera_images([
+            "IMG_001.CR3", "IMG_001.JPG",
+            "IMG_002.CR3", "IMG_002.JPG",
+        ])
+        assert "IMG_001.JPG" not in result
+        assert "IMG_002.JPG" not in result
+        assert set(result) == {"IMG_001.CR3", "IMG_002.CR3"}
+
+    def test_orphan_jpeg_kept(self):
+        """User shoots RAW+JPG then switches to JPG-only mid-card.
+
+        Paired JPEGs drop out as in-camera sidecars; JPGs without a
+        same-stem RAW partner are kept so the JPG-only photos still get
+        analyzed instead of disappearing.
+        """
+        result = select_camera_images([
+            "IMG_001.CR3", "IMG_001.JPG",   # paired — JPG dropped
+            "IMG_002.CR3", "IMG_002.JPG",   # paired — JPG dropped
+            "IMG_003.JPG",                  # orphan — kept
+            "IMG_004.JPG",                  # orphan — kept
+        ])
+        assert set(result) == {
+            "IMG_001.CR3", "IMG_002.CR3",
+            "IMG_003.JPG", "IMG_004.JPG",
+        }
+
+    def test_case_insensitive_stem_match(self):
+        """Capture stems pair across case so case-folding filesystems work."""
+        result = select_camera_images(["IMG_001.CR3", "img_001.jpg"])
+        assert result == ["IMG_001.CR3"]
+
+    def test_hidden_and_appledouble_filtered(self):
+        result = select_camera_images([
+            ".DS_Store",
+            "._IMG_001.CR3",
+            "._IMG_001.JPG",
+            "IMG_001.CR3",
+        ])
+        assert result == ["IMG_001.CR3"]
+
+    def test_mixed_raw_formats_kept(self):
+        """Different cameras' RAWs in one folder all survive."""
+        result = select_camera_images([
+            "IMG_001.CR3",      # Canon
+            "DSC_002.NEF",      # Nikon
+            "DSC_003.ARW",      # Sony
+            "DSC_002.JPG",      # paired with NEF — dropped
+        ])
+        assert set(result) == {"IMG_001.CR3", "DSC_002.NEF", "DSC_003.ARW"}
+
+    def test_empty_input(self):
+        assert select_camera_images([]) == []
+
+    def test_no_supported_files(self):
+        assert select_camera_images(["notes.txt", "movie.mp4", "README"]) == []
