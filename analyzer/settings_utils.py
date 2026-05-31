@@ -429,6 +429,11 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     _set_int('max_bird_crops', default=10, min_value=1, max_value=20)
     _set_int('parallel_prefetch', default=3, min_value=1, max_value=5)
     _set_bool('exposure_corrected_thumbs', default=True)
+    # Analysis-mode feature toggles persisted so cloud-compute settings snapshot
+    # (_cc_analysis_settings_snapshot) can read them without needing the UI to
+    # pass them as runtime parameters.
+    _set_bool('wildlife_enabled', default=False)
+    _set_bool('species_detection_enabled', default=True)
     # ONNX provider resilience (auto GPU↔CPU fallback). Advanced/triage knobs;
     # not exposed in the UI. ``gpu_resilience_enabled=False`` reverts to the
     # pre-resilience behavior (single GPU session, no recovery).

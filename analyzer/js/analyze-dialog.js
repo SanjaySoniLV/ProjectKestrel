@@ -1040,6 +1040,14 @@
         _adlgThumbComp.value = compression.toFixed(2);
       }
 
+      // Hydrate wildlife/species-detection toggles from persisted settings so
+      // the user's choice survives dialog re-opens and is visible to the cloud
+      // compute snapshot path (settings.js getSetting reads localStorage).
+      const _adlgWildlife = document.getElementById('analyzeWildlife');
+      if (_adlgWildlife) _adlgWildlife.checked = !!getSetting('wildlife_enabled', false);
+      const _adlgSpecies = document.getElementById('analyzeSpeciesDetection');
+      if (_adlgSpecies) _adlgSpecies.checked = getSetting('species_detection_enabled') !== false;
+
       // Unlock checkbox state — reset every open. User must explicitly re-tick
       // it to unlock destructive re-analysis on each queue.
       const unlockBox = document.getElementById('analyzeDlgReanalyzeUnlock');

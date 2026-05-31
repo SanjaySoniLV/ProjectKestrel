@@ -125,6 +125,9 @@
       const tcRaw = parseFloat(document.getElementById('adlgThumbnailJpegCompression')?.value);
       const tcVal = Math.max(0.5, Math.min(1.0, Number.isFinite(tcRaw) ? tcRaw : 0.75));
       const tqVal = Math.max(50, Math.min(100, Math.round(tcVal * 100)));
+      const useGpu = document.getElementById('analyzeUseGpu')?.checked ?? true;
+      const wildlifeEnabled = document.getElementById('analyzeWildlife')?.checked ?? false;
+      const speciesDetectionEnabled = document.getElementById('analyzeSpeciesDetection')?.checked ?? true;
       const adlgSettings = loadSettings();
       adlgSettings.detection_threshold = dtVal;
       adlgSettings.max_bird_crops = mbcVal;
@@ -136,14 +139,14 @@
       adlgSettings.thumbnail_max_width = twVal;
       adlgSettings.thumbnail_jpeg_compression = tcVal;
       adlgSettings.thumbnail_jpeg_quality = tqVal;
+      // Persist toggles so _cc_analysis_settings_snapshot can read them at
+      // cloud-compute submit time.
+      adlgSettings.wildlife_enabled = wildlifeEnabled;
+      adlgSettings.species_detection_enabled = speciesDetectionEnabled;
       saveSettings(adlgSettings);
       if (hasPywebviewApi && window.pywebview?.api?.save_settings_data) {
         try { await window.pywebview.api.save_settings_data(adlgSettings); } catch (_) { }
       }
-
-      const useGpu = document.getElementById('analyzeUseGpu')?.checked ?? true;
-      const wildlifeEnabled = document.getElementById('analyzeWildlife')?.checked ?? false;
-      const speciesDetectionEnabled = document.getElementById('analyzeSpeciesDetection')?.checked ?? true;
 
       const startBtn = document.getElementById('analyzeDlgAdd');
       if (startBtn) startBtn.disabled = true;
