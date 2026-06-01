@@ -769,6 +769,19 @@ class CloudComputeClient:
                         imageCount=int(status_body.get("image_count") or len(files)),
                     )
 
+                    # Remote terminal status (cancelled/incomplete from the
+                    # website or the cron). The upload pool only checks the
+                    # LOCAL cancel_event, so without this the client keeps
+                    # PUTting to R2 + notifying a dead job. Trip cancel_event to
+                    # abort in-flight uploads, then exit. (For 'complete'/'failed'
+                    # the terminal handler below returns; 'failed' also trips
+                    # cancel_event there so a worker-side failure stops uploads.)
+                    if cur_status in ("cancelled", "incomplete"):
+                        if cancel_event is not None:
+                            cancel_event.set()
+                        poller_state["final"] = status_body
+                        return
+
                     try:
                         files_meta = self.list_results(job_id)
                     except CloudComputeError as e:
@@ -814,6 +827,11 @@ class CloudComputeClient:
                                 _emit("pack_merge_failed", filename=fname, error=str(e))
 
                     if cur_status in ("complete", "failed"):
+                        # A worker-side 'failed' should also stop the upload
+                        # pool (no point feeding a dead job); 'complete' leaves
+                        # cancel_event alone (uploads already finished).
+                        if cur_status == "failed" and cancel_event is not None:
+                            cancel_event.set()
                         poller_state["final"] = status_body
                         return
                     if poller_done.wait(timeout=_POLL_INTERVAL_SEC):
