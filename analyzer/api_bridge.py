@@ -2714,6 +2714,20 @@ class Api:
             from analyzer import cloud_jobs_store as cjs  # type: ignore[no-redef]
             return cjs
 
+    def _cc_fresh_token(self) -> str | None:
+        """Token provider handed to CloudComputeClient. Called by the client on
+        a 401 to obtain a FRESH JWT and retry — so a session that expires
+        mid-job (e.g. after laptop sleep) self-heals instead of failing the
+        job. _check_auth_token() triggers a lazy OAuth refresh when the access
+        token is near/at expiry, which is exactly the post-sleep case. Returns
+        None when re-auth genuinely can't be obtained (signed out / refresh
+        token revoked); the client then raises CloudComputeAuthError."""
+        try:
+            token, _dev_user, _err = self._check_auth_token()
+        except Exception:
+            return None
+        return token
+
     def _cc_make_client(self):
         """Build an authenticated CloudComputeClient. Returns (client, error_dict)."""
         token, dev_user, token_err = self._check_auth_token()
@@ -2728,6 +2742,9 @@ class Api:
                 self.cloud_compute_get_api_base(),
                 token,
                 dev_user=dev_user,
+                # On a 401, let the client refresh + retry instead of failing
+                # the job. See _cc_fresh_token.
+                token_provider=self._cc_fresh_token,
             )
         except ValueError as e:
             return None, {"ok": False, "error": str(e)}
@@ -3116,9 +3133,19 @@ class Api:
     def _cc_start_remote_poller(self, job_id: str) -> None:
         """Start a single background poller thread that refreshes the per-job
         cached remote snapshot every ``_CC_POLL_INTERVAL_SEC``. Idempotent —
-        a no-op if a poller is already running for this job_id. Exits when the
-        local status becomes terminal (``done|failed|cancelled``) or
-        ``cancel_event`` fires."""
+        a no-op if a poller is already running for this job_id.
+
+        The poller's lifetime is tied to the LOCAL job status, NOT to
+        ``cancel_event``: ``run_full_job`` sets ``cancel_event`` on the first
+        'incomplete'/'cancelled'/'failed' remote tick to STOP UPLOADS, but the
+        local status only flips to its terminal mapping after run_full_job
+        finishes draining downloads. If the poller exited on cancel_event it
+        would stop refreshing the cached `remote` snapshot during the entire
+        incomplete/cancelled drain and the UI's analysis counters would freeze.
+        So we keep refreshing until the local status is terminal
+        (``done|failed|cancelled|incomplete``). We still short-circuit on a USER
+        cancellation (local status already flipped to 'cancelled' by
+        cloud_compute_cancel_job) via the terminal-status check below."""
         import threading as _t
         with self._ensure_cc_lock():
             existing = self._cc_poll_threads.get(job_id)
@@ -3132,9 +3159,6 @@ class Api:
                     state = self._cc_jobs.get(job_id)
                     if state is None:
                         return
-                    cancel_ev = state.get("cancel_event")
-                if cancel_ev is not None and cancel_ev.is_set():
-                    return
                 try:
                     client, client_err = self._cc_make_client()
                     if client is None:
@@ -3172,16 +3196,21 @@ class Api:
                     if fc == 1 or fc % 5 == 0:
                         warn(f"[cloud-compute] poller {job_id}: failure #{fc}: {e}")
                 # Terminal-status check AFTER the refresh, not before. The tick
-                # that observes done/failed/cancelled then also captures any
-                # final remote bump (e.g. Modal's /progress lands within the
-                # same poll window as the local 'done' flip from the download
-                # worker, but on the prior arrangement we'd exit before the
-                # refresh and freeze analyzedCount one tick stale).
+                # that observes done/failed/cancelled/incomplete then also
+                # captures any final remote bump (e.g. Modal's /progress lands
+                # within the same poll window as the local 'done' flip from the
+                # download worker, but on the prior arrangement we'd exit before
+                # the refresh and freeze analyzedCount one tick stale).
+                # 'incomplete' is in the exit set: by the time the LOCAL status
+                # is 'incomplete', run_full_job has finished draining (active
+                # containers hit 0), so there's nothing left to refresh.
                 with self._ensure_cc_lock():
                     state = self._cc_jobs.get(job_id)
                     if state is None:
                         return
-                    if state.get("status") in ("done", "failed", "cancelled"):
+                    if state.get("status") in (
+                        "done", "failed", "cancelled", "incomplete"
+                    ):
                         return
                 _time.sleep(_CC_POLL_INTERVAL_SEC)
 
@@ -3383,6 +3412,21 @@ class Api:
                 # set status='cancelled' in both the in-memory map and the
                 # persistent ledger. Don't overwrite that with 'failed'.
                 return
+            except ccc.CloudComputeAuthError:
+                # Session expired (401) and the in-client token refresh couldn't
+                # recover within its budget — e.g. laptop slept long enough that
+                # the refresh token also aged out, or the user is signed out.
+                # This is TRANSIENT: the job is fine server-side and result packs
+                # stay downloadable. Do NOT mark 'failed'. Keep the current
+                # non-terminal local status and surface a friendly reconnect
+                # message; the next app launch / sign-in resumes the download.
+                with self._ensure_cc_lock():
+                    state = self._cc_jobs.get(job_id)
+                    if state is not None and state.get("status") not in (
+                        "done", "failed", "cancelled", "incomplete"
+                    ):
+                        state["error"] = "Session expired — reconnecting…"
+                return
             except Exception as e:
                 with self._ensure_cc_lock():
                     state = self._cc_jobs.get(job_id)
@@ -3394,7 +3438,18 @@ class Api:
                 except Exception:
                     pass
                 return
-            terminal = "done" if result.get("ok") else "failed"
+            # Map the remote terminal status to a local one. 'incomplete' is NOT
+            # 'failed' — the client merely disconnected >10min with uploads
+            # unfinished; the in-session poller already drained what it could,
+            # and restart-resume of incomplete jobs is deferred. Surface it as a
+            # distinct 'incomplete' badge instead of a scary failure.
+            status_str = str(result.get("status") or "")
+            if result.get("ok"):
+                terminal = "done"
+            elif status_str == "incomplete":
+                terminal = "incomplete"
+            else:
+                terminal = "failed"
             with self._ensure_cc_lock():
                 state = self._cc_jobs.get(job_id)
                 if state is not None:
@@ -3405,10 +3460,7 @@ class Api:
                         state["status"] = terminal
                         state["result"] = result
             try:
-                if terminal == "done":
-                    self._cc_jobs_store().update_job(job_id, status="done")
-                else:
-                    self._cc_jobs_store().update_job(job_id, status="failed")
+                self._cc_jobs_store().update_job(job_id, status=terminal)
             except Exception:
                 pass
 
@@ -3876,7 +3928,15 @@ class Api:
         # already finalised. Avoids the audit's HIGH-2 case where a cancelled
         # job whose Worker race-condition'd to 'complete' still showed up as
         # resumable.
-        from cloud_jobs_store import _TERMINAL_STATUSES as _CC_TERMINAL_STATUSES
+        #
+        # EXCEPTION: 'incomplete' jobs are terminal-for-upload but their result
+        # packs may still be sitting in R2 (analysis continued server-side after
+        # the client disconnected). Those are DOWNLOAD-resumable, so we DO query
+        # the Worker for their availablePacks — see _DOWNLOAD_RESUMABLE_STATUSES.
+        from cloud_jobs_store import (
+            _TERMINAL_STATUSES as _CC_TERMINAL_STATUSES,
+            _DOWNLOAD_RESUMABLE_STATUSES as _CC_DL_RESUMABLE,
+        )
         try:
             from cloud_folder_state import list_merged_packs as _fs_list_merged
         except Exception:
@@ -3915,8 +3975,12 @@ class Api:
                 "remoteStatus": None,
                 "availablePacks": None,
             }
+            # Query the Worker for non-terminal jobs AND for download-resumable
+            # 'incomplete' jobs (only when the folder is mounted — no point
+            # pulling a pack list for an ejected drive we can't merge into).
             is_terminal = j["status"] in _CC_TERMINAL_STATUSES
-            if client is not None and not is_terminal:
+            is_dl_resumable = j["status"] in _CC_DL_RESUMABLE and folder_available
+            if client is not None and (not is_terminal or is_dl_resumable):
                 try:
                     remote = client.get_status(j["jobId"])
                     entry["remoteStatus"] = remote.get("status")

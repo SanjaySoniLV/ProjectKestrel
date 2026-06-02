@@ -39,10 +39,11 @@
     // previous poll tick, used to detect the trigger transitions.
     let _ccPrevJobSnapshot = new Map();
     // JS-side terminal statuses (set by api_bridge._worker terminal handler).
-    // NOT to be confused with the Worker's 'complete'|'cancelled'|'failed'|
-    // 'incomplete' set — the desktop normalises those to 'done'|'failed'|
-    // 'cancelled' before we ever see them.
-    const _CC_TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled']);
+    // The Worker's 'complete'|'cancelled'|'failed' normalise to 'done'|'failed'|
+    // 'cancelled'; the Worker's 'incomplete' (client disconnected >10min, uploads
+    // unfinished) is surfaced AS 'incomplete' — terminal locally (restart-resume
+    // is deferred) but distinct from 'failed' for the badge.
+    const _CC_TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled', 'incomplete']);
     window._ccInProgressFolderPaths = new Set();
 
     function _ccPickFirstSelectedFolder() {
@@ -488,7 +489,11 @@
     function _ccUploadPhase(state) {
       // Phase of the upload half of the round-trip. Independent of analysis.
       const s = (state && state.status) || 'running';
-      if (s === 'cancelled' || s === 'failed') return s;
+      if (s === 'cancelled' || s === 'failed' || s === 'incomplete') return s;
+      // Worker flipped the job to 'incomplete' (client disconnected >10min with
+      // uploads unfinished): uploads are halted server-side even while the local
+      // job is still draining downloads. Grey the upload half immediately.
+      if (state && state.remoteStatus === 'incomplete') return 'incomplete';
       if (s === 'upload_paused') return 'upload_paused';
       // Use total-with-anchor here so the "Uploaded" pill flips only when ALL
       // wire-level uploads are complete (including the anchor), even though
@@ -502,9 +507,13 @@
     }
 
     function _ccAnalysisPhase(state) {
-      // Phase of the analysis half of the round-trip.
+      // Phase of the analysis half of the round-trip. NOTE: 'incomplete' analysis
+      // continues server-side during the in-session drain, so we only show the
+      // terminal 'incomplete' label once the LOCAL job is terminal — while
+      // draining (local status still uploading/running) the counts below keep the
+      // bar advancing.
       const s = (state && state.status) || 'running';
-      if (s === 'cancelled' || s === 'failed' || s === 'done') return s;
+      if (s === 'cancelled' || s === 'failed' || s === 'done' || s === 'incomplete') return s;
       const r = state && state.remoteStatus;
       if (r === 'complete') return 'done';
       const analyzed = Number(state.analyzedCount || 0);
@@ -520,6 +529,7 @@
         upload_paused: 'Paused',
         cancelled:     'Cancelled',
         failed:        'Failed',
+        incomplete:    'Incomplete',
       })[phase] || phase;
     }
 
@@ -530,6 +540,7 @@
         done:            'Done',
         cancelled:       'Cancelled',
         failed:          'Failed',
+        incomplete:      'Incomplete',
       })[phase] || phase;
     }
 
@@ -577,7 +588,7 @@
       // stops once a job is done), so suppress the badge for them.
       const updatedAt = Number(state.remoteUpdatedAtMs || 0);
       const ageMs = updatedAt > 0 ? (Date.now() - updatedAt) : Infinity;
-      const isTerminal = ['done', 'failed', 'cancelled'].includes(state.status);
+      const isTerminal = ['done', 'failed', 'cancelled', 'incomplete'].includes(state.status);
       const isStale = !isTerminal && ageMs > _CC_STALE_THRESHOLD_MS;
       const failureCount = Number(state.remoteFailureCount || 0);
       const staleHint = isStale
@@ -591,7 +602,7 @@
       //  - Cancel disabled in terminal states.
       const pauseDisabled = uploadPhase !== 'uploading';
       const resumeDisabled = uploadPhase !== 'upload_paused';
-      const cancelDisabled = ['done', 'failed', 'cancelled'].includes(state.status);
+      const cancelDisabled = ['done', 'failed', 'cancelled', 'incomplete'].includes(state.status);
 
       return `
         <div class="queue-item cloud-queue-item" data-job-id="${escapeHtml(state.jobId)}">
@@ -606,13 +617,13 @@
           <div class="cloud-bar-block">
             <div class="cloud-bar-label">${uploaded} / ${total} uploaded${anchor}</div>
             <div class="queue-item-progress">
-              <div class="queue-item-progress-fill upload" style="width:${uploadPct}%"></div>
+              <div class="queue-item-progress-fill upload${['incomplete','cancelled','failed'].includes(uploadPhase) ? ' halted' : ''}" style="width:${uploadPct}%"></div>
             </div>
           </div>
           <div class="cloud-bar-block">
             <div class="cloud-bar-label">${analyzed} / ${total} analyzed</div>
             <div class="queue-item-progress">
-              <div class="queue-item-progress-fill analysis" style="width:${analysisPct}%"></div>
+              <div class="queue-item-progress-fill analysis${['cancelled','failed'].includes(analysisPhase) ? ' halted' : ''}" style="width:${analysisPct}%"></div>
             </div>
           </div>
           ${reasonBanner}
@@ -633,8 +644,10 @@
     }
 
     function _ccPanelBadge(jobs, pendingCount) {
-      const active = jobs.filter(j => !['done', 'failed', 'cancelled'].includes(j.status)).length;
-      const done = jobs.filter(j => j.status === 'done').length;
+      const active = jobs.filter(j => !['done', 'failed', 'cancelled', 'incomplete'].includes(j.status)).length;
+      // 'incomplete' folds into the done-ish bucket for the summary count — it
+      // finished its run (partially), it's not a failure.
+      const done = jobs.filter(j => j.status === 'done' || j.status === 'incomplete').length;
       const failed = jobs.filter(j => j.status === 'failed' || j.status === 'cancelled').length;
       const parts = [];
       if (active > 0) parts.push(`${active} active`);
@@ -824,11 +837,18 @@
         // Defence in depth: backend already skips Worker I/O for terminal jobs,
         // but make sure cancelled / failed never appear as resumable here even
         // if the local store somehow shows pending packs (cancelled mid-flight
-        // could leave stale availablePacks data).
+        // could leave stale availablePacks data). 'done' is fully finished.
         if (j.status === 'cancelled' || j.status === 'failed' || j.status === 'done') return false;
+        // 'incomplete' is terminal-for-UPLOAD (uploads can't resume) but its
+        // result packs may still be in R2 (analysis continued server-side for
+        // ~30 days). It IS download-resumable: include it when the backend
+        // reported un-merged available packs. The backend only populates
+        // availablePacks for an incomplete job when its folder is mounted, so a
+        // missing folder naturally yields no candidate here.
         const downloaded = new Set(j.downloadedPacks || []);
         const available = j.availablePacks || [];
         const unmerged = available.filter(p => !downloaded.has(p));
+        if (j.status === 'incomplete') return unmerged.length > 0;
         return unmerged.length > 0 || (j.remoteStatus === 'complete' && downloaded.size === 0);
       });
     }
@@ -1034,7 +1054,7 @@
         try {
           const r = await window.pywebview.api.cloud_compute_list_jobs();
           return ((r && r.jobs) || [])
-            .filter(j => !['done', 'failed', 'cancelled'].includes(j.status))
+            .filter(j => !['done', 'failed', 'cancelled', 'incomplete'].includes(j.status))
             .map(j => j.jobId);
         } catch { return []; }
       };
@@ -1099,7 +1119,7 @@
         if (window.pywebview?.api?.cloud_compute_list_pending_jobs) {
           const r = await window.pywebview.api.cloud_compute_list_pending_jobs();
           const jobs = (r && r.jobs) || [];
-          hasPending = jobs.some(j => !['done', 'failed', 'cancelled'].includes(j.status));
+          hasPending = jobs.some(j => !['done', 'failed', 'cancelled', 'incomplete'].includes(j.status));
         }
       } catch {}
       _ccStartupResume();   // resume dialog gates itself on candidate count

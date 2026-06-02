@@ -97,6 +97,18 @@ class CloudComputeError(RuntimeError):
         self.message = message
 
 
+class CloudComputeAuthError(CloudComputeError):
+    """Raised when a worker call returns 401 (expired/invalid session) and the
+    client could not recover by refreshing the token. Distinct from a generic
+    ``CloudComputeError`` so callers can treat it as TRANSIENT (the session
+    expired — e.g. after laptop sleep — but the job is fine server-side) and
+    keep the job in its current non-terminal local state instead of marking it
+    'failed'. ``status`` is always 401."""
+
+    def __init__(self, message: str = "Session expired") -> None:
+        super().__init__(401, message)
+
+
 class CloudComputeNetworkError(CloudComputeError):
     """Raised on transport-level failure talking to the Worker (timeout, DNS,
     connection reset, malformed JSON). Distinct from ``CloudComputeError``
@@ -158,15 +170,28 @@ class CloudComputeClient:
     `analyzer/perch_uploader.py:PerchKestrelUploader.__init__`.
     """
 
+    # Bounded number of token-refresh-and-retry attempts on a 401. One retry is
+    # enough for the laptop-sleep case (token expired while suspended); the cap
+    # stops a permanently-revoked session from looping forever.
+    _MAX_AUTH_RETRIES = 2
+
     def __init__(
         self,
         api_base: str,
         jwt_token: str | None,
         timeout: int = 120,
         dev_user: str | None = None,
+        token_provider: Optional[Callable[[], str | None]] = None,
     ) -> None:
         self.api_base = api_base.rstrip("/")
         self.timeout = timeout
+        # ``token_provider`` is an optional zero-arg callable returning a FRESH
+        # JWT (the bridge wires it to _check_auth_token, which triggers an OAuth
+        # refresh). On a 401 we call it, swap the new token into our auth header
+        # and retry the request — so a session that expires mid-job (e.g. after
+        # laptop sleep) self-heals instead of failing the whole job.
+        self._token_provider = token_provider
+        self._auth_lock = threading.Lock()
         self._auth_headers: dict = {}
         du = dev_user or os.environ.get("KESTREL_DEV_USER_ID")
         if du:
@@ -182,6 +207,29 @@ class CloudComputeClient:
 
     # ─── HTTP helpers ────────────────────────────────────────────────────
 
+    def _refresh_token(self) -> bool:
+        """Ask ``token_provider`` for a fresh JWT and swap it into the auth
+        header. Returns True if a usable (and, when possible, *different*) token
+        was installed, False otherwise. Thread-safe: serialised so concurrent
+        upload/poller/download threads that all 401 at once refresh once."""
+        if self._token_provider is None:
+            return False
+        with self._auth_lock:
+            try:
+                fresh = self._token_provider()
+            except Exception:
+                return False
+            t = str(fresh).strip() if fresh else ""
+            if not t:
+                return False
+            new_header = f"Bearer {t}"
+            # If the provider handed back the same token we already hold, the
+            # refresh didn't actually advance — retrying would just 401 again.
+            if self._auth_headers.get("Authorization") == new_header:
+                return False
+            self._auth_headers["Authorization"] = new_header
+            return True
+
     def _request(
         self,
         method: str,
@@ -191,32 +239,44 @@ class CloudComputeClient:
     ) -> dict:
         url = f"{self.api_base}{path}"
         data = json.dumps(body).encode("utf-8") if body is not None else None
-        headers = {
-            "Content-Type": "application/json",
-            "User-Agent": "KestrelDesktop/CloudCompute/1.0",
-            **self._auth_headers,
-        }
-        req = urllib.request.Request(url, data=data, method=method, headers=headers)
-        try:
-            with urllib.request.urlopen(req, timeout=timeout or self.timeout) as resp:
-                raw = resp.read()
-                if not raw:
-                    return {}
-                try:
-                    return json.loads(raw)
-                except json.JSONDecodeError as e:
-                    raise CloudComputeNetworkError(
-                        f"Worker returned malformed JSON: {e}"
-                    ) from e
-        except urllib.error.HTTPError as e:
-            text = e.read().decode("utf-8", errors="replace")
-            raise CloudComputeError(e.code, text) from e
-        except urllib.error.URLError as e:
-            raise CloudComputeNetworkError(f"network error: {e.reason}") from e
-        except socket.timeout as e:
-            raise CloudComputeNetworkError(f"request timed out after {timeout or self.timeout}s") from e
-        except (TimeoutError, ConnectionError) as e:
-            raise CloudComputeNetworkError(f"transport error: {e}") from e
+        # On a 401 we refresh the token and retry (bounded). The body/data are
+        # re-used as-is; only the Authorization header changes between attempts.
+        for attempt in range(self._MAX_AUTH_RETRIES + 1):
+            headers = {
+                "Content-Type": "application/json",
+                "User-Agent": "KestrelDesktop/CloudCompute/1.0",
+                **self._auth_headers,
+            }
+            req = urllib.request.Request(url, data=data, method=method, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=timeout or self.timeout) as resp:
+                    raw = resp.read()
+                    if not raw:
+                        return {}
+                    try:
+                        return json.loads(raw)
+                    except json.JSONDecodeError as e:
+                        raise CloudComputeNetworkError(
+                            f"Worker returned malformed JSON: {e}"
+                        ) from e
+            except urllib.error.HTTPError as e:
+                if e.code == 401 and attempt < self._MAX_AUTH_RETRIES and self._refresh_token():
+                    continue  # got a fresh token — retry with new Authorization
+                text = e.read().decode("utf-8", errors="replace")
+                if e.code == 401:
+                    # Couldn't recover (no provider / refresh failed / still
+                    # 401). Surface as the transient auth error so the caller
+                    # keeps the job alive rather than marking it 'failed'.
+                    raise CloudComputeAuthError("Session expired") from e
+                raise CloudComputeError(e.code, text) from e
+            except urllib.error.URLError as e:
+                raise CloudComputeNetworkError(f"network error: {e.reason}") from e
+            except socket.timeout as e:
+                raise CloudComputeNetworkError(f"request timed out after {timeout or self.timeout}s") from e
+            except (TimeoutError, ConnectionError) as e:
+                raise CloudComputeNetworkError(f"transport error: {e}") from e
+        # Unreachable: the loop either returns or raises on the final attempt.
+        raise CloudComputeAuthError("Session expired")
 
     # ─── REST endpoints ──────────────────────────────────────────────────
 
@@ -482,31 +542,39 @@ class CloudComputeClient:
         is skipped silently in that case.
         """
         url = f"{self.api_base}/api/jobs/{job_id}/results/{filename}"
-        headers = {
-            "User-Agent": "KestrelDesktop/CloudCompute/1.0",
-            **self._auth_headers,
-        }
-        req = urllib.request.Request(url, headers=headers)
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                expected_sha = resp.headers.get("X-Pack-SHA256") or ""
-                data = resp.read()
-                if expected_sha:
-                    actual_sha = hashlib.sha256(data).hexdigest()
-                    if not hmac.compare_digest(
-                        actual_sha.lower(), expected_sha.strip().lower()
-                    ):
-                        raise CloudComputeError(
-                            0,
-                            f"Pack integrity check failed for {filename}: "
-                            f"expected sha256={expected_sha}, got {actual_sha}",
-                        )
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(data)
-                return dest
-        except urllib.error.HTTPError as e:
-            text = e.read().decode("utf-8", errors="replace")
-            raise CloudComputeError(e.code, text) from e
+        # Same 401 refresh-and-retry contract as _request: a session that
+        # expires mid-download (laptop sleep) self-heals instead of failing.
+        for attempt in range(self._MAX_AUTH_RETRIES + 1):
+            headers = {
+                "User-Agent": "KestrelDesktop/CloudCompute/1.0",
+                **self._auth_headers,
+            }
+            req = urllib.request.Request(url, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    expected_sha = resp.headers.get("X-Pack-SHA256") or ""
+                    data = resp.read()
+                    if expected_sha:
+                        actual_sha = hashlib.sha256(data).hexdigest()
+                        if not hmac.compare_digest(
+                            actual_sha.lower(), expected_sha.strip().lower()
+                        ):
+                            raise CloudComputeError(
+                                0,
+                                f"Pack integrity check failed for {filename}: "
+                                f"expected sha256={expected_sha}, got {actual_sha}",
+                            )
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(data)
+                    return dest
+            except urllib.error.HTTPError as e:
+                if e.code == 401 and attempt < self._MAX_AUTH_RETRIES and self._refresh_token():
+                    continue
+                text = e.read().decode("utf-8", errors="replace")
+                if e.code == 401:
+                    raise CloudComputeAuthError("Session expired") from e
+                raise CloudComputeError(e.code, text) from e
+        raise CloudComputeAuthError("Session expired")
 
     # ─── Direct-to-R2 upload ─────────────────────────────────────────────
 
@@ -747,18 +815,39 @@ class CloudComputeClient:
         poller_done = threading.Event()
         poller_state: dict = {"final": None, "analyzed": 0, "exception": None}
 
+        # Fix 3: bound how long a wedged poller keeps the foreground hung. If
+        # get_status keeps failing — a permanently-revoked session that the
+        # token refresh can't fix, or the network is down for good — the
+        # foreground's unconditional poller_thread.join() would otherwise wait
+        # forever and the job would never reach its terminal mapping (the cloud
+        # queue never advances). After this many CONSECUTIVE get_status failures
+        # we give up and surface the last error via poller_state['exception'] so
+        # run_full_job resolves (the api_bridge maps an auth error to a kept
+        # non-terminal state; any other error → 'failed'). A single success
+        # resets the budget, so a flaky network just slows polling, it doesn't
+        # kill the job. ~15 failures * 5s poll ≈ 75s of grace.
+        _MAX_CONSECUTIVE_POLL_FAILURES = 15
+
         def _poll_loop() -> None:
+            consecutive_failures = 0
             try:
                 while not poller_done.is_set():
-                    if cancel_event is not None and cancel_event.is_set():
-                        return
                     try:
                         status_body = self.get_status(job_id)
                     except CloudComputeError as e:
+                        # CloudComputeAuthError (401) lands here too — it is a
+                        # subclass — so an expired session never escapes as a
+                        # fatal poller exception; it's just another transient.
+                        consecutive_failures += 1
                         _emit("status_failed", error=str(e))
+                        if consecutive_failures >= _MAX_CONSECUTIVE_POLL_FAILURES:
+                            # Budget exhausted — stop hanging the foreground.
+                            poller_state["exception"] = e
+                            return
                         if poller_done.wait(timeout=_POLL_INTERVAL_SEC):
                             return
                         continue
+                    consecutive_failures = 0  # a success clears the budget
                     cur_status = str(status_body.get("status", ""))
                     analyzed = int(status_body.get("analyzedCount") or 0)
                     poller_state["analyzed"] = analyzed
@@ -769,18 +858,18 @@ class CloudComputeClient:
                         imageCount=int(status_body.get("image_count") or len(files)),
                     )
 
-                    # Remote terminal status (cancelled/incomplete from the
-                    # website or the cron). The upload pool only checks the
-                    # LOCAL cancel_event, so without this the client keeps
-                    # PUTting to R2 + notifying a dead job. Trip cancel_event to
-                    # abort in-flight uploads, then exit. (For 'complete'/'failed'
-                    # the terminal handler below returns; 'failed' also trips
-                    # cancel_event there so a worker-side failure stops uploads.)
-                    if cur_status in ("cancelled", "incomplete"):
+                    # Remote terminal-for-UPLOAD status. cancel_event STOPS THE
+                    # UPLOAD POOL ONLY — the download drain below keeps running so
+                    # we still fetch results that exist (and, for 'incomplete', are
+                    # still being produced server-side). We do NOT return here:
+                    #   cancelled → server halted everything; drain once, then the
+                    #     loop-exit below stops us.
+                    #   incomplete → uploads halted but analysis CONTINUES; keep
+                    #     draining until the last container exits (handled below).
+                    #   failed → no recoverable packs beyond what exists; drain, stop.
+                    if cur_status in ("cancelled", "incomplete", "failed"):
                         if cancel_event is not None:
                             cancel_event.set()
-                        poller_state["final"] = status_body
-                        return
 
                     try:
                         files_meta = self.list_results(job_id)
@@ -789,8 +878,6 @@ class CloudComputeClient:
                         files_meta = []
 
                     for meta in files_meta:
-                        if cancel_event is not None and cancel_event.is_set():
-                            return
                         fname = str(meta.get("filename") or "")
                         if not fname.endswith(".zip"):
                             continue
@@ -826,12 +913,18 @@ class CloudComputeClient:
                             except Exception as e:
                                 _emit("pack_merge_failed", filename=fname, error=str(e))
 
-                    if cur_status in ("complete", "failed"):
-                        # A worker-side 'failed' should also stop the upload
-                        # pool (no point feeding a dead job); 'complete' leaves
-                        # cancel_event alone (uploads already finished).
-                        if cur_status == "failed" and cancel_event is not None:
-                            cancel_event.set()
+                    # Loop-exit AFTER draining this tick's packs:
+                    #   complete / cancelled / failed → fully terminal, no more
+                    #     results will be produced; stop now.
+                    #   incomplete → stop only once the last container has drained
+                    #     (active_container_count==0). The cron reaps stale
+                    #     containers, so this always converges; until then keep
+                    #     polling so newly-produced packs are fetched and the
+                    #     analysis bar keeps advancing.
+                    if cur_status in ("complete", "cancelled", "failed"):
+                        poller_state["final"] = status_body
+                        return
+                    if cur_status == "incomplete" and int(status_body.get("active_container_count") or 0) == 0:
                         poller_state["final"] = status_body
                         return
                     if poller_done.wait(timeout=_POLL_INTERVAL_SEC):
@@ -915,15 +1008,24 @@ class CloudComputeClient:
                 succeeded=list(notify_unconfirmed),
                 failed=list(failed_uploads),
             )
+        except JobCancelled:
+            # Uploads were stopped because the job went terminal-for-upload
+            # (local cancel OR a remote cancelled/incomplete observed by the
+            # poller, which sets cancel_event). Do NOT kill the poller — it must
+            # keep draining the remaining/late result packs and observe the
+            # terminal status. Skip mark_complete (the job is already terminal)
+            # and fall through to the join below.
+            _emit("uploads_stopped", reason="cancelled_or_incomplete")
         except Exception:
-            # If uploads failed or were cancelled, make sure the poller exits
-            # before we re-raise — otherwise we'd leak the thread.
+            # A genuine upload error: make sure the poller exits before we
+            # re-raise — otherwise we'd leak the thread.
             poller_done.set()
             poller_thread.join(timeout=10.0)
             raise
 
         # 5) Wait for the poller to observe a terminal status. It picks up any
-        # stragglers (the final pack(s) Modal produces after `mark_complete`).
+        # stragglers (the final pack(s) Modal produces after `mark_complete`),
+        # and for 'incomplete' keeps draining until the last container exits.
         poller_thread.join()
         if poller_state["exception"] is not None:
             raise poller_state["exception"]

@@ -200,6 +200,9 @@
 .cloud-phase-pill.upload.upload_paused { color: #ffb060; background: #3a2a1a; font-style: italic; }
 .cloud-phase-pill.upload.cancelled     { color: #ff7070; background: #3a1a1a; }
 .cloud-phase-pill.upload.failed        { color: #ff7070; background: #3a1a1a; }
+/* Incomplete: client disconnected >10min with uploads unfinished. Neutral grey
+   (not a red failure) — uploads are halted but it's not an error. */
+.cloud-phase-pill.upload.incomplete    { color: var(--muted, #999); background: #2c2c2c; font-style: italic; }
 
 /* Analysis phase variants */
 .cloud-phase-pill.analysis.waiting_uploads { color: var(--muted, #888); background: #2a2a3a; font-style: italic; }
@@ -207,6 +210,7 @@
 .cloud-phase-pill.analysis.done            { color: #6bcf6b; background: #1a3a1a; }
 .cloud-phase-pill.analysis.cancelled       { color: #ff7070; background: #3a1a1a; }
 .cloud-phase-pill.analysis.failed          { color: #ff7070; background: #3a1a1a; }
+.cloud-phase-pill.analysis.incomplete      { color: var(--muted, #999); background: #2c2c2c; font-style: italic; }
 
 /* Stacked progress bars: one for uploaded, one for analyzed. */
 
@@ -225,6 +229,9 @@
 
 .cloud-queue-item .queue-item-progress-fill.upload   { background: #6b9eff; }
 .cloud-queue-item .queue-item-progress-fill.analysis { background: #ffc060; }
+/* Halted: the half is done progressing (incomplete/cancelled/failed). Grey it
+   so a frozen bar reads as "stopped" rather than "still working". */
+.cloud-queue-item .queue-item-progress-fill.halted   { background: #555; opacity: 0.7; }
 
 /* Syncing badge: shown when the backend cache is older than the staleness
    threshold. Inline in the row header so the user sees that the displayed

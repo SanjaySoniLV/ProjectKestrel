@@ -39,10 +39,25 @@ from typing import Any
 CLOUD_JOBS_FILENAME = "cloud_jobs.json"
 _SAVE_LOCK = threading.RLock()
 
-_TERMINAL_STATUSES = {"done", "cancelled", "failed"}
+# 'incomplete' = the client disconnected >10min with uploads UNFINISHED. Uploads
+# are halted, but analysis CONTINUES server-side and result packs remain
+# downloadable from R2 for ~30 days. It stays in _TERMINAL_STATUSES because it's
+# terminal for UPLOAD-resume (uploads can never resume) and for the orphan-reaper
+# / badge-folding logic that keys off this set. It is, however,
+# DOWNLOAD-resumable: see _DOWNLOAD_RESUMABLE_STATUSES below. Keeping it in
+# _TERMINAL_STATUSES (rather than removing it) is the cleaner option — it leaves
+# the orphan reaper, retention cap, and UI badge untouched, and we add an
+# explicit narrow carve-out for the one thing that changed (download-resume).
+_TERMINAL_STATUSES = {"done", "cancelled", "failed", "incomplete"}
+
+# Statuses that are terminal-for-upload but whose result packs may still be
+# pulled from R2. The startup resume sweep treats these as download-resumable
+# (NOT skipped) when the worker still reports available, un-merged packs.
+# 'incomplete': uploads halted, analysis continued server-side, packs live ~30d.
+_DOWNLOAD_RESUMABLE_STATUSES = {"incomplete"}
 _VALID_STATUSES = {
     "uploading", "downloading", "done",
-    "cancelled", "failed", "upload_paused",
+    "cancelled", "failed", "upload_paused", "incomplete",
 }
 _MAX_JOBS_RETAINED = 200  # oldest non-terminal kept; terminal jobs prune on touch
 
