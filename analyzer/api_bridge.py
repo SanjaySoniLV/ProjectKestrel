@@ -3035,9 +3035,7 @@ class Api:
         "pendingCount": 0,
         "downloadedCount": 0,
         "pack_count": 0,
-        "uploadPauseRequested": False,
         "stopRequested": False,
-        "controlFlags": {},
         "remoteStatus": None,
         # Worker's upload_complete flag (POST /api/jobs/:id/complete sets this).
         # JS layer uses the false→true flip as one of two triggers for
@@ -3061,8 +3059,8 @@ class Api:
         snapshot = dict(self._CC_REMOTE_DEFAULTS)
         for key in (
             "uploadedCount", "analyzedCount", "dispatchedCount", "pendingCount",
-            "downloadedCount", "pack_count", "uploadPauseRequested",
-            "stopRequested", "controlFlags", "uploadComplete",
+            "downloadedCount", "pack_count",
+            "stopRequested", "uploadComplete",
         ):
             if key in remote and remote[key] is not None:
                 snapshot[key] = remote[key]
@@ -3170,22 +3168,11 @@ class Api:
                     else:
                         remote = client.get_status(job_id)
                         self._cc_apply_remote_snapshot(job_id, remote)
-                        # Phase 2 auto-resume: when the Worker observes that
-                        # the client is heartbeating again after a previous
-                        # auto-pause (e.g. desktop was offline), it returns
-                        # autoPausedCleared=true on this single response.
-                        # Release the local pause_event so the upload thread
-                        # un-blocks without needing the user to click Resume.
-                        if isinstance(remote, dict) and remote.get("autoPausedCleared"):
-                            with self._ensure_cc_lock():
-                                st = self._cc_jobs.get(job_id) or {}
-                                pe = st.get("pause_event")
-                            if pe is not None and not pe.is_set():
-                                pe.set()
-                                warn(
-                                    f"[cloud-compute] {job_id}: Worker auto-cleared upload pause; "
-                                    "resuming local upload thread."
-                                )
+                        # W1: pause is purely client-side now — the local
+                        # pause_event is the sole source of truth and only the
+                        # user toggles it. There is no server auto-pause to
+                        # clear, so the poller no longer reacts to any remote
+                        # resume signal.
                 except Exception as e:
                     self._cc_record_remote_failure(job_id, str(e))
                     # Log every 5th consecutive failure so the journal doesn't
@@ -3552,9 +3539,7 @@ class Api:
             "pendingCount": remote.get("pendingCount", 0),
             "downloadedCount": remote.get("downloadedCount", 0),
             "pack_count": remote.get("pack_count", 0),
-            "uploadPauseRequested": remote.get("uploadPauseRequested", False),
             "stopRequested": remote.get("stopRequested", False),
-            "controlFlags": remote.get("controlFlags", {}),
             # True once the desktop has called /api/jobs/:id/complete and the
             # Worker has recorded upload_complete=1. JS uses the false→true
             # flip to trip the auto-drain queue (relevant on paid tiers with
@@ -3699,23 +3684,18 @@ class Api:
         return {"ok": True, "removed": removed}
 
     def cloud_compute_pause_job(self, job_id: str) -> dict:
-        """Pause uploads for a job. Modal keeps draining the already-uploaded
-        backlog — pause is upload-side only. Worker tracks the pause in
-        ``jobs.upload_pause_requested`` so cross-orchestrator decisions (Stage
-        2 multi-modal) can respect it later. Idempotent."""
+        """Pause uploads for a job. W1: pause is now PURELY CLIENT-SIDE — we
+        clear the local ``pause_event`` (which blocks the upload pool in
+        ``run_full_job._upload_and_notify``) and stop PUT+notify. The Worker
+        has no pause concept; analysis naturally drains the already-uploaded
+        backlog and then idles. The job stays ``processing`` server-side while
+        paused — the ``upload_paused`` status here is LOCAL-ONLY, used to drive
+        the UI. Idempotent."""
         with self._ensure_cc_lock():
             state = self._cc_jobs.get(job_id)
             if state is None:
                 return {"ok": False, "error": "unknown jobId"}
             pause_ev = state.get("pause_event")
-        # Tell the Worker first so it survives a desktop crash.
-        client, client_err = self._cc_make_client()
-        if client is None:
-            return client_err or {"ok": False, "error": "no client"}
-        try:
-            client.pause_job(job_id)
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
         if pause_ev is not None:
             pause_ev.clear()
         with self._ensure_cc_lock():
@@ -3724,7 +3704,7 @@ class Api:
         try:
             self._cc_jobs_store().update_job(job_id, status="upload_paused")
         except Exception:
-            # Store write failed — revert in-memory state so local + remote agree.
+            # Store write failed — revert in-memory state so local + persisted agree.
             if pause_ev is not None:
                 pause_ev.set()
             with self._ensure_cc_lock():
@@ -3733,19 +3713,13 @@ class Api:
         return {"ok": True, "uploadPauseRequested": True}
 
     def cloud_compute_resume_job(self, job_id: str) -> dict:
-        """Inverse of pause_job. Idempotent."""
+        """Inverse of pause_job. Sets the local ``pause_event`` so the upload
+        pool un-blocks. Purely client-side (W1). Idempotent."""
         with self._ensure_cc_lock():
             state = self._cc_jobs.get(job_id)
             if state is None:
                 return {"ok": False, "error": "unknown jobId"}
             pause_ev = state.get("pause_event")
-        client, client_err = self._cc_make_client()
-        if client is None:
-            return client_err or {"ok": False, "error": "no client"}
-        try:
-            client.resume_job(job_id)
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
         if pause_ev is not None:
             pause_ev.set()
         with self._ensure_cc_lock():
@@ -3754,7 +3728,7 @@ class Api:
         try:
             self._cc_jobs_store().update_job(job_id, status="uploading")
         except Exception:
-            # Store write failed — revert in-memory state so local + remote agree.
+            # Store write failed — revert in-memory state so local + persisted agree.
             if pause_ev is not None:
                 pause_ev.clear()
             with self._ensure_cc_lock():

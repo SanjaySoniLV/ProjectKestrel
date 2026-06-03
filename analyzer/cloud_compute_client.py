@@ -418,15 +418,9 @@ class CloudComputeClient:
             body["failed"] = failed
         return self._request("POST", f"/api/jobs/{job_id}/complete", body)
 
-    def pause_job(self, job_id: str) -> dict:
-        """POST /api/jobs/{jobId}/pause — upload-side pause. Modal keeps
-        analyzing whatever is already in flight; only further client uploads
-        are held. Idempotent."""
-        return self._request("POST", f"/api/jobs/{job_id}/pause", {})
-
-    def resume_job(self, job_id: str) -> dict:
-        """POST /api/jobs/{jobId}/resume — clears the upload-side pause."""
-        return self._request("POST", f"/api/jobs/{job_id}/resume", {})
+    # W1: /pause and /resume endpoints were retired — pause is now purely
+    # client-side (the desktop holds its own upload pool via a local
+    # pause_event in api_bridge). No worker round-trip on pause/resume.
 
     def cancel_job_remote(self, job_id: str, *, origin: str = "user") -> dict:
         """POST /api/jobs/{jobId}/cancel — terminal cancellation. Worker marks
