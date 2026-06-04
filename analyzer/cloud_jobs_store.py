@@ -123,6 +123,13 @@ def _sanitize_job(raw: Any) -> dict | None:
         # Surfaced in the cloud queue panel so the user understands why the
         # job is dead instead of seeing a silent "failed" badge.
         "failureReason": _coerce_str(raw.get("failureReason"), max_len=64),
+        # Worker terminal_reason captured when the job reached a terminal state
+        # (complete | client_disconnected | modal_retries_exhausted |
+        # runaway_dispatch | stalled_no_container | user_cancel | orphan_reaped …).
+        # Lets the account panel's history show a specific "why it ended"
+        # message in later sessions without a Worker round-trip. Empty until
+        # a terminal reason is observed.
+        "terminalReason": _coerce_str(raw.get("terminalReason"), max_len=64),
         "imageCount": _coerce_int(raw.get("imageCount")),
         "anchorFilename": _coerce_str(raw.get("anchorFilename"), max_len=512),
         "settingsSnapshot": _coerce_dict(raw.get("settingsSnapshot")),

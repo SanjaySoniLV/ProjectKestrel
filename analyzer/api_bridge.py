@@ -3047,6 +3047,20 @@ class Api:
         "updatedAtMs": 0,
         "failureCount": 0,
         "lastError": None,
+        # §0 UX-rework additions (no worker change — these already ship in
+        # GET /api/jobs/{id}):
+        #  - retrievedCount: images whose result pack the client has pulled
+        #    from the worker (results_status='results_retrieved'); drives the
+        #    third "results retrieved" progress bar.
+        #  - activeContainerCount: live Modal containers (jobs.active_container_count);
+        #    drives the per-job "Additional information" container tally.
+        #  - terminalReason: jobs.terminal_reason once terminal
+        #    (complete | client_disconnected | modal_retries_exhausted |
+        #    runaway_dispatch | stalled_no_container | user_cancel | orphan_reaped …);
+        #    drives the friendly per-state explanation banner.
+        "retrievedCount": 0,
+        "activeContainerCount": 0,
+        "terminalReason": None,
     }
 
     def _cc_apply_remote_snapshot(self, job_id: str, remote: dict) -> None:
@@ -3059,7 +3073,7 @@ class Api:
         snapshot = dict(self._CC_REMOTE_DEFAULTS)
         for key in (
             "uploadedCount", "analyzedCount", "dispatchedCount", "pendingCount",
-            "downloadedCount", "pack_count",
+            "downloadedCount", "pack_count", "retrievedCount",
             "stopRequested", "uploadComplete",
         ):
             if key in remote and remote[key] is not None:
@@ -3067,6 +3081,18 @@ class Api:
         rs = remote.get("status")
         if isinstance(rs, str) and rs:
             snapshot["remoteStatus"] = rs
+        # active_container_count + terminal_reason ride along on the raw jobs
+        # row (worker spreads `...job` into GET /api/jobs/{id}). snake_case on
+        # the wire; normalise to the camelCase keys the JS layer reads.
+        acc = remote.get("active_container_count")
+        if acc is not None:
+            try:
+                snapshot["activeContainerCount"] = int(acc)
+            except (TypeError, ValueError):
+                snapshot["activeContainerCount"] = 0
+        tr = remote.get("terminal_reason")
+        if isinstance(tr, str) and tr:
+            snapshot["terminalReason"] = tr
         snapshot["updatedAtMs"] = int(_t.time() * 1000)
         snapshot["failureCount"] = 0
         snapshot["lastError"] = None
@@ -3437,9 +3463,18 @@ class Api:
                 terminal = "incomplete"
             else:
                 terminal = "failed"
+            # Capture the worker's terminal_reason (cached on the remote
+            # snapshot by the poller) so the §4 history panel can show a
+            # specific "why it ended" message in future sessions without a
+            # Worker round-trip. None for a clean completion.
+            terminal_reason = None
             with self._ensure_cc_lock():
                 state = self._cc_jobs.get(job_id)
                 if state is not None:
+                    rsnap = state.get("remote") or {}
+                    tr = rsnap.get("terminalReason")
+                    if isinstance(tr, str) and tr:
+                        terminal_reason = tr
                     # Don't clobber a cancellation that landed during the
                     # final stretch (race between cancel + run_full_job's
                     # natural completion).
@@ -3447,7 +3482,10 @@ class Api:
                         state["status"] = terminal
                         state["result"] = result
             try:
-                self._cc_jobs_store().update_job(job_id, status=terminal)
+                _upd = {"status": terminal}
+                if terminal_reason:
+                    _upd["terminalReason"] = terminal_reason
+                self._cc_jobs_store().update_job(job_id, **_upd)
             except Exception:
                 pass
 
@@ -3539,6 +3577,15 @@ class Api:
             "pendingCount": remote.get("pendingCount", 0),
             "downloadedCount": remote.get("downloadedCount", 0),
             "pack_count": remote.get("pack_count", 0),
+            # §1: images whose result pack the client has retrieved from the
+            # worker — numerator of the third "results retrieved" bar.
+            "retrievedCount": remote.get("retrievedCount", 0),
+            # §2: live Modal container count for the "Additional information"
+            # disclosure (0 once the job is terminal).
+            "activeContainerCount": remote.get("activeContainerCount", 0),
+            # §3: server-side terminal reason for the friendly "why it ended"
+            # banner. None until the job reaches a terminal state.
+            "terminalReason": remote.get("terminalReason"),
             "stopRequested": remote.get("stopRequested", False),
             # True once the desktop has called /api/jobs/:id/complete and the
             # Worker has recorded upload_complete=1. JS uses the false→true
@@ -3812,7 +3859,18 @@ class Api:
         result["ok"] = True
         return result
 
-    def cloud_compute_list_pending_jobs(self) -> dict:
+    # §4 history: when the account panel asks for the full picture, also probe
+    # the Worker for salvageable result packs on TERMINAL failed/cancelled/
+    # incomplete jobs (the Worker keeps the RESULTS bucket on terminal-failure +
+    # user-cancel paths — see the CC worker invariants — and reaps it ~24h
+    # after terminal). Bounded so a power-user with a long ledger can't trigger
+    # a request storm: we query at most the N most-recent eligible terminal
+    # jobs. 'done' jobs are excluded (fully merged by definition) and
+    # 'upload_interrupted' orphans are excluded (their staging was reaped and
+    # they never produced server-side results).
+    _CC_HISTORY_TERMINAL_QUERY_CAP = 60
+
+    def cloud_compute_list_pending_jobs(self, include_terminal: bool = False) -> dict:
         """Return the set of jobs whose status is not terminal locally OR whose
         result packs have not all been downloaded yet. Used by the startup
         resume flow: when the user reopens the app, JS calls this; if it
@@ -3821,6 +3879,15 @@ class Api:
         Each entry: ``{jobId, folderPath, status, imageCount, downloadedPacks,
         remoteStatus, availablePacks}``. ``remoteStatus`` / ``availablePacks``
         are best-effort — set to ``None`` on transient Worker failures.
+
+        ``include_terminal`` (§4 account panel): when True, ALSO query the
+        Worker for salvageable packs on terminal failed/cancelled/incomplete
+        jobs so the history can offer "Download results" on jobs that failed
+        mid-run but produced partial output. Bounded to the most-recent
+        ``_CC_HISTORY_TERMINAL_QUERY_CAP`` eligible jobs. The startup resume
+        path leaves this False so the resume DIALOG keeps its lean,
+        terminal-skipping behavior (and the orphan-confusion guard in
+        ``_ccPickResumeCandidates`` stays the source of truth for auto-prompts).
         """
         try:
             store = self._cc_jobs_store()
@@ -3915,6 +3982,24 @@ class Api:
             from cloud_folder_state import list_merged_packs as _fs_list_merged
         except Exception:
             _fs_list_merged = None  # noqa: N816
+
+        # §4 history: precompute the bounded set of TERMINAL jobs to also probe
+        # for salvageable packs (only when include_terminal). Eligible =
+        # failed/cancelled/incomplete (NOT done — fully merged), excluding
+        # upload_interrupted orphans (no server-side results). Most-recent-first,
+        # capped, so the request count stays bounded regardless of ledger size.
+        terminal_query_ids: set[str] = set()
+        if include_terminal:
+            eligible = [
+                j for j in jobs
+                if j["status"] in {"failed", "cancelled", "incomplete"}
+                and (j.get("failureReason") or "") != "upload_interrupted"
+            ]
+            eligible.sort(key=lambda j: j.get("createdAtUtc") or "", reverse=True)
+            terminal_query_ids = {
+                j["jobId"] for j in eligible[:self._CC_HISTORY_TERMINAL_QUERY_CAP]
+            }
+
         out_jobs: list[dict] = []
         for j in jobs:
             folder_available = bool(j.get("folderPath")) and os.path.isdir(j["folderPath"])
@@ -3948,17 +4033,33 @@ class Api:
                 "folderAvailable": folder_available,
                 "remoteStatus": None,
                 "availablePacks": None,
+                # §4c history extras. terminalReason comes from the local
+                # ledger by default (persisted when the job went terminal) and
+                # is overwritten with the live worker value when we query below.
+                "terminalReason": j.get("terminalReason") or None,
+                "retrievedCount": None,
+                "activeContainerCount": None,
             }
             # Query the Worker for non-terminal jobs AND for download-resumable
             # 'incomplete' jobs (only when the folder is mounted — no point
             # pulling a pack list for an ejected drive we can't merge into).
+            # §4 history additionally probes the bounded terminal set regardless
+            # of folder availability, so a missing-folder job still reveals that
+            # recoverable packs EXIST (driving the "Locate folder…" affordance).
             is_terminal = j["status"] in _CC_TERMINAL_STATUSES
             is_dl_resumable = j["status"] in _CC_DL_RESUMABLE and folder_available
-            if client is not None and (not is_terminal or is_dl_resumable):
+            query_terminal_history = j["jobId"] in terminal_query_ids
+            if client is not None and (not is_terminal or is_dl_resumable or query_terminal_history):
                 try:
                     remote = client.get_status(j["jobId"])
                     entry["remoteStatus"] = remote.get("status")
                     entry["analyzedCount"] = remote.get("analyzedCount")
+                    # §1/§3 history extras (free on the same GET).
+                    entry["retrievedCount"] = remote.get("retrievedCount")
+                    entry["activeContainerCount"] = remote.get("active_container_count")
+                    _live_tr = remote.get("terminal_reason")
+                    if isinstance(_live_tr, str) and _live_tr:
+                        entry["terminalReason"] = _live_tr
                     files = client.list_results(j["jobId"])
                     available = [
                         str(f.get("filename") or "")
@@ -4195,6 +4296,54 @@ class Api:
 
         _t.Thread(target=_worker, name=f"cc-resume-{job_id}", daemon=True).start()
         return {"ok": True, "jobId": job_id}
+
+    def cloud_compute_relocate_job(self, job_id: str, new_folder_path: str) -> dict:
+        """§4d — re-point a persisted job's ``folderPath`` to a new location.
+
+        Used by the account panel's "Locate folder…" recovery path when the
+        original analyzed folder has moved (drive-letter change, folder
+        renamed/moved, external drive remounted elsewhere). After relocation
+        ``folderAvailable`` flips true on the next ``list_pending_jobs`` and the
+        "Download results" button re-enables; ``resume_download`` then writes
+        into the new location's ``.kestrel/``.
+
+        Validation: the chosen dir must pass ``_validate_root_dir`` (normalised,
+        inside the allowed root if one is configured, and an existing
+        directory). We deliberately DON'T hard-require that the folder "looks
+        like" the original — the pack merge is filename-keyed and idempotent, so
+        a wrong pick simply merges into the wrong folder (recoverable) rather
+        than corrupting anything. The picker UX already nudges the user to the
+        right place.
+        """
+        job_id = (job_id or "").strip()
+        if not job_id:
+            return {"ok": False, "error": "missing jobId"}
+        new_root, err = self._validate_root_dir(
+            new_folder_path, "cloud_compute_relocate_job", require_exists=True
+        )
+        if err:
+            return {"ok": False, "error": err}
+        try:
+            store = self._cc_jobs_store()
+            target = next((j for j in store.load_jobs() if j["jobId"] == job_id), None)
+        except Exception as e:
+            return {"ok": False, "error": f"store load failed: {e}"}
+        if target is None:
+            return {"ok": False, "error": "unknown jobId"}
+        try:
+            updated = store.update_job(job_id, folderPath=new_root)
+        except Exception as e:
+            return {"ok": False, "error": f"store update failed: {e}"}
+        if updated is None:
+            return {"ok": False, "error": "update failed"}
+        # Keep an already-registered in-memory entry (e.g. a failed/incomplete
+        # job surfaced in _cc_jobs) pointed at the new location too, so a
+        # subsequent resume_download in this same session targets the new path.
+        with self._ensure_cc_lock():
+            st = self._cc_jobs.get(job_id)
+            if st is not None:
+                st["rootPath"] = new_root
+        return {"ok": True, "jobId": job_id, "folderPath": new_root}
 
     def cloud_compute_get_pack_events(self) -> dict:
         """Drain pack-merged events accumulated since the last call. JS calls

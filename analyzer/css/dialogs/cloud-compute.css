@@ -227,11 +227,14 @@
   align-items: baseline;
 }
 
-.cloud-queue-item .queue-item-progress-fill.upload   { background: #6b9eff; }
-.cloud-queue-item .queue-item-progress-fill.analysis { background: #ffc060; }
+.cloud-queue-item .queue-item-progress-fill.upload    { background: #6b9eff; }
+.cloud-queue-item .queue-item-progress-fill.analysis  { background: #ffc060; }
+/* §1: third bar — results retrieved (downloaded back from the server). Green
+   so the user can watch the download/merge gap close behind analysis. */
+.cloud-queue-item .queue-item-progress-fill.retrieved { background: #6bcf6b; }
 /* Halted: the half is done progressing (incomplete/cancelled/failed). Grey it
    so a frozen bar reads as "stopped" rather than "still working". */
-.cloud-queue-item .queue-item-progress-fill.halted   { background: #555; opacity: 0.7; }
+.cloud-queue-item .queue-item-progress-fill.halted    { background: #555; opacity: 0.7; }
 
 /* Syncing badge: shown when the backend cache is older than the staleness
    threshold. Inline in the row header so the user sees that the displayed
@@ -253,6 +256,118 @@
   font-size: 11px;
   margin-top: 2px;
 }
+
+/* §3: per-terminal-state explanation banner. Severity-keyed so a user-cancel
+   reads as calm info, an incomplete as a neutral warning, and a server
+   failure as an error — without any raw enum leaking through. */
+.cloud-queue-item-notice {
+  font-size: 11px;
+  line-height: 1.45;
+  margin-top: 4px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  border-left: 3px solid var(--muted, #888);
+  background: #20202c;
+  color: var(--muted, #aaa);
+}
+.cloud-queue-item-notice strong {
+  display: block;
+  margin-bottom: 1px;
+  color: var(--fg, #e8f0f8);
+}
+.cloud-queue-item-notice.cc-sev-error {
+  border-left-color: #ff7070;
+  background: #2a1a1a;
+  color: #f0c0c0;
+}
+.cloud-queue-item-notice.cc-sev-error strong { color: #ff9a9a; }
+.cloud-queue-item-notice.cc-sev-warn {
+  border-left-color: #ffb060;
+  background: #2a2418;
+  color: #d8c8a8;
+}
+.cloud-queue-item-notice.cc-sev-warn strong { color: #ffc88a; }
+.cloud-queue-item-notice.cc-sev-info {
+  border-left-color: #6b9eff;
+  background: #1c2233;
+  color: #b8c4dc;
+}
+.cloud-queue-item-notice.cc-sev-info strong { color: #9bb8ff; }
+
+/* ── §2: per-job "Additional information" disclosure ──────────────────────── */
+
+.cc-additional-info {
+  margin-top: 6px;
+  font-size: 11px;
+}
+.cc-additional-info > summary {
+  cursor: pointer;
+  color: var(--muted, #8aa);
+  list-style: none;
+  user-select: none;
+  padding: 2px 0;
+}
+.cc-additional-info > summary::-webkit-details-marker { display: none; }
+.cc-additional-info > summary::before {
+  content: "▸ ";
+  display: inline-block;
+  transition: transform 0.12s ease;
+}
+.cc-additional-info[open] > summary::before { content: "▾ "; }
+.cc-additional-info > summary:hover { color: var(--fg, #cde); }
+
+.cc-info-body {
+  margin-top: 4px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: #181822;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.cc-info-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.cc-info-key {
+  flex: 0 0 116px;
+  color: var(--muted, #889);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+}
+.cc-info-val {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--fg, #dde);
+  word-break: break-all;
+}
+.cc-info-val code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+}
+.cc-info-jobid {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cc-info-path {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cc-copy-btn {
+  flex: 0 0 auto;
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 3px;
+  border: 1px solid var(--border, #344);
+  background: #20202c;
+  color: var(--muted, #9ab);
+  cursor: pointer;
+}
+.cc-copy-btn:hover { color: var(--fg, #cde); border-color: #4d6a9a; }
 
 /* ── #cloudResumeDlg ──────────────────────────────────────────────────────── */
 
@@ -388,3 +503,168 @@
   letter-spacing: 0.2px;
   white-space: nowrap;
 }
+
+/* ── §4: #cloudAccountDlg (Account & Cloud Compute panel) ─────────────────── */
+
+.cloud-account-dlg-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 18px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.cloud-account-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.cloud-account-header h3 { margin: 0; font-size: 17px; }
+.cloud-account-close {
+  background: transparent;
+  border: none;
+  color: var(--muted, #99a);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  line-height: 1;
+}
+.cloud-account-close:hover { color: var(--fg, #fff); background: #2a2a3a; }
+
+/* Account + usage card */
+.cloud-account-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--border, #2a2a3a);
+  border-radius: 8px;
+  background: #181822;
+}
+.cloud-account-identity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 180px;
+}
+.cloud-account-avatar {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #2d3a52;
+  color: #cfe0ff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 700;
+}
+.cloud-account-identity-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.cloud-account-name { font-size: 14px; font-weight: 600; color: var(--fg, #e8f0f8); }
+.cloud-account-meta { font-size: 12px; color: var(--muted, #8aa); word-break: break-all; }
+.cloud-account-tier { font-size: 11px; color: #9bb8ff; margin-top: 2px; }
+.cloud-account-usage {
+  flex: 1 1 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--fg, #cdd6e4);
+}
+.cloud-account-usage-line.muted { color: var(--muted, #8aa); }
+.cloud-account-actions { flex: 0 0 auto; }
+.cloud-account-actions .primary { font-size: 12px; padding: 6px 12px; }
+
+/* History */
+.cloud-account-history-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--border, #2a2a3a);
+  padding-bottom: 4px;
+}
+.cloud-account-history-header h4 { margin: 0; font-size: 13px; }
+.cloud-account-history-hint { font-size: 11px; color: #d4a948; }
+
+.cloud-account-history {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 80px;
+  max-height: 52vh;
+  padding: 2px;
+}
+.cloud-account-history-empty {
+  font-size: 12px;
+  color: var(--muted, #888);
+  padding: 16px 4px;
+  text-align: center;
+}
+
+.cloud-account-row {
+  border: 1px solid var(--border, #2a2a3a);
+  border-radius: 6px;
+  background: #1c1c28;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+/* Actionable rows (pending packs and/or a missing folder) — sorted to the top
+   and visually lifted so the user's eye lands on what to download/fix. */
+.cloud-account-row--actionable {
+  border-color: #3a5a86;
+  background: #182135;
+}
+.cloud-account-row--missing { border-left: 3px solid #d4a948; }
+
+.cloud-account-row-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.cloud-account-row-folder {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg, #e8f0f8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cloud-account-row-caption {
+  font-size: 11px;
+  color: var(--muted, #9ab);
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.cloud-account-row-progress { font-size: 11px; color: #6bcf6b; }
+
+.cloud-account-row-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+.cloud-account-dl-btn,
+.cloud-account-locate-btn {
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 5px;
+  border: 1px solid var(--border, #344);
+  background: #20202c;
+  color: var(--fg, #cde);
+  cursor: pointer;
+}
+.cloud-account-dl-btn { border-color: #3d5a7e; background: #243650; color: #cfe0ff; }
+.cloud-account-dl-btn:hover:not(:disabled) { background: #2d456a; }
+.cloud-account-dl-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.cloud-account-locate-btn:hover { border-color: #d4a948; color: #ffd98a; }

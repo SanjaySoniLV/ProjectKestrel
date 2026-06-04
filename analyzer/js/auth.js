@@ -111,13 +111,28 @@
           labelEl.classList.remove('hidden');
         }
       } else {
+        // Signed out: show an explicit "Sign In" label (not just the person
+        // icon) so the affordance is unambiguous (§4a).
+        accountBtn.title = 'Perch — Sign in';
+        accountBtn.setAttribute('aria-label', 'Perch account: sign in');
         if (labelEl) {
-          labelEl.textContent = '';
-          labelEl.classList.add('hidden');
+          labelEl.textContent = 'Sign In';
+          labelEl.classList.remove('hidden');
         }
       }
 
       accountBtn.addEventListener('click', () => {
+        // §4a: when signed in, the account button opens the Account & Cloud
+        // Compute panel instead of re-triggering sign-in. Signed-out (incl.
+        // session-expired) keeps the OAuth sign-in flow.
+        if (accountBtn.classList.contains('signed-in')) {
+          if (typeof window.openCloudAccountPanel === 'function') {
+            window.openCloudAccountPanel();
+          } else if (typeof showToast === 'function') {
+            showToast('Account panel unavailable in this build.', 4000);
+          }
+          return;
+        }
         // OAuth + PKCE: Python opens the system browser, runs a loopback
         // callback server on 127.0.0.1:53682, exchanges the code for a token
         // pair, and notifies us via window.onAuthSignIn(...).
@@ -198,8 +213,13 @@
         accountBtn.setAttribute('aria-label', 'Perch account: sign in');
       }
       if (labelEl) {
-        labelEl.textContent = '';
-        labelEl.classList.add('hidden');
+        // §4a: keep the explicit "Sign In" affordance after sign-out.
+        labelEl.textContent = 'Sign In';
+        labelEl.classList.remove('hidden');
+      }
+      // If the account panel is open, close it — it's signed-in-only content.
+      if (typeof window.closeCloudAccountPanel === 'function') {
+        try { window.closeCloudAccountPanel(); } catch {}
       }
     };
 

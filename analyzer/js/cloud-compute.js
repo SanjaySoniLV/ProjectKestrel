@@ -544,6 +544,169 @@
       })[phase] || phase;
     }
 
+    // ── §3: terminal-reason → friendly explanation ───────────────────────
+    //
+    // Single source of truth mapping a job's terminal reason (worker
+    // `terminal_reason`, or the local `failureReason` set by the bootstrap
+    // orphan reaper) to a human-readable {title, body, severity}. Keyed so
+    // it's trivial to extend when the worker grows a new terminal_reason.
+    //
+    //   severity 'error'  → red banner (something went wrong server-side)
+    //   severity 'warn'   → neutral/amber banner (incomplete, not a failure)
+    //   severity 'info'   → calm banner (expected outcome, e.g. user cancel)
+    //
+    // `complete` deliberately has NO entry → no banner on a clean finish.
+    const _CC_REASON_MESSAGES = {
+      // Local failureReason (pre-dates the worker terminal_reason arriving).
+      upload_interrupted: {
+        severity: 'error',
+        title: 'Upload interrupted',
+        body: 'The desktop app closed mid-upload, so this job could not finish. '
+            + 'Server-side files have been cleaned up — re-submit the folder to start a new analysis.',
+      },
+      // Worker terminal_reason values.
+      user_cancel: {
+        severity: 'info',
+        title: 'Cancelled',
+        body: 'You cancelled this job. Uploaded images were removed from the server; '
+            + 'any results already downloaded stay on disk.',
+      },
+      orphan_reaped: {
+        severity: 'info',
+        title: 'Cancelled — app closed mid-upload',
+        body: 'This job was cancelled because the app closed while it was still uploading. '
+            + 'Re-submit the folder to analyze it.',
+      },
+      modal_retries_exhausted: {
+        severity: 'error',
+        title: 'Analysis failed on the server',
+        body: 'Analysis kept failing on the server (the compute containers exhausted their retries). '
+            + 'Any results that completed before the failure are still available to download.',
+      },
+      runaway_dispatch: {
+        severity: 'error',
+        title: 'Analysis stopped',
+        body: 'The server stopped this job after detecting a dispatch problem. '
+            + 'Any results that completed are still available to download — please re-submit, '
+            + 'and contact support if it happens again.',
+      },
+      stalled_no_container: {
+        severity: 'error',
+        title: 'Analysis stalled',
+        body: 'The server could not keep a compute container running for this job, so analysis stalled. '
+            + 'Any completed results are available to download — please re-submit.',
+      },
+      client_disconnected: {
+        severity: 'warn',
+        title: 'Job incomplete',
+        body: 'The app was closed mid-upload, so not all photos finished uploading and the job '
+            + 'couldn\u2019t complete. Results for the photos that did upload may still be available '
+            + 'to download; re-submit the folder to analyze the rest.',
+      },
+      account_deletion: {
+        severity: 'info',
+        title: 'Cancelled',
+        body: 'This job was stopped due to an account change.',
+      },
+    };
+
+    // Resolve a job's terminal explanation, or null when none should show
+    // (non-terminal, or a clean completion). Centralizes the precedence:
+    // a known local failureReason wins (it's set before the worker reason
+    // propagates), then the worker terminal_reason, then a generic per-status
+    // fallback so a raw enum never leaks to the user.
+    function _ccTerminalExplanation(state) {
+      const status = (state && state.status) || '';
+      const localReason = state && state.failureReason;
+      if (localReason && _CC_REASON_MESSAGES[localReason]) {
+        return _CC_REASON_MESSAGES[localReason];
+      }
+      const isTerminal = ['done', 'failed', 'cancelled', 'incomplete'].includes(status);
+      if (!isTerminal || status === 'done') return null;
+      const tr = state && state.terminalReason;
+      if (tr === 'complete') return null;
+      if (tr && _CC_REASON_MESSAGES[tr]) return _CC_REASON_MESSAGES[tr];
+      // Terminal but no mapped reason yet (worker reason not surfaced, or an
+      // unrecognised enum). Generic, friendly per-status text — no enum leaks.
+      if (status === 'incomplete') return _CC_REASON_MESSAGES.client_disconnected;
+      if (status === 'cancelled') {
+        return {
+          severity: 'info',
+          title: 'Cancelled',
+          body: 'This job was cancelled. Any results already downloaded stay on disk.',
+        };
+      }
+      if (status === 'failed') {
+        return {
+          severity: 'error',
+          title: 'Analysis failed',
+          body: (state && state.error)
+            ? String(state.error)
+            : 'This job failed on the server. Any results that completed are available to download — '
+              + 'please try re-submitting.',
+        };
+      }
+      return null;
+    }
+
+    // ── §2: per-job "Additional information" disclosure ──────────────────
+    //
+    // Collapsible <details> with the support-relevant facts: Job ID (with a
+    // copy button), live running-container count, folder path, and created-at
+    // when known. Reusable across the live queue panel and the §4 account
+    // panel's history rows. `opts`: { jobId, folderPath, activeContainerCount,
+    // createdAtUtc, isTerminal }.
+    function _ccRenderAdditionalInfo(opts) {
+      const jobId = String(opts.jobId || '');
+      if (!jobId) return '';
+      const folderPath = opts.folderPath || '';
+      // Containers only count while running; a terminal job is always 0.
+      const containers = opts.isTerminal ? 0 : Number(opts.activeContainerCount || 0);
+      const created = opts.createdAtUtc ? _ccFormatCreatedAt(opts.createdAtUtc) : '';
+      const rows = [];
+      rows.push(
+        `<div class="cc-info-row">`
+        + `<span class="cc-info-key">Job ID</span>`
+        + `<span class="cc-info-val cc-info-jobid">`
+        + `<code>${escapeHtml(jobId)}</code>`
+        + `<button type="button" class="cc-copy-btn" data-cc-action="copy-jobid" `
+        + `data-job-id="${escapeHtml(jobId)}" title="Copy Job ID">⧉ Copy</button>`
+        + `</span></div>`,
+      );
+      rows.push(
+        `<div class="cc-info-row">`
+        + `<span class="cc-info-key">Running containers</span>`
+        + `<span class="cc-info-val">${containers}</span></div>`,
+      );
+      if (folderPath) {
+        rows.push(
+          `<div class="cc-info-row">`
+          + `<span class="cc-info-key">Folder</span>`
+          + `<span class="cc-info-val cc-info-path" title="${escapeHtml(folderPath)}">${escapeHtml(folderPath)}</span></div>`,
+        );
+      }
+      if (created) {
+        rows.push(
+          `<div class="cc-info-row">`
+          + `<span class="cc-info-key">Created</span>`
+          + `<span class="cc-info-val">${escapeHtml(created)}</span></div>`,
+        );
+      }
+      return `
+        <details class="cc-additional-info">
+          <summary>Additional information</summary>
+          <div class="cc-info-body">${rows.join('')}</div>
+        </details>`;
+    }
+
+    function _ccFormatCreatedAt(iso) {
+      try {
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return String(iso);
+        return d.toLocaleString();
+      } catch { return String(iso || ''); }
+    }
+
     function _ccRenderItem(state) {
       const folder = (state.rootPath || '').split(/[\\/]/).pop() || state.jobId;
       // Display denominator: use newImageCount when available (excludes the
@@ -554,31 +717,38 @@
       const total = Number(state.newImageCount ?? state.imageCount ?? 0);
       const rawAnalyzed = Number(state.analyzedCount || 0);
       const rawUploaded = Number(state.uploadedCount || 0);
+      // §1: retrieved = images whose result pack the client has pulled back
+      // from the worker (results_status='results_retrieved'). retrieved ≤
+      // analyzed ≤ uploaded ≤ total by construction on the worker side.
+      const rawRetrieved = Number(state.retrievedCount || 0);
       // Numerators are also clamped to the displayed total so the text never
       // shows e.g. "182/181 uploaded".
       const analyzed = total > 0 ? Math.min(rawAnalyzed, total) : rawAnalyzed;
       const uploaded = total > 0 ? Math.min(rawUploaded, total) : rawUploaded;
+      const retrieved = total > 0 ? Math.min(rawRetrieved, total) : rawRetrieved;
       const uploadPhase = _ccUploadPhase(state);
       const analysisPhase = _ccAnalysisPhase(state);
       const uploadPct = total > 0 ? Math.min(100, Math.round((uploaded / total) * 100)) : 0;
       const analysisPct = total > 0 ? Math.min(100, Math.round((analyzed / total) * 100)) : 0;
+      const retrievedPct = total > 0 ? Math.min(100, Math.round((retrieved / total) * 100)) : 0;
       const anchor = state.anchorFilename
         ? ` <span class="muted">(+1 anchor for scene continuity)</span>`
         : '';
-      // Surface a known failureReason (set by the bootstrap orphan reaper) as
-      // an explanatory banner. Without this the user just sees "failed" with
-      // no clue why their upload disappeared after a crash.
-      const reasonMsg = (() => {
-        if (state.failureReason !== 'upload_interrupted') return '';
-        return 'Upload was interrupted (the desktop closed mid-upload). '
-             + 'The job cannot be resumed — server-side files have been cleaned up. '
-             + 'Re-submit the folder to start a new analysis.';
-      })();
-      const reasonBanner = reasonMsg
-        ? `<div class="cloud-queue-item-error">${escapeHtml(reasonMsg)}</div>`
+      // §3: friendly per-terminal-state explanation, sourced from the
+      // centralized reason map (worker terminal_reason + local failureReason).
+      // Covers user-cancel, server failures, incomplete, etc. — no raw enum
+      // leaks. A clean completion returns null → no banner.
+      const explanation = _ccTerminalExplanation(state);
+      const reasonBanner = explanation
+        ? `<div class="cloud-queue-item-notice cc-sev-${explanation.severity}">`
+          + `<strong>${escapeHtml(explanation.title)}</strong> ${escapeHtml(explanation.body)}`
+          + `</div>`
         : '';
-      const err = state.error
-        ? `<div class="cloud-queue-item-error">${escapeHtml(String(state.error))}</div>`
+      // Only surface a raw error string when no mapped explanation already
+      // covers it (avoids double-banners and prevents enum/stacktrace leakage
+      // once a friendly reason is known).
+      const err = (!explanation && state.error)
+        ? `<div class="cloud-queue-item-notice cc-sev-error">${escapeHtml(String(state.error))}</div>`
         : '';
 
       // Staleness signal: if the backend hasn't received a successful Worker
@@ -626,6 +796,12 @@
               <div class="queue-item-progress-fill analysis${['cancelled','failed'].includes(analysisPhase) ? ' halted' : ''}" style="width:${analysisPct}%"></div>
             </div>
           </div>
+          <div class="cloud-bar-block">
+            <div class="cloud-bar-label">${retrieved} / ${total} results retrieved</div>
+            <div class="queue-item-progress">
+              <div class="queue-item-progress-fill retrieved${['cancelled','failed'].includes(analysisPhase) ? ' halted' : ''}" style="width:${retrievedPct}%"></div>
+            </div>
+          </div>
           ${reasonBanner}
           ${err}
           <div class="cloud-queue-item-controls">
@@ -639,6 +815,13 @@
               ⏹ Cancel
             </button>
           </div>
+          ${_ccRenderAdditionalInfo({
+            jobId: state.jobId,
+            folderPath: state.rootPath,
+            activeContainerCount: state.activeContainerCount,
+            createdAtUtc: state.createdAtUtc,
+            isTerminal,
+          })}
         </div>
       `;
     }
@@ -754,33 +937,88 @@
           if (typeof _updateAutoRefreshTimers === 'function') _updateAutoRefreshTimers();
         }
       } catch {}
+      // NOTE: pack-event draining used to live here, coupled to this render
+      // (so it only fired when the panel had jobs and was repainting). It now
+      // runs on its own steady timer — see _ccDrainPackEvents / _ccStartPackEventDrain
+      // (§5) — so a merged pack refreshes the gallery even when the user is
+      // looking at the photos rather than the cloud panel.
+    }
 
-      // Drain pack-merged events and trigger folder rescan so new photos show
-      // in the gallery as packs arrive — same UX as local live update. Uses
-      // the multi-root _findRootContaining lookup (from folder-tree.js) so a
-      // pack landing in folder X rescans the root that contains X, not the
-      // legacy singleton folderTreeRootNode.
+    // ── §5: pack-merged → gallery refresh (decoupled from panel render) ──
+    //
+    // api_bridge enqueues a {jobId, folderPath, packName} event each time a
+    // result pack is merged into a folder's local kestrel DB. We drain that
+    // queue on a steady timer (independent of _ccRenderPanel) and:
+    //   1) rescan the containing root so the folder tree picks up newly
+    //      kestrel-ized subfolders + the in-progress indicators, and
+    //   2) queue the folder for a merge-preserving silent reload AND kick
+    //      silentRefreshPending() immediately, so the currently-open folder's
+    //      gallery shows the new scenes within one drain interval — instead
+    //      of waiting on the 10s in-progress auto-refresh timer (which only
+    //      exists while the folder is still flagged in-progress + checked).
+    //
+    // silentRefreshPending() itself only touches *checked* folders and merges
+    // additively (preserving ratings / scene names / culling), so triggering
+    // it here can never clobber a user edit or reload a folder the user isn't
+    // viewing.
+    let _ccPackEventDrainInFlight = false;
+    async function _ccDrainPackEvents() {
+      if (_ccPackEventDrainInFlight) return;
+      if (!window.pywebview?.api?.cloud_compute_get_pack_events) return;
+      _ccPackEventDrainInFlight = true;
       try {
-        if (window.pywebview?.api?.cloud_compute_get_pack_events) {
-          const evRes = await window.pywebview.api.cloud_compute_get_pack_events();
-          const events = (evRes && evRes.events) || [];
-          const folders = new Set();
-          for (const ev of events) if (ev && ev.folderPath) folders.add(ev.folderPath);
-          for (const fp of folders) {
-            try {
-              if (typeof _findRootContaining === 'function'
-                  && typeof rescanFolderRoot === 'function') {
-                const root = _findRootContaining(fp);
-                if (root) rescanFolderRoot(root.path);
-              }
-            } catch {}
-            try { if (typeof scheduleAutoRefresh === 'function') scheduleAutoRefresh(fp); } catch {}
-          }
+        const evRes = await window.pywebview.api.cloud_compute_get_pack_events();
+        const events = (evRes && evRes.events) || [];
+        if (events.length === 0) return;
+        const folders = new Set();
+        for (const ev of events) if (ev && ev.folderPath) folders.add(ev.folderPath);
+        let queuedAny = false;
+        for (const fp of folders) {
+          try {
+            if (typeof _findRootContaining === 'function'
+                && typeof rescanFolderRoot === 'function') {
+              const root = _findRootContaining(fp);
+              if (root) rescanFolderRoot(root.path);
+            }
+          } catch {}
+          try {
+            if (typeof scheduleAutoRefresh === 'function') {
+              scheduleAutoRefresh(fp);
+              queuedAny = true;
+            }
+          } catch {}
         }
-      } catch {}
+        // Immediately reload the open folder rather than waiting for the next
+        // in-progress timer tick. silentRefreshPending self-guards against
+        // concurrent runs and filters to checked paths.
+        if (queuedAny && typeof silentRefreshPending === 'function') {
+          try { await silentRefreshPending(); } catch {}
+        }
+      } catch {
+        /* transient bridge failure — next tick retries (events aren't lost
+           until successfully drained on the Python side). */
+      } finally {
+        _ccPackEventDrainInFlight = false;
+      }
+    }
+
+    // Steady drain timer. Same cadence as the panel poller; lifecycle is tied
+    // to it (started/stopped alongside polling) but it runs independently of
+    // whether the panel is visible or has rows.
+    let _ccPackEventTimer = null;
+    function _ccStartPackEventDrain() {
+      if (_ccPackEventTimer) return;
+      _ccDrainPackEvents(); // immediate drain
+      _ccPackEventTimer = setInterval(_ccDrainPackEvents, 4000);
+    }
+    function _ccStopPackEventDrain() {
+      if (_ccPackEventTimer) { clearInterval(_ccPackEventTimer); _ccPackEventTimer = null; }
     }
 
     function _ccStartPolling() {
+      // The pack-event drain runs independently of the panel poller (§5) so
+      // gallery refresh keeps working even if the panel render path bails.
+      _ccStartPackEventDrain();
       if (_ccPollingTimer) return;
       _ccRenderPanel(); // immediate paint
       // 4s cadence: backend cache is refreshed every 5s, so a slightly
@@ -791,6 +1029,34 @@
 
     function _ccStopPolling() {
       if (_ccPollingTimer) { clearInterval(_ccPollingTimer); _ccPollingTimer = null; }
+      _ccStopPackEventDrain();
+    }
+
+    // Clipboard helper with a legacy fallback — some embedded webviews don't
+    // grant async-clipboard access, so fall back to a hidden textarea +
+    // execCommand('copy') before giving up.
+    function _ccCopyText(text) {
+      const str = String(text || '');
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(str).catch(() => _ccLegacyCopy(str));
+      }
+      return _ccLegacyCopy(str);
+    }
+    function _ccLegacyCopy(str) {
+      return new Promise((resolve, reject) => {
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = str;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.focus();
+          ta.select();
+          const ok = document.execCommand('copy');
+          document.body.removeChild(ta);
+          ok ? resolve() : reject(new Error('copy failed'));
+        } catch (e) { reject(e); }
+      });
     }
 
     // Click delegation for per-item pause/resume/cancel buttons.
@@ -799,7 +1065,15 @@
       if (!t || !(t instanceof HTMLElement)) return;
       const action = t.getAttribute('data-cc-action');
       const jobId = t.getAttribute('data-job-id');
-      if (!action || !jobId || !window.pywebview?.api) return;
+      if (!action || !jobId) return;
+      // §2: copy Job ID to the clipboard — no bridge call, handy for support.
+      if (action === 'copy-jobid') {
+        _ccCopyText(jobId)
+          .then(() => showToast('Job ID copied', 1800))
+          .catch(() => showToast('Could not copy Job ID', 2500));
+        return;
+      }
+      if (!window.pywebview?.api) return;
       const fnName = ({
         pause: 'cloud_compute_pause_job',
         resume: 'cloud_compute_resume_job',
@@ -1105,12 +1379,338 @@
       }
     }
 
+    // ═══ §4: Account & Cloud Compute panel ═══════════════════════════════
+    //
+    // A signed-in-only modal (#cloudAccountDlg) the user opens from the
+    // account button. Shows account + usage + a myaccount link, and a job
+    // history list driven by cloud_compute_list_pending_jobs. Per-job actions:
+    //   - "Download results" → cloud_compute_resume_download (merge pending packs)
+    //   - "Locate folder…"   → folder picker → cloud_compute_relocate_job
+    // Actionable rows (pending packs and/or a missing folder) sort to the top
+    // so the fastest path is: open panel → see what to download → click.
+
+    const _CC_MYACCOUNT_URL = 'https://myaccount.projectkestrel.org';
+    let _ccAccountRefreshTimer = null;
+
+    function _ccAccountDlg() { return document.getElementById('cloudAccountDlg'); }
+
+    // Is there pending work the user can act on for this job?
+    function _ccHistoryUnmerged(j) {
+      const downloaded = new Set(j.downloadedPacks || []);
+      const available = j.availablePacks || [];
+      return available.filter(p => !downloaded.has(p));
+    }
+    function _ccHistoryActionable(j) {
+      if (_ccHistoryUnmerged(j).length > 0) return true;
+      // Missing folder + plausibly-recoverable results → actionable (relocate
+      // to find out). upload_interrupted / cancelled have nothing server-side.
+      if (j.folderAvailable === false) {
+        if (j.failureReason === 'upload_interrupted') return false;
+        if (j.status === 'cancelled') return false;
+        return true;
+      }
+      return false;
+    }
+
+    function _ccRenderHistoryRow(j) {
+      const folder = (j.folderPath || '').split(/[\\/]/).pop() || j.jobId;
+      const total = Number(j.imageCount || 0);
+      const retrieved = Number(j.retrievedCount || 0);
+      const isTerminal = ['done', 'failed', 'cancelled', 'incomplete'].includes(j.status);
+      // Reuse §3's mapping. Build a state-shaped object from the history entry.
+      const explanation = _ccTerminalExplanation({
+        status: j.status,
+        terminalReason: j.terminalReason,
+        failureReason: j.failureReason,
+      });
+      const reasonBanner = explanation
+        ? `<div class="cloud-queue-item-notice cc-sev-${explanation.severity}">`
+          + `<strong>${escapeHtml(explanation.title)}</strong> ${escapeHtml(explanation.body)}`
+          + `</div>`
+        : '';
+
+      const unmerged = _ccHistoryUnmerged(j);
+      const folderMissing = j.folderAvailable === false;
+      const hasPending = unmerged.length > 0;
+      const downloadedCount = (j.downloadedPacks || []).length;
+
+      // Status caption.
+      let caption;
+      if (j.status === 'done') {
+        caption = `Complete · ${downloadedCount} pack(s) downloaded`;
+      } else if (hasPending) {
+        caption = `${unmerged.length} pack(s) ready to download`;
+      } else if (folderMissing) {
+        caption = 'Folder not found — locate it to download any results';
+      } else if (isTerminal) {
+        const st = String(j.status || '');
+        caption = escapeHtml(`${st.charAt(0).toUpperCase()}${st.slice(1)}`);
+      } else {
+        caption = `In progress${j.remoteStatus ? ' · ' + escapeHtml(j.remoteStatus) : ''}`;
+      }
+
+      // Optional retrieved progress line for jobs we have a count for.
+      const progressLine = total > 0
+        ? `<div class="cloud-account-row-progress">${retrieved} / ${total} results retrieved</div>`
+        : '';
+
+      // Actions.
+      const downloadDisabled = !(j.folderAvailable === true && hasPending);
+      const downloadBtn = `<button type="button" class="cloud-account-dl-btn" `
+        + `data-cc-action="history-download" data-job-id="${escapeHtml(j.jobId)}" `
+        + `${downloadDisabled ? 'disabled' : ''} `
+        + `title="${folderMissing ? 'Folder not available — locate it first' : 'Download &amp; merge the pending result pack(s)'}">`
+        + `⬇ Download results</button>`;
+      const locateBtn = folderMissing
+        ? `<button type="button" class="cloud-account-locate-btn" `
+          + `data-cc-action="history-locate" data-job-id="${escapeHtml(j.jobId)}" `
+          + `title="Re-point this job to the folder's new location">📁 Locate folder…</button>`
+        : '';
+
+      const additionalInfo = _ccRenderAdditionalInfo({
+        jobId: j.jobId,
+        folderPath: j.folderPath,
+        activeContainerCount: j.activeContainerCount,
+        createdAtUtc: j.createdAtUtc,
+        isTerminal,
+      });
+
+      return `
+        <div class="cloud-account-row${_ccHistoryActionable(j) ? ' cloud-account-row--actionable' : ''}${folderMissing ? ' cloud-account-row--missing' : ''}">
+          <div class="cloud-account-row-head">
+            <span class="cloud-account-row-folder" title="${escapeHtml(j.folderPath || '')}">${escapeHtml(folder)}</span>
+            <span class="cloud-account-row-caption">${caption}</span>
+          </div>
+          ${progressLine}
+          ${reasonBanner}
+          <div class="cloud-account-row-actions">
+            ${downloadBtn}
+            ${locateBtn}
+          </div>
+          ${additionalInfo}
+        </div>`;
+    }
+
+    async function _ccLoadAccountIdentity() {
+      const nameEl = document.getElementById('cloudAccountName');
+      const metaEl = document.getElementById('cloudAccountMeta');
+      const avatarEl = document.getElementById('cloudAccountAvatar');
+      const tierEl = document.getElementById('cloudAccountTier');
+      try {
+        if (window.pywebview?.api?.get_perch_account) {
+          const res = await window.pywebview.api.get_perch_account();
+          if (res && res.success && res.account) {
+            const acc = res.account;
+            const display = acc.displayName || acc.display_name || acc.firstName
+              || acc.first_name || acc.username || 'Signed in';
+            const handle = acc.username ? '@' + acc.username : (acc.email || acc.userId || acc.user_id || '');
+            if (nameEl) nameEl.textContent = display;
+            if (metaEl) metaEl.textContent = handle;
+            if (avatarEl) avatarEl.textContent = (String(display).trim()[0] || '?').toUpperCase();
+          } else if (nameEl) {
+            nameEl.textContent = 'Signed in';
+          }
+        }
+      } catch { if (nameEl) nameEl.textContent = 'Signed in'; }
+
+      // Tier + concurrency from entitlements; usage counts from /api/usage.
+      let tier = null, maxConcurrent = null;
+      try {
+        if (window.pywebview?.api?.cloud_compute_get_entitlements) {
+          const r = await window.pywebview.api.cloud_compute_get_entitlements();
+          if (r && r.ok) {
+            tier = r.tier || (r.limits && r.limits.tier) || null;
+            maxConcurrent = (r.limits && (r.limits.maxConcurrentJobs ?? r.limits.max_concurrent_jobs)) ?? null;
+          }
+        }
+      } catch {}
+      if (tierEl) tierEl.textContent = tier ? `Plan: ${String(tier).charAt(0).toUpperCase()}${String(tier).slice(1)}` : '';
+
+      const imagesEl = document.getElementById('cloudAccountUsageImages');
+      const concEl = document.getElementById('cloudAccountUsageConcurrent');
+      if (concEl) {
+        concEl.textContent = (maxConcurrent != null)
+          ? `Concurrent job limit: ${maxConcurrent}`
+          : '';
+      }
+      if (imagesEl) {
+        imagesEl.textContent = 'Loading usage…';
+        try {
+          if (window.pywebview?.api?.cloud_compute_get_usage) {
+            const u = await window.pywebview.api.cloud_compute_get_usage();
+            if (u && u.ok && u.usage) {
+              const usage = u.usage;
+              const analyzed = usage.totalImagesAnalyzed ?? usage.imagesAnalyzed ?? null;
+              const remaining = usage.remainingImages;
+              const parts = [];
+              if (analyzed != null) parts.push(`${analyzed} image(s) analyzed this period`);
+              if (remaining != null) parts.push(`${remaining} remaining`);
+              imagesEl.textContent = parts.length ? parts.join(' · ') : 'Usage metering not configured yet.';
+            } else {
+              imagesEl.textContent = 'Usage unavailable.';
+            }
+          } else {
+            imagesEl.textContent = 'Usage unavailable.';
+          }
+        } catch { imagesEl.textContent = 'Usage unavailable.'; }
+      }
+    }
+
+    async function _ccRefreshAccountHistory() {
+      const listEl = document.getElementById('cloudAccountHistory');
+      const hintEl = document.getElementById('cloudAccountHistoryHint');
+      if (!listEl) return;
+      if (!window.pywebview?.api?.cloud_compute_list_pending_jobs) {
+        listEl.innerHTML = '<div class="cloud-account-history-empty">Job history unavailable in this build.</div>';
+        return;
+      }
+      let r;
+      try {
+        // include_terminal=true: also surface salvageable packs on terminal
+        // failed/cancelled/incomplete jobs (bounded server-side). This is the
+        // account panel only — the startup resume dialog still calls with the
+        // default (terminal-skipping) behavior.
+        r = await window.pywebview.api.cloud_compute_list_pending_jobs(true);
+      } catch {
+        listEl.innerHTML = '<div class="cloud-account-history-empty">Could not load job history.</div>';
+        return;
+      }
+      const jobs = (r && r.ok && Array.isArray(r.jobs)) ? r.jobs.slice() : [];
+      if (jobs.length === 0) {
+        listEl.innerHTML = '<div class="cloud-account-history-empty">No cloud analysis jobs yet.</div>';
+        if (hintEl) hintEl.textContent = '';
+        return;
+      }
+      // Sort: actionable first, then newest createdAtUtc first.
+      jobs.sort((a, b) => {
+        const aAct = _ccHistoryActionable(a) ? 1 : 0;
+        const bAct = _ccHistoryActionable(b) ? 1 : 0;
+        if (aAct !== bAct) return bAct - aAct;
+        const aT = a.createdAtUtc || '';
+        const bT = b.createdAtUtc || '';
+        return bT < aT ? -1 : (bT > aT ? 1 : 0);
+      });
+      const actionableCount = jobs.filter(_ccHistoryActionable).length;
+      if (hintEl) {
+        hintEl.textContent = actionableCount > 0
+          ? `${actionableCount} need${actionableCount === 1 ? 's' : ''} your attention`
+          : '';
+      }
+      listEl.innerHTML = jobs.map(_ccRenderHistoryRow).join('');
+    }
+
+    async function _ccLocateFolderForJob(jobId, btn) {
+      if (!window.pywebview?.api?.choose_directory || !window.pywebview?.api?.cloud_compute_relocate_job) {
+        showToast('Folder relocation unavailable in this build.', 4000);
+        return;
+      }
+      let chosen;
+      try {
+        chosen = await window.pywebview.api.choose_directory();
+      } catch { chosen = null; }
+      if (!chosen) return; // user cancelled
+      if (btn) btn.disabled = true;
+      try {
+        const r = await window.pywebview.api.cloud_compute_relocate_job(jobId, chosen);
+        if (r && r.ok) {
+          showToast('Folder re-pointed. You can download results now.', 3500);
+          await _ccRefreshAccountHistory();
+        } else {
+          showToast(`Could not use that folder: ${r?.error || 'unknown error'}`, 5000);
+          if (btn) btn.disabled = false;
+        }
+      } catch (e) {
+        showToast(`Locate folder failed: ${e?.message || e}`, 5000);
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    function _ccWireAccountPanel() {
+      const dlg = _ccAccountDlg();
+      if (!dlg || dlg._ccWired) return;
+      dlg._ccWired = true;
+      document.getElementById('cloudAccountClose')?.addEventListener('click', closeCloudAccountPanel);
+      // Backdrop click / Esc close.
+      dlg.addEventListener('cancel', () => closeCloudAccountPanel());
+      dlg.addEventListener('click', (e) => {
+        if (e.target === dlg) closeCloudAccountPanel(); // click on backdrop
+      });
+      document.getElementById('cloudAccountManageBtn')?.addEventListener('click', () => {
+        if (window.pywebview?.api?.open_url) {
+          try { window.pywebview.api.open_url(_CC_MYACCOUNT_URL); } catch {}
+        }
+      });
+      // Delegated per-row actions (download / locate).
+      dlg.addEventListener('click', async (e) => {
+        const t = e.target;
+        if (!t || !(t instanceof HTMLElement)) return;
+        const action = t.getAttribute('data-cc-action');
+        const jobId = t.getAttribute('data-job-id');
+        if (!action || !jobId) return;
+        if (action === 'copy-jobid') return; // handled by the global delegate
+        if (action === 'history-download') {
+          t.disabled = true;
+          try {
+            const r = await window.pywebview.api.cloud_compute_resume_download(jobId);
+            if (r && r.ok) {
+              showToast('Downloading results…', 3000);
+              _ccStartPolling(); // surfaces live progress + drains pack events
+              setTimeout(() => { _ccRefreshAccountHistory(); }, 1200);
+            } else if (r && r.reason === 'folder_unavailable') {
+              showToast('That folder isn\u2019t available — use "Locate folder…".', 4500);
+              await _ccRefreshAccountHistory();
+            } else {
+              showToast(`Download failed: ${r?.error || 'unknown error'}`, 5000);
+              t.disabled = false;
+            }
+          } catch (err) {
+            showToast(`Download failed: ${err?.message || err}`, 5000);
+            t.disabled = false;
+          }
+          return;
+        }
+        if (action === 'history-locate') {
+          await _ccLocateFolderForJob(jobId, t);
+          return;
+        }
+      });
+    }
+
+    async function openCloudAccountPanel() {
+      _ccWireAccountPanel();
+      const dlg = _ccAccountDlg();
+      if (!dlg) return;
+      try { dlg.showModal(); } catch { try { dlg.show(); } catch {} }
+      // Populate both halves; history first so the actionable items appear ASAP.
+      _ccRefreshAccountHistory();
+      _ccLoadAccountIdentity();
+      // Light refresh while open so async download progress + newly-merged
+      // packs reflect without a manual reopen. Cleared on close.
+      if (_ccAccountRefreshTimer) clearInterval(_ccAccountRefreshTimer);
+      _ccAccountRefreshTimer = setInterval(() => {
+        const d = _ccAccountDlg();
+        if (!d || !d.open) { clearInterval(_ccAccountRefreshTimer); _ccAccountRefreshTimer = null; return; }
+        _ccRefreshAccountHistory();
+      }, 5000);
+    }
+
+    function closeCloudAccountPanel() {
+      const dlg = _ccAccountDlg();
+      if (dlg && dlg.open) { try { dlg.close(); } catch {} }
+      if (_ccAccountRefreshTimer) { clearInterval(_ccAccountRefreshTimer); _ccAccountRefreshTimer = null; }
+    }
+
+    // Exposed for auth.js (account button) + sign-out cleanup.
+    window.openCloudAccountPanel = openCloudAccountPanel;
+    window.closeCloudAccountPanel = closeCloudAccountPanel;
+
     // Wire startup hooks. The pywebview ready event is the canonical signal
     // that the bridge is alive; we also tolerate a fallback timer in case
     // the event fired before our listener attached.
     async function _ccBootstrap() {
       _ccWireResumeDialog();
       _ccWirePanelControls();
+      _ccWireAccountPanel();
       // Only spin up the panel poller if there's actually a non-terminal
       // job to watch. Avoids burning a 4s tick forever after app launch
       // when the user has never used cloud compute.
