@@ -194,7 +194,7 @@ class TestSanitizePayload:
 
 class TestAnalyzeRecentsSetting:
     """Tests for ``analyze_recents`` — the Phase 3 Analyze Folders dialog
-    recents chip row. List of dicts ``{path, timestamp}``, cap 16."""
+    recents chip row. List of dicts ``{path, timestamp}``, cap 8."""
 
     def test_round_trip(self):
         payload = {"analyze_recents": [
@@ -207,13 +207,13 @@ class TestAnalyzeRecentsSetting:
         assert result["analyze_recents"][0]["path"].endswith("2024")
         assert result["analyze_recents"][0]["timestamp"] == "2026-05-20T10:30:00Z"
 
-    def test_caps_at_sixteen(self):
+    def test_caps_at_eight(self):
         big_list = [
             {"path": f"/photos/{i}", "timestamp": f"2026-05-{i:02d}T00:00:00Z"}
             for i in range(1, 25)
         ]
         result = _sanitize_settings_payload({"analyze_recents": big_list})
-        assert len(result["analyze_recents"]) == 16
+        assert len(result["analyze_recents"]) == 8
 
     def test_dedupes_by_path_most_recent_wins(self):
         # When the same path appears twice, the FIRST occurrence (most recent

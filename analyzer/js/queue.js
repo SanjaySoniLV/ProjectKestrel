@@ -4,6 +4,7 @@
     let _queuePanelExpanded = true;
     let _queueLastDoneSet = new Set(); // track newly-done folders to auto-refresh tree
     let _queueLastRunningSet = new Set(); // track newly-running folders to update tree
+    let _queueLastInProgressSet = new Set(); // pending + running (auto-load when tree empty)
     let _tempKestrelPaths = new Set(); // transiently-marked paths to prevent flicker
     let _analyticsConsentPending = false; // guard against showing consent dialog multiple times
     let _queueCountsTimer = null; // interval for updating folder counts from queue
@@ -12,7 +13,6 @@
     let _inProgressFolderPaths = new Set(); // folders with pending/running status
     let _autoRefreshTimers = new Map(); // path -> intervalId for auto-refresh listeners
     let _inProgressFoldersCheckedCount = 0; // count of in-progress folders that are checked
-    let _isFirstQueueStart = true; // used to detect Case 1 vs Case 2 for auto-load
     
     // Session state for ETA calculations: track baseline state from folder inspection
     let _queueSessionStartState = new Map(); // path -> { initialProcessed: int, totalImages: int, toAnalyze: int }
@@ -388,6 +388,12 @@
           }
           for (const rp of rootsToRescan) rescanFolderRoot(rp);
         }, 1200);
+        // Newly-finished folders become home-page recents (fully analyzed).
+        for (const p of nowDone) {
+          if (!_queueLastDoneSet.has(p) && typeof persistFolderRecentsBump === 'function') {
+            persistFolderRecentsBump(p);
+          }
+        }
       }
       _queueLastDoneSet = nowDone;
 
@@ -401,15 +407,17 @@
           }
         }
         
-        // Detect newly-running items (first time moving from pending to running)
         const runningNow = new Set(items.filter(i => i.status === 'running').map(i => norm(i.path)));
-        const runningRawPaths = {};
-        items.filter(i => i.status === 'running').forEach(i => { runningRawPaths[norm(i.path)] = i.path; });
-        for (const p of runningNow) {
-          if (!_queueLastRunningSet.has(p)) {
-            _handleFirstFolderAnalysisStart(runningRawPaths[p] || p);
+        const inProgressRawPaths = {};
+        items.filter(i => i.status === 'pending' || i.status === 'running').forEach(i => {
+          inProgressRawPaths[norm(i.path)] = i.path;
+        });
+        for (const p of inProgressNow) {
+          if (!_queueLastInProgressSet.has(p) && typeof autoLoadFolderWhenTreeEmpty === 'function') {
+            autoLoadFolderWhenTreeEmpty(inProgressRawPaths[p] || p);
           }
         }
+        _queueLastInProgressSet = new Set(inProgressNow);
         const prevRunningSet = _queueLastRunningSet;
         _queueLastRunningSet = runningNow;
         
@@ -1049,6 +1057,8 @@
 
           if (isNowInProgress) {
             row.classList.add('in-progress');
+            row.classList.remove('no-kestrel');
+            row.classList.add('has-kestrel');
             _tempKestrelPaths.add(rp);
 
             if (!row.querySelector('.tree-in-progress-hourglass')) {
@@ -1219,23 +1229,6 @@
         for (const root of _getAllRoots()) traverse(root);
         return count;
       } catch (e) { return 0; }
-    }
-
-    /** Implement Case 1 logic: if first folder starts analysis and no other analyzed folders exist, auto-load it. */
-    async function _handleFirstFolderAnalysisStart(folderPath) {
-      try {
-        if (!_isFirstQueueStart) return; // only on first start
-        _isFirstQueueStart = false;
-        
-        const analyzedCount = countAnalyzedFolders();
-        if (analyzedCount === 0) {
-          // Case 1: Auto-check and auto-load the in-progress folder
-          checkedFolderPaths.add(folderPath);
-          renderFolderTree();
-          await debouncedAutoLoad();
-          setStatus('Auto-loaded in-progress folder (Case 1: no other analyzed folders)');
-        }
-      } catch (e) { console.warn('[case1] error:', e); }
     }
 
     // ── End Analysis Queue ────────────────────────────────────────────────────────

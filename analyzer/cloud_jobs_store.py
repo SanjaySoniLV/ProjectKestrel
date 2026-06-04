@@ -42,16 +42,13 @@ _SAVE_LOCK = threading.RLock()
 # 'incomplete' = the client disconnected >10min with uploads UNFINISHED. Uploads
 # are halted, but analysis CONTINUES server-side and result packs remain
 # downloadable from R2 for ~30 days. It stays in _TERMINAL_STATUSES because it's
-# terminal for UPLOAD-resume (uploads can never resume) and for the orphan-reaper
-# / badge-folding logic that keys off this set. It is, however,
-# DOWNLOAD-resumable: see _DOWNLOAD_RESUMABLE_STATUSES below. Keeping it in
-# _TERMINAL_STATUSES (rather than removing it) is the cleaner option — it leaves
-# the orphan reaper, retention cap, and UI badge untouched, and we add an
-# explicit narrow carve-out for the one thing that changed (download-resume).
+# terminal for UPLOAD-resume (uploads can never resume) and badge-folding logic
+# that keys off this set. It is, however, DOWNLOAD-resumable: see
+# _DOWNLOAD_RESUMABLE_STATUSES below.
 _TERMINAL_STATUSES = {"done", "cancelled", "failed", "incomplete"}
 
 # Statuses that are terminal-for-upload but whose result packs may still be
-# pulled from R2. The startup resume sweep treats these as download-resumable
+# pulled from R2. list_pending_jobs treats these as download-resumable
 # (NOT skipped) when the worker still reports available, un-merged packs.
 # 'incomplete': uploads halted, analysis continued server-side, packs live ~30d.
 _DOWNLOAD_RESUMABLE_STATUSES = {"incomplete"}
@@ -117,11 +114,9 @@ def _sanitize_job(raw: Any) -> dict | None:
         "folderPath": folder,
         "createdAtUtc": _coerce_str(raw.get("createdAtUtc"), max_len=64),
         "status": status,
-        # Free-form short tag explaining a non-obvious terminal status. Today
-        # the only producer is the bootstrap orphan-detection path setting it
-        # to "upload_interrupted" when a previous session crashed mid-upload.
-        # Surfaced in the cloud queue panel so the user understands why the
-        # job is dead instead of seeing a silent "failed" badge.
+        # Free-form short tag explaining a non-obvious terminal status (e.g.
+        # "upload_interrupted" from a legacy local mark). Surfaced in the
+        # cloud queue panel when set.
         "failureReason": _coerce_str(raw.get("failureReason"), max_len=64),
         # Worker terminal_reason captured when the job reached a terminal state
         # (complete | client_disconnected | modal_retries_exhausted |

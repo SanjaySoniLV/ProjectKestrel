@@ -16,8 +16,8 @@
     //     backlog). Cancel = terminal (stops Modal, deletes staging).
     //   - Pack-merged events drain into rescanFolderTree + scheduleAutoRefresh
     //     so folder gallery updates as packs arrive — mirrors local live update.
-    //   - Startup resume: on pywebviewready, list pending jobs; if any have
-    //     unmerged packs, show #cloudResumeDlg.
+    //   - Startup: list pending jobs (read-only); surface unmerged packs via
+    //     account-button affordance + toast — user downloads from #cloudAccountDlg.
     // ───────────────────────────────────────────────────────────────────
 
     // -- destination state in analyze dialog --
@@ -38,12 +38,22 @@
     // Map<jobId, {uploadComplete: bool, status: string}> snapshot of the
     // previous poll tick, used to detect the trigger transitions.
     let _ccPrevJobSnapshot = new Map();
+    let _ccLastDoneFolderPaths = new Set();
     // JS-side terminal statuses (set by api_bridge._worker terminal handler).
     // The Worker's 'complete'|'cancelled'|'failed' normalise to 'done'|'failed'|
     // 'cancelled'; the Worker's 'incomplete' (client disconnected >10min, uploads
     // unfinished) is surfaced AS 'incomplete' — terminal locally (restart-resume
     // is deferred) but distinct from 'failed' for the badge.
     const _CC_TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled', 'incomplete']);
+    const _CC_FOLDER_UNAVAILABLE_MSG =
+      'Cloud Compute results are available for download, but Kestrel cannot locate the folder that you analyzed.';
+    // Cosmetic-only: hides finished rows from the cloud pill; never touches the ledger.
+    const _ccPanelHiddenJobIds = new Set();
+    // Preserve <details> open state across panel/history re-renders.
+    const _ccOpenDetailsJobIds = new Set();
+    const _ccHistoryDownloads = new Map();
+    let _ccHistoryDownloadPollTimer = null;
+    const _CC_HISTORY_DOWNLOAD_POLL_MS = 1500;
     window._ccInProgressFolderPaths = new Set();
 
     function _ccPickFirstSelectedFolder() {
@@ -366,6 +376,9 @@
             break;
           }
           if (r && r.ok) {
+            if (typeof autoLoadFolderWhenTreeEmpty === 'function') {
+              autoLoadFolderWhenTreeEmpty(next.path);
+            }
             // Upload started. Wait for uploadComplete (or terminal) before
             // submitting the next folder — bandwidth is the constraint.
             break;
@@ -692,11 +705,26 @@
           + `<span class="cc-info-val">${escapeHtml(created)}</span></div>`,
         );
       }
+      const openAttr = _ccOpenDetailsJobIds.has(jobId) ? ' open' : '';
       return `
-        <details class="cc-additional-info">
+        <details class="cc-additional-info"${openAttr}>
           <summary>Additional information</summary>
           <div class="cc-info-body">${rows.join('')}</div>
         </details>`;
+    }
+
+    function _ccWireDetailsPersistence() {
+      if (document._ccDetailsPersistenceWired) return;
+      document._ccDetailsPersistenceWired = true;
+      document.addEventListener('toggle', (e) => {
+        const det = e.target;
+        if (!(det instanceof HTMLDetailsElement) || !det.classList.contains('cc-additional-info')) return;
+        const host = det.closest('[data-job-id]');
+        const jobId = host && host.getAttribute('data-job-id');
+        if (!jobId) return;
+        if (det.open) _ccOpenDetailsJobIds.add(jobId);
+        else _ccOpenDetailsJobIds.delete(jobId);
+      }, true);
     }
 
     function _ccFormatCreatedAt(iso) {
@@ -776,9 +804,22 @@
 
       return `
         <div class="queue-item cloud-queue-item" data-job-id="${escapeHtml(state.jobId)}">
-          <div class="queue-item-header">
-            <span class="queue-item-name" title="${escapeHtml(state.rootPath || '')}">${escapeHtml(folder)}</span>
-            ${staleHint}
+          <div class="cloud-queue-item-header-row">
+            <div class="queue-item-header">
+              <span class="queue-item-name" title="${escapeHtml(state.rootPath || '')}">${escapeHtml(folder)}</span>
+              ${staleHint}
+            </div>
+            <div class="cloud-queue-item-controls">
+              <button data-cc-action="pause" data-job-id="${escapeHtml(state.jobId)}" ${pauseDisabled ? 'disabled' : ''}>
+                ⏸ Pause
+              </button>
+              <button data-cc-action="resume" data-job-id="${escapeHtml(state.jobId)}" ${resumeDisabled ? 'disabled' : ''}>
+                ▶ Resume
+              </button>
+              <button data-cc-action="cancel" data-job-id="${escapeHtml(state.jobId)}" ${cancelDisabled ? 'disabled' : ''}>
+                ⏹ Cancel
+              </button>
+            </div>
           </div>
           <div class="cloud-phase-row">
             <span class="cloud-phase-pill upload ${uploadPhase}">↑ ${_ccUploadPhaseLabel(uploadPhase)}</span>
@@ -804,17 +845,6 @@
           </div>
           ${reasonBanner}
           ${err}
-          <div class="cloud-queue-item-controls">
-            <button data-cc-action="pause" data-job-id="${escapeHtml(state.jobId)}" ${pauseDisabled ? 'disabled' : ''}>
-              ⏸ Pause
-            </button>
-            <button data-cc-action="resume" data-job-id="${escapeHtml(state.jobId)}" ${resumeDisabled ? 'disabled' : ''}>
-              ▶ Resume
-            </button>
-            <button data-cc-action="cancel" data-job-id="${escapeHtml(state.jobId)}" ${cancelDisabled ? 'disabled' : ''}>
-              ⏹ Cancel
-            </button>
-          </div>
           ${_ccRenderAdditionalInfo({
             jobId: state.jobId,
             folderPath: state.rootPath,
@@ -890,8 +920,9 @@
       if (controls) controls.classList.toggle('hidden', !_cloudQueuePanelExpanded);
       // Active jobs first, pending ghost rows below. Pending shows the user
       // exactly what's still ahead in their queue.
+      const visibleJobs = jobs.filter(j => !_ccPanelHiddenJobIds.has(j.jobId));
       body.innerHTML =
-        jobs.map(_ccRenderItem).join('') +
+        visibleJobs.map(_ccRenderItem).join('') +
         pending.map(_ccRenderPendingItem).join('');
       badge.textContent = _ccPanelBadge(jobs, pending.length);
       _ccRepositionPanel();
@@ -911,7 +942,17 @@
         const becameTerminal = !_CC_TERMINAL_STATUSES.has(prev.status)
           && _CC_TERMINAL_STATUSES.has(j.status);
         if (becameUploadComplete || becameTerminal) { shouldRetryQueue = true; break; }
+        if (becameTerminal && (j.status === 'done' || j.status === 'incomplete')) {
+          const fp = (j.rootPath || '').replace(/\\/g, '/');
+          if (fp && !_ccLastDoneFolderPaths.has(fp) && typeof persistFolderRecentsBump === 'function') {
+            persistFolderRecentsBump(j.rootPath);
+          }
+        }
       }
+      _ccLastDoneFolderPaths = new Set(
+        jobs.filter(j => j.status === 'done' || j.status === 'incomplete')
+          .map(j => (j.rootPath || '').replace(/\\/g, '/')),
+      );
       _ccPrevJobSnapshot = new Map(jobs.map(j => [j.jobId, {
         uploadComplete: !!j.uploadComplete,
         status: j.status,
@@ -1102,196 +1143,23 @@
       }
     });
 
-    // ── Startup resume ───────────────────────────────────────────────────
+    // ── Startup surface (read-only enumerate) ───────────────────────────
 
-    // Helper: filter list_pending_jobs result down to "needs download" candidates.
-    // Used by both startup resume and the periodic folder-recheck timer.
-    function _ccPickResumeCandidates(jobs) {
-      return (jobs || []).filter(j => {
-        // Defence in depth: backend already skips Worker I/O for terminal jobs,
-        // but make sure cancelled / failed never appear as resumable here even
-        // if the local store somehow shows pending packs (cancelled mid-flight
-        // could leave stale availablePacks data). 'done' is fully finished.
-        if (j.status === 'cancelled' || j.status === 'failed' || j.status === 'done') return false;
-        // 'incomplete' is terminal-for-UPLOAD (uploads can't resume) but its
-        // result packs may still be in R2 (analysis continued server-side for
-        // ~30 days). It IS download-resumable: include it when the backend
-        // reported un-merged available packs. The backend only populates
-        // availablePacks for an incomplete job when its folder is mounted, so a
-        // missing folder naturally yields no candidate here.
-        const downloaded = new Set(j.downloadedPacks || []);
-        const available = j.availablePacks || [];
-        const unmerged = available.filter(p => !downloaded.has(p));
-        if (j.status === 'incomplete') return unmerged.length > 0;
-        return unmerged.length > 0 || (j.remoteStatus === 'complete' && downloaded.size === 0);
-      });
+    let _ccResultsReadySurfaced = false;
+
+    function _ccJobHasUnmergedPacks(j) {
+      const downloaded = new Set(j.downloadedPacks || []);
+      const available = j.availablePacks || [];
+      return available.some(p => p && !downloaded.has(p));
     }
 
-    // Fire-and-forget downloads. Centralised so startup, dialog, recheck, and
-    // the manual "Retry downloads" link all use the same path.
-    function _ccTriggerResume(jobIds, toastVerb = 'Resuming') {
-      if (!jobIds || jobIds.length === 0) return;
-      (async () => {
-        for (const jid of jobIds) {
-          try { await window.pywebview.api.cloud_compute_resume_download(jid); } catch {}
-        }
-        showToast(`${toastVerb} ${jobIds.length} cloud download(s).`, 3500);
-        _ccStartPolling();
-        _ccRenderPanel();
-      })();
-    }
-
-    async function _ccStartupResume() {
-      if (!window.pywebview?.api?.cloud_compute_list_pending_jobs) return;
-      let r;
-      try {
-        r = await window.pywebview.api.cloud_compute_list_pending_jobs();
-      } catch { return; }
-      if (!r || !r.ok) return;
-      const candidates = _ccPickResumeCandidates(r.jobs);
-      if (candidates.length === 0) return;
-      const accessible = candidates.filter(j => j.folderAvailable !== false);
-      const inaccessible = candidates.filter(j => j.folderAvailable === false);
-      // All folders accessible → just auto-resume; no need to show a dialog.
-      if (inaccessible.length === 0) {
-        _ccTriggerResume(accessible.map(j => j.jobId), 'Auto-resuming');
-        return;
+    function _ccSurfaceResultsReady() {
+      const accountBtn = document.getElementById('accountBtn');
+      if (accountBtn) accountBtn.classList.add('has-results');
+      if (!_ccResultsReadySurfaced) {
+        _ccResultsReadySurfaced = true;
+        showToast('Cloud results ready — open your account to download.', 6000);
       }
-      // At least one inaccessible folder. Show the grouped dialog AND start
-      // the recheck timer so inaccessible folders auto-resume when mounted,
-      // regardless of how the user dismisses the dialog.
-      _ccShowResumeDialog(accessible, inaccessible);
-      _ccStartFolderRecheckTimer();
-    }
-
-    function _ccShowResumeDialog(accessibleJobs, inaccessibleJobs) {
-      const dlg = document.getElementById('cloudResumeDlg');
-      const list = document.getElementById('cloudResumeList');
-      const intro = document.getElementById('cloudResumeIntro');
-      if (!dlg || !list) return;
-      const accCount = accessibleJobs.length;
-      const inaccCount = inaccessibleJobs.length;
-      const totalCount = accCount + inaccCount;
-      let introText;
-      if (inaccCount === 0) {
-        introText = `You have ${totalCount} cloud analysis job(s) with result packs ready to download.`;
-      } else if (accCount === 0) {
-        introText = `${inaccCount} cloud analysis job(s) have packs ready, but their folders aren't currently mounted. They will auto-resume when the folders come back online.`;
-      } else {
-        introText = `${totalCount} cloud analysis job(s) have packs ready. ${accCount} can resume now; ${inaccCount} are waiting for a folder to be mounted.`;
-      }
-      intro.textContent = introText;
-      const renderItem = (j) => {
-        const folder = (j.folderPath || '').split(/[\\/]/).pop() || j.jobId;
-        const downloaded = (j.downloadedPacks || []).length;
-        const available = (j.availablePacks || []).length;
-        const status = j.remoteStatus || j.status || '?';
-        const isUnavail = j.folderAvailable === false;
-        // Disabled checkboxes are skipped by the "Resume All" handler so a
-        // user can't accidentally fire a download for a missing folder. The
-        // recheck timer auto-resumes them when the folder reappears.
-        const attrs = isUnavail ? 'disabled' : 'checked';
-        const cls = isUnavail ? ' cloud-resume-item-unavail' : '';
-        const meta = isUnavail
-          ? `${escapeHtml(j.folderPath || '')}<br><em>Folder not currently mounted — will auto-resume when available.</em>`
-          : `${escapeHtml(j.folderPath || '')}<br>Status: ${escapeHtml(status)} · ${available - downloaded} pack(s) waiting`;
-        return `
-          <label class="cloud-resume-item${cls}">
-            <input type="checkbox" data-job-id="${escapeHtml(j.jobId)}" ${attrs} />
-            <div class="cloud-resume-item-body">
-              <div class="cloud-resume-item-folder">${escapeHtml(folder)}</div>
-              <div class="cloud-resume-item-meta">${meta}</div>
-            </div>
-          </label>
-        `;
-      };
-      let html = accessibleJobs.map(renderItem).join('');
-      if (inaccessibleJobs.length > 0) {
-        html += `
-          <details class="cloud-resume-section-deferred"${accCount === 0 ? ' open' : ''}>
-            <summary>Folders not currently accessible (${inaccCount})</summary>
-            ${inaccessibleJobs.map(renderItem).join('')}
-          </details>
-        `;
-      }
-      list.innerHTML = html;
-      try { dlg.showModal(); } catch { dlg.show(); }
-    }
-
-    // ── Periodic folder-availability recheck ────────────────────────────
-    // Runs only while at least one job has packs ready but its folder is
-    // unmounted. Self-terminates as soon as the deferred set is empty so
-    // there's zero idle traffic when nothing's waiting.
-    let _ccFolderRecheckTimer = null;
-    const _CC_FOLDER_RECHECK_MS = 30000;
-
-    function _ccStartFolderRecheckTimer() {
-      if (_ccFolderRecheckTimer != null) return;
-      _ccFolderRecheckTimer = setInterval(_ccFolderRecheck, _CC_FOLDER_RECHECK_MS);
-      // Surface the manual "Retry downloads" entry while the timer is active
-      // so the user can collapse the wait if they just plugged a drive in.
-      const btn = document.getElementById('cloudQueueRetryDownloadsBtn');
-      if (btn) btn.classList.remove('hidden');
-    }
-    function _ccStopFolderRecheckTimer() {
-      if (_ccFolderRecheckTimer != null) {
-        clearInterval(_ccFolderRecheckTimer);
-        _ccFolderRecheckTimer = null;
-      }
-      const btn = document.getElementById('cloudQueueRetryDownloadsBtn');
-      if (btn) btn.classList.add('hidden');
-    }
-
-    async function _ccFolderRecheck() {
-      if (!window.pywebview?.api?.cloud_compute_list_pending_jobs) return;
-      let r;
-      try {
-        r = await window.pywebview.api.cloud_compute_list_pending_jobs();
-      } catch { return; }
-      if (!r || !r.ok) return;
-      const candidates = _ccPickResumeCandidates(r.jobs);
-      const stillDeferred = candidates.filter(j => j.folderAvailable === false);
-      const nowAvailable = candidates.filter(j => j.folderAvailable !== false);
-      if (nowAvailable.length > 0) {
-        // Folders that flipped from unavailable to available since last check
-        // (any candidate without an in-memory _cc_jobs entry counts; the
-        // backend's _cc_jobs map will already include resume jobs from this
-        // session, so calling resume_download is idempotent).
-        _ccTriggerResume(nowAvailable.map(j => j.jobId), 'Folder back online — resuming');
-      }
-      if (stillDeferred.length === 0) _ccStopFolderRecheckTimer();
-    }
-
-    function _ccWireResumeDialog() {
-      const dlg = document.getElementById('cloudResumeDlg');
-      if (!dlg || dlg._ccWired) return;
-      dlg._ccWired = true;
-      const close = () => { try { dlg.close(); } catch {} };
-      document.getElementById('cloudResumeLater')?.addEventListener('click', close);
-      const fireResume = async (jobIds) => {
-        for (const jid of jobIds) {
-          try {
-            await window.pywebview.api.cloud_compute_resume_download(jid);
-          } catch {}
-        }
-        showToast(`Resuming ${jobIds.length} cloud download(s).`, 3500);
-        _ccStartPolling();
-        close();
-      };
-      document.getElementById('cloudResumeAll')?.addEventListener('click', () => {
-        // Skip :disabled — those are inaccessible-folder rows that auto-resume
-        // via the recheck timer. User clicking "Resume All" should not trigger
-        // a noisy folder_unavailable round-trip for them.
-        const all = [...dlg.querySelectorAll('input[data-job-id]:not(:disabled)')]
-          .map(i => i.getAttribute('data-job-id'));
-        if (all.length === 0) { showToast('No accessible folders to resume right now.', 3500); close(); return; }
-        fireResume(all);
-      });
-      document.getElementById('cloudResumeSelected')?.addEventListener('click', () => {
-        const picked = [...dlg.querySelectorAll('input[data-job-id]:checked')].map(i => i.getAttribute('data-job-id'));
-        if (picked.length === 0) { showToast('Pick at least one job, or click Later.', 3000); return; }
-        fireResume(picked);
-      });
     }
 
     // Panel-level controls (one-time wiring): Clear done removes terminal jobs
@@ -1306,16 +1174,27 @@
       const cancelBtn = document.getElementById('cloudQueueCancelBtn');
       if (clearBtn) {
         clearBtn.addEventListener('click', async () => {
-          if (!window.pywebview?.api?.cloud_compute_clear_done) return;
           clearBtn.disabled = true;
           try {
-            const r = await window.pywebview.api.cloud_compute_clear_done();
-            if (r && r.ok) {
-              showToast(`Cleared ${(r.removed || []).length} finished job(s)`, 2500);
-              _ccRenderPanel();
-            } else {
-              showToast(`Clear done failed: ${r?.error || 'unknown'}`, 5000);
+            let jobs = [];
+            if (window.pywebview?.api?.cloud_compute_list_jobs) {
+              const r = await window.pywebview.api.cloud_compute_list_jobs();
+              jobs = (r && r.jobs) || [];
             }
+            let n = 0;
+            for (const j of jobs) {
+              if (_CC_TERMINAL_STATUSES.has(j.status)) {
+                _ccPanelHiddenJobIds.add(j.jobId);
+                n++;
+              }
+            }
+            showToast(
+              n > 0
+                ? `Hidden ${n} finished job(s) from the panel`
+                : 'No finished jobs to hide',
+              2500,
+            );
+            _ccRenderPanel();
           } catch (e) {
             showToast(`Clear done failed: ${e?.message || e}`, 5000);
           } finally {
@@ -1363,20 +1242,6 @@
           }
         });
       }
-      // "Retry downloads" — manual short-circuit for the 30s recheck timer.
-      // Visible only while the timer is running (i.e. at least one job is
-      // waiting for a folder to come back online).
-      const retryBtn = document.getElementById('cloudQueueRetryDownloadsBtn');
-      if (retryBtn) {
-        retryBtn.addEventListener('click', async () => {
-          retryBtn.disabled = true;
-          try {
-            await _ccFolderRecheck();
-          } finally {
-            retryBtn.disabled = false;
-          }
-        });
-      }
     }
 
     // ═══ §4: Account & Cloud Compute panel ═══════════════════════════════
@@ -1412,6 +1277,37 @@
       return false;
     }
 
+    function _ccFmtBytes(n) {
+      n = Number(n) || 0;
+      if (n < 1024) return n + ' B';
+      const units = ['KB', 'MB', 'GB', 'TB'];
+      let v = n / 1024;
+      let i = 0;
+      while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+      return v.toFixed(v >= 100 ? 0 : 1) + ' ' + units[i];
+    }
+
+    function _ccTrackHistoryDownload(jobId, totalPacks) {
+      const n = Number(totalPacks) || 0;
+      if (n <= 0) return;
+      _ccHistoryDownloads.set(jobId, { total: n });
+      _ccStartHistoryDownloadPoll();
+    }
+
+    function _ccStartHistoryDownloadPoll() {
+      if (_ccHistoryDownloadPollTimer) return;
+      const tick = async () => {
+        if (_ccHistoryDownloads.size === 0) {
+          clearInterval(_ccHistoryDownloadPollTimer);
+          _ccHistoryDownloadPollTimer = null;
+          return;
+        }
+        await _ccRefreshAccountHistory();
+      };
+      _ccHistoryDownloadPollTimer = setInterval(tick, _CC_HISTORY_DOWNLOAD_POLL_MS);
+      tick();
+    }
+
     function _ccRenderHistoryRow(j) {
       const folder = (j.folderPath || '').split(/[\\/]/).pop() || j.jobId;
       const total = Number(j.imageCount || 0);
@@ -1432,7 +1328,13 @@
       const unmerged = _ccHistoryUnmerged(j);
       const folderMissing = j.folderAvailable === false;
       const hasPending = unmerged.length > 0;
+      const packsOnServer = (j.availablePacks || []).length > 0;
       const downloadedCount = (j.downloadedPacks || []).length;
+
+      const dlTrack = _ccHistoryDownloads.get(j.jobId);
+      if (dlTrack && dlTrack.total > 0 && unmerged.length === 0) {
+        _ccHistoryDownloads.delete(j.jobId);
+      }
 
       // Status caption.
       let caption;
@@ -1440,8 +1342,10 @@
         caption = `Complete · ${downloadedCount} pack(s) downloaded`;
       } else if (hasPending) {
         caption = `${unmerged.length} pack(s) ready to download`;
+      } else if (folderMissing && (hasPending || packsOnServer)) {
+        caption = 'Results available — folder not found';
       } else if (folderMissing) {
-        caption = 'Folder not found — locate it to download any results';
+        caption = 'Folder not found';
       } else if (isTerminal) {
         const st = String(j.status || '');
         caption = escapeHtml(`${st.charAt(0).toUpperCase()}${st.slice(1)}`);
@@ -1449,18 +1353,35 @@
         caption = `In progress${j.remoteStatus ? ' · ' + escapeHtml(j.remoteStatus) : ''}`;
       }
 
-      // Optional retrieved progress line for jobs we have a count for.
       const progressLine = total > 0
         ? `<div class="cloud-account-row-progress">${retrieved} / ${total} results retrieved</div>`
         : '';
 
-      // Actions.
+      let downloadProgressHtml = '';
+      const activeDl = _ccHistoryDownloads.get(j.jobId);
+      if (activeDl && activeDl.total > 0) {
+        const done = Math.max(0, activeDl.total - unmerged.length);
+        const pct = Math.min(100, Math.round((done / activeDl.total) * 100));
+        downloadProgressHtml = `
+          <div class="cloud-account-dl-progress">
+            <div class="cloud-account-dl-progress-label">Downloading &amp; installing packs… ${done} / ${activeDl.total}</div>
+            <div class="queue-item-progress">
+              <div class="queue-item-progress-fill retrieved" style="width:${pct}%"></div>
+            </div>
+          </div>`;
+      }
+
+      const folderNotice = (folderMissing && (hasPending || packsOnServer))
+        ? `<div class="cloud-queue-item-notice cc-sev-warn">${escapeHtml(_CC_FOLDER_UNAVAILABLE_MSG)}</div>`
+        : '';
+
       const downloadDisabled = !(j.folderAvailable === true && hasPending);
       const downloadBtn = `<button type="button" class="cloud-account-dl-btn" `
         + `data-cc-action="history-download" data-job-id="${escapeHtml(j.jobId)}" `
+        + `data-pending-packs="${unmerged.length}" `
         + `${downloadDisabled ? 'disabled' : ''} `
-        + `title="${folderMissing ? 'Folder not available — locate it first' : 'Download &amp; merge the pending result pack(s)'}">`
-        + `⬇ Download results</button>`;
+        + `title="${folderMissing ? 'Locate the folder first' : 'Download &amp; merge the pending result pack(s)'}">`
+        + `⬇ Download</button>`;
       const locateBtn = folderMissing
         ? `<button type="button" class="cloud-account-locate-btn" `
           + `data-cc-action="history-locate" data-job-id="${escapeHtml(j.jobId)}" `
@@ -1476,17 +1397,21 @@
       });
 
       return `
-        <div class="cloud-account-row${_ccHistoryActionable(j) ? ' cloud-account-row--actionable' : ''}${folderMissing ? ' cloud-account-row--missing' : ''}">
+        <div class="cloud-account-row${_ccHistoryActionable(j) ? ' cloud-account-row--actionable' : ''}${folderMissing ? ' cloud-account-row--missing' : ''}" data-job-id="${escapeHtml(j.jobId)}">
           <div class="cloud-account-row-head">
-            <span class="cloud-account-row-folder" title="${escapeHtml(j.folderPath || '')}">${escapeHtml(folder)}</span>
-            <span class="cloud-account-row-caption">${caption}</span>
+            <div class="cloud-account-row-title-block">
+              <span class="cloud-account-row-folder" title="${escapeHtml(j.folderPath || '')}">${escapeHtml(folder)}</span>
+              <span class="cloud-account-row-caption">${caption}</span>
+            </div>
+            <div class="cloud-account-row-actions">
+              ${downloadBtn}
+              ${locateBtn}
+            </div>
           </div>
           ${progressLine}
+          ${folderNotice}
+          ${downloadProgressHtml}
           ${reasonBanner}
-          <div class="cloud-account-row-actions">
-            ${downloadBtn}
-            ${locateBtn}
-          </div>
           ${additionalInfo}
         </div>`;
     }
@@ -1553,6 +1478,63 @@
             imagesEl.textContent = 'Usage unavailable.';
           }
         } catch { imagesEl.textContent = 'Usage unavailable.'; }
+      }
+    }
+
+    async function _ccLoadPerchAccountSection() {
+      const perchesEl = document.getElementById('perchAccountUsagePerches');
+      const imagesEl = document.getElementById('perchAccountUsageImages');
+      const assetsEl = document.getElementById('perchAccountUsageAssets');
+      const bytesEl = document.getElementById('perchAccountUsageBytes');
+      const listEl = document.getElementById('perchAccountList');
+      if (!listEl) return;
+
+      if (window.pywebview?.api?.get_perch_usage) {
+        try {
+          const u = await window.pywebview.api.get_perch_usage();
+          if (u && u.success && u.usage) {
+            const usage = u.usage;
+            const fmtN = (x) => (Number(x) || 0).toLocaleString();
+            if (perchesEl) {
+              perchesEl.textContent = `${fmtN(usage.perchCount)} perch(es)`;
+            }
+            if (imagesEl) imagesEl.textContent = `${fmtN(usage.totalImages)} photo(s) uploaded`;
+            if (assetsEl) assetsEl.textContent = `${fmtN(usage.totalAssets)} total asset(s)`;
+            if (bytesEl) bytesEl.textContent = `${_ccFmtBytes(usage.totalBytes)} storage used`;
+          } else {
+            if (perchesEl) perchesEl.textContent = 'Usage unavailable';
+          }
+        } catch {
+          if (perchesEl) perchesEl.textContent = 'Usage unavailable';
+        }
+      }
+
+      if (!window.pywebview?.api?.get_perch_list) {
+        listEl.innerHTML = '<div class="cloud-account-history-empty">Perch list unavailable in this build.</div>';
+        return;
+      }
+      try {
+        const r = await window.pywebview.api.get_perch_list(200);
+        const perches = (r && r.success && Array.isArray(r.perches)) ? r.perches : [];
+        if (perches.length === 0) {
+          listEl.innerHTML = '<div class="cloud-account-history-empty">No perches yet.</div>';
+          return;
+        }
+        listEl.innerHTML = perches.map((p) => {
+          const title = escapeHtml(p.title || '(untitled)');
+          const state = String(p.uploadState || p.status || '—');
+          const stateCls = state === 'complete' ? ' complete' : '';
+          const bytes = _ccFmtBytes(p.actualBytes);
+          const imgs = (Number(p.imageCount) || 0).toLocaleString();
+          return `
+            <div class="perch-account-row">
+              <span class="perch-account-row-name" title="${title}">${title}</span>
+              <span class="perch-account-row-meta">${imgs} photos · ${bytes}</span>
+              <span class="perch-account-row-state${stateCls}">${escapeHtml(state)}</span>
+            </div>`;
+        }).join('');
+      } catch {
+        listEl.innerHTML = '<div class="cloud-account-history-empty">Could not load perches.</div>';
       }
     }
 
@@ -1649,16 +1631,19 @@
         if (!action || !jobId) return;
         if (action === 'copy-jobid') return; // handled by the global delegate
         if (action === 'history-download') {
+          const pendingPacks = Number(t.getAttribute('data-pending-packs') || 0);
           t.disabled = true;
           try {
             const r = await window.pywebview.api.cloud_compute_resume_download(jobId);
             if (r && r.ok) {
+              if (pendingPacks > 0) _ccTrackHistoryDownload(jobId, pendingPacks);
               showToast('Downloading results…', 3000);
-              _ccStartPolling(); // surfaces live progress + drains pack events
-              setTimeout(() => { _ccRefreshAccountHistory(); }, 1200);
-            } else if (r && r.reason === 'folder_unavailable') {
-              showToast('That folder isn\u2019t available — use "Locate folder…".', 4500);
+              _ccStartPolling();
               await _ccRefreshAccountHistory();
+            } else if (r && r.reason === 'folder_unavailable') {
+              showToast(_CC_FOLDER_UNAVAILABLE_MSG, 6000);
+              await _ccRefreshAccountHistory();
+              t.disabled = false;
             } else {
               showToast(`Download failed: ${r?.error || 'unknown error'}`, 5000);
               t.disabled = false;
@@ -1681,9 +1666,9 @@
       const dlg = _ccAccountDlg();
       if (!dlg) return;
       try { dlg.showModal(); } catch { try { dlg.show(); } catch {} }
-      // Populate both halves; history first so the actionable items appear ASAP.
       _ccRefreshAccountHistory();
       _ccLoadAccountIdentity();
+      _ccLoadPerchAccountSection();
       // Light refresh while open so async download progress + newly-merged
       // packs reflect without a manual reopen. Cleared on close.
       if (_ccAccountRefreshTimer) clearInterval(_ccAccountRefreshTimer);
@@ -1691,6 +1676,7 @@
         const d = _ccAccountDlg();
         if (!d || !d.open) { clearInterval(_ccAccountRefreshTimer); _ccAccountRefreshTimer = null; return; }
         _ccRefreshAccountHistory();
+        _ccLoadPerchAccountSection();
       }, 5000);
     }
 
@@ -1698,6 +1684,10 @@
       const dlg = _ccAccountDlg();
       if (dlg && dlg.open) { try { dlg.close(); } catch {} }
       if (_ccAccountRefreshTimer) { clearInterval(_ccAccountRefreshTimer); _ccAccountRefreshTimer = null; }
+      if (_ccHistoryDownloadPollTimer) {
+        clearInterval(_ccHistoryDownloadPollTimer);
+        _ccHistoryDownloadPollTimer = null;
+      }
     }
 
     // Exposed for auth.js (account button) + sign-out cleanup.
@@ -1708,24 +1698,21 @@
     // that the bridge is alive; we also tolerate a fallback timer in case
     // the event fired before our listener attached.
     async function _ccBootstrap() {
-      _ccWireResumeDialog();
+      _ccWireDetailsPersistence();
       _ccWirePanelControls();
       _ccWireAccountPanel();
-      // Only spin up the panel poller if there's actually a non-terminal
-      // job to watch. Avoids burning a 4s tick forever after app launch
-      // when the user has never used cloud compute.
       let hasPending = false;
+      let hasAvailablePacks = false;
       try {
         if (window.pywebview?.api?.cloud_compute_list_pending_jobs) {
           const r = await window.pywebview.api.cloud_compute_list_pending_jobs();
           const jobs = (r && r.jobs) || [];
           hasPending = jobs.some(j => !['done', 'failed', 'cancelled', 'incomplete'].includes(j.status));
+          hasAvailablePacks = jobs.some(_ccJobHasUnmergedPacks);
         }
       } catch {}
-      _ccStartupResume();   // resume dialog gates itself on candidate count
-      if (hasPending) {
-        _ccStartPolling();
-      }
+      if (hasAvailablePacks) _ccSurfaceResultsReady();
+      if (hasPending) _ccStartPolling();
     }
     if (window.pywebview && window.pywebview.api) {
       _ccBootstrap();

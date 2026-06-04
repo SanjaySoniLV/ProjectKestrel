@@ -86,6 +86,13 @@ except ImportError:
 # burning Worker subrequests when several jobs run in parallel.
 _CC_POLL_INTERVAL_SEC = 5
 
+# B2 accept gate: Worker returns 503 {error:'cloud_busy'} when Modal GPU
+# capacity is at the job-block threshold. Surfaced verbatim to JS on submit.
+_CC_CLOUD_BUSY_USER_MESSAGE = (
+    "Cloud Compute Servers are at max capacity, please try again in a few "
+    "minutes, or contact support. Sorry for the inconvenience!"
+)
+
 # ── Account-auth helpers (Kestrel Auth Worker JWT) ───────────────────────────
 _KEYRING_SERVICE = 'ProjectKestrel'
 # Big-bang rename in the auth-migration: keychain slot changed from
@@ -2638,6 +2645,35 @@ class Api:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    def get_perch_list(self, limit: int = 200) -> dict:
+        """GET /v1/me/perches — lightweight perch list for the Account panel."""
+        token, dev_user, err = self._check_auth_token()
+        if err:
+            return err
+        lim = max(1, min(int(limit or 200), 200))
+        try:
+            import requests as _req
+            headers: dict = {}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            if dev_user:
+                headers["x-dev-user-id"] = str(dev_user)
+            r = _req.get(
+                f"{self.get_perch_api_base()}/v1/me/perches",
+                headers=headers,
+                params={"limit": lim},
+                timeout=15,
+            )
+            if not r.ok:
+                return {"success": False, "error": f"HTTP {r.status_code}"}
+            body = r.json()
+            perches = body.get("perches") if isinstance(body, dict) else None
+            if not isinstance(perches, list):
+                perches = body if isinstance(body, list) else []
+            return {"success": True, "perches": perches}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     # ─── Cloud Compute — submit / poll / cancel ───────────────────────────
     # Reuses the Perch JWT (same Clerk identity). The cloud-compute Worker
     # validates the JWT and calls Perch internally for entitlement + usage
@@ -2665,6 +2701,34 @@ class Api:
         if len(text) > 300:
             text = text[:300] + "…"
         return text
+
+    @staticmethod
+    def _cc_submit_error_response(exc: "object") -> dict | None:
+        """Map known Worker submit failures to desktop-friendly error dicts.
+
+        Returns a full ``{ok: False, ...}`` payload for typed cases, or
+        ``None`` so the caller can fall through to the generic sanitizer.
+        """
+        try:
+            from cloud_compute_client import CloudComputeError as _CCE
+        except ImportError:
+            return None
+        if not isinstance(exc, _CCE):
+            return None
+        if exc.status != 503:
+            return None
+        try:
+            parsed = json.loads(exc.message)
+        except (ValueError, TypeError):
+            parsed = None
+        if not isinstance(parsed, dict) or parsed.get("error") != "cloud_busy":
+            return None
+        return {
+            "ok": False,
+            "error": _CC_CLOUD_BUSY_USER_MESSAGE,
+            "status": 503,
+            "errorCode": "cloud_busy",
+        }
 
     def _ensure_cc_lock(self) -> "threading.Lock":
         import threading as _t
@@ -3119,8 +3183,7 @@ class Api:
              whether the local zip still exists or the R2 delete fired.
           2. Best-effort local zip delete (we don't need the bytes anymore).
           3. Best-effort Worker delete-packs call. Failures are absorbed;
-             the next bootstrap reconciliation will retry — see
-             cloud_compute_list_pending_jobs's stale-R2-pack cleanup pass.
+             Worker cron reaps stale R2 when results are fully retrieved.
 
         Each step is independent: a failure at step 2 doesn't block step 3,
         and vice versa.
@@ -3347,6 +3410,9 @@ class Api:
                 ),
             }
         except ccc.CloudComputeError as e:
+            mapped = self._cc_submit_error_response(e)
+            if mapped is not None:
+                return mapped
             return {
                 "ok": False,
                 "error": self._sanitize_cloud_error_message(e.message),
@@ -3566,8 +3632,7 @@ class Api:
             "totalInFolder": state.get("totalInFolder"),
             "alreadyAnalyzed": state.get("alreadyAnalyzed"),
             "status": state.get("status", "running"),
-            # Set by the bootstrap orphan reaper (e.g. "upload_interrupted")
-            # so the panel can explain why a non-obvious failure happened.
+            # Optional local tag explaining a non-obvious terminal status.
             "failureReason": state.get("failureReason") or "",
             "progress": dict(state.get("progress") or {}),
             # Cached remote counters (zeros until first poll lands).
@@ -3719,16 +3784,14 @@ class Api:
         return body
 
     def cloud_compute_clear_done(self) -> dict:
-        """Remove every terminal job (done|cancelled|failed) from both the
-        persistent ledger and the in-memory map. Returns the IDs removed."""
-        try:
-            removed = self._cc_jobs_store().remove_terminal_jobs()
-        except Exception as e:
-            return {"ok": False, "error": f"store: {e}"}
-        with self._ensure_cc_lock():
-            for jid in removed:
-                self._cc_jobs.pop(jid, None)
-        return {"ok": True, "removed": removed}
+        """Legacy bridge hook — does **not** touch the persistent job ledger.
+
+        The desktop's "Clear done" control only hides finished rows in the
+        cloud-analysis pill (``cloud-compute.js`` client-side filter). Job
+        history for the Account panel and startup resume still read the full
+        on-disk manifest via ``cloud_jobs_store``.
+        """
+        return {"ok": True, "removed": []}
 
     def cloud_compute_pause_job(self, job_id: str) -> dict:
         """Pause uploads for a job. W1: pause is now PURELY CLIENT-SIDE — we
@@ -3871,23 +3934,17 @@ class Api:
     _CC_HISTORY_TERMINAL_QUERY_CAP = 60
 
     def cloud_compute_list_pending_jobs(self, include_terminal: bool = False) -> dict:
-        """Return the set of jobs whose status is not terminal locally OR whose
-        result packs have not all been downloaded yet. Used by the startup
-        resume flow: when the user reopens the app, JS calls this; if it
-        returns non-empty, the resume dialog prompts the user to download.
+        """Enumerate persisted cloud jobs for display (read-only).
+
+        Per job, best-effort Worker reconcile for counters and result packs.
+        No local status mutation, no remote cancel, no R2 deletes.
 
         Each entry: ``{jobId, folderPath, status, imageCount, downloadedPacks,
-        remoteStatus, availablePacks}``. ``remoteStatus`` / ``availablePacks``
-        are best-effort — set to ``None`` on transient Worker failures.
+        remoteStatus, availablePacks, …}``. ``remoteStatus`` / ``availablePacks``
+        are ``None`` on transient Worker failures or when the job is skipped.
 
-        ``include_terminal`` (§4 account panel): when True, ALSO query the
-        Worker for salvageable packs on terminal failed/cancelled/incomplete
-        jobs so the history can offer "Download results" on jobs that failed
-        mid-run but produced partial output. Bounded to the most-recent
-        ``_CC_HISTORY_TERMINAL_QUERY_CAP`` eligible jobs. The startup resume
-        path leaves this False so the resume DIALOG keeps its lean,
-        terminal-skipping behavior (and the orphan-confusion guard in
-        ``_ccPickResumeCandidates`` stays the source of truth for auto-prompts).
+        ``include_terminal`` (account panel): when True, ALSO query salvageable
+        packs on terminal failed/cancelled/incomplete jobs (bounded cap).
         """
         try:
             store = self._cc_jobs_store()
@@ -3899,68 +3956,6 @@ class Api:
             return {"ok": True, "jobs": []}
 
         client, _ = self._cc_make_client()
-
-        # Bootstrap orphan reaper. Any local job stuck in 'uploading' or
-        # 'upload_paused' across a process restart has no upload thread to
-        # resume — the previous process took it to the grave. Mark such jobs
-        # failed locally with a clear reason so the UI can explain it, and
-        # fire-and-forget a Worker cancel to clean up R2 + D1 (idempotent;
-        # no-op if the Worker already moved to terminal). Only reaches here
-        # the first time bootstrap runs after a crash because subsequent
-        # passes find them in 'failed' state and skip.
-        orphan_statuses = {"uploading", "upload_paused"}
-        orphans = [j for j in jobs if j["status"] in orphan_statuses
-                   and j["jobId"] not in self._cc_jobs]
-        if orphans:
-            import threading as _t
-            for j in orphans:
-                try:
-                    store.update_job(
-                        j["jobId"],
-                        status="failed",
-                        failureReason="upload_interrupted",
-                    )
-                    j["status"] = "failed"
-                    j["failureReason"] = "upload_interrupted"
-                except Exception:
-                    pass
-                # Register in the in-memory map so the cloud queue panel
-                # surfaces the failed orphan with a clear reason. Without this
-                # the user would have no signal that the job is dead — the
-                # panel only renders _cc_jobs entries, not the persistent
-                # ledger.
-                with self._ensure_cc_lock():
-                    if j["jobId"] not in self._cc_jobs:
-                        self._cc_jobs[j["jobId"]] = {
-                            "jobId": j["jobId"],
-                            "rootPath": j["folderPath"],
-                            "imageCount": int(j.get("imageCount") or 0),
-                            "newImageCount": int(j.get("imageCount") or 0),
-                            "anchorFilename": (j.get("anchorFilename") or "") or None,
-                            "totalInFolder": None,
-                            "alreadyAnalyzed": None,
-                            "status": "failed",
-                            "failureReason": "upload_interrupted",
-                            "progress": {"event": "orphan_reaped"},
-                            "cancel_event": None,
-                            "pause_event": None,
-                            "remote": dict(self._CC_REMOTE_DEFAULTS),
-                        }
-                if client is not None:
-                    jid = j["jobId"]
-                    def _cancel(jid=jid):
-                        try:
-                            # `origin=orphan` so the Worker audit log can
-                            # distinguish a desktop-crash reap from a user
-                            # click. Was previously calling the wrong method
-                            # (`cancel_job` doesn't exist; only
-                            # `cancel_job_remote` does) — the bare except
-                            # silently swallowed the AttributeError so orphan
-                            # cleanup on the Worker side was never firing.
-                            client.cancel_job_remote(jid, origin="orphan")
-                        except Exception as e:
-                            warn(f"[cloud-compute] orphan reap {jid}: cancel_job_remote failed: {e}")
-                    _t.Thread(target=_cancel, name=f"cc-reap-{jid}", daemon=True).start()
 
         # Locally-terminal jobs (done/cancelled/failed) skip Worker I/O entirely
         # at bootstrap. They still appear in the returned list so the panel can
@@ -4066,23 +4061,6 @@ class Api:
                         for f in files
                         if str(f.get("filename") or "").endswith(".zip")
                     ]
-                    # Proactive stale-R2 cleanup: any pack that's already
-                    # been merged locally is dead weight in R2. Best-effort
-                    # batch delete; on failure, log and let the next
-                    # bootstrap (or a Worker-side cleanup cron, when we
-                    # build it) catch it.
-                    if folder_available:
-                        merged_set = set(merged_union)
-                        stale = [n for n in available if n in merged_set]
-                        if stale:
-                            try:
-                                client.delete_packs(j["jobId"], stale)
-                                available = [n for n in available if n not in merged_set]
-                            except Exception as e:
-                                warn(
-                                    f"[cloud-compute] {j['jobId']}: bootstrap stale-R2 "
-                                    f"cleanup ({len(stale)} packs) failed: {e}"
-                                )
                     entry["availablePacks"] = available
                 except Exception:
                     pass

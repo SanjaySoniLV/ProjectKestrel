@@ -192,7 +192,7 @@ def _sanitize_path_list(value: Any, max_items: int = 256) -> list[str]:
     return out
 
 
-def _sanitize_analyze_recents(value: Any, max_items: int = 16) -> list[dict]:
+def _sanitize_analyze_recents(value: Any, max_items: int = 8) -> list[dict]:
     """Validate the analyze_recents settings field — list of recently-queued
     folders that haven't been fully analyzed yet. Each entry is a dict
     ``{'path': str, 'timestamp': str}``. Deduped by normalized path
@@ -517,7 +517,7 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
         # Phase 3: Analyze Folders dialog's own recents (list of {path, timestamp}).
         # Separate from folder_recents — the dialog's mental model is "recently
         # queued but not yet fully analyzed", independent of the main tree.
-        out['analyze_recents'] = _sanitize_analyze_recents(data.get('analyze_recents'), max_items=16)
+        out['analyze_recents'] = _sanitize_analyze_recents(data.get('analyze_recents'), max_items=8)
 
     # Local performance samples for the Analyze Folders dialog's time estimate.
     # The queue worker appends one entry per completed folder run; the dialog

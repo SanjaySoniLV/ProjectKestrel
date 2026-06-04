@@ -554,72 +554,45 @@
 
     // ── Recents chips (Phase 3G — independent from main tree's folder_recents) ──
 
-    /** Build a single recents chip DOM node. Shared by sync + async paths. */
     function _adlgBuildRecentsChip(path) {
-      function ellipsize(p, maxLen = 28) {
-        if (!p) return '';
-        const s = p.replace(/\\/g, '/');
-        if (s.length <= maxLen) return s;
-        const parts = s.split('/').filter(Boolean);
-        if (parts.length <= 2) return s.slice(0, maxLen - 1) + '…';
-        const t = `${parts[0]}/…/${parts[parts.length - 1]}`;
-        return t.length <= maxLen ? t : (t.slice(0, maxLen - 1) + '…');
-      }
-      const chip = document.createElement('button');
-      chip.type = 'button';
-      chip.className = 'folder-recents-chip';
-      chip.title = path;
-      chip.dataset.path = path;
-      const plus = document.createElement('span');
-      plus.className = 'folder-recents-chip-plus';
-      plus.textContent = '+ \u{1F4C2}';
-      const label = document.createElement('span');
-      label.textContent = ' ' + ellipsize(path);
-      chip.appendChild(plus); chip.appendChild(label);
-      chip.addEventListener('click', async () => {
-        chip.disabled = true;
-        try {
-          const r = await addAnalyzeDlgRoot(path);
-          if (r && r.added) {
-            await _persistAnalyzeRecentsBump(path);
-            _renderAnalyzeDlgRecentsChipsSync();
-            renderAnalyzeDlgRecentsChips().catch(() => {});
-            _inspectAndRenderAnalyzeDlg().catch(() => {});
+      const wrap = buildFolderRecentsChip(
+        path,
+        async () => {
+          const chipBtn = wrap.querySelector('.folder-recents-chip');
+          if (chipBtn) chipBtn.disabled = true;
+          try {
+            const r = await addAnalyzeDlgRoot(path);
+            if (r && r.added) {
+              await _persistAnalyzeRecentsBump(path);
+              _renderAnalyzeDlgRecentsChipsSync();
+              renderAnalyzeDlgRecentsChips().catch(() => {});
+              _inspectAndRenderAnalyzeDlg().catch(() => {});
+            }
+          } finally {
+            const chipBtn = wrap.querySelector('.folder-recents-chip');
+            if (chipBtn) chipBtn.disabled = false;
           }
-        } finally { chip.disabled = false; }
-      });
-      return chip;
+        },
+        (p) => {
+          if (typeof persistAnalyzeRecentsRemove === 'function') persistAnalyzeRecentsRemove(p);
+        },
+      );
+      return wrap;
     }
 
-    /** Instant sync render from settings — no IPC. Shows every recent that
-     *  isn't already loaded in the dialog tree. Called before showModal() so
-     *  the chips appear without waiting for inspect_folders. The async
-     *  renderAnalyzeDlgRecentsChips() then refines this by removing chips
-     *  whose paths are invalid or have no work remaining. */
+    /** Sync pass: hide until async inspect confirms disk + remaining work. */
     function _renderAnalyzeDlgRecentsChipsSync() {
       const row = document.getElementById('analyzeDlgRecentsRow');
       if (!row) return;
-      const s = (typeof loadSettings === 'function') ? loadSettings() : {};
-      const recents = Array.isArray(s.analyze_recents) ? s.analyze_recents.slice(0, 16) : [];
-      const loaded = new Set(analyzeDlgRootOrder);
-      const available = recents
-        .map(r => r && r.path)
-        .filter(p => p && !loaded.has(_adlgNormRoot(p)));
-      if (available.length === 0) {
-        row.classList.add('hidden');
-        row.innerHTML = '';
-        return;
-      }
+      row.classList.add('hidden');
       row.innerHTML = '';
-      for (const path of available) row.appendChild(_adlgBuildRecentsChip(path));
-      row.classList.remove('hidden');
     }
 
     async function renderAnalyzeDlgRecentsChips() {
       const row = document.getElementById('analyzeDlgRecentsRow');
       if (!row) return;
       const s = (typeof loadSettings === 'function') ? loadSettings() : {};
-      const recents = Array.isArray(s.analyze_recents) ? s.analyze_recents.slice(0, 16) : [];
+      const recents = Array.isArray(s.analyze_recents) ? s.analyze_recents.slice(0, 8) : [];
       if (recents.length === 0) {
         row.classList.add('hidden');
         row.innerHTML = '';
@@ -647,11 +620,13 @@
               const total = info.total || 0;
               const processed = info.processed || 0;
               const errored = info.errored || 0;
-              return total === 0 || processed < total || errored > 0;
+              return total > 0 && (processed < total || errored > 0);
             });
           } else if (res && Array.isArray(res.invalid_paths)) {
             const invalid = new Set(res.invalid_paths.map(_adlgNormRoot));
             available = paths.filter(p => !invalid.has(_adlgNormRoot(p)));
+          } else {
+            available = [];
           }
         }
       } catch (e) { /* best-effort */ }
@@ -675,7 +650,7 @@
         const np = _adlgNormRoot(path);
         const filtered = existing.filter(e => e && _adlgNormRoot(e.path) !== np);
         const ts = new Date().toISOString();
-        s.analyze_recents = [{ path: np, timestamp: ts }, ...filtered].slice(0, 16);
+        s.analyze_recents = [{ path: np, timestamp: ts }, ...filtered].slice(0, 8);
         saveSettings(s);
         if (hasPywebviewApi && window.pywebview?.api?.save_settings_data) {
           try { await window.pywebview.api.save_settings_data(s); } catch (_) { }

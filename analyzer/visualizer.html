@@ -268,8 +268,7 @@
       <div class="queue-panel-controls" id="cloudQueuePanelControls">
         <button id="cloudQueuePauseBtn" title="Pause cloud uploads. Modal keeps analyzing whatever has already uploaded.">⏸ Pause</button>
         <button id="cloudQueueCancelBtn" title="Cancel cloud analysis (stops Modal and deletes staged files).">⏹ Cancel</button>
-        <button id="cloudQueueClearBtn" title="Remove finished items from list">🗑 Clear done</button>
-        <button id="cloudQueueRetryDownloadsBtn" class="hidden" title="Re-check folder availability and resume any deferred pack downloads.">🔄 Retry downloads</button>
+        <button id="cloudQueueClearBtn" title="Hide finished jobs from this panel (does not delete job history)">🗑 Clear done</button>
       </div>
     </div>
 
@@ -1142,59 +1141,68 @@
     </div>
   </dialog>
 
-  <!-- Cloud Compute resume dialog. Opens on startup when there are finished
-       cloud jobs whose result packs haven't all been merged locally yet
-       (e.g. the desktop was closed while a job finished on its own). -->
-  <dialog id="cloudResumeDlg" class="kdlg kdlg--md kdlg--flex">
-    <div class="cloud-resume-dlg">
-      <h3>☁ Cloud Analysis Results Available</h3>
-      <p id="cloudResumeIntro">You have finished cloud analysis jobs ready to download.</p>
-      <div id="cloudResumeList" class="cloud-resume-list"></div>
-      <div class="cloud-resume-footer">
-        <button id="cloudResumeLater">Later</button>
-        <button id="cloudResumeSelected">Download Selected</button>
-        <button id="cloudResumeAll" class="primary">Download All</button>
-      </div>
-    </div>
-  </dialog>
-
-  <!-- §4: Account & Cloud Compute panel. Opened from the account button when
-       signed in. Account + usage + a myaccount link + a job-history list with
-       per-job "Download results" (resume merge) and "Locate folder…" (moved-
-       folder recovery). All content is rendered by cloud-compute.js. -->
+  <!-- Account panel (signed-in). Two columns: Cloud Compute (left) and Perch
+       (right), each with usage then history — mirrors myaccount.projectkestrel.org.
+       Rendered by cloud-compute.js. -->
   <dialog id="cloudAccountDlg" class="kdlg kdlg--lg kdlg--flex cloud-account-dlg" aria-labelledby="cloudAccountDlgTitle">
     <div class="cloud-account-dlg-body">
       <div class="cloud-account-header">
-        <h3 id="cloudAccountDlgTitle">☁ Account &amp; Cloud Compute</h3>
+        <h3 id="cloudAccountDlgTitle">Account</h3>
         <button id="cloudAccountClose" class="cloud-account-close" title="Close" aria-label="Close">✕</button>
       </div>
 
-      <!-- Account + usage card (mirrors perch.js's .perch-usage-card pattern) -->
-      <div class="cloud-account-card">
-        <div class="cloud-account-identity">
-          <div class="cloud-account-avatar" id="cloudAccountAvatar">·</div>
-          <div class="cloud-account-identity-text">
-            <div class="cloud-account-name" id="cloudAccountName">Loading…</div>
-            <div class="cloud-account-meta" id="cloudAccountMeta">—</div>
-            <div class="cloud-account-tier" id="cloudAccountTier"></div>
-          </div>
+      <div class="cloud-account-identity-bar">
+        <div class="cloud-account-avatar" id="cloudAccountAvatar">·</div>
+        <div class="cloud-account-identity-text">
+          <div class="cloud-account-name" id="cloudAccountName">Loading…</div>
+          <div class="cloud-account-meta" id="cloudAccountMeta">—</div>
         </div>
-        <div class="cloud-account-usage" id="cloudAccountUsage">
-          <div class="cloud-account-usage-line" id="cloudAccountUsageImages">Loading usage…</div>
-          <div class="cloud-account-usage-line muted" id="cloudAccountUsageConcurrent"></div>
-        </div>
-        <div class="cloud-account-actions">
-          <button id="cloudAccountManageBtn" class="primary" type="button">Manage my account ↗</button>
-        </div>
+        <button id="cloudAccountManageBtn" class="primary" type="button">Manage my account ↗</button>
       </div>
 
-      <!-- Job history -->
-      <div class="cloud-account-history-header">
-        <h4>Job history</h4>
-        <span class="cloud-account-history-hint" id="cloudAccountHistoryHint"></span>
-      </div>
-      <div class="cloud-account-history" id="cloudAccountHistory">
-        <div class="cloud-account-history-empty">Loading…</div>
+      <div class="account-columns">
+        <section class="account-col account-col--cc" aria-labelledby="accountCcHeading">
+          <h4 class="account-col-title" id="accountCcHeading">Cloud Compute</h4>
+          <div class="account-usage-card">
+            <div class="account-usage-card-title">Usage</div>
+            <div class="account-usage-tier" id="cloudAccountTier"></div>
+            <div class="account-usage-line" id="cloudAccountUsageImages">Loading usage…</div>
+            <div class="account-usage-line muted" id="cloudAccountUsageConcurrent"></div>
+          </div>
+          <div class="account-history-header">
+            <span class="account-history-title">Job history</span>
+            <span class="cloud-account-history-hint" id="cloudAccountHistoryHint"></span>
+          </div>
+          <div class="cloud-account-history" id="cloudAccountHistory">
+            <div class="cloud-account-history-empty">Loading…</div>
+          </div>
+        </section>
+
+        <section class="account-col account-col--perch" aria-labelledby="accountPerchHeading">
+          <h4 class="account-col-title" id="accountPerchHeading">Perch</h4>
+          <div class="account-usage-card">
+            <div class="account-usage-card-title">Usage</div>
+            <div class="account-usage-line" id="perchAccountUsagePerches">—</div>
+            <div class="account-usage-line" id="perchAccountUsageImages">—</div>
+            <div class="account-usage-line" id="perchAccountUsageAssets">—</div>
+            <div class="account-usage-line" id="perchAccountUsageBytes">—</div>
+            <div class="account-storage-bar" id="perchAccountStorageBar" hidden>
+              <div class="account-storage-bar-meta">
+                <span id="perchAccountStoragePct">—</span>
+              </div>
+              <div class="account-storage-bar-track">
+                <div class="account-storage-bar-fill" id="perchAccountStorageFill"></div>
+                <div class="account-storage-bar-fill-reserved" id="perchAccountStorageFillReserved"></div>
+              </div>
+            </div>
+          </div>
+          <div class="account-history-header">
+            <span class="account-history-title">Your perches</span>
+          </div>
+          <div class="perch-account-list" id="perchAccountList">
+            <div class="cloud-account-history-empty">Loading…</div>
+          </div>
+        </section>
       </div>
     </div>
   </dialog>

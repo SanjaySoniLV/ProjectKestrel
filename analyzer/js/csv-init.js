@@ -391,44 +391,27 @@
       }
       row.innerHTML = '';
       for (const path of available) {
-        const chip = document.createElement('button');
-        chip.type = 'button';
-        chip.className = 'folder-recents-chip';
-        chip.title = path;
-        const plus = document.createElement('span');
-        plus.className = 'folder-recents-chip-plus';
-        plus.textContent = '+ 📂';
-        const label = document.createElement('span');
-        label.textContent = ' ' + _ellipsizePathMiddle(path);
-        chip.appendChild(plus);
-        chip.appendChild(label);
-        chip.addEventListener('click', async () => {
-          chip.disabled = true;
-          try {
-            const r = await addFolderRoot(path);
-            if (r && r.added) {
-              debouncedAutoLoad();
-              // Bump-to-top in recents on successful click. Push to backend
-              // too so the change survives the next hydrateSettingsFromServer.
-              try {
-                const ss = loadSettings();
-                const existing = Array.isArray(ss.folder_recents) ? ss.folder_recents : [];
-                const normRoot = q => (q || '').replace(/\\/g, '/').replace(/\/+$/, '');
-                const np = normRoot(path);
-                const filtered = existing.filter(p => normRoot(p) !== np);
-                ss.folder_recents = [np, ...filtered].slice(0, 8);
-                saveSettings(ss);
-                if (hasPywebviewApi && window.pywebview?.api?.save_settings_data) {
-                  try { await window.pywebview.api.save_settings_data(ss); } catch (_) { }
+        const wrap = buildFolderRecentsChip(
+          path,
+          async () => {
+            const chipBtn = wrap.querySelector('.folder-recents-chip');
+            if (chipBtn) chipBtn.disabled = true;
+            try {
+              const r = await addFolderRoot(path);
+              if (r && r.added) {
+                debouncedAutoLoad();
+                if (typeof persistFolderRecentsBump === 'function') {
+                  await persistFolderRecentsBump(path);
                 }
-                renderFolderRecentsChips();
-              } catch (e) { /* best-effort */ }
+              }
+            } finally {
+              const chipBtn = wrap.querySelector('.folder-recents-chip');
+              if (chipBtn) chipBtn.disabled = false;
             }
-          } finally {
-            chip.disabled = false;
-          }
-        });
-        row.appendChild(chip);
+          },
+          (p) => { if (typeof persistFolderRecentsRemove === 'function') persistFolderRecentsRemove(p); },
+        );
+        row.appendChild(wrap);
       }
       row.classList.remove('hidden');
       updateEmptyHintCopy();

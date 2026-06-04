@@ -308,7 +308,15 @@
   color: var(--bad);
 }
 
-/* In-progress hourglass indicator (mirrors .tree-perch-feather pattern) */
+/* In-progress: purple label + hourglass (mirrors Perch feather affordance). */
+.tree-node-row.in-progress .tree-label {
+  color: #b36bff;
+  font-style: italic;
+}
+.tree-node-row.in-progress:hover .tree-label {
+  color: #c99bff;
+}
+
 .tree-in-progress-hourglass {
   font-size: 11px;
   margin-left: 1px;
@@ -317,6 +325,31 @@
   line-height: 1;
   vertical-align: middle;
   opacity: 0.85;
+}
+
+/* Recents chip row: primary chip + dismiss control */
+.folder-recents-chip-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+}
+.folder-recents-chip-dismiss {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted, #889);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.folder-recents-chip-dismiss:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
 }
 
 /* Context menu for folder tree */

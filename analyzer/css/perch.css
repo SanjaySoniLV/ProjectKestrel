@@ -71,6 +71,14 @@
   color: #f5c542;
 }
 
+/* Cloud result packs ready to download (startup enumerate — no auto-download). */
+#accountBtn.has-results {
+  border-color: #3ecf8e;
+  background: rgba(62, 207, 142, 0.12);
+  color: #3ecf8e;
+  box-shadow: 0 0 0 1px rgba(62, 207, 142, 0.25);
+}
+
 /* ── Folder-card "Published" pill + Sync button ──────────────────── */
 
 /* Folder-card "Published" button — shown when .kestrel/perch_link.json
