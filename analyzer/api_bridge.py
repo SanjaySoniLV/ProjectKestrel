@@ -86,6 +86,12 @@ except ImportError:
 # burning Worker subrequests when several jobs run in parallel.
 _CC_POLL_INTERVAL_SEC = 5
 
+# Continuous-retrieval loop cadence: how long cloud_compute_retrieve_results
+# sleeps between successive list_results+download passes for a still-running
+# job. Packs arrive in batches of ~10, so 15s keeps the gallery fresh without
+# hammering R2/list_results.
+_CC_RETRIEVE_LOOP_SEC = 15
+
 # B2 accept gate: Worker returns 503 {error:'cloud_busy'} when Modal GPU
 # capacity is at the job-block threshold. Surfaced verbatim to JS on submit.
 _CC_CLOUD_BUSY_USER_MESSAGE = (
@@ -365,6 +371,11 @@ class Api:
         # from one bridge call (cloud_compute_list_jobs) without the N+1 query
         # pattern that previously called get_status per job per render.
         self._cc_poll_threads: dict = {}
+        # Continuous-retrieval worker threads (job_id -> Thread). Started by
+        # cloud_compute_retrieve_results, which loops _cc_drain_packs_once
+        # until the job is terminal. Guarded so re-clicking "Retrieve Results"
+        # doesn't spawn duplicate download loops (mirrors _cc_poll_threads).
+        self._cc_retrieve_threads: dict = {}
         # Short-poll event queue for pack-merged notifications from the
         # background download thread. JS drains via
         # ``cloud_compute_get_pack_events()`` ~every poll tick and triggers a
@@ -4064,19 +4075,29 @@ class Api:
                     entry["availablePacks"] = available
                 except Exception:
                     pass
+            # A 'done' job has, by construction, pulled every result pack
+            # (status only flips to done once remote==complete AND all packs
+            # merged — see cloud_compute_resume_download). We deliberately
+            # don't spend a Worker call on done jobs, which left
+            # retrievedCount=None and rendered "0 / N retrieved" in the account
+            # panel. Backfill from imageCount — all results are in.
+            if entry["retrievedCount"] is None and j["status"] == "done":
+                entry["retrievedCount"] = j["imageCount"]
             out_jobs.append(entry)
         return {"ok": True, "jobs": out_jobs}
 
-    def cloud_compute_resume_download(self, job_id: str) -> dict:
-        """Resume pack download + merge for an existing persisted job.
+    def _cc_prepare_resume(self, job_id: str) -> dict:
+        """Shared setup for ``cloud_compute_resume_download`` /
+        ``cloud_compute_retrieve_results``: load the persisted job, verify the
+        folder is mounted, make the Worker client, register the job into the
+        in-memory ``_cc_jobs`` map (so the cloud queue pill renders it even
+        though it predates this process), and start the remote poller.
 
-        Registers the job in the in-memory ``_cc_jobs`` map (so the cloud
-        queue panel can render it), starts the standard background remote
-        poller, and spawns a one-off worker that downloads + merges any
-        packs not already present locally. Status is only marked ``done``
-        when the Worker confirms ``status==complete`` AND every available
-        pack has been downloaded — otherwise the live poller keeps tracking
-        and the UI reflects real state."""
+        Returns either an error dict (``ok==False`` — caller returns it
+        verbatim to JS, including the ``folder_unavailable`` soft-fail) or a
+        success context dict (``ok==True``) carrying ``target``, ``folder``,
+        ``client``, ``ccc``, ``store``, ``anchor_filenames`` and
+        ``retry_errored`` for the download worker."""
         try:
             store = self._cc_jobs_store()
             jobs = store.load_jobs()
@@ -4106,11 +4127,6 @@ class Api:
         except ImportError as e:
             return {"ok": False, "error": str(e)}
 
-        import threading as _t
-
-        # Register in-memory state so the cloud queue panel renders this job
-        # even though it predates the current process. The remote poller will
-        # populate the cached counters within one tick.
         anchor_filename = (target.get("anchorFilename") or "") or None
         # anchorFilenames is the post-retry_errored protected-anchor set
         # persisted by cloud_compute_submit_job. Older jobs (pre-this-change)
@@ -4128,7 +4144,7 @@ class Api:
         # don't re-read settings.json here because the user may have toggled
         # the flag off after submission; the job-time snapshot is authoritative.
         _snapshot = target.get("settingsSnapshot") or {}
-        _retry_errored = bool(isinstance(_snapshot, dict) and _snapshot.get("retry_errored"))
+        retry_errored = bool(isinstance(_snapshot, dict) and _snapshot.get("retry_errored"))
         with self._ensure_cc_lock():
             if job_id not in self._cc_jobs:
                 self._cc_jobs[job_id] = {
@@ -4148,88 +4164,192 @@ class Api:
                 }
         # Start the live remote poller; safe to call again if already running.
         self._cc_start_remote_poller(job_id)
+        return {
+            "ok": True,
+            "target": target,
+            "folder": folder,
+            "client": client,
+            "ccc": ccc,
+            "store": store,
+            "anchor_filenames": anchor_filenames,
+            "retry_errored": retry_errored,
+        }
+
+    def _cc_seed_already(self, target, folder, job_id) -> set:
+        """Seed the merged-pack truth = union(folder-local cloud_folder_state,
+        legacy desktop-store downloadedPacks). Folder-local is the post-fix
+        authoritative source; the legacy field stays so old jobs that pre-date
+        the folder-state file still dedup correctly."""
+        try:
+            from cloud_folder_state import list_merged_packs as _list_merged
+            merged_in_folder = set(_list_merged(folder, job_id))
+        except Exception:
+            merged_in_folder = set()
+        return set(target.get("downloadedPacks") or []) | merged_in_folder
+
+    def cloud_compute_resume_download(self, job_id: str) -> dict:
+        """Resume pack download + merge for an existing persisted job — a
+        one-shot pull of whatever packs are available right now.
+
+        Registers the job in the in-memory ``_cc_jobs`` map (so the cloud
+        queue panel can render it), starts the standard background remote
+        poller, and spawns a one-off worker that downloads + merges any
+        packs not already present locally. Status is only marked ``done``
+        when the Worker confirms ``status==complete`` AND every available
+        pack has been downloaded — otherwise the live poller keeps tracking
+        and the UI reflects real state. For a still-running job whose packs
+        keep arriving, use ``cloud_compute_retrieve_results`` (continuous)."""
+        ctx = self._cc_prepare_resume(job_id)
+        if not ctx.get("ok"):
+            return ctx
+        folder = ctx["folder"]; client = ctx["client"]; ccc = ctx["ccc"]
+        store = ctx["store"]; target = ctx["target"]
+        anchor_filenames = ctx["anchor_filenames"]; retry_errored = ctx["retry_errored"]
+
+        import threading as _t
 
         def _worker() -> None:
-            pack_dir = folder / ".kestrel" / "cloud-packs"
-            pack_dir.mkdir(parents=True, exist_ok=True)
-            # Merged-set truth = union(folder-local cloud_folder_state,
-            # legacy desktop-store downloadedPacks). Folder-local is the
-            # post-fix authoritative source; the legacy field stays so old
-            # jobs that pre-date the folder-state file still dedup correctly.
-            try:
-                from cloud_folder_state import list_merged_packs as _list_merged
-                merged_in_folder = set(_list_merged(folder, job_id))
-            except Exception:
-                merged_in_folder = set()
-            already = set(target.get("downloadedPacks") or []) | merged_in_folder
-            try:
-                files = client.list_results(job_id)
-            except Exception as e:
+            already = self._cc_seed_already(target, folder, job_id)
+            drained = self._cc_drain_packs_once(
+                job_id, folder, client, ccc, store,
+                anchor_filenames, retry_errored, already,
+            )
+            if drained is None:
+                return  # list_results failed; event already recorded
+            already, available_pack_names = drained
+            self._cc_maybe_mark_done(job_id, client, store, already, available_pack_names)
+
+        _t.Thread(target=_worker, name=f"cc-resume-{job_id}", daemon=True).start()
+        return {"ok": True, "jobId": job_id}
+
+    def cloud_compute_retrieve_results(self, job_id: str) -> dict:
+        """Restart the continuous 'download packs as they arrive' loop for an
+        existing persisted job — the resumable equivalent of the live download
+        path that runs during a fresh submit. Registers the job into the
+        in-memory map (so the cloud queue pill repopulates), starts the remote
+        poller, then loops ``_cc_drain_packs_once`` every
+        ``_CC_RETRIEVE_LOOP_SEC`` until the Worker reports a terminal state,
+        marking ``done`` once complete + all packs pulled.
+
+        Idempotent: a second call while a loop is already running for this job
+        is a no-op (guarded by ``_cc_retrieve_threads``), so the JS button can
+        fire freely without double-downloading."""
+        import threading as _t
+        with self._ensure_cc_lock():
+            existing = self._cc_retrieve_threads.get(job_id)
+            if existing is not None and existing.is_alive():
+                return {"ok": True, "jobId": job_id, "alreadyRunning": True}
+        ctx = self._cc_prepare_resume(job_id)
+        if not ctx.get("ok"):
+            return ctx
+        folder = ctx["folder"]; ccc = ctx["ccc"]; store = ctx["store"]
+        target = ctx["target"]
+        anchor_filenames = ctx["anchor_filenames"]; retry_errored = ctx["retry_errored"]
+
+        def _loop() -> None:
+            import time as _time
+            already = self._cc_seed_already(target, folder, job_id)
+            # Worker statuses that mean "no more packs will arrive". 'complete'
+            # is handled separately: we keep pulling until every listed pack is
+            # local (then _cc_maybe_mark_done flips us to 'done'), with a small
+            # retry bound so a permanently-failing pack can't spin forever.
+            _NO_MORE = {"failed", "cancelled", "incomplete", "error"}
+            complete_retries = 0
+            while True:
+                # Stop promptly if the user cancelled or the job went terminal
+                # locally (cloud_compute_cancel_job flips the in-memory status).
                 with self._ensure_cc_lock():
-                    self._cc_pack_events.append({
-                        "jobId": job_id, "folderPath": str(folder),
-                        "packName": None, "error": str(e),
-                    })
-                return
-            available_pack_names = [
-                str(meta.get("filename") or "") for meta in files
-                if str(meta.get("filename") or "").endswith(".zip")
-            ]
-            # Stale-R2 cleanup: any pack still in R2 that we've already merged
-            # is dead weight (probably from a pre-folder-state job, or a prior
-            # delete-packs call that lost network). Tell the Worker to drop it
-            # so the next list_results stops returning them.
-            stale = [n for n in available_pack_names if n in already]
-            if stale and client is not None:
-                try:
-                    client.delete_packs(job_id, stale)
-                    available_pack_names = [n for n in available_pack_names if n not in already]
-                except Exception as e:
-                    warn(f"[cloud-compute] {job_id}: stale-R2 cleanup ({len(stale)} packs) failed: {e}")
-            for fname in available_pack_names:
-                if fname in already:
+                    st = self._cc_jobs.get(job_id)
+                    local_status = (st or {}).get("status")
+                if local_status in ("done", "failed", "cancelled", "incomplete"):
+                    break
+                # Re-make the client each pass so a mid-loop JWT refresh doesn't
+                # wedge the whole retrieval (the poller does the same).
+                client, _client_err = self._cc_make_client()
+                if client is None:
+                    _time.sleep(_CC_RETRIEVE_LOOP_SEC)
                     continue
-                dest = pack_dir / fname
-                # Filesystem fallback dedup: if the pack zip is already on disk
-                # but missing from `downloadedPacks`, we previously re-downloaded
-                # it. That happens when the JSON ledger was killed mid-write
-                # (atomic-replace race) or `add_downloaded_pack` swallowed an
-                # exception. Re-merging is safe (the database merge is
-                # last-wins by filename) and skipping the network call is the
-                # whole point — repair the JSON so the next launch isn't
-                # confused either.
-                if dest.exists() and dest.stat().st_size > 0:
-                    try:
-                        ccc.merge_pack_into_kestrel(
-                            dest, folder,
-                            protected_filenames=set(anchor_filenames) if anchor_filenames else None,
-                            overwrite_errors=_retry_errored,
-                        )
-                    except Exception as e:
-                        with self._ensure_cc_lock():
-                            self._cc_pack_events.append({
-                                "jobId": job_id, "folderPath": str(folder),
-                                "packName": fname, "error": str(e),
-                            })
-                        continue
-                    already.add(fname)
-                    try:
-                        store.add_downloaded_pack(job_id, fname)
-                    except Exception:
-                        pass
-                    self._cc_finalize_pack_merge(folder, job_id, fname, dest, client)
-                    with self._ensure_cc_lock():
-                        self._cc_pack_events.append({
-                            "jobId": job_id, "folderPath": str(folder),
-                            "packName": fname,
-                        })
-                    continue
+                drained = self._cc_drain_packs_once(
+                    job_id, folder, client, ccc, store,
+                    anchor_filenames, retry_errored, already,
+                )
+                if drained is not None:
+                    already, available_pack_names = drained
+                    remote_status = self._cc_maybe_mark_done(
+                        job_id, client, store, already, available_pack_names,
+                    )
+                    if remote_status == "complete":
+                        if all(p in already for p in available_pack_names):
+                            break  # all in; _cc_maybe_mark_done flipped to done
+                        complete_retries += 1
+                        if complete_retries >= 3:
+                            # Stuck pack(s) after completion — stop spinning;
+                            # the account panel's one-shot Download is the
+                            # recovery path for the straggler(s).
+                            break
+                    elif remote_status in _NO_MORE:
+                        break
+                _time.sleep(_CC_RETRIEVE_LOOP_SEC)
+
+        thread = _t.Thread(target=_loop, name=f"cc-retrieve-{job_id}", daemon=True)
+        with self._ensure_cc_lock():
+            self._cc_retrieve_threads[job_id] = thread
+        thread.start()
+        return {"ok": True, "jobId": job_id}
+
+    def _cc_drain_packs_once(
+        self, job_id, folder, client, ccc, store,
+        anchor_filenames, retry_errored, already,
+    ):
+        """Download + merge every result pack on the Worker we haven't merged
+        yet. Returns ``(already_updated, available_pack_names)`` or ``None`` if
+        the initial ``list_results`` call failed (a pack event recording the
+        error is appended in that case). Idempotent and safe to call repeatedly
+        — used one-shot by ``cloud_compute_resume_download`` and in a loop by
+        ``cloud_compute_retrieve_results``."""
+        pack_dir = folder / ".kestrel" / "cloud-packs"
+        pack_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            files = client.list_results(job_id)
+        except Exception as e:
+            with self._ensure_cc_lock():
+                self._cc_pack_events.append({
+                    "jobId": job_id, "folderPath": str(folder),
+                    "packName": None, "error": str(e),
+                })
+            return None
+        available_pack_names = [
+            str(meta.get("filename") or "") for meta in files
+            if str(meta.get("filename") or "").endswith(".zip")
+        ]
+        # Stale-R2 cleanup: any pack still in R2 that we've already merged is
+        # dead weight (probably from a pre-folder-state job, or a prior
+        # delete-packs call that lost network). Tell the Worker to drop it so
+        # the next list_results stops returning them.
+        stale = [n for n in available_pack_names if n in already]
+        if stale and client is not None:
+            try:
+                client.delete_packs(job_id, stale)
+                available_pack_names = [n for n in available_pack_names if n not in already]
+            except Exception as e:
+                warn(f"[cloud-compute] {job_id}: stale-R2 cleanup ({len(stale)} packs) failed: {e}")
+        for fname in available_pack_names:
+            if fname in already:
+                continue
+            dest = pack_dir / fname
+            # Filesystem fallback dedup: if the pack zip is already on disk but
+            # missing from `downloadedPacks`, we previously re-downloaded it.
+            # That happens when the JSON ledger was killed mid-write
+            # (atomic-replace race) or `add_downloaded_pack` swallowed an
+            # exception. Re-merging is safe (the database merge is last-wins by
+            # filename) and skipping the network call is the whole point —
+            # repair the JSON so the next launch isn't confused either.
+            if dest.exists() and dest.stat().st_size > 0:
                 try:
-                    client.download_pack(job_id, fname, dest)
                     ccc.merge_pack_into_kestrel(
                         dest, folder,
                         protected_filenames=set(anchor_filenames) if anchor_filenames else None,
-                        overwrite_errors=_retry_errored,
+                        overwrite_errors=retry_errored,
                     )
                 except Exception as e:
                     with self._ensure_cc_lock():
@@ -4249,31 +4369,58 @@ class Api:
                         "jobId": job_id, "folderPath": str(folder),
                         "packName": fname,
                     })
-
-            # Only mark `done` when Worker confirms terminal-complete state
-            # AND every available pack has been pulled locally. Otherwise
-            # leave the persisted status untouched — the live poller (and
-            # subsequent app launches) will keep observing reality.
+                continue
             try:
-                remote = client.get_status(job_id)
-                remote_status = str(remote.get("status") or "")
-            except Exception:
-                remote_status = ""
+                client.download_pack(job_id, fname, dest)
+                ccc.merge_pack_into_kestrel(
+                    dest, folder,
+                    protected_filenames=set(anchor_filenames) if anchor_filenames else None,
+                    overwrite_errors=retry_errored,
+                )
+            except Exception as e:
+                with self._ensure_cc_lock():
+                    self._cc_pack_events.append({
+                        "jobId": job_id, "folderPath": str(folder),
+                        "packName": fname, "error": str(e),
+                    })
+                continue
+            already.add(fname)
             try:
-                if (
-                    remote_status == "complete"
-                    and all(p in already for p in available_pack_names)
-                ):
-                    store.update_job(job_id, status="done")
-                    with self._ensure_cc_lock():
-                        st = self._cc_jobs.get(job_id)
-                        if st is not None:
-                            st["status"] = "done"
+                store.add_downloaded_pack(job_id, fname)
             except Exception:
                 pass
+            self._cc_finalize_pack_merge(folder, job_id, fname, dest, client)
+            with self._ensure_cc_lock():
+                self._cc_pack_events.append({
+                    "jobId": job_id, "folderPath": str(folder),
+                    "packName": fname,
+                })
+        return already, available_pack_names
 
-        _t.Thread(target=_worker, name=f"cc-resume-{job_id}", daemon=True).start()
-        return {"ok": True, "jobId": job_id}
+    def _cc_maybe_mark_done(self, job_id, client, store, already, available_pack_names):
+        """Flip the job to ``done`` only when the Worker confirms
+        terminal-complete state AND every available pack has been pulled
+        locally. Otherwise leave the persisted status untouched — the live
+        poller (and subsequent app launches) keep observing reality. Returns
+        the Worker's reported status string (``""`` on query failure)."""
+        try:
+            remote = client.get_status(job_id)
+            remote_status = str(remote.get("status") or "")
+        except Exception:
+            remote_status = ""
+        try:
+            if (
+                remote_status == "complete"
+                and all(p in already for p in available_pack_names)
+            ):
+                store.update_job(job_id, status="done")
+                with self._ensure_cc_lock():
+                    st = self._cc_jobs.get(job_id)
+                    if st is not None:
+                        st["status"] = "done"
+        except Exception:
+            pass
+        return remote_status
 
     def cloud_compute_relocate_job(self, job_id: str, new_folder_path: str) -> dict:
         """§4d — re-point a persisted job's ``folderPath`` to a new location.

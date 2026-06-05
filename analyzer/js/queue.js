@@ -289,6 +289,21 @@
         statusEl.textContent = labels[item.status] || item.status;
         if (item.status === 'error' && item.error) statusEl.title = item.error;
         hdr.appendChild(nameEl); hdr.appendChild(statusEl);
+        // "Load" affordance: jump to this folder's results in the gallery.
+        // Shown once a folder has analyzable output (done) or is producing it
+        // (running) — loading mid-run is safe; new scenes stream in additively.
+        if (item.path && (item.status === 'done' || item.status === 'running')) {
+          const loadBtn = document.createElement('button');
+          loadBtn.className = 'queue-item-load-btn';
+          loadBtn.type = 'button';
+          loadBtn.textContent = '📂 Load';
+          loadBtn.title = 'Open this folder to browse results';
+          loadBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            if (typeof loadFolderIntoBrowser === 'function') loadFolderIntoBrowser(item.path);
+          });
+          hdr.appendChild(loadBtn);
+        }
         div.appendChild(hdr);
 
         // Progress bar

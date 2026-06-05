@@ -126,6 +126,57 @@ class TestListPendingJobsReadOnly:
         assert "pack_1.zip" in entry["availablePacks"]
         assert "pack_2.zip" in entry["availablePacks"]
 
+    def test_done_job_backfills_retrieved_count_from_image_count(self, api, store, tmp_path, monkeypatch):
+        """Bug fix: a 'done' job is never queried against the Worker (terminal,
+        not in the salvageable set), so retrievedCount stayed None and the
+        account panel rendered "0 / N retrieved". It must backfill to
+        imageCount — a done job has, by construction, pulled every pack."""
+        folder = tmp_path / "completed"
+        folder.mkdir()
+        store.upsert_job({
+            "jobId": "job-done",
+            "folderPath": str(folder),
+            "status": "done",
+            "imageCount": 42,
+            "downloadedPacks": ["pack_1.zip", "pack_2.zip"],
+        })
+        # Client present but should NOT be consulted for a done job.
+        fake = _TrackingClient(remote_status="complete", packs=["pack_1.zip"])
+        monkeypatch.setattr(api, "_cc_make_client", lambda: (fake, None))
+
+        r = api.cloud_compute_list_pending_jobs(include_terminal=True)
+        assert r["ok"] is True
+        entry = next(j for j in r["jobs"] if j["jobId"] == "job-done")
+        assert entry["retrievedCount"] == 42
+        # Done job was not queried → no remote probe happened.
+        assert entry["remoteStatus"] is None
+        assert entry["availablePacks"] is None
+
+    def test_running_job_retrieved_count_not_overwritten(self, api, store, tmp_path, monkeypatch):
+        """A non-terminal job keeps the Worker's live retrievedCount; the
+        done-backfill must not touch it."""
+        folder = tmp_path / "running"
+        folder.mkdir()
+        store.upsert_job({
+            "jobId": "job-running",
+            "folderPath": str(folder),
+            "status": "uploading",
+            "imageCount": 400,
+        })
+
+        class _LiveClient(_TrackingClient):
+            def get_status(self, job_id):
+                d = super().get_status(job_id)
+                d["retrievedCount"] = 150
+                return d
+
+        fake = _LiveClient(remote_status="processing", packs=[])
+        monkeypatch.setattr(api, "_cc_make_client", lambda: (fake, None))
+
+        r = api.cloud_compute_list_pending_jobs()
+        entry = next(j for j in r["jobs"] if j["jobId"] == "job-running")
+        assert entry["retrievedCount"] == 150
+
     def test_no_client_still_read_only(self, api, store, tmp_path, monkeypatch):
         folder = tmp_path / "offline"
         folder.mkdir()

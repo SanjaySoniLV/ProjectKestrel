@@ -816,6 +816,12 @@
               <button data-cc-action="resume" data-job-id="${escapeHtml(state.jobId)}" ${resumeDisabled ? 'disabled' : ''}>
                 ▶ Resume
               </button>
+              ${!isTerminal ? `<button data-cc-action="retrieve" data-job-id="${escapeHtml(state.jobId)}" title="Restart auto-downloading result packs as they finish">
+                ⤓ Retrieve Results
+              </button>` : ''}
+              ${state.rootPath ? `<button data-cc-action="load" data-job-id="${escapeHtml(state.jobId)}" data-folder-path="${escapeHtml(state.rootPath)}" title="Open this folder to browse results">
+                📂 Load
+              </button>` : ''}
               <button data-cc-action="cancel" data-job-id="${escapeHtml(state.jobId)}" ${cancelDisabled ? 'disabled' : ''}>
                 ⏹ Cancel
               </button>
@@ -1114,7 +1120,39 @@
           .catch(() => showToast('Could not copy Job ID', 2500));
         return;
       }
+      // Load: open the job's folder for browsing. No bridge round-trip beyond
+      // the shared loader (which reads the folder's kestrel DB).
+      if (action === 'load') {
+        const folderPath = t.getAttribute('data-folder-path');
+        if (folderPath && typeof loadFolderIntoBrowser === 'function') {
+          loadFolderIntoBrowser(folderPath);
+        }
+        return;
+      }
       if (!window.pywebview?.api) return;
+      // Retrieve Results: (re)start the continuous download-as-packs-arrive
+      // loop. Idempotent on the backend, so a double-click is harmless.
+      if (action === 'retrieve') {
+        if (!window.pywebview.api.cloud_compute_retrieve_results) return;
+        t.disabled = true;
+        try {
+          const r = await window.pywebview.api.cloud_compute_retrieve_results(jobId);
+          if (r && r.ok) {
+            showToast(r.alreadyRunning ? 'Already retrieving results…' : 'Retrieving results…', 2800);
+            _ccStartPolling();
+            _ccRenderPanel();
+          } else if (r && r.reason === 'folder_unavailable') {
+            showToast(_CC_FOLDER_UNAVAILABLE_MSG, 6000);
+          } else {
+            showToast(`Retrieve failed: ${r?.error || 'unknown'}`, 5000);
+          }
+        } catch (e) {
+          showToast(`Retrieve failed: ${e?.message || e}`, 5000);
+        } finally {
+          t.disabled = false;
+        }
+        return;
+      }
       const fnName = ({
         pause: 'cloud_compute_pause_job',
         resume: 'cloud_compute_resume_job',
@@ -1387,6 +1425,22 @@
           + `data-cc-action="history-locate" data-job-id="${escapeHtml(j.jobId)}" `
           + `title="Re-point this job to the folder's new location">📁 Locate folder…</button>`
         : '';
+      // For a still-running job, the continuous "Retrieve Results" loop is the
+      // right affordance (downloads packs as they finish); the one-shot
+      // Download stays for terminal jobs with salvageable packs.
+      const retrieveBtn = `<button type="button" class="cloud-account-dl-btn" `
+        + `data-cc-action="history-retrieve" data-job-id="${escapeHtml(j.jobId)}" `
+        + `${folderMissing ? 'disabled' : ''} `
+        + `title="${folderMissing ? 'Locate the folder first' : 'Auto-download result packs as they finish'}">`
+        + `⤓ Retrieve Results</button>`;
+      // Load: browse this folder's results in the gallery (works for completed
+      // jobs too, which only ever appear here — never as a live pill).
+      const loadBtn = (j.folderAvailable === true && j.folderPath)
+        ? `<button type="button" class="cloud-account-load-btn" `
+          + `data-cc-action="history-load" data-job-id="${escapeHtml(j.jobId)}" `
+          + `data-folder-path="${escapeHtml(j.folderPath)}" `
+          + `title="Open this folder to browse results">📂 Load</button>`
+        : '';
 
       const additionalInfo = _ccRenderAdditionalInfo({
         jobId: j.jobId,
@@ -1404,7 +1458,8 @@
               <span class="cloud-account-row-caption">${caption}</span>
             </div>
             <div class="cloud-account-row-actions">
-              ${downloadBtn}
+              ${isTerminal ? downloadBtn : retrieveBtn}
+              ${loadBtn}
               ${locateBtn}
             </div>
           </div>
@@ -1651,6 +1706,39 @@
           } catch (err) {
             showToast(`Download failed: ${err?.message || err}`, 5000);
             t.disabled = false;
+          }
+          return;
+        }
+        if (action === 'history-retrieve') {
+          // Continuous retrieval: re-registers the job into the live cloud
+          // pill and keeps downloading packs until the job completes.
+          t.disabled = true;
+          try {
+            const r = await window.pywebview.api.cloud_compute_retrieve_results(jobId);
+            if (r && r.ok) {
+              showToast(r.alreadyRunning ? 'Already retrieving results…' : 'Retrieving results…', 3000);
+              _ccStartPolling();
+              await _ccRefreshAccountHistory();
+            } else if (r && r.reason === 'folder_unavailable') {
+              showToast(_CC_FOLDER_UNAVAILABLE_MSG, 6000);
+              await _ccRefreshAccountHistory();
+              t.disabled = false;
+            } else {
+              showToast(`Retrieve failed: ${r?.error || 'unknown error'}`, 5000);
+              t.disabled = false;
+            }
+          } catch (err) {
+            showToast(`Retrieve failed: ${err?.message || err}`, 5000);
+            t.disabled = false;
+          }
+          return;
+        }
+        if (action === 'history-load') {
+          const folderPath = t.getAttribute('data-folder-path');
+          if (folderPath && typeof loadFolderIntoBrowser === 'function') {
+            loadFolderIntoBrowser(folderPath);
+            showToast('Loading folder…', 2500);
+            closeCloudAccountPanel();
           }
           return;
         }

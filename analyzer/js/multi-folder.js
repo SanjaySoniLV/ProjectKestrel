@@ -234,6 +234,34 @@
       }
     }
 
+    // Shared "open this folder for browsing" entry point. Reuses the exact
+    // folder-picker pattern (addFolderRoot → check → debouncedAutoLoad) so the
+    // folder lands in the tree, gets checked, and its scenes render — invoked
+    // from the cloud-compute job pill, account history, and local analysis
+    // queue "Load" buttons. No-op if the desktop bridge / tree isn't available.
+    async function loadFolderIntoBrowser(path) {
+      if (!path || typeof addFolderRoot !== 'function') return;
+      const norm = (path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+      try {
+        const r = await addFolderRoot(path);
+        // addFolderRoot auto-checks analyzed *descendants*; explicitly check
+        // the picked root too so a folder whose .kestrel lives at the root
+        // (the common case for an analyzed job folder) actually loads.
+        if (typeof checkedFolderPaths !== 'undefined' && (r?.rootHasKestrel || r?.added || r?.alreadyLoaded)) {
+          checkedFolderPaths.add(norm);
+          if (typeof updateSelectToggleVisibility === 'function') updateSelectToggleVisibility();
+          if (typeof renderFolderTree === 'function') renderFolderTree();
+        }
+        if (typeof debouncedAutoLoad === 'function') debouncedAutoLoad();
+        if (typeof setStatus === 'function') setStatus(`Loading ${norm.split('/').pop() || norm}…`);
+      } catch (e) {
+        console.warn('[load] loadFolderIntoBrowser failed:', path, e);
+        if (typeof setStatus === 'function') setStatus('Could not load that folder');
+      }
+    }
+    // Expose for cross-module callers (cloud-compute.js, queue.js).
+    window.loadFolderIntoBrowser = loadFolderIntoBrowser;
+
     // Event wiring
     el('#pickFolder').addEventListener('click', async () => {
       kdebug('[pickFolder] clicked');

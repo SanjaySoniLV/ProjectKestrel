@@ -854,6 +854,19 @@
   white-space: nowrap;
 }
 
+.queue-item-load-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid #3d7e57;
+  background: #1e3a2b;
+  color: #bfe9cf;
+  cursor: pointer;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.queue-item-load-btn:hover { background: #265038; border-color: #4d9a6a; }
+
 .queue-item-status.pending {
   background: #0f2310;
   color: #3abf67;
