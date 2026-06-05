@@ -2951,7 +2951,7 @@ class Api:
         # ignored). Only when there are zero RAWs do we fall back to JPEGs.
         # Without this, cloud jobs upload both RAW and JPG, doubling bandwidth
         # and producing duplicate scene rows on merge. See folder_inspector.py
-        # `_list_images_in_folder` (line 20-34) — keep the two filters in sync.
+        # `list_images_in_folder` — keep the two filters in sync.
         try:
             from kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS
         except ImportError:
@@ -3296,7 +3296,7 @@ class Api:
         thread.start()
 
     def cloud_compute_submit_job(self, root_path: str) -> dict:
-        """Kick off a cloud-compute job for a folder of CR3s. Non-blocking.
+        """Kick off a cloud-compute job for a folder of images. Non-blocking.
 
         Snapshots the cloud-compute analysis-settings overrides at submit time
         (matches the local-queue pattern) and forwards them to the Worker so
@@ -3334,7 +3334,7 @@ class Api:
         )
         if not files:
             if total_in_folder == 0:
-                return {"ok": False, "error": "No CR3/JPEG files found in folder"}
+                return {"ok": False, "error": "No supported image files found in folder"}
             return {
                 "ok": False,
                 "error": (

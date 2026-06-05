@@ -88,6 +88,27 @@ def default_api_base() -> str:
     return os.environ.get("KESTREL_CC_API_BASE", _DEFAULT_API_BASE).rstrip("/")
 
 
+def _discover_upload_images(folder: Path) -> list[Path]:
+    """Discover analyzable images in ``folder``, honouring the same RAW-priority
+    rule the desktop pipeline and folder inspector use: when the folder contains
+    any RAW files we return only RAWs (their JPEG sidecars are skipped); only
+    when there are zero RAWs do we fall back to JPEGs. Hidden files and macOS
+    AppleDouble (``._*``) companions are filtered out.
+
+    Delegates to ``folder_inspector.list_images_in_folder`` so the upload-speed
+    test and the real job agree on exactly which files count — keeping the
+    cloud paths in lock-step with the canonical ``RAW_EXTENSIONS`` /
+    ``JPEG_EXTENSIONS`` config instead of a hardcoded ``cr3/jpg/jpeg`` subset.
+    Returns absolute ``Path`` objects sorted by filename (the canonical
+    processing order). Non-recursive.
+    """
+    try:
+        from folder_inspector import list_images_in_folder
+    except ImportError:  # packaged / fully-qualified import path
+        from analyzer.folder_inspector import list_images_in_folder  # type: ignore[no-redef]
+    return [folder / name for name in list_images_in_folder(str(folder))]
+
+
 class CloudComputeError(RuntimeError):
     """Raised on non-2xx response from the cloud-compute Worker."""
 
@@ -615,7 +636,8 @@ class CloudComputeClient:
     ) -> dict:
         """Measure real upload throughput against the staging bucket.
 
-        Discovers the first ``sample_count`` images in ``folder`` (CR3/JPEG),
+        Discovers the first ``sample_count`` images in ``folder`` (RAW-priority,
+        any supported format — see ``_discover_upload_images``),
         requests presigned PUT URLs from ``/api/upload-test`` (scoped to a
         short-lived per-user prefix that the bucket's lifecycle policy
         auto-purges — these files are NOT analyzed and do NOT count against
@@ -641,10 +663,7 @@ class CloudComputeClient:
             raise ValueError("sample_count must be >= 1")
         sample_count = min(sample_count, 10)  # Worker caps at 10 slots
 
-        all_images = sorted(
-            p for p in folder.iterdir()
-            if p.is_file() and p.suffix.lower() in {".cr3", ".jpg", ".jpeg"}
-        )
+        all_images = _discover_upload_images(folder)
         if not all_images:
             raise ValueError(f"no images found in {folder}")
 
@@ -761,10 +780,7 @@ class CloudComputeClient:
         if not images_dir.is_dir():
             raise ValueError(f"images_dir not a directory: {images_dir}")
 
-        files = file_paths or sorted(
-            p for p in images_dir.iterdir()
-            if p.is_file() and p.suffix.lower() in {".cr3", ".jpg", ".jpeg"}
-        )
+        files = file_paths or _discover_upload_images(images_dir)
         if not files:
             raise ValueError(f"no images found in {images_dir}")
 
