@@ -13,6 +13,11 @@
   /* New: dialog column sizing */
   --right-w: 510px;
   --divider-w: 8px;
+  /* Sticky scene-grid stack heights — keep these in sync so each sticky
+     layer (search/filter bar → folder header → day banner) pins below the
+     one above it instead of overlapping. */
+  --filter-bar-h: 49px;     /* sticky search/filter bar height */
+  --folder-header-h: 44px;  /* sticky folder-group-header height */
 }
 
 * {
