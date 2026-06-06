@@ -201,6 +201,8 @@ Direct questions or comments to [support@projectkestrel.org](mailto:support@proj
 
 This project is licensed under the **GNU Affero General Public License v3.0 (AGPLv3)** — see the [LICENSE](LICENSE) file for the full text. The AGPL adds a "network use" clause to the standard GPL: if you run a modified version of Project Kestrel as a network service, you must offer the source of your modifications to the users of that service.
 
+**Brand assets are not covered by the AGPLv3.** The "Project Kestrel", "Perch", and "Cloud Compute" names, logos, and other brand/visual-identity assets (including the files in [`assets/`](assets/)) are proprietary and all rights reserved — see [`assets/LICENSE`](assets/LICENSE). The AGPLv3 covers the source code only; it does not grant any right to use the names or brand. You may fork and redistribute the code, but not under the Project Kestrel, Perch, or Cloud Compute brand.
+
 Copyright © 2026 Project Kestrel LLC.
 
 ## 📜 Terms of Use & Privacy Policy
