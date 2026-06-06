@@ -192,6 +192,31 @@ class TestSanitizePayload:
         assert isinstance(result, dict)
 
 
+class TestCrashReportsSetting:
+    """Tests for ``crash_reports_enabled`` — opt-out flag, default ON.
+
+    Like other ``_set_bool`` keys, an absent key is left absent (the default
+    is applied at read time via ``.get(..., True)``); a present value is
+    coerced to a real bool.
+    """
+
+    def test_true_round_trips(self):
+        result = _sanitize_settings_payload({"crash_reports_enabled": True})
+        assert result["crash_reports_enabled"] is True
+
+    def test_false_round_trips(self):
+        result = _sanitize_settings_payload({"crash_reports_enabled": False})
+        assert result["crash_reports_enabled"] is False
+
+    def test_coerced_to_bool(self):
+        result = _sanitize_settings_payload({"crash_reports_enabled": "no"})
+        assert result["crash_reports_enabled"] is False
+
+    def test_absent_key_omitted(self):
+        result = _sanitize_settings_payload({})
+        assert "crash_reports_enabled" not in result
+
+
 class TestAnalyzeRecentsSetting:
     """Tests for ``analyze_recents`` — the Phase 3 Analyze Folders dialog
     recents chip row. List of dicts ``{path, timestamp}``, cap 8."""

@@ -792,12 +792,14 @@ def main():
             _mark_session_exit_reason('crash')
             if _telemetry is not None:
                 try:
+                    _crash_settings = load_persisted_settings()
                     _telemetry.send_crash_report(
                         exc=args.exc_value,
                         tb_str=tb_str,
-                        machine_id=_telemetry.get_machine_id(load_persisted_settings()),
+                        machine_id=_telemetry.get_machine_id(_crash_settings),
                         version=_telemetry._read_version(),
                         exit_reason='crash',
+                        crash_reports_enabled=bool(_crash_settings.get('crash_reports_enabled', True)),
                     )
                 except Exception:
                     pass
@@ -1041,6 +1043,7 @@ if __name__ == '__main__':
                     machine_id=_crash_mid,
                     version=_telemetry._read_version(),
                     exit_reason='crash',
+                    crash_reports_enabled=bool(_crash_settings.get('crash_reports_enabled', True)),
                 )
                 # Give daemon thread a moment to fire off the HTTP request
                 import time as _t

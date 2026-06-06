@@ -37,6 +37,58 @@ def pinned_user(monkeypatch):
     log_redactor._cache_key = ('', '')
 
 
+class TestCrashReportOptOut:
+    """send_crash_report() must respect the crash_reports_enabled flag.
+
+    Gating happens for the two automatic call sites; the flag defaults to
+    True so a failed settings read still sends.
+    """
+
+    @pytest.fixture
+    def captured_posts(self, monkeypatch):
+        """Force frozen mode and capture outbound POSTs instead of sending."""
+        posts = []
+        monkeypatch.setattr(kestrel_telemetry, 'is_frozen', lambda: True)
+        monkeypatch.setattr(
+            kestrel_telemetry,
+            '_post_json_async',
+            lambda endpoint, payload: posts.append((endpoint, payload)),
+        )
+        return posts
+
+    def test_sends_when_enabled(self, captured_posts):
+        kestrel_telemetry.send_crash_report(
+            exc=ValueError('boom'), crash_reports_enabled=True
+        )
+        assert len(captured_posts) == 1
+        assert captured_posts[0][0] == '/api/crash'
+
+    def test_sends_by_default(self, captured_posts):
+        # No explicit flag -> defaults to True (failsafe-on).
+        kestrel_telemetry.send_crash_report(exc=ValueError('boom'))
+        assert len(captured_posts) == 1
+
+    def test_suppressed_when_disabled(self, captured_posts):
+        kestrel_telemetry.send_crash_report(
+            exc=ValueError('boom'), crash_reports_enabled=False
+        )
+        assert captured_posts == []
+
+    def test_not_sent_when_not_frozen(self, monkeypatch):
+        posts = []
+        monkeypatch.setattr(kestrel_telemetry, 'is_frozen', lambda: False)
+        monkeypatch.setattr(
+            kestrel_telemetry,
+            '_post_json_async',
+            lambda endpoint, payload: posts.append((endpoint, payload)),
+        )
+        # Even with the flag on, source/dev builds never send.
+        kestrel_telemetry.send_crash_report(
+            exc=ValueError('boom'), crash_reports_enabled=True
+        )
+        assert posts == []
+
+
 class TestGetRecentLogTailRedaction:
     """Integration: planted log files should come back through
     get_recent_log_tail() with username PII stripped."""

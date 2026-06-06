@@ -420,6 +420,10 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
 
     _set_opt_bool('analytics_opted_in', default=None)
     _set_bool('analytics_consent_shown', default=False)
+    # Crash reports default ON; users can opt out via Settings. Gated only for
+    # the two automatic sends in visualizer.py — the user-confirmed recovery
+    # report ignores this flag (the dialog is its own consent).
+    _set_bool('crash_reports_enabled', default=True)
 
     if 'rating_profile' in data:
         out['rating_profile'] = _coerce_enum(data.get('rating_profile'), _ALLOWED_RATING_PROFILES, default='balanced')

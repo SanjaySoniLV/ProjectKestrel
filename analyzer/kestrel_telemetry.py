@@ -271,6 +271,7 @@ def send_crash_report(
     machine_id: str = '',
     version: str = '',
     exit_reason: str = 'crash',
+    crash_reports_enabled: bool = True,
 ) -> None:
     """Send a crash report to the Cloudflare Worker (async, failsafe).
 
@@ -293,8 +294,16 @@ def send_crash_report(
         only — the recovery dialog filters these client-side, but the
         server should record any that slip through so they can be excluded
         from crash-rate dashboards.
+    crash_reports_enabled : bool
+        User preference (settings key ``crash_reports_enabled``). Defaults to
+        ``True`` so a failed settings read errs toward sending. Callers that
+        send automatically (no per-report user consent) must pass the current
+        value; the user-confirmed recovery report passes ``True`` because the
+        dialog is its own consent.
     """
     if not is_frozen():
+        return
+    if not crash_reports_enabled:
         return
     try:
         exc_type = type(exc).__name__ if exc else 'Unknown'
