@@ -45,3 +45,4 @@ documentation/
 EXPCOMP_tests/
 _kestrel*
 .tmp*
+.wrangler/
