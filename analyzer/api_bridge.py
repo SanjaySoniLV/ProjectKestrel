@@ -1763,8 +1763,24 @@ class Api:
     #  Telemetry / Feedback API                                            #
     # ------------------------------------------------------------------ #
 
+    # Map dialog type values to Auth Worker report_type enum.
+    # 'liked' has no direct equivalent; fold into 'general'.
+    _FEEDBACK_TYPE_MAP: dict[str, str] = {
+        'bug':        'bug',
+        'suggestion': 'suggestion',
+        'liked':      'general',
+        'general':    'general',
+        'account':    'account',
+    }
+
     def send_feedback(self, data):
-        """Send feedback / bug report (async, failsafe). Called from JS."""
+        """Send feedback / bug report (async, failsafe). Called from JS.
+
+        When the user is signed in, routes to the Auth Worker
+        (POST /v1/me/feedback) so feedback lands in the unified store.
+        Falls back to the analytics-worker path when signed out or if the
+        Auth Worker call fails.  Screenshots stay on the analytics path.
+        """
         try:
             if _telemetry is None:
                 warn('[API] send_feedback: telemetry unavailable')
@@ -1777,9 +1793,34 @@ class Api:
             if data.get('include_logs', False):
                 active_folder = str(settings.get('active_analysis_path', '') or '').strip()
                 log_tail = _telemetry.get_recent_log_tail(folder=active_folder or None, runtime_log_files=3)
+
+            raw_type = data.get('type', 'general')
+            report_type = self._FEEDBACK_TYPE_MAP.get(str(raw_type).lower(), 'general')
+            description = data.get('description', '')
+
+            # --- Auth Worker path (signed-in users) ---
+            # Screenshots are out of scope for the Auth path; they stay on the
+            # analytics path only.  Any failure falls through to analytics.
+            try:
+                client, _err = self._auth_make_client()
+                if client is not None:
+                    version = _telemetry._read_version() if _telemetry else ''
+                    os_info = _telemetry._get_os_info() if _telemetry else ''  # module-level fn
+                    client.post_feedback(
+                        report_type=report_type,
+                        message=description,
+                        version=version,
+                        os=os_info,
+                        contact=str(data.get('contact', '') or '').strip(),
+                    )
+                    return {'success': True}
+            except Exception:
+                pass  # fall through to analytics path
+
+            # --- Analytics-worker path (signed-out or Auth call failed) ---
             _telemetry.send_feedback(
-                report_type=data.get('type', 'general'),
-                description=data.get('description', ''),
+                report_type=raw_type,
+                description=description,
                 contact=data.get('contact', ''),
                 screenshot_b64=data.get('screenshot_b64', ''),
                 log_tail=log_tail,
