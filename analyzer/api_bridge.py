@@ -4967,6 +4967,306 @@ class Api:
             },
         }
 
+    # ─── Tag sync (H7): push species/family corrections to a linked perch ──
+    #
+    # When the user fixes species/family names on a *linked* folder, push just
+    # those scene-level corrections to the existing perch via the batch route
+    # PATCH /v1/perches/{id}/scenes — no file re-upload (tags are manifest
+    # metadata). Scenes are matched by `kestrelSceneId` (the desktop scene id,
+    # which is the CSV `scene_count` string, persisted into the manifest at
+    # upload time). V1 is metadata-only: no added/deleted scenes or files.
+
+    @staticmethod
+    def _read_link_dict(folder_path: str) -> "dict | None":
+        """Read .kestrel/perch_link.json as a dict, or None if absent/unreadable."""
+        from pathlib import Path as _P
+        link_path = _P(folder_path) / ".kestrel" / "perch_link.json"
+        if not link_path.is_file():
+            return None
+        try:
+            import json as _json
+            with open(link_path, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _read_scenedata_dict(folder_path: str) -> dict:
+        """Read .kestrel/kestrel_scenedata.json as a dict (empty dict on absence/error)."""
+        from pathlib import Path as _P
+        sp = _P(folder_path) / ".kestrel" / "kestrel_scenedata.json"
+        if not sp.is_file():
+            return {}
+        try:
+            import json as _json
+            with open(sp, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _norm_tag_list(v) -> list:
+        """Normalize a tag list the same way the uploader/worker do: stringify,
+        strip, drop empties, preserve order. Makes a freshly-synced scene
+        re-diff to 'no change' against the manifest."""
+        if not isinstance(v, list):
+            return []
+        return [str(x).strip() for x in v if str(x).strip()]
+
+    def _perch_tag_changeset(self, folder_path: str, perch_id: str):
+        """Diff local user_tags against the live perch manifest, matched by
+        kestrelSceneId. Returns (changes, None) on success or (None, error_code).
+
+        Each change: {kestrelSceneId, title, species, family, remoteSpecies,
+        remoteFamily} where species/family are the *local* (desired) lists.
+        Only scenes present in BOTH the local scenedata and the remote manifest
+        are considered (V1 is metadata-only — no add/delete of scenes).
+        """
+        token, dev_user, terr = self._check_auth_token()
+        if terr:
+            return None, "no_auth"
+        try:
+            import requests as _req
+        except Exception as e:
+            return None, f"requests_unavailable: {e}"
+
+        headers: dict = {}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        if dev_user:
+            headers["x-dev-user-id"] = str(dev_user)
+        try:
+            r = _req.get(
+                f"{self.get_perch_api_base()}/v1/perches/{perch_id}",
+                headers=headers,
+                timeout=15,
+            )
+        except Exception as e:
+            return None, "unreachable"
+        if r.status_code == 404:
+            return None, "not_found"
+        if r.status_code == 401:
+            return None, "unauthorized"
+        if r.status_code == 403:
+            return None, "forbidden"
+        if r.status_code != 200:
+            return None, f"http_{r.status_code}"
+        try:
+            detail = r.json()
+        except Exception:
+            return None, "bad_json"
+        remote_scenes = detail.get("scenes") if isinstance(detail, dict) else None
+        if not isinstance(remote_scenes, list):
+            return None, "bad_shape"
+
+        scenedata = self._read_scenedata_dict(folder_path)
+        local_scenes = scenedata.get("scenes") if isinstance(scenedata, dict) else {}
+        local_scenes = local_scenes if isinstance(local_scenes, dict) else {}
+        return self._diff_perch_tags(remote_scenes, local_scenes), None
+
+    @classmethod
+    def _diff_perch_tags(cls, remote_scenes, local_scenes) -> list:
+        """Pure changeset: remote manifest scenes vs local scenedata, matched by
+        kestrelSceneId. Returns scenes whose local species/family differ from
+        remote. Only scenes present in BOTH sides are considered (V1 is
+        metadata-only — no add/delete). Extracted from the network path so it's
+        unit-testable.
+        """
+        local_scenes = local_scenes if isinstance(local_scenes, dict) else {}
+        changes: list = []
+        for rs in remote_scenes if isinstance(remote_scenes, list) else []:
+            if not isinstance(rs, dict):
+                continue
+            ksid_raw = rs.get("kestrelSceneId")
+            if ksid_raw is None:
+                continue
+            ksid = str(ksid_raw)
+            local = local_scenes.get(ksid)
+            if not isinstance(local, dict):
+                continue  # scene not in local scenedata — skip (no add/delete in V1)
+            ut = local.get("user_tags")
+            ut = ut if isinstance(ut, dict) else {}
+            local_species = cls._norm_tag_list(ut.get("species"))
+            local_family = cls._norm_tag_list(ut.get("families"))
+            remote_species = cls._norm_tag_list(rs.get("speciesList"))
+            remote_family = cls._norm_tag_list(rs.get("familyList"))
+            if local_species == remote_species and local_family == remote_family:
+                continue
+            title = ""
+            nm = local.get("name")
+            if isinstance(nm, str) and nm.strip():
+                title = nm.strip()
+            if not title:
+                title = f"Scene {ksid}"
+            changes.append({
+                "kestrelSceneId": ksid,
+                "title": title,
+                "species": local_species,
+                "family": local_family,
+                "remoteSpecies": remote_species,
+                "remoteFamily": remote_family,
+            })
+        return changes
+
+    def _update_link_state_hash(self, folder_path: str) -> None:
+        """Re-stamp perch_link.json's state_hash_at_upload to the current state,
+        so the cheap 'anything changed?' gate reports in-sync after a sync."""
+        import json as _json
+        link_path = self._perch_link_path(folder_path)
+        if not link_path.is_file():
+            return
+        with open(link_path, "r", encoding="utf-8") as f:
+            data = _json.load(f)
+        if not isinstance(data, dict):
+            return
+        data["state_hash_at_upload"] = self._hash_kestrel_state(folder_path)
+        tmp = link_path.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(data, f, indent=2)
+        os.replace(tmp, link_path)
+
+    def compute_perch_tag_diff(self, folder_path: str) -> dict:
+        """Compute the species/family changeset for a linked folder vs its perch.
+
+        Returns:
+          {"ok": True, "perch_id", "count", "changes": [...], "unchanged"?: bool}
+          {"ok": False, "error": "not_linked"|"no_auth"|"unauthorized"|
+                                  "forbidden"|"not_found"|"unreachable"|...}
+
+        Uses the coarse perch_link.json `state_hash_at_upload` as a cheap gate:
+        if nothing on disk changed since upload, there can be no tag diff, so it
+        returns count 0 without a network round-trip. Otherwise it does the
+        precise per-scene manifest comparison.
+        """
+        root_real, err = self._validate_root_dir(
+            folder_path, context="compute_perch_tag_diff", require_exists=True
+        )
+        if err:
+            return {"ok": False, "error": err}
+        link = self._read_link_dict(str(root_real))
+        if not link:
+            return {"ok": False, "error": "not_linked"}
+        perch_id = str(link.get("perch_id") or "").strip()
+        if not perch_id:
+            return {"ok": False, "error": "not_linked"}
+
+        prev_hash = str(link.get("state_hash_at_upload") or "")
+        cur_hash = self._hash_kestrel_state(str(root_real)) or ""
+        if prev_hash and cur_hash and prev_hash == cur_hash:
+            return {"ok": True, "perch_id": perch_id, "count": 0, "changes": [], "unchanged": True}
+
+        changes, derr = self._perch_tag_changeset(str(root_real), perch_id)
+        if derr is not None:
+            return {"ok": False, "error": derr, "perch_id": perch_id}
+        return {"ok": True, "perch_id": perch_id, "count": len(changes), "changes": changes}
+
+    def sync_perch_tags(self, folder_path: str) -> dict:
+        """Push the linked folder's species/family corrections to its perch.
+
+        Recomputes the changeset internally (never trusts a client-supplied one,
+        avoiding a TOCTOU on stale data), PATCHes the batch route, and on success
+        re-stamps perch_link.json's state hash.
+
+        Returns:
+          {"ok": True, "perch_id", "updated": int, "skipped": [...], "count": int,
+           "nothing_to_sync"?: bool}
+          {"ok": False, "error": ...}
+        """
+        root_real, err = self._validate_root_dir(
+            folder_path, context="sync_perch_tags", require_exists=True
+        )
+        if err:
+            return {"ok": False, "error": err}
+        link = self._read_link_dict(str(root_real))
+        if not link:
+            return {"ok": False, "error": "not_linked"}
+        perch_id = str(link.get("perch_id") or "").strip()
+        if not perch_id:
+            return {"ok": False, "error": "not_linked"}
+
+        changes, derr = self._perch_tag_changeset(str(root_real), perch_id)
+        if derr is not None:
+            return {"ok": False, "error": derr, "perch_id": perch_id}
+        if not changes:
+            # Already in sync — still re-stamp the hash so the next probe is cheap.
+            try:
+                self._update_link_state_hash(str(root_real))
+            except Exception:
+                pass
+            return {
+                "ok": True, "perch_id": perch_id, "updated": 0,
+                "skipped": [], "count": 0, "nothing_to_sync": True,
+            }
+
+        token, dev_user, terr = self._check_auth_token()
+        if terr:
+            return {"ok": False, "error": "no_auth", "perch_id": perch_id}
+        try:
+            import requests as _req
+        except Exception as e:
+            return {"ok": False, "error": f"requests_unavailable: {e}"}
+
+        headers: dict = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        if dev_user:
+            headers["x-dev-user-id"] = str(dev_user)
+        payload = {
+            "scenes": [
+                {
+                    "kestrelSceneId": c["kestrelSceneId"],
+                    "species": c["species"],
+                    "family": c["family"],
+                }
+                for c in changes
+            ]
+        }
+        try:
+            r = _req.patch(
+                f"{self.get_perch_api_base()}/v1/perches/{perch_id}/scenes",
+                json=payload,
+                headers=headers,
+                timeout=30,
+            )
+        except Exception as e:
+            return {"ok": False, "error": "unreachable", "detail": str(e), "perch_id": perch_id}
+        if r.status_code == 404:
+            return {"ok": False, "error": "not_found", "perch_id": perch_id}
+        if r.status_code == 401:
+            return {"ok": False, "error": "unauthorized", "perch_id": perch_id}
+        if r.status_code == 403:
+            return {"ok": False, "error": "forbidden", "perch_id": perch_id}
+        if r.status_code != 200:
+            msg = ""
+            try:
+                body = r.json()
+                if isinstance(body, dict):
+                    msg = str(body.get("error") or "")
+            except Exception:
+                pass
+            return {"ok": False, "error": msg or f"http_{r.status_code}", "perch_id": perch_id}
+        try:
+            body = r.json()
+        except Exception:
+            body = {}
+        body = body if isinstance(body, dict) else {}
+        updated = int(body.get("updated") or 0)
+        skipped = body.get("skipped") if isinstance(body.get("skipped"), list) else []
+
+        # Re-stamp the state hash so a subsequent compute_perch_tag_diff short-
+        # circuits to "in sync" via the cheap gate.
+        try:
+            self._update_link_state_hash(str(root_real))
+        except Exception as e:
+            log(f"sync_perch_tags: state hash update failed: {e}")
+
+        return {
+            "ok": True, "perch_id": perch_id, "updated": updated,
+            "skipped": skipped, "count": len(changes),
+        }
+
     # ── OAuth 2.0 + PKCE sign-in / refresh / sign-out ────────────────────
 
     def start_oauth_sign_in(self):

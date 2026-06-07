@@ -7,6 +7,7 @@
       deselected: new Set(),  // sceneIds the user has unchecked
       skipRejected: true,     // tracks the "Skip rejected photos" checkbox
       resumable: null,        // {perchId, idempotencyKey, total, committed, pending} when partial upload found
+      tagDiff: null,          // {perchId, changes:[...]} when linked-folder tags differ from the perch (H7)
     };
     // Job state for the in-flight upload (only one allowed at a time).
     let _perchActiveJobId = null;
@@ -1103,6 +1104,15 @@
           if (input) { input.focus(); input.select(); }
         }
       });
+      // H7 tag-sync: banner opens the preview; dialog buttons confirm/cancel.
+      const tagSyncBtn = document.getElementById('perchTagSyncBtn');
+      if (tagSyncBtn) tagSyncBtn.addEventListener('click', _perchOpenTagSyncPreview);
+      const tagSyncClose = document.getElementById('perchTagSyncDlgClose');
+      const tagSyncCancel = document.getElementById('perchTagSyncCancelBtn');
+      const tagSyncConfirm = document.getElementById('perchTagSyncConfirmBtn');
+      if (tagSyncClose) tagSyncClose.addEventListener('click', _perchCloseTagSyncDlg);
+      if (tagSyncCancel) tagSyncCancel.addEventListener('click', _perchCloseTagSyncDlg);
+      if (tagSyncConfirm) tagSyncConfirm.addEventListener('click', _perchDoTagSync);
       // Phase 2 resumable-upload banner buttons.
       const resumeBtn = document.getElementById('perchResumableResumeBtn');
       const startOverBtn = document.getElementById('perchResumableStartOverBtn');
@@ -1227,6 +1237,10 @@
       if (warn) { warn.classList.add('hidden'); warn.textContent = ''; }
       const url = document.getElementById('perchLinkedShareUrl');
       if (url) url.value = '';
+      // H7 tag-sync banner starts hidden; the diff probe reveals it if needed.
+      const tagBanner = document.getElementById('perchTagSyncBanner');
+      if (tagBanner) tagBanner.classList.add('hidden');
+      _perchDlgState.tagDiff = null;
     }
 
     /** Refresh every .folder-perch-btn for this path to its current linked state.
@@ -1362,6 +1376,147 @@
       warn.classList.remove('hidden');
     }
 
+    // ── H7 tag-sync: push local species/family corrections to a linked perch ──
+
+    /** Order-sensitive equality for two tag lists (used to highlight which of
+     *  species / family actually changed in the preview). */
+    function _perchArrEq(a, b) {
+      const aa = Array.isArray(a) ? a : [];
+      const bb = Array.isArray(b) ? b : [];
+      if (aa.length !== bb.length) return false;
+      for (let i = 0; i < aa.length; i++) if (String(aa[i]) !== String(bb[i])) return false;
+      return true;
+    }
+
+    /** Render a tag list as text ("(none)" when empty). */
+    function _perchFmtTags(arr) {
+      const a = Array.isArray(arr) ? arr.filter((x) => String(x).trim()) : [];
+      return a.length ? a.join(', ') : '(none)';
+    }
+
+    /** Build one "Label: old → new" diff line (textContent only — tags are
+     *  user-controlled strings, never interpolate into innerHTML). */
+    function _perchTagDiffLine(label, oldArr, newArr) {
+      const line = document.createElement('div');
+      line.className = 'perch-tag-sync-diff';
+      const lab = document.createElement('span');
+      lab.className = 'perch-tag-sync-diff-label';
+      lab.textContent = label + ': ';
+      const oldEl = document.createElement('span');
+      oldEl.className = 'perch-tag-sync-old';
+      oldEl.textContent = _perchFmtTags(oldArr);
+      const arrow = document.createElement('span');
+      arrow.className = 'perch-tag-sync-arrow';
+      arrow.textContent = ' → ';
+      const newEl = document.createElement('span');
+      newEl.className = 'perch-tag-sync-new';
+      newEl.textContent = _perchFmtTags(newArr);
+      line.append(lab, oldEl, arrow, newEl);
+      return line;
+    }
+
+    /** Render the per-scene preview list inside the confirm dialog. */
+    function _perchRenderTagSyncList(changes) {
+      const list = document.getElementById('perchTagSyncList');
+      if (!list) return;
+      list.innerHTML = '';
+      for (const c of changes) {
+        const row = document.createElement('div');
+        row.className = 'perch-tag-sync-row';
+        const title = document.createElement('div');
+        title.className = 'perch-tag-sync-row-title';
+        title.textContent = c.title || ('Scene ' + c.kestrelSceneId);
+        row.appendChild(title);
+        if (!_perchArrEq(c.species, c.remoteSpecies)) {
+          row.appendChild(_perchTagDiffLine('Species', c.remoteSpecies, c.species));
+        }
+        if (!_perchArrEq(c.family, c.remoteFamily)) {
+          row.appendChild(_perchTagDiffLine('Family', c.remoteFamily, c.family));
+        }
+        list.appendChild(row);
+      }
+    }
+
+    /** Probe the linked folder for tag changes vs the live perch; reveal the
+     *  accent banner when the changeset is non-empty. Fire-and-forget; guards
+     *  against a stale result after the dialog moved to another folder. */
+    async function _perchProbeTagDiff(rootPath) {
+      const banner = document.getElementById('perchTagSyncBanner');
+      if (banner) banner.classList.add('hidden');
+      _perchDlgState.tagDiff = null;
+      if (!window.pywebview?.api?.compute_perch_tag_diff) return;
+      let res = null;
+      try { res = await window.pywebview.api.compute_perch_tag_diff(rootPath); } catch { return; }
+      if (_perchDlgState.rootPath !== rootPath) return;  // dialog moved on
+      if (!res || !res.ok) return;
+      const changes = Array.isArray(res.changes) ? res.changes : [];
+      if (changes.length === 0) return;
+      _perchDlgState.tagDiff = { perchId: res.perch_id, changes };
+      const n = changes.length;
+      const titleEl = document.getElementById('perchTagSyncTitle');
+      if (titleEl) {
+        titleEl.textContent = `${n} scene${n === 1 ? '' : 's'} ${n === 1 ? 'has' : 'have'} tag changes since you published`;
+      }
+      if (banner) banner.classList.remove('hidden');
+    }
+
+    /** Open the per-scene preview confirm dialog for the current changeset. */
+    function _perchOpenTagSyncPreview() {
+      const diff = _perchDlgState.tagDiff;
+      if (!diff || !Array.isArray(diff.changes) || diff.changes.length === 0) return;
+      _perchRenderTagSyncList(diff.changes);
+      const n = diff.changes.length;
+      const confirmBtn = document.getElementById('perchTagSyncConfirmBtn');
+      if (confirmBtn) {
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = `Sync ${n} scene${n === 1 ? '' : 's'}`;
+      }
+      const dlg = document.getElementById('perchTagSyncDlg');
+      if (dlg && !dlg.open) { try { dlg.showModal(); } catch {} }
+    }
+
+    function _perchCloseTagSyncDlg() {
+      const dlg = document.getElementById('perchTagSyncDlg');
+      if (dlg && dlg.open) { try { dlg.close(); } catch {} }
+    }
+
+    /** Confirm handler: push the changeset, then refresh the banner. */
+    async function _perchDoTagSync() {
+      const root = _perchDlgState.rootPath;
+      if (!root) return;
+      const confirmBtn = document.getElementById('perchTagSyncConfirmBtn');
+      if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = 'Syncing…'; }
+      let res = null;
+      try { res = await window.pywebview.api.sync_perch_tags(root); }
+      catch (e) { res = { ok: false, error: (e && e.message) || String(e) }; }
+      if (res && res.ok) {
+        _perchCloseTagSyncDlg();
+        const n = Number(res.updated || 0);
+        let msg = n > 0
+          ? `Synced ${n} scene${n === 1 ? '' : 's'} to Perch.`
+          : 'Tags are already up to date on Perch.';
+        if (Array.isArray(res.skipped) && res.skipped.length) {
+          const s = res.skipped.length;
+          msg += ` ${s} scene${s === 1 ? '' : 's'} not on the perch ${s === 1 ? 'was' : 'were'} skipped.`;
+        }
+        showToast(msg, 4500);
+        // Re-probe so the banner reflects the new (empty) diff.
+        await _perchProbeTagDiff(root);
+      } else {
+        const err = (res && res.error) || 'unknown';
+        const friendly = {
+          no_auth: 'Sign in to Perch to sync tag changes.',
+          unauthorized: 'Sign in to Perch to sync tag changes.',
+          forbidden: 'This perch belongs to a different Perch account.',
+          not_found: 'This perch no longer exists on Perch.',
+          unreachable: "Couldn't reach Perch — check your connection and try again.",
+          not_linked: 'This folder is no longer linked to a perch.',
+        }[err] || ('Sync failed: ' + err);
+        showToast(friendly, 5500);
+        if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.textContent = 'Retry sync'; }
+      }
+    }
+
     /** After Unlink (or on detected server-side delete): hide the linked view,
      *  fall through to the upload form by running _perchOpenDialog. */
     async function _perchSwapLinkedToUploadForm(rootPath) {
@@ -1403,6 +1558,9 @@
         _perchOpenLinkedView(rootPath, linkRes.link);
         const perchId = String(linkRes.link.perch_id || '').trim();
         if (!perchId) return;
+        // H7: probe for local tag changes vs the perch (independent of the
+        // status probe below); reveals the "Sync" banner when non-empty.
+        _perchProbeTagDiff(rootPath);
         (async () => {
           let res = null;
           try { res = await window.pywebview.api.get_perch_status(perchId); } catch (e) {

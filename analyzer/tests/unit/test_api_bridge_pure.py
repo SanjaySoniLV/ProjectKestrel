@@ -58,6 +58,59 @@ class TestPlatformInfo:
         assert isinstance(info, dict)
 
 
+class TestPerchTagDiff:
+    """Tests for the H7 tag-sync pure diff helpers (_norm_tag_list /
+    _diff_perch_tags) — the changeset computed for a linked folder vs its perch."""
+
+    def test_norm_tag_list_strips_and_drops_empties(self, api):
+        assert api._norm_tag_list([" Robin ", "", "  ", "Jay"]) == ["Robin", "Jay"]
+        assert api._norm_tag_list(None) == []
+        assert api._norm_tag_list("not a list") == []
+        # Order is preserved (order-sensitive diff).
+        assert api._norm_tag_list(["B", "A"]) == ["B", "A"]
+
+    def test_diff_detects_species_change(self, api):
+        remote = [{"kestrelSceneId": "0", "speciesList": ["Robin"], "familyList": ["Turdidae"]}]
+        local = {"0": {"name": "Morning", "user_tags": {"species": ["American Robin"], "families": ["Turdidae"]}}}
+        changes = api._diff_perch_tags(remote, local)
+        assert len(changes) == 1
+        c = changes[0]
+        assert c["kestrelSceneId"] == "0"
+        assert c["title"] == "Morning"
+        assert c["species"] == ["American Robin"]
+        assert c["remoteSpecies"] == ["Robin"]
+        assert c["family"] == ["Turdidae"]
+
+    def test_diff_no_change_when_equal(self, api):
+        remote = [{"kestrelSceneId": "0", "speciesList": ["Robin"], "familyList": None}]
+        local = {"0": {"user_tags": {"species": ["Robin"], "families": []}}}
+        # null remote familyList and empty local families both normalize to [].
+        assert api._diff_perch_tags(remote, local) == []
+
+    def test_diff_skips_unmatched_and_tagless_scenes(self, api):
+        remote = [
+            {"kestrelSceneId": "0", "speciesList": ["Robin"], "familyList": []},
+            {"kestrelSceneId": "5", "speciesList": ["Crow"], "familyList": []},   # no local entry
+            {"speciesList": ["X"], "familyList": []},                              # no kestrelSceneId
+        ]
+        local = {"0": {"user_tags": {"species": ["Robin", "Jay"], "families": []}}}
+        changes = api._diff_perch_tags(remote, local)
+        # Only scene "0" matches AND differs (added "Jay").
+        assert [c["kestrelSceneId"] for c in changes] == ["0"]
+        assert changes[0]["species"] == ["Robin", "Jay"]
+
+    def test_diff_title_falls_back_to_scene_number(self, api):
+        remote = [{"kestrelSceneId": "3", "speciesList": [], "familyList": []}]
+        local = {"3": {"user_tags": {"species": ["Heron"], "families": []}}}
+        changes = api._diff_perch_tags(remote, local)
+        assert changes[0]["title"] == "Scene 3"
+
+    def test_diff_handles_malformed_input(self, api):
+        assert api._diff_perch_tags(None, None) == []
+        assert api._diff_perch_tags([], {}) == []
+        assert api._diff_perch_tags(["junk", 5], {"0": {}}) == []
+
+
 class TestIsSafeExternalUrl:
     """Tests for module-level _is_safe_external_url() function."""
 

@@ -519,6 +519,17 @@
 
         <div class="perch-linked-warn hidden" id="perchLinkedWarn"></div>
 
+        <!-- H7 tag-sync: appears only when local species/family tags differ from
+             the live perch. Clicking Sync opens a per-scene preview dialog. -->
+        <div class="perch-tag-sync hidden" id="perchTagSyncBanner">
+          <div class="perch-tag-sync-icon">✏️</div>
+          <div class="perch-tag-sync-body">
+            <div class="perch-tag-sync-title" id="perchTagSyncTitle">Tag changes since you published</div>
+            <div class="perch-tag-sync-sub" id="perchTagSyncSub">Push your corrected species &amp; family names to the live perch.</div>
+          </div>
+          <button type="button" id="perchTagSyncBtn" class="perch-cta">Sync to Perch</button>
+        </div>
+
         <div class="perch-linked-actions">
           <button type="button" id="perchLinkedOpenBtn" class="perch-cta">Open in browser →</button>
           <button type="button" id="perchLinkedUnlinkBtn" class="perch-cta-secondary">Unlink</button>
@@ -646,7 +657,7 @@
             <div class="perch-beta-icon">⚠</div>
             <div class="perch-beta-body">
               <div class="perch-beta-title">Perch is in beta</div>
-              <div class="perch-beta-text">Once you share to Perch, the only change you can make to an uploaded perch is showing or hiding individual scenes. To add or remove photos, delete scenes, or change species/family tags, make those edits here in Kestrel, delete the old perch, and upload a fresh one.</div>
+              <div class="perch-beta-text">Once you share to Perch, you can show or hide individual scenes and sync species/family tag corrections straight from here — no re-upload. To add or remove photos or delete scenes, make those edits here in Kestrel, delete the old perch, and upload a fresh one.</div>
             </div>
           </div>
 
@@ -664,6 +675,26 @@
       <button type="button" id="perchUploadCancelBtn">Cancel</button>
       <button type="button" id="perchUploadSignInBtn" class="perch-cta hidden">Sign in to Perch</button>
       <button type="button" id="perchUploadSubmitBtn" class="perch-cta hidden" disabled>📤 Upload</button>
+    </div>
+  </dialog>
+
+  <!-- H7 tag-sync preview: per-scene old→new species/family confirmation before
+       pushing corrections to the linked perch. Opened from the linked view's
+       "Sync to Perch" banner. -->
+  <dialog id="perchTagSyncDlg" class="perch-tag-sync-dlg">
+    <div class="perch-tag-sync-dlg-head">
+      <h3 style="margin:0;font-size:16px">Sync tag changes to Perch</h3>
+      <button type="button" class="perch-upload-dlg-close" id="perchTagSyncDlgClose" title="Close">✕</button>
+    </div>
+    <p class="perch-tag-sync-dlg-intro">
+      These scenes have local species/family changes that aren't on Perch yet.
+      Photos aren't re-uploaded — only the tags update, and the perch keeps its
+      link, social, and groups.
+    </p>
+    <div class="perch-tag-sync-list" id="perchTagSyncList"></div>
+    <div class="perch-tag-sync-dlg-actions">
+      <button type="button" id="perchTagSyncCancelBtn" class="perch-cta-secondary">Cancel</button>
+      <button type="button" id="perchTagSyncConfirmBtn" class="perch-cta">Sync</button>
     </div>
   </dialog>
 
