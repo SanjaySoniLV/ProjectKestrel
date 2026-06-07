@@ -15,6 +15,11 @@
 
   function api() { return window.pywebview && window.pywebview.api; }
   function $(id) { return document.getElementById(id); }
+  function escAttr(s) {
+    return String(s)
+      .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/'/g, '&#39;');
+  }
 
   function relTime(sec) {
     if (!sec) return '';
@@ -59,9 +64,18 @@
       const body = md ? md.render(n.bodyMd) : '';
       const unreadCls = n.readAt ? '' : ' notif-unread';
       const safeId = String(n.id).replace(/[^A-Za-z0-9_-]/g, '');
+      // Deep-link CTA (e.g. a support reply → the ticket thread). Reuse the
+      // markdown renderer's allowlist (https projectkestrel.org / mailto only);
+      // the existing a[href] click handler opens it in the system browser.
+      const action = (n.actionUrl && md && md.isAllowedHref(n.actionUrl)) ? String(n.actionUrl) : '';
+      const cta = action
+        ? '<a class="notif-action" href="' + escAttr(action) + '">View &rarr;</a>'
+        : '';
       return '<div class="notif-item' + unreadCls + '" data-id="' + safeId + '">'
         + '<div class="notif-bodywrap"><div class="notif-body">' + body + '</div>'
-        + '<div class="notif-time">' + relTime(n.createdAt) + '</div></div>'
+        + '<div class="notif-time">' + relTime(n.createdAt) + '</div>'
+        + cta
+        + '</div>'
         + '<button type="button" class="notif-hide" aria-label="Dismiss" title="Dismiss">×</button>'
         + '</div>';
     }).join('');
