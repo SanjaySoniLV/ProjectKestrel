@@ -20,6 +20,7 @@ pandas==2.2.2
 PyExifTool==0.5.6
 requests==2.34.2
 pywebview==6.2.1
+keyring
 
 # installer
 pyinstaller==6.20.0

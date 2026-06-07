@@ -1,10 +1,5 @@
-/* ═══ Tutorial chooser dialog ═══ */
-dialog.tut-chooser-dlg {
-  width: min(560px, 96vw);
-  max-width: min(560px, 96vw);
-  padding: 0;
-  border-radius: 14px;
-}
+/* ═══ Tutorial chooser dialog ═══
+   Sizing comes from .kdlg--md in kdlg.css. */
 .tut-chooser-body {
   padding: 22px 24px 18px;
   display: flex;

@@ -39,6 +39,16 @@ except Exception:
     # Failsafe: if the module can't load for any reason, fall back to legacy headers only.
     def _build_auth_headers():
         return {}
+
+try:
+    from log_redactor import redact_user_paths, redact_user_paths_in_obj
+except Exception:
+    # Failsafe stubs — never let an import failure block telemetry.
+    def redact_user_paths(text):  # type: ignore[no-redef]
+        return text
+
+    def redact_user_paths_in_obj(obj):  # type: ignore[no-redef]
+        return obj
 # ---------------------------------------------------------------------------
 # Configuration — the shared secret and endpoint URL
 # ---------------------------------------------------------------------------
@@ -231,6 +241,9 @@ def send_feedback(
         if len(screenshot_b64) > _MAX_SCREENSHOT_BYTES:
             screenshot_b64 = ''  # silently drop oversized screenshots
 
+        # Strip username-in-paths from log content before it leaves the device.
+        log_tail = redact_user_paths(log_tail)
+
         payload = {
             'type': report_type or 'general',
             'description': description or '',
@@ -258,6 +271,7 @@ def send_crash_report(
     machine_id: str = '',
     version: str = '',
     exit_reason: str = 'crash',
+    crash_reports_enabled: bool = True,
 ) -> None:
     """Send a crash report to the Cloudflare Worker (async, failsafe).
 
@@ -280,8 +294,16 @@ def send_crash_report(
         only — the recovery dialog filters these client-side, but the
         server should record any that slip through so they can be excluded
         from crash-rate dashboards.
+    crash_reports_enabled : bool
+        User preference (settings key ``crash_reports_enabled``). Defaults to
+        ``True`` so a failed settings read errs toward sending. Callers that
+        send automatically (no per-report user consent) must pass the current
+        value; the user-confirmed recovery report passes ``True`` because the
+        dialog is its own consent.
     """
     if not is_frozen():
+        return
+    if not crash_reports_enabled:
         return
     try:
         exc_type = type(exc).__name__ if exc else 'Unknown'
@@ -291,6 +313,12 @@ def send_crash_report(
                 tb_str = traceback.format_exc()
             except Exception:
                 tb_str = ''
+        # Strip username-in-paths from anything that could carry a filesystem
+        # path. The exception type name is a class name and safe; everything
+        # else is free-form and gets sanitised.
+        exc_msg = redact_user_paths(exc_msg)
+        tb_str = redact_user_paths(tb_str)
+        log_tail = redact_user_paths(log_tail)
         payload = {
             'exception_type': exc_type,
             'exception_message': exc_msg,
@@ -557,6 +585,10 @@ def get_recent_log_tail(
 
         if not payload:
             return ''
+        # Best-effort redaction of the local OS username from any path
+        # strings inside the payload (covers structured analysis entries
+        # *and* the runtime log tail strings) before serialisation.
+        payload = redact_user_paths_in_obj(payload)
         return json.dumps(payload, indent=2, default=str)
 
     except Exception:

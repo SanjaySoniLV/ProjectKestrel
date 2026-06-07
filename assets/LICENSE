@@ -1,21 +1,39 @@
-PROJECT KESTREL - LICENSE
+PROJECT KESTREL - BRAND ASSET LICENSE
 
-LOGO AND NAME USAGE RESTRICTIONS
+NAME, LOGO, AND BRAND ASSET USAGE RESTRICTIONS
 
-The logo and name "Project Kestrel" included in this repository are proprietary assets and copyright Sanjay Soni ("owner"), 2026.
+The names "Project Kestrel", "Perch", and "Cloud Compute", together with the logos,
+icons, and other brand or visual-identity assets included in this repository (including
+the files in this "assets" directory), are proprietary and copyright Project Kestrel LLC
+("owner"), 2026. All rights reserved.
 
-PROHIBITED USE:
-- You may not use, copy, modify, or distribute the logo and name "Project Kestrel" for any other project, product, or purpose.
+RELATIONSHIP TO THE AGPLv3 LICENSE OF THE SOURCE CODE
+
+The Project Kestrel desktop application's source code is licensed under the GNU Affero
+General Public License v3.0 (AGPLv3), as set out in the LICENSE file at the root of this
+repository. Notwithstanding that license, the names and brand assets described above are
+NOT licensed under the AGPLv3 and are expressly excluded from it. Your AGPLv3 rights to
+the source code do not grant you any right to use the names, logos, or brand assets -
+including to present a modified or unofficial build as an official Project Kestrel, Perch,
+or Cloud Compute product. If you fork and redistribute the source code, you must do so
+under a different name and without these brand assets.
+
+PROHIBITED USE
+- You may not use, copy, modify, or distribute these names or brand assets for any other
+  project, product, or purpose.
 - You may not create derivative works based on these assets.
 - You may not use these assets in any form without explicit written permission from the owner.
-- You may not distribute any works that utilize these assets without explicit written permission from the owner.
+- You may not distribute any works that utilize these assets without explicit written
+  permission from the owner.
 
-PERMITTED USE:
+PERMITTED USE
 - No use is permitted without explicit written permission from the owner.
 
-VIOLATIONS:
-Unauthorized use of the Project Kestrel logo or name is prohibited and may result in legal action.
+VIOLATIONS
 
-For permission requests, contact the  owner.
+Unauthorized use of the Project Kestrel, Perch, or Cloud Compute names or brand assets is
+prohibited and may result in legal action.
+
+For permission requests, contact the owner at support@projectkestrel.org.
 
 Last Updated: 2026

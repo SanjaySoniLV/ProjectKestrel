@@ -3,7 +3,7 @@
 Project Kestrel uses machine learning to organize your bird photo collection. By grouping similar photos together, ranking them by sharpness, and tagging them by bird species, Kestrel turns your photography into a searchable, quality-sorted, and interactive library.
 
 ![Python](https://img.shields.io/badge/python-3.12+-blue.svg)
-![License](https://img.shields.io/badge/license-GPLv3-green.svg)
+![License](https://img.shields.io/badge/license-AGPLv3-green.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-lightgrey.svg)
 
 [Visit Projectkestrel.org](https://projectkestrel.org) | [Donate](https://www.paypal.com/donate/?hosted_button_id=CXH4FE5AKZD3A)
@@ -199,7 +199,18 @@ Direct questions or comments to [support@projectkestrel.org](mailto:support@proj
 
 ## 📄 License
 
-This project is licensed under the GPL v3 License with a Commons Clause License Condition v1.0 - see the LICENSE file for details. Commercial use is prohibited without explicit permission from the author.
+This project is licensed under the **GNU Affero General Public License v3.0 (AGPLv3)** — see the [LICENSE](LICENSE) file for the full text. The AGPL adds a "network use" clause to the standard GPL: if you run a modified version of Project Kestrel as a network service, you must offer the source of your modifications to the users of that service.
+
+**Brand assets are not covered by the AGPLv3.** The "Project Kestrel", "Perch", and "Cloud Compute" names, logos, and other brand/visual-identity assets (including the files in [`assets/`](assets/)) are proprietary and all rights reserved — see [`assets/LICENSE`](assets/LICENSE). The AGPLv3 covers the source code only; it does not grant any right to use the names or brand. You may fork and redistribute the code, but not under the Project Kestrel, Perch, or Cloud Compute brand.
+
+Copyright © 2026 Project Kestrel LLC.
+
+## 📜 Terms of Use & Privacy Policy
+
+The canonical Terms of Service and Privacy Policy live on the marketing site and apply to the desktop app, Perch, and Cloud Compute:
+
+- **Terms of Service**: https://projectkestrel.org/terms-of-use
+- **Privacy Policy**: https://projectkestrel.org/privacy-policy
 
 ## 🙏 Acknowledgments
 

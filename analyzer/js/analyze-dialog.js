@@ -57,6 +57,52 @@
       return el;
     }
 
+    // Cloud destination est. time:
+    //   max(upload_seconds, analysis_floor_seconds)
+    // where analysis_floor = images × 0.5s (sustained 2 imgs/sec on Modal),
+    // and upload_seconds is computed from the speed-test result if present.
+    // Returns null when destination=cloud and no speed test has run yet.
+    const _CLOUD_ANALYSIS_FLOOR_SECS_PER_IMG = 0.5; // 2 imgs/sec sustained
+
+    function _getCloudEstSeconds(totalImages) {
+      const result = (typeof _cloudSpeedTestResult !== 'undefined') ? _cloudSpeedTestResult : null;
+      const analysisSecs = totalImages * _CLOUD_ANALYSIS_FLOOR_SECS_PER_IMG;
+      if (!result || !(result.mbps > 0) || !(result.samples_uploaded > 0)) {
+        return { secs: null, analysisSecs, uploadSecs: null, hasTest: false };
+      }
+      const avgBytes = Number(result.total_bytes || 0) / Number(result.samples_uploaded || 1);
+      if (!(avgBytes > 0)) return { secs: null, analysisSecs, uploadSecs: null, hasTest: true };
+      const totalMB = (totalImages * avgBytes) / 1_048_576;
+      const uploadSecs = totalMB / Number(result.mbps);
+      return {
+        secs: Math.max(analysisSecs, uploadSecs),
+        analysisSecs,
+        uploadSecs,
+        hasTest: true,
+      };
+    }
+
+    // Always-on "?" badge for cloud est. time. Phrasing differs from the local
+    // baseline badge — the cloud "?" stays permanent because the estimate is
+    // beta and depends on transfer speed + Modal worker availability.
+    function _buildCloudUncertainBadge() {
+      const tip =
+        'Cloud Compute is in beta. Estimates use the higher of (a) projected ' +
+        'upload time and (b) a 2-images-per-second analysis floor. Actual time ' +
+        'depends on transfer speed and Modal worker availability.';
+      const el = document.createElement('span');
+      el.className = 'est-time-uncertain est-time-uncertain--cloud';
+      el.setAttribute('title', tip);
+      el.setAttribute('aria-label', tip);
+      el.textContent = '?';
+      return el;
+    }
+
+    function _isCloudDestination() {
+      try { return typeof _analyzeDestination !== 'undefined' && _analyzeDestination === 'cloud'; }
+      catch { return false; }
+    }
+
     // ── Dialog-local state (NEVER shared with the main tree) ────────────────────
     let analyzeDlgRootNodes = new Map();      // Map<rootPath, syntheticRootNode>
     let analyzeDlgRootOrder = [];             // insertion order (render order)
@@ -507,11 +553,46 @@
     }
 
     // ── Recents chips (Phase 3G — independent from main tree's folder_recents) ──
+
+    function _adlgBuildRecentsChip(path) {
+      const wrap = buildFolderRecentsChip(
+        path,
+        async () => {
+          const chipBtn = wrap.querySelector('.folder-recents-chip');
+          if (chipBtn) chipBtn.disabled = true;
+          try {
+            const r = await addAnalyzeDlgRoot(path);
+            if (r && r.added) {
+              await _persistAnalyzeRecentsBump(path);
+              _renderAnalyzeDlgRecentsChipsSync();
+              renderAnalyzeDlgRecentsChips().catch(() => {});
+              _inspectAndRenderAnalyzeDlg().catch(() => {});
+            }
+          } finally {
+            const chipBtn = wrap.querySelector('.folder-recents-chip');
+            if (chipBtn) chipBtn.disabled = false;
+          }
+        },
+        (p) => {
+          if (typeof persistAnalyzeRecentsRemove === 'function') persistAnalyzeRecentsRemove(p);
+        },
+      );
+      return wrap;
+    }
+
+    /** Sync pass: hide until async inspect confirms disk + remaining work. */
+    function _renderAnalyzeDlgRecentsChipsSync() {
+      const row = document.getElementById('analyzeDlgRecentsRow');
+      if (!row) return;
+      row.classList.add('hidden');
+      row.innerHTML = '';
+    }
+
     async function renderAnalyzeDlgRecentsChips() {
       const row = document.getElementById('analyzeDlgRecentsRow');
       if (!row) return;
       const s = (typeof loadSettings === 'function') ? loadSettings() : {};
-      const recents = Array.isArray(s.analyze_recents) ? s.analyze_recents.slice(0, 16) : [];
+      const recents = Array.isArray(s.analyze_recents) ? s.analyze_recents.slice(0, 8) : [];
       if (recents.length === 0) {
         row.classList.add('hidden');
         row.innerHTML = '';
@@ -539,11 +620,13 @@
               const total = info.total || 0;
               const processed = info.processed || 0;
               const errored = info.errored || 0;
-              return total === 0 || processed < total || errored > 0;
+              return total > 0 && (processed < total || errored > 0);
             });
           } else if (res && Array.isArray(res.invalid_paths)) {
             const invalid = new Set(res.invalid_paths.map(_adlgNormRoot));
             available = paths.filter(p => !invalid.has(_adlgNormRoot(p)));
+          } else {
+            available = [];
           }
         }
       } catch (e) { /* best-effort */ }
@@ -555,41 +638,8 @@
         row.innerHTML = '';
         return;
       }
-      function ellipsize(p, maxLen = 28) {
-        if (!p) return '';
-        const s = p.replace(/\\/g, '/');
-        if (s.length <= maxLen) return s;
-        const parts = s.split('/').filter(Boolean);
-        if (parts.length <= 2) return s.slice(0, maxLen - 1) + '…';
-        const t = `${parts[0]}/…/${parts[parts.length - 1]}`;
-        return t.length <= maxLen ? t : (t.slice(0, maxLen - 1) + '…');
-      }
       row.innerHTML = '';
-      for (const path of available) {
-        const chip = document.createElement('button');
-        chip.type = 'button';
-        chip.className = 'folder-recents-chip';
-        chip.title = path;
-        const plus = document.createElement('span');
-        plus.className = 'folder-recents-chip-plus';
-        plus.textContent = '+ 📂';
-        const label = document.createElement('span');
-        label.textContent = ' ' + ellipsize(path);
-        chip.appendChild(plus); chip.appendChild(label);
-        chip.addEventListener('click', async () => {
-          chip.disabled = true;
-          try {
-            const r = await addAnalyzeDlgRoot(path);
-            if (r && r.added) {
-              // Bump-to-top in analyze_recents + persist.
-              await _persistAnalyzeRecentsBump(path);
-              await renderAnalyzeDlgRecentsChips();
-              await _inspectAndRenderAnalyzeDlg();
-            }
-          } finally { chip.disabled = false; }
-        });
-        row.appendChild(chip);
-      }
+      for (const path of available) row.appendChild(_adlgBuildRecentsChip(path));
       row.classList.remove('hidden');
     }
 
@@ -600,7 +650,7 @@
         const np = _adlgNormRoot(path);
         const filtered = existing.filter(e => e && _adlgNormRoot(e.path) !== np);
         const ts = new Date().toISOString();
-        s.analyze_recents = [{ path: np, timestamp: ts }, ...filtered].slice(0, 16);
+        s.analyze_recents = [{ path: np, timestamp: ts }, ...filtered].slice(0, 8);
         saveSettings(s);
         if (hasPywebviewApi && window.pywebview?.api?.save_settings_data) {
           try { await window.pywebview.api.save_settings_data(s); } catch (_) { }
@@ -727,13 +777,26 @@
             meta.appendChild(imgSpan);
             // Per-folder time estimate
             if (f.imagesThisFolder >= _EST_MIN_IMAGES_TO_ESTIMATE) {
-              const { rate, source, sampledImgs } = _getEstRate(useGpu);
-              const sec = f.imagesThisFolder * rate;
-              const timeSpan = document.createElement('span');
-              timeSpan.className = 'meta-time';
-              timeSpan.textContent = `· ~${_formatDuration(sec)}`;
-              meta.appendChild(timeSpan);
-              if (source === 'baseline') meta.appendChild(_buildUncertainBadge(sampledImgs));
+              if (_isCloudDestination()) {
+                const { secs } = _getCloudEstSeconds(f.imagesThisFolder);
+                if (secs != null) {
+                  const timeSpan = document.createElement('span');
+                  timeSpan.className = 'meta-time';
+                  timeSpan.textContent = `· ~${_formatDuration(secs)}`;
+                  meta.appendChild(timeSpan);
+                  meta.appendChild(_buildCloudUncertainBadge());
+                }
+                // Pre-speed-test cloud: no per-folder estimate; the panel
+                // below the headline carries the "?" + run-test affordance.
+              } else {
+                const { rate, source, sampledImgs } = _getEstRate(useGpu);
+                const sec = f.imagesThisFolder * rate;
+                const timeSpan = document.createElement('span');
+                timeSpan.className = 'meta-time';
+                timeSpan.textContent = `· ~${_formatDuration(sec)}`;
+                meta.appendChild(timeSpan);
+                if (source === 'baseline') meta.appendChild(_buildUncertainBadge(sampledImgs));
+              }
             }
           }
           item.appendChild(meta);
@@ -760,20 +823,43 @@
         const skipFrag = fullyAnalyzedSkipCount > 0
           ? `<span class="analyze-dlg-stat-skip">${fullyAnalyzedSkipCount} skipped</span>`
           : '';
-        // Time stat
+        // Time stat — destination-dependent.
+        //   Local: existing baseline-or-local logic with optional "?" badge.
+        //   Cloud: "?" until a speed test has run, then max(upload, 2-img/sec
+        //          floor) with a permanent "?" + beta affordance underneath.
         let timeValue = '—';
         let timeLabel = 'estimated time';
         let timeDim = true;
-        let timeRateSource = 'baseline';
-        let timeRateSampledImgs = 0;
-        if (totalImagesToProcess >= _EST_MIN_IMAGES_TO_ESTIMATE) {
+        let timeBadgeKind = null; // null | 'local-baseline' | 'cloud'
+        let timeBadgeSampledImgs = 0;
+        const isCloud = _isCloudDestination();
+        if (isCloud) {
+          if (totalImagesToProcess >= _EST_MIN_IMAGES_TO_ESTIMATE) {
+            const { secs, hasTest } = _getCloudEstSeconds(totalImagesToProcess);
+            if (secs != null) {
+              timeValue = `~${_formatDuration(secs)}`;
+              timeLabel = 'est. time (cloud · beta)';
+              timeDim = false;
+              timeBadgeKind = 'cloud';
+            } else {
+              // Cloud destination, no speed test yet — show "?" prominently
+              // and let the panel below host the Run Speed Test button.
+              timeValue = '?';
+              timeLabel = 'est. time (cloud · beta)';
+              timeDim = false; // we want the "?" to read clearly, not muted
+              timeBadgeKind = null; // value IS the "?"; no separate badge
+            }
+          }
+        } else if (totalImagesToProcess >= _EST_MIN_IMAGES_TO_ESTIMATE) {
           const { rate, source, sampledImgs } = _getEstRate(useGpu);
           const seconds = totalImagesToProcess * rate;
           timeValue = `~${_formatDuration(seconds)}`;
           timeLabel = `est. time (${useGpu ? 'GPU' : 'CPU'}${source === 'local' ? ' · local' : ''})`;
           timeDim = false;
-          timeRateSource = source;
-          timeRateSampledImgs = sampledImgs;
+          if (source === 'baseline') {
+            timeBadgeKind = 'local-baseline';
+            timeBadgeSampledImgs = sampledImgs;
+          }
         }
         headline.innerHTML =
           `<div class="analyze-dlg-stat">` +
@@ -789,12 +875,44 @@
             `<div class="analyze-dlg-stat-value${timeDim ? ' dim' : ''}" id="_analyzeDlgTimeStatValue">${timeValue}</div>` +
             `<div class="analyze-dlg-stat-label">${timeLabel}</div>` +
           `</div>`;
-        // Append the ? badge in the time-value cell when we're showing a
-        // baseline estimate (i.e. not enough local samples yet). Done via DOM
-        // append so the title attribute and aria-label survive verbatim.
-        if (!timeDim && timeRateSource === 'baseline') {
+        if (timeBadgeKind === 'local-baseline') {
           const valueEl = headline.querySelector('#_analyzeDlgTimeStatValue');
-          if (valueEl) valueEl.appendChild(_buildUncertainBadge(timeRateSampledImgs));
+          if (valueEl) valueEl.appendChild(_buildUncertainBadge(timeBadgeSampledImgs));
+        } else if (timeBadgeKind === 'cloud') {
+          const valueEl = headline.querySelector('#_analyzeDlgTimeStatValue');
+          if (valueEl) valueEl.appendChild(_buildCloudUncertainBadge());
+        }
+      }
+
+      // Toggle the cloud-only affordances panel under the headline. Speed-test
+      // button is enabled iff at least one folder is checked. When a speed test
+      // has already run, the button reads "Re-run upload speed test" and the
+      // status line surfaces the measured mbps for transparency.
+      const cloudPanel = document.getElementById('analyzeDlgCloudEstPanel');
+      if (cloudPanel) {
+        const showCloudPanel = _isCloudDestination();
+        cloudPanel.classList.toggle('hidden', !showCloudPanel);
+        if (showCloudPanel) {
+          const runBtn = document.getElementById('analyzeDlgRunSpeedTest');
+          const statusEl = document.getElementById('analyzeDlgCloudSpeedStatus');
+          const hasResult = !!(typeof _cloudSpeedTestResult !== 'undefined' && _cloudSpeedTestResult);
+          if (runBtn) {
+            runBtn.disabled = checkedCount === 0;
+            const labelText = hasResult ? ' Re-run upload speed test' : ' Run Upload Speed Test';
+            // Keep the leading lightning icon span intact.
+            const iconHtml = '<span class="adlg-cloud-speed-btn-icon">⚡</span>';
+            runBtn.innerHTML = iconHtml + labelText;
+          }
+          if (statusEl) {
+            if (hasResult) {
+              const mbps = Number(_cloudSpeedTestResult.mbps || 0).toFixed(1);
+              statusEl.textContent = `Measured upload: ${mbps} MB/s`;
+              statusEl.classList.remove('hidden', 'error');
+              statusEl.classList.add('success');
+            } else {
+              statusEl.classList.add('hidden');
+            }
+          }
         }
       }
 
@@ -832,16 +950,16 @@
         alert('Analysis queue is only available in the desktop (pywebview) mode.\n\nRun kestrel_visualizer as a desktop app to use this feature.');
         return;
       }
-      // Fetch the app version once if not already cached — needed for the
-      // outdated-version pill badges (isVersionOutdated returns false when
-      // _appVersion is empty, so badges silently never render). The main-tree
-      // addFolderRoot also fetches this; we duplicate the guard here because
-      // the user can open the analyze dialog before touching the main tree.
+      // App-version fetch is needed for the outdated-version pill badges, but
+      // it's a non-blocking concern — fire it without awaiting so the dialog
+      // opens instantly. When it lands, re-render the tree so badges appear.
       if (!_appVersion && window.pywebview?.api?.get_app_version) {
-        try {
-          const vr = await window.pywebview.api.get_app_version();
-          if (vr && vr.success) _appVersion = vr.version || '';
-        } catch (e) { /* ignore — badges just won't show */ }
+        window.pywebview.api.get_app_version().then(vr => {
+          if (vr && vr.success && vr.version) {
+            _appVersion = vr.version;
+            if (typeof renderAnalyzeDlgTree === 'function') renderAnalyzeDlgTree();
+          }
+        }).catch(() => {});
       }
       // Hydrate critical settings from persisted values. The radios mirror to
       // the hidden #adlgWildlifeModelMode <select> so existing read/write paths
@@ -896,6 +1014,14 @@
         compression = Math.max(0.5, Math.min(1.0, compression));
         _adlgThumbComp.value = compression.toFixed(2);
       }
+
+      // Hydrate wildlife/species-detection toggles from persisted settings so
+      // the user's choice survives dialog re-opens and is visible to the cloud
+      // compute snapshot path (settings.js getSetting reads localStorage).
+      const _adlgWildlife = document.getElementById('analyzeWildlife');
+      if (_adlgWildlife) _adlgWildlife.checked = !!getSetting('wildlife_enabled', false);
+      const _adlgSpecies = document.getElementById('analyzeSpeciesDetection');
+      if (_adlgSpecies) _adlgSpecies.checked = getSetting('species_detection_enabled') !== false;
 
       // Unlock checkbox state — reset every open. User must explicitly re-tick
       // it to unlock destructive re-analysis on each queue.
@@ -961,17 +1087,25 @@
       }
       _syncDetectionConfidenceWarning();
 
-      // Render recents first (no roots yet → just shows chips). Then if the
-      // dialog already has roots from a prior open (we keep state across
-      // opens until Clear), inspect + render the tree.
-      await renderAnalyzeDlgRecentsChips();
-      if (_adlgHasAnyRoots()) {
-        renderAnalyzeDlgTree();
-        await _inspectAndRenderAnalyzeDlg();
-      } else {
-        renderAnalyzeDlgTree();
-      }
+      // Sync render passes — fast, no IPC. These paint a usable dialog
+      // immediately. Background tasks below refine the data when ready.
+      _renderAnalyzeDlgRecentsChipsSync();
+      renderAnalyzeDlgTree();
       refreshAnalyzeDlgSummary();
+
+      // Open the dialog NOW. Everything below is background work that
+      // updates the UI in-place when results arrive.
       document.getElementById('analyzeQueueDlg').showModal();
+
+      // Async refinement (fire-and-forget): inspect_folders on recents to
+      // filter out invalid/already-done paths; on roots to populate per-folder
+      // counts. _ccResetDestinationOnDialogOpen wires the cloud card + auth gate.
+      renderAnalyzeDlgRecentsChips().catch(e => console.warn('[adlg] recents refresh failed', e));
+      if (_adlgHasAnyRoots()) {
+        _inspectAndRenderAnalyzeDlg().catch(e => console.warn('[adlg] inspect failed', e));
+      }
+      if (typeof _ccResetDestinationOnDialogOpen === 'function') {
+        _ccResetDestinationOnDialogOpen().catch(e => console.warn('[cc] reset failed', e));
+      }
     }
 

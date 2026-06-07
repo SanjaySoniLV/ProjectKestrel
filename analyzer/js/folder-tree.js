@@ -424,7 +424,8 @@
 
       const norm = p => (p || '').replace(/\\/g, '/');
       const normPath = norm(node.path);
-      const isInProgress = _inProgressFolderPaths.has(normPath);
+      const isInProgress = _inProgressFolderPaths.has(normPath)
+        || (window._ccInProgressFolderPaths && window._ccInProgressFolderPaths.has(normPath));
 
       const effectiveHasKestrel = subtreeHasKestrel(node) || isInProgress; // Show checkbox for in-progress too
       const outdated = isVersionOutdated(node);
@@ -465,8 +466,16 @@
 
       // Folder icon
       const icon = document.createElement('span');
-      icon.className = 'tree-icon';
+      icon.className = 'tree-icon' + (node.has_perch_link ? ' has-perch' : '');
       icon.textContent = node.has_kestrel ? '📂' : '📁';
+
+      // Feather overlay — surfaces "this folder is on Perch" at a glance.
+      const perchFeather = node.has_perch_link ? document.createElement('span') : null;
+      if (perchFeather) {
+        perchFeather.className = 'tree-perch-feather';
+        perchFeather.textContent = '\u{1FAB6}';
+        perchFeather.title = 'Published to Perch';
+      }
 
       // Hourglass overlay — surfaces "this folder is being analyzed" at a glance.
       const inProgressHourglass = isInProgress ? document.createElement('span') : null;
@@ -515,6 +524,7 @@
 
       row.appendChild(arrow);
       row.appendChild(icon);
+      if (perchFeather) row.appendChild(perchFeather);
       if (inProgressHourglass) row.appendChild(inProgressHourglass);
       row.appendChild(label);
       row.appendChild(countSpan);
@@ -593,6 +603,126 @@
     // pure-CSS state pills. The legacy 6-class color coding it set
     // (analyzed-full / analyzed-partial / analyzed-none / no-photos-deep /
     // no-photos-shallow / has-errored-images) is no longer used.
+
+    function _normRootPath(p) {
+      return (p || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    }
+
+    function ellipsizeRecentsPath(path, maxLen = 28) {
+      if (!path) return '';
+      const s = path.replace(/\\/g, '/');
+      if (s.length <= maxLen) return s;
+      const parts = s.split('/').filter(Boolean);
+      if (parts.length <= 2) return s.slice(0, maxLen - 1) + '…';
+      const t = `${parts[0]}/…/${parts[parts.length - 1]}`;
+      return t.length <= maxLen ? t : (t.slice(0, maxLen - 1) + '…');
+    }
+
+    /** Build recents chip (+ optional × dismiss). Returns a .folder-recents-chip-wrap. */
+    function buildFolderRecentsChip(path, onClick, onDismiss) {
+      const wrap = document.createElement('span');
+      wrap.className = 'folder-recents-chip-wrap';
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'folder-recents-chip';
+      chip.title = path;
+      chip.dataset.path = path;
+      const plus = document.createElement('span');
+      plus.className = 'folder-recents-chip-plus';
+      plus.textContent = '+ \u{1F4C2}';
+      const label = document.createElement('span');
+      label.textContent = ' ' + ellipsizeRecentsPath(path);
+      chip.appendChild(plus);
+      chip.appendChild(label);
+      chip.addEventListener('click', onClick);
+      wrap.appendChild(chip);
+      if (onDismiss) {
+        const x = document.createElement('button');
+        x.type = 'button';
+        x.className = 'folder-recents-chip-dismiss';
+        x.setAttribute('aria-label', 'Remove from recents');
+        x.textContent = '\u00d7';
+        x.addEventListener('click', (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          onDismiss(path);
+        });
+        wrap.appendChild(x);
+      }
+      return wrap;
+    }
+
+    async function persistFolderRecentsBump(path) {
+      const np = _normRootPath(path);
+      if (!np) return;
+      try {
+        const s = loadSettings();
+        const existing = Array.isArray(s.folder_recents) ? s.folder_recents : [];
+        const filtered = existing.filter(p => _normRootPath(p) !== np);
+        s.folder_recents = [np, ...filtered].slice(0, 8);
+        saveSettings(s);
+        if (hasPywebviewApi && window.pywebview?.api?.save_settings_data) {
+          try { await window.pywebview.api.save_settings_data(s); } catch (_) { }
+        }
+        if (typeof renderFolderRecentsChips === 'function') renderFolderRecentsChips();
+      } catch (_) { /* best-effort */ }
+    }
+
+    async function persistFolderRecentsRemove(path) {
+      const np = _normRootPath(path);
+      if (!np) return;
+      try {
+        const s = loadSettings();
+        const existing = Array.isArray(s.folder_recents) ? s.folder_recents : [];
+        s.folder_recents = existing.filter(p => _normRootPath(p) !== np);
+        saveSettings(s);
+        if (hasPywebviewApi && window.pywebview?.api?.save_settings_data) {
+          try { await window.pywebview.api.save_settings_data(s); } catch (_) { }
+        }
+        if (typeof renderFolderRecentsChips === 'function') renderFolderRecentsChips();
+      } catch (_) { }
+    }
+
+    async function persistAnalyzeRecentsRemove(path) {
+      const np = _normRootPath(path);
+      if (!np) return;
+      try {
+        const s = loadSettings();
+        const existing = Array.isArray(s.analyze_recents) ? s.analyze_recents : [];
+        s.analyze_recents = existing.filter(e => e && _normRootPath(e.path) !== np);
+        saveSettings(s);
+        if (hasPywebviewApi && window.pywebview?.api?.save_settings_data) {
+          try { await window.pywebview.api.save_settings_data(s); } catch (_) { }
+        }
+        if (typeof renderAnalyzeDlgRecentsChips === 'function') {
+          renderAnalyzeDlgRecentsChips().catch(() => {});
+        }
+      } catch (_) { }
+    }
+
+    /**
+     * When the sidebar tree is empty, add the analyzing folder as a root and
+     * auto-check + auto-load it. Used by local queue and cloud submit paths.
+     */
+    async function autoLoadFolderWhenTreeEmpty(folderPath) {
+      if (!folderPath) return;
+      if (_hasAnyRoots()) return;
+      if (!hasPywebviewApi || !window.pywebview?.api?.list_subfolders) return;
+      try {
+        const r = await addFolderRoot(folderPath);
+        if (!r || (!r.added && !r.alreadyLoaded)) return;
+        const loadPath = (r.node && r.node.path) ? r.node.path : _normRootPath(folderPath);
+        checkedFolderPaths.add(loadPath);
+        renderFolderTree();
+        if (typeof updateInProgressFoldersInTree === 'function') updateInProgressFoldersInTree();
+        if (typeof debouncedAutoLoad === 'function') await debouncedAutoLoad();
+        if (typeof setStatus === 'function') {
+          setStatus('Auto-loaded folder (tree was empty)');
+        }
+      } catch (e) {
+        console.warn('[tree] autoLoadFolderWhenTreeEmpty failed:', e);
+      }
+    }
 
     // ── End Folder Tree ───────────────────────────────────────────────────────────
 

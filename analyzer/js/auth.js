@@ -1,3 +1,240 @@
+    // Render the account button's display label from a /v1/me response.
+    // Preference order: "First Last" > "First" > displayName > "@username" >
+    // generic "Signed in" fallback. Same logic is used by both the startup
+    // hydration path and the post-sign-in onAuthSignIn handler so the UI is
+    // consistent across both entry points.
+    function _accountDisplayLabel(account) {
+      if (!account) return 'Signed in';
+      const firstName = (account.firstName || account.first_name || '').trim();
+      const lastName  = (account.lastName  || account.last_name  || '').trim();
+      if (firstName && lastName) return `${firstName} ${lastName}`;
+      if (firstName) return firstName;
+      const displayName = (account.displayName || account.display_name || '').trim();
+      if (displayName) return displayName;
+      const handle = account.username || null;
+      if (handle) return `@${handle}`;
+      return 'Signed in';
+    }
+
+    // Perch Authentication Handler
+    async function initPerchAuth() {
+      const accountBtn = el('#accountBtn');
+      if (!accountBtn) return;
+
+      // Wait for the pywebview JS↔Py bridge to be ready before doing any API
+      // call. Without this, on cold starts `hasPywebviewApi` is still false
+      // at the moment initPerchAuth() runs (the IIFE that flips it to true
+      // is racing with us), so every API check below silently no-ops.
+      try {
+        if (!hasPywebviewApi) {
+          await waitForPywebview();
+        }
+      } catch (_) { /* fall through and try anyway */ }
+
+      // Token validity drives the indicator. The /v1/me call only ENRICHES
+      // with the user's handle — if it fails (network blip, transient 401),
+      // we still want the indicator on so the user knows their token is good.
+      let signedIn = false;
+      let expired = false;          // token stored but past exp
+
+      if (window.pywebview?.api?.get_auth_token) {
+        try {
+          const result = await window.pywebview.api.get_auth_token();
+          if (result?.token) {
+            _perchToken = result.token;
+            signedIn = true;
+          }
+        } catch (e) {
+          console.warn('Failed to get auth token on startup:', e);
+        }
+      }
+
+      // Only fetch the handle if we already know the token is good. Failure
+      // here doesn't roll back the signed-in state — we just don't show the
+      // handle. If the worker explicitly says the token is expired, that
+      // overrides the local-only check.
+      let accountObj = null;
+      if (signedIn && window.pywebview?.api?.get_perch_account) {
+        try {
+          const accountRes = await window.pywebview.api.get_perch_account();
+          if (accountRes?.success && accountRes.account) {
+            accountObj = accountRes.account;
+          } else if (accountRes?.error === 'auth_token_expired') {
+            expired = true;
+            signedIn = false;
+          }
+        } catch (e) {
+          console.warn('Failed to get Perch account info:', e);
+        }
+      }
+
+      // Cold-start retry: on Windows, the keyring read backing
+      // get_perch_account can momentarily race the OS Credential Manager
+      // warming up, so the first call after launch sometimes returns
+      // success:false (or no account). Without this retry the indicator
+      // sticks on the generic "Signed in" label until the next sign-in or
+      // app restart, even though the token is valid. Try once more after a
+      // short delay before painting the label.
+      if (signedIn && !accountObj && window.pywebview?.api?.get_perch_account) {
+        await new Promise(r => setTimeout(r, 1500));
+        try {
+          const accountRes = await window.pywebview.api.get_perch_account();
+          if (accountRes?.success && accountRes.account) {
+            accountObj = accountRes.account;
+          } else if (accountRes?.error === 'auth_token_expired') {
+            expired = true;
+            signedIn = false;
+          }
+        } catch (e) {
+          console.warn('Perch account retry failed:', e);
+        }
+      }
+
+      const labelEl = el('#accountBtnLabel');
+      if (signedIn) {
+        accountBtn.classList.add('signed-in');
+        accountBtn.classList.remove('session-expired');
+        const label = _accountDisplayLabel(accountObj);
+        accountBtn.title = `Perch — Signed in as ${label}`;
+        accountBtn.setAttribute('aria-label', `Perch account: signed in as ${label}`);
+        if (labelEl) {
+          labelEl.textContent = label;
+          labelEl.classList.remove('hidden');
+        }
+      } else if (expired) {
+        accountBtn.classList.remove('signed-in');
+        accountBtn.classList.add('session-expired');
+        accountBtn.title = 'Perch — Session expired, click to sign in again';
+        accountBtn.setAttribute('aria-label', 'Perch account: session expired, click to sign in again');
+        if (labelEl) {
+          labelEl.textContent = 'Sign in';
+          labelEl.classList.remove('hidden');
+        }
+      } else {
+        // Signed out: show an explicit "Sign In" label (not just the person
+        // icon) so the affordance is unambiguous (§4a).
+        accountBtn.title = 'Perch — Sign in';
+        accountBtn.setAttribute('aria-label', 'Perch account: sign in');
+        if (labelEl) {
+          labelEl.textContent = 'Sign In';
+          labelEl.classList.remove('hidden');
+        }
+      }
+
+      // H6: show + populate the notification bell when signed in.
+      if (window.KestrelNotifications) {
+        try { window.KestrelNotifications.onAuthState(signedIn); } catch (_) {}
+      }
+
+      accountBtn.addEventListener('click', () => {
+        // §4a: when signed in, the account button opens the Account & Cloud
+        // Compute panel instead of re-triggering sign-in. Signed-out (incl.
+        // session-expired) keeps the OAuth sign-in flow.
+        if (accountBtn.classList.contains('signed-in')) {
+          if (typeof window.openCloudAccountPanel === 'function') {
+            window.openCloudAccountPanel();
+          } else if (typeof showToast === 'function') {
+            showToast('Account panel unavailable in this build.', 4000);
+          }
+          return;
+        }
+        // OAuth + PKCE: Python opens the system browser, runs a loopback
+        // callback server on 127.0.0.1:53682, exchanges the code for a token
+        // pair, and notifies us via window.onAuthSignIn(...).
+        if (hasPywebviewApi && window.pywebview?.api?.start_oauth_sign_in) {
+          try {
+            window.pywebview.api.start_oauth_sign_in();
+            if (typeof showToast === 'function') {
+              showToast('Sign-in in progress — complete sign-in in your browser, then return here.', 8000);
+            }
+          } catch (e) {
+            console.warn('start_oauth_sign_in failed:', e);
+          }
+        } else {
+          // No bridge available — desktop app should always have it; surface this.
+          if (typeof showToast === 'function') {
+            showToast('Sign-in unavailable in this environment.', 5000);
+          }
+        }
+      });
+    }
+
+    // Called by Python after a successful OAuth sign-in or refresh that
+    // produced a fresh access token. Python clears its account/usage caches
+    // before this fires, so the get_perch_account call below hits the network.
+    window.onAuthSignIn = async (token) => {
+      _perchToken = token;
+      const accountBtn = el('#accountBtn');
+      const labelEl = el('#accountBtnLabel');
+      if (accountBtn) {
+        accountBtn.classList.add('signed-in');
+        accountBtn.classList.remove('session-expired');
+      }
+      if (labelEl) {
+        labelEl.textContent = 'Signed in';
+        labelEl.classList.remove('hidden');
+      }
+      try {
+        if (window.pywebview?.api?.get_perch_account) {
+          const accountRes = await window.pywebview.api.get_perch_account();
+          if (accountRes?.success && accountRes.account && accountBtn) {
+            const label = _accountDisplayLabel(accountRes.account);
+            accountBtn.title = `Perch — Signed in as ${label}`;
+            accountBtn.setAttribute('aria-label', `Perch account: signed in as ${label}`);
+            if (labelEl) labelEl.textContent = label;
+          }
+        }
+      } catch (e) { /* ignore — indicator is on regardless */ }
+      if (window.KestrelNotifications) {
+        try { window.KestrelNotifications.onAuthState(true); } catch (_) {}
+      }
+    };
+
+    // Called by Python when the OAuth flow fails (user closed the browser,
+    // callback timed out, port collision, state mismatch, token-exchange
+    // error). ``info`` is ``{error, description}``.
+    window.onAuthSignInFailed = (info) => {
+      const err = (info && info.error) || 'unknown';
+      const desc = (info && info.description) || '';
+      console.warn('[auth] sign-in failed:', err, desc);
+      let msg;
+      switch (err) {
+        case 'timeout':         msg = 'Sign-in timed out. Click Sign In to try again.'; break;
+        case 'port_in_use':     msg = 'Port 53682 is in use. Close the conflicting app and try again.'; break;
+        case 'state_mismatch':  msg = 'Sign-in failed (state mismatch). Click Sign In to try again.'; break;
+        case 'flow_in_progress': msg = 'Sign-in is already in progress. Complete it in your browser.'; break;
+        case 'browser_open_failed': msg = 'Could not open your browser. Sign in manually at myaccount.projectkestrel.org and try again.'; break;
+        default:                msg = `Sign-in failed: ${err}${desc ? ' — ' + desc : ''}`;
+      }
+      if (typeof showToast === 'function') showToast(msg, 8000);
+    };
+
+    // Called by Python after sign_out clears the keychain.
+    window.onAuthSignOut = () => {
+      _perchToken = null;
+      const accountBtn = el('#accountBtn');
+      const labelEl = el('#accountBtnLabel');
+      if (accountBtn) {
+        accountBtn.classList.remove('signed-in');
+        accountBtn.classList.remove('session-expired');
+        accountBtn.title = 'Perch — Sign in';
+        accountBtn.setAttribute('aria-label', 'Perch account: sign in');
+      }
+      if (labelEl) {
+        // §4a: keep the explicit "Sign In" affordance after sign-out.
+        labelEl.textContent = 'Sign In';
+        labelEl.classList.remove('hidden');
+      }
+      // If the account panel is open, close it — it's signed-in-only content.
+      if (typeof window.closeCloudAccountPanel === 'function') {
+        try { window.closeCloudAccountPanel(); } catch {}
+      }
+      // H6: hide the notification bell when signed out.
+      if (window.KestrelNotifications) {
+        try { window.KestrelNotifications.onAuthState(false); } catch (_) {}
+      }
+    };
+
     function loadVersionBadge() {
       if (!versionBadge) return;
       

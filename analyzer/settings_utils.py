@@ -192,7 +192,7 @@ def _sanitize_path_list(value: Any, max_items: int = 256) -> list[str]:
     return out
 
 
-def _sanitize_analyze_recents(value: Any, max_items: int = 16) -> list[dict]:
+def _sanitize_analyze_recents(value: Any, max_items: int = 8) -> list[dict]:
     """Validate the analyze_recents settings field — list of recently-queued
     folders that haven't been fully analyzed yet. Each entry is a dict
     ``{'path': str, 'timestamp': str}``. Deduped by normalized path
@@ -420,6 +420,10 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
 
     _set_opt_bool('analytics_opted_in', default=None)
     _set_bool('analytics_consent_shown', default=False)
+    # Crash reports default ON; users can opt out via Settings. Gated only for
+    # the two automatic sends in visualizer.py — the user-confirmed recovery
+    # report ignores this flag (the dialog is its own consent).
+    _set_bool('crash_reports_enabled', default=True)
 
     if 'rating_profile' in data:
         out['rating_profile'] = _coerce_enum(data.get('rating_profile'), _ALLOWED_RATING_PROFILES, default='balanced')
@@ -429,6 +433,11 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     _set_int('max_bird_crops', default=10, min_value=1, max_value=20)
     _set_int('parallel_prefetch', default=3, min_value=1, max_value=5)
     _set_bool('exposure_corrected_thumbs', default=True)
+    # Analysis-mode feature toggles persisted so cloud-compute settings snapshot
+    # (_cc_analysis_settings_snapshot) can read them without needing the UI to
+    # pass them as runtime parameters.
+    _set_bool('wildlife_enabled', default=False)
+    _set_bool('species_detection_enabled', default=True)
     # ONNX provider resilience (auto GPU↔CPU fallback). Advanced/triage knobs;
     # not exposed in the UI. ``gpu_resilience_enabled=False`` reverts to the
     # pre-resilience behavior (single GPU session, no recovery).
@@ -512,7 +521,7 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
         # Phase 3: Analyze Folders dialog's own recents (list of {path, timestamp}).
         # Separate from folder_recents — the dialog's mental model is "recently
         # queued but not yet fully analyzed", independent of the main tree.
-        out['analyze_recents'] = _sanitize_analyze_recents(data.get('analyze_recents'), max_items=16)
+        out['analyze_recents'] = _sanitize_analyze_recents(data.get('analyze_recents'), max_items=8)
 
     # Local performance samples for the Analyze Folders dialog's time estimate.
     # The queue worker appends one entry per completed folder run; the dialog
@@ -545,6 +554,18 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     _set_bool('legal_upgrade_self_heal_2026_03', default=False)
 
     _set_path('active_analysis_path')
+    # Override the cloud-compute Worker URL (handy for staging / wrangler dev).
+    # Empty string falls back to the env var KESTREL_CC_API_BASE then the
+    # hardcoded default in cloud_compute_client.default_api_base().
+    _set_str('cloud_compute_api_base', default='', max_len=256)
+    _set_str('auth_api_base', default='', max_len=256)
+    # Cloud-compute analysis settings are NOT a separate override block —
+    # they're projected from the same advanced-analysis settings the local
+    # queue uses (detection_threshold, detector_name, etc.) at submit time.
+    # See api_bridge._cc_build_analysis_settings_from_local. One source of
+    # truth across local + cloud; the wire allowlist lives on both the
+    # client (cloud_compute_client.ANALYSIS_SETTINGS_ALLOWLIST) and the
+    # Worker / Modal sides (defence in depth).
     _set_str('app_session_started_utc', max_len=64)
     _set_bool('app_session_closed_cleanly', default=True)
     _set_int('app_session_pid', default=0, min_value=0, max_value=2_147_483_647)

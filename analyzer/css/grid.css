@@ -538,10 +538,11 @@
   text-overflow: ellipsis;
 }
 
-/* Sticky folder group headers */
+/* Sticky folder group headers — pinned below the sticky search/filter bar
+   so the two don't overlap when scrolling. */
 .folder-group-header {
   position: sticky;
-  top: 0;
+  top: var(--filter-bar-h);
   z-index: 10;
   background: var(--bg);
 }

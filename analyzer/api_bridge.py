@@ -11,12 +11,18 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
+import time
 import webbrowser
 
 from settings_utils import load_persisted_settings, save_persisted_settings, debug, info, warn, error
+# Several long-standing call sites use `log(...)` as a catch-all logger.
+# Bind it to `error` so error-path handlers don't NameError mid-cleanup
+# (which masks the real exception that triggered them).
+log = error
 from queue_manager import _queue_manager
 
 try:
@@ -63,6 +69,169 @@ try:
     WEBVIEW_IMPORT_SUCCESS = True
 except Exception:
     pass
+
+# OAuth 2.0 + PKCE flow against Clerk OAuth Applications. Pure-stdlib module
+# kept separate so it's unit-testable without pywebview / JS.
+try:
+    import oauth_client as _oauth  # type: ignore
+except ImportError:
+    try:
+        from analyzer import oauth_client as _oauth  # type: ignore
+    except ImportError:
+        _oauth = None  # type: ignore[assignment]
+
+# Cloud-compute backend poller cadence (seconds). One poller per active job
+# keeps the per-job remote snapshot fresh; JS reads from cache so there is no
+# N+1 query against the Worker per render. 5s gives near-realtime UI without
+# burning Worker subrequests when several jobs run in parallel.
+_CC_POLL_INTERVAL_SEC = 5
+
+# Continuous-retrieval loop cadence: how long cloud_compute_retrieve_results
+# sleeps between successive list_results+download passes for a still-running
+# job. Packs arrive in batches of ~10, so 15s keeps the gallery fresh without
+# hammering R2/list_results.
+_CC_RETRIEVE_LOOP_SEC = 15
+
+# B2 accept gate: Worker returns 503 {error:'cloud_busy'} when Modal GPU
+# capacity is at the job-block threshold. Surfaced verbatim to JS on submit.
+_CC_CLOUD_BUSY_USER_MESSAGE = (
+    "Cloud Compute Servers are at max capacity, please try again in a few "
+    "minutes, or contact support. Sorry for the inconvenience!"
+)
+
+# ── Account-auth helpers (Kestrel Auth Worker JWT) ───────────────────────────
+_KEYRING_SERVICE = 'ProjectKestrel'
+# Big-bang rename in the auth-migration: keychain slot changed from
+# 'perch_auth' to 'kestrel_auth'. Existing installs see an empty slot and
+# are prompted to sign in once. Acceptable pre-launch.
+_KEYRING_KEY     = 'kestrel_auth'
+
+def _get_auth_fallback_path() -> str:
+    """Plaintext fallback path when no keyring backend is available."""
+    from settings_utils import _get_user_data_dir
+    return os.path.join(_get_user_data_dir(), 'auth.json')
+
+def _keyring_load() -> dict | None:
+    """Read the stored auth JWT from OS keychain; fall back to plaintext file.
+
+    If the key is missing from the keychain (get_password returns None), we
+    must still read the file fallback — otherwise a token stored only in
+    ``auth.json`` (when keyring save failed) is never loaded after restart.
+    """
+    try:
+        import keyring
+        raw = keyring.get_password(_KEYRING_SERVICE, _KEYRING_KEY)
+        if raw:
+            return json.loads(raw)
+    except Exception:
+        pass
+    try:
+        with open(_get_auth_fallback_path(), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+def _keyring_save(data: dict) -> None:
+    """Write the auth bundle to OS keychain; fall back to plaintext file.
+
+    Critical invariant: only ONE of keychain / fallback-file should hold
+    canonical data at any moment. If keychain write succeeds we delete any
+    stale fallback file (and vice versa) so ``_keyring_load`` — which checks
+    keychain first — cannot return outdated data while fresh data sits
+    invisibly in the file. OAuth bundles routinely exceed Windows
+    Credential Manager's ~2560-byte per-credential limit, so the file
+    fallback is hit in practice, not just in keyring-unavailable
+    environments.
+
+    Fallback file is locked down to owner-read/write (``0o600``) in a
+    ``0o700`` directory. Without that the default umask leaves the file
+    world-readable on POSIX, which on a shared dev / CI box is a direct
+    JWT exfil path (audit Medium-13). On Windows, ``chmod`` is a weak ACL
+    approximation; the keyring path is the secure-by-default option there.
+    """
+    serialized = json.dumps(data)
+    fallback_path = _get_auth_fallback_path()
+
+    keyring_ok = False
+    keyring_err: Exception | None = None
+    try:
+        import keyring
+        keyring.set_password(_KEYRING_SERVICE, _KEYRING_KEY, serialized)
+        keyring_ok = True
+    except Exception as e:
+        keyring_err = e
+
+    if keyring_ok:
+        # Wipe any stale file fallback so the next _keyring_load doesn't
+        # silently return outdated data if keychain later breaks.
+        try:
+            os.remove(fallback_path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+        return
+
+    # Keychain failed (most often: bundle too large for the OS keystore).
+    # Log it so this isn't silent, then ensure the keychain has no stale
+    # entry that would shadow the about-to-be-written file.
+    try:
+        print(
+            f"[Auth] keychain write failed ({type(keyring_err).__name__}: "
+            f"{keyring_err}); falling back to plaintext file at {fallback_path}",
+            flush=True,
+        )
+    except Exception:
+        pass
+    try:
+        import keyring as _kr
+        try:
+            _kr.delete_password(_KEYRING_SERVICE, _KEYRING_KEY)
+        except Exception:
+            pass
+    except ImportError:
+        pass
+
+    directory = os.path.dirname(fallback_path)
+    os.makedirs(directory, exist_ok=True)
+    try:
+        os.chmod(directory, 0o700)
+    except OSError:
+        pass
+    with open(fallback_path, 'w', encoding='utf-8') as f:
+        f.write(serialized)
+    try:
+        os.chmod(fallback_path, 0o600)
+    except OSError:
+        pass
+
+
+def _auth_jwt_exp_unverified(token: str) -> float | None:
+    """Return JWT `exp` (seconds since epoch) from the payload without verifying the signature."""
+    t = str(token).strip()
+    parts = t.split(".")
+    if len(parts) < 2:
+        return None
+    try:
+        seg = parts[1] + "=" * (-len(parts[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(seg))
+        e = payload.get("exp")
+        if e is None:
+            return None
+        return float(e)
+    except Exception:  # pragma: no cover
+        return None
+
+
+def _auth_jwt_seconds_until_exp(token: str) -> float | None:
+    """Seconds from now until JWT exp (unverified), or None if not decodable / no exp."""
+    exp = _auth_jwt_exp_unverified(token)
+    if exp is None:
+        return None
+    return float(exp) - time.time()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 
 # Metadata writing utilities
 try:
@@ -182,6 +351,41 @@ class Api:
         self._main_window = None
         self._culling_window = None
         self._server_port: int | None = None
+        # Async share-with-perch state (job_id -> {progress, cancel_event, thread})
+        self._share_jobs: dict = {}
+        self._share_jobs_lock = None
+        self._active_share_job: str | None = None
+        self._perch_account_cache: dict | None = None
+        self._perch_account_cache_at: float = 0.0
+        self._perch_usage_cache: dict | None = None
+        self._perch_usage_cache_at: float = 0.0
+        # Async cloud-compute job state (job_id -> {progress, cancel_event,
+        # pause_event, thread, result}). Cloud-compute reuses the Perch JWT
+        # (same Clerk identity) — see _check_auth_token() and
+        # analyzer/cloud_compute_client.py.
+        self._cc_jobs: dict = {}
+        self._cc_jobs_lock = None
+        # Per-job remote-status poller threads (job_id -> Thread). One thread
+        # per job, started at submit/resume, exits when local status becomes
+        # terminal or `cancel_event` fires. Centralised polling lets JS render
+        # from one bridge call (cloud_compute_list_jobs) without the N+1 query
+        # pattern that previously called get_status per job per render.
+        self._cc_poll_threads: dict = {}
+        # Continuous-retrieval worker threads (job_id -> Thread). Started by
+        # cloud_compute_retrieve_results, which loops _cc_drain_packs_once
+        # until the job is terminal. Guarded so re-clicking "Retrieve Results"
+        # doesn't spawn duplicate download loops (mirrors _cc_poll_threads).
+        self._cc_retrieve_threads: dict = {}
+        # Short-poll event queue for pack-merged notifications from the
+        # background download thread. JS drains via
+        # ``cloud_compute_get_pack_events()`` ~every poll tick and triggers a
+        # folder rescan so the gallery refreshes as packs land — same UX as
+        # local-analysis live updates. Drained-and-cleared each poll.
+        self._cc_pack_events: list = []
+        # 5-minute TTL cache for /api/usage so the Cloud destination card in
+        # the analyze dialog doesn't hit the Worker on every keystroke.
+        self._cc_usage_cache: dict | None = None
+        self._cc_usage_cache_at: float = 0.0
 
     def notify_dirty(self, is_dirty: bool) -> dict:
         """Called from JS whenever the dirty flag changes."""
@@ -1266,6 +1470,9 @@ class Api:
                     full = entry.path
                     has_kestrel = os.path.isfile(os.path.join(full, '.kestrel', 'kestrel_database.csv'))
                     kestrel_version = ''
+                    has_perch_link = has_kestrel and os.path.isfile(
+                        os.path.join(full, '.kestrel', 'perch_link.json')
+                    )
                     if has_kestrel:
                         try:
                             meta_path = os.path.join(full, '.kestrel', 'kestrel_metadata.json')
@@ -1279,6 +1486,7 @@ class Api:
                         'name': name,
                         'path': full,
                         'has_kestrel': has_kestrel,
+                        'has_perch_link': has_perch_link,
                         'kestrel_version': kestrel_version,
                         'children': children,
                     })
@@ -1286,6 +1494,9 @@ class Api:
 
             tree = _scan(root_path, max_depth)
             root_has_kestrel = os.path.isfile(os.path.join(root_path, '.kestrel', 'kestrel_database.csv'))
+            root_has_perch_link = root_has_kestrel and os.path.isfile(
+                os.path.join(root_path, '.kestrel', 'perch_link.json')
+            )
             root_kestrel_version = ''
             if root_has_kestrel:
                 try:
@@ -1299,6 +1510,7 @@ class Api:
                 'success': True,
                 'tree': tree,
                 'root_has_kestrel': root_has_kestrel,
+                'root_has_perch_link': root_has_perch_link,
                 'root_kestrel_version': root_kestrel_version,
                 'error': '',
                 'nodes': node_count[0],
@@ -1551,8 +1763,24 @@ class Api:
     #  Telemetry / Feedback API                                            #
     # ------------------------------------------------------------------ #
 
+    # Map dialog type values to Auth Worker report_type enum.
+    # 'liked' has no direct equivalent; fold into 'general'.
+    _FEEDBACK_TYPE_MAP: dict[str, str] = {
+        'bug':        'bug',
+        'suggestion': 'suggestion',
+        'liked':      'general',
+        'general':    'general',
+        'account':    'account',
+    }
+
     def send_feedback(self, data):
-        """Send feedback / bug report (async, failsafe). Called from JS."""
+        """Send feedback / bug report (async, failsafe). Called from JS.
+
+        When the user is signed in, routes to the Auth Worker
+        (POST /v1/me/feedback) so feedback lands in the unified store.
+        Falls back to the analytics-worker path when signed out or if the
+        Auth Worker call fails.  Screenshots stay on the analytics path.
+        """
         try:
             if _telemetry is None:
                 warn('[API] send_feedback: telemetry unavailable')
@@ -1565,9 +1793,38 @@ class Api:
             if data.get('include_logs', False):
                 active_folder = str(settings.get('active_analysis_path', '') or '').strip()
                 log_tail = _telemetry.get_recent_log_tail(folder=active_folder or None, runtime_log_files=3)
+
+            raw_type = data.get('type', 'general')
+            report_type = self._FEEDBACK_TYPE_MAP.get(str(raw_type).lower(), 'general')
+            description = data.get('description', '')
+
+            # --- Auth Worker path (signed-in users who opted to send as self) ---
+            # Gated on the explicit `send_as_user` opt-in from the dialog: even
+            # when signed in, an unchecked box means the report is anonymous and
+            # must take the analytics path below.
+            # Screenshots are out of scope for the Auth path; they stay on the
+            # analytics path only.  Any failure falls through to analytics.
+            try:
+                send_as_user = bool(data.get('send_as_user', False))
+                client, _err = (self._auth_make_client() if send_as_user else (None, None))
+                if client is not None:
+                    version = _telemetry._read_version() if _telemetry else ''
+                    os_info = _telemetry._get_os_info() if _telemetry else ''  # module-level fn
+                    client.post_feedback(
+                        report_type=report_type,
+                        message=description,
+                        version=version,
+                        os=os_info,
+                        contact=str(data.get('contact', '') or '').strip(),
+                    )
+                    return {'success': True}
+            except Exception:
+                pass  # fall through to analytics path
+
+            # --- Analytics-worker path (signed-out or Auth call failed) ---
             _telemetry.send_feedback(
-                report_type=data.get('type', 'general'),
-                description=data.get('description', ''),
+                report_type=raw_type,
+                description=description,
                 contact=data.get('contact', ''),
                 screenshot_b64=data.get('screenshot_b64', ''),
                 log_tail=log_tail,
@@ -2058,6 +2315,14 @@ class Api:
     #  Culling Assistant API                                               #
     # ------------------------------------------------------------------ #
 
+    _main_window = None
+    _culling_window = None
+    _server_port = None
+    # OAuth flow state (per-instance, defaults safe for fresh sessions).
+    _oauth_lock = None              # lazy-init threading.Lock in _get_oauth_lock
+    _oauth_in_flight = False
+    _oauth_status = "idle"
+
     def open_culling_window(self, root_path: str):
         """Open a new pywebview window for the Culling Assistant."""
         try:
@@ -2088,6 +2353,3154 @@ class Api:
             import traceback
             error(f'[culling] Traceback: {traceback.format_exc()}')
             return {'success': False, 'error': str(e)}
+
+    def _get_oauth_lock(self):
+        """Lazy-init the OAuth flow lock; mirrors the _share_jobs_lock pattern."""
+        if self._oauth_lock is None:
+            import threading as _t
+            self._oauth_lock = _t.Lock()
+        return self._oauth_lock
+
+    def _load_token_bundle(self) -> dict | None:
+        """Read the OAuth bundle from keychain. Returns None if missing or stale-schema."""
+        data = _keyring_load()
+        if not data or not isinstance(data, dict):
+            return None
+        if not data.get("access_token"):
+            return None
+        return data
+
+    def _clear_keychain_auth(self) -> None:
+        """Best-effort: remove the keyring slot and the plaintext fallback file."""
+        try:
+            import keyring as _kr
+            try:
+                _kr.delete_password(_KEYRING_SERVICE, _KEYRING_KEY)
+            except Exception:
+                pass
+        except ImportError:
+            pass
+        try:
+            os.remove(_get_auth_fallback_path())
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+    def _refresh_if_needed(self, bundle: dict) -> dict | None:
+        """Refresh the access token if within REFRESH_BUFFER_SEC of expiry.
+
+        Returns the (possibly updated) bundle. Returns None only if refresh
+        definitively failed with ``invalid_grant`` and the keychain was
+        cleared. On transient failures (network), returns the unchanged
+        bundle so callers can still attempt to use the existing token until
+        it truly expires.
+        """
+        if _oauth is None:
+            return bundle  # OAuth module unavailable — nothing we can do
+        try:
+            expires_at = float(bundle.get("expires_at") or 0)
+        except (TypeError, ValueError):
+            expires_at = 0.0
+        ttl = expires_at - time.time()
+        if ttl >= _oauth.REFRESH_BUFFER_SEC:
+            return bundle
+        refresh_token = bundle.get("refresh_token") or ""
+        if not refresh_token:
+            return bundle  # no refresh available; let upstream stale-check handle it
+
+        lock = self._get_oauth_lock()
+        if not lock.acquire(timeout=10.0):
+            return bundle
+        try:
+            # Another caller may have refreshed while we waited for the lock.
+            current = _keyring_load() or {}
+            if (current.get("access_token")
+                    and current.get("access_token") != bundle.get("access_token")):
+                return current
+            try:
+                ttl_now = float(current.get("expires_at") or 0) - time.time()
+            except (TypeError, ValueError):
+                ttl_now = 0.0
+            if ttl_now >= _oauth.REFRESH_BUFFER_SEC:
+                return current
+
+            resp = _oauth.refresh_access_token(refresh_token)
+            if resp.get("error"):
+                # invalid_grant => refresh token revoked / aged out / rotated past.
+                if resp.get("error") == "invalid_grant":
+                    self._clear_keychain_auth()
+                    self._perch_account_cache = None
+                    self._perch_account_cache_at = 0.0
+                    self._perch_usage_cache = None
+                    self._perch_usage_cache_at = 0.0
+                    return None
+                # Network / 5xx — keep old bundle, downstream will surface stale.
+                return current or bundle
+
+            new_bundle = _oauth.build_bundle(resp)
+            # Clerk may omit refresh_token if it isn't rotating; preserve ours.
+            if not new_bundle.get("refresh_token"):
+                new_bundle["refresh_token"] = refresh_token
+            if not new_bundle.get("access_token"):
+                return current or bundle
+            _keyring_save(new_bundle)
+            # Caches were keyed on the now-rotated access token.
+            self._perch_account_cache = None
+            self._perch_account_cache_at = 0.0
+            self._perch_usage_cache = None
+            self._perch_usage_cache_at = 0.0
+            return new_bundle
+        finally:
+            lock.release()
+
+    def get_auth_token(self):
+        """Return current OAuth access token; trigger lazy refresh near expiry.
+
+        Return shape preserved for backward compatibility with JS callers:
+        ``{success, token, expiry}``. ``token`` is None when the user is signed
+        out or the token is past its post-refresh staleness floor.
+        """
+        try:
+            bundle = self._load_token_bundle()
+            if not bundle:
+                return {"success": True, "token": None}
+            bundle = self._refresh_if_needed(bundle)
+            if bundle is None:
+                return {"success": True, "token": None}
+            access_token = bundle.get("access_token") or ""
+            if not access_token:
+                return {"success": True, "token": None}
+            ttl = _auth_jwt_seconds_until_exp(str(access_token))
+            if ttl is None or ttl < 60:
+                # Token is past its useful life and refresh didn't (or couldn't)
+                # extend it — surface signed-out so the UI prompts re-auth.
+                return {"success": True, "token": None}
+            exp_out = _auth_jwt_exp_unverified(str(access_token))
+            if exp_out is None:
+                try:
+                    exp_out = float(bundle.get("expires_at") or 0)
+                except (TypeError, ValueError):
+                    exp_out = 0.0
+            return {"success": True, "token": access_token, "expiry": exp_out}
+        except Exception as e:
+            print(f"[API] get_auth_token() -> Error: {e}", flush=True)
+            return {"success": True, "token": None}
+
+    def get_perch_api_base(self) -> str:
+        """Base URL of the Perch API Worker (no trailing slash)."""
+        return os.environ.get(
+            "PERCH_API_BASE", "https://perchapi.projectkestrel.org"
+        ).rstrip("/")
+
+    # ─── Perch upload — preflight, async share, progress, cancel ─────────
+    # Per-instance share-job state lives on `self._share_jobs`, initialized in
+    # __init__. Access is guarded by a lazy-allocated lock since pywebview
+    # method handlers run on a thread distinct from the upload worker pool.
+
+    def _ensure_share_lock(self) -> "threading.Lock":
+        import threading as _t
+        if self._share_jobs_lock is None:
+            self._share_jobs_lock = _t.Lock()
+        return self._share_jobs_lock
+
+    def _check_auth_token(self) -> tuple[str | None, str | None, dict | None]:
+        """Return (token, dev_user, error_dict-if-not-signed-in-or-stale).
+
+        On a usable token: error_dict is None.
+        On no token: error_dict has `needSignIn: True`.
+
+        Triggers a lazy OAuth refresh when the access token is within the
+        300s pre-expiry buffer, so a long-running call doesn't 401 if the
+        token rolled over mid-flight.
+        """
+        dev_user = os.environ.get("PERCH_DEV_USER_ID")
+        bundle = self._load_token_bundle()
+        token = None
+        if bundle is not None:
+            bundle = self._refresh_if_needed(bundle)
+            if bundle is not None:
+                token = bundle.get("access_token") or None
+        if not token and not dev_user:
+            return None, None, {"success": False, "error": "not_signed_in", "needSignIn": True}
+        if token and not dev_user:
+            ttl = _auth_jwt_seconds_until_exp(str(token))
+            if ttl is None or ttl < 90:
+                return None, None, {
+                    "success": False,
+                    "error": "auth_token_expired",
+                    "needSignIn": True,
+                }
+        return (str(token) if token else None), dev_user, None
+
+    def preflight_perch_upload(self, root_path: str, skip_rejected: bool = True) -> dict:
+        """Compute scene/photo/byte counts for a folder before uploading.
+
+        Local-only (no auth needed). Returns aggregate totals plus a per-scene
+        breakdown so the JS layer can render a checkbox-per-scene selector.
+        Also reports `signedIn` so the dialog can fork between the explainer
+        body and the upload-preview body.
+
+        ``skip_rejected``: when True (default), CSV rows with ``culled``
+        truthy are dropped from preflight totals. The number dropped is
+        returned as ``rejectedSkipped`` so the dialog can show the count.
+        """
+        try:
+            from perch_uploader import PerchKestrelUploader
+        except ImportError:  # pragma: no cover
+            try:
+                from analyzer.perch_uploader import PerchKestrelUploader
+            except ImportError as e:
+                return {"ok": False, "error": f"uploader import failed: {e}"}
+
+        root_real, err = self._validate_root_dir(
+            root_path, context="preflight_perch_upload", require_exists=True
+        )
+        if err:
+            return {"ok": False, "error": err}
+
+        # Token check is non-fatal here — preflight runs even when signed out.
+        dev_user = os.environ.get("PERCH_DEV_USER_ID")
+        bundle = self._load_token_bundle()
+        if bundle is not None:
+            bundle = self._refresh_if_needed(bundle)
+        token = (bundle or {}).get("access_token") if bundle else None
+        signed_in = bool(dev_user)
+        token_stale = False
+        if not signed_in and token:
+            ttl = _auth_jwt_seconds_until_exp(str(token))
+            if ttl is None or ttl < 90:
+                token_stale = True
+            else:
+                signed_in = True
+
+        try:
+            uploader = PerchKestrelUploader(
+                self.get_perch_api_base(),
+                str(token) if token else None,
+                dev_user=dev_user,
+            )
+        except ValueError:
+            # No usable auth at all — preflight still works (no network call),
+            # so we pass a placeholder dev_user just to satisfy the constructor.
+            # This placeholder never reaches the worker because preflight() is
+            # local-only.
+            try:
+                uploader = PerchKestrelUploader(
+                    self.get_perch_api_base(), None, dev_user="preflight-no-auth"
+                )
+            except Exception as e:
+                return {"ok": False, "error": str(e)}
+        try:
+            pre = uploader.preflight(root_real, skip_rejected=bool(skip_rejected))
+        except Exception as e:
+            log(f"preflight_perch_upload: {e}")
+            return {"ok": False, "error": str(e)}
+
+        return {
+            "ok": True,
+            "signedIn": signed_in,
+            "tokenStale": token_stale,
+            "sceneCount": pre.scene_count,
+            "imageCount": pre.image_count,
+            "exportCount": pre.export_count,
+            "cropCount": pre.crop_count,
+            "totalBytes": pre.total_bytes,
+            "fileCount": pre.file_count,
+            "rejectedSkipped": pre.rejected_skipped,
+            "skipRejectedUsed": bool(skip_rejected),
+            "scenes": [
+                {
+                    "sceneId": s.scene_id,
+                    "title": s.title,
+                    "captureTimeMs": s.capture_time_ms,
+                    "imageCount": s.image_count,
+                    "exportCount": s.export_count,
+                    "cropCount": s.crop_count,
+                    "totalBytes": s.total_bytes,
+                    "topQuality": s.top_quality,
+                    "thumbnailPath": s.thumbnail_rel,
+                    "reviewed": bool(s.reviewed),
+                    "rejectedSkipped": int(s.rejected_skipped),
+                    "species": list(s.species),
+                    "families": list(s.families),
+                }
+                for s in pre.scenes
+            ],
+        }
+
+    def get_perch_account(self) -> dict:
+        """GET /v1/me — caller's Clerk profile. 5-min in-process cache.
+
+        Only successful responses are cached — failures are NOT cached, so a
+        recoverable error (transient network blip, token-just-refreshed) is
+        retried on the next call instead of getting stuck for 5 minutes.
+        """
+        now = time.time()
+        if (
+            self._perch_account_cache is not None
+            and self._perch_account_cache.get("success")
+            and (now - self._perch_account_cache_at) < 300
+        ):
+            return self._perch_account_cache
+        token, dev_user, err = self._check_auth_token()
+        if err:
+            return err
+        try:
+            import requests as _req
+            headers: dict = {}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            if dev_user:
+                headers["x-dev-user-id"] = str(dev_user)
+            r = _req.get(
+                f"{self.get_perch_api_base()}/v1/me",
+                headers=headers,
+                timeout=15,
+            )
+            if not r.ok:
+                return {"success": False, "error": f"HTTP {r.status_code}"}
+            body = r.json()
+            out = {"success": True, "account": body}
+            self._perch_account_cache = out
+            self._perch_account_cache_at = now
+            return out
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def get_perch_usage(self) -> dict:
+        """GET /v1/me/usage — totalImages, totalAssets, totalBytes. 5-min cache."""
+        now = time.time()
+        if (
+            self._perch_usage_cache is not None
+            and (now - self._perch_usage_cache_at) < 300
+        ):
+            return self._perch_usage_cache
+        token, dev_user, err = self._check_auth_token()
+        if err:
+            return err
+        try:
+            import requests as _req
+            headers: dict = {}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            if dev_user:
+                headers["x-dev-user-id"] = str(dev_user)
+            r = _req.get(
+                f"{self.get_perch_api_base()}/v1/me/usage",
+                headers=headers,
+                timeout=15,
+            )
+            if not r.ok:
+                return {"success": False, "error": f"HTTP {r.status_code}"}
+            body = r.json()
+            out = {"success": True, "usage": body}
+            self._perch_usage_cache = out
+            self._perch_usage_cache_at = now
+            return out
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def get_perch_list(self, limit: int = 200) -> dict:
+        """GET /v1/me/perches — lightweight perch list for the Account panel."""
+        token, dev_user, err = self._check_auth_token()
+        if err:
+            return err
+        lim = max(1, min(int(limit or 200), 200))
+        try:
+            import requests as _req
+            headers: dict = {}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            if dev_user:
+                headers["x-dev-user-id"] = str(dev_user)
+            r = _req.get(
+                f"{self.get_perch_api_base()}/v1/me/perches",
+                headers=headers,
+                params={"limit": lim},
+                timeout=15,
+            )
+            if not r.ok:
+                return {"success": False, "error": f"HTTP {r.status_code}"}
+            body = r.json()
+            perches = body.get("perches") if isinstance(body, dict) else None
+            if not isinstance(perches, list):
+                perches = body if isinstance(body, list) else []
+            return {"success": True, "perches": perches}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    # ─── Cloud Compute — submit / poll / cancel ───────────────────────────
+    # Reuses the Perch JWT (same Clerk identity). The cloud-compute Worker
+    # validates the JWT and calls Perch internally for entitlement + usage
+    # accrual; the desktop app does not need to know about that handshake.
+
+    @staticmethod
+    def _sanitize_cloud_error_message(msg: str) -> str:
+        """Strip credentials from Worker error bodies before surfacing to JS.
+
+        Worker error responses are forwarded verbatim into the analyzer UI; a
+        misbehaving upstream (or a future logging-the-request-body bug) could
+        echo back the user's Bearer token / JWT. Redact those patterns and
+        cap the payload so a flood of HTML / stack trace can't crowd out the
+        actionable error.
+        """
+        if not msg:
+            return ""
+        text = str(msg)
+        text = re.sub(r"Bearer\s+[A-Za-z0-9._\-]+", "Bearer [REDACTED]", text)
+        text = re.sub(
+            r"\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\b",
+            "[REDACTED_JWT]",
+            text,
+        )
+        if len(text) > 300:
+            text = text[:300] + "…"
+        return text
+
+    @staticmethod
+    def _cc_submit_error_response(exc: "object") -> dict | None:
+        """Map known Worker submit failures to desktop-friendly error dicts.
+
+        Returns a full ``{ok: False, ...}`` payload for typed cases, or
+        ``None`` so the caller can fall through to the generic sanitizer.
+        """
+        try:
+            from cloud_compute_client import CloudComputeError as _CCE
+        except ImportError:
+            return None
+        if not isinstance(exc, _CCE):
+            return None
+        if exc.status != 503:
+            return None
+        try:
+            parsed = json.loads(exc.message)
+        except (ValueError, TypeError):
+            parsed = None
+        if not isinstance(parsed, dict) or parsed.get("error") != "cloud_busy":
+            return None
+        return {
+            "ok": False,
+            "error": _CC_CLOUD_BUSY_USER_MESSAGE,
+            "status": 503,
+            "errorCode": "cloud_busy",
+        }
+
+    def _ensure_cc_lock(self) -> "threading.Lock":
+        import threading as _t
+        if self._cc_jobs_lock is None:
+            self._cc_jobs_lock = _t.Lock()
+        return self._cc_jobs_lock
+
+    def cloud_compute_get_api_base(self) -> str:
+        """Settings-aware cloud-compute Worker base URL (no trailing slash)."""
+        try:
+            from cloud_compute_client import default_api_base
+        except ImportError:
+            try:
+                from analyzer.cloud_compute_client import default_api_base
+            except ImportError:
+                return "https://cloudcompute.projectkestrel.org"
+
+        # Settings override > env override > default. settings_utils stores the
+        # value as a string; empty string = unset.
+        try:
+            settings = self.get_settings()
+            if isinstance(settings, dict):
+                cfg = settings.get("settings") if "settings" in settings else settings
+                if isinstance(cfg, dict):
+                    s_val = str(cfg.get("cloud_compute_api_base") or "").strip()
+                    if s_val:
+                        return s_val.rstrip("/")
+        except Exception:
+            pass
+        return default_api_base()
+
+    def _cc_import(self):
+        """Lazy import of cloud_compute_client. Returns the module or raises."""
+        try:
+            import cloud_compute_client as ccc
+            return ccc
+        except ImportError:
+            from analyzer import cloud_compute_client as ccc  # type: ignore[no-redef]
+            return ccc
+
+    def _cc_jobs_store(self):
+        """Lazy import of cloud_jobs_store."""
+        try:
+            import cloud_jobs_store as cjs
+            return cjs
+        except ImportError:
+            from analyzer import cloud_jobs_store as cjs  # type: ignore[no-redef]
+            return cjs
+
+    def _cc_fresh_token(self) -> str | None:
+        """Token provider handed to CloudComputeClient. Called by the client on
+        a 401 to obtain a FRESH JWT and retry — so a session that expires
+        mid-job (e.g. after laptop sleep) self-heals instead of failing the
+        job. _check_auth_token() triggers a lazy OAuth refresh when the access
+        token is near/at expiry, which is exactly the post-sleep case. Returns
+        None when re-auth genuinely can't be obtained (signed out / refresh
+        token revoked); the client then raises CloudComputeAuthError."""
+        try:
+            token, _dev_user, _err = self._check_auth_token()
+        except Exception:
+            return None
+        return token
+
+    def _cc_make_client(self):
+        """Build an authenticated CloudComputeClient. Returns (client, error_dict)."""
+        token, dev_user, token_err = self._check_auth_token()
+        if token_err:
+            return None, token_err
+        try:
+            ccc = self._cc_import()
+        except ImportError as e:
+            return None, {"ok": False, "error": f"cloud_compute_client import failed: {e}"}
+        try:
+            client = ccc.CloudComputeClient(
+                self.cloud_compute_get_api_base(),
+                token,
+                dev_user=dev_user,
+                # On a 401, let the client refresh + retry instead of failing
+                # the job. See _cc_fresh_token.
+                token_provider=self._cc_fresh_token,
+            )
+        except ValueError as e:
+            return None, {"ok": False, "error": str(e)}
+        return client, None
+
+    def auth_get_api_base(self) -> str:
+        """Settings-aware Auth Worker base URL (no trailing slash). Mirrors
+        cloud_compute_get_api_base — the JWT bridge talks to a different
+        domain from the CC Worker, so we resolve it independently."""
+        try:
+            from auth_client import default_auth_api_base
+        except ImportError:
+            try:
+                from analyzer.auth_client import default_auth_api_base
+            except ImportError:
+                return "https://auth.projectkestrel.org"
+        try:
+            settings = self.get_settings()
+            if isinstance(settings, dict):
+                cfg = settings.get("settings") if "settings" in settings else settings
+                if isinstance(cfg, dict):
+                    s_val = str(cfg.get("auth_api_base") or "").strip()
+                    if s_val:
+                        return s_val.rstrip("/")
+        except Exception:
+            pass
+        return default_auth_api_base()
+
+    def _auth_import(self):
+        """Lazy import of auth_client. Returns the module or raises."""
+        try:
+            import auth_client as ac
+            return ac
+        except ImportError:
+            from analyzer import auth_client as ac  # type: ignore[no-redef]
+            return ac
+
+    def _auth_make_client(self):
+        """Build an authenticated AuthClient. Returns (client, error_dict)."""
+        token, dev_user, token_err = self._check_auth_token()
+        if token_err:
+            return None, token_err
+        try:
+            ac = self._auth_import()
+        except ImportError as e:
+            return None, {"ok": False, "error": f"auth_client import failed: {e}"}
+        try:
+            client = ac.AuthClient(
+                self.auth_get_api_base(),
+                token,
+                dev_user=dev_user,
+            )
+        except ValueError as e:
+            return None, {"ok": False, "error": str(e)}
+        return client, None
+
+    # ── Notifications (H6) — proxy the central Auth-hosted store ────────────
+    # The bell UI lives in the desktop app but the store lives on the Auth
+    # Worker; we proxy through Python so the Clerk JWT (held in the OS keychain)
+    # never has to be handed to the webview. All best-effort: a failure returns
+    # {success: False, error} and the bell degrades quietly.
+    def get_notifications(self) -> dict:
+        """GET /v1/me/notifications → {success, notifications, unreadCount}."""
+        client, err = self._auth_make_client()
+        if err:
+            return {"success": False, "error": err.get("error", "not signed in")}
+        try:
+            data = client.get_notifications(30)
+            return {
+                "success": True,
+                "notifications": data.get("notifications", []),
+                "unreadCount": data.get("unreadCount", 0),
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def mark_notification_read(self, notif_id: str) -> dict:
+        """POST /v1/me/notifications/{id}/read."""
+        client, err = self._auth_make_client()
+        if err:
+            return {"success": False, "error": err.get("error", "not signed in")}
+        try:
+            client.mark_notification_read(notif_id)
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def mark_all_notifications_read(self) -> dict:
+        """POST /v1/me/notifications/read-all."""
+        client, err = self._auth_make_client()
+        if err:
+            return {"success": False, "error": err.get("error", "not signed in")}
+        try:
+            client.mark_all_notifications_read()
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def hide_notification(self, notif_id: str) -> dict:
+        """DELETE /v1/me/notifications/{id} — soft hide."""
+        client, err = self._auth_make_client()
+        if err:
+            return {"success": False, "error": err.get("error", "not signed in")}
+        try:
+            client.hide_notification(notif_id)
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _cc_load_analyzed_filenames(self, folder) -> tuple[set, set]:
+        """Read analyzed + errored filenames from the folder's kestrel database,
+        running schema migration as needed.
+
+        Wraps ``kestrel_analyzer.database.load_database`` so legacy CSVs (with
+        ``rating`` / ``scene_name`` columns and no ``kestrel_scenedata.json``)
+        get the same OLD_..._csv backup + scenedata.json extraction as on a
+        local enqueue. Without this, the cloud path would read a legacy CSV
+        directly and the pack-merge would silently lose the user's pre-migration
+        ratings / scene names.
+
+        Returns ``(analyzed_filenames, errored_filenames)``. Both empty when
+        no database exists yet.
+        """
+        from pathlib import Path as _Path
+        folder = _Path(folder)
+        kestrel_dir = folder / ".kestrel"
+        if not (kestrel_dir / "kestrel_database.csv").is_file():
+            return set(), set()
+        try:
+            from kestrel_analyzer.database import load_database
+        except ImportError:
+            from analyzer.kestrel_analyzer.database import load_database  # type: ignore[no-redef]
+        try:
+            database, _db_path = load_database(
+                str(kestrel_dir), analyzer_name="cloud-compute-select"
+            )
+        except Exception as e:
+            warn(f"[cloud-compute] load_database failed for {folder}: {e}")
+            return set(), set()
+        if database.empty or "filename" not in database.columns:
+            return set(), set()
+        analyzed = {
+            str(f).strip() for f in database["filename"].values if str(f).strip()
+        }
+        errored: set = set()
+        if "species" in database.columns:
+            mask = database["species"].astype(str) == "Error"
+            errored = {
+                str(f).strip()
+                for f in database.loc[mask, "filename"].values
+                if str(f).strip()
+            }
+        return analyzed, errored
+
+    def _cc_select_upload_files(self, folder, retry_errored: bool = False) -> tuple:
+        """Resume-aware file-selection for cloud upload.
+
+        Mirrors the local pipeline's "pick up where Kestrel left off" behavior:
+        reads ``<folder>/.kestrel/kestrel_database.csv`` to discover which
+        images have already been analyzed, then returns only the unprocessed
+        ones — **prepending the last alphabetically-analyzed file as a
+        scene-merger anchor** so the cloud pipeline's per-image similarity
+        check has a real previous_image to compare against. Without the
+        anchor, the first new image would have no previous_image and could be
+        wrongly split into a new scene.
+
+        When ``retry_errored=True``, rows with ``species == "Error"`` are
+        treated as un-analyzed (re-uploaded + expected to be overwritten by
+        the cloud-result merge), and the file immediately preceding each
+        errored file (by sort order) is added to the protected-anchor set
+        so the cloud pipeline has a real previous_image for scene continuity
+        at the errored file's position. The pack-merge respects the protected
+        set by passing it to ``merge_pack_into_kestrel(..., protected_filenames=...)``.
+
+        Returns ``(upload_files, anchor_filename, anchor_filenames,
+        total_in_folder, already_analyzed_count)`` where:
+          - ``anchor_filename``: the primary (last-alphabetical) anchor, used
+            for display/log messages. May be ``None``.
+          - ``anchor_filenames``: frozenset of ALL filenames we re-upload
+            purely for scene continuity (the primary anchor plus any
+            per-errored-predecessor anchors). Caller MUST pass this to
+            ``merge_pack_into_kestrel`` as ``protected_filenames`` so the
+            cloud pipeline's re-analysis of these anchor frames doesn't
+            clobber the user's already-good local rows.
+
+        Returns an empty ``upload_files`` list when there is nothing new to
+        analyze — the caller should treat that as a no-op.
+        """
+        from pathlib import Path as _Path
+        folder = _Path(folder)
+        # Match the local pipeline / folder_inspector RAW-priority rule: if the
+        # folder has any RAWs we ONLY analyze RAWs (their JPEG sidecars are
+        # ignored). Only when there are zero RAWs do we fall back to JPEGs.
+        # Without this, cloud jobs upload both RAW and JPG, doubling bandwidth
+        # and producing duplicate scene rows on merge. See folder_inspector.py
+        # `list_images_in_folder` — keep the two filters in sync.
+        try:
+            from kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS
+        except ImportError:
+            from analyzer.kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS  # type: ignore[no-redef]
+        raw_set = {ext.lower() for ext in RAW_EXTENSIONS}
+        jpeg_set = {ext.lower() for ext in JPEG_EXTENSIONS}
+        candidates = [p for p in folder.iterdir() if p.is_file()]
+        raws = sorted(p for p in candidates if p.suffix.lower() in raw_set)
+        all_files = raws if raws else sorted(p for p in candidates if p.suffix.lower() in jpeg_set)
+        if not all_files:
+            return [], None, frozenset(), 0, 0
+
+        # Read analyzed/errored filenames via the shared helper so legacy CSVs
+        # get migrated (load_database → _needs_upgrade → _perform_db_upgrade)
+        # the same way the local enqueue path does. Without this, a folder
+        # whose CSV still has the pre-migration rating/scene_name columns
+        # would have its user data silently dropped on first cloud pack-merge.
+        analyzed, errored = self._cc_load_analyzed_filenames(folder)
+
+        # When retry_errored is on, errored filenames are NOT considered
+        # "analyzed" for the skip filter, so they get re-uploaded. They are,
+        # however, expected to be overwritten by the cloud result-merge —
+        # they're NOT added to the protected anchor set.
+        skip = analyzed - errored if retry_errored else analyzed
+        new_files = [p for p in all_files if p.name not in skip]
+
+        # Build the protected-anchor set. The primary anchor is the last
+        # alphabetical analyzed-and-not-errored file (same as before). When
+        # retry_errored is on, we ALSO need a scene-continuity anchor for each
+        # errored gap: the immediately-preceding file in the sorted folder
+        # listing. That predecessor is a healthy already-analyzed row whose
+        # local data we MUST keep, hence membership in the protected set.
+        protected: set = set()
+        anchor_filename = None
+        if analyzed and new_files:
+            # Healthy-analyzed = analyzed minus errored. Errored rows being
+            # re-uploaded shouldn't double as scene anchors (their species
+            # value is "Error", not a real classification).
+            healthy = analyzed - errored
+            healthy_in_folder = [p for p in all_files if p.name in healthy]
+            if healthy_in_folder:
+                primary = healthy_in_folder[-1]
+                anchor_filename = primary.name
+                protected.add(primary.name)
+                if primary not in new_files:
+                    new_files = [primary] + new_files
+
+        if retry_errored and errored:
+            errored_in_folder = [p for p in all_files if p.name in errored]
+            # Build index map once so predecessor lookup is O(1) per errored file.
+            index_by_path = {p: i for i, p in enumerate(all_files)}
+            for ep in errored_in_folder:
+                idx = index_by_path.get(ep)
+                if idx is None or idx == 0:
+                    continue  # first file in folder has no predecessor
+                pred = all_files[idx - 1]
+                # Skip a predecessor that's itself errored or un-analyzed —
+                # neither provides a clean scene-continuity baseline.
+                if pred.name in errored or pred.name not in analyzed:
+                    continue
+                protected.add(pred.name)
+                if pred not in new_files:
+                    new_files = [pred] + new_files
+
+        return (
+            new_files,
+            anchor_filename,
+            frozenset(protected),
+            len(all_files),
+            len(analyzed),
+        )
+
+    def _cc_analysis_settings_snapshot(self) -> dict | None:
+        """Project the user's local advanced-analysis settings into the
+        cloud-compute wire format.
+
+        The wire allowlist (``cloud_compute_client.ANALYSIS_SETTINGS_ALLOWLIST``)
+        is intentionally narrow — only ``detector_name``, ``confidence_threshold``
+        and a handful of feature toggles cross to Modal today. We pull each from
+        the same ``settings.json`` keys the local queue reads at enqueue time,
+        so picking ``Cloud`` from the destination toggle uses the same advanced
+        settings as ``Local`` would. ``filter_analysis_settings`` (called by
+        ``CloudComputeClient.submit_job``) will then drop anything the wire
+        doesn't accept, so this can safely include keys that aren't yet wired
+        up on the Modal side (forward-compatible).
+        """
+        try:
+            settings = self.get_settings()
+            if not isinstance(settings, dict):
+                return None
+            cfg = settings.get("settings") if "settings" in settings else settings
+            if not isinstance(cfg, dict):
+                return None
+        except Exception:
+            return None
+        # Mirrors the local queue's advanced-settings keys (visualizer.js
+        # ~line 8285-8318). Cloud takes whatever subset it can use; the rest
+        # are dropped at the filter step.
+        candidate: dict = {}
+        det = cfg.get("detector_name")
+        if isinstance(det, str) and det:
+            candidate["detector_name"] = det
+        thr = cfg.get("detection_threshold")
+        if isinstance(thr, (int, float)) and 0.10 <= float(thr) <= 0.99:
+            candidate["confidence_threshold"] = float(thr)
+        # Boolean feature toggles. Project from the same flag names the local
+        # pipeline checks. Missing → omit (Modal uses its built-in default).
+        for src_key, wire_key in (
+            ("species_detection_enabled", "species_detection_enabled"),
+            ("wildlife_enabled",          "wildlife_enabled"),
+            ("scene_grouping_enabled",    "scene_grouping_enabled"),
+            ("crop_generation_enabled",   "crop_generation_enabled"),
+            ("quality_model_enabled",     "quality_model_enabled"),
+            ("retry_errored",             "retry_errored"),
+        ):
+            v = cfg.get(src_key)
+            if isinstance(v, bool):
+                candidate[wire_key] = v
+        # Advanced numeric/enum settings. Range guards mirror the CLI's
+        # documented ranges (cli.py) so we don't ship out-of-range values that
+        # Modal would just clamp anyway.
+        mbc = cfg.get("max_bird_crops")
+        if isinstance(mbc, int) and not isinstance(mbc, bool) and 1 <= mbc <= 20:
+            candidate["max_bird_crops"] = mbc
+        eq = cfg.get("exposure_quality")
+        if isinstance(eq, str) and eq in ("lenient", "balanced", "aggressive"):
+            candidate["exposure_quality"] = eq
+        stt = cfg.get("scene_time_threshold")
+        if isinstance(stt, (int, float)) and not isinstance(stt, bool) and 0.0 <= float(stt) <= 60.0:
+            candidate["scene_time_threshold"] = float(stt)
+        tmw = cfg.get("thumbnail_max_width")
+        if isinstance(tmw, int) and not isinstance(tmw, bool) and 400 <= tmw <= 2400:
+            candidate["thumbnail_max_width"] = tmw
+        tjc = cfg.get("thumbnail_jpeg_compression")
+        if isinstance(tjc, (int, float)) and not isinstance(tjc, bool) and 0.50 <= float(tjc) <= 1.00:
+            candidate["thumbnail_jpeg_compression"] = float(tjc)
+        return candidate or None
+
+    # Default cached remote counters — keeps the JS render code simple by
+    # guaranteeing every numeric counter is a number, never `None`.
+    _CC_REMOTE_DEFAULTS: dict = {  # type: ignore[var-annotated]
+        "uploadedCount": 0,
+        "analyzedCount": 0,
+        "dispatchedCount": 0,
+        "pendingCount": 0,
+        "downloadedCount": 0,
+        "pack_count": 0,
+        "stopRequested": False,
+        "remoteStatus": None,
+        # Worker's upload_complete flag (POST /api/jobs/:id/complete sets this).
+        # JS layer uses the false→true flip as one of two triggers for
+        # maybeStartNextCloudJob (the other is remoteStatus → terminal). On
+        # free-tier (limit=1) this is a no-op since uploadComplete doesn't
+        # free a slot; on paid-tier (limit>=2) it lets the next folder's
+        # upload start as soon as the previous folder's upload finishes.
+        "uploadComplete": False,
+        "updatedAtMs": 0,
+        "failureCount": 0,
+        "lastError": None,
+        # §0 UX-rework additions (no worker change — these already ship in
+        # GET /api/jobs/{id}):
+        #  - retrievedCount: images whose result pack the client has pulled
+        #    from the worker (results_status='results_retrieved'); drives the
+        #    third "results retrieved" progress bar.
+        #  - activeContainerCount: live Modal containers (jobs.active_container_count);
+        #    drives the per-job "Additional information" container tally.
+        #  - terminalReason: jobs.terminal_reason once terminal
+        #    (complete | client_disconnected | modal_retries_exhausted |
+        #    runaway_dispatch | stalled_no_container | user_cancel | orphan_reaped …);
+        #    drives the friendly per-state explanation banner.
+        "retrievedCount": 0,
+        "activeContainerCount": 0,
+        "terminalReason": None,
+    }
+
+    def _cc_apply_remote_snapshot(self, job_id: str, remote: dict) -> None:
+        """Merge a fresh remote snapshot from the Worker into the per-job cache.
+
+        Idempotent. Holds the cc lock briefly to swap the dict; the JS render
+        path reads from here under the same lock so partial updates can't be
+        observed."""
+        import time as _t
+        snapshot = dict(self._CC_REMOTE_DEFAULTS)
+        for key in (
+            "uploadedCount", "analyzedCount", "dispatchedCount", "pendingCount",
+            "downloadedCount", "pack_count", "retrievedCount",
+            "stopRequested", "uploadComplete",
+        ):
+            if key in remote and remote[key] is not None:
+                snapshot[key] = remote[key]
+        rs = remote.get("status")
+        if isinstance(rs, str) and rs:
+            snapshot["remoteStatus"] = rs
+        # active_container_count + terminal_reason ride along on the raw jobs
+        # row (worker spreads `...job` into GET /api/jobs/{id}). snake_case on
+        # the wire; normalise to the camelCase keys the JS layer reads.
+        acc = remote.get("active_container_count")
+        if acc is not None:
+            try:
+                snapshot["activeContainerCount"] = int(acc)
+            except (TypeError, ValueError):
+                snapshot["activeContainerCount"] = 0
+        tr = remote.get("terminal_reason")
+        if isinstance(tr, str) and tr:
+            snapshot["terminalReason"] = tr
+        snapshot["updatedAtMs"] = int(_t.time() * 1000)
+        snapshot["failureCount"] = 0
+        snapshot["lastError"] = None
+        with self._ensure_cc_lock():
+            state = self._cc_jobs.get(job_id)
+            if state is not None:
+                state["remote"] = snapshot
+
+    def _cc_finalize_pack_merge(
+        self,
+        folder,
+        job_id: str,
+        pack_name: str,
+        dest_zip,
+        client,
+    ) -> None:
+        """Per-pack post-merge cleanup. Called from both the live job path
+        (`_on_pack_merged` callback in submit_job) and the resume-download
+        worker.
+
+        Order matters — durability-first:
+          1. Folder-local truth gets the merged-pack mark first. After this,
+             the next bootstrap will treat the pack as merged regardless of
+             whether the local zip still exists or the R2 delete fired.
+          2. Best-effort local zip delete (we don't need the bytes anymore).
+          3. Best-effort Worker delete-packs call. Failures are absorbed;
+             Worker cron reaps stale R2 when results are fully retrieved.
+
+        Each step is independent: a failure at step 2 doesn't block step 3,
+        and vice versa.
+        """
+        try:
+            from cloud_folder_state import mark_pack_merged as _mark
+            _mark(folder, job_id, pack_name)
+        except Exception as e:
+            warn(f"[cloud-compute] {job_id}: mark_pack_merged({pack_name}) failed: {e}")
+        try:
+            if dest_zip is not None and dest_zip.exists():
+                dest_zip.unlink()
+        except Exception as e:
+            warn(f"[cloud-compute] {job_id}: local zip cleanup ({pack_name}) failed: {e}")
+        if client is not None:
+            try:
+                client.delete_packs(job_id, [pack_name])
+            except Exception as e:
+                warn(f"[cloud-compute] {job_id}: R2 delete_packs({pack_name}) failed (will retry on next bootstrap): {e}")
+
+    def _cc_record_remote_failure(self, job_id: str, err: str) -> None:
+        """Bump the per-job remote-failure counter and stash the latest error.
+        Does NOT zero out the cached counters — JS keeps rendering the
+        last-known good values + a 'syncing…' badge driven by ``updatedAtMs``."""
+        with self._ensure_cc_lock():
+            state = self._cc_jobs.get(job_id)
+            if state is None:
+                return
+            cur = state.get("remote") or dict(self._CC_REMOTE_DEFAULTS)
+            cur["failureCount"] = int(cur.get("failureCount") or 0) + 1
+            cur["lastError"] = str(err)[:240]
+            state["remote"] = cur
+
+    def _cc_start_remote_poller(self, job_id: str) -> None:
+        """Start a single background poller thread that refreshes the per-job
+        cached remote snapshot every ``_CC_POLL_INTERVAL_SEC``. Idempotent —
+        a no-op if a poller is already running for this job_id.
+
+        The poller's lifetime is tied to the LOCAL job status, NOT to
+        ``cancel_event``: ``run_full_job`` sets ``cancel_event`` on the first
+        'incomplete'/'cancelled'/'failed' remote tick to STOP UPLOADS, but the
+        local status only flips to its terminal mapping after run_full_job
+        finishes draining downloads. If the poller exited on cancel_event it
+        would stop refreshing the cached `remote` snapshot during the entire
+        incomplete/cancelled drain and the UI's analysis counters would freeze.
+        So we keep refreshing until the local status is terminal
+        (``done|failed|cancelled|incomplete``). We still short-circuit on a USER
+        cancellation (local status already flipped to 'cancelled' by
+        cloud_compute_cancel_job) via the terminal-status check below."""
+        import threading as _t
+        with self._ensure_cc_lock():
+            existing = self._cc_poll_threads.get(job_id)
+            if existing is not None and existing.is_alive():
+                return
+
+        def _poller() -> None:
+            import time as _time
+            while True:
+                with self._ensure_cc_lock():
+                    state = self._cc_jobs.get(job_id)
+                    if state is None:
+                        return
+                try:
+                    client, client_err = self._cc_make_client()
+                    if client is None:
+                        # Auth gone (e.g. JWT expired). Record + back off.
+                        self._cc_record_remote_failure(
+                            job_id,
+                            (client_err or {}).get("error") or "no client",
+                        )
+                    else:
+                        remote = client.get_status(job_id)
+                        self._cc_apply_remote_snapshot(job_id, remote)
+                        # W1: pause is purely client-side now — the local
+                        # pause_event is the sole source of truth and only the
+                        # user toggles it. There is no server auto-pause to
+                        # clear, so the poller no longer reacts to any remote
+                        # resume signal.
+                except Exception as e:
+                    self._cc_record_remote_failure(job_id, str(e))
+                    # Log every 5th consecutive failure so the journal doesn't
+                    # drown but the user can still find the original cause.
+                    with self._ensure_cc_lock():
+                        st = self._cc_jobs.get(job_id) or {}
+                        fc = int(((st.get("remote") or {}).get("failureCount")) or 0)
+                    if fc == 1 or fc % 5 == 0:
+                        warn(f"[cloud-compute] poller {job_id}: failure #{fc}: {e}")
+                # Terminal-status check AFTER the refresh, not before. The tick
+                # that observes done/failed/cancelled/incomplete then also
+                # captures any final remote bump (e.g. Modal's /progress lands
+                # within the same poll window as the local 'done' flip from the
+                # download worker, but on the prior arrangement we'd exit before
+                # the refresh and freeze analyzedCount one tick stale).
+                # 'incomplete' is in the exit set: by the time the LOCAL status
+                # is 'incomplete', run_full_job has finished draining (active
+                # containers hit 0), so there's nothing left to refresh.
+                with self._ensure_cc_lock():
+                    state = self._cc_jobs.get(job_id)
+                    if state is None:
+                        return
+                    if state.get("status") in (
+                        "done", "failed", "cancelled", "incomplete"
+                    ):
+                        return
+                _time.sleep(_CC_POLL_INTERVAL_SEC)
+
+        thread = _t.Thread(target=_poller, name=f"cc-poll-{job_id}", daemon=True)
+        with self._ensure_cc_lock():
+            self._cc_poll_threads[job_id] = thread
+        thread.start()
+
+    def cloud_compute_submit_job(self, root_path: str) -> dict:
+        """Kick off a cloud-compute job for a folder of images. Non-blocking.
+
+        Snapshots the cloud-compute analysis-settings overrides at submit time
+        (matches the local-queue pattern) and forwards them to the Worker so
+        Modal can splice them into the analyzer subprocess. Returns
+        immediately with ``{ok, jobId, imageCount}`` (or an error dict); a
+        background thread handles the upload + poll + merge. Track with
+        ``cloud_compute_get_status(jobId)`` and ``cloud_compute_list_jobs()``.
+        """
+        try:
+            ccc = self._cc_import()
+        except ImportError as e:
+            return {"ok": False, "error": f"cloud_compute_client import failed: {e}"}
+
+        root_real, err = self._validate_root_dir(
+            root_path, context="cloud_compute_submit_job", require_exists=True
+        )
+        if err:
+            return {"ok": False, "error": err}
+
+        client, client_err = self._cc_make_client()
+        if client_err is not None:
+            return client_err
+
+        from pathlib import Path as _Path
+        root = _Path(root_real)
+        # Resume-aware selection: skip files the local pipeline has already
+        # analyzed (folder_inspector-style discovery), but RE-include the last
+        # already-analyzed file as a scene-merger anchor so the cloud
+        # pipeline's previous_image is real, not None. With retry_errored on,
+        # also include errored rows + the file before each errored row.
+        analysis_settings = self._cc_analysis_settings_snapshot()
+        _retry_errored = bool((analysis_settings or {}).get("retry_errored"))
+        files, anchor_filename, anchor_filenames, total_in_folder, already_analyzed = (
+            self._cc_select_upload_files(root, retry_errored=_retry_errored)
+        )
+        if not files:
+            if total_in_folder == 0:
+                return {"ok": False, "error": "No supported image files found in folder"}
+            return {
+                "ok": False,
+                "error": (
+                    f"All {already_analyzed} of {total_in_folder} image(s) in "
+                    "this folder are already analyzed — nothing to send to "
+                    "cloud compute."
+                ),
+                "nothingToDo": True,
+            }
+
+        # The Worker stamps a dense image_index in the EXACT order we send
+        # fileNames, and that index is now the canonical processing order for
+        # the whole cloud pipeline (manifests, container ranges, scaling, scene
+        # continuity). Sort by name so the index order is the natural lexical
+        # order regardless of how _cc_select_upload_files arranged anchors /
+        # errored-predecessors (it prepends them). The same sorted list backs
+        # both submit_job (presigned-URL order) and run_full_job (upload order),
+        # so indices, URLs, and uploads stay aligned. (Time-domain/capture-time
+        # ordering is a deferred future change; lexical matches today's order.)
+        files = sorted(files, key=lambda p: p.name)
+
+        # Log file-selection details so the user can see if files are being reused
+        # or re-analyzed (mirrors the local pipeline's "Picking up where Kestrel
+        # left off" message via the queue manager logs).
+        new_count = len(files) - len(anchor_filenames)
+        if already_analyzed > 0:
+            info(
+                f"[cloud-compute] Picking up where Kestrel left off: "
+                f"{already_analyzed} analyzed, sending {new_count} new + {len(anchor_filenames)} anchor(s)"
+            )
+        else:
+            info(f"[cloud-compute] No prior analysis found, sending all {len(files)} file(s) to cloud")
+
+        # Submit synchronously (cheap call). We need the jobId before we can
+        # return it to the caller; the heavy upload+poll runs on a thread.
+        try:
+            submit = client.submit_job(files, analysis_settings=analysis_settings)
+        except ccc.JobInProgressError as e:
+            # Stage 6 concurrency gate: a Cloud Compute job is already in
+            # flight for this user. Not a fault — surface to JS with a
+            # MyAccount deep-link instead of an error toast. ``activeJobIds`` /
+            # ``current`` / ``limit`` are passed through from the Worker's
+            # 403 body so the desktop's auto-drain queue can decide between
+            # "wait" and "warn about orphan" without hitting the Auth Worker.
+            return {
+                "ok": False,
+                "error": "job_in_progress",
+                "activeJobId": e.active_job_id,
+                "activeJobIds": list(e.active_job_ids) if e.active_job_ids else [],
+                "current": e.current,
+                "limit": e.limit,
+                "myAccountUrl": "https://myaccount.projectkestrel.org/cloud-compute",
+                "message": str(e) or "You have a Cloud Compute job running.",
+            }
+        except ccc.LegalAcceptanceRequiredError as e:
+            # Launch item #13: updated ToS / Privacy Policy. Open the accept
+            # page in the system browser so the user can review and agree
+            # there. Best-effort — if webbrowser fails, the URL is still
+            # surfaced to JS for an in-app link.
+            try:
+                webbrowser.open(e.accept_url, new=2)
+            except Exception as _e:
+                warn(f"[cloud-compute] failed to launch browser for legal accept: {_e}")
+            return {
+                "ok": False,
+                "error": "legal_acceptance_required",
+                "acceptUrl": e.accept_url,
+                "currentEffectiveDate": e.current_effective_date,
+                "message": (
+                    str(e)
+                    or "Project Kestrel's Terms of Service or Privacy Policy "
+                       "have been updated. Please review and accept in your browser."
+                ),
+            }
+        except ccc.CloudComputeError as e:
+            mapped = self._cc_submit_error_response(e)
+            if mapped is not None:
+                return mapped
+            return {
+                "ok": False,
+                "error": self._sanitize_cloud_error_message(e.message),
+                "status": e.status,
+                "needSignIn": e.status == 401,
+            }
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+        job_id = str(submit.get("jobId") or "")
+        if not job_id:
+            return {"ok": False, "error": "Worker returned no jobId"}
+
+        import threading as _t
+        cancel_event = _t.Event()
+        # pause_event is "set" when uploads are running; cleared to pause.
+        # Starts set so the upload thread does not block out of the gate.
+        pause_event = _t.Event()
+        pause_event.set()
+
+        def _on_progress(payload: dict) -> None:
+            with self._ensure_cc_lock():
+                state = self._cc_jobs.get(job_id)
+                if state is not None:
+                    state["progress"] = dict(payload)
+
+        def _on_pack_merged(pack_name: str) -> None:
+            # Record both in cloud_jobs_store (persistent legacy cache) and
+            # the in-memory event queue (drained by the JS poll for live
+            # folder refreshes).
+            try:
+                store = self._cc_jobs_store()
+                store.add_downloaded_pack(job_id, pack_name)
+            except Exception:
+                pass
+            # Folder-local truth + bounded R2 storage: mark merged, drop
+            # the local zip, ask the Worker to delete the R2 pack. See
+            # _cc_finalize_pack_merge for the durability ordering.
+            try:
+                from pathlib import Path as _P
+                pack_dir = _P(root) / ".kestrel" / "cloud-packs"
+                self._cc_finalize_pack_merge(
+                    _P(root), job_id, pack_name, pack_dir / pack_name, client,
+                )
+            except Exception as e:
+                warn(f"[cloud-compute] {job_id}: pack-merge finalize failed: {e}")
+            with self._ensure_cc_lock():
+                self._cc_pack_events.append({
+                    "jobId": job_id,
+                    "folderPath": str(root),
+                    "packName": pack_name,
+                })
+
+        def _worker() -> None:
+            try:
+                result = client.run_full_job(
+                    root,
+                    file_paths=files,
+                    analysis_settings=analysis_settings,
+                    on_progress=_on_progress,
+                    on_pack_merged=_on_pack_merged,
+                    cancel_event=cancel_event,
+                    pause_event=pause_event,
+                    protected_filenames=set(anchor_filenames) if anchor_filenames else None,
+                    overwrite_errors=_retry_errored,
+                    # Pass the pre-submitted job ID and presigned URLs so
+                    # run_full_job skips its internal submit_job call.
+                    # Without this, two Worker jobs are created: the poller
+                    # watches the first; uploads go to the second — counters
+                    # never advance in the UI.
+                    job_id=job_id,
+                    presigned_urls=submit.get("presignedUrls", []),
+                )
+            except ccc.JobCancelled:
+                # User clicked Cancel; cloud_compute_cancel_job has already
+                # set status='cancelled' in both the in-memory map and the
+                # persistent ledger. Don't overwrite that with 'failed'.
+                return
+            except ccc.CloudComputeAuthError:
+                # Session expired (401) and the in-client token refresh couldn't
+                # recover within its budget — e.g. laptop slept long enough that
+                # the refresh token also aged out, or the user is signed out.
+                # This is TRANSIENT: the job is fine server-side and result packs
+                # stay downloadable. Do NOT mark 'failed'. Keep the current
+                # non-terminal local status and surface a friendly reconnect
+                # message; the next app launch / sign-in resumes the download.
+                with self._ensure_cc_lock():
+                    state = self._cc_jobs.get(job_id)
+                    if state is not None and state.get("status") not in (
+                        "done", "failed", "cancelled", "incomplete"
+                    ):
+                        state["error"] = "Session expired — reconnecting…"
+                return
+            except Exception as e:
+                with self._ensure_cc_lock():
+                    state = self._cc_jobs.get(job_id)
+                    if state is not None:
+                        state["status"] = "failed"
+                        state["error"] = str(e)
+                try:
+                    self._cc_jobs_store().update_job(job_id, status="failed")
+                except Exception:
+                    pass
+                return
+            # Map the remote terminal status to a local one. 'incomplete' is NOT
+            # 'failed' — the client merely disconnected >10min with uploads
+            # unfinished; the in-session poller already drained what it could,
+            # and restart-resume of incomplete jobs is deferred. Surface it as a
+            # distinct 'incomplete' badge instead of a scary failure.
+            status_str = str(result.get("status") or "")
+            if result.get("ok"):
+                terminal = "done"
+            elif status_str == "incomplete":
+                terminal = "incomplete"
+            else:
+                terminal = "failed"
+            # Capture the worker's terminal_reason (cached on the remote
+            # snapshot by the poller) so the §4 history panel can show a
+            # specific "why it ended" message in future sessions without a
+            # Worker round-trip. None for a clean completion.
+            terminal_reason = None
+            with self._ensure_cc_lock():
+                state = self._cc_jobs.get(job_id)
+                if state is not None:
+                    rsnap = state.get("remote") or {}
+                    tr = rsnap.get("terminalReason")
+                    if isinstance(tr, str) and tr:
+                        terminal_reason = tr
+                    # Don't clobber a cancellation that landed during the
+                    # final stretch (race between cancel + run_full_job's
+                    # natural completion).
+                    if state.get("status") != "cancelled":
+                        state["status"] = terminal
+                        state["result"] = result
+            try:
+                _upd = {"status": terminal}
+                if terminal_reason:
+                    _upd["terminalReason"] = terminal_reason
+                self._cc_jobs_store().update_job(job_id, **_upd)
+            except Exception:
+                pass
+
+        with self._ensure_cc_lock():
+            self._cc_jobs[job_id] = {
+                "jobId": job_id,
+                "rootPath": str(root),
+                "imageCount": len(files),
+                "newImageCount": len(files) - len(anchor_filenames),
+                "anchorFilename": anchor_filename,
+                "anchorFilenames": sorted(anchor_filenames),
+                "totalInFolder": total_in_folder,
+                "alreadyAnalyzed": already_analyzed,
+                "status": "uploading",
+                "progress": {"event": "submitted"},
+                "cancel_event": cancel_event,
+                "pause_event": pause_event,
+                "presignedUrls": submit.get("presignedUrls", []),  # for completeness
+                # Cached remote-counters snapshot. The background poller
+                # refreshes this; JS reads it via cloud_compute_list_jobs.
+                # Defaults are zeros so JS never sees `undefined → 0` flicker
+                # before the first poll lands.
+                "remote": dict(self._CC_REMOTE_DEFAULTS),
+            }
+
+        # Persist to cloud_jobs_store so a startup poll can discover this job
+        # after a restart. settingsSnapshot is the same allowlisted dict the
+        # Worker received so the audit trail matches what Modal actually ran.
+        try:
+            store = self._cc_jobs_store()
+            store.upsert_job({
+                "jobId": job_id,
+                "folderPath": str(root),
+                "createdAtUtc": store.utc_now_iso(),
+                "status": "uploading",
+                "imageCount": len(files),
+                "anchorFilename": anchor_filename or "",
+                "anchorFilenames": sorted(anchor_filenames),
+                "settingsSnapshot": analysis_settings or {},
+                "downloadedPacks": [],
+            })
+        except Exception:
+            pass
+
+        thread = _t.Thread(target=_worker, name=f"cc-job-{job_id}", daemon=True)
+        thread.start()
+        with self._ensure_cc_lock():
+            self._cc_jobs[job_id]["thread"] = thread
+        # Start the per-job remote-status poller. Background-thread that
+        # refreshes the cached `remote` snapshot every _CC_POLL_INTERVAL_SEC.
+        # JS renders from the cache so the UI never depends on the JS-tick
+        # cadence aligning with a successful Worker fetch.
+        self._cc_start_remote_poller(job_id)
+
+        return {
+            "ok": True,
+            "jobId": job_id,
+            "imageCount": len(files),
+            "newImageCount": len(files) - len(anchor_filenames),
+            "anchorFilename": anchor_filename,
+            "anchorFilenames": sorted(anchor_filenames),
+            "totalInFolder": total_in_folder,
+            "alreadyAnalyzed": already_analyzed,
+        }
+
+    def _cc_serialise_job(self, job_id: str, state: dict) -> dict:
+        """Build the wire-shape descriptor for one job. Reads the cached
+        ``remote`` snapshot maintained by the background poller; never
+        triggers a Worker call so this is safe to call on every render tick.
+        Caller MUST hold the cc lock."""
+        remote = dict(state.get("remote") or self._CC_REMOTE_DEFAULTS)
+        out = {
+            "jobId": job_id,
+            "rootPath": state.get("rootPath"),
+            "imageCount": state.get("imageCount"),
+            "newImageCount": state.get("newImageCount"),
+            "anchorFilename": state.get("anchorFilename"),
+            "totalInFolder": state.get("totalInFolder"),
+            "alreadyAnalyzed": state.get("alreadyAnalyzed"),
+            "status": state.get("status", "running"),
+            # Optional local tag explaining a non-obvious terminal status.
+            "failureReason": state.get("failureReason") or "",
+            "progress": dict(state.get("progress") or {}),
+            # Cached remote counters (zeros until first poll lands).
+            "uploadedCount": remote.get("uploadedCount", 0),
+            "analyzedCount": remote.get("analyzedCount", 0),
+            "dispatchedCount": remote.get("dispatchedCount", 0),
+            "pendingCount": remote.get("pendingCount", 0),
+            "downloadedCount": remote.get("downloadedCount", 0),
+            "pack_count": remote.get("pack_count", 0),
+            # §1: images whose result pack the client has retrieved from the
+            # worker — numerator of the third "results retrieved" bar.
+            "retrievedCount": remote.get("retrievedCount", 0),
+            # §2: live Modal container count for the "Additional information"
+            # disclosure (0 once the job is terminal).
+            "activeContainerCount": remote.get("activeContainerCount", 0),
+            # §3: server-side terminal reason for the friendly "why it ended"
+            # banner. None until the job reaches a terminal state.
+            "terminalReason": remote.get("terminalReason"),
+            "stopRequested": remote.get("stopRequested", False),
+            # True once the desktop has called /api/jobs/:id/complete and the
+            # Worker has recorded upload_complete=1. JS uses the false→true
+            # flip to trip the auto-drain queue (relevant on paid tiers with
+            # maxConcurrentJobs>=2).
+            "uploadComplete": bool(remote.get("uploadComplete", False)),
+            "remoteStatus": remote.get("remoteStatus"),
+            # Staleness signals for the UI: updatedAtMs is wall-clock of last
+            # successful poll (0 means "never"); failureCount is consecutive
+            # failures since the last success; lastError is the most recent
+            # network/HTTP error string (truncated). The JS layer renders a
+            # 'syncing…' badge when staleness > threshold.
+            "remoteUpdatedAtMs": remote.get("updatedAtMs", 0),
+            "remoteFailureCount": remote.get("failureCount", 0),
+            "remoteLastError": remote.get("lastError"),
+        }
+        if "result" in state:
+            out["result"] = state["result"]
+        if "error" in state:
+            out["error"] = state["error"]
+        return out
+
+    def cloud_compute_get_status(self, job_id: str) -> dict:
+        """Single-job descriptor read from the in-process cache. Cheap — does
+        no Worker I/O. The cached counters are kept fresh by the per-job
+        background poller started in ``cloud_compute_submit_job`` and
+        ``cloud_compute_resume_download``."""
+        with self._ensure_cc_lock():
+            state = self._cc_jobs.get(job_id)
+            if state is None:
+                return {"ok": False, "error": "unknown jobId"}
+            descriptor = self._cc_serialise_job(job_id, state)
+        descriptor["ok"] = True
+        return descriptor
+
+    def cloud_compute_list_jobs(self) -> dict:
+        """Return rich descriptors (with cached remote counters) for every job
+        submitted this session. JS renders the cloud queue panel from this
+        single bridge call — no per-job follow-up needed."""
+        with self._ensure_cc_lock():
+            jobs = [
+                self._cc_serialise_job(jid, state)
+                for jid, state in self._cc_jobs.items()
+            ]
+        return {"ok": True, "jobs": jobs}
+
+    # ─── Stage 5E — dashboard-feeding bridge methods ────────────────────
+    # Thin proxies over the Worker's user-facing endpoints. The primary
+    # consumer is the external online dashboard; the desktop UI keeps a
+    # single "View cloud usage online →" link in Settings rather than
+    # mirroring the full history table.
+
+    def cloud_compute_list_history(self, filters: dict | None = None) -> dict:
+        """Proxy GET /api/jobs (Stage 5C). ``filters`` is a dict matching the
+        query params: ``status`` (str/csv, supports `'running'`), ``from`` /
+        ``to`` (ISO datetimes), ``limit`` (int), ``cursor`` (opaque)."""
+        client, client_err = self._cc_make_client()
+        if client is None:
+            return client_err or {"ok": False, "error": "no client"}
+        f = filters or {}
+        try:
+            body = client.list_jobs(
+                status=f.get("status"),
+                from_iso=f.get("from"),
+                to_iso=f.get("to"),
+                limit=f.get("limit"),
+                cursor=f.get("cursor"),
+            )
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        body["ok"] = True
+        return body
+
+    def cloud_compute_get_job_events(self, job_id: str, order: str = "desc") -> dict:
+        """Proxy GET /api/jobs/:jobId/events (Stage 5C)."""
+        client, client_err = self._cc_make_client()
+        if client is None:
+            return client_err or {"ok": False, "error": "no client"}
+        try:
+            body = client.get_job_events(job_id, order=order)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        body["ok"] = True
+        return body
+
+    def cloud_compute_get_job_timing_stats(self, job_id: str) -> dict:
+        """Proxy GET /api/jobs/:jobId/timing-stats (Stage 5C)."""
+        client, client_err = self._cc_make_client()
+        if client is None:
+            return client_err or {"ok": False, "error": "no client"}
+        try:
+            body = client.get_job_timing_stats(job_id)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        body["ok"] = True
+        return body
+
+    def cloud_compute_get_usage_summary(self, period: str = "monthly") -> dict:
+        """Proxy GET /api/usage (Stage 5D). Returns aggregate totals for the
+        current month or all-time. Used by the panel badge / Settings link."""
+        client, client_err = self._cc_make_client()
+        if client is None:
+            return client_err or {"ok": False, "error": "no client"}
+        try:
+            body = client.get_usage(period=period)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        body["ok"] = True
+        return body
+
+    def cloud_compute_get_entitlements(self) -> dict:
+        """Proxy GET /v1/me/entitlements on the Auth Worker. Returns the
+        user's tier, plan limits, current-period usage, and active-job slots
+        held — same payload MyAccount's Cloud Compute dashboard renders.
+
+        Used by the analyze dialog's cloud queue logic to decide whether the
+        next folder can submit now (``activeJobs.length <
+        limits.maxConcurrentJobs``) or should wait for a slot. Failure is
+        non-fatal — JS treats absent / errored response as "unknown, try
+        anyway and let the Worker's 403 decide."""
+        client, client_err = self._auth_make_client()
+        if client is None:
+            return client_err or {"ok": False, "error": "no client"}
+        try:
+            body = client.get_my_entitlements()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        if not isinstance(body, dict):
+            return {"ok": False, "error": "auth worker returned non-object"}
+        body["ok"] = True
+        return body
+
+    def cloud_compute_clear_done(self) -> dict:
+        """Legacy bridge hook — does **not** touch the persistent job ledger.
+
+        The desktop's "Clear done" control only hides finished rows in the
+        cloud-analysis pill (``cloud-compute.js`` client-side filter). Job
+        history for the Account panel and startup resume still read the full
+        on-disk manifest via ``cloud_jobs_store``.
+        """
+        return {"ok": True, "removed": []}
+
+    def cloud_compute_pause_job(self, job_id: str) -> dict:
+        """Pause uploads for a job. W1: pause is now PURELY CLIENT-SIDE — we
+        clear the local ``pause_event`` (which blocks the upload pool in
+        ``run_full_job._upload_and_notify``) and stop PUT+notify. The Worker
+        has no pause concept; analysis naturally drains the already-uploaded
+        backlog and then idles. The job stays ``processing`` server-side while
+        paused — the ``upload_paused`` status here is LOCAL-ONLY, used to drive
+        the UI. Idempotent."""
+        with self._ensure_cc_lock():
+            state = self._cc_jobs.get(job_id)
+            if state is None:
+                return {"ok": False, "error": "unknown jobId"}
+            pause_ev = state.get("pause_event")
+        if pause_ev is not None:
+            pause_ev.clear()
+        with self._ensure_cc_lock():
+            if job_id in self._cc_jobs:
+                self._cc_jobs[job_id]["status"] = "upload_paused"
+        try:
+            self._cc_jobs_store().update_job(job_id, status="upload_paused")
+        except Exception:
+            # Store write failed — revert in-memory state so local + persisted agree.
+            if pause_ev is not None:
+                pause_ev.set()
+            with self._ensure_cc_lock():
+                if job_id in self._cc_jobs:
+                    self._cc_jobs[job_id]["status"] = "uploading"
+        return {"ok": True, "uploadPauseRequested": True}
+
+    def cloud_compute_resume_job(self, job_id: str) -> dict:
+        """Inverse of pause_job. Sets the local ``pause_event`` so the upload
+        pool un-blocks. Purely client-side (W1). Idempotent."""
+        with self._ensure_cc_lock():
+            state = self._cc_jobs.get(job_id)
+            if state is None:
+                return {"ok": False, "error": "unknown jobId"}
+            pause_ev = state.get("pause_event")
+        if pause_ev is not None:
+            pause_ev.set()
+        with self._ensure_cc_lock():
+            if job_id in self._cc_jobs:
+                self._cc_jobs[job_id]["status"] = "uploading"
+        try:
+            self._cc_jobs_store().update_job(job_id, status="uploading")
+        except Exception:
+            # Store write failed — revert in-memory state so local + persisted agree.
+            if pause_ev is not None:
+                pause_ev.clear()
+            with self._ensure_cc_lock():
+                if job_id in self._cc_jobs:
+                    self._cc_jobs[job_id]["status"] = "upload_paused"
+        return {"ok": True, "uploadPauseRequested": False}
+
+    def cloud_compute_cancel_job(self, job_id: str) -> dict:
+        """Terminal cancel. Tells the Worker to stop the job (Modal exits on
+        next pending-images poll, staging objects are async-deleted) AND
+        signals the local upload/poll thread to exit. Marks the job
+        ``cancelled`` in the persistent ledger.
+        """
+        with self._ensure_cc_lock():
+            state = self._cc_jobs.get(job_id)
+            if state is None:
+                return {"ok": False, "error": "unknown jobId"}
+            cancel_ev = state.get("cancel_event")
+            pause_ev = state.get("pause_event")
+        # Remote cancel first. If the desktop dies right after, the Worker
+        # has already started staging-cleanup so we don't leak storage.
+        client, _err = self._cc_make_client()
+        remote_err: str | None = None
+        if client is not None:
+            try:
+                client.cancel_job_remote(job_id)
+            except Exception as e:
+                remote_err = str(e)
+        # Local cleanup: release any pause so the upload thread can see the
+        # cancel and exit, then set cancel_event.
+        if pause_ev is not None:
+            pause_ev.set()
+        if cancel_ev is not None:
+            cancel_ev.set()
+        with self._ensure_cc_lock():
+            if job_id in self._cc_jobs:
+                self._cc_jobs[job_id]["status"] = "cancelled"
+        try:
+            self._cc_jobs_store().update_job(job_id, status="cancelled")
+        except Exception:
+            pass
+        return {"ok": True, "remoteError": remote_err}
+
+    def cloud_compute_upload_test(
+        self,
+        folder_path: str,
+        sample_count: int = 10,
+    ) -> dict:
+        """Run a real-image upload-throughput probe against the staging bucket.
+
+        Returns ``{ok, mbps, samples_uploaded, total_bytes, elapsed_ms,
+        errors}``. Errors surface as ``{ok: False, error}``; the Worker's
+        ``file_too_large`` rejection is propagated verbatim so the dialog can
+        explain the 200 MB cap.
+        """
+        root_real, err = self._validate_root_dir(
+            folder_path, context="cloud_compute_upload_test", require_exists=True
+        )
+        if err:
+            return {"ok": False, "error": err}
+        client, client_err = self._cc_make_client()
+        if client is None:
+            return client_err or {"ok": False, "error": "no client"}
+        try:
+            ccc = self._cc_import()
+        except ImportError as e:
+            return {"ok": False, "error": f"cloud_compute_client import failed: {e}"}
+        from pathlib import Path as _Path
+        try:
+            result = client.upload_test(_Path(root_real), sample_count=sample_count)
+        except ccc.CloudComputeError as e:
+            return {
+                "ok": False,
+                "error": self._sanitize_cloud_error_message(e.message),
+                "status": e.status,
+            }
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        result["ok"] = True
+        return result
+
+    # §4 history: when the account panel asks for the full picture, also probe
+    # the Worker for salvageable result packs on TERMINAL failed/cancelled/
+    # incomplete jobs (the Worker keeps the RESULTS bucket on terminal-failure +
+    # user-cancel paths — see the CC worker invariants — and reaps it ~24h
+    # after terminal). Bounded so a power-user with a long ledger can't trigger
+    # a request storm: we query at most the N most-recent eligible terminal
+    # jobs. 'done' jobs are excluded (fully merged by definition) and
+    # 'upload_interrupted' orphans are excluded (their staging was reaped and
+    # they never produced server-side results).
+    _CC_HISTORY_TERMINAL_QUERY_CAP = 60
+
+    def cloud_compute_list_pending_jobs(self, include_terminal: bool = False) -> dict:
+        """Enumerate persisted cloud jobs for display (read-only).
+
+        Per job, best-effort Worker reconcile for counters and result packs.
+        No local status mutation, no remote cancel, no R2 deletes.
+
+        Each entry: ``{jobId, folderPath, status, imageCount, downloadedPacks,
+        remoteStatus, availablePacks, …}``. ``remoteStatus`` / ``availablePacks``
+        are ``None`` on transient Worker failures or when the job is skipped.
+
+        ``include_terminal`` (account panel): when True, ALSO query salvageable
+        packs on terminal failed/cancelled/incomplete jobs (bounded cap).
+        """
+        try:
+            store = self._cc_jobs_store()
+            jobs = store.load_jobs()
+        except Exception as e:
+            return {"ok": False, "error": f"store load failed: {e}", "jobs": []}
+
+        if not jobs:
+            return {"ok": True, "jobs": []}
+
+        client, _ = self._cc_make_client()
+
+        # Locally-terminal jobs (done/cancelled/failed) skip Worker I/O entirely
+        # at bootstrap. They still appear in the returned list so the panel can
+        # render them (and Clear Done can target them), but we don't burn
+        # /api/jobs/* + /api/jobs/*/results requests on jobs the desktop has
+        # already finalised. Avoids the audit's HIGH-2 case where a cancelled
+        # job whose Worker race-condition'd to 'complete' still showed up as
+        # resumable.
+        #
+        # EXCEPTION: 'incomplete' jobs are terminal-for-upload but their result
+        # packs may still be sitting in R2 (analysis continued server-side after
+        # the client disconnected). Those are DOWNLOAD-resumable, so we DO query
+        # the Worker for their availablePacks — see _DOWNLOAD_RESUMABLE_STATUSES.
+        from cloud_jobs_store import (
+            _TERMINAL_STATUSES as _CC_TERMINAL_STATUSES,
+            _DOWNLOAD_RESUMABLE_STATUSES as _CC_DL_RESUMABLE,
+        )
+        try:
+            from cloud_folder_state import list_merged_packs as _fs_list_merged
+        except Exception:
+            _fs_list_merged = None  # noqa: N816
+
+        # §4 history: precompute the bounded set of TERMINAL jobs to also probe
+        # for salvageable packs (only when include_terminal). Eligible =
+        # failed/cancelled/incomplete (NOT done — fully merged), excluding
+        # upload_interrupted orphans (no server-side results). Most-recent-first,
+        # capped, so the request count stays bounded regardless of ledger size.
+        terminal_query_ids: set[str] = set()
+        if include_terminal:
+            eligible = [
+                j for j in jobs
+                if j["status"] in {"failed", "cancelled", "incomplete"}
+                and (j.get("failureReason") or "") != "upload_interrupted"
+            ]
+            eligible.sort(key=lambda j: j.get("createdAtUtc") or "", reverse=True)
+            terminal_query_ids = {
+                j["jobId"] for j in eligible[:self._CC_HISTORY_TERMINAL_QUERY_CAP]
+            }
+
+        out_jobs: list[dict] = []
+        for j in jobs:
+            folder_available = bool(j.get("folderPath")) and os.path.isdir(j["folderPath"])
+            # Folder-local merged truth wins over the legacy global cache —
+            # but we union with `downloadedPacks` so jobs that pre-date the
+            # folder-state file still dedup correctly. JS sees a single
+            # `downloadedPacks` field and doesn't need to know about the
+            # split source.
+            legacy_downloaded = list(j.get("downloadedPacks") or [])
+            folder_merged: list[str] = []
+            if folder_available and _fs_list_merged is not None:
+                try:
+                    folder_merged = _fs_list_merged(j["folderPath"], j["jobId"])
+                except Exception:
+                    folder_merged = []
+            merged_union = list(dict.fromkeys(legacy_downloaded + folder_merged))
+            entry: dict = {
+                "jobId": j["jobId"],
+                "folderPath": j["folderPath"],
+                "status": j["status"],
+                "failureReason": j.get("failureReason") or "",
+                "imageCount": j["imageCount"],
+                "downloadedPacks": merged_union,
+                "createdAtUtc": j.get("createdAtUtc"),
+                "settingsSnapshot": j.get("settingsSnapshot") or {},
+                # True if the folder is currently mounted/readable. JS uses
+                # this to gate auto-resume: an unavailable folder (external
+                # drive ejected, network share offline) is silently deferred
+                # rather than throwing — the periodic recheck timer auto-
+                # resumes once the folder reappears.
+                "folderAvailable": folder_available,
+                "remoteStatus": None,
+                "availablePacks": None,
+                # §4c history extras. terminalReason comes from the local
+                # ledger by default (persisted when the job went terminal) and
+                # is overwritten with the live worker value when we query below.
+                "terminalReason": j.get("terminalReason") or None,
+                "retrievedCount": None,
+                "activeContainerCount": None,
+            }
+            # Query the Worker for non-terminal jobs AND for download-resumable
+            # 'incomplete' jobs (only when the folder is mounted — no point
+            # pulling a pack list for an ejected drive we can't merge into).
+            # §4 history additionally probes the bounded terminal set regardless
+            # of folder availability, so a missing-folder job still reveals that
+            # recoverable packs EXIST (driving the "Locate folder…" affordance).
+            is_terminal = j["status"] in _CC_TERMINAL_STATUSES
+            is_dl_resumable = j["status"] in _CC_DL_RESUMABLE and folder_available
+            query_terminal_history = j["jobId"] in terminal_query_ids
+            if client is not None and (not is_terminal or is_dl_resumable or query_terminal_history):
+                try:
+                    remote = client.get_status(j["jobId"])
+                    entry["remoteStatus"] = remote.get("status")
+                    entry["analyzedCount"] = remote.get("analyzedCount")
+                    # §1/§3 history extras (free on the same GET).
+                    entry["retrievedCount"] = remote.get("retrievedCount")
+                    entry["activeContainerCount"] = remote.get("active_container_count")
+                    _live_tr = remote.get("terminal_reason")
+                    if isinstance(_live_tr, str) and _live_tr:
+                        entry["terminalReason"] = _live_tr
+                    files = client.list_results(j["jobId"])
+                    available = [
+                        str(f.get("filename") or "")
+                        for f in files
+                        if str(f.get("filename") or "").endswith(".zip")
+                    ]
+                    entry["availablePacks"] = available
+                except Exception:
+                    pass
+            # A 'done' job has, by construction, pulled every result pack
+            # (status only flips to done once remote==complete AND all packs
+            # merged — see cloud_compute_resume_download). We deliberately
+            # don't spend a Worker call on done jobs, which left
+            # retrievedCount=None and rendered "0 / N retrieved" in the account
+            # panel. Backfill from imageCount — all results are in.
+            if entry["retrievedCount"] is None and j["status"] == "done":
+                entry["retrievedCount"] = j["imageCount"]
+            out_jobs.append(entry)
+        return {"ok": True, "jobs": out_jobs}
+
+    def _cc_prepare_resume(self, job_id: str) -> dict:
+        """Shared setup for ``cloud_compute_resume_download`` /
+        ``cloud_compute_retrieve_results``: load the persisted job, verify the
+        folder is mounted, make the Worker client, register the job into the
+        in-memory ``_cc_jobs`` map (so the cloud queue pill renders it even
+        though it predates this process), and start the remote poller.
+
+        Returns either an error dict (``ok==False`` — caller returns it
+        verbatim to JS, including the ``folder_unavailable`` soft-fail) or a
+        success context dict (``ok==True``) carrying ``target``, ``folder``,
+        ``client``, ``ccc``, ``store``, ``anchor_filenames`` and
+        ``retry_errored`` for the download worker."""
+        try:
+            store = self._cc_jobs_store()
+            jobs = store.load_jobs()
+        except Exception as e:
+            return {"ok": False, "error": f"store load failed: {e}"}
+        target = next((j for j in jobs if j["jobId"] == job_id), None)
+        if target is None:
+            return {"ok": False, "error": "unknown jobId"}
+        from pathlib import Path as _Path
+        folder = _Path(target["folderPath"])
+        if not folder.is_dir():
+            # Soft-fail: external-drive eject / network-share unmount is
+            # transient. Returning a structured `reason` lets JS show a
+            # helpful "Folder not currently mounted" caption and start the
+            # periodic recheck instead of dropping a noisy error toast.
+            return {
+                "ok": False,
+                "reason": "folder_unavailable",
+                "folderPath": str(folder),
+                "error": f"folder not currently accessible: {folder}",
+            }
+        client, client_err = self._cc_make_client()
+        if client is None:
+            return client_err or {"ok": False, "error": "no client"}
+        try:
+            ccc = self._cc_import()
+        except ImportError as e:
+            return {"ok": False, "error": str(e)}
+
+        anchor_filename = (target.get("anchorFilename") or "") or None
+        # anchorFilenames is the post-retry_errored protected-anchor set
+        # persisted by cloud_compute_submit_job. Older jobs (pre-this-change)
+        # only have anchorFilename, so fall back to the singleton.
+        _persisted_anchors = target.get("anchorFilenames")
+        if isinstance(_persisted_anchors, (list, tuple)) and _persisted_anchors:
+            anchor_filenames = frozenset(
+                str(x) for x in _persisted_anchors if isinstance(x, str) and x
+            )
+        elif anchor_filename:
+            anchor_filenames = frozenset({anchor_filename})
+        else:
+            anchor_filenames = frozenset()
+        # Retry-errored: persisted in settingsSnapshot at submit time. We
+        # don't re-read settings.json here because the user may have toggled
+        # the flag off after submission; the job-time snapshot is authoritative.
+        _snapshot = target.get("settingsSnapshot") or {}
+        retry_errored = bool(isinstance(_snapshot, dict) and _snapshot.get("retry_errored"))
+        with self._ensure_cc_lock():
+            if job_id not in self._cc_jobs:
+                self._cc_jobs[job_id] = {
+                    "jobId": job_id,
+                    "rootPath": str(folder),
+                    "imageCount": int(target.get("imageCount") or 0),
+                    "newImageCount": int(target.get("imageCount") or 0),
+                    "anchorFilename": anchor_filename,
+                    "anchorFilenames": sorted(anchor_filenames),
+                    "totalInFolder": None,
+                    "alreadyAnalyzed": None,
+                    "status": str(target.get("status") or "downloading"),
+                    "progress": {"event": "resume"},
+                    "cancel_event": None,
+                    "pause_event": None,
+                    "remote": dict(self._CC_REMOTE_DEFAULTS),
+                }
+        # Start the live remote poller; safe to call again if already running.
+        self._cc_start_remote_poller(job_id)
+        return {
+            "ok": True,
+            "target": target,
+            "folder": folder,
+            "client": client,
+            "ccc": ccc,
+            "store": store,
+            "anchor_filenames": anchor_filenames,
+            "retry_errored": retry_errored,
+        }
+
+    def _cc_seed_already(self, target, folder, job_id) -> set:
+        """Seed the merged-pack truth = union(folder-local cloud_folder_state,
+        legacy desktop-store downloadedPacks). Folder-local is the post-fix
+        authoritative source; the legacy field stays so old jobs that pre-date
+        the folder-state file still dedup correctly."""
+        try:
+            from cloud_folder_state import list_merged_packs as _list_merged
+            merged_in_folder = set(_list_merged(folder, job_id))
+        except Exception:
+            merged_in_folder = set()
+        return set(target.get("downloadedPacks") or []) | merged_in_folder
+
+    def cloud_compute_resume_download(self, job_id: str) -> dict:
+        """Resume pack download + merge for an existing persisted job — a
+        one-shot pull of whatever packs are available right now.
+
+        Registers the job in the in-memory ``_cc_jobs`` map (so the cloud
+        queue panel can render it), starts the standard background remote
+        poller, and spawns a one-off worker that downloads + merges any
+        packs not already present locally. Status is only marked ``done``
+        when the Worker confirms ``status==complete`` AND every available
+        pack has been downloaded — otherwise the live poller keeps tracking
+        and the UI reflects real state. For a still-running job whose packs
+        keep arriving, use ``cloud_compute_retrieve_results`` (continuous)."""
+        ctx = self._cc_prepare_resume(job_id)
+        if not ctx.get("ok"):
+            return ctx
+        folder = ctx["folder"]; client = ctx["client"]; ccc = ctx["ccc"]
+        store = ctx["store"]; target = ctx["target"]
+        anchor_filenames = ctx["anchor_filenames"]; retry_errored = ctx["retry_errored"]
+
+        import threading as _t
+
+        def _worker() -> None:
+            already = self._cc_seed_already(target, folder, job_id)
+            drained = self._cc_drain_packs_once(
+                job_id, folder, client, ccc, store,
+                anchor_filenames, retry_errored, already,
+            )
+            if drained is None:
+                return  # list_results failed; event already recorded
+            already, available_pack_names = drained
+            self._cc_maybe_mark_done(job_id, client, store, already, available_pack_names)
+
+        _t.Thread(target=_worker, name=f"cc-resume-{job_id}", daemon=True).start()
+        return {"ok": True, "jobId": job_id}
+
+    def cloud_compute_retrieve_results(self, job_id: str) -> dict:
+        """Restart the continuous 'download packs as they arrive' loop for an
+        existing persisted job — the resumable equivalent of the live download
+        path that runs during a fresh submit. Registers the job into the
+        in-memory map (so the cloud queue pill repopulates), starts the remote
+        poller, then loops ``_cc_drain_packs_once`` every
+        ``_CC_RETRIEVE_LOOP_SEC`` until the Worker reports a terminal state,
+        marking ``done`` once complete + all packs pulled.
+
+        Idempotent: a second call while a loop is already running for this job
+        is a no-op (guarded by ``_cc_retrieve_threads``), so the JS button can
+        fire freely without double-downloading."""
+        import threading as _t
+        with self._ensure_cc_lock():
+            existing = self._cc_retrieve_threads.get(job_id)
+            if existing is not None and existing.is_alive():
+                return {"ok": True, "jobId": job_id, "alreadyRunning": True}
+        ctx = self._cc_prepare_resume(job_id)
+        if not ctx.get("ok"):
+            return ctx
+        folder = ctx["folder"]; ccc = ctx["ccc"]; store = ctx["store"]
+        target = ctx["target"]
+        anchor_filenames = ctx["anchor_filenames"]; retry_errored = ctx["retry_errored"]
+
+        def _loop() -> None:
+            import time as _time
+            already = self._cc_seed_already(target, folder, job_id)
+            # Worker statuses that mean "no more packs will arrive". 'complete'
+            # is handled separately: we keep pulling until every listed pack is
+            # local (then _cc_maybe_mark_done flips us to 'done'), with a small
+            # retry bound so a permanently-failing pack can't spin forever.
+            _NO_MORE = {"failed", "cancelled", "incomplete", "error"}
+            complete_retries = 0
+            while True:
+                # Stop promptly if the user cancelled or the job went terminal
+                # locally (cloud_compute_cancel_job flips the in-memory status).
+                with self._ensure_cc_lock():
+                    st = self._cc_jobs.get(job_id)
+                    local_status = (st or {}).get("status")
+                if local_status in ("done", "failed", "cancelled", "incomplete"):
+                    break
+                # Re-make the client each pass so a mid-loop JWT refresh doesn't
+                # wedge the whole retrieval (the poller does the same).
+                client, _client_err = self._cc_make_client()
+                if client is None:
+                    _time.sleep(_CC_RETRIEVE_LOOP_SEC)
+                    continue
+                drained = self._cc_drain_packs_once(
+                    job_id, folder, client, ccc, store,
+                    anchor_filenames, retry_errored, already,
+                )
+                if drained is not None:
+                    already, available_pack_names = drained
+                    remote_status = self._cc_maybe_mark_done(
+                        job_id, client, store, already, available_pack_names,
+                    )
+                    if remote_status == "complete":
+                        if all(p in already for p in available_pack_names):
+                            break  # all in; _cc_maybe_mark_done flipped to done
+                        complete_retries += 1
+                        if complete_retries >= 3:
+                            # Stuck pack(s) after completion — stop spinning;
+                            # the account panel's one-shot Download is the
+                            # recovery path for the straggler(s).
+                            break
+                    elif remote_status in _NO_MORE:
+                        break
+                _time.sleep(_CC_RETRIEVE_LOOP_SEC)
+
+        thread = _t.Thread(target=_loop, name=f"cc-retrieve-{job_id}", daemon=True)
+        with self._ensure_cc_lock():
+            self._cc_retrieve_threads[job_id] = thread
+        thread.start()
+        return {"ok": True, "jobId": job_id}
+
+    def _cc_drain_packs_once(
+        self, job_id, folder, client, ccc, store,
+        anchor_filenames, retry_errored, already,
+    ):
+        """Download + merge every result pack on the Worker we haven't merged
+        yet. Returns ``(already_updated, available_pack_names)`` or ``None`` if
+        the initial ``list_results`` call failed (a pack event recording the
+        error is appended in that case). Idempotent and safe to call repeatedly
+        — used one-shot by ``cloud_compute_resume_download`` and in a loop by
+        ``cloud_compute_retrieve_results``."""
+        pack_dir = folder / ".kestrel" / "cloud-packs"
+        pack_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            files = client.list_results(job_id)
+        except Exception as e:
+            with self._ensure_cc_lock():
+                self._cc_pack_events.append({
+                    "jobId": job_id, "folderPath": str(folder),
+                    "packName": None, "error": str(e),
+                })
+            return None
+        available_pack_names = [
+            str(meta.get("filename") or "") for meta in files
+            if str(meta.get("filename") or "").endswith(".zip")
+        ]
+        # Stale-R2 cleanup: any pack still in R2 that we've already merged is
+        # dead weight (probably from a pre-folder-state job, or a prior
+        # delete-packs call that lost network). Tell the Worker to drop it so
+        # the next list_results stops returning them.
+        stale = [n for n in available_pack_names if n in already]
+        if stale and client is not None:
+            try:
+                client.delete_packs(job_id, stale)
+                available_pack_names = [n for n in available_pack_names if n not in already]
+            except Exception as e:
+                warn(f"[cloud-compute] {job_id}: stale-R2 cleanup ({len(stale)} packs) failed: {e}")
+        for fname in available_pack_names:
+            if fname in already:
+                continue
+            dest = pack_dir / fname
+            # Filesystem fallback dedup: if the pack zip is already on disk but
+            # missing from `downloadedPacks`, we previously re-downloaded it.
+            # That happens when the JSON ledger was killed mid-write
+            # (atomic-replace race) or `add_downloaded_pack` swallowed an
+            # exception. Re-merging is safe (the database merge is last-wins by
+            # filename) and skipping the network call is the whole point —
+            # repair the JSON so the next launch isn't confused either.
+            if dest.exists() and dest.stat().st_size > 0:
+                try:
+                    ccc.merge_pack_into_kestrel(
+                        dest, folder,
+                        protected_filenames=set(anchor_filenames) if anchor_filenames else None,
+                        overwrite_errors=retry_errored,
+                    )
+                except Exception as e:
+                    with self._ensure_cc_lock():
+                        self._cc_pack_events.append({
+                            "jobId": job_id, "folderPath": str(folder),
+                            "packName": fname, "error": str(e),
+                        })
+                    continue
+                already.add(fname)
+                try:
+                    store.add_downloaded_pack(job_id, fname)
+                except Exception:
+                    pass
+                self._cc_finalize_pack_merge(folder, job_id, fname, dest, client)
+                with self._ensure_cc_lock():
+                    self._cc_pack_events.append({
+                        "jobId": job_id, "folderPath": str(folder),
+                        "packName": fname,
+                    })
+                continue
+            try:
+                client.download_pack(job_id, fname, dest)
+                ccc.merge_pack_into_kestrel(
+                    dest, folder,
+                    protected_filenames=set(anchor_filenames) if anchor_filenames else None,
+                    overwrite_errors=retry_errored,
+                )
+            except Exception as e:
+                with self._ensure_cc_lock():
+                    self._cc_pack_events.append({
+                        "jobId": job_id, "folderPath": str(folder),
+                        "packName": fname, "error": str(e),
+                    })
+                continue
+            already.add(fname)
+            try:
+                store.add_downloaded_pack(job_id, fname)
+            except Exception:
+                pass
+            self._cc_finalize_pack_merge(folder, job_id, fname, dest, client)
+            with self._ensure_cc_lock():
+                self._cc_pack_events.append({
+                    "jobId": job_id, "folderPath": str(folder),
+                    "packName": fname,
+                })
+        return already, available_pack_names
+
+    def _cc_maybe_mark_done(self, job_id, client, store, already, available_pack_names):
+        """Flip the job to ``done`` only when the Worker confirms
+        terminal-complete state AND every available pack has been pulled
+        locally. Otherwise leave the persisted status untouched — the live
+        poller (and subsequent app launches) keep observing reality. Returns
+        the Worker's reported status string (``""`` on query failure)."""
+        try:
+            remote = client.get_status(job_id)
+            remote_status = str(remote.get("status") or "")
+        except Exception:
+            remote_status = ""
+        try:
+            if (
+                remote_status == "complete"
+                and all(p in already for p in available_pack_names)
+            ):
+                store.update_job(job_id, status="done")
+                with self._ensure_cc_lock():
+                    st = self._cc_jobs.get(job_id)
+                    if st is not None:
+                        st["status"] = "done"
+        except Exception:
+            pass
+        return remote_status
+
+    def cloud_compute_relocate_job(self, job_id: str, new_folder_path: str) -> dict:
+        """§4d — re-point a persisted job's ``folderPath`` to a new location.
+
+        Used by the account panel's "Locate folder…" recovery path when the
+        original analyzed folder has moved (drive-letter change, folder
+        renamed/moved, external drive remounted elsewhere). After relocation
+        ``folderAvailable`` flips true on the next ``list_pending_jobs`` and the
+        "Download results" button re-enables; ``resume_download`` then writes
+        into the new location's ``.kestrel/``.
+
+        Validation: the chosen dir must pass ``_validate_root_dir`` (normalised,
+        inside the allowed root if one is configured, and an existing
+        directory). We deliberately DON'T hard-require that the folder "looks
+        like" the original — the pack merge is filename-keyed and idempotent, so
+        a wrong pick simply merges into the wrong folder (recoverable) rather
+        than corrupting anything. The picker UX already nudges the user to the
+        right place.
+        """
+        job_id = (job_id or "").strip()
+        if not job_id:
+            return {"ok": False, "error": "missing jobId"}
+        new_root, err = self._validate_root_dir(
+            new_folder_path, "cloud_compute_relocate_job", require_exists=True
+        )
+        if err:
+            return {"ok": False, "error": err}
+        try:
+            store = self._cc_jobs_store()
+            target = next((j for j in store.load_jobs() if j["jobId"] == job_id), None)
+        except Exception as e:
+            return {"ok": False, "error": f"store load failed: {e}"}
+        if target is None:
+            return {"ok": False, "error": "unknown jobId"}
+        try:
+            updated = store.update_job(job_id, folderPath=new_root)
+        except Exception as e:
+            return {"ok": False, "error": f"store update failed: {e}"}
+        if updated is None:
+            return {"ok": False, "error": "update failed"}
+        # Keep an already-registered in-memory entry (e.g. a failed/incomplete
+        # job surfaced in _cc_jobs) pointed at the new location too, so a
+        # subsequent resume_download in this same session targets the new path.
+        with self._ensure_cc_lock():
+            st = self._cc_jobs.get(job_id)
+            if st is not None:
+                st["rootPath"] = new_root
+        return {"ok": True, "jobId": job_id, "folderPath": new_root}
+
+    def cloud_compute_get_pack_events(self) -> dict:
+        """Drain pack-merged events accumulated since the last call. JS calls
+        this on its cloud-queue poll tick and triggers a folder rescan +
+        gallery refresh for any ``folderPath`` mentioned."""
+        with self._ensure_cc_lock():
+            events = self._cc_pack_events
+            self._cc_pack_events = []
+        return {"ok": True, "events": events}
+
+    def cloud_compute_get_usage(self) -> dict:
+        """Cached fetch of ``/api/usage``. 5-minute TTL. Used by the Cloud
+        destination card to display ``Remaining cloud analysis images: N``.
+        Stub-shaped today (Stage 3 fleshes it out)."""
+        import time as _t
+        now = _t.time()
+        if self._cc_usage_cache is not None and (now - self._cc_usage_cache_at) < 300:
+            return {"ok": True, "usage": self._cc_usage_cache, "cached": True}
+        client, client_err = self._cc_make_client()
+        if client is None:
+            return client_err or {"ok": False, "error": "no client"}
+        try:
+            usage = client.get_usage()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        self._cc_usage_cache = usage
+        self._cc_usage_cache_at = now
+        return {"ok": True, "usage": usage, "cached": False}
+
+    def share_with_perch(
+        self,
+        root_path: str,
+        excluded_scene_ids=None,
+        skip_rejected: bool = True,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        """Kick off an async upload. Returns immediately with `{job_id}`.
+
+        JS polls `get_share_progress(job_id)` for live state. The browser is NOT
+        opened automatically — the user clicks an "Open in browser" button on
+        the success card so the auto-redirect-during-work pattern is gone.
+
+        ``skip_rejected``: when True (default), CSV rows marked culled are
+        omitted from the upload. The dialog defaults this to True; the user
+        can uncheck "Skip rejected photos" in the dialog to override.
+
+        ``idempotency_key``: optional — if a previous call crashed between
+        receiving the perch id and the success response, the JS layer can
+        replay with the same key to dedupe. Server matches on
+        ``(owner_id, idempotency_key)`` and returns the same perch row.
+        """
+        try:
+            from perch_uploader import (
+                PerchKestrelUploader,
+                PerchLegalAcceptanceRequired,
+                PerchPlanLimitExceeded,
+            )
+        except ImportError:
+            try:
+                from analyzer.perch_uploader import (
+                    PerchKestrelUploader,
+                    PerchLegalAcceptanceRequired,
+                    PerchPlanLimitExceeded,
+                )
+            except ImportError as e:
+                return {"success": False, "error": f"uploader import failed: {e}"}
+
+        token, dev_user, err = self._check_auth_token()
+        if err:
+            return err
+
+        root_real, verr = self._validate_root_dir(
+            root_path, context="share_with_perch", require_exists=True
+        )
+        if verr:
+            return {"success": False, "error": verr}
+
+        lock = self._ensure_share_lock()
+        with lock:
+            if self._active_share_job is not None:
+                return {
+                    "success": False,
+                    "error": "already_running",
+                    "active_job_id": self._active_share_job,
+                }
+            import threading as _t
+            import uuid as _uuid
+            job_id = str(_uuid.uuid4())
+            cancel_event = _t.Event()
+            job_state = {
+                "progress": {"phase": "starting"},
+                "cancel_event": cancel_event,
+                "thread": None,
+            }
+            self._share_jobs[job_id] = job_state
+            self._active_share_job = job_id
+
+        excluded = list(excluded_scene_ids or [])
+
+        def _on_progress(payload: dict) -> None:
+            with lock:
+                if job_id in self._share_jobs:
+                    self._share_jobs[job_id]["progress"] = dict(payload)
+
+        def _runner() -> None:
+            try:
+                uploader = PerchKestrelUploader(
+                    self.get_perch_api_base(),
+                    str(token) if token else None,
+                    dev_user=dev_user,
+                )
+                result = uploader.run(
+                    str(root_real),
+                    excluded_scene_ids=excluded,
+                    progress_callback=_on_progress,
+                    cancel_event=cancel_event,
+                    skip_rejected=bool(skip_rejected),
+                    idempotency_key=(str(idempotency_key) if idempotency_key else None),
+                )
+                # Persist `.kestrel/perch_link.json` only on a fully-successful
+                # upload. On cancel, the partial perch lives on the server and
+                # the user must clear it via the canceled-state UI; we don't
+                # want a stale "Published" badge claiming success.
+                if result and not result.get("canceled"):
+                    try:
+                        self._write_perch_link(
+                            str(root_real),
+                            result,
+                            skip_rejected=bool(skip_rejected),
+                            preflight=getattr(uploader, "_cached_preflight", None),
+                        )
+                    except Exception as link_err:
+                        log(f"share_with_perch: perch_link.json write failed: {link_err}")
+            except PerchLegalAcceptanceRequired as e:
+                # Launch item #13: open the browser for ToS / Privacy re-acceptance
+                # and surface a structured progress payload so the JS side can
+                # render a "Review updated terms" card with a fallback link
+                # if the browser launch failed.
+                try:
+                    webbrowser.open(e.accept_url, new=2)
+                except Exception as _e:
+                    warn(f"share_with_perch: failed to open legal accept URL: {_e}")
+                _on_progress({
+                    "phase": "error",
+                    "message": "legal_acceptance_required",
+                    "acceptUrl": e.accept_url,
+                    "currentEffectiveDate": e.current_effective_date,
+                })
+            except PerchPlanLimitExceeded as e:
+                # Stage 7: plan-tier cap denial. Surface a typed error so JS
+                # renders an upgrade card with a clickable "Upgrade" button
+                # to myaccount.projectkestrel.org/perch. The presigning
+                # spinner unwinds because we end the job here.
+                _on_progress({
+                    "phase": "error",
+                    "message": "plan_limit_exceeded",
+                    "errorCode": e.error_code,
+                    "status": e.status,
+                    "tier": e.tier,
+                    "current": e.current,
+                    "limit": e.limit,
+                    "filename": e.filename,
+                    "upgradeUrl": e.upgrade_url,
+                    "friendlyMessage": str(e),
+                })
+            except Exception as e:
+                log(f"share_with_perch: {e}")
+                import traceback as _tb
+                log(_tb.format_exc())
+                _on_progress({"phase": "error", "message": str(e)})
+            finally:
+                with lock:
+                    if self._active_share_job == job_id:
+                        self._active_share_job = None
+                # Invalidate usage cache so the next dialog open shows fresh numbers.
+                self._perch_usage_cache = None
+                self._perch_usage_cache_at = 0.0
+
+        import threading as _t
+        thread = _t.Thread(target=_runner, name=f"PerchUpload-{job_id[:8]}", daemon=True)
+        with lock:
+            self._share_jobs[job_id]["thread"] = thread
+        thread.start()
+
+        return {"success": True, "job_id": job_id}
+
+    def get_share_progress(self, job_id: str) -> dict:
+        """Return the latest progress event for an in-flight or recent share job."""
+        lock = self._ensure_share_lock()
+        with lock:
+            entry = self._share_jobs.get(str(job_id))
+            if entry is None:
+                return {"success": False, "error": "not_found"}
+            return {"success": True, "progress": dict(entry.get("progress") or {})}
+
+    def cancel_share(self, job_id: str) -> dict:
+        """Request cancellation of an in-flight share job. Idempotent."""
+        lock = self._ensure_share_lock()
+        with lock:
+            entry = self._share_jobs.get(str(job_id))
+            if entry is None:
+                return {"success": False, "error": "not_found"}
+            ev = entry.get("cancel_event")
+        if ev is not None:
+            try:
+                ev.set()
+            except Exception:
+                pass
+        return {"success": True}
+
+    def open_perch_url(self, url: str) -> dict:
+        """Open an arbitrary URL in the user's default browser."""
+        try:
+            if not isinstance(url, str) or not url.strip():
+                return {"success": False, "error": "missing url"}
+            u = url.strip()
+            if not (u.startswith("http://") or u.startswith("https://")):
+                return {"success": False, "error": "invalid url scheme"}
+            webbrowser.open(u, new=2, autoraise=True)
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    # ─── Perch link persistence (Phase 1: per-folder perch_link.json) ──
+
+    @staticmethod
+    def _perch_link_path(folder_path: str) -> "Path":
+        from pathlib import Path as _P
+        return _P(folder_path) / ".kestrel" / "perch_link.json"
+
+    @staticmethod
+    def _hash_kestrel_state(folder_path: str) -> str | None:
+        """SHA-256 over kestrel_database.csv + kestrel_scenedata.json contents.
+
+        Returned as ``"sha256:<hex>"`` or None if neither file is present. Used
+        as a "did anything change since upload?" gate by Phase 3 sync — covers
+        both row-level edits and scene-renames.
+        """
+        import hashlib
+        from pathlib import Path as _P
+        kestrel_dir = _P(folder_path) / ".kestrel"
+        h = hashlib.sha256()
+        any_read = False
+        for name in ("kestrel_database.csv", "kestrel_scenedata.json"):
+            fp = kestrel_dir / name
+            if fp.is_file():
+                try:
+                    with open(fp, "rb") as f:
+                        for chunk in iter(lambda: f.read(65536), b""):
+                            h.update(chunk)
+                    any_read = True
+                except OSError:
+                    pass
+        return ("sha256:" + h.hexdigest()) if any_read else None
+
+    def _write_perch_link(
+        self,
+        folder_path: str,
+        run_result: dict,
+        skip_rejected: bool,
+        preflight=None,
+    ) -> None:
+        """Persist `.kestrel/perch_link.json` after a successful upload."""
+        from pathlib import Path as _P
+        import json as _json
+        import time as _time
+        link_path = self._perch_link_path(folder_path)
+        link_path.parent.mkdir(parents=True, exist_ok=True)
+        title = _P(folder_path).name or ""
+        payload = {
+            "version": 1,
+            "perch_id": str(run_result.get("perch_id") or ""),
+            "perch_url": str(run_result.get("url") or ""),
+            "title": title,
+            "uploaded_at_ms": int(_time.time() * 1000),
+            "scene_count": int(run_result.get("scene_count") or 0),
+            "asset_count": int(getattr(preflight, "file_count", 0) or 0),
+            "image_count": int(getattr(preflight, "image_count", 0) or 0),
+            "skip_rejected_used": bool(skip_rejected),
+            "state_hash_at_upload": self._hash_kestrel_state(folder_path),
+        }
+        tmp = link_path.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(payload, f, indent=2)
+        os.replace(tmp, link_path)
+
+    def read_perch_link(self, folder_path: str) -> dict:
+        """Read .kestrel/perch_link.json. Returns {present, link} or {present: False}."""
+        root_real, err = self._validate_root_dir(folder_path, context="read_perch_link", require_exists=True)
+        if err:
+            return {"present": False, "error": err}
+        link_path = self._perch_link_path(str(root_real))
+        if not link_path.is_file():
+            return {"present": False}
+        try:
+            import json as _json
+            with open(link_path, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+            return {"present": True, "link": data}
+        except Exception as e:
+            return {"present": False, "error": str(e)}
+
+    def delete_perch_link(self, folder_path: str) -> dict:
+        """Delete .kestrel/perch_link.json (local only; does not touch Worker)."""
+        root_real, err = self._validate_root_dir(folder_path, context="delete_perch_link", require_exists=True)
+        if err:
+            return {"success": False, "error": err}
+        link_path = self._perch_link_path(str(root_real))
+        if not link_path.is_file():
+            return {"success": True, "removed": False}
+        try:
+            link_path.unlink()
+            return {"success": True, "removed": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def verify_perch_link(self, folder_path: str) -> dict:
+        """Check whether the perch a folder is linked to still exists on the server.
+
+        Returns one of:
+          {"status": "missing"}          — no perch_link.json present
+          {"status": "alive", ...}       — server returned 200, link is valid
+          {"status": "deleted", ...}     — server returned 404, local file removed
+          {"status": "unauthorized"}     — 401, user signed out (link untouched)
+          {"status": "forbidden"}        — 403, link owned by another account (untouched)
+          {"status": "unreachable", ...} — network error (link untouched)
+
+        Only a definite 404 clears local state. 401/403/network errors are
+        treated as transient and never cause a destructive cleanup.
+        """
+        root_real, err = self._validate_root_dir(
+            folder_path, context="verify_perch_link", require_exists=True
+        )
+        if err:
+            return {"status": "missing", "error": err}
+        link_path = self._perch_link_path(str(root_real))
+        if not link_path.is_file():
+            return {"status": "missing"}
+        try:
+            import json as _json
+            with open(link_path, "r", encoding="utf-8") as f:
+                link = _json.load(f)
+        except Exception as e:
+            return {"status": "missing", "error": f"link unreadable: {e}"}
+        perch_id = str((link or {}).get("perch_id") or "").strip()
+        if not perch_id:
+            return {"status": "missing", "error": "link has no perch_id"}
+
+        token, dev_user, terr = self._check_auth_token()
+        if terr:
+            # No usable auth — treat as unauthorized; do NOT clear the link.
+            return {"status": "unauthorized", "perch_id": perch_id, "link": link}
+        try:
+            import requests as _req
+            headers: dict = {}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            if dev_user:
+                headers["x-dev-user-id"] = str(dev_user)
+            r = _req.get(
+                f"{self.get_perch_api_base()}/v1/perches/{perch_id}",
+                headers=headers,
+                timeout=15,
+            )
+        except Exception as e:
+            return {"status": "unreachable", "error": str(e), "perch_id": perch_id, "link": link}
+
+        if r.status_code == 200:
+            return {"status": "alive", "perch_id": perch_id, "link": link}
+        if r.status_code == 404:
+            # Definite delete — clear local link.
+            try:
+                link_path.unlink()
+            except OSError:
+                pass
+            return {"status": "deleted", "perch_id": perch_id, "cleared_local": True}
+        if r.status_code == 401:
+            return {"status": "unauthorized", "perch_id": perch_id, "link": link}
+        if r.status_code == 403:
+            return {"status": "forbidden", "perch_id": perch_id, "link": link}
+        # Anything else (5xx, etc.) — transient; leave local state alone.
+        return {
+            "status": "unreachable",
+            "error": f"HTTP {r.status_code}",
+            "perch_id": perch_id,
+            "link": link,
+        }
+
+    def get_perch_status(self, perch_id: str) -> dict:
+        """Fetch live status of one perch from the Perch Worker.
+
+        Hits two endpoints sequentially with the same auth header:
+          - GET /v1/perches/{id} — visibility, publicSlug, commentsPermission,
+            publishedAt, owner. Treat 404 as "perch deleted on server".
+          - GET /v1/me/perches — lightweight list. Find entry where id matches
+            to pick up actualBytes + assetCount + imageCount.
+
+        Returns:
+          {"ok": True, "status": {
+              "title", "visibility", "status" ("draft"|"published"),
+              "publicUrl", "commentsPermission",
+              "publishedAt" (unix seconds or None), "createdAt" (unix seconds),
+              "actualBytes", "imageCount", "assetCount", "uploadState",
+          }}
+        On failure:
+          {"ok": False, "error": "not_found" | "unauthorized" | "forbidden" |
+                                  "unreachable" | "no_auth"}
+
+        Callers treat this as advisory — the local perch_link.json is still
+        authoritative for whether the dialog is in linked state. On
+        "not_found" the caller is expected to clear the link locally.
+        """
+        pid = str(perch_id or "").strip()
+        if not pid:
+            return {"ok": False, "error": "missing_id"}
+
+        token, dev_user, terr = self._check_auth_token()
+        if terr:
+            return {"ok": False, "error": "no_auth"}
+
+        try:
+            import requests as _req
+        except Exception as e:
+            return {"ok": False, "error": f"requests_unavailable: {e}"}
+
+        headers: dict = {}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        if dev_user:
+            headers["x-dev-user-id"] = str(dev_user)
+        base = self.get_perch_api_base()
+
+        try:
+            r_detail = _req.get(f"{base}/v1/perches/{pid}", headers=headers, timeout=15)
+        except Exception as e:
+            return {"ok": False, "error": "unreachable", "detail": str(e)}
+        if r_detail.status_code == 404:
+            return {"ok": False, "error": "not_found"}
+        if r_detail.status_code == 401:
+            return {"ok": False, "error": "unauthorized"}
+        if r_detail.status_code == 403:
+            return {"ok": False, "error": "forbidden"}
+        if r_detail.status_code != 200:
+            return {"ok": False, "error": f"http_{r_detail.status_code}"}
+        try:
+            detail = r_detail.json()
+        except Exception as e:
+            return {"ok": False, "error": f"bad_json: {e}"}
+
+        perch_obj = detail.get("perch") if isinstance(detail, dict) else None
+        if not isinstance(perch_obj, dict):
+            # Shape mismatch — surface as unreachable so UI shows cached info.
+            return {"ok": False, "error": "bad_shape"}
+
+        # Second call: lightweight list for byte counts. Don't fail the whole
+        # response if this 500s or 401s — we still got the detail; show what
+        # we have and let bytes show "—".
+        actual_bytes = None
+        asset_count = None
+        image_count = None
+        upload_state = None
+        try:
+            r_list = _req.get(f"{base}/v1/me/perches", headers=headers, timeout=15)
+            if r_list.status_code == 200:
+                list_payload = r_list.json()
+                items = list_payload.get("perches") if isinstance(list_payload, dict) else None
+                if not isinstance(items, list):
+                    items = list_payload if isinstance(list_payload, list) else []
+                for it in items:
+                    if not isinstance(it, dict):
+                        continue
+                    if str(it.get("id") or "") == pid:
+                        actual_bytes = it.get("actualBytes")
+                        asset_count = it.get("assetCount")
+                        image_count = it.get("imageCount")
+                        upload_state = it.get("uploadState")
+                        break
+        except Exception:
+            pass  # advisory only
+
+        return {
+            "ok": True,
+            "status": {
+                "title": perch_obj.get("title"),
+                "visibility": perch_obj.get("visibility"),
+                "status": perch_obj.get("status"),
+                "publicSlug": perch_obj.get("publicSlug"),
+                "publicUrl": perch_obj.get("publicUrl"),
+                "commentsPermission": perch_obj.get("commentsPermission"),
+                "publishedAt": perch_obj.get("publishedAt"),
+                "createdAt": perch_obj.get("createdAt"),
+                "actualBytes": actual_bytes,
+                "imageCount": image_count,
+                "assetCount": asset_count,
+                "uploadState": upload_state,
+            },
+        }
+
+    # ─── Tag sync (H7): push species/family corrections to a linked perch ──
+    #
+    # When the user fixes species/family names on a *linked* folder, push just
+    # those scene-level corrections to the existing perch via the batch route
+    # PATCH /v1/perches/{id}/scenes — no file re-upload (tags are manifest
+    # metadata). Scenes are matched by `kestrelSceneId` (the desktop scene id,
+    # which is the CSV `scene_count` string, persisted into the manifest at
+    # upload time). V1 is metadata-only: no added/deleted scenes or files.
+
+    @staticmethod
+    def _read_link_dict(folder_path: str) -> "dict | None":
+        """Read .kestrel/perch_link.json as a dict, or None if absent/unreadable."""
+        from pathlib import Path as _P
+        link_path = _P(folder_path) / ".kestrel" / "perch_link.json"
+        if not link_path.is_file():
+            return None
+        try:
+            import json as _json
+            with open(link_path, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _read_scenedata_dict(folder_path: str) -> dict:
+        """Read .kestrel/kestrel_scenedata.json as a dict (empty dict on absence/error)."""
+        from pathlib import Path as _P
+        sp = _P(folder_path) / ".kestrel" / "kestrel_scenedata.json"
+        if not sp.is_file():
+            return {}
+        try:
+            import json as _json
+            with open(sp, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _norm_tag_list(v) -> list:
+        """Normalize a tag list the same way the uploader/worker do: stringify,
+        strip, drop empties, preserve order. Makes a freshly-synced scene
+        re-diff to 'no change' against the manifest."""
+        if not isinstance(v, list):
+            return []
+        return [str(x).strip() for x in v if str(x).strip()]
+
+    def _perch_tag_changeset(self, folder_path: str, perch_id: str):
+        """Diff local user_tags against the live perch manifest, matched by
+        kestrelSceneId. Returns (changes, None) on success or (None, error_code).
+
+        Each change: {kestrelSceneId, title, species, family, remoteSpecies,
+        remoteFamily} where species/family are the *local* (desired) lists.
+        Only scenes present in BOTH the local scenedata and the remote manifest
+        are considered (V1 is metadata-only — no add/delete of scenes).
+        """
+        token, dev_user, terr = self._check_auth_token()
+        if terr:
+            return None, "no_auth"
+        try:
+            import requests as _req
+        except Exception as e:
+            return None, f"requests_unavailable: {e}"
+
+        headers: dict = {}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        if dev_user:
+            headers["x-dev-user-id"] = str(dev_user)
+        try:
+            r = _req.get(
+                f"{self.get_perch_api_base()}/v1/perches/{perch_id}",
+                headers=headers,
+                timeout=15,
+            )
+        except Exception as e:
+            return None, "unreachable"
+        if r.status_code == 404:
+            return None, "not_found"
+        if r.status_code == 401:
+            return None, "unauthorized"
+        if r.status_code == 403:
+            return None, "forbidden"
+        if r.status_code != 200:
+            return None, f"http_{r.status_code}"
+        try:
+            detail = r.json()
+        except Exception:
+            return None, "bad_json"
+        remote_scenes = detail.get("scenes") if isinstance(detail, dict) else None
+        if not isinstance(remote_scenes, list):
+            return None, "bad_shape"
+
+        scenedata = self._read_scenedata_dict(folder_path)
+        local_scenes = scenedata.get("scenes") if isinstance(scenedata, dict) else {}
+        local_scenes = local_scenes if isinstance(local_scenes, dict) else {}
+        return self._diff_perch_tags(remote_scenes, local_scenes), None
+
+    @classmethod
+    def _diff_perch_tags(cls, remote_scenes, local_scenes) -> list:
+        """Pure changeset: remote manifest scenes vs local scenedata, matched by
+        kestrelSceneId. Returns scenes whose local species/family differ from
+        remote. Only scenes present in BOTH sides are considered (V1 is
+        metadata-only — no add/delete). Extracted from the network path so it's
+        unit-testable.
+        """
+        local_scenes = local_scenes if isinstance(local_scenes, dict) else {}
+        changes: list = []
+        for rs in remote_scenes if isinstance(remote_scenes, list) else []:
+            if not isinstance(rs, dict):
+                continue
+            ksid_raw = rs.get("kestrelSceneId")
+            if ksid_raw is None:
+                continue
+            ksid = str(ksid_raw)
+            local = local_scenes.get(ksid)
+            if not isinstance(local, dict):
+                continue  # scene not in local scenedata — skip (no add/delete in V1)
+            ut = local.get("user_tags")
+            ut = ut if isinstance(ut, dict) else {}
+            local_species = cls._norm_tag_list(ut.get("species"))
+            local_family = cls._norm_tag_list(ut.get("families"))
+            remote_species = cls._norm_tag_list(rs.get("speciesList"))
+            remote_family = cls._norm_tag_list(rs.get("familyList"))
+            if local_species == remote_species and local_family == remote_family:
+                continue
+            title = ""
+            nm = local.get("name")
+            if isinstance(nm, str) and nm.strip():
+                title = nm.strip()
+            if not title:
+                title = f"Scene {ksid}"
+            changes.append({
+                "kestrelSceneId": ksid,
+                "title": title,
+                "species": local_species,
+                "family": local_family,
+                "remoteSpecies": remote_species,
+                "remoteFamily": remote_family,
+            })
+        return changes
+
+    def _update_link_state_hash(self, folder_path: str) -> None:
+        """Re-stamp perch_link.json's state_hash_at_upload to the current state,
+        so the cheap 'anything changed?' gate reports in-sync after a sync."""
+        import json as _json
+        link_path = self._perch_link_path(folder_path)
+        if not link_path.is_file():
+            return
+        with open(link_path, "r", encoding="utf-8") as f:
+            data = _json.load(f)
+        if not isinstance(data, dict):
+            return
+        data["state_hash_at_upload"] = self._hash_kestrel_state(folder_path)
+        tmp = link_path.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(data, f, indent=2)
+        os.replace(tmp, link_path)
+
+    def compute_perch_tag_diff(self, folder_path: str) -> dict:
+        """Compute the species/family changeset for a linked folder vs its perch.
+
+        Returns:
+          {"ok": True, "perch_id", "count", "changes": [...], "unchanged"?: bool}
+          {"ok": False, "error": "not_linked"|"no_auth"|"unauthorized"|
+                                  "forbidden"|"not_found"|"unreachable"|...}
+
+        Uses the coarse perch_link.json `state_hash_at_upload` as a cheap gate:
+        if nothing on disk changed since upload, there can be no tag diff, so it
+        returns count 0 without a network round-trip. Otherwise it does the
+        precise per-scene manifest comparison.
+        """
+        root_real, err = self._validate_root_dir(
+            folder_path, context="compute_perch_tag_diff", require_exists=True
+        )
+        if err:
+            return {"ok": False, "error": err}
+        link = self._read_link_dict(str(root_real))
+        if not link:
+            return {"ok": False, "error": "not_linked"}
+        perch_id = str(link.get("perch_id") or "").strip()
+        if not perch_id:
+            return {"ok": False, "error": "not_linked"}
+
+        prev_hash = str(link.get("state_hash_at_upload") or "")
+        cur_hash = self._hash_kestrel_state(str(root_real)) or ""
+        if prev_hash and cur_hash and prev_hash == cur_hash:
+            return {"ok": True, "perch_id": perch_id, "count": 0, "changes": [], "unchanged": True}
+
+        changes, derr = self._perch_tag_changeset(str(root_real), perch_id)
+        if derr is not None:
+            return {"ok": False, "error": derr, "perch_id": perch_id}
+        return {"ok": True, "perch_id": perch_id, "count": len(changes), "changes": changes}
+
+    def sync_perch_tags(self, folder_path: str) -> dict:
+        """Push the linked folder's species/family corrections to its perch.
+
+        Recomputes the changeset internally (never trusts a client-supplied one,
+        avoiding a TOCTOU on stale data), PATCHes the batch route, and on success
+        re-stamps perch_link.json's state hash.
+
+        Returns:
+          {"ok": True, "perch_id", "updated": int, "skipped": [...], "count": int,
+           "nothing_to_sync"?: bool}
+          {"ok": False, "error": ...}
+        """
+        root_real, err = self._validate_root_dir(
+            folder_path, context="sync_perch_tags", require_exists=True
+        )
+        if err:
+            return {"ok": False, "error": err}
+        link = self._read_link_dict(str(root_real))
+        if not link:
+            return {"ok": False, "error": "not_linked"}
+        perch_id = str(link.get("perch_id") or "").strip()
+        if not perch_id:
+            return {"ok": False, "error": "not_linked"}
+
+        changes, derr = self._perch_tag_changeset(str(root_real), perch_id)
+        if derr is not None:
+            return {"ok": False, "error": derr, "perch_id": perch_id}
+        if not changes:
+            # Already in sync — still re-stamp the hash so the next probe is cheap.
+            try:
+                self._update_link_state_hash(str(root_real))
+            except Exception:
+                pass
+            return {
+                "ok": True, "perch_id": perch_id, "updated": 0,
+                "skipped": [], "count": 0, "nothing_to_sync": True,
+            }
+
+        token, dev_user, terr = self._check_auth_token()
+        if terr:
+            return {"ok": False, "error": "no_auth", "perch_id": perch_id}
+        try:
+            import requests as _req
+        except Exception as e:
+            return {"ok": False, "error": f"requests_unavailable: {e}"}
+
+        headers: dict = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        if dev_user:
+            headers["x-dev-user-id"] = str(dev_user)
+        payload = {
+            "scenes": [
+                {
+                    "kestrelSceneId": c["kestrelSceneId"],
+                    "species": c["species"],
+                    "family": c["family"],
+                }
+                for c in changes
+            ]
+        }
+        try:
+            r = _req.patch(
+                f"{self.get_perch_api_base()}/v1/perches/{perch_id}/scenes",
+                json=payload,
+                headers=headers,
+                timeout=30,
+            )
+        except Exception as e:
+            return {"ok": False, "error": "unreachable", "detail": str(e), "perch_id": perch_id}
+        if r.status_code == 404:
+            return {"ok": False, "error": "not_found", "perch_id": perch_id}
+        if r.status_code == 401:
+            return {"ok": False, "error": "unauthorized", "perch_id": perch_id}
+        if r.status_code == 403:
+            return {"ok": False, "error": "forbidden", "perch_id": perch_id}
+        if r.status_code != 200:
+            msg = ""
+            try:
+                body = r.json()
+                if isinstance(body, dict):
+                    msg = str(body.get("error") or "")
+            except Exception:
+                pass
+            return {"ok": False, "error": msg or f"http_{r.status_code}", "perch_id": perch_id}
+        try:
+            body = r.json()
+        except Exception:
+            body = {}
+        body = body if isinstance(body, dict) else {}
+        updated = int(body.get("updated") or 0)
+        skipped = body.get("skipped") if isinstance(body.get("skipped"), list) else []
+
+        # Re-stamp the state hash so a subsequent compute_perch_tag_diff short-
+        # circuits to "in sync" via the cheap gate.
+        try:
+            self._update_link_state_hash(str(root_real))
+        except Exception as e:
+            log(f"sync_perch_tags: state hash update failed: {e}")
+
+        return {
+            "ok": True, "perch_id": perch_id, "updated": updated,
+            "skipped": skipped, "count": len(changes),
+        }
+
+    # ── OAuth 2.0 + PKCE sign-in / refresh / sign-out ────────────────────
+
+    def start_oauth_sign_in(self):
+        """Start a Clerk OAuth Authorization Code + PKCE flow in a background thread.
+
+        Returns immediately. On success the worker thread persists the OAuth
+        bundle to the keychain and calls ``window.onAuthSignIn(token)``; on
+        failure it calls ``window.onAuthSignInFailed({error, description})``.
+        Refuses to start a second concurrent flow.
+        """
+        if _oauth is None:
+            return {"success": False, "error": "oauth_module_unavailable"}
+        try:
+            lock = self._get_oauth_lock()
+            if not lock.acquire(blocking=False):
+                return {"success": False, "error": "flow_in_progress"}
+            try:
+                if self._oauth_in_flight:
+                    return {"success": False, "error": "flow_in_progress"}
+                self._oauth_in_flight = True
+                self._oauth_status = "starting"
+            finally:
+                lock.release()
+
+            import threading as _t
+            thread = _t.Thread(
+                target=self._oauth_worker, name="oauth-flow", daemon=True
+            )
+            thread.start()
+            return {"success": True, "started": True}
+        except Exception as e:
+            self._oauth_in_flight = False
+            self._oauth_status = "idle"
+            print(f"[API] start_oauth_sign_in() -> Error: {e}", flush=True)
+            return {"success": False, "error": str(e)}
+
+    def _oauth_progress_cb(self, label: str) -> None:
+        self._oauth_status = str(label)
+
+    def _oauth_worker(self) -> None:
+        """Background thread that drives ``oauth_client.run_authorization_flow``.
+
+        Persists the result on success and notifies JS either way. Always
+        clears ``_oauth_in_flight`` in ``finally`` so a botched flow doesn't
+        permanently block re-attempts.
+        """
+        try:
+            result = _oauth.run_authorization_flow(
+                progress_cb=self._oauth_progress_cb,
+                url_validator=_is_safe_external_url,
+            )
+            if not result.get("ok"):
+                err = str(result.get("error") or "unknown")
+                desc = str(result.get("error_description") or "")
+                print(f"[API] OAuth flow failed: {err} ({desc})", flush=True)
+                self._notify_js_sign_in_failed(err, desc)
+                return
+
+            bundle = result["bundle"]
+            _keyring_save(bundle)
+            # Caches were keyed on the previous (now-stale) identity.
+            self._perch_account_cache = None
+            self._perch_account_cache_at = 0.0
+            self._perch_usage_cache = None
+            self._perch_usage_cache_at = 0.0
+            self._notify_js_sign_in(bundle.get("access_token") or "")
+        except Exception as e:
+            print(f"[API] _oauth_worker() -> Error: {e}", flush=True)
+            try:
+                self._notify_js_sign_in_failed("unexpected", str(e))
+            except Exception:
+                pass
+        finally:
+            self._oauth_in_flight = False
+            self._oauth_status = "idle"
+
+    def _notify_js_sign_in(self, token: str) -> None:
+        if self._main_window is None:
+            return
+        try:
+            safe = json.dumps(str(token))
+            self._main_window.evaluate_js(
+                f"window.onAuthSignIn && window.onAuthSignIn({safe})"
+            )
+        except Exception as e:
+            print(f"[API] _notify_js_sign_in() -> Error: {e}", flush=True)
+
+    def _notify_js_sign_in_failed(self, error: str, description: str = "") -> None:
+        if self._main_window is None:
+            return
+        try:
+            payload = json.dumps({"error": str(error), "description": str(description)})
+            self._main_window.evaluate_js(
+                f"window.onAuthSignInFailed && window.onAuthSignInFailed({payload})"
+            )
+        except Exception as e:
+            print(f"[API] _notify_js_sign_in_failed() -> Error: {e}", flush=True)
+
+    def _notify_js_sign_out(self) -> None:
+        if self._main_window is None:
+            return
+        try:
+            self._main_window.evaluate_js(
+                "window.onAuthSignOut && window.onAuthSignOut()"
+            )
+        except Exception as e:
+            print(f"[API] _notify_js_sign_out() -> Error: {e}", flush=True)
+
+    def get_oauth_flow_status(self) -> dict:
+        """Diagnostic — JS-callable. Mostly useful for surfacing 'stuck' flows."""
+        return {
+            "success": True,
+            "in_flight": bool(self._oauth_in_flight),
+            "status": str(self._oauth_status or "idle"),
+        }
+
+    def sign_out(self) -> dict:
+        """Clear keychain credentials, best-effort revoke at Clerk, notify JS."""
+        try:
+            bundle = self._load_token_bundle()
+            refresh_token = (bundle or {}).get("refresh_token") if bundle else None
+            self._clear_keychain_auth()
+            self._perch_account_cache = None
+            self._perch_account_cache_at = 0.0
+            self._perch_usage_cache = None
+            self._perch_usage_cache_at = 0.0
+            if refresh_token and _oauth is not None:
+                try:
+                    _oauth.revoke_token(str(refresh_token))
+                except Exception:
+                    pass  # best-effort
+            self._notify_js_sign_out()
+            return {"success": True}
+        except Exception as e:
+            print(f"[API] sign_out() -> Error: {e}", flush=True)
+            return {"success": False, "error": str(e)}
 
     def _find_sidecar_file(self, root_path: str, filename: str, ext: str = '.xmp'):
         """Find sidecar file with given extension for an image file.

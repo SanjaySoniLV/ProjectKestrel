@@ -21,7 +21,17 @@ from kestrel_analyzer.config import (
 from kestrel_analyzer.database import load_database
 
 
-def _list_images_in_folder(folder: str) -> list:
+def list_images_in_folder(folder: str) -> list:
+    """Return analyzable image filenames in ``folder`` (sorted), honouring the
+    RAW-priority rule: when the folder contains any RAW files, only RAWs are
+    returned (their JPEG sidecars are skipped); only when there are zero RAWs do
+    we fall back to JPEGs. Hidden files and macOS AppleDouble (``._*``)
+    companions are filtered out via :func:`is_supported_image_file`.
+
+    Names only (not paths), non-recursive. This is the single source of truth
+    for "which files count" so folder inspection, the cloud upload-speed test,
+    and the cloud job's fallback discovery all agree.
+    """
     try:
         entries = [
             name for name in os.listdir(folder)
@@ -32,6 +42,11 @@ def _list_images_in_folder(folder: str) -> list:
         return files
     except Exception:
         return []
+
+
+# Back-compat alias: this function was private until the cloud upload-speed test
+# began reusing it. Keep the old name working for any in-tree callers.
+_list_images_in_folder = list_images_in_folder
 
 
 def inspect_folder(path: str) -> Dict[str, int | str | bool]:
@@ -66,7 +81,7 @@ def inspect_folder(path: str) -> Dict[str, int | str | bool]:
         root = p
 
     result['root'] = root
-    files = _list_images_in_folder(root)
+    files = list_images_in_folder(root)
     total = len(files)
     result['total'] = total
     files_set = set(files)

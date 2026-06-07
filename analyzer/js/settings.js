@@ -97,6 +97,10 @@
       lbl.textContent = consentShown
         ? (optedIn === true ? 'Opted in' : 'Not sharing')
         : 'Not yet decided';
+
+      // Crash reports default ON (opt-out).
+      const crashCb = document.getElementById('settingsCrashReports');
+      if (crashCb) crashCb.checked = getSetting('crash_reports_enabled', true);
       
       // Display total impact (photos analyzed) from hydrated local settings.
       const totalPhotos = getSetting('kestrel_impact_total_files', 0);
@@ -149,6 +153,8 @@
       const customEditorPath = document.getElementById('customEditorPath').value.trim();
       const treeScanDepth = Math.max(1, Math.min(6, parseInt(document.getElementById('treeScanDepth').value, 10) || 3));
       const analyticsOptIn = document.getElementById('settingsAnalyticsOptIn').checked;
+      const crashReportsCb = document.getElementById('settingsCrashReports');
+      const crashReportsEnabled = crashReportsCb ? crashReportsCb.checked : true;
       const profileEl = document.getElementById('ratingProfile');
       const ratingProfile = profileEl ? profileEl.value : 'balanced';
       const rawCacheCb2 = document.getElementById('rawPreviewCacheEnabled');
@@ -187,6 +193,7 @@
       const settings = {
         ...existing, editor, customEditorPath, treeScanDepth,
         analytics_opted_in: analyticsOptIn, analytics_consent_shown: true,
+        crash_reports_enabled: crashReportsEnabled,
         rating_profile: ratingProfile,
         raw_preview_cache_enabled: rawPreviewCacheEnabled,
         auto_save_enabled: autoSaveEnabled,
