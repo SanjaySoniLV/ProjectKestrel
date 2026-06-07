@@ -1811,6 +1811,7 @@ class Api:
                         message=description,
                         version=version,
                         os=os_info,
+                        contact=str(data.get('contact', '') or '').strip(),
                     )
                     return {'success': True}
             except Exception:

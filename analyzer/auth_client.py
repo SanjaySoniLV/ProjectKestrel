@@ -152,6 +152,7 @@ class AuthClient:
         subject: str = "",
         version: str = "",
         os: str = "",
+        contact: str = "",
     ) -> dict:
         """POST /v1/me/feedback — submit feedback as the signed-in user.
 
@@ -169,4 +170,6 @@ class AuthClient:
             body["version"] = version
         if os:
             body["os"] = os
+        if contact:
+            body["contact"] = contact
         return self._request("POST", "/v1/me/feedback", body)
