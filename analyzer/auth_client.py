@@ -144,3 +144,29 @@ class AuthClient:
         return self._request(
             "DELETE", f"/v1/me/notifications/{quote(str(notif_id), safe='')}"
         )
+
+    def post_feedback(
+        self,
+        report_type: str,
+        message: str,
+        subject: str = "",
+        version: str = "",
+        os: str = "",
+    ) -> dict:
+        """POST /v1/me/feedback — submit feedback as the signed-in user.
+
+        report_type must be one of: bug, suggestion, general, account.
+        Returns {ok: true, id} on success; raises AuthClientError on failure.
+        """
+        body: dict = {
+            "product": "desktop",
+            "report_type": report_type,
+            "message": message,
+        }
+        if subject:
+            body["subject"] = subject
+        if version:
+            body["version"] = version
+        if os:
+            body["os"] = os
+        return self._request("POST", "/v1/me/feedback", body)
