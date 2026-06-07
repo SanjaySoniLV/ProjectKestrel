@@ -32,7 +32,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
-from . import gpu_providers
+from . import gpu_providers, gpu_providers_for
 
 if TYPE_CHECKING:
     from .resilient_session import ResilientOnnxSession
@@ -83,6 +83,14 @@ _SESSION_DEAD_SIGNATURES: tuple[str, ...] = (
     "GetDeviceRemovedReason",
     "!model_path.empty()",
     "model_path must not be empty",
+    # TensorRT EP failures (engine cache corruption, TRT/CUDA version
+    # mismatch, OOM during build, etc.). Treating these as session-dead
+    # triggers the rebuild path, which on retry uses CUDA EP (next in the
+    # provider list) instead of TRT.
+    "Could not deserialize engine",
+    "TensorRT EP failed",
+    "trt_engine_cache",
+    "engine deserialize",
 )
 
 
@@ -190,16 +198,18 @@ class ProviderCoordinator:
             sess._rebuild()
         gc.collect()
 
-    def providers_for(self, kind: str) -> list[str]:
+    def providers_for(self, kind: str, model_path: object = None) -> list:
         """Return the ONNX providers list for a fresh session of the given kind.
 
-        ``kind`` is a free-form string ("detector"/"classifier"/"sam_enc"/"sam_dec");
-        currently all kinds use the same provider list, but the parameter is kept
-        so we can per-kind tune later without changing call sites.
+        ``kind`` is a free-form string ("detector"/"classifier"/"sam_enc"/
+        "sam_dec"/"bird_species"/"quality"). On Linux+CUDA, per-model
+        TRT routing happens via ``gpu_providers_for(kind, model_path)`` — which
+        keys off the ONNX file's basename to pick the right TRT engine cache
+        subdir. The 4 TRT-eligible models (see ml/__init__.py) get a TRT EP
+        prepended; everything else gets the platform default GPU EP.
         """
-        _ = kind
         if self._state is ProviderState.GPU:
-            return gpu_providers()
+            return gpu_providers_for(kind, model_path)
         return ["CPUExecutionProvider"]
 
     # ---- event handlers ----

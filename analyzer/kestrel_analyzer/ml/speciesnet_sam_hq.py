@@ -336,7 +336,7 @@ class OnnxClassifier:
 
     def predict_many(self, filepaths: list[str], preprocessed_list: list[np.ndarray]) -> list[dict]:
         """
-        Run one ONNX forward pass for many preprocessed crops.
+        Run one ONNX forward pass per crop, sequentially.
 
         Returns one SpeciesNet-format classification dict per input crop:
             {"classifications": {"classes": [...], "scores": [...]} }
@@ -346,11 +346,16 @@ class OnnxClassifier:
         if len(filepaths) != len(preprocessed_list):
             raise ValueError("filepaths and preprocessed_list lengths must match")
 
-        inp = np.stack(preprocessed_list, axis=0).astype(np.float32) / 255.0  # (N,480,480,3)
-        logits_batch = self._session.run(None, {"input": inp})[0]             # (N, N_classes)
-
+        # Cap batch=1. ORT's TRT engine cache key includes the input profile;
+        # batching N crops together produced a fresh profile per N and forced a
+        # 1–9 min engine rebuild on the first encounter of each batch size at
+        # runtime. The TRT steady-state speedup absorbs per-call Python overhead
+        # trivially. If batching ever becomes worth the complexity, the follow-up
+        # is a profile-range engine (min=1, opt=4, max=8) — explicitly deferred.
         results: list[dict] = []
-        for logits in logits_batch:
+        for prep in preprocessed_list:
+            inp = (prep.astype(np.float32) / 255.0)[np.newaxis, ...]  # (1,480,480,3)
+            logits = self._session.run(None, {"input": inp})[0][0]    # (N_classes,)
             exp = np.exp(logits - logits.max())
             scores = exp / exp.sum()
             order = np.argsort(scores)[::-1]

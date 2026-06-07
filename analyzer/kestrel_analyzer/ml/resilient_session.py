@@ -51,7 +51,9 @@ class ResilientOnnxSession:
     def _build(self) -> None:
         import onnxruntime as ort  # imported lazily so test environments without ORT can import this module
 
-        providers = self._coord.providers_for(self._kind)
+        # Pass model_path so the coordinator can route TRT-eligible models
+        # (keyed by basename) through TensorrtExecutionProvider on Linux.
+        providers = self._coord.providers_for(self._kind, self._path)
         self._session = ort.InferenceSession(str(self._path), providers=providers)
 
     def _rebuild(self) -> None:

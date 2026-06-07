@@ -140,6 +140,34 @@ class AnalysisPipeline:
     # Default parallel RAW decode workers when caller omits parallel_prefetch (matches settings default).
     _DEFAULT_DECODE_WORKERS: int = 3
 
+    _POINTER_WAIT_SEC: float = 2.0
+    # Hard timeout on pointer-wait when NO download is in progress. At this
+    # point the pointer never materialized — either we've caught up to the
+    # input stream, or the file was reset to a 0-byte pointer at a batch
+    # boundary. The decoder worker does NOT fire the pointer_stall callback
+    # (it may be a prefetch worker running ahead of the in-order drainer). It
+    # tags the result `pointer_stall=True` and returns; the drainer fires the
+    # callback from its own position once every prior in-scope image has a
+    # terminal outcome. 2s assumes download speed >> analysis speed: if a file
+    # isn't there after one poll cycle we've genuinely caught up to the input
+    # queue.
+    # (Batch-mode tuning only. Desktop never enters this loop because files
+    # always have size>0 when iterated, so the change is functionally a no-op
+    # on desktop.)
+    _POINTER_MAX_WAIT_SEC: float = 2.0
+    # Extended ceiling when a download IS in progress (a `.tmp` file exists in
+    # the same directory). Covers the worst case of slow network streams +
+    # retries so we don't falsely error out a legitimately-arriving file. A pointer
+    # still empty after this ceiling WITH a `.tmp` present is a genuinely
+    # slow/failed stream and is surfaced as a per-image error, not a stall.
+    _POINTER_MAX_WAIT_WITH_DOWNLOAD_SEC: float = 60.0
+
+    # Set by process_folder() before _iter_decoded fans out work. Set on the
+    # instance so _decode_image (worker threads) can reach it without re-plumbing
+    # through _iter_decoded's signature. Fired from the in-order drainer (see
+    # _decoded_is_pointer_stall), NOT from the workers that detect the stall.
+    _pointer_stall_cb = None
+
     def _decode_image(self, image_path: str, raw_file: str) -> dict:
         """Decode one image.  Safe to call from a worker thread.
 
@@ -160,6 +188,61 @@ class AnalysisPipeline:
             "capture_time_warning": None,
             "error": None,
         }
+
+        # If this is a zero-byte pointer file (streaming/batch mode), wait for
+        # the download thread to atomically replace it with real image data.
+        waited = 0.0
+        while True:
+            try:
+                size = os.path.getsize(image_path)
+            except OSError:
+                size = 0  # Briefly absent during atomic os.replace — retry
+            if size > 0:
+                break
+            # Is the fetcher actively downloading this file? The downloader
+            # writes to "{image_path}.tmp" first, then atomically renames to the
+            # destination. While the .tmp exists the destination is 0 bytes but a
+            # download IS in progress, so the longer ceiling applies and a
+            # post-ceiling miss is a genuine failure, not a caught-up stall.
+            download_in_progress = os.path.exists(image_path + ".tmp")
+            effective_max = (
+                self._POINTER_MAX_WAIT_WITH_DOWNLOAD_SEC
+                if download_in_progress
+                else self._POINTER_MAX_WAIT_SEC
+            )
+            if waited >= effective_max:
+                if not download_in_progress:
+                    # No active download and the pointer never filled: we've
+                    # caught up to the input stream, or the file was reset to a
+                    # 0-byte pointer at a batch boundary. Do NOT fire the stall
+                    # callback here — this may be a prefetch worker running ahead
+                    # of the in-order drainer. Tag the result and return; the
+                    # drainer fires the callback from its own position (see
+                    # _decoded_is_pointer_stall) once every prior in-scope image
+                    # has a terminal outcome.
+                    result["pointer_stall"] = True
+                    return result
+                # A download WAS in progress but didn't finish within the 60s
+                # ceiling — a genuinely slow/failed stream. Surface as a
+                # per-image error (the drainer emits image_error). Diagnostic:
+                # count other still-empty pointers in the dir to flag an
+                # input-order vs sort-order mismatch.
+                still_empty = 0
+                try:
+                    folder = os.path.dirname(image_path)
+                    for fn in os.listdir(folder):
+                        fp = os.path.join(folder, fn)
+                        if os.path.isfile(fp) and os.path.getsize(fp) == 0:
+                            still_empty += 1
+                except OSError:
+                    pass
+                raise OSError(
+                    f"Pointer file not replaced after {effective_max:.0f}s: "
+                    f"{image_path} ({still_empty} other empty pointer(s) in dir)"
+                )
+            time.sleep(self._POINTER_WAIT_SEC)
+            waited += self._POINTER_WAIT_SEC
+
         try:
             img, raw_obj = read_image_for_pipeline(image_path)
             if img is None and raw_obj is None:
@@ -222,6 +305,30 @@ class AnalysisPipeline:
             result["error"] = exc
 
         return result
+
+    def _decoded_is_pointer_stall(self, decoded: dict) -> bool:
+        """Handle a decoded result the worker tagged as a pointer stall.
+
+        Returns True (and fires the pointer-stall callback) when the in-order
+        drainer has reached a 0-byte pointer that never materialized — a batch
+        boundary, or we've caught up to the input stream. The callback fires
+        from HERE — the drainer's position — rather than from the prefetch
+        worker that detected the stall, which may be running 1-N images ahead.
+        By the time the drainer pulls this result, every prior in-scope image
+        already has a terminal outcome (analyzed or errored), so the parent
+        process can exit caught-up without dropping an in-flight tail.
+
+        Desktop never sets the `pointer_stall` marker (its files always have
+        size>0 when iterated), so this is always False off the batch path.
+        """
+        if not decoded.get("pointer_stall"):
+            return False
+        if self._pointer_stall_cb is not None:
+            try:
+                self._pointer_stall_cb(decoded.get("file_name"))
+            except Exception:
+                pass
+        return True
 
     def _iter_decoded(
         self,
@@ -471,6 +578,13 @@ class AnalysisPipeline:
         quality_cb = callbacks.get("on_quality")
         species_cb = callbacks.get("on_species")
         error_cb = callbacks.get("on_error")
+        # Pointer-stall callback. A decoder worker thread DETECTS a stall (a
+        # 0-byte pointer that never fills) but does NOT fire this — it tags the
+        # decoded result instead. The in-order drainer fires it from its own
+        # position via _decoded_is_pointer_stall, so the parent process only
+        # exits caught-up once every prior in-scope image has a terminal outcome.
+        # Set on `self` so _decode_image (worker threads) can reach it.
+        self._pointer_stall_cb = callbacks.get("on_pointer_stall")
 
         try:
             max_bird_crops = int(max_bird_crops)
@@ -674,6 +788,14 @@ class AnalysisPipeline:
                 start=1,
             ):
                 raw_file = decoded["file_name"]
+
+                # The in-order drainer has reached a 0-byte pointer that never
+                # filled (batch boundary / caught up to input). Fire the stall
+                # from this position and stop — every prior in-scope image
+                # already has a terminal outcome, and post-analysis is skipped
+                # exactly as the cancel path below does. No-op on desktop.
+                if self._decoded_is_pointer_stall(decoded):
+                    return
 
                 # Pause: wait until resume or until cancel_event is set.
                 if pause_event is not None:

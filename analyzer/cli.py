@@ -1,8 +1,11 @@
 import argparse
+import json as _json
 import os
 import shutil
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 from typing import Sequence
 
@@ -61,6 +64,17 @@ def parse_args(argv: Sequence[str] | None = None):
         type=int,
         default=3,
         help="Parallel RAW decode workers (1-5); matches desktop 'parallel prefetch' setting.",
+    )
+    parser.add_argument(
+        "--json-output",
+        action="store_true",
+        help="Emit machine-readable JSON events on stdout for a parent process.",
+    )
+    parser.add_argument(
+        "--stop-file",
+        type=str,
+        default=None,
+        help="Path to a sentinel file; when it appears the CLI drains and exits cleanly.",
     )
     parser.add_argument(
         "--max-bird-crops",
@@ -256,16 +270,53 @@ def main(argv: Sequence[str] | None = None):
             else:
                 print("Smoke test FAILED: read_image returned None", flush=True)
             return
+        cancel_event = threading.Event()
+        if args.stop_file:
+            def _watch_stop():
+                while not cancel_event.is_set():
+                    if os.path.exists(args.stop_file):
+                        cancel_event.set()
+                        break
+                    time.sleep(1.0)
+            threading.Thread(target=_watch_stop, daemon=True).start()
+
         pipeline = AnalysisPipeline(
             use_gpu=args.use_gpu,
             detector_name=detector_name,
         )
 
-        def on_status(msg):
-            print(msg)
-
-        def on_progress(processed, total):
-            print(f"\rProcessed {processed}/{total}", end="", flush=True)
+        if args.json_output:
+            def on_status(msg):
+                print(_json.dumps({"event": "status", "msg": msg}), flush=True)
+            def on_progress(processed, total):
+                print(_json.dumps({"event": "progress", "count": processed, "total": total}), flush=True)
+            def on_pointer_stall(filename):
+                print(_json.dumps({"event": "pointer_stall", "filename": filename}), flush=True)
+            def on_error(raw_file, exc):
+                # Emit a machine-readable per-image error event for the parent
+                # process. The existing status string emit (driven by the
+                # pipeline's on_status callback) still happens separately; this
+                # is additive.
+                try:
+                    print(_json.dumps({
+                        "event": "image_error",
+                        "filename": Path(raw_file).name,
+                        "exception_type": type(exc).__name__,
+                        "exception_message": str(exc)[:500],
+                    }), flush=True)
+                except Exception:
+                    # Never let the error emitter itself break the pipeline.
+                    pass
+        else:
+            def on_status(msg):
+                print(msg)
+            def on_progress(processed, total):
+                print(f"\rProcessed {processed}/{total}", end="", flush=True)
+            def on_pointer_stall(filename):
+                print(f"[pointer-stall] {filename}", flush=True)
+            def on_error(raw_file, exc):
+                print(f"[image-error] {Path(raw_file).name}: "
+                      f"{type(exc).__name__}: {str(exc)[:500]}", flush=True)
 
         log_event(
             log_path,
@@ -290,9 +341,12 @@ def main(argv: Sequence[str] | None = None):
 
         pipeline.process_folder(
             args.folder,
+            cancel_event=cancel_event,
             callbacks={
                 "on_status": on_status,
                 "on_progress": on_progress,
+                "on_pointer_stall": on_pointer_stall,
+                "on_error": on_error,
             },
             analyzer_name="cli",
             wildlife_enabled=args.wildlife_enabled,

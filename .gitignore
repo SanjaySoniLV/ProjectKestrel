@@ -46,3 +46,6 @@ EXPCOMP_tests/
 _kestrel*
 .tmp*
 .wrangler/
+# Pre-built TensorRT engines are environment-specific build artifacts,
+# regenerated at deploy time; never tracked in git.
+analyzer/models/trt_engines/
