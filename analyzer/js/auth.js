@@ -121,6 +121,11 @@
         }
       }
 
+      // H6: show + populate the notification bell when signed in.
+      if (window.KestrelNotifications) {
+        try { window.KestrelNotifications.onAuthState(signedIn); } catch (_) {}
+      }
+
       accountBtn.addEventListener('click', () => {
         // §4a: when signed in, the account button opens the Account & Cloud
         // Compute panel instead of re-triggering sign-in. Signed-out (incl.
@@ -180,6 +185,9 @@
           }
         }
       } catch (e) { /* ignore — indicator is on regardless */ }
+      if (window.KestrelNotifications) {
+        try { window.KestrelNotifications.onAuthState(true); } catch (_) {}
+      }
     };
 
     // Called by Python when the OAuth flow fails (user closed the browser,
@@ -220,6 +228,10 @@
       // If the account panel is open, close it — it's signed-in-only content.
       if (typeof window.closeCloudAccountPanel === 'function') {
         try { window.closeCloudAccountPanel(); } catch {}
+      }
+      // H6: hide the notification bell when signed out.
+      if (window.KestrelNotifications) {
+        try { window.KestrelNotifications.onAuthState(false); } catch (_) {}
       }
     };
 

@@ -2876,6 +2876,59 @@ class Api:
             return None, {"ok": False, "error": str(e)}
         return client, None
 
+    # ── Notifications (H6) — proxy the central Auth-hosted store ────────────
+    # The bell UI lives in the desktop app but the store lives on the Auth
+    # Worker; we proxy through Python so the Clerk JWT (held in the OS keychain)
+    # never has to be handed to the webview. All best-effort: a failure returns
+    # {success: False, error} and the bell degrades quietly.
+    def get_notifications(self) -> dict:
+        """GET /v1/me/notifications → {success, notifications, unreadCount}."""
+        client, err = self._auth_make_client()
+        if err:
+            return {"success": False, "error": err.get("error", "not signed in")}
+        try:
+            data = client.get_notifications(30)
+            return {
+                "success": True,
+                "notifications": data.get("notifications", []),
+                "unreadCount": data.get("unreadCount", 0),
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def mark_notification_read(self, notif_id: str) -> dict:
+        """POST /v1/me/notifications/{id}/read."""
+        client, err = self._auth_make_client()
+        if err:
+            return {"success": False, "error": err.get("error", "not signed in")}
+        try:
+            client.mark_notification_read(notif_id)
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def mark_all_notifications_read(self) -> dict:
+        """POST /v1/me/notifications/read-all."""
+        client, err = self._auth_make_client()
+        if err:
+            return {"success": False, "error": err.get("error", "not signed in")}
+        try:
+            client.mark_all_notifications_read()
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def hide_notification(self, notif_id: str) -> dict:
+        """DELETE /v1/me/notifications/{id} — soft hide."""
+        client, err = self._auth_make_client()
+        if err:
+            return {"success": False, "error": err.get("error", "not signed in")}
+        try:
+            client.hide_notification(notif_id)
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     def _cc_load_analyzed_filenames(self, folder) -> tuple[set, set]:
         """Read analyzed + errored filenames from the folder's kestrel database,
         running schema migration as needed.

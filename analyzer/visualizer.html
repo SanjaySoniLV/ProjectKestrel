@@ -37,6 +37,7 @@
   <link rel="stylesheet" href="css/dialogs/tutorial-chooser.css" />
   <link rel="stylesheet" href="css/tutorial.css" />
   <link rel="stylesheet" href="css/perch.css" />
+  <link rel="stylesheet" href="css/notifications.css" />
   <script src="csv_parser.js"></script>
 </head>
 
@@ -59,13 +60,31 @@
           <img src="logo.png" alt="Project Kestrel" style="height:32px;" />
           <span>Project Kestrel</span>
         </span>
-        <button id="accountBtn" title="Perch Account" aria-label="Perch Account">
-          <svg class="account-btn-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-            <circle cx="12" cy="7" r="4"></circle>
-          </svg>
-          <span id="accountBtnLabel" class="account-btn-label hidden"></span>
-        </button>
+        <span style="display:flex;align-items:center;gap:8px;">
+          <div id="notifWrap" class="notif-wrap hidden">
+            <button id="notifBell" class="notif-bell" type="button" aria-haspopup="true" aria-expanded="false" title="Notifications" aria-label="Notifications">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+                <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+              </svg>
+              <span id="notifBadge" class="notif-badge hidden">0</span>
+            </button>
+            <div id="notifPanel" class="notif-panel hidden" role="dialog" aria-label="Notifications">
+              <div class="notif-head">
+                <span class="notif-title">Notifications</span>
+                <button id="notifReadAll" class="notif-readall" type="button">Mark all read</button>
+              </div>
+              <div id="notifList" class="notif-list"></div>
+            </div>
+          </div>
+          <button id="accountBtn" title="Perch Account" aria-label="Perch Account">
+            <svg class="account-btn-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+              <circle cx="12" cy="7" r="4"></circle>
+            </svg>
+            <span id="accountBtnLabel" class="account-btn-label hidden"></span>
+          </button>
+        </span>
       </h1>
       <div class="toolbar">
         <div class="toolbar-row actions">
@@ -1433,6 +1452,8 @@
   <script src="js/state.js"></script>
   <script src="js/image-loader.js"></script>
   <script src="js/auth.js"></script>
+  <script src="js/notify-markdown.js"></script>
+  <script src="js/notifications.js"></script>
   <script src="js/blob-zoom.js"></script>
   <script src="js/species.js"></script>
   <script src="js/crop-data.js"></script>

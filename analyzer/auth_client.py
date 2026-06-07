@@ -26,6 +26,7 @@ import os
 import socket
 import urllib.error
 import urllib.request
+from urllib.parse import quote
 from typing import Any
 
 
@@ -81,14 +82,19 @@ class AuthClient:
                 "KESTREL_DEV_USER_ID (wrangler dev only)"
             )
 
-    def _request(self, method: str, path: str) -> dict:
+    def _request(self, method: str, path: str, body: Any | None = None) -> dict:
         url = f"{self.api_base}{path}"
         headers = {
             "Accept": "application/json",
             "User-Agent": "KestrelDesktop/Auth/1.0",
             **self._auth_headers,
         }
-        req = urllib.request.Request(url, data=None, method=method, headers=headers)
+        data: bytes | None = None
+        if method in ("POST", "PUT", "PATCH"):
+            # The Auth Worker's mutate endpoints accept an empty JSON body.
+            data = json.dumps(body if body is not None else {}).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(url, data=data, method=method, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 raw = resp.read()
@@ -117,3 +123,24 @@ class AuthClient:
         and active-job slots. Same data MyAccount renders on the Cloud
         Compute dashboard."""
         return self._request("GET", "/v1/me/entitlements")
+
+    # ── Notifications (H6) — the central Auth-hosted store ──────────────────
+    def get_notifications(self, limit: int = 30) -> dict:
+        """GET /v1/me/notifications — {notifications: [...], unreadCount}."""
+        return self._request("GET", f"/v1/me/notifications?limit={int(limit)}")
+
+    def mark_notification_read(self, notif_id: str) -> dict:
+        """POST /v1/me/notifications/{id}/read."""
+        return self._request(
+            "POST", f"/v1/me/notifications/{quote(str(notif_id), safe='')}/read"
+        )
+
+    def mark_all_notifications_read(self) -> dict:
+        """POST /v1/me/notifications/read-all."""
+        return self._request("POST", "/v1/me/notifications/read-all")
+
+    def hide_notification(self, notif_id: str) -> dict:
+        """DELETE /v1/me/notifications/{id} — soft-hide ("permanently hide")."""
+        return self._request(
+            "DELETE", f"/v1/me/notifications/{quote(str(notif_id), safe='')}"
+        )
