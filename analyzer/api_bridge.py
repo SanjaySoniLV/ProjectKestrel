@@ -1798,11 +1798,15 @@ class Api:
             report_type = self._FEEDBACK_TYPE_MAP.get(str(raw_type).lower(), 'general')
             description = data.get('description', '')
 
-            # --- Auth Worker path (signed-in users) ---
+            # --- Auth Worker path (signed-in users who opted to send as self) ---
+            # Gated on the explicit `send_as_user` opt-in from the dialog: even
+            # when signed in, an unchecked box means the report is anonymous and
+            # must take the analytics path below.
             # Screenshots are out of scope for the Auth path; they stay on the
             # analytics path only.  Any failure falls through to analytics.
             try:
-                client, _err = self._auth_make_client()
+                send_as_user = bool(data.get('send_as_user', False))
+                client, _err = (self._auth_make_client() if send_as_user else (None, None))
                 if client is not None:
                     version = _telemetry._read_version() if _telemetry else ''
                     os_info = _telemetry._get_os_info() if _telemetry else ''  # module-level fn

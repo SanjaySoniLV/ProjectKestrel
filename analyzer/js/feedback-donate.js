@@ -1,4 +1,39 @@
     // ─── Feedback dialog ──────────────────────────────────────────────────────
+
+    /** Resolve the current account display label (e.g. "Jane Doe" / "@jane"),
+     *  falling back to "my account" when no specific handle is available. The
+     *  startup auth hydration already paints this into #accountBtnLabel. */
+    function _feedbackAccountLabel() {
+      const labelEl = document.getElementById('accountBtnLabel');
+      const txt = (labelEl?.textContent || '').trim();
+      // #accountBtnLabel doubles as the signed-out "Sign In" affordance, so
+      // ignore those sentinel values.
+      if (txt && !/^sign\s*in$/i.test(txt) && txt.toLowerCase() !== 'signed in') {
+        return txt;
+      }
+      return 'my account';
+    }
+
+    /** Sync the "Send as …" checkbox + send-button label to the current
+     *  sign-in state. The checkbox is disabled (and forced off) when signed
+     *  out — you can't report as an account you aren't. */
+    function _syncFeedbackSendAs() {
+      const cb = document.getElementById('feedbackSendAsUser');
+      const cbLabel = document.getElementById('feedbackSendAsUserLabel');
+      const sendBtn = document.getElementById('feedbackSend');
+      const accountBtn = document.getElementById('accountBtn');
+      const signedIn = !!_perchToken || !!accountBtn?.classList.contains('signed-in');
+      const who = _feedbackAccountLabel();
+      if (cbLabel) cbLabel.textContent = signedIn ? `Send as ${who}` : 'Send as my account (sign in to enable)';
+      if (cb) {
+        cb.disabled = !signedIn;
+        if (!signedIn) cb.checked = false;
+      }
+      if (sendBtn) {
+        sendBtn.textContent = (signedIn && cb?.checked) ? `Send as ${who}` : 'Send anonymously';
+      }
+    }
+
     function openFeedbackDialog() {
       document.getElementById('feedbackDesc').value = '';
       document.getElementById('feedbackContact').value = '';
@@ -6,10 +41,14 @@
       document.getElementById('feedbackIncludeLogs').checked = false;
       document.getElementById('feedbackIncludeScreenshot').checked = false;
       document.getElementById('feedbackScreenshotFile').value = '';
+      document.getElementById('feedbackSendAsUser').checked = false;
       const preview = document.getElementById('feedbackSsPreview');
       preview.src = ''; preview.style.display = 'none'; preview.dataset.b64 = '';
+      _syncFeedbackSendAs();
       document.getElementById('feedbackDlg').showModal();
     }
+
+    document.getElementById('feedbackSendAsUser').addEventListener('change', _syncFeedbackSendAs);
 
     // Auto-check logs when Bug Report type is selected
     document.getElementById('feedbackType').addEventListener('change', function () {
@@ -57,6 +96,8 @@
         contact: document.getElementById('feedbackContact').value.trim(),
         include_logs: document.getElementById('feedbackIncludeLogs').checked,
         screenshot_b64: document.getElementById('feedbackSsPreview').dataset.b64 || '',
+        send_as_user: document.getElementById('feedbackSendAsUser').checked
+          && !document.getElementById('feedbackSendAsUser').disabled,
       };
       try {
         if (!window.pywebview?.api?.send_feedback) {

@@ -1353,11 +1353,17 @@
         </label>
         <input type="file" id="feedbackScreenshotFile" accept="image/*" style="display:none" />
       </div>
+      <div>
+        <label class="inline" style="font-size:13px">
+          <input type="checkbox" id="feedbackSendAsUser" />
+          <span class="muted" id="feedbackSendAsUserLabel">Send as my account</span>
+        </label>
+      </div>
       <img id="feedbackSsPreview" class="feedback-ss-preview" alt="screenshot preview" style="display:none" />
       <div id="feedbackStatus" style="font-size:13px; color:var(--muted); min-height:18px"></div>
       <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:4px">
         <button id="feedbackCancel">Cancel</button>
-        <button id="feedbackSend" class="primary">Send</button>
+        <button id="feedbackSend" class="primary">Send anonymously</button>
       </div>
     </div>
   </dialog>
