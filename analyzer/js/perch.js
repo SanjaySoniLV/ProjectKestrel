@@ -808,6 +808,9 @@
         _perchActiveJobId = null;
         if (_perchActivePollTimer) { clearInterval(_perchActivePollTimer); _perchActivePollTimer = null; }
         _perchSetButtonsDisabled(false);
+        // Server confirmed the perch is live → transition the folder's
+        // "Share with Perch" button straight to "On Perch".
+        if (rootPath) _perchMarkFolderOnPerch(rootPath, prog.perch_url || prog.perchUrl || '');
       } else if (phase === 'canceled') {
         _perchSwapToCanceledState(card, prog);
         _perchActiveJobId = null;
@@ -1241,6 +1244,23 @@
       const tagBanner = document.getElementById('perchTagSyncBanner');
       if (tagBanner) tagBanner.classList.add('hidden');
       _perchDlgState.tagDiff = null;
+    }
+
+    /** Flip every .folder-perch-btn for this path straight to the linked
+     *  ("On Perch") state from a known perch URL — no disk read. Used the moment
+     *  a share job reports phase 'done' (server-confirmed), since the bridge
+     *  writes perch_link.json *after* emitting 'done', so a read_perch_link here
+     *  could race the file write. The disk becomes the source of truth again on
+     *  the next natural refresh (e.g. reopening the Perch dialog). */
+    function _perchMarkFolderOnPerch(rootPath, perchUrl) {
+      const sel = `.folder-perch-btn[data-folder-path="${cssEscape(rootPath)}"]`;
+      document.querySelectorAll(sel).forEach(btn => {
+        const lbl = btn.querySelector('.folder-perch-btn-label');
+        btn.classList.add('is-linked');
+        if (lbl) lbl.textContent = 'On Perch';
+        if (perchUrl) btn.dataset.perchUrl = String(perchUrl);
+        btn.title = 'This folder is published to Perch (click to manage)';
+      });
     }
 
     /** Refresh every .folder-perch-btn for this path to its current linked state.
