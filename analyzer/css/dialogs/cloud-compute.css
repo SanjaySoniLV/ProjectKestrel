@@ -553,9 +553,50 @@ dialog.kdlg.cloud-account-dlg {
 .account-usage-tier { font-size: 11px; color: #9bb8ff; }
 .account-usage-line { font-size: 12px; color: var(--fg, #cdd6e4); }
 .account-usage-line.muted { color: var(--muted, #8aa); }
+.account-usage-foot { font-size: 10.5px; margin-top: 2px; line-height: 1.4; }
+.account-usage-hold {
+  font-size: 11px;
+  color: #ffc88a;
+  background: #2a2418;
+  border: 1px solid #4a3a1f;
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  margin: 2px 0;
+}
+
+/* Headline stat trio — Analyzed / Remaining / Credits. Mirrors MyAccount's
+   Cloud Compute "Plan & usage" stat grid. */
+.account-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin: 6px 0 2px;
+}
+.account-stat {
+  border: 1px solid var(--border, #2a2a3a);
+  border-radius: var(--radius-sm);
+  background: #16161f;
+  padding: 6px 4px;
+  text-align: center;
+  min-width: 0;
+}
+.account-stat-value {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--fg, #e8f0f8);
+  line-height: 1.2;
+}
+.account-stat-label {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted, #889);
+  margin-top: 1px;
+}
 
 .account-storage-bar { margin-top: 4px; }
 .account-storage-bar-meta { font-size: 11px; color: var(--muted, #9ab); margin-bottom: 3px; }
+.account-quota-meta { display: flex; justify-content: space-between; gap: 8px; }
 .account-storage-bar-track {
   height: 6px;
   border-radius: var(--radius-pill);

@@ -387,6 +387,19 @@ class Api:
         self._cc_usage_cache: dict | None = None
         self._cc_usage_cache_at: float = 0.0
 
+    def _invalidate_account_caches(self) -> None:
+        """Drop every identity-scoped cache (Perch account, Perch usage, and
+        Cloud Compute usage) so a sign-out / account-switch / token rotation
+        can't surface the previous user's numbers. The CC usage cache in
+        particular was previously left untouched on sign-out, so the account
+        panel kept showing the prior account's "images analyzed this period"."""
+        self._perch_account_cache = None
+        self._perch_account_cache_at = 0.0
+        self._perch_usage_cache = None
+        self._perch_usage_cache_at = 0.0
+        self._cc_usage_cache = None
+        self._cc_usage_cache_at = 0.0
+
     def notify_dirty(self, is_dirty: bool) -> dict:
         """Called from JS whenever the dirty flag changes."""
         self._has_unsaved_changes = bool(is_dirty)
@@ -2430,10 +2443,7 @@ class Api:
                 # invalid_grant => refresh token revoked / aged out / rotated past.
                 if resp.get("error") == "invalid_grant":
                     self._clear_keychain_auth()
-                    self._perch_account_cache = None
-                    self._perch_account_cache_at = 0.0
-                    self._perch_usage_cache = None
-                    self._perch_usage_cache_at = 0.0
+                    self._invalidate_account_caches()
                     return None
                 # Network / 5xx — keep old bundle, downstream will surface stale.
                 return current or bundle
@@ -2446,10 +2456,7 @@ class Api:
                 return current or bundle
             _keyring_save(new_bundle)
             # Caches were keyed on the now-rotated access token.
-            self._perch_account_cache = None
-            self._perch_account_cache_at = 0.0
-            self._perch_usage_cache = None
-            self._perch_usage_cache_at = 0.0
+            self._invalidate_account_caches()
             return new_bundle
         finally:
             lock.release()
@@ -5426,10 +5433,7 @@ class Api:
             bundle = result["bundle"]
             _keyring_save(bundle)
             # Caches were keyed on the previous (now-stale) identity.
-            self._perch_account_cache = None
-            self._perch_account_cache_at = 0.0
-            self._perch_usage_cache = None
-            self._perch_usage_cache_at = 0.0
+            self._invalidate_account_caches()
             self._notify_js_sign_in(bundle.get("access_token") or "")
         except Exception as e:
             print(f"[API] _oauth_worker() -> Error: {e}", flush=True)
@@ -5487,10 +5491,7 @@ class Api:
             bundle = self._load_token_bundle()
             refresh_token = (bundle or {}).get("refresh_token") if bundle else None
             self._clear_keychain_auth()
-            self._perch_account_cache = None
-            self._perch_account_cache_at = 0.0
-            self._perch_usage_cache = None
-            self._perch_usage_cache_at = 0.0
+            self._invalidate_account_caches()
             if refresh_token and _oauth is not None:
                 try:
                     _oauth.revoke_token(str(refresh_token))

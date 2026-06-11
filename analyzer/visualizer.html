@@ -1224,10 +1224,41 @@
         <section class="account-col account-col--cc" aria-labelledby="accountCcHeading">
           <h4 class="account-col-title" id="accountCcHeading">Cloud Compute</h4>
           <div class="account-usage-card">
-            <div class="account-usage-card-title">Usage</div>
+            <div class="account-usage-card-title">Plan &amp; usage</div>
             <div class="account-usage-tier" id="cloudAccountTier"></div>
-            <div class="account-usage-line" id="cloudAccountUsageImages">Loading usage…</div>
+            <div class="account-usage-line muted" id="cloudAccountPeriod"></div>
+            <div class="account-usage-hold" id="cloudAccountHold" hidden>
+              Account on hold — new analysis is paused.
+            </div>
+            <div class="account-stat-grid">
+              <div class="account-stat">
+                <div class="account-stat-value" id="ccStatAnalyzed">&mdash;</div>
+                <div class="account-stat-label">Analyzed this period</div>
+              </div>
+              <div class="account-stat">
+                <div class="account-stat-value" id="ccStatRemaining">&mdash;</div>
+                <div class="account-stat-label">Remaining</div>
+              </div>
+              <div class="account-stat">
+                <div class="account-stat-value" id="ccStatCredits">&mdash;</div>
+                <div class="account-stat-label">Credits</div>
+              </div>
+            </div>
+            <div class="account-storage-bar" id="ccQuotaBar" hidden>
+              <div class="account-storage-bar-meta account-quota-meta">
+                <span id="ccQuotaUsed">0 used</span>
+                <span id="ccQuotaCap"></span>
+              </div>
+              <div class="account-storage-bar-track">
+                <div class="account-storage-bar-fill" id="ccQuotaFill"></div>
+                <div class="account-storage-bar-fill-reserved" id="ccQuotaFillReserved"></div>
+              </div>
+            </div>
             <div class="account-usage-line muted" id="cloudAccountUsageConcurrent"></div>
+            <div class="account-usage-line muted account-usage-foot">
+              Subscription quota resets each period; credits are a one-time stock
+              that doesn’t reset.
+            </div>
           </div>
           <div class="account-history-header">
             <span class="account-history-title">Job history</span>

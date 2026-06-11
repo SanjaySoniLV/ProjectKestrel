@@ -1528,47 +1528,120 @@
         }
       } catch { if (nameEl) nameEl.textContent = 'Signed in'; }
 
-      // Tier + concurrency from entitlements; usage counts from /api/usage.
-      let tier = null, maxConcurrent = null;
+      // Cloud Compute plan + usage. Driven entirely by /v1/me/entitlements
+      // (cloud_compute_get_entitlements) — the same payload MyAccount's Cloud
+      // Compute card renders. This call is NOT cached on the backend, so it's
+      // always fresh per identity (the old path read a 5-min-cached /api/usage
+      // that lingered across account switches and showed the prior user's
+      // numbers). currentUsage carries periodStart/imageCount/imagesReserved;
+      // creditBalance + effectiveRemaining ride at the top level.
+      await _ccRenderEntitlementsCard();
+    }
+
+    function _ccFmtN(x) { return (Number(x) || 0).toLocaleString(); }
+
+    async function _ccRenderEntitlementsCard() {
+      const tierEl   = document.getElementById('cloudAccountTier');
+      const periodEl = document.getElementById('cloudAccountPeriod');
+      const holdEl   = document.getElementById('cloudAccountHold');
+      const concEl   = document.getElementById('cloudAccountUsageConcurrent');
+      const analyzedEl = document.getElementById('ccStatAnalyzed');
+      const remainingEl = document.getElementById('ccStatRemaining');
+      const creditsEl = document.getElementById('ccStatCredits');
+      const quotaBar = document.getElementById('ccQuotaBar');
+
+      let ent = null;
       try {
         if (window.pywebview?.api?.cloud_compute_get_entitlements) {
           const r = await window.pywebview.api.cloud_compute_get_entitlements();
-          if (r && r.ok) {
-            tier = r.tier || (r.limits && r.limits.tier) || null;
-            maxConcurrent = (r.limits && (r.limits.maxConcurrentJobs ?? r.limits.max_concurrent_jobs)) ?? null;
-          }
+          if (r && r.ok) ent = r;
         }
       } catch {}
-      if (tierEl) tierEl.textContent = tier ? `Plan: ${String(tier).charAt(0).toUpperCase()}${String(tier).slice(1)}` : '';
 
-      const imagesEl = document.getElementById('cloudAccountUsageImages');
-      const concEl = document.getElementById('cloudAccountUsageConcurrent');
-      if (concEl) {
-        concEl.textContent = (maxConcurrent != null)
-          ? `Concurrent job limit: ${maxConcurrent}`
-          : '';
+      const limits = (ent && ent.limits) || null;
+      const usage = (ent && ent.currentUsage) || null;
+
+      // Plan tier.
+      const tier = ent && ent.tier ? String(ent.tier) : null;
+      if (tierEl) tierEl.textContent = tier
+        ? `Plan: ${tier.charAt(0).toUpperCase()}${tier.slice(1)}`
+        : '';
+
+      // Billing period — "start – renewal" from currentUsage.periodStart.
+      if (periodEl) periodEl.textContent = _ccBillingPeriodLabel(usage && usage.periodStart);
+
+      // Account-hold banner.
+      if (holdEl) holdEl.hidden = !(ent && ent.suspended);
+
+      // Concurrent-job limit.
+      const maxConcurrent = limits
+        ? (limits.maxConcurrentJobs ?? limits.max_concurrent_jobs ?? null)
+        : null;
+      if (concEl) concEl.textContent = (maxConcurrent != null)
+        ? `Concurrent job limit: ${maxConcurrent}` : '';
+
+      const cap = limits ? (Number(limits.maxImagesAnalyzedMonthly) || 0) : 0;
+      const used = usage ? (Number(usage.imageCount) || 0) : 0;
+      const reserved = usage ? (Number(usage.imagesReserved) || 0) : 0;
+
+      // Headline stats.
+      if (analyzedEl) analyzedEl.textContent = usage ? _ccFmtN(used) : '—';
+      if (remainingEl) {
+        // Prefer effectiveRemaining (subscription headroom + credits). Unbounded
+        // cap with no credit concept shows "Unlimited".
+        if (ent && typeof ent.effectiveRemaining === 'number') {
+          remainingEl.textContent = _ccFmtN(ent.effectiveRemaining);
+        } else if (cap > 0 && usage) {
+          remainingEl.textContent = _ccFmtN(Math.max(0, cap - used - reserved));
+        } else if (usage && cap === 0) {
+          remainingEl.textContent = 'Unlimited';
+        } else {
+          remainingEl.textContent = '—';
+        }
       }
-      if (imagesEl) {
-        imagesEl.textContent = 'Loading usage…';
-        try {
-          if (window.pywebview?.api?.cloud_compute_get_usage) {
-            const u = await window.pywebview.api.cloud_compute_get_usage();
-            if (u && u.ok && u.usage) {
-              const usage = u.usage;
-              const analyzed = usage.totalImagesAnalyzed ?? usage.imagesAnalyzed ?? null;
-              const remaining = usage.remainingImages;
-              const parts = [];
-              if (analyzed != null) parts.push(`${analyzed} image(s) analyzed this period`);
-              if (remaining != null) parts.push(`${remaining} remaining`);
-              imagesEl.textContent = parts.length ? parts.join(' · ') : 'Usage metering not configured yet.';
-            } else {
-              imagesEl.textContent = 'Usage unavailable.';
-            }
-          } else {
-            imagesEl.textContent = 'Usage unavailable.';
-          }
-        } catch { imagesEl.textContent = 'Usage unavailable.'; }
+      if (creditsEl) {
+        creditsEl.textContent = (ent && typeof ent.creditBalance === 'number')
+          ? _ccFmtN(ent.creditBalance) : '—';
       }
+
+      // Quota bar — two segments: used (green) + in-flight reservations (blue).
+      if (quotaBar) {
+        if (cap > 0 && usage) {
+          const usedPct = Math.min(100, (used / cap) * 100);
+          const reservedPct = Math.min(100 - usedPct, (reserved / cap) * 100);
+          // Floor any non-zero segment to a visible sliver; legend carries the
+          // precise counts.
+          const vis = (p, v) => (v > 0 && p < 1.2) ? 1.2 : p;
+          const fill = document.getElementById('ccQuotaFill');
+          const fillRes = document.getElementById('ccQuotaFillReserved');
+          if (fill) fill.style.width = vis(usedPct, used).toFixed(2) + '%';
+          if (fillRes) fillRes.style.width = vis(reservedPct, reserved).toFixed(2) + '%';
+          const usedLabel = reserved > 0
+            ? `${_ccFmtN(used)} used · ${_ccFmtN(reserved)} in-progress`
+            : `${_ccFmtN(used)} used`;
+          const usedEl = document.getElementById('ccQuotaUsed');
+          const capEl = document.getElementById('ccQuotaCap');
+          if (usedEl) usedEl.textContent = usedLabel;
+          if (capEl) capEl.textContent = `${_ccFmtN(cap)} quota`;
+          quotaBar.hidden = false;
+        } else {
+          quotaBar.hidden = true;
+        }
+      }
+    }
+
+    // Render a billing period as "start – renewal" (start + 1 month). Mirrors
+    // MyAccount's billingPeriodLabel. Falls back to '' when start is unknown.
+    function _ccBillingPeriodLabel(periodStart) {
+      if (!periodStart) return '';
+      try {
+        const start = new Date(periodStart);
+        if (isNaN(start.getTime())) return '';
+        const end = new Date(start);
+        end.setMonth(end.getMonth() + 1);
+        const fmt = (d) => d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+        return `Billing period: ${fmt(start)} – ${fmt(end)}`;
+      } catch { return ''; }
     }
 
     async function _ccLoadPerchAccountSection() {
