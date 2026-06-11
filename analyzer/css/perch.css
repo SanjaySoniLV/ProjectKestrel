@@ -1373,8 +1373,8 @@
   border-radius: 12px;
   background: #111318;
   color: #e8f0f8;
-  width: min(460px, 92vw);
-  max-width: 92vw;
+  width: min(520px, 94vw);
+  max-width: 94vw;
   padding: 0;
 }
 .perch-relink-dlg::backdrop { background: rgba(0, 0, 0, .55); }
@@ -1403,15 +1403,21 @@
   padding: 18px 8px; text-align: center; font-size: 12.5px; color: var(--muted, #8b96a7);
 }
 .perch-relink-row {
-  display: flex; flex-direction: column; gap: 2px; align-items: flex-start;
-  width: 100%; text-align: left; cursor: pointer;
+  display: flex; flex-direction: column; gap: 2px; align-items: stretch;
+  width: 100%; min-width: 0; box-sizing: border-box; text-align: left; cursor: pointer;
   padding: 9px 11px; border: 1px solid #25394e; border-radius: 8px;
   background: #14202f; color: #cbd6e2; font: inherit;
   transition: background .12s ease, border-color .12s ease;
 }
 .perch-relink-row:hover { background: #1c2c42; border-color: #3a5573; }
-.perch-relink-row-title { font-size: 13px; font-weight: 600; color: #e8f0f8; }
-.perch-relink-row-meta { font-size: 11px; color: var(--muted, #8b96a7); }
+.perch-relink-row-title {
+  font-size: 13px; font-weight: 600; color: #e8f0f8;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.perch-relink-row-meta {
+  font-size: 11px; color: var(--muted, #8b96a7);
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 .perch-dlg-timeline {
   flex: 1 1 auto;
