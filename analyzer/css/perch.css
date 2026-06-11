@@ -10,7 +10,7 @@
 
 #accountBtn {
   min-width: 28px;
-  height: 28px;
+  height: 30px;
   padding: 0 4px;        /* icon-only state — symmetric so the icon stays centered */
   border-radius: 7px;
   border: 1px solid var(--card-border);
@@ -39,7 +39,9 @@
 .account-btn-label {
   font-size: 12px;
   font-weight: 500;
-  line-height: 1;
+  /* >1 so descenders (the "g" in "Sign in"/"Signed in") aren't clipped by the
+     label's overflow:hidden — line-height:1 left no room below the baseline. */
+  line-height: 1.4;
   letter-spacing: 0.1px;
   max-width: 160px;
   overflow: hidden;
