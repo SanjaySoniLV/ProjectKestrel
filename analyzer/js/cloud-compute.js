@@ -526,6 +526,20 @@
     // server-side work and nothing left to produce or download. Treat that as
     // terminal in the UI so we stop showing "Analyzing" and hide the
     // cancel / retrieve affordances (the job is done — just partial).
+    // True when `path` is already open as a loaded folder root in the browser.
+    // Shares scope with folder-tree.js (folderTreeRootOrder); guarded so a load-
+    // order race or missing global degrades to "not loaded" rather than throwing.
+    // Paths are normalized case-insensitively (Windows filesystem).
+    function _ccIsFolderLoaded(path) {
+      if (!path) return false;
+      try {
+        if (typeof folderTreeRootOrder === 'undefined' || !Array.isArray(folderTreeRootOrder)) return false;
+        const norm = (p) => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+        const target = norm(path);
+        return folderTreeRootOrder.some((r) => norm(r) === target);
+      } catch { return false; }
+    }
+
     function _ccRemoteIncompleteDone(state) {
       if (!state || state.remoteStatus !== 'incomplete') return false;
       const uploaded = Number(state.uploadedCount || 0);
@@ -822,12 +836,8 @@
       const resumeDisabled = uploadPhase !== 'upload_paused';
       const cancelDisabled = ['done', 'failed', 'cancelled', 'incomplete'].includes(state.status)
         || _ccRemoteIncompleteDone(state);
-      // Retrieve Results restarts the auto-download drain. It only makes sense
-      // while there are still results to pull back — once every image's result
-      // pack has been retrieved (retrieved >= total) there's nothing left to do,
-      // even if the local job lifecycle hasn't finalized to 'done' yet.
-      const allRetrieved = total > 0 && retrieved >= total;
-      const showRetrieve = !isTerminal && !allRetrieved;
+      // Load: only offer when the folder isn't already open in the browser.
+      const showLoad = !!state.rootPath && !_ccIsFolderLoaded(state.rootPath);
 
       return `
         <div class="queue-item cloud-queue-item" data-job-id="${escapeHtml(state.jobId)}">
@@ -843,11 +853,8 @@
               <button data-cc-action="resume" data-job-id="${escapeHtml(state.jobId)}" ${resumeDisabled ? 'disabled' : ''}>
                 ▶ Resume
               </button>
-              ${showRetrieve ? `<button data-cc-action="retrieve" data-job-id="${escapeHtml(state.jobId)}" title="Restart auto-downloading result packs as they finish">
-                ⤓ Retrieve Results
-              </button>` : ''}
-              ${state.rootPath ? `<button data-cc-action="load" data-job-id="${escapeHtml(state.jobId)}" data-folder-path="${escapeHtml(state.rootPath)}" title="Open this folder to browse results">
-                📂 Load
+              ${showLoad ? `<button class="cc-load-btn" data-cc-action="load" data-job-id="${escapeHtml(state.jobId)}" data-folder-path="${escapeHtml(state.rootPath)}" title="Open this folder to browse results">
+                + 📂 Load
               </button>` : ''}
               <button data-cc-action="cancel" data-job-id="${escapeHtml(state.jobId)}" ${cancelDisabled ? 'disabled' : ''}>
                 ⏹ Cancel
@@ -1157,29 +1164,10 @@
         return;
       }
       if (!window.pywebview?.api) return;
-      // Retrieve Results: (re)start the continuous download-as-packs-arrive
-      // loop. Idempotent on the backend, so a double-click is harmless.
-      if (action === 'retrieve') {
-        if (!window.pywebview.api.cloud_compute_retrieve_results) return;
-        t.disabled = true;
-        try {
-          const r = await window.pywebview.api.cloud_compute_retrieve_results(jobId);
-          if (r && r.ok) {
-            showToast(r.alreadyRunning ? 'Already retrieving results…' : 'Retrieving results…', 2800);
-            _ccStartPolling();
-            _ccRenderPanel();
-          } else if (r && r.reason === 'folder_unavailable') {
-            showToast(_CC_FOLDER_UNAVAILABLE_MSG, 6000);
-          } else {
-            showToast(`Retrieve failed: ${r?.error || 'unknown'}`, 5000);
-          }
-        } catch (e) {
-          showToast(`Retrieve failed: ${e?.message || e}`, 5000);
-        } finally {
-          t.disabled = false;
-        }
-        return;
-      }
+      // NB: the live pill streams results automatically while a job is present,
+      // so there's no per-pill "Retrieve Results" control. Re-registering an
+      // older/in-progress job into the pill is done from the account panel's
+      // history rows (history-retrieve), which call cloud_compute_retrieve_results.
       const fnName = ({
         pause: 'cloud_compute_pause_job',
         resume: 'cloud_compute_resume_job',
@@ -1469,12 +1457,13 @@
         + `title="${folderMissing ? 'Locate the folder first' : 'Auto-download result packs as they finish'}">`
         + `⤓ Retrieve Results</button>`;
       // Load: browse this folder's results in the gallery (works for completed
-      // jobs too, which only ever appear here — never as a live pill).
-      const loadBtn = (j.folderAvailable === true && j.folderPath)
+      // jobs too, which only ever appear here — never as a live pill). Hidden
+      // once the folder is already open in the browser.
+      const loadBtn = (j.folderAvailable === true && j.folderPath && !_ccIsFolderLoaded(j.folderPath))
         ? `<button type="button" class="cloud-account-load-btn" `
           + `data-cc-action="history-load" data-job-id="${escapeHtml(j.jobId)}" `
           + `data-folder-path="${escapeHtml(j.folderPath)}" `
-          + `title="Open this folder to browse results">📂 Load</button>`
+          + `title="Open this folder to browse results">+ 📂 Load</button>`
         : '';
 
       const additionalInfo = _ccRenderAdditionalInfo({
@@ -1849,8 +1838,13 @@
             const r = await window.pywebview.api.cloud_compute_retrieve_results(jobId);
             if (r && r.ok) {
               showToast(r.alreadyRunning ? 'Already retrieving results…' : 'Retrieving results…', 3000);
+              // Surface the job in the live cloud pill — that's where it now
+              // streams results until done. Expand the pill and close the
+              // account panel so the user sees it picking up.
+              _cloudQueuePanelExpanded = true;
               _ccStartPolling();
-              await _ccRefreshAccountHistory();
+              _ccRenderPanel();
+              closeCloudAccountPanel();
             } else if (r && r.reason === 'folder_unavailable') {
               showToast(_CC_FOLDER_UNAVAILABLE_MSG, 6000);
               await _ccRefreshAccountHistory();

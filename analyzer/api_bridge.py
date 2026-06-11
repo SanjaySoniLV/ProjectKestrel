@@ -4306,6 +4306,9 @@ class Api:
             if job_id not in self._cc_jobs:
                 self._cc_jobs[job_id] = {
                     "jobId": job_id,
+                    # Carry the owner so a resumed job in the live pill is scoped
+                    # to the current account (matches the submit path).
+                    "ownerId": target.get("ownerId") or self._cc_owner_id(),
                     "rootPath": str(folder),
                     "imageCount": int(target.get("imageCount") or 0),
                     "newImageCount": int(target.get("imageCount") or 0),

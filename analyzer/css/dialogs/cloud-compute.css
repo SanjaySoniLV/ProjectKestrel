@@ -174,9 +174,9 @@
 }
 .cloud-queue-item-controls button[data-cc-action="retrieve"]:hover:not(:disabled) { background: #2d456a; }
 .cloud-queue-item-controls button[data-cc-action="load"] {
-  border-color: #3d7e57; background: #1e3a2b; color: #bfe9cf;
+  border-color: #3d5a7e; background: #243650; color: #cfe0ff;
 }
-.cloud-queue-item-controls button[data-cc-action="load"]:hover:not(:disabled) { background: #265038; }
+.cloud-queue-item-controls button[data-cc-action="load"]:hover:not(:disabled) { background: #2d456a; }
 
 .cloud-queue-item-controls button {
   font-size: 11px;
@@ -719,8 +719,8 @@ dialog.kdlg.cloud-account-dlg {
 .cloud-account-dl-btn:hover:not(:disabled) { background: #2d456a; }
 .cloud-account-dl-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .cloud-account-locate-btn:hover { border-color: #d4a948; color: #ffd98a; }
-.cloud-account-load-btn { border-color: #3d7e57; background: #1e3a2b; color: #bfe9cf; }
-.cloud-account-load-btn:hover { background: #265038; border-color: #4d9a6a; }
+.cloud-account-load-btn { border-color: #3d5a7e; background: #243650; color: #cfe0ff; }
+.cloud-account-load-btn:hover { background: #2d456a; border-color: #4d6a9a; }
 
 .perch-account-list {
   display: flex;
