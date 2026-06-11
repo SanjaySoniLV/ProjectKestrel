@@ -390,6 +390,13 @@
         return;
       }
       row.innerHTML = '';
+      // "Recents" header + a divider (CSS) separating the chips from the tree.
+      const header = document.createElement('div');
+      header.className = 'folder-recents-header';
+      header.textContent = 'Recents';
+      row.appendChild(header);
+      const chips = document.createElement('div');
+      chips.className = 'folder-recents-chips';
       for (const path of available) {
         const wrap = buildFolderRecentsChip(
           path,
@@ -411,8 +418,9 @@
           },
           (p) => { if (typeof persistFolderRecentsRemove === 'function') persistFolderRecentsRemove(p); },
         );
-        row.appendChild(wrap);
+        chips.appendChild(wrap);
       }
+      row.appendChild(chips);
       row.classList.remove('hidden');
       updateEmptyHintCopy();
     }

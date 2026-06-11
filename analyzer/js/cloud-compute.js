@@ -38,7 +38,10 @@
     // Map<jobId, {uploadComplete: bool, status: string}> snapshot of the
     // previous poll tick, used to detect the trigger transitions.
     let _ccPrevJobSnapshot = new Map();
-    let _ccLastDoneFolderPaths = new Set();
+    // Folders whose completed cloud job we've already pushed into the "recents"
+    // chips this session — bump once per folder so an already-done job (e.g.
+    // surfaced after a restart) registers too, without re-bumping every tick.
+    let _ccRecentsBumped = new Set();
     // JS-side terminal statuses (set by api_bridge._worker terminal handler).
     // The Worker's 'complete'|'cancelled'|'failed' normalise to 'done'|'failed'|
     // 'cancelled'; the Worker's 'incomplete' (client disconnected >10min, uploads
@@ -977,22 +980,26 @@
       let shouldRetryQueue = false;
       for (const j of jobs) {
         const prev = _ccPrevJobSnapshot.get(j.jobId);
-        if (!prev) continue;
-        const becameUploadComplete = !prev.uploadComplete && !!j.uploadComplete;
-        const becameTerminal = !_CC_TERMINAL_STATUSES.has(prev.status)
-          && _CC_TERMINAL_STATUSES.has(j.status);
-        if (becameUploadComplete || becameTerminal) { shouldRetryQueue = true; break; }
-        if (becameTerminal && (j.status === 'done' || j.status === 'incomplete')) {
+        if (prev) {
+          const becameUploadComplete = !prev.uploadComplete && !!j.uploadComplete;
+          const becameTerminal = !_CC_TERMINAL_STATUSES.has(prev.status)
+            && _CC_TERMINAL_STATUSES.has(j.status);
+          // NB: don't break here — earlier this short-circuited the loop before
+          // the recents bump below, so cloud-analyzed folders never registered.
+          if (becameUploadComplete || becameTerminal) shouldRetryQueue = true;
+        }
+        // Register a finished cloud job's folder into the "recents" chips so it's
+        // one click to re-add — independent of the transition diff above, so a
+        // job that's already done when first observed (restart / late panel
+        // mount) still lands. Once per folder per session.
+        if (j.status === 'done' || j.status === 'incomplete') {
           const fp = (j.rootPath || '').replace(/\\/g, '/');
-          if (fp && !_ccLastDoneFolderPaths.has(fp) && typeof persistFolderRecentsBump === 'function') {
+          if (fp && !_ccRecentsBumped.has(fp) && typeof persistFolderRecentsBump === 'function') {
+            _ccRecentsBumped.add(fp);
             persistFolderRecentsBump(j.rootPath);
           }
         }
       }
-      _ccLastDoneFolderPaths = new Set(
-        jobs.filter(j => j.status === 'done' || j.status === 'incomplete')
-          .map(j => (j.rootPath || '').replace(/\\/g, '/')),
-      );
       _ccPrevJobSnapshot = new Map(jobs.map(j => [j.jobId, {
         uploadComplete: !!j.uploadComplete,
         status: j.status,

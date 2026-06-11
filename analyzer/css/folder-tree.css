@@ -96,12 +96,36 @@
 .folder-recents-row.hidden {
   display: none;
 }
+
+/* Sidebar recents: stacked "Recents" header + chip strip, divided from the
+   folder tree below. Scoped to the sidebar row so the analyze-dialog recents
+   (shared .folder-recents-row) keep their inline layout. */
+#folderRecentsRow {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 8px 8px 10px;
+  margin: 0 0 2px;
+  border-bottom: 1px solid var(--card-border, #222634);
+}
+.folder-recents-header {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted, #8a9099);
+}
+.folder-recents-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
 .folder-recents-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px 9px;
-  font-size: 11px;
+  gap: 3px;
+  padding: 2px 8px;
+  font-size: 10.5px;
   background: #14202f;
   border: 1px solid #25394e;
   border-radius: 999px;
