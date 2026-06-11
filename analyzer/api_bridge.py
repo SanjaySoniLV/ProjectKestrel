@@ -231,6 +231,24 @@ def _auth_jwt_seconds_until_exp(token: str) -> float | None:
     return float(exp) - time.time()
 
 
+def _auth_jwt_sub_unverified(token: str) -> str | None:
+    """Return JWT `sub` (the stable Clerk user id) from the payload without
+    verifying the signature. Used as an offline owner id to tag cloud jobs so
+    history can be filtered to the account that submitted them — works even
+    when the network is down or the job's folder is unavailable."""
+    t = str(token).strip()
+    parts = t.split(".")
+    if len(parts) < 2:
+        return None
+    try:
+        seg = parts[1] + "=" * (-len(parts[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(seg))
+        sub = payload.get("sub")
+        return str(sub) if sub else None
+    except Exception:  # pragma: no cover
+        return None
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 
 # Metadata writing utilities
@@ -2841,6 +2859,21 @@ class Api:
             from analyzer import cloud_jobs_store as cjs  # type: ignore[no-redef]
             return cjs
 
+    def _cc_owner_id(self) -> str:
+        """Stable id of the currently signed-in account (JWT `sub`), or "" when
+        signed out / undecodable. Used to tag cloud jobs at submit and to filter
+        job history so switching accounts never surfaces another user's jobs.
+        Read straight off the stored access token — no network call — so it
+        works offline and regardless of folder availability."""
+        try:
+            bundle = self._load_token_bundle()
+            token = (bundle or {}).get("access_token") if bundle else None
+            if not token:
+                return ""
+            return _auth_jwt_sub_unverified(str(token)) or ""
+        except Exception:
+            return ""
+
     def _cc_fresh_token(self) -> str | None:
         """Token provider handed to CloudComputeClient. Called by the client on
         a 401 to obtain a FRESH JWT and retry — so a session that expires
@@ -3671,9 +3704,11 @@ class Api:
             except Exception:
                 pass
 
+        owner_id = self._cc_owner_id()
         with self._ensure_cc_lock():
             self._cc_jobs[job_id] = {
                 "jobId": job_id,
+                "ownerId": owner_id,
                 "rootPath": str(root),
                 "imageCount": len(files),
                 "newImageCount": len(files) - len(anchor_filenames),
@@ -3700,6 +3735,7 @@ class Api:
             store = self._cc_jobs_store()
             store.upsert_job({
                 "jobId": job_id,
+                "ownerId": owner_id,
                 "folderPath": str(root),
                 "createdAtUtc": store.utc_now_iso(),
                 "status": "uploading",
@@ -3806,10 +3842,19 @@ class Api:
         """Return rich descriptors (with cached remote counters) for every job
         submitted this session. JS renders the cloud queue panel from this
         single bridge call — no per-job follow-up needed."""
+        # Filter to the current account so an in-session account switch (sign
+        # out → sign in without restart) doesn't show the previous user's live
+        # jobs. When the owner can't be resolved (signed out, or an undecodable
+        # token) we fall back to showing all rather than hiding the user's own
+        # in-flight jobs; un-owned (legacy) in-memory states are always shown.
+        owner = self._cc_owner_id()
         with self._ensure_cc_lock():
             jobs = [
                 self._cc_serialise_job(jid, state)
                 for jid, state in self._cc_jobs.items()
+                if (not owner)
+                or (not (state.get("ownerId") or ""))
+                or (state.get("ownerId") == owner)
             ]
         return {"ok": True, "jobs": jobs}
 
@@ -4064,7 +4109,14 @@ class Api:
         """
         try:
             store = self._cc_jobs_store()
-            jobs = store.load_jobs()
+            # Filter to the signed-in account (claims legacy un-owned rows). A
+            # signed-out caller resolves to "" → no jobs, so history never leaks
+            # the previous account's jobs after a sign-out / account switch.
+            owner_id = self._cc_owner_id()
+            if owner_id:
+                jobs = store.jobs_for_owner(owner_id)
+            else:
+                jobs = []
         except Exception as e:
             return {"ok": False, "error": f"store load failed: {e}", "jobs": []}
 

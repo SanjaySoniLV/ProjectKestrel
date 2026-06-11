@@ -23,7 +23,11 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture
 def api():
-    return api_bridge.Api()
+    a = api_bridge.Api()
+    # Pin a deterministic owner so job-history filtering doesn't depend on the
+    # ambient OS keychain (signed-out → empty history).
+    a._cc_owner_id = lambda: "test-owner"
+    return a
 
 
 @pytest.fixture

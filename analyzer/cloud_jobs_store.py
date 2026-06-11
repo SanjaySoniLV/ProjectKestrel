@@ -112,6 +112,12 @@ def _sanitize_job(raw: Any) -> dict | None:
     return {
         "jobId": job_id,
         "folderPath": folder,
+        # Stable id (JWT `sub`) of the account that submitted this job. Stamped
+        # at submit time so history can be filtered to the current account —
+        # switching accounts must never surface another user's jobs. Empty for
+        # legacy rows written before this field existed; those are claimed by
+        # the first signed-in account that lists them (adopt_unowned_jobs).
+        "ownerId": _coerce_str(raw.get("ownerId"), max_len=128),
         "createdAtUtc": _coerce_str(raw.get("createdAtUtc"), max_len=64),
         "status": status,
         # Free-form short tag explaining a non-obvious terminal status (e.g.
@@ -270,6 +276,31 @@ def add_downloaded_pack(job_id: str, pack_filename: str) -> None:
                     j["downloadedPacks"] = packs
                     save_jobs(existing)
                 return
+
+
+def jobs_for_owner(owner_id: str, *, adopt_unowned: bool = True) -> list[dict]:
+    """Return jobs belonging to ``owner_id``.
+
+    Legacy rows with an empty ``ownerId`` predate per-account tagging; we can't
+    know who submitted them. When ``adopt_unowned`` (the default), the first
+    signed-in account that lists history claims them — they're stamped with
+    ``owner_id`` and persisted, so the dominant single-user case keeps its full
+    pre-upgrade history and rediscovery (downloaded-pack counts, packs for
+    folders that aren't currently mounted) without leaking across accounts going
+    forward. Returns [] when ``owner_id`` is empty (signed out)."""
+    owner_id = (owner_id or "").strip()
+    if not owner_id:
+        return []
+    with _SAVE_LOCK:
+        existing = load_jobs()
+        changed = False
+        for j in existing:
+            if not (j.get("ownerId") or "").strip() and adopt_unowned:
+                j["ownerId"] = owner_id
+                changed = True
+        if changed:
+            save_jobs(existing)
+        return [j for j in existing if (j.get("ownerId") or "") == owner_id]
 
 
 def remove_job(job_id: str) -> bool:
