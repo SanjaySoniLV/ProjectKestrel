@@ -1358,6 +1358,61 @@
 .perch-link-btn:hover { text-decoration: underline; }
 .perch-sep { color: var(--muted, #8b96a7); margin: 0 2px; }
 
+/* ── Re-link: prompt in the share dialog + existing-perch picker ──────────── */
+.perch-relink-prompt {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #232a3d;
+  font-size: 11.5px;
+  color: var(--muted, #8b96a7);
+}
+.perch-relink-prompt .perch-link-btn { font-size: 11.5px; font-weight: 600; }
+
+.perch-relink-dlg {
+  border: 1px solid #2a3040;
+  border-radius: 12px;
+  background: #111318;
+  color: #e8f0f8;
+  width: min(460px, 92vw);
+  max-width: 92vw;
+  padding: 0;
+}
+.perch-relink-dlg::backdrop { background: rgba(0, 0, 0, .55); }
+.perch-relink-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid #232a3d;
+}
+.perch-relink-title { margin: 0; font-size: 15px; font-weight: 600; }
+.perch-relink-close {
+  background: none; border: none; color: var(--muted, #8b96a7);
+  font-size: 16px; cursor: pointer; padding: 4px 8px; border-radius: 6px; line-height: 1;
+}
+.perch-relink-close:hover { color: #fff; background: #1c2230; }
+.perch-relink-subtitle {
+  margin: 0; padding: 12px 16px 6px; font-size: 12.5px;
+  line-height: 1.45; color: var(--muted, #8b96a7);
+}
+.perch-relink-list {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 6px 12px 14px; max-height: 52vh; overflow-y: auto;
+}
+.perch-relink-empty {
+  padding: 18px 8px; text-align: center; font-size: 12.5px; color: var(--muted, #8b96a7);
+}
+.perch-relink-row {
+  display: flex; flex-direction: column; gap: 2px; align-items: flex-start;
+  width: 100%; text-align: left; cursor: pointer;
+  padding: 9px 11px; border: 1px solid #25394e; border-radius: 8px;
+  background: #14202f; color: #cbd6e2; font: inherit;
+  transition: background .12s ease, border-color .12s ease;
+}
+.perch-relink-row:hover { background: #1c2c42; border-color: #3a5573; }
+.perch-relink-row-title { font-size: 13px; font-weight: 600; color: #e8f0f8; }
+.perch-relink-row-meta { font-size: 11px; color: var(--muted, #8b96a7); }
+
 .perch-dlg-timeline {
   flex: 1 1 auto;
   min-height: 0;

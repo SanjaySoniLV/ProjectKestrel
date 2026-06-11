@@ -4931,6 +4931,73 @@ class Api:
         except Exception as e:
             return {"present": False, "error": str(e)}
 
+    def relink_perch(self, folder_path: str, perch_id: str) -> dict:
+        """Re-associate a local folder with an EXISTING perch by writing
+        `.kestrel/perch_link.json` — no re-upload.
+
+        For folders that were shared previously but lost their local link (the
+        `.kestrel` folder was deleted, the folder was moved/copied to another
+        machine, etc.). Confirms the perch exists and is owned by the caller via
+        GET /v1/perches/{id} (through get_perch_status), then persists a link
+        payload shaped like the post-upload one so the linked view + "On Perch"
+        button light up exactly as a fresh upload would.
+
+        Returns {"success": True, "link": <payload>} or {"success": False,
+        "error": ...} (error mirrors get_perch_status: not_found / unauthorized /
+        forbidden / no_auth / unreachable …)."""
+        root_real, err = self._validate_root_dir(
+            folder_path, context="relink_perch", require_exists=True
+        )
+        if err:
+            return {"success": False, "error": err}
+        pid = str(perch_id or "").strip()
+        if not pid:
+            return {"success": False, "error": "missing_perch_id"}
+
+        status = self.get_perch_status(pid)
+        if not status.get("ok"):
+            return {"success": False, "error": status.get("error") or "lookup_failed"}
+        st = status.get("status") or {}
+
+        from pathlib import Path as _P
+        import json as _json
+        import time as _time
+
+        created = st.get("createdAt")
+        uploaded_ms = (
+            int(float(created) * 1000)
+            if isinstance(created, (int, float)) and created
+            else int(_time.time() * 1000)
+        )
+        payload = {
+            "version": 1,
+            "perch_id": pid,
+            "perch_url": str(st.get("publicUrl") or ""),
+            "title": str(st.get("title") or _P(str(root_real)).name or ""),
+            "uploaded_at_ms": uploaded_ms,
+            # scene_count isn't exposed by the perch detail endpoint; left 0.
+            # The linked view tolerates 0 (it shows asset/image counts).
+            "scene_count": 0,
+            "asset_count": int(st.get("assetCount") or 0),
+            "image_count": int(st.get("imageCount") or 0),
+            "skip_rejected_used": False,
+            "state_hash_at_upload": self._hash_kestrel_state(str(root_real)),
+            # Marker so a later reader can tell this link was reconstructed
+            # rather than written by a fresh upload (e.g. to soften a tag-sync
+            # state-hash mismatch warning, which is expected after a re-link).
+            "relinked": True,
+        }
+        link_path = self._perch_link_path(str(root_real))
+        try:
+            link_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = link_path.with_suffix(".json.tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                _json.dump(payload, f, indent=2)
+            os.replace(tmp, link_path)
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        return {"success": True, "link": payload}
+
     def delete_perch_link(self, folder_path: str) -> dict:
         """Delete .kestrel/perch_link.json (local only; does not touch Worker)."""
         root_real, err = self._validate_root_dir(folder_path, context="delete_perch_link", require_exists=True)

@@ -1065,6 +1065,19 @@
       });
       const rejectCb = document.getElementById('perchRejectToggleCb');
       if (rejectCb) rejectCb.addEventListener('change', _perchOnRejectToggleChange);
+      // Re-link an already-shared folder to an existing perch (no re-upload).
+      const relinkOpen = document.getElementById('perchRelinkOpenBtn');
+      if (relinkOpen) relinkOpen.addEventListener('click', () => _perchOpenRelinkPicker());
+      const relinkClose = document.getElementById('perchRelinkClose');
+      if (relinkClose) relinkClose.addEventListener('click', () => {
+        const d = document.getElementById('perchRelinkDlg');
+        if (d && d.open) { try { d.close(); } catch {} }
+      });
+      const relinkList = document.getElementById('perchRelinkList');
+      if (relinkList) relinkList.addEventListener('click', (e) => {
+        const row = e.target.closest('.perch-relink-row');
+        if (row) _perchDoRelink(row.getAttribute('data-perch-id'));
+      });
       // Linked-state takeover buttons.
       const linkedOpen = document.getElementById('perchLinkedOpenBtn');
       const linkedUnlink = document.getElementById('perchLinkedUnlinkBtn');
@@ -1261,6 +1274,100 @@
         if (perchUrl) btn.dataset.perchUrl = String(perchUrl);
         btn.title = 'This folder is published to Perch (click to manage)';
       });
+    }
+
+    // ── Re-link: associate this folder with an EXISTING perch (no re-upload) ──
+    function _perchEsc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+    function _perchFmtBytes(n) {
+      n = Number(n) || 0;
+      if (n < 1024) return n + ' B';
+      const u = ['KB', 'MB', 'GB', 'TB'];
+      let v = n / 1024, i = 0;
+      while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+      return v.toFixed(v >= 100 ? 0 : 1) + ' ' + u[i];
+    }
+
+    /** Open the picker listing the user's existing perches to re-link to. */
+    async function _perchOpenRelinkPicker() {
+      const dlg = document.getElementById('perchRelinkDlg');
+      const list = document.getElementById('perchRelinkList');
+      if (!dlg || !list) return;
+      list.innerHTML = '<div class="perch-relink-empty">Loading your perches…</div>';
+      try { dlg.showModal(); } catch { try { dlg.show(); } catch {} }
+      let perches = [];
+      try {
+        const r = await window.pywebview?.api?.get_perch_list?.(200);
+        if (r && r.success && Array.isArray(r.perches)) {
+          perches = r.perches;
+        } else {
+          list.innerHTML = '<div class="perch-relink-empty">Could not load your perches'
+            + (r && r.error ? ' (' + _perchEsc(r.error) + ')' : '') + '.</div>';
+          return;
+        }
+      } catch {
+        list.innerHTML = '<div class="perch-relink-empty">Could not load your perches.</div>';
+        return;
+      }
+      if (!perches.length) {
+        list.innerHTML = '<div class="perch-relink-empty">You don’t have any perches yet — upload one instead.</div>';
+        return;
+      }
+      list.innerHTML = perches.map((p) => {
+        const id = _perchEsc(p.id || '');
+        const title = _perchEsc(p.title || '(untitled)');
+        const imgs = (Number(p.imageCount) || 0).toLocaleString();
+        const bytes = _perchFmtBytes(p.actualBytes);
+        const state = _perchEsc(String(p.uploadState || p.status || ''));
+        return '<button type="button" class="perch-relink-row" data-perch-id="' + id + '">'
+          + '<span class="perch-relink-row-title">' + title + '</span>'
+          + '<span class="perch-relink-row-meta">' + imgs + ' photos · ' + bytes
+          + (state ? ' · ' + state : '') + '</span>'
+          + '</button>';
+      }).join('');
+    }
+
+    /** Write the local link for the chosen perch, then show the linked view. */
+    async function _perchDoRelink(perchId) {
+      const root = _perchDlgState.rootPath;
+      if (!root || !perchId) return;
+      let res = null;
+      try {
+        res = await window.pywebview?.api?.relink_perch?.(root, perchId);
+      } catch (e) {
+        showToast('Re-link failed: ' + (e?.message || String(e)), 5000);
+        return;
+      }
+      if (!res || !res.success) {
+        const map = {
+          not_found: 'That perch no longer exists on Perch.',
+          forbidden: 'That perch belongs to a different account.',
+          unauthorized: 'Please sign in to Perch again.',
+          no_auth: 'Please sign in to Perch again.',
+        };
+        showToast('Re-link failed: ' + (map[res?.error] || res?.error || 'unknown error'), 5500);
+        return;
+      }
+      const dlg = document.getElementById('perchRelinkDlg');
+      if (dlg && dlg.open) { try { dlg.close(); } catch {} }
+      showToast('Folder re-linked to Perch.', 3000);
+      _perchMarkFolderOnPerch(root, (res.link && res.link.perch_url) || '');
+      // Swap the open share dialog to the linked takeover; probe live status.
+      if (res.link) {
+        _perchOpenLinkedView(root, res.link);
+        const pid = String(res.link.perch_id || '').trim();
+        if (pid) {
+          (async () => {
+            try {
+              const s = await window.pywebview.api.get_perch_status(pid);
+              if (s && s.ok) _perchPopulateLinkedView(s.status);
+            } catch { /* advisory */ }
+          })();
+        }
+      }
     }
 
     /** Refresh every .folder-perch-btn for this path to its current linked state.

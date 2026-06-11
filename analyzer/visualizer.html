@@ -680,6 +680,11 @@
             </div>
           </div>
 
+          <div class="perch-relink-prompt">
+            Already shared this folder to Perch?
+            <button type="button" class="perch-link-btn" id="perchRelinkOpenBtn">Re-link this Perch</button>
+          </div>
+
           <!-- Hidden compat shells: existing _perchUpdateDialogTotals targets these
                by ID. Kept invisible so the timeline summary stays the visible totals. -->
           <span id="perchStatScenes" hidden></span>
@@ -694,6 +699,23 @@
       <button type="button" id="perchUploadCancelBtn">Cancel</button>
       <button type="button" id="perchUploadSignInBtn" class="perch-cta hidden">Sign in to Perch</button>
       <button type="button" id="perchUploadSubmitBtn" class="perch-cta hidden" disabled>📤 Upload</button>
+    </div>
+  </dialog>
+
+  <!-- Re-link picker: pick an existing perch to associate with this folder
+       (writes perch_link.json locally, no re-upload). Opened from the share
+       dialog's "Re-link this Perch" prompt. -->
+  <dialog id="perchRelinkDlg" class="perch-relink-dlg">
+    <div class="perch-relink-head">
+      <h3 class="perch-relink-title">Re-link an existing Perch</h3>
+      <button type="button" id="perchRelinkClose" class="perch-relink-close" aria-label="Close">✕</button>
+    </div>
+    <p class="perch-relink-subtitle">
+      Pick the perch this folder was already shared as. This restores the local
+      link without re-uploading any photos.
+    </p>
+    <div class="perch-relink-list" id="perchRelinkList">
+      <div class="perch-relink-empty">Loading your perches…</div>
     </div>
   </dialog>
 
