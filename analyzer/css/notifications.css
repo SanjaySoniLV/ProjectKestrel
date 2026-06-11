@@ -20,7 +20,10 @@
 .notif-badge.hidden { display: none; }
 
 .notif-panel {
-  position: absolute; right: 0; top: calc(100% + 8px);
+  /* Positioned (fixed) in JS relative to the bell so it escapes the header
+     sidebar's `.wrap { overflow: hidden }` clip — otherwise the dropdown gets
+     cut off / flows off-screen. */
+  position: fixed; top: 0; left: 0;
   width: 340px; max-width: calc(100vw - 32px);
   background: var(--card); border: 1px solid var(--card-border); border-radius: 10px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45); z-index: 1000; overflow: hidden;

@@ -519,14 +519,30 @@
       return 'uploading';
     }
 
+    // An 'incomplete' job is terminal on the Worker (client vanished with
+    // uploads unfinished). While the desktop drains the last result packs the
+    // LOCAL job status can still read 'uploading'/'running' for a poll cycle or
+    // two — but once every uploaded image has been analyzed there is no more
+    // server-side work and nothing left to produce or download. Treat that as
+    // terminal in the UI so we stop showing "Analyzing" and hide the
+    // cancel / retrieve affordances (the job is done — just partial).
+    function _ccRemoteIncompleteDone(state) {
+      if (!state || state.remoteStatus !== 'incomplete') return false;
+      const uploaded = Number(state.uploadedCount || 0);
+      const analyzed = Number(state.analyzedCount || 0);
+      return uploaded > 0 && analyzed >= uploaded;
+    }
+
     function _ccAnalysisPhase(state) {
       // Phase of the analysis half of the round-trip. NOTE: 'incomplete' analysis
       // continues server-side during the in-session drain, so we only show the
-      // terminal 'incomplete' label once the LOCAL job is terminal — while
-      // draining (local status still uploading/running) the counts below keep the
-      // bar advancing.
+      // terminal 'incomplete' label once the LOCAL job is terminal OR every
+      // uploaded image has been analyzed (_ccRemoteIncompleteDone) — while
+      // analysis is genuinely still draining the counts below keep the bar
+      // advancing.
       const s = (state && state.status) || 'running';
       if (s === 'cancelled' || s === 'failed' || s === 'done' || s === 'incomplete') return s;
+      if (_ccRemoteIncompleteDone(state)) return 'incomplete';
       const r = state && state.remoteStatus;
       if (r === 'complete') return 'done';
       const analyzed = Number(state.analyzedCount || 0);
@@ -786,7 +802,11 @@
       // stops once a job is done), so suppress the badge for them.
       const updatedAt = Number(state.remoteUpdatedAtMs || 0);
       const ageMs = updatedAt > 0 ? (Date.now() - updatedAt) : Infinity;
-      const isTerminal = ['done', 'failed', 'cancelled', 'incomplete'].includes(state.status);
+      // A drained 'incomplete' job (remoteStatus terminal + all uploaded images
+      // analyzed) counts as terminal even before the local lifecycle finalizes,
+      // so we hide the Retrieve-Results affordance and suppress the syncing badge.
+      const isTerminal = ['done', 'failed', 'cancelled', 'incomplete'].includes(state.status)
+        || _ccRemoteIncompleteDone(state);
       const isStale = !isTerminal && ageMs > _CC_STALE_THRESHOLD_MS;
       const failureCount = Number(state.remoteFailureCount || 0);
       const staleHint = isStale
@@ -800,7 +820,14 @@
       //  - Cancel disabled in terminal states.
       const pauseDisabled = uploadPhase !== 'uploading';
       const resumeDisabled = uploadPhase !== 'upload_paused';
-      const cancelDisabled = ['done', 'failed', 'cancelled', 'incomplete'].includes(state.status);
+      const cancelDisabled = ['done', 'failed', 'cancelled', 'incomplete'].includes(state.status)
+        || _ccRemoteIncompleteDone(state);
+      // Retrieve Results restarts the auto-download drain. It only makes sense
+      // while there are still results to pull back — once every image's result
+      // pack has been retrieved (retrieved >= total) there's nothing left to do,
+      // even if the local job lifecycle hasn't finalized to 'done' yet.
+      const allRetrieved = total > 0 && retrieved >= total;
+      const showRetrieve = !isTerminal && !allRetrieved;
 
       return `
         <div class="queue-item cloud-queue-item" data-job-id="${escapeHtml(state.jobId)}">
@@ -816,7 +843,7 @@
               <button data-cc-action="resume" data-job-id="${escapeHtml(state.jobId)}" ${resumeDisabled ? 'disabled' : ''}>
                 ▶ Resume
               </button>
-              ${!isTerminal ? `<button data-cc-action="retrieve" data-job-id="${escapeHtml(state.jobId)}" title="Restart auto-downloading result packs as they finish">
+              ${showRetrieve ? `<button data-cc-action="retrieve" data-job-id="${escapeHtml(state.jobId)}" title="Restart auto-downloading result packs as they finish">
                 ⤓ Retrieve Results
               </button>` : ''}
               ${state.rootPath ? `<button data-cc-action="load" data-job-id="${escapeHtml(state.jobId)}" data-folder-path="${escapeHtml(state.rootPath)}" title="Open this folder to browse results">
@@ -1351,6 +1378,9 @@
       const total = Number(j.imageCount || 0);
       const retrieved = Number(j.retrievedCount || 0);
       const isTerminal = ['done', 'failed', 'cancelled', 'incomplete'].includes(j.status);
+      // Nothing left to pull back — suppress the Retrieve-Results affordance on
+      // a non-terminal row once every result pack has already been retrieved.
+      const allRetrieved = total > 0 && retrieved >= total;
       // Reuse §3's mapping. Build a state-shaped object from the history entry.
       const explanation = _ccTerminalExplanation({
         status: j.status,
@@ -1458,7 +1488,7 @@
               <span class="cloud-account-row-caption">${caption}</span>
             </div>
             <div class="cloud-account-row-actions">
-              ${isTerminal ? downloadBtn : retrieveBtn}
+              ${isTerminal ? downloadBtn : (allRetrieved ? '' : retrieveBtn)}
               ${loadBtn}
               ${locateBtn}
             </div>
@@ -1675,6 +1705,30 @@
       document.getElementById('cloudAccountManageBtn')?.addEventListener('click', () => {
         if (window.pywebview?.api?.open_url) {
           try { window.pywebview.api.open_url(_CC_MYACCOUNT_URL); } catch {}
+        }
+      });
+      // Sign out of the Perch/Cloud session from within the app. Python clears
+      // the keychain + revokes the refresh token, then fires window.onAuthSignOut
+      // (auth.js) which resets the account button and closes this panel.
+      document.getElementById('cloudAccountSignOutBtn')?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        if (!window.pywebview?.api?.sign_out) {
+          showToast('Sign out unavailable in this build.', 4000);
+          return;
+        }
+        btn.disabled = true;
+        try {
+          const r = await window.pywebview.api.sign_out();
+          if (r && r.success) {
+            showToast('Signed out.', 3000);
+            closeCloudAccountPanel();
+          } else {
+            showToast(`Sign out failed: ${r?.error || 'unknown error'}`, 5000);
+            btn.disabled = false;
+          }
+        } catch (err) {
+          showToast(`Sign out failed: ${err?.message || err}`, 5000);
+          btn.disabled = false;
         }
       });
       // Delegated per-row actions (download / locate).

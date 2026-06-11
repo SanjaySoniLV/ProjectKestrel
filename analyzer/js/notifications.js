@@ -96,10 +96,27 @@
     }
   }
 
+  // Anchor the fixed-position panel under the bell, keeping it on-screen.
+  // Fixed positioning lets it escape the header sidebar's overflow:hidden clip.
+  function positionPanel() {
+    const p = $('notifPanel'), b = $('notifBell');
+    if (!p || !b || p.classList.contains('hidden')) return;
+    const rect = b.getBoundingClientRect();
+    const margin = 16;
+    const pw = p.offsetWidth || 340;
+    // Right-align the panel to the bell, then clamp into the viewport.
+    let left = rect.right - pw;
+    left = Math.min(left, window.innerWidth - pw - margin);
+    left = Math.max(margin, left);
+    p.style.left = left + 'px';
+    p.style.top = (rect.bottom + 8) + 'px';
+  }
+
   function openPanel() {
     const p = $('notifPanel'), b = $('notifBell');
     if (!p) return;
     p.classList.remove('hidden');
+    positionPanel();
     if (b) b.setAttribute('aria-expanded', 'true');
     load(true);
   }
@@ -128,6 +145,7 @@
       if (e.key === 'Escape') closePanel();
     });
     window.addEventListener('focus', () => { if (_signedIn) load(false); });
+    window.addEventListener('resize', positionPanel);
 
     const readAll = $('notifReadAll');
     if (readAll) {

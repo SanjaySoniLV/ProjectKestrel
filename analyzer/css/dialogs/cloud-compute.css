@@ -491,6 +491,22 @@ dialog.kdlg.cloud-account-dlg {
 .cloud-account-name { font-size: 14px; font-weight: 600; color: var(--fg, #e8f0f8); }
 .cloud-account-meta { font-size: 12px; color: var(--muted, #8aa); word-break: break-all; }
 .cloud-account-identity-bar .primary { font-size: 12px; padding: 6px 12px; flex: 0 0 auto; }
+.cloud-account-signout {
+  font-size: 12px;
+  padding: 6px 12px;
+  flex: 0 0 auto;
+  background: transparent;
+  border: 1px solid var(--border, #2a2a3a);
+  color: var(--muted, #99a);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.cloud-account-signout:hover:not(:disabled) {
+  color: var(--fg, #fff);
+  border-color: #e0533b;
+  background: rgba(224, 83, 59, 0.12);
+}
+.cloud-account-signout:disabled { opacity: 0.5; cursor: default; }
 
 .account-columns {
   display: grid;
