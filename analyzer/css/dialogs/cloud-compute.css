@@ -17,7 +17,7 @@
   min-height: 88px;
   padding: 10px 12px;
   border: 1px solid var(--border, #2a2a3a);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: #1c1c28;
   cursor: pointer;
   transition: border-color 120ms, background-color 120ms;
@@ -92,7 +92,7 @@
   background: #2a3550;
   color: var(--brand, #6b9eff);
   border: 1px solid #3a4a6a;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 
@@ -117,7 +117,7 @@
   align-items: center;
   justify-content: center;
   background: rgba(28, 28, 40, 0.92);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   color: var(--fg, #eee);
   font-size: 12px;
   font-weight: 500;
@@ -184,7 +184,7 @@
   background: #2a2a3a;
   color: var(--fg, #eee);
   border: 1px solid #3a3a4a;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 
@@ -213,7 +213,7 @@
   text-transform: uppercase;
   letter-spacing: 0.5px;
   padding: 1px 7px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   background: #2a2a3a;
   color: var(--muted, #888);
 }
@@ -270,7 +270,7 @@
   color: var(--muted, #aaa);
   background: #2a2a3a;
   padding: 1px 7px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   margin-left: auto;
   font-style: italic;
 }
@@ -289,7 +289,7 @@
   line-height: 1.45;
   margin-top: 4px;
   padding: 6px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   border-left: 3px solid var(--muted, #888);
   background: #20202c;
   color: var(--muted, #aaa);
@@ -343,7 +343,7 @@
 .cc-info-body {
   margin-top: 4px;
   padding: 6px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: #181822;
   display: flex;
   flex-direction: column;
@@ -385,7 +385,7 @@
   flex: 0 0 auto;
   font-size: 10px;
   padding: 1px 7px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border, #344);
   background: #20202c;
   color: var(--muted, #9ab);
@@ -454,7 +454,7 @@ dialog.kdlg.cloud-account-dlg {
   font-size: 16px;
   cursor: pointer;
   padding: 4px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   line-height: 1;
 }
 .cloud-account-close:hover { color: var(--fg, #fff); background: #2a2a3a; }
@@ -465,7 +465,7 @@ dialog.kdlg.cloud-account-dlg {
   gap: 12px;
   padding: 10px 14px;
   border: 1px solid var(--border, #2a2a3a);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: #181822;
 }
 .cloud-account-avatar {
@@ -498,7 +498,7 @@ dialog.kdlg.cloud-account-dlg {
   background: transparent;
   border: 1px solid var(--border, #2a2a3a);
   color: var(--muted, #99a);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 .cloud-account-signout:hover:not(:disabled) {
@@ -537,7 +537,7 @@ dialog.kdlg.cloud-account-dlg {
 .account-usage-card {
   padding: 10px 12px;
   border: 1px solid var(--border, #2a2a3a);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: #1c1c28;
   display: flex;
   flex-direction: column;
@@ -558,7 +558,7 @@ dialog.kdlg.cloud-account-dlg {
 .account-storage-bar-meta { font-size: 11px; color: var(--muted, #9ab); margin-bottom: 3px; }
 .account-storage-bar-track {
   height: 6px;
-  border-radius: 3px;
+  border-radius: var(--radius-pill);
   background: #252530;
   overflow: hidden;
   display: flex;
@@ -604,7 +604,7 @@ dialog.kdlg.cloud-account-dlg {
 
 .cloud-account-row {
   border: 1px solid var(--border, #2a2a3a);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: #1c1c28;
   padding: 10px 12px;
   display: flex;
@@ -668,7 +668,7 @@ dialog.kdlg.cloud-account-dlg {
 .cloud-account-load-btn {
   font-size: 12px;
   padding: 5px 12px;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border, #344);
   background: #20202c;
   color: var(--fg, #cde);
@@ -698,7 +698,7 @@ dialog.kdlg.cloud-account-dlg {
   gap: 10px;
   padding: 8px 10px;
   border: 1px solid var(--border, #2a2a3a);
-  border-radius: 5px;
+  border-radius: var(--radius-md);
   background: #1c1c28;
   font-size: 12px;
 }
@@ -719,7 +719,7 @@ dialog.kdlg.cloud-account-dlg {
 .perch-account-row-state {
   font-size: 10px;
   padding: 1px 6px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   background: #243650;
   color: #9bb8ff;
 }

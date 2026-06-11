@@ -1444,6 +1444,11 @@
         : '';
 
       const downloadDisabled = !(j.folderAvailable === true && hasPending);
+      // Only surface Download when there is actually something to pull: pending
+      // packs to merge, or a missing folder hiding salvageable packs (paired
+      // with Locate). A fully-retrieved job has nothing to download, so the
+      // button vanishes rather than greying out.
+      const showDownload = hasPending || (folderMissing && packsOnServer);
       const downloadBtn = `<button type="button" class="cloud-account-dl-btn" `
         + `data-cc-action="history-download" data-job-id="${escapeHtml(j.jobId)}" `
         + `data-pending-packs="${unmerged.length}" `
@@ -1488,7 +1493,7 @@
               <span class="cloud-account-row-caption">${caption}</span>
             </div>
             <div class="cloud-account-row-actions">
-              ${isTerminal ? downloadBtn : (allRetrieved ? '' : retrieveBtn)}
+              ${isTerminal ? (showDownload ? downloadBtn : '') : (allRetrieved ? '' : retrieveBtn)}
               ${loadBtn}
               ${locateBtn}
             </div>

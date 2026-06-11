@@ -4,7 +4,7 @@
 
 .notif-bell {
   position: relative; display: inline-flex; align-items: center; justify-content: center;
-  width: 32px; height: 32px; padding: 0; border-radius: 8px;
+  width: 32px; height: 32px; padding: 0; border-radius: var(--radius-md);
   border: 1px solid var(--card-border); background: var(--chip); color: var(--muted);
   cursor: pointer; transition: color .15s, background .15s, border-color .15s;
 }
@@ -13,7 +13,7 @@
 
 .notif-badge {
   position: absolute; top: -5px; right: -5px; min-width: 17px; height: 17px;
-  padding: 0 4px; box-sizing: border-box; border-radius: 999px;
+  padding: 0 4px; box-sizing: border-box; border-radius: var(--radius-pill);
   background: #e0533b; color: #fff; font-size: 10px; font-weight: 700;
   line-height: 17px; text-align: center; border: 2px solid var(--bg);
 }
@@ -25,7 +25,7 @@
      cut off / flows off-screen. */
   position: fixed; top: 0; left: 0;
   width: 340px; max-width: calc(100vw - 32px);
-  background: var(--card); border: 1px solid var(--card-border); border-radius: 10px;
+  background: var(--card); border: 1px solid var(--card-border); border-radius: var(--radius-lg);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45); z-index: 1000; overflow: hidden;
   text-align: left;
 }
@@ -38,7 +38,7 @@
 .notif-title { font-size: 13px; font-weight: 600; color: var(--text); }
 .notif-readall {
   font-size: 11px; color: var(--brand); background: none; border: 0; cursor: pointer;
-  padding: 2px 4px; border-radius: 6px;
+  padding: 2px 4px; border-radius: var(--radius-sm);
 }
 .notif-readall:hover { background: var(--chip); }
 
@@ -69,6 +69,6 @@
 .notif-hide {
   flex: 0 0 auto; width: 20px; height: 20px; line-height: 18px; text-align: center;
   border: 0; background: none; color: var(--muted); font-size: 16px;
-  border-radius: 6px; cursor: pointer;
+  border-radius: var(--radius-sm); cursor: pointer;
 }
 .notif-hide:hover { background: rgba(224, 83, 59, 0.15); color: #e0533b; }

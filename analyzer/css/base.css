@@ -18,6 +18,16 @@
      one above it instead of overlapping. */
   --filter-bar-h: 49px;     /* sticky search/filter bar height */
   --folder-header-h: 44px;  /* sticky folder-group-header height */
+  /* Corner-radius scale — use these instead of ad-hoc px values so cards,
+     rows, buttons and bars stay visually consistent across panels.
+       sm  → buttons, chips, small controls
+       md  → cards, list rows, containers
+       lg  → dialogs / large surfaces
+       pill→ progress tracks / fully-rounded bars */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-pill: 999px;
 }
 
 * {
