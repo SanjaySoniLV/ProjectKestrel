@@ -55,6 +55,41 @@ except ImportError:
 
 HOST = '127.0.0.1'
 
+# How many sequential ports past the requested one to try before giving up and
+# letting the OS pick a free port (bind to 0). Keeps the URL predictable in the
+# common case while surviving a busy port (e.g. a stale instance still exiting).
+PORT_FALLBACK_TRIES = 8
+
+
+def _bind_server_with_fallback(preferred_port, handler):
+    """Bind a ThreadingHTTPServer on 127.0.0.1, trying a few ports.
+
+    Tries ``preferred_port`` first, then the next ``PORT_FALLBACK_TRIES`` ports,
+    and finally falls back to an OS-assigned free port (bind to 0). Returns
+    ``(server, port)`` where ``port`` is the port actually bound. Raises
+    ``OSError`` only if every candidate — including the OS-assigned one — fails.
+    """
+    candidates = [preferred_port + offset for offset in range(PORT_FALLBACK_TRIES + 1)]
+    candidates.append(0)  # last resort: let the OS hand us any free port
+    last_exc = None
+    for candidate in candidates:
+        try:
+            server = ThreadingHTTPServer((HOST, candidate), handler)
+        except OSError as exc:
+            last_exc = exc
+            continue
+        bound_port = server.server_address[1]
+        if candidate not in (preferred_port, 0):
+            log(f'Port {preferred_port} unavailable; using {bound_port} instead.')
+        elif candidate == 0:
+            log(f'Ports {preferred_port}-{preferred_port + PORT_FALLBACK_TRIES} '
+                f'unavailable; OS assigned port {bound_port}.')
+        return server, bound_port
+    raise OSError(
+        f'Could not bind an HTTP server on {HOST}: no free port found near '
+        f'{preferred_port}'
+    ) from last_exc
+
 # One-time settings-migration key that flags whether the 2026-03 legal-consent
 # self-heal has already run for this install. See ``_apply_legal_upgrade_self_heal``.
 LEGAL_SELF_HEAL_MIGRATION_KEY = 'legal_upgrade_self_heal_2026_03'
@@ -815,7 +850,7 @@ def main():
     # files (assets/, visualizer files) are served correctly. The frozen
     # PyInstaller branch prefers the bundled _internal/ folder.
     _chdir_to_static_root()
-    server = ThreadingHTTPServer((HOST, args.port), Handler)
+    server, args.port = _bind_server_with_fallback(args.port, Handler)
     log(f'Serving visualizer at http://{HOST}:{args.port}/  (Press Ctrl+C to stop)')
     log('HTTP surface: static-file GET only. Control routes permanently removed.')
 
