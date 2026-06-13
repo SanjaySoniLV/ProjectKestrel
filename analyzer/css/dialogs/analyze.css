@@ -794,6 +794,32 @@
   transform: rotate(180deg);
 }
 
+/* Header close (X) — replaces "Clear done". Shown only when every queue item
+   is terminal (see renderQueuePanel / _ccRenderPanel). Sits next to the
+   collapse toggle; its click is stopPropagation'd so it doesn't also collapse
+   the panel. */
+.queue-panel-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  margin: -2px 0;
+  font-size: 15px;
+  line-height: 1;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.queue-panel-close:hover {
+  background: #3a1d1d;
+  color: #ff6b6b;
+}
+
 .queue-panel-body {
   padding: 8px;
   max-height: 340px;
@@ -854,18 +880,20 @@
   white-space: nowrap;
 }
 
+/* Blue to match the cloud panel's "+ 📂 Load" (.cloud-account-load-btn) and the
+   pill's pause/cancel controls — the green here was an inconsistent outlier. */
 .queue-item-load-btn {
   font-size: 11px;
   padding: 2px 8px;
   border-radius: 4px;
-  border: 1px solid #3d7e57;
-  background: #1e3a2b;
-  color: #bfe9cf;
+  border: 1px solid #3d5a7e;
+  background: #243650;
+  color: #cfe0ff;
   cursor: pointer;
   flex-shrink: 0;
   white-space: nowrap;
 }
-.queue-item-load-btn:hover { background: #265038; border-color: #4d9a6a; }
+.queue-item-load-btn:hover { background: #2d456a; border-color: #4d6a9a; }
 
 .queue-item-status.pending {
   background: #0f2310;

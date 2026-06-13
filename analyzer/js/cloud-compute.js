@@ -940,10 +940,13 @@
       } catch { return; }
       const jobs = (listRes && listRes.jobs) || [];
       const pending = _ccPendingSubmits.slice(); // snapshot for this render
-      // Panel is visible when there's anything to show — accepted jobs OR
-      // pending queue entries. Hiding when only pending exists would lose
-      // the "your 5 folders are queued" affordance.
-      if (jobs.length === 0 && pending.length === 0) {
+      // Jobs the user dismissed via the header close (X) are filtered out.
+      const visibleJobs = jobs.filter(j => !_ccPanelHiddenJobIds.has(j.jobId));
+      // Panel is visible when there's anything to show — visible (non-dismissed)
+      // jobs OR pending queue entries. Using visibleJobs (not jobs) means the
+      // panel actually closes once the user dismisses all finished jobs, instead
+      // of lingering as an empty shell (the old "Clear done" left it open).
+      if (visibleJobs.length === 0 && pending.length === 0) {
         panel.classList.add('hidden');
         body.innerHTML = '';
         _ccPrevJobSnapshot = new Map();
@@ -961,9 +964,17 @@
       if (toggle) toggle.classList.toggle('open', _cloudQueuePanelExpanded);
       body.classList.toggle('hidden', !_cloudQueuePanelExpanded);
       if (controls) controls.classList.toggle('hidden', !_cloudQueuePanelExpanded);
+      // Header close (X): only when every visible job is terminal and nothing is
+      // pending — i.e. no uploads/analysis in flight. Lets the user dismiss the
+      // finished panel; otherwise it stays open.
+      const cloudCloseBtn = document.getElementById('cloudQueuePanelCloseBtn');
+      if (cloudCloseBtn) {
+        const anyActive = pending.length > 0
+          || visibleJobs.some(j => !_CC_TERMINAL_STATUSES.has(j.status));
+        cloudCloseBtn.classList.toggle('hidden', !(visibleJobs.length > 0 && !anyActive));
+      }
       // Active jobs first, pending ghost rows below. Pending shows the user
       // exactly what's still ahead in their queue.
-      const visibleJobs = jobs.filter(j => !_ccPanelHiddenJobIds.has(j.jobId));
       body.innerHTML =
         visibleJobs.map(_ccRenderItem).join('') +
         pending.map(_ccRenderPendingItem).join('');
@@ -1013,7 +1024,7 @@
       const norm = p => (p || '').replace(/\\/g, '/');
       const ccInProg = new Set();
       for (const j of jobs) {
-        if (!_CC_TERMINAL_STATUSES.has(j.status) && j.folderPath) ccInProg.add(norm(j.folderPath));
+        if (!_CC_TERMINAL_STATUSES.has(j.status) && j.rootPath) ccInProg.add(norm(j.rootPath));
       }
       for (const p of pending) {
         if (p.path) ccInProg.add(norm(p.path));
@@ -1222,43 +1233,35 @@
       }
     }
 
-    // Panel-level controls (one-time wiring): Clear done removes terminal jobs
-    // from the persistent ledger; Pause All / Cancel All apply to every active
+    // Panel-level controls (one-time wiring): the header close (X) dismisses all
+    // terminal jobs from the panel; Pause All / Cancel All apply to every active
     // job in the panel. The buttons themselves live in visualizer.html.
     let _ccPanelControlsWired = false;
     function _ccWirePanelControls() {
       if (_ccPanelControlsWired) return;
       _ccPanelControlsWired = true;
-      const clearBtn = document.getElementById('cloudQueueClearBtn');
+      const closeBtn = document.getElementById('cloudQueuePanelCloseBtn');
       const pauseBtn = document.getElementById('cloudQueuePauseBtn');
       const cancelBtn = document.getElementById('cloudQueueCancelBtn');
-      if (clearBtn) {
-        clearBtn.addEventListener('click', async () => {
-          clearBtn.disabled = true;
+      if (closeBtn) {
+        // Header close (X) — replaces "Clear done". Only visible (toggled in
+        // _ccRenderPanel) once every job is terminal, so dismiss them all and
+        // hide the panel. stopPropagation keeps the header collapse from firing.
+        closeBtn.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
           try {
             let jobs = [];
             if (window.pywebview?.api?.cloud_compute_list_jobs) {
               const r = await window.pywebview.api.cloud_compute_list_jobs();
               jobs = (r && r.jobs) || [];
             }
-            let n = 0;
             for (const j of jobs) {
-              if (_CC_TERMINAL_STATUSES.has(j.status)) {
-                _ccPanelHiddenJobIds.add(j.jobId);
-                n++;
-              }
+              if (_CC_TERMINAL_STATUSES.has(j.status)) _ccPanelHiddenJobIds.add(j.jobId);
             }
-            showToast(
-              n > 0
-                ? `Hidden ${n} finished job(s) from the panel`
-                : 'No finished jobs to hide',
-              2500,
-            );
+            document.getElementById('cloudQueuePanel')?.classList.add('hidden');
             _ccRenderPanel();
           } catch (e) {
-            showToast(`Clear done failed: ${e?.message || e}`, 5000);
-          } finally {
-            clearBtn.disabled = false;
+            showToast(`Close failed: ${e?.message || e}`, 5000);
           }
         });
       }

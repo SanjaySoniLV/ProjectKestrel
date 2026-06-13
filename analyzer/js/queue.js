@@ -191,6 +191,17 @@
       // Pause/resume button label
       if (pauseBtn) pauseBtn.textContent = paused ? '▶ Resume' : '⏸ Pause';
 
+      // Header close (X): only when every item is terminal (nothing running or
+      // pending and the queue isn't running). Lets the user dismiss a finished
+      // panel; otherwise it stays open. Toggled here (before the collapse
+      // early-return) so it works whether the panel is expanded or collapsed.
+      const closeBtn = document.getElementById('queuePanelCloseBtn');
+      if (closeBtn) {
+        const allTerminal = hasItems && !running
+          && runningItems.length === 0 && pendingItems.length === 0;
+        closeBtn.classList.toggle('hidden', !allTerminal);
+      }
+
       if (!_queuePanelExpanded) { body.classList.add('hidden'); if (controls) controls.classList.add('hidden'); return; }
       body.classList.remove('hidden'); if (controls) controls.classList.remove('hidden');
 

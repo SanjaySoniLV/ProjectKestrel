@@ -290,14 +290,14 @@
    signal. Italic is reserved for outdated + in-progress (subtle visual cue).
    Bold is preserved for the future so when something IS bold, it actually pops. */
 .tree-node-row.has-kestrel:not(.analyzed-full):not(.analyzed-partial):not(.analyzed-none) .tree-label {
-  color: var(--ok);
+  color: var(--text);
 }
 .tree-node-row.has-kestrel:not(.analyzed-full):not(.analyzed-partial):not(.analyzed-none):hover .tree-label {
   color: #c8dcf5;
 }
 
 .tree-node-row.analyzed-full .tree-label {
-  color: var(--ok);
+  color: var(--text);
 }
 .tree-node-row.analyzed-partial .tree-label {
   color: #b36bff;

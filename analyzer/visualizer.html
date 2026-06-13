@@ -259,6 +259,10 @@
       <div class="queue-panel-header" id="queuePanelHeader" title="Click to expand / collapse">
         <span class="queue-panel-title">🔬 Analysis Queue</span>
         <span class="queue-panel-badge" id="queuePanelBadge">Idle</span>
+        <!-- Close (X): only appears once every item is in a terminal state
+             (done/error/cancelled) — i.e. nothing is analyzing. Replaces the
+             old "Clear done" button. -->
+        <button class="queue-panel-close hidden" id="queuePanelCloseBtn" type="button" title="Close — all items finished">×</button>
         <span class="queue-panel-toggle open" id="queuePanelToggle">▲</span>
       </div>
       <div class="queue-panel-body" id="queuePanelBody"></div>
@@ -266,7 +270,6 @@
       <div class="queue-panel-controls" id="queuePanelControls">
         <button id="queuePauseBtn" title="Pause / resume analysis">⏸ Pause</button>
         <button id="queueCancelBtn" title="Cancel all pending items">⏹ Cancel</button>
-        <button id="queueClearBtn" title="Remove finished items from list">🗑 Clear done</button>
         <button id="queueLiveBtn" title="See live analysis details">👁 Live</button>
       </div>
     </div>
@@ -281,13 +284,16 @@
       <div class="queue-panel-header" id="cloudQueuePanelHeader" title="Click to expand / collapse">
         <span class="queue-panel-title">☁ Cloud Analysis</span>
         <span class="queue-panel-badge" id="cloudQueuePanelBadge">Idle</span>
+        <!-- Close (X): only appears once every job is in a terminal state
+             (done/failed/cancelled/incomplete) — i.e. nothing is uploading or
+             analyzing. Replaces the old "Clear done" button. -->
+        <button class="queue-panel-close hidden" id="cloudQueuePanelCloseBtn" type="button" title="Close — all jobs finished">×</button>
         <span class="queue-panel-toggle open" id="cloudQueuePanelToggle">▲</span>
       </div>
       <div class="queue-panel-body" id="cloudQueuePanelBody"></div>
       <div class="queue-panel-controls" id="cloudQueuePanelControls">
         <button id="cloudQueuePauseBtn" title="Pause cloud uploads. Modal keeps analyzing whatever has already uploaded.">⏸ Pause</button>
         <button id="cloudQueueCancelBtn" title="Cancel cloud analysis (stops Modal and deletes staged files).">⏹ Cancel</button>
-        <button id="cloudQueueClearBtn" title="Hide finished jobs from this panel (does not delete job history)">🗑 Clear done</button>
       </div>
     </div>
 

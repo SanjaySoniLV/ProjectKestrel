@@ -393,10 +393,14 @@
       });
     }
 
-    // Clear done button
-    const queueClearBtn = document.getElementById('queueClearBtn');
-    if (queueClearBtn) {
-      queueClearBtn.addEventListener('click', async () => {
+    // Header close (X) — replaces "Clear done". Only visible (toggled in
+    // renderQueuePanel) when every item is terminal, so clearing removes them
+    // all and dismisses the panel. stopPropagation keeps the header's
+    // collapse-toggle from also firing.
+    const queuePanelCloseBtn = document.getElementById('queuePanelCloseBtn');
+    if (queuePanelCloseBtn) {
+      queuePanelCloseBtn.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
         try {
           await apiQueueControl('clear');
           const status = await apiGetQueueStatus();
