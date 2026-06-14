@@ -1622,11 +1622,23 @@
     function _ccBillingPeriodLabel(periodStart) {
       if (!periodStart) return '';
       try {
-        const start = new Date(periodStart);
+        // currentUsage.periodStart from /v1/me/entitlements is epoch SECONDS, so
+        // it must be ×1000 for the JS Date (which wants ms) — otherwise a 2026
+        // value reads as Jan 1970. Be liberal: scale up only if it looks like
+        // seconds (~1.7e9) vs ms (~1.7e12); accept an ISO string too.
+        let startMs;
+        if (typeof periodStart === 'number') {
+          startMs = periodStart < 1e12 ? periodStart * 1000 : periodStart;
+        } else {
+          startMs = Date.parse(periodStart);
+        }
+        const start = new Date(startMs);
         if (isNaN(start.getTime())) return '';
+        // The period is a UTC calendar month; step the renewal and format in UTC
+        // so a midnight-UTC start doesn't render as the prior day locally.
         const end = new Date(start);
-        end.setMonth(end.getMonth() + 1);
-        const fmt = (d) => d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+        end.setUTCMonth(end.getUTCMonth() + 1);
+        const fmt = (d) => d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
         return `Billing period: ${fmt(start)} – ${fmt(end)}`;
       } catch { return ''; }
     }

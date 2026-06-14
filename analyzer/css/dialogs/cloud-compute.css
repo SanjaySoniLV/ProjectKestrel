@@ -594,7 +594,8 @@ dialog.kdlg.cloud-account-dlg {
   margin-top: 1px;
 }
 
-.account-storage-bar { margin-top: 4px; }
+.account-storage-bar { margin-top: 10px; }
+.account-storage-bar-heading { font-size: 12px; font-weight: 600; color: var(--text, #dfe7ef); margin-bottom: 3px; }
 .account-storage-bar-meta { font-size: 11px; color: var(--muted, #9ab); margin-bottom: 3px; }
 .account-quota-meta { display: flex; justify-content: space-between; gap: 8px; }
 .account-storage-bar-track {
