@@ -3095,21 +3095,24 @@ class Api:
         """
         from pathlib import Path as _Path
         folder = _Path(folder)
-        # Match the local pipeline / folder_inspector RAW-priority rule: if the
-        # folder has any RAWs we ONLY analyze RAWs (their JPEG sidecars are
-        # ignored). Only when there are zero RAWs do we fall back to JPEGs.
-        # Without this, cloud jobs upload both RAW and JPG, doubling bandwidth
-        # and producing duplicate scene rows on merge. See folder_inspector.py
-        # `list_images_in_folder` — keep the two filters in sync.
+        # Discover analyzable images via the SAME code path the local pipeline
+        # uses — folder_inspector.list_images_in_folder → select_camera_images —
+        # so a cloud job analyzes exactly the files local analysis would. That
+        # shared helper applies RAW-priority correctly: a JPEG is dropped only
+        # when a same-stem RAW exists (an in-camera sidecar); an ORPHAN JPEG (a
+        # lone JPG-only frame in an otherwise-RAW shoot) is KEPT, and hidden /
+        # AppleDouble files are filtered. This function previously re-implemented
+        # its own `raws if raws else jpegs` filter, which dropped orphan JPEGs and
+        # silently truncated such folders by one image vs. local (off-by-one). Do
+        # NOT fork the discovery rule again — share folder_inspector.
+        import importlib
         try:
-            from kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS
-        except ImportError:
-            from analyzer.kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS  # type: ignore[no-redef]
-        raw_set = {ext.lower() for ext in RAW_EXTENSIONS}
-        jpeg_set = {ext.lower() for ext in JPEG_EXTENSIONS}
-        candidates = [p for p in folder.iterdir() if p.is_file()]
-        raws = sorted(p for p in candidates if p.suffix.lower() in raw_set)
-        all_files = raws if raws else sorted(p for p in candidates if p.suffix.lower() in jpeg_set)
+            _inspector = importlib.import_module('analyzer.folder_inspector')
+        except Exception:
+            _inspector = importlib.import_module('folder_inspector')
+        # Returns sorted image NAMES; map back to Paths in this folder. Order is
+        # lexical, matching the canonical processing order submit_job re-asserts.
+        all_files = [folder / name for name in _inspector.list_images_in_folder(str(folder))]
         if not all_files:
             return [], None, frozenset(), 0, 0
 
@@ -4472,17 +4475,39 @@ class Api:
             str(meta.get("filename") or "") for meta in files
             if str(meta.get("filename") or "").endswith(".zip")
         ]
-        # Stale-R2 cleanup: any pack still in R2 that we've already merged is
-        # dead weight (probably from a pre-folder-state job, or a prior
-        # delete-packs call that lost network). Tell the Worker to drop it so
-        # the next list_results stops returning them.
+        # Stale-R2 reconciliation: a pack still in R2 that we've ALREADY merged
+        # locally means its server-side results_retrieved flip never landed —
+        # e.g. a download GET whose (best-effort) flip was lost when the app was
+        # closed mid-download. Do NOT just delete it: the Worker's delete-packs
+        # path clears still-`results_available` rows to the terminal,
+        # non-billable `results_nuked` state, so the user is never billed for
+        # results they actually received and merged. Instead RE-DOWNLOAD it — the
+        # GET re-fires the Worker's `results_available → results_retrieved` flip
+        # (restoring billing), and the idempotent re-merge (last-wins by filename)
+        # guarantees every asset/row made it into the folder. Only THEN does
+        # _cc_finalize_pack_merge delete it, safely, now that the rows are
+        # retrieved. A pack already gone from R2 won't appear in
+        # available_pack_names, so there is nothing left to reconcile.
         stale = [n for n in available_pack_names if n in already]
         if stale and client is not None:
-            try:
-                client.delete_packs(job_id, stale)
-                available_pack_names = [n for n in available_pack_names if n not in already]
-            except Exception as e:
-                warn(f"[cloud-compute] {job_id}: stale-R2 cleanup ({len(stale)} packs) failed: {e}")
+            for fname in stale:
+                dest = pack_dir / fname
+                try:
+                    client.download_pack(job_id, fname, dest)
+                    ccc.merge_pack_into_kestrel(
+                        dest, folder,
+                        protected_filenames=set(anchor_filenames) if anchor_filenames else None,
+                        overwrite_errors=retry_errored,
+                    )
+                except Exception as e:
+                    with self._ensure_cc_lock():
+                        self._cc_pack_events.append({
+                            "jobId": job_id, "folderPath": str(folder),
+                            "packName": fname, "error": str(e),
+                        })
+                    continue
+                self._cc_finalize_pack_merge(folder, job_id, fname, dest, client)
+            available_pack_names = [n for n in available_pack_names if n not in already]
         for fname in available_pack_names:
             if fname in already:
                 continue

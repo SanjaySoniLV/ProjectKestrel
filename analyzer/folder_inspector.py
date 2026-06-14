@@ -23,14 +23,19 @@ from kestrel_analyzer.database import load_database
 
 def list_images_in_folder(folder: str) -> list:
     """Return analyzable image filenames in ``folder`` (sorted), honouring the
-    RAW-priority rule: when the folder contains any RAW files, only RAWs are
-    returned (their JPEG sidecars are skipped); only when there are zero RAWs do
-    we fall back to JPEGs. Hidden files and macOS AppleDouble (``._*``)
-    companions are filtered out via :func:`is_supported_image_file`.
+    RAW-priority rule via :func:`select_camera_images`: a JPEG is dropped only
+    when a same-stem RAW exists (an in-camera sidecar of that RAW). ORPHAN
+    JPEGs — a lone JPG-only frame with no RAW partner — are KEPT, so a mixed
+    RAW+JPG (or JPG-only) shoot is never silently truncated. When there are no
+    RAWs at all, every JPEG is returned. Hidden files and macOS AppleDouble
+    (``._*``) companions are filtered out via :func:`is_supported_image_file`.
 
     Names only (not paths), non-recursive. This is the single source of truth
-    for "which files count" so folder inspection, the cloud upload-speed test,
-    and the cloud job's fallback discovery all agree.
+    for "which files count" so folder inspection, local analysis, the cloud
+    upload-speed test, and BOTH cloud discovery paths
+    (``cloud_compute_client._discover_upload_images`` and
+    ``api_bridge._cc_select_upload_files``) all agree. Do not re-implement this
+    filter elsewhere — call this helper, or cloud/local drift by an image.
     """
     try:
         entries = [

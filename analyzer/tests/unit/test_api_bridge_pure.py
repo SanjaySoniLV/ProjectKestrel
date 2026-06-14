@@ -363,6 +363,82 @@ class TestCCSelectUploadFiles:
         assert files == []
         assert anchors == frozenset()
 
+    def test_orphan_jpeg_kept_alongside_raws(self, api, tmp_path):
+        """Regression (cloud off-by-one): a JPEG with NO same-stem RAW partner
+        is an orphan (a lone JPG-only frame) and MUST be uploaded even when the
+        folder otherwise contains RAWs. A JPEG that DOES share a stem with a RAW
+        is an in-camera sidecar and is correctly dropped. Discovery must match
+        the local pipeline (folder_inspector.list_images_in_folder); the old
+        forked 'raws if raws else jpegs' filter dropped orphan JPEGs, sending
+        N-1 images to the cloud vs. N analyzed locally."""
+        for n in ("IMG_1.CR3", "IMG_1.JPG", "IMG_2.CR3", "IMG_9219.JPG"):
+            (tmp_path / n).touch()
+        files, _, _, total, _ = api._cc_select_upload_files(tmp_path)
+        names = {p.name for p in files}
+        assert "IMG_9219.JPG" in names, "orphan JPEG silently dropped (the bug)"
+        assert "IMG_1.JPG" not in names, "same-stem JPEG sidecar should be dropped"
+        assert names == {"IMG_1.CR3", "IMG_2.CR3", "IMG_9219.JPG"}
+        assert total == 3
+
+
+class TestCCDrainReconciliation:
+    """Regression (billing nuke): a result pack already merged locally but
+    still present in R2 means its server-side results_retrieved flip was lost
+    (e.g. a download GET interrupted by app close). The drain must RE-DOWNLOAD
+    such a pack — the re-GET re-fires the Worker's results_retrieved flip,
+    restoring billing — and re-merge it (idempotent), THEN delete it via
+    _cc_finalize_pack_merge once the rows are safely retrieved. The old code
+    deleted the stale pack outright, which nuked its rows to the terminal,
+    non-billable results_nuked state (the observed 10-image under-billing)."""
+
+    def test_stale_pack_redownloaded_not_nuked(self, api, tmp_path, monkeypatch):
+        stale = "pack_2_seg_16.zip"
+        calls = {"download": [], "merge": [], "finalize": []}
+
+        class FakeClient:
+            def list_results(self, job_id):
+                return [{"filename": stale}]
+
+            def download_pack(self, job_id, fname, dest):
+                calls["download"].append(fname)
+                dest = Path(dest)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(b"zip")
+
+            def delete_packs(self, job_id, names):
+                # The old stale-cleanup deleted WITHOUT downloading. If that
+                # path ever runs again for a stale pack, this records it.
+                calls.setdefault("delete_without_download", []).append(list(names))
+
+        class FakeCcc:
+            def merge_pack_into_kestrel(self, dest, folder, protected_filenames=None,
+                                        overwrite_errors=False):
+                calls["merge"].append(Path(dest).name)
+
+        class FakeStore:
+            def add_downloaded_pack(self, job_id, fname):
+                pass
+
+        # Isolate the reconciliation decision: record finalize instead of
+        # touching real folder-state / R2. pack_name is the 3rd positional arg.
+        monkeypatch.setattr(
+            api, "_cc_finalize_pack_merge",
+            lambda *a, **k: calls["finalize"].append(a[2]),
+        )
+
+        result = api._cc_drain_packs_once(
+            "job_x", tmp_path, FakeClient(), FakeCcc(), FakeStore(),
+            frozenset(), False, already={stale},
+        )
+
+        assert calls["download"] == [stale], "stale pack was not re-downloaded → billing lost"
+        assert calls["merge"] == [stale], "stale pack was not re-merged"
+        assert calls["finalize"] == [stale], "safe delete-after-retrieve did not run"
+        assert "delete_without_download" not in calls, "stale pack was nuked without a re-GET"
+        assert result is not None
+        _already, available = result
+        assert stale not in available
+
 
 class TestCCAnalysisSettingsSnapshot:
     """Tests for _cc_analysis_settings_snapshot read of advanced settings."""
