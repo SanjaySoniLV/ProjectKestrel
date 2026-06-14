@@ -770,11 +770,11 @@
       // from the worker (results_status='results_retrieved'). retrieved ≤
       // analyzed ≤ uploaded ≤ total by construction on the worker side.
       const rawRetrieved = Number(state.retrievedCount || 0);
-      // Numerators are also clamped to the displayed total so the text never
-      // shows e.g. "182/181 uploaded".
-      const analyzed = total > 0 ? Math.min(rawAnalyzed, total) : rawAnalyzed;
-      const uploaded = total > 0 ? Math.min(rawUploaded, total) : rawUploaded;
-      const retrieved = total > 0 ? Math.min(rawRetrieved, total) : rawRetrieved;
+      // Trust the server counts directly — no numerator clamp. The bar WIDTH
+      // is still pixel-clamped below; that's pure render safety, not billing math.
+      const analyzed = rawAnalyzed;
+      const uploaded = rawUploaded;
+      const retrieved = rawRetrieved;
       const uploadPhase = _ccUploadPhase(state);
       const analysisPhase = _ccAnalysisPhase(state);
       const uploadPct = total > 0 ? Math.min(100, Math.round((uploaded / total) * 100)) : 0;
@@ -1364,9 +1364,9 @@
       // Status caption.
       let caption;
       if (j.status === 'done') {
-        caption = `Complete · ${downloadedCount} pack(s) downloaded`;
+        caption = `Complete · ${downloadedCount} result${downloadedCount === 1 ? '' : 's'} downloaded`;
       } else if (hasPending) {
-        caption = `${unmerged.length} pack(s) ready to download`;
+        caption = `${unmerged.length} result${unmerged.length === 1 ? '' : 's'} ready to download`;
       } else if (folderMissing && (hasPending || packsOnServer)) {
         caption = 'Results available — folder not found';
       } else if (folderMissing) {
@@ -1389,7 +1389,7 @@
         const pct = Math.min(100, Math.round((done / activeDl.total) * 100));
         downloadProgressHtml = `
           <div class="cloud-account-dl-progress">
-            <div class="cloud-account-dl-progress-label">Downloading &amp; installing packs… ${done} / ${activeDl.total}</div>
+            <div class="cloud-account-dl-progress-label">Downloading &amp; installing results… ${done} / ${activeDl.total}</div>
             <div class="queue-item-progress">
               <div class="queue-item-progress-fill retrieved" style="width:${pct}%"></div>
             </div>
@@ -1410,7 +1410,7 @@
         + `data-cc-action="history-download" data-job-id="${escapeHtml(j.jobId)}" `
         + `data-pending-packs="${unmerged.length}" `
         + `${downloadDisabled ? 'disabled' : ''} `
-        + `title="${folderMissing ? 'Locate the folder first' : 'Download &amp; merge the pending result pack(s)'}">`
+        + `title="${folderMissing ? 'Locate the folder first' : 'Download &amp; install the pending result(s)'}">`
         + `⬇ Download</button>`;
       const locateBtn = folderMissing
         ? `<button type="button" class="cloud-account-locate-btn" `
@@ -1423,7 +1423,7 @@
       const retrieveBtn = `<button type="button" class="cloud-account-dl-btn" `
         + `data-cc-action="history-retrieve" data-job-id="${escapeHtml(j.jobId)}" `
         + `${folderMissing ? 'disabled' : ''} `
-        + `title="${folderMissing ? 'Locate the folder first' : 'Auto-download result packs as they finish'}">`
+        + `title="${folderMissing ? 'Locate the folder first' : 'Auto-download results as they finish'}">`
         + `⤓ Retrieve Results</button>`;
       // Load: browse this folder's results in the gallery (works for completed
       // jobs too, which only ever appear here — never as a live pill). Hidden
@@ -1538,21 +1538,13 @@
       if (concEl) concEl.textContent = (maxConcurrent != null)
         ? `Concurrent job limit: ${maxConcurrent}` : '';
 
-      const cap = limits ? (Number(limits.maxImagesAnalyzedMonthly) || 0) : 0;
-      const used = usage ? (Number(usage.imageCount) || 0) : 0;
-      const reserved = usage ? (Number(usage.imagesReserved) || 0) : 0;
-
-      // Headline stats.
-      if (analyzedEl) analyzedEl.textContent = usage ? _ccFmtN(used) : '—';
+      // Headline stats — verbatim server fields (no client cap/credit math).
+      if (analyzedEl) analyzedEl.textContent = usage ? _ccFmtN(Number(usage.imageCount) || 0) : '—';
       if (remainingEl) {
-        // Prefer effectiveRemaining (subscription headroom + credits). Unbounded
-        // cap with no credit concept shows "Unlimited".
+        // effectiveRemaining is the worker's pre-computed headroom (subscription
+        // + credits). When absent, show '—' rather than recomputing it client-side.
         if (ent && typeof ent.effectiveRemaining === 'number') {
           remainingEl.textContent = _ccFmtN(ent.effectiveRemaining);
-        } else if (cap > 0 && usage) {
-          remainingEl.textContent = _ccFmtN(Math.max(0, cap - used - reserved));
-        } else if (usage && cap === 0) {
-          remainingEl.textContent = 'Unlimited';
         } else {
           remainingEl.textContent = '—';
         }
@@ -1562,28 +1554,65 @@
           ? _ccFmtN(ent.creditBalance) : '—';
       }
 
-      // Quota bar — two segments: used (green) + in-flight reservations (blue).
-      if (quotaBar) {
-        if (cap > 0 && usage) {
-          const usedPct = Math.min(100, (used / cap) * 100);
-          const reservedPct = Math.min(100 - usedPct, (reserved / cap) * 100);
-          // Floor any non-zero segment to a visible sliver; legend carries the
-          // precise counts.
-          const vis = (p, v) => (v > 0 && p < 1.2) ? 1.2 : p;
-          const fill = document.getElementById('ccQuotaFill');
-          const fillRes = document.getElementById('ccQuotaFillReserved');
-          if (fill) fill.style.width = vis(usedPct, used).toFixed(2) + '%';
-          if (fillRes) fillRes.style.width = vis(reservedPct, reserved).toFixed(2) + '%';
-          const usedLabel = reserved > 0
-            ? `${_ccFmtN(used)} used · ${_ccFmtN(reserved)} in-progress`
-            : `${_ccFmtN(used)} used`;
-          const usedEl = document.getElementById('ccQuotaUsed');
-          const capEl = document.getElementById('ccQuotaCap');
-          if (usedEl) usedEl.textContent = usedLabel;
-          if (capEl) capEl.textContent = `${_ccFmtN(cap)} quota`;
-          quotaBar.hidden = false;
-        } else {
-          quotaBar.hidden = true;
+      // ── Usage bars — rendered STRAIGHT from the worker-computed `ent.bars`.
+      // The worker already did all cap/credit spend-order math; the client only
+      // turns numbers into pixel widths. No cap/used/reserved extraction, no
+      // remaining = cap - used - reserved, no sub-1.2% visibility clamp here.
+      const bars = (ent && ent.bars) || null;
+      const creditsBar = document.getElementById('ccCreditsBar');
+
+      // Render one bar: a solid `billed` segment + a hatched `reserved` segment
+      // over `total`. Legend carries the precise counts. Pixel-width clamp only.
+      const _renderBar = (barEl, fillId, fillResId, usedLabelId, capLabelId,
+                          billed, reserved, total, capLabel, disabled) => {
+        if (!barEl) return;
+        const fill = document.getElementById(fillId);
+        const fillRes = document.getElementById(fillResId);
+        const billedPct = total > 0 ? Math.max(0, Math.min(100, (billed / total) * 100)) : 0;
+        const reservedPct = total > 0 ? Math.max(0, Math.min(100 - billedPct, (reserved / total) * 100)) : 0;
+        if (fill) fill.style.width = billedPct.toFixed(2) + '%';
+        if (fillRes) fillRes.style.width = reservedPct.toFixed(2) + '%';
+        const usedEl = document.getElementById(usedLabelId);
+        const capEl = document.getElementById(capLabelId);
+        if (usedEl) {
+          usedEl.textContent = reserved > 0
+            ? `${_ccFmtN(billed)} used · ${_ccFmtN(reserved)} in-progress`
+            : `${_ccFmtN(billed)} used`;
+        }
+        if (capEl) capEl.textContent = capLabel;
+        barEl.classList.toggle('account-storage-bar--disabled', !!disabled);
+        barEl.hidden = false;
+      };
+
+      if (!bars) {
+        // Older worker without `bars` — hide the bars; do NOT resurrect client math.
+        if (quotaBar) quotaBar.hidden = true;
+        if (creditsBar) creditsBar.hidden = true;
+      } else {
+        // Monthly bar: billed + reserved + remaining === cap. Greyed when the
+        // subscription is inactive (no monthly allotment).
+        const m = bars.monthly || {};
+        const subActive = !!(bars.subscription && bars.subscription.active);
+        const mCap = Number(m.cap) || 0;
+        _renderBar(quotaBar, 'ccQuotaFill', 'ccQuotaFillReserved',
+          'ccQuotaUsed', 'ccQuotaCap',
+          Number(m.billed) || 0, Number(m.reserved) || 0, mCap,
+          subActive ? `${_ccFmtN(mCap)} monthly quota` : 'No active subscription',
+          !subActive);
+
+        // Credits bar: billed + reserved is this period's draw; remaining is
+        // what's left of balance. Rendered over balance.
+        const c = bars.credits || {};
+        const cBalance = Number(c.balance) || 0;
+        if (creditsBar) {
+          if (cBalance > 0 || (Number(c.billed) || 0) > 0 || (Number(c.reserved) || 0) > 0) {
+            _renderBar(creditsBar, 'ccCreditsFill', 'ccCreditsFillReserved',
+              'ccCreditsUsed', 'ccCreditsCap',
+              Number(c.billed) || 0, Number(c.reserved) || 0, cBalance,
+              `${_ccFmtN(cBalance)} credits`, false);
+          } else {
+            creditsBar.hidden = true;
+          }
         }
       }
     }

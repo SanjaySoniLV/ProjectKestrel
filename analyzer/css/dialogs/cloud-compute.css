@@ -612,7 +612,23 @@ dialog.kdlg.cloud-account-dlg {
 .account-storage-bar-fill-reserved {
   height: 100%;
   background: #3a5a86;
+  /* In-flight reservations: hatched so they read as "pending", not spent. */
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0.18) 0,
+    rgba(255, 255, 255, 0.18) 2px,
+    transparent 2px,
+    transparent 5px
+  );
   transition: width 0.2s ease;
+}
+
+/* Unsubscribed / no monthly allotment: greyed & non-interactive look. */
+.account-storage-bar--disabled { opacity: 0.5; }
+.account-storage-bar--disabled .account-storage-bar-fill,
+.account-storage-bar--disabled .account-storage-bar-fill-reserved {
+  background: #4a4a55;
+  background-image: none;
 }
 
 .account-history-header {
