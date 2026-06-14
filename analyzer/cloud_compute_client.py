@@ -439,9 +439,9 @@ class CloudComputeClient:
             body["failed"] = failed
         return self._request("POST", f"/api/jobs/{job_id}/complete", body)
 
-    # W1: /pause and /resume endpoints were retired — pause is now purely
-    # client-side (the desktop holds its own upload pool via a local
-    # pause_event in api_bridge). No worker round-trip on pause/resume.
+    # The cloud-compute pause feature was removed entirely — there are no
+    # /pause or /resume endpoints and the desktop no longer holds an upload
+    # pause. Cancel is the only client-driven job control.
 
     def cancel_job_remote(self, job_id: str, *, origin: str = "user") -> dict:
         """POST /api/jobs/{jobId}/cancel — terminal cancellation. Worker marks
@@ -758,7 +758,6 @@ class CloudComputeClient:
         on_progress: Optional[Callable[[dict], None]] = None,
         on_pack_merged: Optional[Callable[[str], None]] = None,
         cancel_event: Optional[threading.Event] = None,
-        pause_event: Optional[threading.Event] = None,
         merge_into_kestrel: bool = True,
         protected_filenames: Optional[set[str]] = None,
         overwrite_errors: bool = False,
@@ -960,14 +959,6 @@ class CloudComputeClient:
         def _upload_and_notify(item: dict, file_path: Path) -> None:
             nonlocal notified_count
             _check_cancel()
-            # Honour pause-event: when uploads are paused via the Worker
-            # endpoint, the api_bridge clears this event; we block (with a
-            # short timeout so cancellation can still preempt) until resumed.
-            if pause_event is not None:
-                while not pause_event.is_set():
-                    _check_cancel()
-                    if pause_event.wait(timeout=1.0):
-                        break
             status = self._put_file(item["url"], file_path)
             if status >= 400 or status == 0:
                 with notified_lock:

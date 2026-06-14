@@ -12,8 +12,8 @@
     //   - Live state lives in #cloudQueuePanel, a sibling of #queuePanel.
     //     We mirror the local queue's polling shape but at 10s cadence
     //     (Worker rate limits + packs arrive in batches of 10).
-    //   - Pause = upload-side only (Modal keeps analyzing already-uploaded
-    //     backlog). Cancel = terminal (stops Modal, deletes staging).
+    //   - Cancel = terminal (stops Modal, deletes staging). (Client-side pause
+    //     was removed — cancel is the only per-job control.)
     //   - Pack-merged events drain into rescanFolderTree + scheduleAutoRefresh
     //     so folder gallery updates as packs arrive — mirrors local live update.
     //   - Startup: list pending jobs (read-only); surface unmerged packs via
@@ -506,11 +506,9 @@
       // Phase of the upload half of the round-trip. Independent of analysis.
       const s = (state && state.status) || 'running';
       if (s === 'cancelled' || s === 'failed' || s === 'incomplete') return s;
-      // Worker flipped the job to 'incomplete' (client disconnected >10min with
-      // uploads unfinished): uploads are halted server-side even while the local
-      // job is still draining downloads. Grey the upload half immediately.
+      // 'incomplete' on the Worker is now truly terminal (it only lands once the
+      // job has drained), so surface it on the upload half immediately.
       if (state && state.remoteStatus === 'incomplete') return 'incomplete';
-      if (s === 'upload_paused') return 'upload_paused';
       // Use total-with-anchor here so the "Uploaded" pill flips only when ALL
       // wire-level uploads are complete (including the anchor), even though
       // the visible bar uses newImageCount as denominator.
@@ -543,24 +541,15 @@
       } catch { return false; }
     }
 
-    function _ccRemoteIncompleteDone(state) {
-      if (!state || state.remoteStatus !== 'incomplete') return false;
-      const uploaded = Number(state.uploadedCount || 0);
-      const analyzed = Number(state.analyzedCount || 0);
-      return uploaded > 0 && analyzed >= uploaded;
-    }
-
     function _ccAnalysisPhase(state) {
-      // Phase of the analysis half of the round-trip. NOTE: 'incomplete' analysis
-      // continues server-side during the in-session drain, so we only show the
-      // terminal 'incomplete' label once the LOCAL job is terminal OR every
-      // uploaded image has been analyzed (_ccRemoteIncompleteDone) — while
-      // analysis is genuinely still draining the counts below keep the bar
-      // advancing.
+      // Phase of the analysis half of the round-trip. 'incomplete' is now a
+      // truly-terminal Worker state (it only lands after the job has drained —
+      // active_container_count==0, no analysis will advance again), so we surface
+      // it as terminal here without any count-based "is it actually done" check.
       const s = (state && state.status) || 'running';
       if (s === 'cancelled' || s === 'failed' || s === 'done' || s === 'incomplete') return s;
-      if (_ccRemoteIncompleteDone(state)) return 'incomplete';
       const r = state && state.remoteStatus;
+      if (r === 'incomplete') return 'incomplete';
       if (r === 'complete') return 'done';
       const analyzed = Number(state.analyzedCount || 0);
       const dispatched = Number(state.dispatchedCount || 0);
@@ -572,7 +561,6 @@
       return ({
         uploading:     'Uploading',
         uploaded:      'Uploaded',
-        upload_paused: 'Paused',
         cancelled:     'Cancelled',
         failed:        'Failed',
         incomplete:    'Incomplete',
@@ -819,26 +807,21 @@
       // stops once a job is done), so suppress the badge for them.
       const updatedAt = Number(state.remoteUpdatedAtMs || 0);
       const ageMs = updatedAt > 0 ? (Date.now() - updatedAt) : Infinity;
-      // A drained 'incomplete' job (remoteStatus terminal + all uploaded images
-      // analyzed) counts as terminal even before the local lifecycle finalizes,
-      // so we hide the Retrieve-Results affordance and suppress the syncing badge.
-      const isTerminal = ['done', 'failed', 'cancelled', 'incomplete'].includes(state.status)
-        || _ccRemoteIncompleteDone(state);
+      // Server-authoritative: the Worker tells us `terminal` directly (true for
+      // complete/cancelled/failed/incomplete — and 'incomplete' is now genuinely
+      // terminal). Fall back to the local status for the brief window after a
+      // local cancel before the next poll lands. No count math.
+      const isTerminal = !!state.terminal
+        || ['done', 'failed', 'cancelled', 'incomplete'].includes(state.status);
       const isStale = !isTerminal && ageMs > _CC_STALE_THRESHOLD_MS;
       const failureCount = Number(state.remoteFailureCount || 0);
       const staleHint = isStale
         ? `<span class="cloud-sync-badge" title="Last successful sync ${updatedAt > 0 ? Math.round(ageMs/1000)+'s ago' : 'never'}${failureCount > 0 ? ' — ' + failureCount + ' failed attempt(s)' : ''}">syncing…</span>`
         : '';
 
-      // Per-row controls:
-      //  - Pause/Resume only meaningful while uploads are active. Once the
-      //    last image is on the wire there's nothing to pause; the analysis
-      //    half is server-side and can't be paused from the desktop.
-      //  - Cancel disabled in terminal states.
-      const pauseDisabled = uploadPhase !== 'uploading';
-      const resumeDisabled = uploadPhase !== 'upload_paused';
-      const cancelDisabled = ['done', 'failed', 'cancelled', 'incomplete'].includes(state.status)
-        || _ccRemoteIncompleteDone(state);
+      // Per-row controls. Cancel is disabled exactly when the job is terminal
+      // (server `terminal` flag, robust to count skew). Pause was removed.
+      const cancelDisabled = isTerminal;
       // Load: only offer when the folder isn't already open in the browser.
       const showLoad = !!state.rootPath && !_ccIsFolderLoaded(state.rootPath);
 
@@ -850,12 +833,6 @@
               ${staleHint}
             </div>
             <div class="cloud-queue-item-controls">
-              <button data-cc-action="pause" data-job-id="${escapeHtml(state.jobId)}" ${pauseDisabled ? 'disabled' : ''}>
-                ⏸ Pause
-              </button>
-              <button data-cc-action="resume" data-job-id="${escapeHtml(state.jobId)}" ${resumeDisabled ? 'disabled' : ''}>
-                ▶ Resume
-              </button>
               ${showLoad ? `<button class="cc-load-btn" data-cc-action="load" data-job-id="${escapeHtml(state.jobId)}" data-folder-path="${escapeHtml(state.rootPath)}" title="Open this folder to browse results">
                 + 📂 Load
               </button>` : ''}
@@ -1158,7 +1135,7 @@
       });
     }
 
-    // Click delegation for per-item pause/resume/cancel buttons.
+    // Click delegation for per-item cancel/load buttons.
     document.addEventListener('click', async (ev) => {
       const t = ev.target;
       if (!t || !(t instanceof HTMLElement)) return;
@@ -1187,8 +1164,6 @@
       // older/in-progress job into the pill is done from the account panel's
       // history rows (history-retrieve), which call cloud_compute_retrieve_results.
       const fnName = ({
-        pause: 'cloud_compute_pause_job',
-        resume: 'cloud_compute_resume_job',
         cancel: 'cloud_compute_cancel_job',
       })[action];
       if (!fnName || !window.pywebview.api[fnName]) return;
@@ -1234,14 +1209,13 @@
     }
 
     // Panel-level controls (one-time wiring): the header close (X) dismisses all
-    // terminal jobs from the panel; Pause All / Cancel All apply to every active
-    // job in the panel. The buttons themselves live in visualizer.html.
+    // terminal jobs from the panel; Cancel All applies to every active job in the
+    // panel. The buttons themselves live in visualizer.html.
     let _ccPanelControlsWired = false;
     function _ccWirePanelControls() {
       if (_ccPanelControlsWired) return;
       _ccPanelControlsWired = true;
       const closeBtn = document.getElementById('cloudQueuePanelCloseBtn');
-      const pauseBtn = document.getElementById('cloudQueuePauseBtn');
       const cancelBtn = document.getElementById('cloudQueueCancelBtn');
       if (closeBtn) {
         // Header close (X) — replaces "Clear done". Only visible (toggled in
@@ -1274,21 +1248,6 @@
             .map(j => j.jobId);
         } catch { return []; }
       };
-      if (pauseBtn) {
-        pauseBtn.addEventListener('click', async () => {
-          if (!window.pywebview?.api?.cloud_compute_pause_job) return;
-          pauseBtn.disabled = true;
-          try {
-            const ids = await _activeJobIds();
-            if (ids.length === 0) { showToast('No active jobs to pause', 2500); return; }
-            await Promise.all(ids.map(id => window.pywebview.api.cloud_compute_pause_job(id).catch(() => null)));
-            showToast(`Paused ${ids.length} job(s)`, 2500);
-            _ccRenderPanel();
-          } finally {
-            pauseBtn.disabled = false;
-          }
-        });
-      }
       if (cancelBtn) {
         cancelBtn.addEventListener('click', async () => {
           if (!window.pywebview?.api?.cloud_compute_cancel_job) return;

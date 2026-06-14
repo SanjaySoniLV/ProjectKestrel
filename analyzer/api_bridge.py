@@ -378,7 +378,7 @@ class Api:
         self._perch_usage_cache: dict | None = None
         self._perch_usage_cache_at: float = 0.0
         # Async cloud-compute job state (job_id -> {progress, cancel_event,
-        # pause_event, thread, result}). Cloud-compute reuses the Perch JWT
+        # thread, result}). Cloud-compute reuses the Perch JWT
         # (same Clerk identity) — see _check_auth_token() and
         # analyzer/cloud_compute_client.py.
         self._cc_jobs: dict = {}
@@ -3274,6 +3274,13 @@ class Api:
         "retrievedCount": 0,
         "activeContainerCount": 0,
         "terminalReason": None,
+        # Server-authoritative status booleans (the desktop renders buttons off
+        # these instead of inferring from status + counts). Defaults match a
+        # freshly-submitted job (non-terminal, cancellable, accepting uploads).
+        "terminal": False,
+        "cancellable": True,
+        "resultsAvailable": False,
+        "acceptingUploads": True,
     }
 
     def _cc_apply_remote_snapshot(self, job_id: str, remote: dict) -> None:
@@ -3288,6 +3295,8 @@ class Api:
             "uploadedCount", "analyzedCount", "dispatchedCount", "pendingCount",
             "downloadedCount", "pack_count", "retrievedCount",
             "stopRequested", "uploadComplete",
+            # Server-authoritative status booleans (camelCase on the wire).
+            "terminal", "cancellable", "resultsAvailable", "acceptingUploads",
         ):
             if key in remote and remote[key] is not None:
                 snapshot[key] = remote[key]
@@ -3406,11 +3415,9 @@ class Api:
                     else:
                         remote = client.get_status(job_id)
                         self._cc_apply_remote_snapshot(job_id, remote)
-                        # W1: pause is purely client-side now — the local
-                        # pause_event is the sole source of truth and only the
-                        # user toggles it. There is no server auto-pause to
-                        # clear, so the poller no longer reacts to any remote
-                        # resume signal.
+                        # Client-side pause was removed — the only client-driven
+                        # job control left is cancel. The poller just refreshes
+                        # the remote snapshot.
                 except Exception as e:
                     self._cc_record_remote_failure(job_id, str(e))
                     # Log every 5th consecutive failure so the journal doesn't
@@ -3577,10 +3584,6 @@ class Api:
 
         import threading as _t
         cancel_event = _t.Event()
-        # pause_event is "set" when uploads are running; cleared to pause.
-        # Starts set so the upload thread does not block out of the gate.
-        pause_event = _t.Event()
-        pause_event.set()
 
         def _on_progress(payload: dict) -> None:
             with self._ensure_cc_lock():
@@ -3624,7 +3627,6 @@ class Api:
                     on_progress=_on_progress,
                     on_pack_merged=_on_pack_merged,
                     cancel_event=cancel_event,
-                    pause_event=pause_event,
                     protected_filenames=set(anchor_filenames) if anchor_filenames else None,
                     overwrite_errors=_retry_errored,
                     # Pass the pre-submitted job ID and presigned URLs so
@@ -3719,7 +3721,6 @@ class Api:
                 "status": "uploading",
                 "progress": {"event": "submitted"},
                 "cancel_event": cancel_event,
-                "pause_event": pause_event,
                 "presignedUrls": submit.get("presignedUrls", []),  # for completeness
                 # Cached remote-counters snapshot. The background poller
                 # refreshes this; JS reads it via cloud_compute_list_jobs.
@@ -3810,6 +3811,12 @@ class Api:
             # maxConcurrentJobs>=2).
             "uploadComplete": bool(remote.get("uploadComplete", False)),
             "remoteStatus": remote.get("remoteStatus"),
+            # Server-authoritative status booleans — the JS layer renders buttons
+            # straight off these (no status/count inference). See _CC_REMOTE_DEFAULTS.
+            "terminal": bool(remote.get("terminal", False)),
+            "cancellable": bool(remote.get("cancellable", True)),
+            "resultsAvailable": bool(remote.get("resultsAvailable", False)),
+            "acceptingUploads": bool(remote.get("acceptingUploads", True)),
             # Staleness signals for the UI: updatedAtMs is wall-clock of last
             # successful poll (0 means "never"); failureCount is consecutive
             # failures since the last success; lastError is the most recent
@@ -3954,84 +3961,68 @@ class Api:
         """
         return {"ok": True, "removed": []}
 
-    def cloud_compute_pause_job(self, job_id: str) -> dict:
-        """Pause uploads for a job. W1: pause is now PURELY CLIENT-SIDE — we
-        clear the local ``pause_event`` (which blocks the upload pool in
-        ``run_full_job._upload_and_notify``) and stop PUT+notify. The Worker
-        has no pause concept; analysis naturally drains the already-uploaded
-        backlog and then idles. The job stays ``processing`` server-side while
-        paused — the ``upload_paused`` status here is LOCAL-ONLY, used to drive
-        the UI. Idempotent."""
-        with self._ensure_cc_lock():
-            state = self._cc_jobs.get(job_id)
-            if state is None:
-                return {"ok": False, "error": "unknown jobId"}
-            pause_ev = state.get("pause_event")
-        if pause_ev is not None:
-            pause_ev.clear()
-        with self._ensure_cc_lock():
-            if job_id in self._cc_jobs:
-                self._cc_jobs[job_id]["status"] = "upload_paused"
-        try:
-            self._cc_jobs_store().update_job(job_id, status="upload_paused")
-        except Exception:
-            # Store write failed — revert in-memory state so local + persisted agree.
-            if pause_ev is not None:
-                pause_ev.set()
-            with self._ensure_cc_lock():
-                if job_id in self._cc_jobs:
-                    self._cc_jobs[job_id]["status"] = "uploading"
-        return {"ok": True, "uploadPauseRequested": True}
-
-    def cloud_compute_resume_job(self, job_id: str) -> dict:
-        """Inverse of pause_job. Sets the local ``pause_event`` so the upload
-        pool un-blocks. Purely client-side (W1). Idempotent."""
-        with self._ensure_cc_lock():
-            state = self._cc_jobs.get(job_id)
-            if state is None:
-                return {"ok": False, "error": "unknown jobId"}
-            pause_ev = state.get("pause_event")
-        if pause_ev is not None:
-            pause_ev.set()
-        with self._ensure_cc_lock():
-            if job_id in self._cc_jobs:
-                self._cc_jobs[job_id]["status"] = "uploading"
-        try:
-            self._cc_jobs_store().update_job(job_id, status="uploading")
-        except Exception:
-            # Store write failed — revert in-memory state so local + persisted agree.
-            if pause_ev is not None:
-                pause_ev.clear()
-            with self._ensure_cc_lock():
-                if job_id in self._cc_jobs:
-                    self._cc_jobs[job_id]["status"] = "upload_paused"
-        return {"ok": True, "uploadPauseRequested": False}
-
     def cloud_compute_cancel_job(self, job_id: str) -> dict:
-        """Terminal cancel. Tells the Worker to stop the job (Modal exits on
-        next pending-images poll, staging objects are async-deleted) AND
-        signals the local upload/poll thread to exit. Marks the job
-        ``cancelled`` in the persistent ledger.
+        """Terminal cancel. Tells the Worker to stop the job, then — ONLY if the
+        remote cancel actually LANDED — signals the local upload/poll thread to
+        exit and marks the job ``cancelled`` in the persistent ledger.
+
+        If the remote cancel can't be confirmed (network down / expired session),
+        we DO NOT touch local state: the job is still running server-side, so a
+        false local ``cancelled`` would desync the desktop. We return
+        ``{ok:False, transient:True}`` so the UI keeps Cancel live to retry. A
+        404 means the job is already gone server-side → safe to finalize.
         """
         with self._ensure_cc_lock():
             state = self._cc_jobs.get(job_id)
             if state is None:
                 return {"ok": False, "error": "unknown jobId"}
             cancel_ev = state.get("cancel_event")
-            pause_ev = state.get("pause_event")
-        # Remote cancel first. If the desktop dies right after, the Worker
-        # has already started staging-cleanup so we don't leak storage.
-        client, _err = self._cc_make_client()
-        remote_err: str | None = None
-        if client is not None:
-            try:
-                client.cancel_job_remote(job_id)
-            except Exception as e:
-                remote_err = str(e)
-        # Local cleanup: release any pause so the upload thread can see the
-        # cancel and exit, then set cancel_event.
-        if pause_ev is not None:
-            pause_ev.set()
+
+        _transient = (
+            "Couldn't reach the server — the job is still running. Try again."
+        )
+
+        ccc = self._cc_import()
+        client, client_err = self._cc_make_client()
+        if client is None:
+            # No client (e.g. signed out / token gone) — we never reached the
+            # server, so the job may still be running. Transient.
+            return {
+                "ok": False, "transient": True, "error": _transient,
+                "remoteError": (client_err or {}).get("error") or "no client",
+            }
+
+        landed = False
+        try:
+            client.cancel_job_remote(job_id)
+            landed = True  # 200 — the Worker accepted the cancel (idempotent).
+        except ccc.CloudComputeAuthError as e:
+            # 401 after refresh failed — session expired. Transient.
+            return {"ok": False, "transient": True, "error": _transient, "remoteError": str(e)}
+        except ccc.CloudComputeNetworkError as e:
+            # Transport-level failure (status 0). Transient.
+            return {"ok": False, "transient": True, "error": _transient, "remoteError": str(e)}
+        except ccc.CloudComputeError as e:
+            # Other non-2xx. 404 = job already gone server-side → nothing left
+            # running, safe to finalize. Anything else = server refused.
+            if getattr(e, "status", None) == 404:
+                landed = True
+            else:
+                return {
+                    "ok": False,
+                    "error": f"Server refused the cancel ({getattr(e, 'status', '?')}); job not cancelled.",
+                    "remoteError": str(e),
+                }
+        except Exception as e:
+            # Unknown error talking to the server — be conservative, treat as transient.
+            return {"ok": False, "transient": True, "error": _transient, "remoteError": str(e)}
+
+        if not landed:
+            return {"ok": False, "transient": True, "error": _transient}
+
+        # Remote cancel landed (200) or the job is already gone (404): finalize
+        # locally. Signal the upload/poll thread to exit (the upload worker checks
+        # _check_cancel(); there is no pause to release anymore), then mark cancelled.
         if cancel_ev is not None:
             cancel_ev.set()
         with self._ensure_cc_lock():
@@ -4041,7 +4032,7 @@ class Api:
             self._cc_jobs_store().update_job(job_id, status="cancelled")
         except Exception:
             pass
-        return {"ok": True, "remoteError": remote_err}
+        return {"ok": True}
 
     def cloud_compute_upload_test(
         self,
@@ -4319,7 +4310,6 @@ class Api:
                     "status": str(target.get("status") or "downloading"),
                     "progress": {"event": "resume"},
                     "cancel_event": None,
-                    "pause_event": None,
                     "remote": dict(self._CC_REMOTE_DEFAULTS),
                 }
         # Start the live remote poller; safe to call again if already running.
