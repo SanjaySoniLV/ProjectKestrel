@@ -80,6 +80,58 @@ jobs:
           chmod +x packaging/build_app_headless.sh
           ./packaging/build_app_headless.sh
 
+      - name: Place CI auth bundle (test account)
+        shell: bash
+        env:
+          KESTREL_CI_AUTH_JSON: ${{ secrets.KESTREL_CI_AUTH_JSON }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KESTREL_CI_AUTH_JSON:-}" ]; then
+            echo "::notice::KESTREL_CI_AUTH_JSON not set; cloud reach smoke will be skipped."
+            exit 0
+          fi
+          # _get_user_data_dir() on darwin (settings_utils.py); the bundle is
+          # loaded via the keychain->file fallback (no keychain entry on a fresh
+          # runner -> the file is used).
+          AUTH_DIR="$HOME/Library/Application Support/ProjectKestrel"
+          mkdir -p "$AUTH_DIR"
+          printf '%s' "$KESTREL_CI_AUTH_JSON" | base64 --decode > "$AUTH_DIR/auth.json"
+          chmod 600 "$AUTH_DIR/auth.json"
+          echo "Wrote auth bundle to $AUTH_DIR/auth.json"
+
+      - name: Cloud reach smoke (--selftest-reach) against frozen binary
+        id: reach
+        continue-on-error: true
+        shell: bash
+        env:
+          KESTREL_CI_AUTH_JSON: ${{ secrets.KESTREL_CI_AUTH_JSON }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KESTREL_CI_AUTH_JSON:-}" ]; then
+            echo "::warning::KESTREL_CI_AUTH_JSON not set; skipping --selftest-reach cloud smoke."
+            exit 0
+          fi
+          # Exercises auth-refresh -> CC presign -> R2 PUT through net_tls on the
+          # FROZEN binary: the only way to catch the macOS .app CERTIFICATE_
+          # VERIFY_FAILED bundling regression without a Mac.
+          OUT="${RUNNER_TEMP}/reach-result.json"
+          rm -f "$OUT"
+          analyzer/dist/ProjectKestrel/ProjectKestrel \
+            --cli --selftest-reach test_imgs --sample-count 2 --json-out "$OUT"
+          echo "=== reach-result.json ==="
+          cat "$OUT"
+          cp "$OUT" reach-result.json
+          ok=$(python3 -c "import json; print(str(json.load(open('$OUT')).get('ok')).lower())")
+          if [ "$ok" != "true" ]; then
+            echo "::error::--selftest-reach failed (ok=$ok) — possible macOS frozen-app TLS regression"
+            exit 1
+          fi
+
+      - name: Warn if cloud reach smoke failed
+        if: ${{ always() && steps.reach.outcome == 'failure' }}
+        shell: bash
+        run: echo "::warning::Frozen-binary --selftest-reach failed on macOS dev build (auth/network/TLS)."
+
       - name: Run --validate against frozen binary
         id: validate
         continue-on-error: true
@@ -190,5 +242,14 @@ jobs:
         with:
           name: macos-dev-ui-probe-result
           path: ui-probe-result.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload reach-result.json
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dev-reach-result
+          path: reach-result.json
           if-no-files-found: warn
           retention-days: 14
