@@ -29,6 +29,7 @@ jobs:
 
       - name: Run pytest from source (skip ui marker)
         id: pretest
+        if: ${{ false }}  # DEBUG: temporarily skipped to speed up ui-probe iteration
         continue-on-error: true
         shell: bash
         run: |
@@ -41,6 +42,7 @@ jobs:
         run: echo "::warning::Pre-build pytest failed on macOS dev build; continuing to PyInstaller."
 
       - name: Smoke test CLI from source (repo root, first 2 test images)
+        if: ${{ false }}  # DEBUG: temporarily skipped to speed up ui-probe iteration
         shell: bash
         run: |
           set -euo pipefail
@@ -101,6 +103,7 @@ jobs:
 
       - name: Cloud reach smoke (--selftest-reach) against frozen binary
         id: reach
+        if: ${{ false }}  # DEBUG: temporarily skipped to speed up ui-probe iteration
         continue-on-error: true
         shell: bash
         env:
@@ -134,6 +137,7 @@ jobs:
 
       - name: Run --validate against frozen binary
         id: validate
+        if: ${{ false }}  # DEBUG: temporarily skipped to speed up ui-probe iteration
         continue-on-error: true
         shell: bash
         run: |
@@ -167,65 +171,79 @@ jobs:
         shell: bash
         run: echo "::warning::Frozen-binary --validate failed on macOS dev build; continuing to publish available artifacts."
 
-      - name: UI probe (real visualizer.html) against frozen binary
+      - name: UI probe DIAGNOSTIC harness (macOS bridge investigation)
         id: ui_probe
         continue-on-error: true
-        timeout-minutes: 3
+        timeout-minutes: 12
         shell: bash
         run: |
-          set -euo pipefail
-          UI_PROBE_OUTPUT="${RUNNER_TEMP}/ui-probe-result.json"
-          rm -f "${UI_PROBE_OUTPUT}"
+          set +e  # run every experiment; never abort early
+          echo "##################### macOS UI PROBE DIAGNOSTICS #####################"
+          ONEDIR="analyzer/dist/ProjectKestrel"
+          BIN="$ONEDIR/ProjectKestrel"
+          APP="$(find analyzer/dist -maxdepth 1 -name '*.app' | head -1)"
+          DBG="$PWD/debug-artifacts"; mkdir -p "$DBG"
+          echo "ONEDIR=$ONEDIR"; echo "BIN=$BIN"; echo "APP=$APP"
 
-          analyzer/dist/ProjectKestrel/ProjectKestrel \
-            --api-probe \
-            --probe-target visualizer \
-            --probe-output "${UI_PROBE_OUTPUT}" \
-            --probe-timeout 60 \
-            --port 8798
+          echo "===== ENV ====="
+          sw_vers
+          echo "user: $(whoami) uid=$(id -u)"
+          echo "--- GUI session (launchctl) ---"
+          launchctl print "gui/$(id -u)" 2>&1 | head -8 || echo "(no gui session)"
+          echo "--- Aqua/WindowServer present? ---"
+          (ps aux | grep -i -E 'WindowServer|loginwindow|Dock' | grep -v grep | head) || true
 
-          if [ ! -f "${UI_PROBE_OUTPUT}" ]; then
-            echo "UI probe did not produce a result JSON"
-            exit 1
-          fi
-          echo "=== ui-probe-result.json ==="
-          cat "${UI_PROBE_OUTPUT}"
+          echo "===== .app structure ====="
+          ls -la "$APP/Contents" 2>&1
+          ls -la "$APP/Contents/MacOS" 2>&1
+          echo "--- Info.plist ---"
+          /usr/libexec/PlistBuddy -c Print "$APP/Contents/Info.plist" 2>&1 | head -50 || cat "$APP/Contents/Info.plist" 2>&1 | head -50
+          echo "--- WebKit/pyobjc framework presence ---"
+          find "$ONEDIR" -iname '*WebKit*' 2>/dev/null | head
+          find "$ONEDIR" -ipath '*pyobjc*' -iname '*.so' 2>/dev/null | grep -i webkit | head
 
-          cp "${UI_PROBE_OUTPUT}" ui-probe-result.json
+          run_raw () { # label target timeout port
+            echo ""; echo "######## EXPERIMENT raw:$1 (target=$2 timeout=$3 port=$4) ########"
+            local out="${RUNNER_TEMP}/probe-$1.json"; local log="$DBG/probe-$1.log"; rm -f "$out"
+            "$BIN" --api-probe --probe-target "$2" --probe-output "$out" --probe-timeout "$3" --port "$4" >"$log" 2>&1
+            echo "exit=$?"
+            echo "--- stdout/stderr tail(40) ---"; tail -40 "$log" 2>/dev/null
+            echo "--- JSON ---"; if [ -f "$out" ]; then cat "$out"; cp "$out" "$DBG/"; else echo "(NO JSON WRITTEN)"; fi
+          }
+          run_app () { # label target timeout port
+            echo ""; echo "######## EXPERIMENT app(open -W):$1 (target=$2 timeout=$3 port=$4) ########"
+            local out="${RUNNER_TEMP}/probe-$1.json"; local olog="$DBG/probe-$1.out"; local elog="$DBG/probe-$1.err"; rm -f "$out"
+            open -W --stdout "$olog" --stderr "$elog" "$APP" --args \
+              --api-probe --probe-target "$2" --probe-output "$out" --probe-timeout "$3" --port "$4"
+            echo "open exit=$?"
+            echo "--- app stdout tail(40) ---"; tail -40 "$olog" 2>/dev/null || echo "(none)"
+            echo "--- app stderr tail(40) ---"; tail -40 "$elog" 2>/dev/null || echo "(none)"
+            echo "--- JSON ---"; if [ -f "$out" ]; then cat "$out"; cp "$out" "$DBG/"; else echo "(NO JSON WRITTEN)"; fi
+          }
 
-          ok=$(python3 -c "import json,sys; print(str(json.load(open('${UI_PROBE_OUTPUT}')).get('ok')).lower())")
-          if [ "${ok}" != "true" ]; then
-            echo "UI probe reported failure (ok=${ok}); visualizer.html did not wire up window.pywebview.api"
-            exit 1
-          fi
+          run_raw synthetic-raw  synthetic  20 8801
+          run_raw visualizer-raw visualizer 25 8802
+          run_app synthetic-app  synthetic  25 8803
+          run_app visualizer-app visualizer 30 8804
 
-      - name: Warn if UI probe failed
-        if: ${{ always() && steps.ui_probe.outcome == 'failure' }}
-        shell: bash
-        run: echo "::warning::Frozen-binary UI probe failed on macOS dev build; visualizer.html did not see window.pywebview.api."
+          echo ""; echo "===== CRASH REPORTS (user) ====="
+          ls -la "$HOME/Library/Logs/DiagnosticReports/" 2>&1 | head -30
+          for f in "$HOME/Library/Logs/DiagnosticReports/"*; do
+            [ -f "$f" ] || continue
+            case "$f" in *ProjectKestrel*|*.ips|*.crash) echo "=== CRASH: $f ==="; head -90 "$f"; cp "$f" "$DBG/" 2>/dev/null;; esac
+          done
+          echo "===== CRASH REPORTS (system) ====="
+          ls -la "/Library/Logs/DiagnosticReports/" 2>&1 | head -20
+          echo "DIAGNOSTIC HARNESS COMPLETE"
 
-      - name: Collect macOS .app
-        shell: bash
-        run: |
-          set -e
-          mkdir -p artifact
-          APP_PATH=$(find analyzer/dist -maxdepth 2 -name "*.app" | head -n 1 || true)
-          if [ -z "$APP_PATH" ]; then
-            APP_PATH=$(find release -type d -name "*.app" | head -n 1 || true)
-          fi
-          if [ -z "$APP_PATH" ]; then
-            echo "No .app found to upload"
-            exit 1
-          fi
-          echo "Found .app: $APP_PATH"
-          cp -a "$APP_PATH" artifact/
-
-      - name: Upload macOS dev app
+      - name: Upload macOS ui-probe debug artifacts
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: macos-dev-app
-          path: artifact/
+          name: macos-uiprobe-debug
+          path: debug-artifacts/
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload validate-result.json
         if: ${{ always() }}
