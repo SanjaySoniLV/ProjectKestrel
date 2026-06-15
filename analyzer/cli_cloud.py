@@ -209,6 +209,22 @@ def cmd_e2e(api, args) -> tuple[dict, int]:
             0 if perch_ok else 1)
 
 
+def cmd_export_auth(args) -> tuple[dict, int]:
+    """Print the on-disk/keychain token bundle as JSON so it can be base64'd into
+    the CI KESTREL_CI_AUTH_JSON secret. SENSITIVE — contains the refresh token.
+    No Api() init or network; just the same loader the bridge uses."""
+    try:
+        from api_bridge import _keyring_load
+    except ImportError:  # pragma: no cover - package-style path
+        from analyzer.api_bridge import _keyring_load
+    bundle = _keyring_load()
+    if not bundle:
+        return {"command": "export-auth", "ok": False, "error": "no_auth_bundle_found",
+                "detail": "sign in to the desktop app with the CI test account first"}, 1
+    # The raw bundle IS the secret payload — emit it verbatim.
+    return bundle, 0
+
+
 _DISPATCH = {
     "selftest_reach": cmd_selftest_reach,
     "cc_run": cmd_cc_run,
@@ -227,6 +243,11 @@ def run_cloud_command(args) -> int:
             _stream.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
         except Exception:
             pass
+    # export-auth needs no Api()/network — handle it before the heavier path.
+    if getattr(args, "export_auth", False):
+        result, code = cmd_export_auth(args)
+        _emit(result, getattr(args, "json_out", None))
+        return code
     selected = [name for name in _DISPATCH if getattr(args, name, False)]
     if len(selected) != 1:
         _log("error: select exactly one headless cloud command")

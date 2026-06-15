@@ -187,6 +187,11 @@ def parse_args(argv: Sequence[str] | None = None):
         help="With --cc-run/--e2e: delete the folder's .kestrel analysis state first (fresh run).",
     )
     parser.add_argument(
+        "--export-auth", dest="export_auth", action="store_true",
+        help="Print the current auth token bundle as JSON (for minting the CI "
+             "KESTREL_CI_AUTH_JSON secret). SENSITIVE: contains the refresh token. No `folder` needed.",
+    )
+    parser.add_argument(
         "--sample-count", dest="sample_count", type=int, default=10,
         help="Images to upload for --selftest-reach (default 10).",
     )
@@ -251,13 +256,13 @@ def main(argv: Sequence[str] | None = None):
                 output_path=args.validate_output,
             ))
         # Headless cloud / Perch commands — short-circuit before any analysis.
-        _cloud_modes = (args.selftest_reach, args.cc_run, args.perch_upload, args.e2e)
+        _cloud_modes = (args.selftest_reach, args.cc_run, args.perch_upload, args.e2e, args.export_auth)
         if any(_cloud_modes):
             if sum(bool(m) for m in _cloud_modes) > 1:
-                print("error: choose exactly one of --selftest-reach/--cc-run/--perch-upload/--e2e",
+                print("error: choose exactly one headless cloud command",
                       flush=True, file=sys.stderr)
                 sys.exit(2)
-            if not args.folder:
+            if not args.export_auth and not args.folder:
                 print("error: 'folder' is required for headless cloud commands",
                       flush=True, file=sys.stderr)
                 sys.exit(2)
