@@ -35,6 +35,13 @@ import urllib.request
 import webbrowser
 from typing import Callable, Optional
 
+# certifi-backed TLS context — bare urlopen() fails CERTIFICATE_VERIFY_FAILED
+# in a frozen macOS .app. See net_tls. Dual import for root-vs-package sys.path.
+try:
+    from net_tls import ssl_context as _ssl_context
+except ImportError:  # pragma: no cover - package-style import path
+    from analyzer.net_tls import ssl_context as _ssl_context
+
 # ── Configuration ────────────────────────────────────────────────────────────
 
 CLERK_AUTHORIZE_URL = "https://clerk.projectkestrel.org/oauth/authorize"
@@ -247,7 +254,7 @@ def _token_request(url: str, form: dict, timeout: float = 15.0) -> dict:
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
             raw = resp.read()
     except urllib.error.HTTPError as e:
         # Capture Clerk's actual response body — without this, str(e) is just

@@ -130,3 +130,42 @@ class TestPauseRemoved:
     def test_pause_resume_bridge_methods_are_gone(self, api):
         assert not hasattr(api, "cloud_compute_pause_job")
         assert not hasattr(api, "cloud_compute_resume_job")
+
+
+class TestStopUploadsForShutdown:
+    """App shutdown must release in-flight upload pools by signalling every
+    job's cancel_event locally (no Worker round-trip), so the ThreadPoolExecutor
+    atexit join doesn't keep uploading after the window closes."""
+
+    def test_signals_all_inflight_events(self, api):
+        ev1 = _seed_job(api, job_id="job_a")
+        ev2 = _seed_job(api, job_id="job_b")
+        n = api.stop_cloud_uploads_for_shutdown()
+        assert n == 2
+        assert ev1.is_set()
+        assert ev2.is_set()
+
+    def test_no_jobs_returns_zero(self, api):
+        assert api.stop_cloud_uploads_for_shutdown() == 0
+
+    def test_already_set_events_not_double_counted(self, api):
+        ev1 = _seed_job(api, job_id="job_a")
+        ev1.set()  # e.g. user already cancelled this one
+        ev2 = _seed_job(api, job_id="job_b")
+        n = api.stop_cloud_uploads_for_shutdown()
+        assert n == 1  # only the still-running job is freshly signalled
+        assert ev2.is_set()
+
+    def test_does_not_touch_persistent_store_or_status(self, api, monkeypatch):
+        # Shutdown is local-only: the job keeps running server-side and resumes
+        # next launch, so we must NOT flip status or write the ledger.
+        store = _FakeStore()
+        monkeypatch.setattr(api, "_cc_jobs_store", lambda: store)
+        _seed_job(api, job_id="job_a")
+        api.stop_cloud_uploads_for_shutdown()
+        assert api._cc_jobs["job_a"]["status"] == "uploading"
+        assert store.updates == []
+
+    def test_tolerates_missing_cancel_event(self, api):
+        api._cc_jobs["job_a"] = {"status": "uploading"}  # no cancel_event key
+        assert api.stop_cloud_uploads_for_shutdown() == 0

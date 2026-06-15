@@ -31,10 +31,24 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+# Shared certifi-backed TLS context. Without it, bare urlopen() fails every
+# HTTPS request with CERTIFICATE_VERIFY_FAILED in a frozen macOS .app. See
+# net_tls for the full rationale. Dual import so the module resolves whether
+# this package is on sys.path as the root (frozen / tests) or as ``analyzer``.
+try:
+    from net_tls import ssl_context as _ssl_context
+except ImportError:  # pragma: no cover - package-style import path
+    from analyzer.net_tls import ssl_context as _ssl_context
+
 
 _DEFAULT_API_BASE = "https://cloudcompute.projectkestrel.org"
 _MAX_UPLOAD_WORKERS = 6
 _POLL_INTERVAL_SEC = 5
+# R2 PUTs stream the whole file body; cap each attempt so a stalled socket
+# can't hang the upload pool forever — critical at app shutdown, where the
+# ThreadPoolExecutor's atexit join would otherwise wait on a wedged upload
+# even after cancel_event short-circuits the queued ones.
+_PUT_TIMEOUT_SEC = 60
 # Per-call timeouts. Status polls are short so a stuck poller can't freeze the
 # UI; submit/notify need a bit more headroom for the first request after a cold
 # Worker. See JobCancelled below for cooperative shutdown.
@@ -270,7 +284,7 @@ class CloudComputeClient:
             }
             req = urllib.request.Request(url, data=data, method=method, headers=headers)
             try:
-                with urllib.request.urlopen(req, timeout=timeout or self.timeout) as resp:
+                with urllib.request.urlopen(req, timeout=timeout or self.timeout, context=_ssl_context()) as resp:
                     raw = resp.read()
                     if not raw:
                         return {}
@@ -566,7 +580,7 @@ class CloudComputeClient:
             }
             req = urllib.request.Request(url, headers=headers)
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                with urllib.request.urlopen(req, timeout=self.timeout, context=_ssl_context()) as resp:
                     expected_sha = resp.headers.get("X-Pack-SHA256") or ""
                     data = resp.read()
                     if expected_sha:
@@ -614,7 +628,7 @@ class CloudComputeClient:
                 headers={"Content-Type": "application/octet-stream"},
             )
             try:
-                with urllib.request.urlopen(req) as resp:
+                with urllib.request.urlopen(req, timeout=_PUT_TIMEOUT_SEC, context=_ssl_context()) as resp:
                     return resp.status
             except urllib.error.HTTPError as e:
                 last_status = e.code
@@ -710,7 +724,7 @@ class CloudComputeClient:
                 headers={"Content-Type": "application/octet-stream"},
             )
             try:
-                with urllib.request.urlopen(req) as r:
+                with urllib.request.urlopen(req, timeout=_PUT_TIMEOUT_SEC, context=_ssl_context()) as r:
                     status = int(r.status)
             except urllib.error.HTTPError as e:
                 status = int(e.code)

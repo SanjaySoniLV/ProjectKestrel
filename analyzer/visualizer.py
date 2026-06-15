@@ -1034,6 +1034,18 @@ def main():
         _kestrel_debug = os.environ.get('KESTREL_DEBUG', '').strip().lower() in ('1', 'true', 'yes', 'on')
         webview.start(debug=_kestrel_debug)
     finally:
+        # Signal in-flight cloud-compute uploads to stop FIRST. Their
+        # ThreadPoolExecutor registers an atexit join of (non-daemon) worker
+        # threads, so a still-running upload would otherwise keep uploading
+        # every queued image and hang the process after the window has closed.
+        # Local-only — the job resumes server-side on next launch.
+        try:
+            if api is not None and hasattr(api, 'stop_cloud_uploads_for_shutdown'):
+                n = api.stop_cloud_uploads_for_shutdown()
+                if n:
+                    log(f'Signalled {n} in-flight cloud upload(s) to stop.')
+        except Exception as e:
+            warn('Cloud-upload shutdown signal failed:', e)
         try:
             if api is not None and hasattr(api, 'cleanup_tracked_culling_caches'):
                 api.cleanup_tracked_culling_caches()

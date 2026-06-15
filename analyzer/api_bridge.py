@@ -4037,6 +4037,42 @@ class Api:
             pass
         return {"ok": True}
 
+    def stop_cloud_uploads_for_shutdown(self) -> int:
+        """Signal every in-flight cloud-compute job's ``cancel_event`` so its
+        upload worker pool stops pulling queued files. Called from the app's
+        shutdown path (``visualizer.main``'s finally block).
+
+        LOCAL-ONLY — we deliberately do NOT tell the Worker to cancel. The job
+        keeps running server-side and its result packs resume downloading on the
+        next launch. The sole purpose is to release the upload
+        ``ThreadPoolExecutor``: its ``atexit`` handler joins mid-flight worker
+        threads on interpreter shutdown, so without this the pool keeps
+        uploading every remaining image (and the process hangs) long after the
+        window has closed and the static server has stopped.
+
+        Idempotent and failsafe. Returns the number of jobs signalled.
+        """
+        signalled = 0
+        try:
+            with self._ensure_cc_lock():
+                events = [
+                    state.get("cancel_event")
+                    for state in self._cc_jobs.values()
+                    if state is not None
+                ]
+        except Exception:
+            return 0
+        for ev in events:
+            if ev is None:
+                continue
+            try:
+                if not ev.is_set():
+                    ev.set()
+                    signalled += 1
+            except Exception:
+                pass
+        return signalled
+
     def cloud_compute_upload_test(
         self,
         folder_path: str,
