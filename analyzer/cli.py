@@ -163,6 +163,41 @@ def parse_args(argv: Sequence[str] | None = None):
         default=None,
         help="Path for the --validate result JSON. Recommended on Windows where console=False hides stdout.",
     )
+    # ── Headless cloud / Perch commands (CI E2E + local smoke) ──────────────
+    # Each short-circuits to cli_cloud (like --validate/--smoke); they drive the
+    # real upload/cloud-compute/Perch paths against `folder` with no GUI.
+    parser.add_argument(
+        "--selftest-reach", action="store_true",
+        help="Headless: auth + a real upload-throughput probe to the staging bucket (no GPU).",
+    )
+    parser.add_argument(
+        "--cc-run", dest="cc_run", action="store_true",
+        help="Headless: submit a cloud-compute job for `folder`, wait for completion + results.",
+    )
+    parser.add_argument(
+        "--perch-upload", dest="perch_upload", action="store_true",
+        help="Headless: upload the analyzed `folder` to Perch, print the share link.",
+    )
+    parser.add_argument(
+        "--e2e", action="store_true",
+        help="Headless E2E: (optionally --clear) cloud-compute job -> retrieve -> upload to Perch.",
+    )
+    parser.add_argument(
+        "--clear", action="store_true",
+        help="With --cc-run/--e2e: delete the folder's .kestrel analysis state first (fresh run).",
+    )
+    parser.add_argument(
+        "--sample-count", dest="sample_count", type=int, default=10,
+        help="Images to upload for --selftest-reach (default 10).",
+    )
+    parser.add_argument(
+        "--cloud-timeout", dest="cloud_timeout", type=int, default=1800,
+        help="Seconds to wait for a cloud job / Perch upload (default 1800).",
+    )
+    parser.add_argument(
+        "--json-out", dest="json_out", type=str, default=None,
+        help="Also write the headless cloud command's JSON result to this path.",
+    )
     parser.set_defaults(
         use_gpu=True,
         wildlife_enabled=False,
@@ -215,6 +250,22 @@ def main(argv: Sequence[str] | None = None):
                 images_dir=args.validate_images,
                 output_path=args.validate_output,
             ))
+        # Headless cloud / Perch commands — short-circuit before any analysis.
+        _cloud_modes = (args.selftest_reach, args.cc_run, args.perch_upload, args.e2e)
+        if any(_cloud_modes):
+            if sum(bool(m) for m in _cloud_modes) > 1:
+                print("error: choose exactly one of --selftest-reach/--cc-run/--perch-upload/--e2e",
+                      flush=True, file=sys.stderr)
+                sys.exit(2)
+            if not args.folder:
+                print("error: 'folder' is required for headless cloud commands",
+                      flush=True, file=sys.stderr)
+                sys.exit(2)
+            try:
+                from cli_cloud import run_cloud_command
+            except ImportError:  # pragma: no cover - package-style path
+                from analyzer.cli_cloud import run_cloud_command
+            sys.exit(run_cloud_command(args))
         if not args.folder:
             print("error: 'folder' is required unless --validate is set", flush=True, file=sys.stderr)
             sys.exit(2)
