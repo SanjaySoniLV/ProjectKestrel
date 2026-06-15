@@ -123,7 +123,7 @@ jobs:
           cp "$OUT" reach-result.json
           ok=$(python3 -c "import json; print(str(json.load(open('$OUT')).get('ok')).lower())")
           if [ "$ok" != "true" ]; then
-            echo "::error::--selftest-reach failed (ok=$ok) — possible macOS frozen-app TLS regression"
+            echo "::error::--selftest-reach failed (ok=$ok) - possible macOS frozen-app TLS regression"
             exit 1
           fi
 

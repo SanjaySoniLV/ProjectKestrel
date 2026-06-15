@@ -87,7 +87,7 @@ jobs:
           Copy-Item $out "reach-result.json"
           $report = Get-Content $out | ConvertFrom-Json
           if (-not $report.ok) {
-            throw "--selftest-reach failed (ok=false) — possible frozen-app TLS/auth regression"
+            throw "--selftest-reach failed (ok=false) - possible frozen-app TLS/auth regression"
           }
 
       - name: Warn if cloud reach smoke failed
