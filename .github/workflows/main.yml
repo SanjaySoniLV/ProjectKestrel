@@ -207,11 +207,21 @@ jobs:
             Copy-Item $img.FullName -Destination $smokeDir
           }
 
-          & "analyzer\dist\ProjectKestrel\ProjectKestrel.exe" --cli $smokeDir --no-gpu --parallel-prefetch 1
+          # The frozen .exe is a GUI-subsystem (console=False) app; PowerShell's
+          # call operator does NOT wait for windowed processes, so `& exe` fell
+          # straight through to Test-Path before analysis finished. Start-Process
+          # + WaitForExit blocks until the exe exits and the pipeline has written
+          # kestrel_database.csv.
+          $proc = Start-Process -FilePath "analyzer\dist\ProjectKestrel\ProjectKestrel.exe" `
+            -NoNewWindow -PassThru -ArgumentList @(
+              '--cli', $smokeDir, '--no-gpu', '--parallel-prefetch', '1'
+            )
+          $proc.WaitForExit()
+          Write-Host "ProjectKestrel.exe exited with code $($proc.ExitCode)"
 
           $metadataPath = Join-Path $smokeDir ".kestrel\kestrel_database.csv"
           if (!(Test-Path $metadataPath)) {
-            throw "Smoke test did not produce kestrel_database.csv"
+            throw "Smoke test did not produce kestrel_database.csv (exit code $($proc.ExitCode))"
           }
           $processedRows = (Get-Content $metadataPath | Measure-Object -Line).Lines - 1
           if ($processedRows -lt 2) {

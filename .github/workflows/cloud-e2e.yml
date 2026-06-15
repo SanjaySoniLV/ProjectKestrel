@@ -160,12 +160,23 @@ jobs:
 
           $out = Join-Path $env:RUNNER_TEMP "e2e-result.json"
           if (Test-Path $out) { Remove-Item $out }
-          & "analyzer\dist\ProjectKestrel\ProjectKestrel.exe" `
-            --cli --e2e $smoke --clear --cloud-timeout 1500 --json-out $out
+          # GUI-subsystem exe (console=False): PowerShell's call operator does not
+          # wait for windowed processes, so reading $out used to race the still-
+          # running exe. Start-Process + WaitForExit blocks until it exits and
+          # flushes the result JSON.
+          $proc = Start-Process -FilePath "analyzer\dist\ProjectKestrel\ProjectKestrel.exe" `
+            -NoNewWindow -PassThru -ArgumentList @(
+              '--cli', '--e2e', $smoke, '--clear', '--cloud-timeout', '1500', '--json-out', $out
+            )
+          $proc.WaitForExit()
+          Write-Host "ProjectKestrel.exe exited with code $($proc.ExitCode)"
+          if (!(Test-Path $out)) {
+            throw "Windows cloud E2E did not produce $out (exit code $($proc.ExitCode))"
+          }
           Write-Host "=== e2e-result.json ==="
           Get-Content $out
           Copy-Item $out "e2e-result.json"
-          $report = Get-Content $out | ConvertFrom-Json
+          $report = Get-Content $out -Raw | ConvertFrom-Json
           if (-not $report.ok) {
             throw "Windows cloud E2E failed (ok=false)"
           }
