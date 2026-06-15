@@ -139,6 +139,33 @@
     });
     // ─────────────────────────────────────────────────────────────────────────
 
+    // ── Probe bridge-ready beacon ────────────────────────────────────────────
+    // Fire report_bridge_ready() the instant the JS bridge wires up, however
+    // late — independent of waitForPywebview() below, which gives up early to
+    // show a desktop compat error. WKWebView on macOS can inject the bridge well
+    // after the page's heavy module init, so the bounded wait used to miss it and
+    // the --api-probe smoke test never saw window.pywebview.api. report_bridge_ready
+    // is a no-op outside --api-probe mode, so this beacon is side-effect-free in
+    // normal desktop use.
+    (function probeBridgeBeacon() {
+      let fired = false;
+      let beaconTimer = null;
+      function fire() {
+        if (fired) return;
+        if (typeof window.pywebview !== 'undefined' &&
+            window.pywebview.api && window.pywebview.api.report_bridge_ready) {
+          fired = true;
+          if (beaconTimer !== null) clearInterval(beaconTimer);
+          try { window.pywebview.api.report_bridge_ready(); } catch (_) { }
+        }
+      }
+      window.addEventListener('pywebviewready', fire);
+      beaconTimer = setInterval(fire, 100);
+      // Stop polling after 3 min regardless (probe timeouts are well under this).
+      setTimeout(function () { if (beaconTimer !== null) clearInterval(beaconTimer); }, 180000);
+      fire();
+    })();
+
     // Debug: Log what APIs are available (initial check)
     kdebug('[init] API detection start');
     kdebug('  - Pywebview API (window.pywebview):', hasPywebviewApi);
@@ -191,7 +218,9 @@
           elapsed += 100;
           if (typeof window.pywebview !== 'undefined' && window.pywebview.api) {
             settle(true);
-          } else if (elapsed >= 10000) {
+          } else if (elapsed >= 30000) {
+            // Cold WKWebView on macOS can inject the bridge later than the old
+            // 10s cap allowed, which surfaced a spurious "Desktop API unavailable".
             settle(false);
           }
         }, 100);

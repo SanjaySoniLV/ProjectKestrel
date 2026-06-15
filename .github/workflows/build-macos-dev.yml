@@ -171,58 +171,59 @@ jobs:
         shell: bash
         run: echo "::warning::Frozen-binary --validate failed on macOS dev build; continuing to publish available artifacts."
 
-      - name: UI probe (real visualizer.html) against frozen .app
+      - name: UI probe DIAGNOSTIC v2 (JS beacon; raw vs .app timing)
         id: ui_probe
         continue-on-error: true
-        timeout-minutes: 6
+        timeout-minutes: 10
         shell: bash
         run: |
           set +e
-          # macOS: the frozen app's WKWebView only injects window.pywebview.api
-          # when launched as a real .app through LaunchServices (open). A raw
-          # dist/ProjectKestrel/ProjectKestrel launch loads the page but the
-          # bridge never reports ready ("bridge did not report ready"). The app
-          # also may not self-terminate (NSApp.run can block), so we poll for the
-          # result JSON, then hard-kill the lingering app.
+          ONEDIR="analyzer/dist/ProjectKestrel"; BIN="$ONEDIR/ProjectKestrel"
           APP="$(find analyzer/dist -maxdepth 1 -name '*.app' | head -1)"
           DBG="$PWD/debug-artifacts"; mkdir -p "$DBG"
-          OUT="${RUNNER_TEMP}/ui-probe-result.json"; rm -f "$OUT"
-          OLOG="$DBG/ui-probe.out"; ELOG="$DBG/ui-probe.err"
-          NUKE='Project Kestrel.app/Contents/MacOS/ProjectKestrel'
-          echo "APP=$APP"
-          if [ -z "$APP" ]; then echo "::error::no .app bundle found"; exit 1; fi
+          NUKE='dist/ProjectKestrel/ProjectKestrel|Project Kestrel.app/Contents/MacOS/ProjectKestrel'
+          echo "BIN=$BIN"; echo "APP=$APP"
 
-          echo "[t=0] launching probe via LaunchServices (open) ..."
-          open --stdout "$OLOG" --stderr "$ELOG" "$APP" --args \
-            --api-probe --probe-target visualizer \
-            --probe-output "$OUT" --probe-timeout 150 --port 8798
-          start=$SECONDS
-          for i in $(seq 1 6); do
-            apid="$(pgrep -f "$NUKE" | head -1)"; [ -n "$apid" ] && break; sleep 1
-          done
-          echo "app pid=$apid"
+          # Wait up to DEADLINE for the result JSON; report WHEN it appears
+          # (=bridge-injection time) and whether the process self-exited.
+          wait_json () { # label outfile pid_pattern start
+            local label="$1" out="$2" pat="$3" start="$4"
+            while [ $((SECONDS-start)) -lt 175 ]; do
+              [ -f "$out" ] && { echo "[$label] t=$((SECONDS-start))s: JSON appeared"; return; }
+              pgrep -f "$pat" >/dev/null || { echo "[$label] t=$((SECONDS-start))s: process gone, no JSON yet"; return; }
+              sleep 1
+            done
+            echo "[$label] t=$((SECONDS-start))s: DEADLINE hit"
+          }
+          show () { # label outfile errlog
+            echo "--- [$1] JSON ---"; if [ -f "$2" ]; then cat "$2"; cp "$2" "$DBG/"; else echo "(NO JSON)"; fi
+            echo ""; echo "--- [$1] stderr tail(12) ---"; grep -vE 'GET /' "$3" 2>/dev/null | tail -12
+          }
 
-          DEADLINE=170
-          while [ $((SECONDS-start)) -lt "$DEADLINE" ]; do
-            if [ -f "$OUT" ]; then echo "[t=$((SECONDS-start))s] result JSON appeared"; break; fi
-            if ! pgrep -f "$NUKE" >/dev/null; then echo "[t=$((SECONDS-start))s] app exited before writing JSON"; break; fi
-            sleep 2
-          done
-          echo "[t=$((SECONDS-start))s] terminating any lingering probe app"
-          pkill -9 -f "$NUKE" 2>/dev/null
+          echo ""; echo "######## EXP visualizer-RAW (beacon build) ########"
+          OUT="${RUNNER_TEMP}/p-raw.json"; EL="$DBG/p-raw.err"; rm -f "$OUT"
+          "$BIN" --api-probe --probe-target visualizer --probe-output "$OUT" --probe-timeout 160 --port 8811 >"$EL" 2>&1 &
+          wait_json raw "$OUT" "dist/ProjectKestrel/ProjectKestrel" "$SECONDS"
+          pkill -9 -f "$NUKE" 2>/dev/null; sleep 2; show raw "$OUT" "$EL"
 
-          echo "=== app stdout tail(15, non-GET) ==="; grep -vE 'GET /' "$OLOG" 2>/dev/null | tail -15
-          echo "=== app stderr tail(15) ==="; tail -15 "$ELOG" 2>/dev/null
-          echo "=== ui-probe-result.json ==="
-          if [ ! -f "$OUT" ]; then echo "UI probe did not produce a result JSON"; exit 1; fi
-          cat "$OUT"; cp "$OUT" "$DBG/"; cp "$OUT" ui-probe-result.json
-          ok=$(python3 -c "import json,sys; print(str(json.load(open('$OUT')).get('ok')).lower())" 2>/dev/null)
-          echo "ok=$ok"
-          if [ "$ok" != "true" ]; then
-            echo "UI probe reported failure (ok=$ok); visualizer.html did not wire up window.pywebview.api"
-            exit 1
+          echo ""; echo "######## EXP visualizer-APP (open; beacon build) ########"
+          OUT="${RUNNER_TEMP}/p-app.json"; OL="$DBG/p-app.out"; EL="$DBG/p-app.err"; rm -f "$OUT"
+          open --stdout "$OL" --stderr "$EL" "$APP" --args \
+            --api-probe --probe-target visualizer --probe-output "$OUT" --probe-timeout 160 --port 8812
+          wait_json app "$OUT" "Project Kestrel.app/Contents/MacOS/ProjectKestrel" "$SECONDS"
+          pkill -9 -f "$NUKE" 2>/dev/null; sleep 2; show app "$OUT" "$EL"
+
+          echo ""; echo "===== VERDICT ====="
+          rok=$(python3 -c "import json;print(json.load(open('${RUNNER_TEMP}/p-raw.json')).get('ok'))" 2>/dev/null)
+          aok=$(python3 -c "import json;print(json.load(open('${RUNNER_TEMP}/p-app.json')).get('ok'))" 2>/dev/null)
+          echo "raw ok=$rok | app ok=$aok"
+          # Prefer raw (simplest) for the eventual fix; pass if EITHER worked.
+          if [ "$rok" = "True" ] || [ "$aok" = "True" ]; then
+            [ "$aok" = "True" ] && cp "${RUNNER_TEMP}/p-app.json" ui-probe-result.json || cp "${RUNNER_TEMP}/p-raw.json" ui-probe-result.json
+            echo "macOS UI probe PASSED (raw=$rok app=$aok)"
+          else
+            echo "UI probe FAILED on both raw and app (raw=$rok app=$aok)"; exit 1
           fi
-          echo "macOS UI probe PASSED via .app launch"
 
       - name: Warn if UI probe failed
         if: ${{ always() && steps.ui_probe.outcome == 'failure' }}
