@@ -37,7 +37,12 @@ def _resolve_username() -> str:
     try:
         home = os.path.expanduser('~')
         if home and home != '~':
-            name = os.path.basename(home.rstrip('/\\'))
+            # Split on BOTH separators rather than os.path.basename: the home may
+            # be a Windows-style path even when running on POSIX (or vice-versa),
+            # and basename only understands the host OS's separator -- so
+            # basename(r'C:\Users\x') wrongly returns the whole string on
+            # macOS/Linux instead of 'x'.
+            name = re.split(r'[\\/]', home.rstrip('\\/'))[-1]
             if name:
                 return name
     except Exception:
