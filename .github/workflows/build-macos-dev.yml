@@ -202,29 +202,55 @@ jobs:
           find "$ONEDIR" -iname '*WebKit*' 2>/dev/null | head
           find "$ONEDIR" -ipath '*pyobjc*' -iname '*.so' 2>/dev/null | grep -i webkit | head
 
-          run_raw () { # label target timeout port
-            echo ""; echo "######## EXPERIMENT raw:$1 (target=$2 timeout=$3 port=$4) ########"
-            local out="${RUNNER_TEMP}/probe-$1.json"; local log="$DBG/probe-$1.log"; rm -f "$out"
-            "$BIN" --api-probe --probe-target "$2" --probe-output "$out" --probe-timeout "$3" --port "$4" >"$log" 2>&1
-            echo "exit=$?"
-            echo "--- stdout/stderr tail(40) ---"; tail -40 "$log" 2>/dev/null
-            echo "--- JSON ---"; if [ -f "$out" ]; then cat "$out"; cp "$out" "$DBG/"; else echo "(NO JSON WRITTEN)"; fi
+          # The macOS frozen app's --api-probe does NOT reliably self-terminate
+          # (webview.start()/NSApp.run() can block forever), so we bound every
+          # experiment with a hard external kill and detect self-exit vs hang.
+          HARD=35          # hard wall-clock kill per experiment (s)
+          NUKE='dist/ProjectKestrel/ProjectKestrel|Project Kestrel.app/Contents/MacOS/ProjectKestrel'
+
+          poll_and_kill () { # label pid outfile
+            local label="$1" pid="$2" out="$3" waited=0 self=0
+            while [ "$waited" -lt "$HARD" ]; do
+              if ! kill -0 "$pid" 2>/dev/null; then self=1; break; fi   # process self-exited
+              [ -f "$out" ] && { sleep 1; break; }                       # JSON appeared
+              sleep 1; waited=$((waited+1))
+            done
+            if [ "$self" = 1 ]; then echo "[$label] PROCESS SELF-EXITED after ${waited}s"; else echo "[$label] still running after ${waited}s -> KILLING"; fi
+            kill -9 "$pid" 2>/dev/null; pkill -9 -f "$NUKE" 2>/dev/null; wait "$pid" 2>/dev/null
           }
-          run_app () { # label target timeout port
-            echo ""; echo "######## EXPERIMENT app(open -W):$1 (target=$2 timeout=$3 port=$4) ########"
-            local out="${RUNNER_TEMP}/probe-$1.json"; local olog="$DBG/probe-$1.out"; local elog="$DBG/probe-$1.err"; rm -f "$out"
-            open -W --stdout "$olog" --stderr "$elog" "$APP" --args \
-              --api-probe --probe-target "$2" --probe-output "$out" --probe-timeout "$3" --port "$4"
-            echo "open exit=$?"
-            echo "--- app stdout tail(40) ---"; tail -40 "$olog" 2>/dev/null || echo "(none)"
-            echo "--- app stderr tail(40) ---"; tail -40 "$elog" 2>/dev/null || echo "(none)"
-            echo "--- JSON ---"; if [ -f "$out" ]; then cat "$out"; cp "$out" "$DBG/"; else echo "(NO JSON WRITTEN)"; fi
+          report () { # label outfile logfile
+            echo "--- [$1] JSON ---"; if [ -f "$2" ]; then cat "$2"; cp "$2" "$DBG/"; else echo "(NO JSON WRITTEN)"; fi
+            echo "--- [$1] app output tail(30) ---"; tail -30 "$3" 2>/dev/null | grep -vE 'GET /' || echo "(none)"
           }
 
-          run_raw synthetic-raw  synthetic  20 8801
-          run_raw visualizer-raw visualizer 25 8802
-          run_app synthetic-app  synthetic  25 8803
-          run_app visualizer-app visualizer 30 8804
+          run_raw () { # label target tmo port
+            echo ""; echo "######## raw:$1 (target=$2 internal-tmo=$3 port=$4 hard=${HARD}s) ########"
+            local out="${RUNNER_TEMP}/probe-$1.json" log="$DBG/probe-$1.log"; rm -f "$out"
+            "$BIN" --api-probe --probe-target "$2" --probe-output "$out" --probe-timeout "$3" --port "$4" >"$log" 2>&1 &
+            poll_and_kill "$1" "$!" "$out"; report "$1" "$out" "$log"
+          }
+          run_app () { # label target tmo port
+            echo ""; echo "######## app(open):$1 (target=$2 internal-tmo=$3 port=$4 hard=${HARD}s) ########"
+            local out="${RUNNER_TEMP}/probe-$1.json" olog="$DBG/probe-$1.out" elog="$DBG/probe-$1.err"; rm -f "$out"
+            # launch detached via LaunchServices (gives proper .app activation);
+            # poll the JSON path and the app PID by name.
+            open --stdout "$olog" --stderr "$elog" "$APP" --args \
+              --api-probe --probe-target "$2" --probe-output "$out" --probe-timeout "$3" --port "$4"
+            sleep 2
+            local apid; apid="$(pgrep -f 'Project Kestrel.app/Contents/MacOS/ProjectKestrel' | head -1)"
+            echo "[$1] app pid=$apid"
+            if [ -n "$apid" ]; then poll_and_kill "$1" "$apid" "$out"; else echo "[$1] could not find app pid; checking JSON anyway after ${HARD}s"; sleep "$HARD"; pkill -9 -f "$NUKE" 2>/dev/null; fi
+            report "$1" "$out" "$olog"
+            echo "--- [$1] stderr tail(20) ---"; tail -20 "$elog" 2>/dev/null || true
+          }
+
+          run_raw synthetic-raw  synthetic  12 8801
+          run_raw visualizer-raw visualizer 15 8802
+          run_app synthetic-app  synthetic  15 8803
+          run_app visualizer-app visualizer 18 8804
+
+          echo ""; echo "===== recent unified log for the app (WebKit/python) ====="
+          log show --last 6m --predicate 'process == "ProjectKestrel"' --style compact 2>/dev/null | tail -60 || echo "(log show unavailable)"
 
           echo ""; echo "===== CRASH REPORTS (user) ====="
           ls -la "$HOME/Library/Logs/DiagnosticReports/" 2>&1 | head -30
