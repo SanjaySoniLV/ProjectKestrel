@@ -168,6 +168,7 @@ jobs:
             -NoNewWindow -PassThru -ArgumentList @(
               '--cli', '--e2e', $smoke, '--clear', '--cloud-timeout', '1500', '--json-out', $out
             )
+          $proc.Handle | Out-Null  # cache native handle so .ExitCode populates
           $proc.WaitForExit()
           Write-Host "ProjectKestrel.exe exited with code $($proc.ExitCode)"
           if (!(Test-Path $out)) {

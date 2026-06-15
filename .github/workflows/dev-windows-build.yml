@@ -89,6 +89,7 @@ jobs:
             -NoNewWindow -PassThru -ArgumentList @(
               '--cli', '--selftest-reach', 'test_imgs', '--sample-count', '2', '--json-out', $out
             )
+          $proc.Handle | Out-Null  # cache native handle so .ExitCode populates
           $proc.WaitForExit()
           Write-Host "ProjectKestrel.exe exited with code $($proc.ExitCode)"
           if (!(Test-Path $out)) {
@@ -122,6 +123,7 @@ jobs:
               '--validate-images', 'test_imgs',
               '--validate-output', $validateOutput
             )
+          $proc.Handle | Out-Null  # cache native handle so .ExitCode populates
           $proc.WaitForExit()
           Write-Host "ProjectKestrel.exe exited with code $($proc.ExitCode)"
 
@@ -162,6 +164,7 @@ jobs:
               '--probe-timeout', '60',
               '--port', '8798'
             )
+          $proc.Handle | Out-Null  # cache native handle so .ExitCode populates
           $proc.WaitForExit()
           Write-Host "ProjectKestrel.exe exited with code $($proc.ExitCode)"
 

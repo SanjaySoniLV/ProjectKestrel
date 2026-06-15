@@ -216,6 +216,7 @@ jobs:
             -NoNewWindow -PassThru -ArgumentList @(
               '--cli', $smokeDir, '--no-gpu', '--parallel-prefetch', '1'
             )
+          $proc.Handle | Out-Null  # cache native handle so .ExitCode populates
           $proc.WaitForExit()
           Write-Host "ProjectKestrel.exe exited with code $($proc.ExitCode)"
 
