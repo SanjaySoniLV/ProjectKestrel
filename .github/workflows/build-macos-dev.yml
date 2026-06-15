@@ -171,96 +171,63 @@ jobs:
         shell: bash
         run: echo "::warning::Frozen-binary --validate failed on macOS dev build; continuing to publish available artifacts."
 
-      - name: UI probe DIAGNOSTIC harness (macOS bridge investigation)
+      - name: UI probe (real visualizer.html) against frozen .app
         id: ui_probe
         continue-on-error: true
-        timeout-minutes: 12
+        timeout-minutes: 6
         shell: bash
         run: |
-          set +e  # run every experiment; never abort early
-          echo "##################### macOS UI PROBE DIAGNOSTICS #####################"
-          ONEDIR="analyzer/dist/ProjectKestrel"
-          BIN="$ONEDIR/ProjectKestrel"
+          set +e
+          # macOS: the frozen app's WKWebView only injects window.pywebview.api
+          # when launched as a real .app through LaunchServices (open). A raw
+          # dist/ProjectKestrel/ProjectKestrel launch loads the page but the
+          # bridge never reports ready ("bridge did not report ready"). The app
+          # also may not self-terminate (NSApp.run can block), so we poll for the
+          # result JSON, then hard-kill the lingering app.
           APP="$(find analyzer/dist -maxdepth 1 -name '*.app' | head -1)"
           DBG="$PWD/debug-artifacts"; mkdir -p "$DBG"
-          echo "ONEDIR=$ONEDIR"; echo "BIN=$BIN"; echo "APP=$APP"
+          OUT="${RUNNER_TEMP}/ui-probe-result.json"; rm -f "$OUT"
+          OLOG="$DBG/ui-probe.out"; ELOG="$DBG/ui-probe.err"
+          NUKE='Project Kestrel.app/Contents/MacOS/ProjectKestrel'
+          echo "APP=$APP"
+          if [ -z "$APP" ]; then echo "::error::no .app bundle found"; exit 1; fi
 
-          echo "===== ENV ====="
-          sw_vers
-          echo "user: $(whoami) uid=$(id -u)"
-          echo "--- GUI session (launchctl) ---"
-          launchctl print "gui/$(id -u)" 2>&1 | head -8 || echo "(no gui session)"
-          echo "--- Aqua/WindowServer present? ---"
-          (ps aux | grep -i -E 'WindowServer|loginwindow|Dock' | grep -v grep | head) || true
-
-          echo "===== .app structure ====="
-          ls -la "$APP/Contents" 2>&1
-          ls -la "$APP/Contents/MacOS" 2>&1
-          echo "--- Info.plist ---"
-          /usr/libexec/PlistBuddy -c Print "$APP/Contents/Info.plist" 2>&1 | head -50 || cat "$APP/Contents/Info.plist" 2>&1 | head -50
-          echo "--- WebKit/pyobjc framework presence ---"
-          find "$ONEDIR" -iname '*WebKit*' 2>/dev/null | head
-          find "$ONEDIR" -ipath '*pyobjc*' -iname '*.so' 2>/dev/null | grep -i webkit | head
-
-          # The macOS frozen app's --api-probe does NOT reliably self-terminate
-          # (webview.start()/NSApp.run() can block forever), so we bound every
-          # experiment with a hard external kill and detect self-exit vs hang.
-          HARD=35          # hard wall-clock kill per experiment (s)
-          NUKE='dist/ProjectKestrel/ProjectKestrel|Project Kestrel.app/Contents/MacOS/ProjectKestrel'
-
-          poll_and_kill () { # label pid outfile
-            local label="$1" pid="$2" out="$3" waited=0 self=0
-            while [ "$waited" -lt "$HARD" ]; do
-              if ! kill -0 "$pid" 2>/dev/null; then self=1; break; fi   # process self-exited
-              [ -f "$out" ] && { sleep 1; break; }                       # JSON appeared
-              sleep 1; waited=$((waited+1))
-            done
-            if [ "$self" = 1 ]; then echo "[$label] PROCESS SELF-EXITED after ${waited}s"; else echo "[$label] still running after ${waited}s -> KILLING"; fi
-            kill -9 "$pid" 2>/dev/null; pkill -9 -f "$NUKE" 2>/dev/null; wait "$pid" 2>/dev/null
-          }
-          report () { # label outfile logfile
-            echo "--- [$1] JSON ---"; if [ -f "$2" ]; then cat "$2"; cp "$2" "$DBG/"; else echo "(NO JSON WRITTEN)"; fi
-            echo "--- [$1] app output tail(30) ---"; tail -30 "$3" 2>/dev/null | grep -vE 'GET /' || echo "(none)"
-          }
-
-          run_raw () { # label target tmo port
-            echo ""; echo "######## raw:$1 (target=$2 internal-tmo=$3 port=$4 hard=${HARD}s) ########"
-            local out="${RUNNER_TEMP}/probe-$1.json" log="$DBG/probe-$1.log"; rm -f "$out"
-            "$BIN" --api-probe --probe-target "$2" --probe-output "$out" --probe-timeout "$3" --port "$4" >"$log" 2>&1 &
-            poll_and_kill "$1" "$!" "$out"; report "$1" "$out" "$log"
-          }
-          run_app () { # label target tmo port
-            echo ""; echo "######## app(open):$1 (target=$2 internal-tmo=$3 port=$4 hard=${HARD}s) ########"
-            local out="${RUNNER_TEMP}/probe-$1.json" olog="$DBG/probe-$1.out" elog="$DBG/probe-$1.err"; rm -f "$out"
-            # launch detached via LaunchServices (gives proper .app activation);
-            # poll the JSON path and the app PID by name.
-            open --stdout "$olog" --stderr "$elog" "$APP" --args \
-              --api-probe --probe-target "$2" --probe-output "$out" --probe-timeout "$3" --port "$4"
-            sleep 2
-            local apid; apid="$(pgrep -f 'Project Kestrel.app/Contents/MacOS/ProjectKestrel' | head -1)"
-            echo "[$1] app pid=$apid"
-            if [ -n "$apid" ]; then poll_and_kill "$1" "$apid" "$out"; else echo "[$1] could not find app pid; checking JSON anyway after ${HARD}s"; sleep "$HARD"; pkill -9 -f "$NUKE" 2>/dev/null; fi
-            report "$1" "$out" "$olog"
-            echo "--- [$1] stderr tail(20) ---"; tail -20 "$elog" 2>/dev/null || true
-          }
-
-          run_raw synthetic-raw  synthetic  12 8801
-          run_raw visualizer-raw visualizer 15 8802
-          run_app synthetic-app  synthetic  15 8803
-          run_app visualizer-app visualizer 18 8804
-
-          echo ""; echo "===== recent unified log for the app (WebKit/python) ====="
-          log show --last 6m --predicate 'process == "ProjectKestrel"' --style compact 2>/dev/null | tail -60 || echo "(log show unavailable)"
-
-          echo ""; echo "===== CRASH REPORTS (user) ====="
-          ls -la "$HOME/Library/Logs/DiagnosticReports/" 2>&1 | head -30
-          for f in "$HOME/Library/Logs/DiagnosticReports/"*; do
-            [ -f "$f" ] || continue
-            case "$f" in *ProjectKestrel*|*.ips|*.crash) echo "=== CRASH: $f ==="; head -90 "$f"; cp "$f" "$DBG/" 2>/dev/null;; esac
+          echo "[t=0] launching probe via LaunchServices (open) ..."
+          open --stdout "$OLOG" --stderr "$ELOG" "$APP" --args \
+            --api-probe --probe-target visualizer \
+            --probe-output "$OUT" --probe-timeout 150 --port 8798
+          start=$SECONDS
+          for i in $(seq 1 6); do
+            apid="$(pgrep -f "$NUKE" | head -1)"; [ -n "$apid" ] && break; sleep 1
           done
-          echo "===== CRASH REPORTS (system) ====="
-          ls -la "/Library/Logs/DiagnosticReports/" 2>&1 | head -20
-          echo "DIAGNOSTIC HARNESS COMPLETE"
+          echo "app pid=$apid"
+
+          DEADLINE=170
+          while [ $((SECONDS-start)) -lt "$DEADLINE" ]; do
+            if [ -f "$OUT" ]; then echo "[t=$((SECONDS-start))s] result JSON appeared"; break; fi
+            if ! pgrep -f "$NUKE" >/dev/null; then echo "[t=$((SECONDS-start))s] app exited before writing JSON"; break; fi
+            sleep 2
+          done
+          echo "[t=$((SECONDS-start))s] terminating any lingering probe app"
+          pkill -9 -f "$NUKE" 2>/dev/null
+
+          echo "=== app stdout tail(15, non-GET) ==="; grep -vE 'GET /' "$OLOG" 2>/dev/null | tail -15
+          echo "=== app stderr tail(15) ==="; tail -15 "$ELOG" 2>/dev/null
+          echo "=== ui-probe-result.json ==="
+          if [ ! -f "$OUT" ]; then echo "UI probe did not produce a result JSON"; exit 1; fi
+          cat "$OUT"; cp "$OUT" "$DBG/"; cp "$OUT" ui-probe-result.json
+          ok=$(python3 -c "import json,sys; print(str(json.load(open('$OUT')).get('ok')).lower())" 2>/dev/null)
+          echo "ok=$ok"
+          if [ "$ok" != "true" ]; then
+            echo "UI probe reported failure (ok=$ok); visualizer.html did not wire up window.pywebview.api"
+            exit 1
+          fi
+          echo "macOS UI probe PASSED via .app launch"
+
+      - name: Warn if UI probe failed
+        if: ${{ always() && steps.ui_probe.outcome == 'failure' }}
+        shell: bash
+        run: echo "::warning::Frozen-binary UI probe failed on macOS dev build; visualizer.html did not see window.pywebview.api."
 
       - name: Upload macOS ui-probe debug artifacts
         if: ${{ always() }}
