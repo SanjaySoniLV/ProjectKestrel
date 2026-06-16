@@ -23,6 +23,29 @@
   margin: -12px 0 0;
 }
 
+/* Header hero: logo on the left, heading + Start Tutorial stacked to its
+   right, so the announcement / tips sit higher up the page. */
+.welcome-hero {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  flex-wrap: wrap;
+}
+.welcome-hero-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  text-align: left;
+}
+/* Center the Start Tutorial button under the heading (override the button's
+   default align-self: flex-start). */
+.welcome-hero-text .welcome-action-btn {
+  align-self: center;
+}
+
 .welcome-action-btn {
   display: inline-flex;
   align-items: center;
