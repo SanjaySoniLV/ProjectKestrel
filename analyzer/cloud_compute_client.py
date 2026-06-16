@@ -102,6 +102,29 @@ def default_api_base() -> str:
     return os.environ.get("KESTREL_CC_API_BASE", _DEFAULT_API_BASE).rstrip("/")
 
 
+def _safe_pack_filename(name: Any) -> Optional[str]:
+    """Reduce a Worker-supplied pack filename to a trusted basename, or None.
+
+    Result packs are named server-side, so a malicious/compromised Worker (or a
+    MITM, despite TLS) could return a traversal name like ``../../evil.zip`` or
+    ``/etc/x.zip``. Joining that to the local pack dir would let it be written —
+    or, worse, read back and merged — from an arbitrary path. We accept the name
+    only when it is already a bare basename with no separators, parent refs,
+    drive/colon, or NUL. This mirrors the zip-member guard in
+    ``merge_pack_into_kestrel`` and ``_sanitize_plain_filename`` in api_bridge.
+    """
+    raw = str(name or "").strip()
+    if not raw:
+        return None
+    # Any separator (posix or windows), parent ref, drive-colon or NUL is out.
+    if ("/" in raw or "\\" in raw or "\x00" in raw or ":" in raw):
+        return None
+    base = os.path.basename(raw)
+    if base != raw or base in ("", ".", ".."):
+        return None
+    return base
+
+
 def _discover_upload_images(folder: Path) -> list[Path]:
     """Discover analyzable images in ``folder``, honouring the same RAW-priority
     rule the desktop pipeline and folder inspector use: when the folder contains
@@ -570,6 +593,18 @@ class CloudComputeClient:
         header is absent on legacy packs and on segment packs; verification
         is skipped silently in that case.
         """
+        # Path-traversal guard at the sink (defends every caller): the Worker
+        # supplies ``filename``, so refuse anything that isn't a bare basename
+        # and ensure ``dest`` actually lands on that name (no escaping pack_dir).
+        safe = _safe_pack_filename(filename)
+        if safe is None:
+            raise CloudComputeError(0, f"Refusing unsafe pack filename: {filename!r}")
+        filename = safe
+        dest = Path(dest)
+        if dest.name != filename:
+            raise CloudComputeError(
+                0, f"Pack dest {dest.name!r} does not match filename {filename!r}"
+            )
         url = f"{self.api_base}/api/jobs/{job_id}/results/{filename}"
         # Same 401 refresh-and-retry contract as _request: a session that
         # expires mid-download (laptop sleep) self-heals instead of failing.
@@ -904,6 +939,11 @@ class CloudComputeClient:
                         fname = str(meta.get("filename") or "")
                         if not fname.endswith(".zip"):
                             continue
+                        safe = _safe_pack_filename(fname)
+                        if safe is None:
+                            _emit("pack_rejected", filename=fname, reason="unsafe_filename")
+                            continue
+                        fname = safe
                         # Dedup under the lock; the actual download + merge
                         # runs OUTSIDE so concurrent merges of different packs
                         # don't serialise.

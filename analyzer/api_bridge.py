@@ -4537,10 +4537,26 @@ class Api:
                     "packName": None, "error": str(e),
                 })
             return None
-        available_pack_names = [
-            str(meta.get("filename") or "") for meta in files
-            if str(meta.get("filename") or "").endswith(".zip")
-        ]
+        # Sanitize Worker-supplied pack names to trusted basenames before any of
+        # them is joined to pack_dir. A traversal name (e.g. ../../evil.zip) must
+        # never reach the dest.exists()/merge or download_pack paths below — a
+        # malicious/compromised Worker could otherwise read or write arbitrary
+        # files. _safe_pack_filename rejects separators/parent-refs/drive-colon.
+        available_pack_names = []
+        for meta in files:
+            raw = str(meta.get("filename") or "")
+            if not raw.endswith(".zip"):
+                continue
+            safe = ccc._safe_pack_filename(raw)
+            if safe is None:
+                with self._ensure_cc_lock():
+                    self._cc_pack_events.append({
+                        "jobId": job_id, "folderPath": str(folder),
+                        "packName": None,
+                        "error": f"Rejected unsafe pack filename: {raw!r}",
+                    })
+                continue
+            available_pack_names.append(safe)
         # Stale-R2 reconciliation: a pack still in R2 that we've ALREADY merged
         # locally means its server-side results_retrieved flip never landed —
         # e.g. a download GET whose (best-effort) flip was lost when the app was
