@@ -6,7 +6,7 @@ Introducing **Perch** by Project Kestrel: share entire birding outings with anyo
 
 Introducing **Cloud Compute**: offload analysis of large backlogs to fast cloud GPUs. Cloud Compute is a paid subscription service that runs the exact same Project Kestrel analysis pipeline in the cloud, parallelizing your workload across up to 3 cloud GPUs.
 
-New accounts start with free Perch storage (3 GB / ~15,000 photos) and 2,500 images of Cloud Compute credits to try. This update also includes several bug fixes, UI improvements, and stability enhancements.
+New accounts start with free Perch storage (3 GB / ~15,000 photos) and 2,500 images of Cloud Compute credits to try.
 
 ## Major Changes
 
