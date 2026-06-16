@@ -1319,6 +1319,36 @@ class Api:
             error(f'[API] fetch_remote_version error: {e}')
             return {'success': False, 'error': str(e)}
 
+    def fetch_remote_whats_new(self):
+        """Fetch whats-new.json from projectkestrel.org to bypass CORS in JS.
+
+        Lets the in-app launch note be edited without shipping a desktop
+        update. The JS side (welcome.js) falls back to its baked-in copy on any
+        failure and sanitizes the returned rich-text fields before rendering.
+        """
+        try:
+            import urllib.request
+            import urllib.error
+            import json
+            import ssl
+            import certifi
+
+            url = "https://projectkestrel.org/whats-new.json"
+            ctx = ssl.create_default_context(cafile=certifi.where())
+
+            req = urllib.request.Request(
+                url,
+                headers={'User-Agent': 'ProjectKestrel/1.0'},
+                method='GET'
+            )
+
+            with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                return {'success': True, 'data': data}
+        except Exception as e:
+            error(f'[API] fetch_remote_whats_new error: {e}')
+            return {'success': False, 'error': str(e)}
+
     def get_platform_info(self):
         """Return platform information (windows, macos, linux)."""
         import sys

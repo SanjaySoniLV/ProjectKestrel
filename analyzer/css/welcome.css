@@ -97,60 +97,206 @@
   text-decoration: underline;
 }
 
-/* ═══ Welcome panel: "What's New" banner ═══ */
+/* ═══ Welcome panel: launch note (custom note + explainer) ═══ */
+/* Replaces the old bullet-list "What's New" box for the Perch / Cloud Compute
+   launch. The outer #welcomeWhatsNew is now just a left-aligned wrapper; the
+   .wln card carries the design. A warm rufous accent nods to the codename. */
 .welcome-whats-new {
   width: 100%;
-  max-width: 840px;
-  background: linear-gradient(135deg, rgba(74, 163, 255, 0.12), rgba(74, 163, 255, 0.04));
-  border: 1px solid rgba(74, 163, 255, 0.3);
-  border-radius: 12px;
-  padding: 14px 18px 14px 16px;
+  max-width: 860px;
   text-align: left;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
 }
 .welcome-whats-new.hidden { display: none; }
-.wwn-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 6px;
+
+.wln {
+  position: relative;
+  background:
+    radial-gradient(125% 150% at 0% 0%, rgba(193, 78, 22, 0.12), transparent 44%),
+    linear-gradient(135deg, rgba(74, 163, 255, 0.10), rgba(74, 163, 255, 0.025));
+  border: 1px solid rgba(74, 163, 255, 0.26);
+  border-radius: 16px;
+  padding: 22px 24px 20px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.30);
+  overflow: hidden;
 }
-.wwn-badge {
-  background: var(--brand);
-  color: #0b0e14;
-  font-size: 10px;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  padding: 2px 7px;
-  border-radius: 999px;
-}
-.wwn-title {
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--text);
-  flex: 1 1 auto;
-}
-.wwn-dismiss {
+
+.wln-dismiss {
+  position: absolute;
+  top: 12px;
+  right: 12px;
   background: none;
   border: none;
   color: var(--muted);
-  font-size: 14px;
-  cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 4px;
+  font-size: 15px;
   line-height: 1;
+  cursor: pointer;
+  padding: 4px 7px;
+  border-radius: 6px;
 }
-.wwn-dismiss:hover { color: var(--text); background: rgba(255, 255, 255, 0.05); }
-.wwn-list {
-  margin: 4px 0 0;
-  padding: 0 0 0 20px;
+.wln-dismiss:hover { color: var(--text); background: rgba(255, 255, 255, 0.06); }
+
+.wln-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: #f0b289;
+  background: rgba(193, 78, 22, 0.16);
+  border: 1px solid rgba(193, 78, 22, 0.40);
+  padding: 3px 11px;
+  border-radius: 999px;
+}
+
+.wln-title {
+  margin: 12px 0 0;
+  font-size: 21px;
+  font-weight: 800;
+  letter-spacing: -0.3px;
+  color: var(--text);
+}
+
+.wln-subtitle {
+  margin: 5px 0 0;
+  font-size: 14.5px;
+  font-weight: 600;
+  color: #f0b289;
+  letter-spacing: 0.1px;
+}
+
+.wln-greeting {
+  margin: 16px 0 0;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.wln-intro {
+  margin: 9px 0 0;
+  font-size: 13px;
+  line-height: 1.62;
+  color: #c4ccd8;
+}
+
+.wln-announce {
+  margin: 14px 0 0;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.wln-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 18px 0 0;
+}
+@media (max-width: 620px) {
+  .wln-cards { grid-template-columns: 1fr; }
+}
+
+.wln-card {
+  background: rgba(10, 13, 19, 0.55);
+  border: 1px solid #20283a;
+  border-radius: 12px;
+  padding: 14px 15px;
+  display: flex;
+  flex-direction: column;
+}
+.wln-card-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.wln-card-icon {
+  font-size: 19px;
+  line-height: 1;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: rgba(74, 163, 255, 0.12);
+  border: 1px solid rgba(74, 163, 255, 0.22);
+  flex-shrink: 0;
+}
+.wln-card-heading { min-width: 0; }
+.wln-card-name {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--text);
+}
+.wln-card-tag {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-top: 1px;
+}
+.wln-card-body {
+  margin: 11px 0 0;
   font-size: 12.5px;
   line-height: 1.55;
-  color: #cbd2dc;
+  color: #bcc4d0;
+  flex: 1 1 auto;
 }
-.wwn-list li { margin-bottom: 2px; }
-.wwn-list li:last-child { margin-bottom: 0; }
+.wln-card-body b { color: #dfe5ee; }
+.wln-card-link {
+  margin-top: 11px;
+  align-self: flex-start;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--brand);
+  text-decoration: none;
+}
+.wln-card-link:hover { color: #7bbfff; text-decoration: underline; }
+.wln-card-hint {
+  margin-top: 11px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.wln-note {
+  margin: 16px 0 0;
+  padding: 11px 14px;
+  border-left: 3px solid rgba(193, 78, 22, 0.55);
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 0 8px 8px 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #c4ccd8;
+}
+.wln-note b { color: var(--text); }
+.wln-note a { color: var(--brand); text-decoration: none; }
+.wln-note a:hover { text-decoration: underline; }
+.wln-sign {
+  display: block;
+  margin-top: 7px;
+  font-style: italic;
+  color: var(--muted);
+}
+
+.wln-blog-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  margin: 18px auto 2px;
+  padding: 9px 16px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--brand);
+  background: rgba(74, 163, 255, 0.10);
+  border: 1px solid rgba(74, 163, 255, 0.32);
+  border-radius: 9px;
+  text-decoration: none;
+  transition: background .15s, border-color .15s;
+}
+.wln-blog-link:hover {
+  background: rgba(74, 163, 255, 0.16);
+  border-color: rgba(74, 163, 255, 0.5);
+}
 
 /* ═══ Welcome panel: rotating tip carousel ═══ */
 .welcome-tip-carousel {
