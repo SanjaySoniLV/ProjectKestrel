@@ -4542,12 +4542,17 @@ class Api:
         # never reach the dest.exists()/merge or download_pack paths below — a
         # malicious/compromised Worker could otherwise read or write arbitrary
         # files. _safe_pack_filename rejects separators/parent-refs/drive-colon.
+        # The sanitizer is a pure utility of the cloud_compute_client module
+        # (not part of the injected behavior tests fake), so fall back to the
+        # real module when ``ccc`` is a partial test double.
+        safe_name_fn = getattr(ccc, "_safe_pack_filename", None) or \
+            self._cc_import()._safe_pack_filename
         available_pack_names = []
         for meta in files:
             raw = str(meta.get("filename") or "")
             if not raw.endswith(".zip"):
                 continue
-            safe = ccc._safe_pack_filename(raw)
+            safe = safe_name_fn(raw)
             if safe is None:
                 with self._ensure_cc_lock():
                     self._cc_pack_events.append({
