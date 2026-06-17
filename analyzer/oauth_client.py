@@ -175,12 +175,21 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
             event.set()
 
 
-def _run_callback_server(stop_event: threading.Event) -> dict:
-    """Bind, serve until ``stop_event`` set or timeout, return captured params.
+def _run_callback_server(
+    stop_event: threading.Event,
+    cancel_event: Optional[threading.Event] = None,
+) -> dict:
+    """Bind, serve until ``stop_event`` set, ``cancel_event`` set, or timeout.
 
     Returns ``{"error": "port_in_use"}`` if ``LOOPBACK_PORT`` is already taken
     — we deliberately don't probe alternates because every alternate would
     need to be pre-registered with Clerk for the redirect URI to match.
+
+    ``cancel_event`` lets the caller abandon a flow the user never completed
+    (e.g. they closed the browser tab and clicked "Sign In" again): when set,
+    the loopback server is torn down promptly and ``{"error": "cancelled"}`` is
+    returned, freeing the port for a fresh attempt instead of holding it for
+    the full ``FLOW_TIMEOUT_SEC``.
     """
     try:
         server = http.server.HTTPServer((LOOPBACK_HOST, LOOPBACK_PORT), _CallbackHandler)
@@ -208,10 +217,21 @@ def _run_callback_server(stop_event: threading.Event) -> dict:
     t = threading.Thread(target=_serve, name="oauth-callback", daemon=True)
     t.start()
 
-    stop_event.wait(FLOW_TIMEOUT_SEC)
+    # Wait for a callback (stop_event), an explicit cancel, or the timeout.
+    # Poll in short slices so a cancel is honored promptly rather than only
+    # after the full FLOW_TIMEOUT_SEC.
+    deadline = time.monotonic() + FLOW_TIMEOUT_SEC
+    cancelled = False
+    while not stop_event.wait(0.25):
+        if cancel_event is not None and cancel_event.is_set():
+            cancelled = True
+            break
+        if time.monotonic() >= deadline:
+            break
 
     if not stop_event.is_set():
-        # Timeout — wake the server thread by poking ourselves at the port.
+        # Cancelled or timed out — wake the server thread by poking ourselves
+        # at the port, then tear it down so the port is free again.
         try:
             with socket.create_connection((LOOPBACK_HOST, LOOPBACK_PORT), timeout=0.5) as s:
                 s.sendall(b"GET /timeout HTTP/1.0\r\n\r\n")
@@ -219,7 +239,7 @@ def _run_callback_server(stop_event: threading.Event) -> dict:
             pass
         stop_event.set()
         t.join(timeout=2.0)
-        return {"error": "timeout"}
+        return {"error": "cancelled"} if cancelled else {"error": "timeout"}
 
     t.join(timeout=2.0)
     return getattr(server, "result", None) or {"error": "no_result"}
@@ -361,6 +381,7 @@ def run_authorization_flow(
     progress_cb: Optional[Callable[[str], None]] = None,
     *,
     url_validator: Optional[Callable[[str], bool]] = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> dict:
     """Run the full PKCE flow. Returns ``{"ok": bool, "bundle"|"error": ...}``.
 
@@ -394,9 +415,12 @@ def run_authorization_flow(
     except Exception as e:
         return {"ok": False, "error": "browser_open_failed", "error_description": str(e)}
 
+    if cancel_event is not None and cancel_event.is_set():
+        return {"ok": False, "error": "cancelled"}
+
     _progress("awaiting_callback")
     stop_event = threading.Event()
-    cb = _run_callback_server(stop_event)
+    cb = _run_callback_server(stop_event, cancel_event)
     if cb.get("error"):
         return {"ok": False, "error": cb["error"], "error_description": cb.get("error_description")}
 
