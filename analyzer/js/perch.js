@@ -1274,6 +1274,20 @@
         if (perchUrl) btn.dataset.perchUrl = String(perchUrl);
         btn.title = 'This folder is published to Perch (click to manage)';
       });
+      // Reflect the new Perch link in the sidebar folder tree immediately. The
+      // 🪶 feather marker is data-driven off node.has_perch_link, which is only
+      // re-scanned from disk on folder load / app restart — so without this the
+      // feather wouldn't appear until a restart. Set the flag in-memory and
+      // repaint the tree now.
+      try {
+        if (typeof findNodeInAnyRoot === 'function') {
+          const node = findNodeInAnyRoot(rootPath);
+          if (node && !node.has_perch_link) {
+            node.has_perch_link = true;
+            if (typeof renderFolderTree === 'function') renderFolderTree();
+          }
+        }
+      } catch (e) { /* tree refresh is best-effort */ }
     }
 
     // ── Re-link: associate this folder with an EXISTING perch (no re-upload) ──
