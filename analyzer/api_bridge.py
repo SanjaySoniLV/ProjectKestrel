@@ -2383,6 +2383,8 @@ class Api:
     _oauth_lock = None              # lazy-init threading.Lock in _get_oauth_lock
     _oauth_in_flight = False
     _oauth_status = "idle"
+    _oauth_cancel_event = None      # threading.Event for the active flow
+    _oauth_thread = None            # the active oauth-flow worker thread
 
     def open_culling_window(self, root_path: str):
         """Open a new pywebview window for the Culling Assistant."""
@@ -5609,47 +5611,87 @@ class Api:
         if _oauth is None:
             return {"success": False, "error": "oauth_module_unavailable"}
         try:
+            import threading as _t
             lock = self._get_oauth_lock()
-            if not lock.acquire(blocking=False):
+            if not lock.acquire(timeout=5.0):
                 return {"success": False, "error": "flow_in_progress"}
             try:
-                if self._oauth_in_flight:
-                    return {"success": False, "error": "flow_in_progress"}
-                self._oauth_in_flight = True
-                self._oauth_status = "starting"
+                # An in-flight flow here almost always means a previous attempt
+                # was abandoned (the user closed the browser tab without
+                # finishing). Rather than dead-ending until the 5-minute
+                # callback timeout (or an app restart), cancel the stale flow
+                # and reclaim the slot so this click can start fresh.
+                prior_cancel = self._oauth_cancel_event if self._oauth_in_flight else None
+                prior_thread = self._oauth_thread if self._oauth_in_flight else None
             finally:
                 lock.release()
 
-            import threading as _t
-            thread = _t.Thread(
-                target=self._oauth_worker, name="oauth-flow", daemon=True
-            )
+            # Tear down the stale flow OUTSIDE the lock — joining can take a
+            # moment while its loopback callback server unwinds and frees the
+            # port we are about to rebind.
+            if prior_cancel is not None:
+                prior_cancel.set()
+            if prior_thread is not None and prior_thread.is_alive():
+                prior_thread.join(timeout=8.0)
+                if prior_thread.is_alive():
+                    # Couldn't reclaim the port in time — report rather than
+                    # corrupt state by starting a second flow on the same port.
+                    return {"success": False, "error": "flow_in_progress"}
+
+            if not lock.acquire(timeout=5.0):
+                return {"success": False, "error": "flow_in_progress"}
+            try:
+                # The reaped worker's finally clears these; clear defensively in
+                # case it lost the timed join above.
+                cancel_event = _t.Event()
+                self._oauth_cancel_event = cancel_event
+                self._oauth_in_flight = True
+                self._oauth_status = "starting"
+                thread = _t.Thread(
+                    target=self._oauth_worker, args=(cancel_event,),
+                    name="oauth-flow", daemon=True,
+                )
+                self._oauth_thread = thread
+            finally:
+                lock.release()
+
             thread.start()
             return {"success": True, "started": True}
         except Exception as e:
             self._oauth_in_flight = False
             self._oauth_status = "idle"
+            self._oauth_cancel_event = None
+            self._oauth_thread = None
             print(f"[API] start_oauth_sign_in() -> Error: {e}", flush=True)
             return {"success": False, "error": str(e)}
 
     def _oauth_progress_cb(self, label: str) -> None:
         self._oauth_status = str(label)
 
-    def _oauth_worker(self) -> None:
+    def _oauth_worker(self, cancel_event=None) -> None:
         """Background thread that drives ``oauth_client.run_authorization_flow``.
 
         Persists the result on success and notifies JS either way. Always
         clears ``_oauth_in_flight`` in ``finally`` so a botched flow doesn't
-        permanently block re-attempts.
+        permanently block re-attempts. ``cancel_event`` lets a newer sign-in
+        attempt supersede this one (the user closed the OAuth tab and clicked
+        "Sign In" again).
         """
         try:
             result = _oauth.run_authorization_flow(
                 progress_cb=self._oauth_progress_cb,
                 url_validator=_is_safe_external_url,
+                cancel_event=cancel_event,
             )
             if not result.get("ok"):
                 err = str(result.get("error") or "unknown")
                 desc = str(result.get("error_description") or "")
+                # A cancelled flow was superseded by a newer attempt (or a
+                # deliberate abort) — stay quiet so we don't flash a spurious
+                # failure over the fresh flow the user just started.
+                if err == "cancelled":
+                    print("[API] OAuth flow cancelled (superseded).", flush=True)
+                    return
                 print(f"[API] OAuth flow failed: {err} ({desc})", flush=True)
                 self._notify_js_sign_in_failed(err, desc)
                 return
@@ -5666,8 +5708,23 @@ class Api:
             except Exception:
                 pass
         finally:
-            self._oauth_in_flight = False
-            self._oauth_status = "idle"
+            # Only clear shared flow state if THIS worker is still the active
+            # one. A superseded worker must not stomp the flag/event/thread of
+            # the newer flow that replaced it.
+            try:
+                lock = self._get_oauth_lock()
+            except Exception:
+                lock = None
+            acquired = lock.acquire(timeout=5.0) if lock is not None else False
+            try:
+                if cancel_event is None or self._oauth_cancel_event is cancel_event:
+                    self._oauth_in_flight = False
+                    self._oauth_status = "idle"
+                    self._oauth_cancel_event = None
+                    self._oauth_thread = None
+            finally:
+                if acquired:
+                    lock.release()
 
     def _notify_js_sign_in(self, token: str) -> None:
         if self._main_window is None:

@@ -670,6 +670,21 @@
             } catch {}
           })();
 
+          // Block sharing while this folder is still being analyzed — uploading
+          // partial results to Perch would publish an incomplete timeline. The
+          // disabled state is kept in sync as analysis starts/finishes by
+          // updateInProgressFoldersInTree() (queue.js).
+          try {
+            const _np = String(fd.folderPath || '').replace(/\\/g, '/');
+            const _analyzing =
+              (typeof _inProgressFolderPaths !== 'undefined' && _inProgressFolderPaths.has(_np))
+              || (window._ccInProgressFolderPaths && window._ccInProgressFolderPaths.has(_np));
+            if (_analyzing) {
+              perchBtn.disabled = true;
+              perchBtn.title = 'Wait for analysis to finish before uploading to Perch.';
+            }
+          } catch {}
+
 
           hdr.appendChild(rightActions);
 

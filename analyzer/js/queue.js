@@ -1121,6 +1121,26 @@
             if (hg) hg.remove();
           }
         }
+
+        // Keep "Share with Perch" buttons in sync with analysis state: a folder
+        // that is mid-analysis must not be uploaded to Perch (incomplete
+        // timeline), so disable the button while analyzing and restore it when
+        // analysis finishes.
+        const perchBtns = Array.from(document.querySelectorAll('.folder-perch-btn'));
+        for (const btn of perchBtns) {
+          const bp = norm(btn.dataset.folderPath || '');
+          const analyzing = _inProgressFolderPaths.has(bp)
+            || (window._ccInProgressFolderPaths && window._ccInProgressFolderPaths.has(bp));
+          if (analyzing) {
+            btn.disabled = true;
+            btn.title = 'Wait for analysis to finish before uploading to Perch.';
+          } else if (btn.disabled) {
+            btn.disabled = false;
+            btn.title = btn.classList.contains('is-linked')
+              ? 'This folder is published to Perch (click to manage)'
+              : 'Share this folder to Perch (or manage existing perch)';
+          }
+        }
       } catch (e) { console.warn('[tree] updateInProgressFoldersInTree error:', e); }
     }
 

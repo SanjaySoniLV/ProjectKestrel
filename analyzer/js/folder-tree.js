@@ -524,10 +524,12 @@
 
       row.appendChild(arrow);
       row.appendChild(icon);
-      if (perchFeather) row.appendChild(perchFeather);
-      if (inProgressHourglass) row.appendChild(inProgressHourglass);
       row.appendChild(label);
       row.appendChild(countSpan);
+      // Status emojis sit on the right edge, adjacent to the checkbox, so they
+      // don't crowd the folder name on the left.
+      if (perchFeather) row.appendChild(perchFeather);
+      if (inProgressHourglass) row.appendChild(inProgressHourglass);
       row.appendChild(cbCol);
       wrap.appendChild(row);
 
