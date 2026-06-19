@@ -172,7 +172,12 @@ jobs:
             exit 1
           }
           $payload = @{ meta = $meta; sig = $sig } | ConvertTo-Json -Compress
-          Set-Content -Path 'analyzer\build_attestation.json' -Value $payload -Encoding utf8 -NoNewline
+          # Windows PowerShell 5.1's `Set-Content -Encoding utf8` writes UTF-8 *with*
+          # a BOM, and Python's json.load rejects a leading BOM — so the attestation
+          # loader silently failed and every Windows build was tagged 'legacy'.
+          # Use .NET WriteAllText with a no-BOM UTF8Encoding to produce valid JSON.
+          $attestPath = (Resolve-Path 'analyzer').Path + '\build_attestation.json'
+          [System.IO.File]::WriteAllText($attestPath, $payload, (New-Object System.Text.UTF8Encoding($false)))
 
           Write-Host "Build attestation generated:"
           Write-Host "  version : $version"

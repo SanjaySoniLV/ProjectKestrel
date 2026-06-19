@@ -42,7 +42,11 @@ def _load() -> None:
         try:
             if not os.path.isfile(path):
                 continue
-            with open(path, 'r', encoding='utf-8') as f:
+            # utf-8-sig tolerates a leading BOM. The macOS workflow writes the
+            # file via Python json.dump (no BOM), but if any writer accidentally
+            # emits one — historically the Windows workflow's Set-Content -Encoding
+            # utf8 did — utf-8-sig still parses cleanly so the build stays attested.
+            with open(path, 'r', encoding='utf-8-sig') as f:
                 data = json.load(f)
             meta = data.get('meta')
             sig = data.get('sig')
