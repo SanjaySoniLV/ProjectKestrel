@@ -49,8 +49,11 @@ CLERK_TOKEN_URL     = "https://clerk.projectkestrel.org/oauth/token"
 CLERK_REVOKE_URL    = "https://clerk.projectkestrel.org/oauth/revoke"
 
 # Public OAuth client — no secret. PKCE replaces what a confidential client's
-# secret would do. The client_id below is registered in the Clerk dashboard
-# with redirect URI hardcoded to LOOPBACK_HOST:LOOPBACK_PORT/callback.
+# secret would do. The client_id below is registered in the Clerk dashboard,
+# and EVERY port in LOOPBACK_PORTS below must be present in that OAuth
+# application's allowed redirect URLs (one ``http://127.0.0.1:<port>/callback``
+# entry each) or Clerk will reject the authorize/token calls as a redirect_uri
+# mismatch.
 CLERK_CLIENT_ID     = "fiYWTMVayj2jbKvj"
 
 # OpenID Connect base scopes — ``email`` and ``profile`` populate the
@@ -62,8 +65,33 @@ CLERK_SCOPES        = "openid email profile"
 # 127.0.0.1 specifically — NOT "localhost". DNS edge cases and IPv6 ``::1``
 # resolution surprises make literal-IPv4 the safer choice per RFC 8252 §7.3.
 LOOPBACK_HOST       = "127.0.0.1"
-LOOPBACK_PORT       = 53682
-REDIRECT_URI        = f"http://{LOOPBACK_HOST}:{LOOPBACK_PORT}/callback"
+
+# Ordered list of candidate loopback ports. We bind the first one that's
+# available and build the redirect URI from it; ALL of them are registered as
+# redirect URLs in the Clerk OAuth app (see CLERK_CLIENT_ID note above).
+#
+# Why a list and not a single fixed port: binding a *single* fixed port fails
+# with WinError 10013 (WSAEACCES, "access forbidden") whenever that port lands
+# inside one of Windows' reserved dynamic-port ranges. Hyper-V / WSL2 / Docker /
+# WinNAT carve the IANA *dynamic/ephemeral* range (49152–65535) into reserved
+# chunks, and — critically — those chunks are RE-RANDOMIZED on every boot
+# (`netsh interface ipv4 show excludedportrange protocol=tcp`). The original
+# single port 53682 lived in that range, so sign-in worked or failed depending
+# purely on which ports the OS happened to reserve that boot — intermittent,
+# machine-dependent, and invisible to CI (which seeds tokens and never binds).
+#
+# These candidates all sit in the IANA *user/registered* range (1024–49151),
+# which WinNAT's boot-time dynamic reservations never touch, so they're immune
+# to that failure. They're spread out (not consecutive) so an unrelated app
+# squatting on one is unlikely to take its neighbours too. 53682 is kept LAST
+# as a best-effort fallback: it's already registered with Clerk and is free on
+# most boots, so it costs nothing to keep and only ever helps.
+LOOPBACK_PORTS      = (17893, 27184, 37265, 47632, 53682)
+
+
+def _redirect_uri(port: int) -> str:
+    """The loopback redirect URI for ``port``. Must match a Clerk redirect URL."""
+    return f"http://{LOOPBACK_HOST}:{port}/callback"
 
 # Hard wall on how long we wait for the user to complete sign-in in their
 # browser. If they get distracted past this, the flow aborts cleanly and the
@@ -98,10 +126,10 @@ def _gen_state() -> str:
     return _b64url(secrets.token_bytes(32))
 
 
-def _build_authorize_url(state: str, challenge: str) -> str:
+def _build_authorize_url(state: str, challenge: str, redirect_uri: str) -> str:
     params = {
         "client_id":             CLERK_CLIENT_ID,
-        "redirect_uri":          REDIRECT_URI,
+        "redirect_uri":          redirect_uri,
         "response_type":         "code",
         "code_challenge":        challenge,
         "code_challenge_method": "S256",
@@ -175,15 +203,63 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
             event.set()
 
 
-def _run_callback_server(
+# bind() failure codes that mean "this particular port is unusable, try the
+# next candidate" rather than "the whole machine can't do loopback":
+#   EADDRINUSE — something is already listening (98 linux / 48 mac / 10048 win)
+#   EACCES     — permission denied; on Windows this is WSAEACCES / WinError
+#                10013, raised when the port is inside a reserved dynamic range
+#                (13 posix / 10013 win)
+_PORT_RETRY_ERRNOS = frozenset({98, 48, 10048, 13, 10013})
+
+
+def _bind_loopback() -> dict:
+    """Bind the first available port in ``LOOPBACK_PORTS``.
+
+    Returns ``{"server", "port"}`` on success, or ``{"error": ...}`` if no
+    candidate could be bound:
+      - ``port_in_use``     — at least one candidate was in use and none bound
+                              (kept for backwards-compatible messaging).
+      - ``no_loopback_port``— every candidate was reserved/forbidden/in-use.
+
+    Each candidate is registered with Clerk, so whichever one binds yields a
+    redirect URI Clerk will accept. See ``LOOPBACK_PORTS`` for why a single
+    fixed port is insufficient on Windows.
+    """
+    last_error: Optional[OSError] = None
+    saw_in_use = False
+    for port in LOOPBACK_PORTS:
+        try:
+            server = http.server.HTTPServer((LOOPBACK_HOST, port), _CallbackHandler)
+        except OSError as e:
+            last_error = e
+            code = e.errno
+            win = getattr(e, "winerror", None)
+            if code in (98, 48, 10048) or win in (10048,):
+                saw_in_use = True
+            if code in _PORT_RETRY_ERRNOS or win in (10048, 10013):
+                continue  # this port is unusable — try the next candidate
+            continue      # any other bind error: still try the remaining ports
+        return {"server": server, "port": port}
+
+    desc = (
+        f"none of the {len(LOOPBACK_PORTS)} loopback ports could be bound "
+        f"({', '.join(str(p) for p in LOOPBACK_PORTS)})"
+        + (f"; last error: {last_error}" if last_error is not None else "")
+    )
+    if saw_in_use:
+        return {"error": "port_in_use", "error_description": desc}
+    return {"error": "no_loopback_port", "error_description": desc}
+
+
+def _serve_callback(
+    server: "http.server.HTTPServer",
+    port: int,
     stop_event: threading.Event,
     cancel_event: Optional[threading.Event] = None,
 ) -> dict:
-    """Bind, serve until ``stop_event`` set, ``cancel_event`` set, or timeout.
+    """Serve the already-bound ``server`` until callback, cancel, or timeout.
 
-    Returns ``{"error": "port_in_use"}`` if ``LOOPBACK_PORT`` is already taken
-    — we deliberately don't probe alternates because every alternate would
-    need to be pre-registered with Clerk for the redirect URI to match.
+    Always closes ``server`` before returning.
 
     ``cancel_event`` lets the caller abandon a flow the user never completed
     (e.g. they closed the browser tab and clicked "Sign In" again): when set,
@@ -191,13 +267,6 @@ def _run_callback_server(
     returned, freeing the port for a fresh attempt instead of holding it for
     the full ``FLOW_TIMEOUT_SEC``.
     """
-    try:
-        server = http.server.HTTPServer((LOOPBACK_HOST, LOOPBACK_PORT), _CallbackHandler)
-    except OSError as e:
-        if e.errno in (98, 10048, 48):  # EADDRINUSE on linux / win / mac
-            return {"error": "port_in_use"}
-        return {"error": "bind_failed", "error_description": str(e)}
-
     server.result = None       # type: ignore[attr-defined]
     server.stop_event = stop_event  # type: ignore[attr-defined]
 
@@ -233,7 +302,7 @@ def _run_callback_server(
         # Cancelled or timed out — wake the server thread by poking ourselves
         # at the port, then tear it down so the port is free again.
         try:
-            with socket.create_connection((LOOPBACK_HOST, LOOPBACK_PORT), timeout=0.5) as s:
+            with socket.create_connection((LOOPBACK_HOST, port), timeout=0.5) as s:
                 s.sendall(b"GET /timeout HTTP/1.0\r\n\r\n")
         except Exception:
             pass
@@ -324,12 +393,17 @@ def _token_request(url: str, form: dict, timeout: float = 15.0) -> dict:
 
 # ── Public API ───────────────────────────────────────────────────────────────
 
-def exchange_code(code: str, verifier: str) -> dict:
-    """Exchange the authorization ``code`` + PKCE ``verifier`` for a token bundle."""
+def exchange_code(code: str, verifier: str, redirect_uri: str) -> dict:
+    """Exchange the authorization ``code`` + PKCE ``verifier`` for a token bundle.
+
+    ``redirect_uri`` MUST be byte-identical to the one sent on the authorize
+    request (RFC 6749 §4.1.3) — i.e. derived from the same loopback port that
+    actually bound — or Clerk rejects the exchange with ``invalid_grant``.
+    """
     return _token_request(CLERK_TOKEN_URL, {
         "grant_type":    "authorization_code",
         "code":          code,
-        "redirect_uri":  REDIRECT_URI,
+        "redirect_uri":  redirect_uri,
         "client_id":     CLERK_CLIENT_ID,
         "code_verifier": verifier,
     })
@@ -401,26 +475,54 @@ def run_authorization_flow(
     _progress("starting")
     verifier, challenge = _gen_pkce()
     state = _gen_state()
-    url = _build_authorize_url(state, challenge)
 
-    if url_validator is not None and not url_validator(url):
-        return {"ok": False, "error": "unsafe_authorize_url"}
+    # Bind the loopback server FIRST — before building the authorize URL or
+    # opening the browser — because the redirect URI (and thus the URL we send
+    # the user to) depends on which candidate port actually binds. Binding
+    # first also means a "no usable port" failure is reported immediately
+    # instead of after the user has already been bounced to their browser.
+    bound = _bind_loopback()
+    if bound.get("error"):
+        return {"ok": False, "error": bound["error"], "error_description": bound.get("error_description")}
+    server = bound["server"]
+    port = bound["port"]
+    redirect_uri = _redirect_uri(port)
 
-    # Open in the system default browser — explicitly NOT pywebview. The
-    # whole point of RFC 8252 is that the user signs in with their daily
-    # browser, where their Clerk session may already be alive, and where
-    # the desktop binary can't observe the password.
+    # From here on the server holds an OS socket; close it on every early exit.
     try:
-        webbrowser.open(url, new=2, autoraise=True)
-    except Exception as e:
-        return {"ok": False, "error": "browser_open_failed", "error_description": str(e)}
+        url = _build_authorize_url(state, challenge, redirect_uri)
 
-    if cancel_event is not None and cancel_event.is_set():
-        return {"ok": False, "error": "cancelled"}
+        if url_validator is not None and not url_validator(url):
+            server.server_close()
+            return {"ok": False, "error": "unsafe_authorize_url"}
 
-    _progress("awaiting_callback")
-    stop_event = threading.Event()
-    cb = _run_callback_server(stop_event, cancel_event)
+        # Open in the system default browser — explicitly NOT pywebview. The
+        # whole point of RFC 8252 is that the user signs in with their daily
+        # browser, where their Clerk session may already be alive, and where
+        # the desktop binary can't observe the password.
+        try:
+            webbrowser.open(url, new=2, autoraise=True)
+        except Exception as e:
+            server.server_close()
+            return {"ok": False, "error": "browser_open_failed", "error_description": str(e)}
+
+        if cancel_event is not None and cancel_event.is_set():
+            server.server_close()
+            return {"ok": False, "error": "cancelled"}
+
+        _progress("awaiting_callback")
+        stop_event = threading.Event()
+        # _serve_callback owns the server from here and always closes it.
+        cb = _serve_callback(server, port, stop_event, cancel_event)
+    except BaseException:
+        # Defensive: never leak the bound socket on an unexpected error before
+        # _serve_callback took ownership.
+        try:
+            server.server_close()
+        except Exception:
+            pass
+        raise
+
     if cb.get("error"):
         return {"ok": False, "error": cb["error"], "error_description": cb.get("error_description")}
 
@@ -435,7 +537,7 @@ def run_authorization_flow(
         return {"ok": False, "error": "state_mismatch"}
 
     _progress("exchanging")
-    tok = exchange_code(cb["code"], verifier)
+    tok = exchange_code(cb["code"], verifier, redirect_uri)
     if tok.get("error"):
         return {
             "ok": False,

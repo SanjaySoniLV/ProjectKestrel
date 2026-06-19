@@ -200,7 +200,8 @@
       let msg;
       switch (err) {
         case 'timeout':         msg = 'Sign-in timed out. Click Sign In to try again.'; break;
-        case 'port_in_use':     msg = 'Port 53682 is in use. Close the conflicting app and try again.'; break;
+        case 'port_in_use':     msg = 'The local sign-in ports are all in use. Close other apps and try again.'; break;
+        case 'no_loopback_port': msg = 'Could not open a local sign-in port. If you run a VPN, firewall, or virtualization software (Hyper-V/WSL/Docker), restarting your PC usually clears this — then sign in again.'; break;
         case 'state_mismatch':  msg = 'Sign-in failed (state mismatch). Click Sign In to try again.'; break;
         case 'flow_in_progress': msg = 'Sign-in is already in progress. Complete it in your browser.'; break;
         case 'browser_open_failed': msg = 'Could not open your browser. Sign in manually at myaccount.projectkestrel.org and try again.'; break;
