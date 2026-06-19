@@ -751,6 +751,13 @@ class OnnxSamPredictor:
         self._decoder_requires_padded_im_size = "padded_im_size" in self._decoder_input_shapes
         self._supports_prompt_batching = self._detect_prompt_batch_support()
         self._batch_unsupported_logged = False
+        # Some execution providers (notably CoreMLExecutionProvider on macOS)
+        # advertise dynamic batch shapes via the ONNX graph but reject batched
+        # prompt input at runtime with "Unable to compute the prediction".
+        # When that happens we permanently downgrade to per-box decode for the
+        # rest of the session — otherwise every multi-detection image pays a
+        # failed batch attempt before falling back.
+        self._batch_decode_runtime_failed = False
         _provs = self._enc_session.get_providers()
         self.device = "ONNX/GPU" if is_gpu_active(_provs) else "ONNX/CPU"
         _active = _provs[0] if _provs else "unknown"
@@ -953,7 +960,7 @@ class OnnxSamPredictor:
             return []
         if len(boxes_xyxy) == 1:
             return [self.decode_box(image_embeddings, interm_embeddings, boxes_xyxy[0], resized_hw, original_hw)]
-        if not self._supports_prompt_batching:
+        if not self._supports_prompt_batching or self._batch_decode_runtime_failed:
             if not self._batch_unsupported_logged:
                 debug(
                     "[SAM-HQ] decoder ONNX export has fixed batch=1 on prompt inputs; "
@@ -1433,7 +1440,15 @@ class SpeciesNetSAMHQWrapper:
                         f"decoded={len(sam_results)} mode=per-box(fixed-batch-model)"
                     )
             except Exception as e:
-                warn(f"[SAM-HQ] batch decode failed, falling back to per-box decode: {e}")
+                if not getattr(self.predictor, "_batch_decode_runtime_failed", False):
+                    warn(
+                        f"[SAM-HQ] batch decode failed at runtime; downgrading to "
+                        f"per-box decode for the rest of this session: {e}"
+                    )
+                    try:
+                        self.predictor._batch_decode_runtime_failed = True
+                    except Exception:
+                        pass
                 sam_results = []
                 for c in sam_decode_candidates:
                     try:
