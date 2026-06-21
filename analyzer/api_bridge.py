@@ -509,9 +509,35 @@ class Api:
         if not path or not root:
             return False
         try:
-            path_real = os.path.realpath(path)
             root_real = os.path.realpath(root)
-            common = os.path.commonpath([path_real, root_real])
+            # On Windows, ``os.path.realpath`` of a non-existent path under a
+            # mapped network drive returns the drive-letter form (``Y:\...``),
+            # while ``realpath`` of an existing UNC root returns the canonical
+            # UNC form (``\\?\UNC\server\share\...``). Comparing those two
+            # spellings mistakenly rejects valid reads — e.g. ``read_image_file``
+            # asking for ``Y:\folder\.kestrel\export\foo.jpg`` (a file the user
+            # has not yet exported) when the analyzed root is the UNC share.
+            # Walk up ``path`` to the deepest existing ancestor, resolve that,
+            # then re-append the non-existent tail so the comparison happens on
+            # spellings that agree.
+            candidate = path
+            tail_parts: list[str] = []
+            while not os.path.exists(candidate):
+                parent = os.path.dirname(candidate)
+                if not parent or parent == candidate:
+                    break
+                tail_parts.append(os.path.basename(candidate))
+                candidate = parent
+            ancestor_real = os.path.realpath(candidate)
+            path_real = (
+                os.path.join(ancestor_real, *reversed(tail_parts))
+                if tail_parts
+                else ancestor_real
+            )
+            try:
+                common = os.path.commonpath([path_real, root_real])
+            except ValueError:
+                return False
             return common == root_real
         except Exception:
             return False

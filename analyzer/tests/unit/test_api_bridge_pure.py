@@ -209,6 +209,22 @@ class TestIsWithinRoot:
         assert api._is_within_root("", "/some/root") == False
         assert api._is_within_root("/some/path", "") == False
 
+    def test_nonexistent_child_still_resolves(self, api, tmp_path):
+        """Path under root that does not yet exist on disk → True.
+
+        Mirrors ``read_image_file`` asking for a ``.kestrel/export/foo.jpg``
+        path that the user has not exported yet. The deepest existing
+        ancestor (``tmp_path``) is realpath-resolved so the comparison
+        survives Windows mapped-drive vs UNC spelling differences.
+        """
+        target = tmp_path / ".kestrel" / "export" / "not_yet.jpg"
+        assert api._is_within_root(str(target), str(tmp_path)) == True
+
+    def test_nonexistent_sibling_blocked(self, api, tmp_path):
+        """Non-existent path outside root → False."""
+        outside = tmp_path.parent / "elsewhere" / "missing.jpg"
+        assert api._is_within_root(str(outside), str(tmp_path)) == False
+
 
 class TestEditorExtensionAllowed:
     """Tests for editor extension allowlist."""
