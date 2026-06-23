@@ -1951,6 +1951,45 @@ class Api:
     #  Sample Sets API                                                     #
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _mirror_sample_set_to_user_dir(bundled_path: str, debug_info: list) -> str | None:
+        """Copy a bundled sample set into the per-user data dir on first use.
+
+        MSIX / Microsoft Store installs land under ``Program Files\\WindowsApps``
+        which is read-only to the running process, so writing back to
+        ``<set>/.kestrel/kestrel_database.csv`` raises ``PermissionError``. The
+        mirror lives at ``<user_data_dir>/sample_sets/<set>`` and is reused on
+        subsequent launches; the readonly DB is re-copied from the bundle each
+        time so the sample state resets per session, matching the in-place
+        behaviour on writable installs.
+        """
+        try:
+            try:
+                from settings_utils import _get_user_data_dir
+            except ImportError:
+                from analyzer.settings_utils import _get_user_data_dir
+            set_name = os.path.basename(os.path.normpath(bundled_path))
+            mirror_root = os.path.join(_get_user_data_dir(), 'sample_sets')
+            mirror = os.path.join(mirror_root, set_name)
+            if not os.path.isdir(mirror):
+                os.makedirs(mirror_root, exist_ok=True)
+                shutil.copytree(bundled_path, mirror)
+                debug_info.append(f'[mirror] copied {bundled_path} -> {mirror}')
+            else:
+                debug_info.append(f'[mirror] reusing existing mirror at {mirror}')
+            mirror_readonly = os.path.join(mirror, '.kestrel', 'kestrel_database_readonly.csv')
+            mirror_db = os.path.join(mirror, '.kestrel', 'kestrel_database.csv')
+            if os.path.isfile(mirror_readonly):
+                try:
+                    shutil.copy2(mirror_readonly, mirror_db)
+                    debug_info.append(f'[mirror] restored sample DB at mirror: {mirror_db}')
+                except OSError as e:
+                    debug_info.append(f'[mirror] mirror DB restore failed: {e}')
+            return mirror
+        except Exception as e:
+            debug_info.append(f'[mirror] failed to mirror {bundled_path}: {e}')
+            return None
+
     def get_sample_sets_paths(self):
         """Return absolute paths to bundled sample bird-photo sets.
 
@@ -2092,22 +2131,34 @@ class Api:
                 kestrel_dir = os.path.join(full, '.kestrel')
                 kestrel_exists = os.path.isdir(kestrel_dir)
                 debug_info.append(f'[api]   Item "{name}": is_dir={is_dir}, has .kestrel={kestrel_exists}')
-                
+
                 if is_dir and kestrel_exists:
                     readonly_src = os.path.join(kestrel_dir, 'kestrel_database_readonly.csv')
                     db_dst       = os.path.join(kestrel_dir, 'kestrel_database.csv')
                     readonly_exists = os.path.isfile(readonly_src)
                     debug_info.append(f'[api]     readonly_src: {readonly_src} exists={readonly_exists}')
-                    
+
                     if readonly_exists:
                         try:
                             shutil.copy2(readonly_src, db_dst)
                             debug_info.append(f'[api]     Restored sample DB: {db_dst}')
-                        except Exception as e:
+                        except PermissionError as e:
+                            # Bundled location is read-only (e.g. an MS Store /
+                            # Program Files\WindowsApps install). Mirror the
+                            # sample set into the user data dir on first use and
+                            # use that copy for both reads and writes.
+                            debug_info.append(
+                                f'[api]     In-place restore denied ({e.__class__.__name__}); '
+                                f'mirroring sample set to user data dir'
+                            )
+                            mirror = self._mirror_sample_set_to_user_dir(full, debug_info)
+                            if mirror is not None:
+                                full = mirror
+                        except OSError as e:
                             debug_info.append(f'[api]     Failed to restore DB: {e}')
                     else:
                         debug_info.append(f'[api]     No readonly DB found at {readonly_src}')
-                    
+
                     paths.append(full)
                     debug_info.append(f'[api]     Added path: {full}')
             

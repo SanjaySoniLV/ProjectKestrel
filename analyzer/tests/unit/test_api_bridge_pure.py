@@ -492,3 +492,68 @@ class TestCCAnalysisSettingsSnapshot:
         out = api._cc_analysis_settings_snapshot()
         # All 5 above are invalid → the snapshot has no entries, returns None.
         assert out is None or out == {}
+
+
+class TestSampleSetMirror:
+    """Tests for ``_mirror_sample_set_to_user_dir`` — the read-only-install
+    fallback that lets sample sets work when bundled under
+    ``Program Files\\WindowsApps`` (MSIX) or any other location the user
+    cannot write to."""
+
+    def _make_sample_set(self, root, name, db_text="header\nrow\n"):
+        """Build a minimal sample-set fixture: <root>/<name>/.kestrel/{db,readonly_db}."""
+        set_dir = root / name
+        kestrel = set_dir / ".kestrel"
+        kestrel.mkdir(parents=True)
+        (kestrel / "kestrel_database_readonly.csv").write_text(db_text)
+        (kestrel / "kestrel_database.csv").write_text("stale\n")
+        (set_dir / "photo.jpg").write_bytes(b"\xff\xd8\xff\xe0")  # JPEG header
+        return set_dir
+
+    def test_mirror_copies_tree_and_restores_db(self, api, tmp_path, monkeypatch):
+        """First-use mirror: copytree happens and DB is reset from readonly src."""
+        bundled = self._make_sample_set(tmp_path / "bundled", "backyard_birds",
+                                        db_text="pristine\n")
+        user_dir = tmp_path / "user_data"
+        monkeypatch.setattr("settings_utils._get_user_data_dir", lambda: str(user_dir))
+
+        debug: list = []
+        mirror = api._mirror_sample_set_to_user_dir(str(bundled), debug)
+
+        assert mirror is not None
+        mirror_path = Path(mirror)
+        assert mirror_path == user_dir / "sample_sets" / "backyard_birds"
+        assert (mirror_path / "photo.jpg").is_file()
+        # Live DB was reset from the readonly source (not the "stale" copy).
+        assert (mirror_path / ".kestrel" / "kestrel_database.csv").read_text() == "pristine\n"
+
+    def test_mirror_reuses_existing_then_refreshes_db(self, api, tmp_path, monkeypatch):
+        """Second call: tree is not re-copied, but the DB is reset each session."""
+        bundled = self._make_sample_set(tmp_path / "bundled", "backyard_birds",
+                                        db_text="pristine\n")
+        user_dir = tmp_path / "user_data"
+        monkeypatch.setattr("settings_utils._get_user_data_dir", lambda: str(user_dir))
+
+        # First call lays down the mirror.
+        api._mirror_sample_set_to_user_dir(str(bundled), [])
+        mirror_db = user_dir / "sample_sets" / "backyard_birds" / ".kestrel" / "kestrel_database.csv"
+        # Simulate the user "dirtying" the live DB during a tutorial session.
+        mirror_db.write_text("dirty\n")
+
+        debug: list = []
+        api._mirror_sample_set_to_user_dir(str(bundled), debug)
+
+        # Per-session reset: DB returns to the readonly state.
+        assert mirror_db.read_text() == "pristine\n"
+        # And we did reuse the existing tree rather than re-copy it.
+        assert any("reusing existing mirror" in line for line in debug)
+
+    def test_mirror_returns_none_on_copytree_failure(self, api, tmp_path, monkeypatch):
+        """If shutil.copytree raises (e.g. source missing), return None and log."""
+        monkeypatch.setattr("settings_utils._get_user_data_dir",
+                            lambda: str(tmp_path / "user_data"))
+        debug: list = []
+        # Source does not exist → copytree raises FileNotFoundError.
+        result = api._mirror_sample_set_to_user_dir(str(tmp_path / "missing_set"), debug)
+        assert result is None
+        assert any("failed to mirror" in line for line in debug)
