@@ -278,6 +278,25 @@ def _mark_session_clean_exit() -> None:
         pass
 
 
+def _is_pywebview_orphan_callback(exc_type, exc_value) -> bool:
+    """Return True for the benign pywebview "orphan callback" JS exception.
+
+    pywebview resolves a Python API call by evaluating
+    ``window.pywebview._returnValuesCallbacks.<fn>.<id>(...)`` on its
+    background thread. If the JS-side context (window/page) navigated or
+    reloaded between the API call and Python's return, that callback no
+    longer exists and pywebview raises ``JavascriptException`` with a
+    ``"... is not a function"`` message. This is not a Kestrel defect — the
+    caller is gone — so the crash handler treats it as a no-op.
+    """
+    if exc_type is None or exc_value is None:
+        return False
+    if exc_type.__name__ != 'JavascriptException':
+        return False
+    msg = str(exc_value)
+    return '_returnValuesCallbacks' in msg and 'is not a function' in msg
+
+
 def _mark_session_exit_reason(reason: str) -> None:
     """Atomically record the cause of an in-progress shutdown.
 
@@ -821,6 +840,19 @@ def main():
         try:
             import traceback as _tb
             thread_name = getattr(args.thread, 'name', 'unknown')
+            # pywebview raises JavascriptException from its background dispatch
+            # thread when a Python API call returns but the JS-side promise
+            # callback is gone (page reloaded / navigated to another HTML file
+            # while the call was in flight). The "_returnValuesCallbacks.<fn>.
+            # <id> is not a function" message is the canonical signature. It is
+            # not a Kestrel defect — the caller went away — so log it once and
+            # don't mark the session as crashed or ship a crash report.
+            if _is_pywebview_orphan_callback(args.exc_type, args.exc_value):
+                warn(
+                    f'[Thread {thread_name!r}] pywebview orphan callback '
+                    f'(JS context navigated before Python returned); ignored.'
+                )
+                return
             tb_str = ''.join(_tb.format_exception(args.exc_type, args.exc_value, args.exc_traceback))
             error(f'[Thread {thread_name!r}] Uncaught exception: {args.exc_type.__name__}: {args.exc_value}')
             error(f'[Thread {thread_name!r}] Traceback:\n{tb_str}')
