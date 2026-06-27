@@ -1083,6 +1083,14 @@ def main():
                 api.cleanup_tracked_culling_caches()
         except Exception as e:
             warn('Cache cleanup during shutdown failed:', e)
+        # Best-effort removal of this session's temp sample-set mirrors. Skipping
+        # it (e.g. on crash) is harmless — the next launch wipes and rebuilds the
+        # mirror before use.
+        try:
+            if api is not None and hasattr(api, 'cleanup_sample_set_mirrors'):
+                api.cleanup_sample_set_mirrors()
+        except Exception as e:
+            warn('Sample-set mirror cleanup during shutdown failed:', e)
         try:
             server.shutdown()
             server.server_close()
