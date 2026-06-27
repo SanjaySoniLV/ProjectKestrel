@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import webbrowser
 
@@ -1952,31 +1953,66 @@ class Api:
     # ------------------------------------------------------------------ #
 
     @staticmethod
-    def _mirror_sample_set_to_user_dir(bundled_path: str, debug_info: list) -> str | None:
-        """Copy a bundled sample set into the per-user data dir on first use.
+    def _sample_sets_temp_root() -> str:
+        """Return the temp root that holds this session's sample-set mirrors.
 
-        MSIX / Microsoft Store installs land under ``Program Files\\WindowsApps``
-        which is read-only to the running process, so writing back to
-        ``<set>/.kestrel/kestrel_database.csv`` raises ``PermissionError``. The
-        mirror lives at ``<user_data_dir>/sample_sets/<set>`` and is reused on
-        subsequent launches; the readonly DB is re-copied from the bundle each
-        time so the sample state resets per session, matching the in-place
-        behaviour on writable installs.
+        Lives under the OS temp dir so it is writable on every install layout
+        — including read-only bundles (MSIX / ``Program Files\\WindowsApps``,
+        macOS Gatekeeper App Translocation) — and is the natural home for
+        transient data that is regenerated each session.
+        """
+        return os.path.join(tempfile.gettempdir(), 'ProjectKestrel', 'sample_sets')
+
+    @classmethod
+    def cleanup_sample_set_mirrors(cls) -> None:
+        """Best-effort removal of the temp sample-set mirror tree.
+
+        Called on clean shutdown. Non-critical: each launch wipes and rebuilds
+        the mirror before use (see :meth:`_mirror_sample_set_to_temp`), so a
+        crash that skips this leaves only stale data the next session
+        overwrites anyway.
         """
         try:
-            try:
-                from settings_utils import _get_user_data_dir
-            except ImportError:
-                from analyzer.settings_utils import _get_user_data_dir
+            root = cls._sample_sets_temp_root()
+            if os.path.isdir(root):
+                shutil.rmtree(root, ignore_errors=True)
+        except Exception:
+            pass
+
+    @classmethod
+    def _mirror_sample_set_to_temp(cls, bundled_path: str, debug_info: list) -> str | None:
+        """Mirror a bundled sample set into a writable per-session temp dir.
+
+        Runs on **every** platform, by default. Two reasons:
+
+        * The bundled tree may be read-only (MSIX / ``WindowsApps``, macOS App
+          Translocation), where writing back to
+          ``<set>/.kestrel/kestrel_database.csv`` raises ``PermissionError``
+          (errno 13) or ``OSError`` EROFS (errno 30). A writable mirror sidesteps
+          both without special-casing the errno.
+        * Even on writable installs, a fresh per-session mirror gives the
+          tutorial a predictable clean slate each run and auto-refreshes if the
+          bundled set ever changes.
+
+        The prior mirror is wiped first (wipe-on-load) so edits from an earlier
+        tutorial session never leak into a new one. Returns the mirror path, or
+        ``None`` if mirroring failed — the caller then falls back to the bundled
+        path with an in-place restore.
+        """
+        try:
             set_name = os.path.basename(os.path.normpath(bundled_path))
-            mirror_root = os.path.join(_get_user_data_dir(), 'sample_sets')
+            mirror_root = cls._sample_sets_temp_root()
             mirror = os.path.join(mirror_root, set_name)
-            if not os.path.isdir(mirror):
-                os.makedirs(mirror_root, exist_ok=True)
-                shutil.copytree(bundled_path, mirror)
-                debug_info.append(f'[mirror] copied {bundled_path} -> {mirror}')
-            else:
-                debug_info.append(f'[mirror] reusing existing mirror at {mirror}')
+            # Wipe-on-load: always start from a clean copy of the bundle.
+            if os.path.isdir(mirror):
+                shutil.rmtree(mirror, ignore_errors=True)
+            os.makedirs(mirror_root, exist_ok=True)
+            # dirs_exist_ok=True keeps the refresh robust even if the wipe above
+            # could not fully remove a locked file from a prior session.
+            shutil.copytree(bundled_path, mirror, dirs_exist_ok=True)
+            debug_info.append(f'[mirror] copied {bundled_path} -> {mirror}')
+            # Reset the live DB from the readonly source inside the mirror so the
+            # sample state is pristine for this session.
             mirror_readonly = os.path.join(mirror, '.kestrel', 'kestrel_database_readonly.csv')
             mirror_db = os.path.join(mirror, '.kestrel', 'kestrel_database.csv')
             if os.path.isfile(mirror_readonly):
@@ -2134,33 +2170,36 @@ class Api:
 
                 if is_dir and kestrel_exists:
                     readonly_src = os.path.join(kestrel_dir, 'kestrel_database_readonly.csv')
-                    db_dst       = os.path.join(kestrel_dir, 'kestrel_database.csv')
                     readonly_exists = os.path.isfile(readonly_src)
                     debug_info.append(f'[api]     readonly_src: {readonly_src} exists={readonly_exists}')
 
-                    if readonly_exists:
-                        try:
-                            shutil.copy2(readonly_src, db_dst)
-                            debug_info.append(f'[api]     Restored sample DB: {db_dst}')
-                        except PermissionError as e:
-                            # Bundled location is read-only (e.g. an MS Store /
-                            # Program Files\WindowsApps install). Mirror the
-                            # sample set into the user data dir on first use and
-                            # use that copy for both reads and writes.
-                            debug_info.append(
-                                f'[api]     In-place restore denied ({e.__class__.__name__}); '
-                                f'mirroring sample set to user data dir'
-                            )
-                            mirror = self._mirror_sample_set_to_user_dir(full, debug_info)
-                            if mirror is not None:
-                                full = mirror
-                        except OSError as e:
-                            debug_info.append(f'[api]     Failed to restore DB: {e}')
+                    # Default path (all platforms): mirror the bundled set into a
+                    # writable per-session temp dir and hand the UI that copy. The
+                    # mirror resets its own live DB from the readonly source, so it
+                    # is a clean-slate sample set for this run.
+                    mirror = self._mirror_sample_set_to_temp(full, debug_info)
+                    if mirror is not None:
+                        paths.append(mirror)
+                        debug_info.append(f'[api]     Added mirror path: {mirror}')
                     else:
-                        debug_info.append(f'[api]     No readonly DB found at {readonly_src}')
-
-                    paths.append(full)
-                    debug_info.append(f'[api]     Added path: {full}')
+                        # Fallback: temp mirror unavailable. Use the bundled set
+                        # directly and reset its DB in place, as before. Any
+                        # residual OSError (e.g. a read-only bundle) is left to
+                        # surface in the trace for future triage rather than
+                        # silently swallowed.
+                        db_dst = os.path.join(kestrel_dir, 'kestrel_database.csv')
+                        if readonly_exists:
+                            try:
+                                shutil.copy2(readonly_src, db_dst)
+                                debug_info.append(f'[api]     Restored sample DB in place: {db_dst}')
+                            except OSError as e:
+                                debug_info.append(
+                                    f'[api]     In-place DB restore failed (mirror unavailable): {e}'
+                                )
+                        else:
+                            debug_info.append(f'[api]     No readonly DB found at {readonly_src}')
+                        paths.append(full)
+                        debug_info.append(f'[api]     Added bundled path: {full}')
             
             # Success path: one-line summary at INFO. Full trace only at DEBUG.
             for line in debug_info:

@@ -495,10 +495,10 @@ class TestCCAnalysisSettingsSnapshot:
 
 
 class TestSampleSetMirror:
-    """Tests for ``_mirror_sample_set_to_user_dir`` — the read-only-install
-    fallback that lets sample sets work when bundled under
-    ``Program Files\\WindowsApps`` (MSIX) or any other location the user
-    cannot write to."""
+    """Tests for ``_mirror_sample_set_to_temp`` — the platform-agnostic
+    per-session mirror that copies bundled sample sets into a writable temp
+    dir so the tutorial starts from a clean slate every run and read-only
+    installs (MSIX / ``WindowsApps``, macOS App Translocation) just work."""
 
     def _make_sample_set(self, root, name, db_text="header\nrow\n"):
         """Build a minimal sample-set fixture: <root>/<name>/.kestrel/{db,readonly_db}."""
@@ -510,50 +510,94 @@ class TestSampleSetMirror:
         (set_dir / "photo.jpg").write_bytes(b"\xff\xd8\xff\xe0")  # JPEG header
         return set_dir
 
+    def _pin_temp_root(self, monkeypatch, root):
+        """Point the temp-mirror root at a tmp_path-backed dir (no real OS temp)."""
+        monkeypatch.setattr(
+            api_bridge.Api, "_sample_sets_temp_root",
+            staticmethod(lambda: str(root)),
+        )
+
     def test_mirror_copies_tree_and_restores_db(self, api, tmp_path, monkeypatch):
         """First-use mirror: copytree happens and DB is reset from readonly src."""
         bundled = self._make_sample_set(tmp_path / "bundled", "backyard_birds",
                                         db_text="pristine\n")
-        user_dir = tmp_path / "user_data"
-        monkeypatch.setattr("settings_utils._get_user_data_dir", lambda: str(user_dir))
+        temp_root = tmp_path / "temp_mirror"
+        self._pin_temp_root(monkeypatch, temp_root)
 
         debug: list = []
-        mirror = api._mirror_sample_set_to_user_dir(str(bundled), debug)
+        mirror = api._mirror_sample_set_to_temp(str(bundled), debug)
 
         assert mirror is not None
         mirror_path = Path(mirror)
-        assert mirror_path == user_dir / "sample_sets" / "backyard_birds"
+        assert mirror_path == temp_root / "backyard_birds"
         assert (mirror_path / "photo.jpg").is_file()
         # Live DB was reset from the readonly source (not the "stale" copy).
         assert (mirror_path / ".kestrel" / "kestrel_database.csv").read_text() == "pristine\n"
 
-    def test_mirror_reuses_existing_then_refreshes_db(self, api, tmp_path, monkeypatch):
-        """Second call: tree is not re-copied, but the DB is reset each session."""
+    def test_mirror_wipes_prior_session_then_refreshes_db(self, api, tmp_path, monkeypatch):
+        """Wipe-on-load: a second call discards last session's edits AND any
+        files that no longer exist in the bundle, then resets the DB."""
         bundled = self._make_sample_set(tmp_path / "bundled", "backyard_birds",
                                         db_text="pristine\n")
-        user_dir = tmp_path / "user_data"
-        monkeypatch.setattr("settings_utils._get_user_data_dir", lambda: str(user_dir))
+        temp_root = tmp_path / "temp_mirror"
+        self._pin_temp_root(monkeypatch, temp_root)
 
         # First call lays down the mirror.
-        api._mirror_sample_set_to_user_dir(str(bundled), [])
-        mirror_db = user_dir / "sample_sets" / "backyard_birds" / ".kestrel" / "kestrel_database.csv"
-        # Simulate the user "dirtying" the live DB during a tutorial session.
+        api._mirror_sample_set_to_temp(str(bundled), [])
+        mirror_dir = temp_root / "backyard_birds"
+        mirror_db = mirror_dir / ".kestrel" / "kestrel_database.csv"
+        # Simulate a prior tutorial session: dirty the DB and drop a stray file.
         mirror_db.write_text("dirty\n")
+        stray = mirror_dir / "user_added.txt"
+        stray.write_text("leftover\n")
 
         debug: list = []
-        api._mirror_sample_set_to_user_dir(str(bundled), debug)
+        api._mirror_sample_set_to_temp(str(bundled), debug)
 
-        # Per-session reset: DB returns to the readonly state.
+        # Clean slate: DB reset to readonly state and the stray file is gone.
         assert mirror_db.read_text() == "pristine\n"
-        # And we did reuse the existing tree rather than re-copy it.
-        assert any("reusing existing mirror" in line for line in debug)
+        assert not stray.exists()
+        assert any("copied" in line for line in debug)
+
+    def test_mirror_auto_refreshes_when_bundle_changes(self, api, tmp_path, monkeypatch):
+        """If the bundled set changes between sessions, the mirror picks it up."""
+        bundled = self._make_sample_set(tmp_path / "bundled", "backyard_birds",
+                                        db_text="v1\n")
+        temp_root = tmp_path / "temp_mirror"
+        self._pin_temp_root(monkeypatch, temp_root)
+
+        api._mirror_sample_set_to_temp(str(bundled), [])
+        # Ship a new bundled version (e.g. an app update changes the readonly DB).
+        (bundled / ".kestrel" / "kestrel_database_readonly.csv").write_text("v2\n")
+        (bundled / "new_photo.jpg").write_bytes(b"\xff\xd8\xff\xe0")
+
+        mirror = Path(api._mirror_sample_set_to_temp(str(bundled), []))
+        assert (mirror / ".kestrel" / "kestrel_database.csv").read_text() == "v2\n"
+        assert (mirror / "new_photo.jpg").is_file()
 
     def test_mirror_returns_none_on_copytree_failure(self, api, tmp_path, monkeypatch):
         """If shutil.copytree raises (e.g. source missing), return None and log."""
-        monkeypatch.setattr("settings_utils._get_user_data_dir",
-                            lambda: str(tmp_path / "user_data"))
+        self._pin_temp_root(monkeypatch, tmp_path / "temp_mirror")
         debug: list = []
         # Source does not exist → copytree raises FileNotFoundError.
-        result = api._mirror_sample_set_to_user_dir(str(tmp_path / "missing_set"), debug)
+        result = api._mirror_sample_set_to_temp(str(tmp_path / "missing_set"), debug)
         assert result is None
         assert any("failed to mirror" in line for line in debug)
+
+    def test_cleanup_removes_temp_root(self, api, tmp_path, monkeypatch):
+        """cleanup_sample_set_mirrors removes the whole temp mirror tree."""
+        bundled = self._make_sample_set(tmp_path / "bundled", "backyard_birds")
+        temp_root = tmp_path / "temp_mirror"
+        self._pin_temp_root(monkeypatch, temp_root)
+
+        api._mirror_sample_set_to_temp(str(bundled), [])
+        assert temp_root.is_dir()
+
+        api.cleanup_sample_set_mirrors()
+        assert not temp_root.exists()
+
+    def test_cleanup_is_noop_when_absent(self, api, tmp_path, monkeypatch):
+        """cleanup is safe to call when no mirror was ever created."""
+        self._pin_temp_root(monkeypatch, tmp_path / "never_created")
+        # Must not raise.
+        api.cleanup_sample_set_mirrors()
