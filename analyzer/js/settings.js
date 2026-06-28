@@ -113,10 +113,23 @@
       const autoSaveCb = document.getElementById('settingsAutoSave');
       if (autoSaveCb) autoSaveCb.checked = getSetting('auto_save_enabled', true);
 
-      const rawExpDisableCb = document.getElementById('rawExposureCorrectionDisabled');
-      if (rawExpDisableCb) rawExpDisableCb.checked = getSetting('raw_exposure_correction_disabled', false);
-      const ectSettings = document.getElementById('settingsExposureCorrectedThumbs');
-      if (ectSettings) ectSettings.checked = !!getSetting('exposure_corrected_thumbs', true);
+      // Preview exposure-compensation strength — one slider shared with the
+      // scene viewer (see scene-zoom.js). Mirror the current value and drive the
+      // same apply path live so both stay in sync.
+      const expStrengthSlider = document.getElementById('settingsExpStrengthSlider');
+      if (expStrengthSlider) {
+        if (typeof syncSettingsExposureStrengthSlider === 'function') {
+          syncSettingsExposureStrengthSlider();
+        }
+        if (!expStrengthSlider.dataset.wired) {
+          expStrengthSlider.dataset.wired = '1';
+          expStrengthSlider.addEventListener('input', () => {
+            if (typeof applyExposurePreviewStrengthPct === 'function') {
+              applyExposurePreviewStrengthPct(parseFloat(expStrengthSlider.value));
+            }
+          });
+        }
+      }
 
       // ── Species & Region section ─────────────────────────────────────────
       const showSciCb = document.getElementById('showScientificNames');
@@ -164,12 +177,6 @@
       // Merge into existing settings so keys like machine_id / analytics_consent_shown are preserved
       const existing = loadSettings();
       const prevProfile = existing.rating_profile || 'balanced';
-      const ectCb = document.getElementById('settingsExposureCorrectedThumbs');
-      const exposureCorrectedThumbs = ectCb ? !!ectCb.checked : getSetting('exposure_corrected_thumbs', true);
-      const prevExposureThumbs = getSetting('exposure_corrected_thumbs', true);
-      const rawExpEl = document.getElementById('rawExposureCorrectionDisabled');
-      const rawExposureCorrectionDisabled = rawExpEl ? !!rawExpEl.checked : !!existing.raw_exposure_correction_disabled;
-      const prevRawExposureDisabled = !!existing.raw_exposure_correction_disabled;
 
       // ── Species & Region: collect region picker state + show-sci toggle ──
       // An empty selection falls back to ``['NA']`` rather than producing an
@@ -197,8 +204,6 @@
         rating_profile: ratingProfile,
         raw_preview_cache_enabled: rawPreviewCacheEnabled,
         auto_save_enabled: autoSaveEnabled,
-        raw_exposure_correction_disabled: rawExposureCorrectionDisabled,
-        exposure_corrected_thumbs: exposureCorrectedThumbs,
         bird_regions: finalRegions,
         show_scientific_names: showScientificNames,
       };
@@ -218,15 +223,9 @@
       if (ratingProfile !== prevProfile && rows.length > 0) {
         await reapplyNormalizationForLoadedFolders();
       }
-      const thumbPreviewChanged =
-        exposureCorrectedThumbs !== prevExposureThumbs || rawExposureCorrectionDisabled !== prevRawExposureDisabled;
-      if (thumbPreviewChanged && rows.length > 0) {
-        await renderScenes();
-        if (sceneDlg?.open && _currentScene) {
-          renderFilmstrip(_currentScene);
-          await selectFilmstripImage(currentImageIndex, _currentScene, false, false);
-        }
-      }
+      // Preview exposure-compensation strength is applied live by the shared
+      // slider (applyExposurePreviewStrengthPct → refreshManagedExposurePreviews),
+      // so no thumbnail re-render is needed here on save.
       // Show-scientific-names + region changes don't affect the model output,
       // just the way pills render and which species the combobox surfaces.
       // Repaint anything that's currently on screen so the change is visible

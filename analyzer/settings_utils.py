@@ -433,6 +433,16 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     _set_int('max_bird_crops', default=10, min_value=1, max_value=20)
     _set_int('parallel_prefetch', default=3, min_value=1, max_value=5)
     _set_bool('exposure_corrected_thumbs', default=True)
+    # Strength of the solver's exposure compensation as applied to *preview*
+    # imagery (export thumbnails' browser-CSS brightness and the RAW zoom
+    # preview's EV). 1.0 = full auto correction, 0.0 = off; default 0.7.
+    # Preview-only: the pipeline-baked crop thumbnails are unaffected.
+    _set_float('exposure_preview_strength', default=0.7, min_value=0.0, max_value=1.0, digits=3)
+    # One-time marker: set the first time the unified preview-exposure slider is
+    # written, so the 70% migration default is applied once and a later user
+    # choice is never reset. Supersedes the retired raw_exposure_correction_disabled
+    # / exposure_corrected_thumbs checkboxes.
+    _set_bool('exposure_preview_strength_migrated', default=False)
     # Analysis-mode feature toggles persisted so cloud-compute settings snapshot
     # (_cc_analysis_settings_snapshot) can read them without needing the UI to
     # pass them as runtime parameters.

@@ -191,6 +191,27 @@ class TestSanitizePayload:
         # (depending on implementation details)
         assert isinstance(result, dict)
 
+    def test_exposure_preview_strength_clamped(self):
+        """Preview exposure-comp strength is a 0..1 float, like other _set_float
+        keys: absent when not provided, coerced + clamped when present."""
+        # Absent on empty input (read-time default of 1.0 applied by the UI).
+        assert "exposure_preview_strength" not in _sanitize_settings_payload({})
+        # In-range value preserved.
+        assert _sanitize_settings_payload(
+            {"exposure_preview_strength": 0.5}
+        )["exposure_preview_strength"] == 0.5
+        # Out-of-range clamps to [0.0, 1.0].
+        assert _sanitize_settings_payload(
+            {"exposure_preview_strength": 5}
+        )["exposure_preview_strength"] == 1.0
+        assert _sanitize_settings_payload(
+            {"exposure_preview_strength": -1}
+        )["exposure_preview_strength"] == 0.0
+        # Garbage falls back to the 0.7 default.
+        assert _sanitize_settings_payload(
+            {"exposure_preview_strength": "abc"}
+        )["exposure_preview_strength"] == 0.7
+
 
 class TestCrashReportsSetting:
     """Tests for ``crash_reports_enabled`` — opt-out flag, default ON.

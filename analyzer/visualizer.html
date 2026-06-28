@@ -388,10 +388,19 @@
                 <span>Copy</span>
               </button>
             </div>
-            <label class="scene-zoom-bar" id="sceneZoomWrap" title="RAW Zoom — click and hold on the full image to zoom">
-              <span class="muted" style="font-size:11px">RAW Zoom</span>
-              <input type="range" id="sceneZoomSlider" min="2" max="12" value="5" step="0.5" style="width:90px">
-            </label>
+            <div class="scene-zoom-bar" id="sceneZoomWrap">
+              <label class="scene-zoom-ctrl" title="RAW Zoom — click and hold on the full image to zoom">
+                <span class="muted scene-zoom-ctrl-label">RAW Zoom</span>
+                <input type="range" id="sceneZoomSlider" min="2" max="12" value="5" step="0.5">
+              </label>
+              <div class="scene-zoom-spacer"></div>
+              <label class="scene-zoom-ctrl" title="Exposure-compensation strength applied to the preview (export thumbnail + RAW zoom). 0% turns preview correction off (original export); 100% applies the full auto correction so the bird roughly matches the bird-crop thumbnail. Does not change the baked bird-crop thumbnail.">
+                <span class="muted scene-zoom-ctrl-label">Exp Comp (<span id="sceneExpStrengthEv">+0.00</span>EV)</span>
+                <input type="range" id="sceneExpStrengthSlider" min="0" max="100" value="70" step="5">
+                <span class="scene-zoom-ctrl-val" id="sceneExpStrengthVal">70%</span>
+              </label>
+              <button type="button" class="scene-zoom-stat" id="sceneOverexposedToggle" aria-pressed="false" title="Percentage of the uncorrected full image with clipped (blown-out) highlights — measured before exposure compensation. Click to toggle the highlight clipping mask on the preview.">— clipped</button>
+            </div>
           </div>
           <div
             class="scene-preview-divider"
@@ -851,22 +860,13 @@
         in .kestrel/culling_TMP for faster subsequent loads. Disable to save disk space (previews will be generated fresh each time).</div>
 
       <div class="row">
-        <label for="rawExposureCorrectionDisabled" style="flex:1">Disable RAW Exposure Correction</label>
-        <label class="inline" style="gap:6px">
-          <input type="checkbox" id="rawExposureCorrectionDisabled" />
-          <span class="muted">Disable</span>
+        <label for="settingsExpStrengthSlider" style="flex:1">Preview exposure compensation</label>
+        <label class="inline" style="gap:8px">
+          <input type="range" id="settingsExpStrengthSlider" min="0" max="100" value="70" step="5" style="width:130px">
+          <span class="muted" id="settingsExpStrengthVal" style="min-width:34px;text-align:right;font-variant-numeric:tabular-nums">70%</span>
         </label>
       </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">By default, Kestrel applies a calculated exposure boost to RAW previews to match the processed JPEG. Enable this to view the RAW data without correction.</div>
-
-      <div class="row">
-        <label for="settingsExposureCorrectedThumbs" style="flex:1">Exposure-corrected thumbnails</label>
-        <label class="inline" style="gap:6px">
-          <input type="checkbox" id="settingsExposureCorrectedThumbs" checked />
-          <span class="muted">Enable</span>
-        </label>
-      </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Display only: approximate subject EV on full-frame thumbnails (grid &amp; scene dialog) with CSS. On by default; turn off for a neutral export preview. Does not affect analysis.</div>
+      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Display only: how strongly Kestrel's calculated exposure boost is applied to preview imagery (grid &amp; scene-dialog export thumbnails and the RAW zoom). 0% shows the uncorrected export; 100% matches the processed bird crop. The same slider is in the scene viewer. Does not affect analysis or the baked crop.</div>
 
       <div class="row">
         <label for="settingsAutoSave" style="flex:1">Auto-Save Changes</label>

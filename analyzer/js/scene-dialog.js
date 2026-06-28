@@ -347,13 +347,18 @@
           eimg.src = eurl;
           applyThumbnailExposureToImg(eimg, r);
           exportBox.appendChild(eimg);
+          // Refresh "% clipped" readout + highlight clip overlay for this row.
+          updateExportClipPreview(r);
         } else {
           const muted = document.createElement('span');
           muted.className = 'muted';
           muted.textContent = 'No export preview';
           exportBox.appendChild(muted);
+          _setOverexposedReadout(NaN);
         }
       }
+      // Reflect this image's applied exposure compensation in the slider label.
+      updateExpCompEvLabel();
 
       // Load crop preview
       const cropBox = el('#previewCropBox');
