@@ -144,7 +144,7 @@
     /**
      * Sample a drawable (img or canvas) at downscaled resolution, optionally
      * with a brightness() pre-filter, and report the fraction of pixels whose
-     * brightest channel is clipped. When wantMask, also returns a magenta mask
+     * brightest channel is clipped. When wantMask, also returns an orange mask
      * canvas (clipped pixels opaque, the rest transparent) sized to the sample.
      * Returns {pct, canvas} — {0,null} on any failure (e.g. tainted canvas).
      */
@@ -262,7 +262,23 @@
       const w = zoomCanvas.width, h = zoomCanvas.height;
       // Readout stays the stable full-frame value (set before zoom started);
       // the zoom overlay is a visual aid only.
-      const { canvas } = _computeClipStats(zoomCanvas, w, h, 1, true);
+      //
+      // Measure on the UNCORRECTED source, to match the export mask + "% clipped"
+      // readout (clipping is a property of the captured source, not the preview's
+      // exposure boost). When the canvas still shows the export thumbnail its
+      // pixels are already uncorrected (CSS brightness() doesn't bake into
+      // drawImage), so mult = 1. Once the corrected RAW is loaded, the backend
+      // has baked the effective EV into those pixels, so we apply the inverse
+      // gamma-aware brightness to undo it before counting clipped pixels.
+      let brightnessMult = 1;
+      const previewImg = box.querySelector('img');
+      if (previewImg && previewImg.dataset.isRaw === '1' && sceneZoomRow) {
+        const eff = getRowRawPreviewEffectiveStops(sceneZoomRow, false);
+        if (Number.isFinite(eff) && Math.abs(eff) > 0.0005) {
+          brightnessMult = stopsToThumbnailBrightnessMultiplier(-eff);
+        }
+      }
+      const { canvas } = _computeClipStats(zoomCanvas, w, h, brightnessMult, true);
       if (old) old.remove();
       if (canvas) {
         canvas.className = 'scene-zoom-clip-overlay';
