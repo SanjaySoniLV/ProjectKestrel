@@ -211,7 +211,7 @@
 
 .wln-cards {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 12px;
   margin: 18px 0 0;
 }
@@ -244,6 +244,18 @@
   background: rgba(74, 163, 255, 0.12);
   border: 1px solid rgba(74, 163, 255, 0.22);
   flex-shrink: 0;
+}
+.wln-card-icon-img {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.10);
+  padding: 4px;
+  overflow: hidden;
+}
+.wln-card-icon-img img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
 }
 .wln-card-heading { min-width: 0; }
 .wln-card-name {

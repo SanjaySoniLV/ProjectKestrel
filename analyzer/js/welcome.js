@@ -12,37 +12,38 @@
     //
     // Keep this object in sync with Kestrel Website/whats-new.json.
     const WHATS_NEW = {
-      version: 'rufous-hummingbird',
-      eyebrow: 'New in v(Rufous Hummingbird)',
-      title: 'Introducing Perch &amp; Cloud Compute',
-      subtitle: 'Celebrating 1.5M photos analyzed',
-      greeting: 'Dear bird photographer,',
-      intro: [
-        "Five years ago, I realized almost all of my bird photography had been buried in an enormous, unsearchable archive.",
-        "I’ve since finished an entire undergraduate engineering degree while building Project Kestrel in my afternoons and weekends. I never imagined it would analyze 1.5&nbsp;million photos — especially not within just three months.",
-      ],
-      announce: "Today, I’m announcing two new platforms.",
+      version: 'rock-wren',
+      eyebrow: 'v(Rock Wren)',
+      title: 'What’s New in Project Kestrel',
+      subtitle: 'Updates across Project Kestrel, Perch &amp; Cloud Compute',
       cards: [
         {
-          icon: '🪶',
+          // Desktop app logo — bundled at the static-server root (see .spec datas).
+          iconImg: 'logo.png',
+          name: 'Project Kestrel',
+          tag: 'New in v(Rock Wren)',
+          body: "A single <b>Preview Exposure Compensation</b> slider — now in both the scene viewer and Settings — replaces the old exposure checkboxes, alongside a new highlight <b>clipping mask</b> and <b>“% clipped”</b> readout for spotting blown highlights. Sign-in is far more reliable on Windows, plus fixes for Perch sharing, read-only installs, and macOS stability.",
+        },
+        {
+          // Perch logo (rufous hummingbird) — bundled at the static-server root.
+          iconImg: 'perch-logo.png',
           name: 'Perch',
-          tag: 'Share entire birding outings with anyone',
-          body: "Perch is a new way to share your bird photography, focused on the <i>experience</i> of your birding outing rather than the individual photos you capture. Click <b>“Share with Perch”</b> to upload your whole timeline, personalize it by adding notes, then share it with anyone you wish. Perch is free for everyone, with <b>3&nbsp;GB</b>, or ~15,000 photos, per account.",
-          link: { label: 'See an example →', href: 'https://perch.projectkestrel.org/' },
+          tag: 'What’s new',
+          // TODO(Sanjay): replace with the real Perch copy for this release.
+          body: "<b>[DRAFT — replace]</b> Recent improvements to Perch, your shared birding timelines.",
+          link: { label: 'Visit Perch →', href: 'https://perch.projectkestrel.org/' },
         },
         {
           icon: '⚡',
           name: 'Cloud Compute',
-          tag: 'Offload analysis to cloud GPUs',
-          body: "Hand a big backlog to cloud GPUs and keep working while they crunch — ideal for slower laptops or high-volume shooters. It runs the exact same Kestrel pipeline, spread across up to 3 GPUs at once. New accounts start with <b>2,500 images</b> of credits to try.",
+          tag: 'What’s new',
+          // TODO(Sanjay): replace with the real Cloud Compute copy for this release.
+          body: "<b>[DRAFT — replace]</b> Recent improvements to Cloud Compute, which offloads analysis to cloud GPUs.",
           hint: 'Find it in the Analyze Folders dialog.',
         },
       ],
-      note: "I hope you’ll try them both. From one birder to another, thank you for using Project Kestrel — and <b>please</b> share your thoughts, stories, feedback, and bug reports through the in-app and in-account feedback forms.",
-      blogLink: { label: 'Read the full blog →', href: 'https://projectkestrel.org/blogs/perch-cc-launch.html' },
-      sign: '— Sanjay, Sole Developer &amp; Owner, Project Kestrel',
       // Kept for the website banner / changelog tooling.
-      headline: "New in v(Rufous Hummingbird) — Perch & Cloud Compute are live!",
+      headline: "New in v(Rock Wren) — A smarter exposure preview and rock-solid sign-in!",
     };
 
     const WELCOME_TIPS = [
@@ -153,6 +154,16 @@
       return null;
     }
 
+    // A card icon image must be a bundled asset served from the static-server
+    // root: a bare filename with an image extension, no path separators, scheme,
+    // or traversal. Intentionally strict because card.iconImg can also arrive
+    // from the remote whats-new.json — only same-origin bundled logos may load,
+    // never an arbitrary remote/tracking URL.
+    function safeAssetFile(f) {
+      var s = String(f == null ? '' : f);
+      return /^[a-z0-9][a-z0-9._-]*\.(png|svg|webp|jpe?g)$/i.test(s) ? s : null;
+    }
+
     // Validate a candidate note (local or remote) has the minimum shape.
     function isValidNote(n) {
       return !!(n && typeof n.version === 'string' && n.version && n.title &&
@@ -175,10 +186,14 @@
         } else if (c.hint) {
           cta = '<div class="wln-card-hint">' + sr(c.hint) + '</div>';
         }
+        var iconFile = safeAssetFile(c.iconImg);
+        var iconHtml = iconFile
+          ? '<span class="wln-card-icon wln-card-icon-img"><img src="' + escapeAttr(iconFile) + '" alt="" /></span>'
+          : '<span class="wln-card-icon">' + sr(c.icon || '•') + '</span>';
         return '' +
           '<div class="wln-card">' +
             '<div class="wln-card-top">' +
-              '<span class="wln-card-icon">' + sr(c.icon || '•') + '</span>' +
+              iconHtml +
               '<div class="wln-card-heading">' +
                 '<div class="wln-card-name">' + sr(c.name || '') + '</div>' +
                 '<div class="wln-card-tag">' + sr(c.tag || '') + '</div>' +
@@ -206,9 +221,11 @@
           intro +
           (note.announce ? '<p class="wln-announce">' + sr(note.announce) + '</p>' : '') +
           '<div class="wln-cards">' + cards + '</div>' +
-          '<div class="wln-note">' + sr(note.note || '') +
-            (note.sign ? '<span class="wln-sign">' + sr(note.sign) + '</span>' : '') +
-          '</div>' +
+          ((note.note || note.sign)
+            ? '<div class="wln-note">' + sr(note.note || '') +
+                (note.sign ? '<span class="wln-sign">' + sr(note.sign) + '</span>' : '') +
+              '</div>'
+            : '') +
           blogBtn +
         '</div>';
     }
