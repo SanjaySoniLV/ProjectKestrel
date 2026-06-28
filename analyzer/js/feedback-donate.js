@@ -140,7 +140,7 @@
     document.getElementById('analyticsDecline').addEventListener('click', () => handleAnalyticsConsent(false));
 
     // ─── Donation / Support ──────────────────────────────────────────────────────
-    const DONATE_URL = 'https://www.paypal.com/donate/?hosted_button_id=CXH4FE5AKZD3A';
+    const DONATE_URL = 'https://donate.stripe.com/aFa28kbrLeb45mFgFE1ZS00';
     const DONATE_THRESHOLD_KEY = 'kestrel-donate-thresholds-shown-v1';
 
     function openDonateLink() {

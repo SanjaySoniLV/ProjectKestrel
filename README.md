@@ -6,7 +6,7 @@ Project Kestrel uses machine learning to organize your bird photo collection. By
 ![License](https://img.shields.io/badge/license-AGPLv3-green.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-lightgrey.svg)
 
-[Visit Projectkestrel.org](https://projectkestrel.org) | [Donate](https://www.paypal.com/donate/?hosted_button_id=CXH4FE5AKZD3A)
+[Visit Projectkestrel.org](https://projectkestrel.org) | [Donate](https://donate.stripe.com/aFa28kbrLeb45mFgFE1ZS00)
 
 ## At a Glance
 
@@ -192,7 +192,7 @@ The `.kestrel` folder will require an additional 1MB of disk space for every ~10
 
 Contributions are welcome! Please feel free to submit pull requests, report bugs, or suggest features.
 
-Donations are welcome. Please donate via [PayPal/Card](https://www.paypal.com/donate/?hosted_button_id=CXH4FE5AKZD3A)
+Donations are welcome. Please donate via [card](https://donate.stripe.com/aFa28kbrLeb45mFgFE1ZS00)
 
 ## ❓ Contact Me
 Direct questions or comments to [support@projectkestrel.org](mailto:support@projectkestrel.org)
