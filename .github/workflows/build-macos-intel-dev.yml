@@ -74,18 +74,27 @@ jobs:
       - name: Verify binary architecture is x86_64
         shell: bash
         run: |
-          set -euo pipefail
+          # No `set -e`: a `find|head` SIGPIPE under pipefail must not abort the
+          # listing. The arch assertion below enforces failure explicitly.
+          set -u
           BIN="analyzer/dist/ProjectKestrel/ProjectKestrel"
           echo "=== main binary ==="
-          lipo -archs "$BIN" || file "$BIN"
+          lipo -archs "$BIN" || file "$BIN" || true
           echo "=== sample native libs ==="
-          find analyzer/dist/ProjectKestrel -type f \( -name "*.dylib" -o -name "*.so" \) | head -8 | while read -r f; do
+          find analyzer/dist/ProjectKestrel -type f \( -name "*.dylib" -o -name "*.so" \) > "${RUNNER_TEMP}/libs.txt" 2>/dev/null || true
+          n=0
+          while IFS= read -r f; do
+            [ "$n" -ge 8 ] && break
             printf '%-55s ' "$(basename "$f")"; lipo -archs "$f" 2>/dev/null || echo "?"
-          done
+            n=$((n+1))
+          done < "${RUNNER_TEMP}/libs.txt"
           ARCHS=$(lipo -archs "$BIN" 2>/dev/null || echo "")
           echo "main binary archs: $ARCHS"
-          echo "$ARCHS" | grep -q x86_64 || { echo "::error::binary is not x86_64 (archs: $ARCHS)"; exit 1; }
-          echo "x86_64 Intel build confirmed"
+          if echo "$ARCHS" | grep -q x86_64; then
+            echo "x86_64 Intel build confirmed"
+          else
+            echo "::error::binary is not x86_64 (archs: $ARCHS)"; exit 1
+          fi
 
       - name: Run --validate against frozen Intel binary
         id: validate
