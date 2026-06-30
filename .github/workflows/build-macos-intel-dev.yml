@@ -5,11 +5,15 @@ name: Build macOS Intel Dev (x86_64)
 # macos-latest (Apple Silicon), so it is arm64-only; this explores whether the
 # same unsandboxed PyInstaller spec builds + validates natively on Intel.
 #
-# Strategy: run on macos-13 (the last Intel GitHub runner — macos-14/15/latest
-# are arm64). Native x86_64 Python + x86_64 wheels => a pure x86_64 binary, no
-# fat-binary/universal2 requirement (which failed because deps ship arch-specific
-# wheels). If this is green, an Intel DMG is feasible by adding a macos-13 matrix
-# leg to the production signing workflow.
+# Strategy: run on macos-15-intel (the CURRENT Intel GitHub runner — macos-13 is
+# RETIRED as of Dec 2025, and macos-14/15/latest are arm64). Native x86_64 Python
+# + x86_64 wheels => a pure x86_64 binary, no fat-binary/universal2 requirement
+# (which failed because deps ship arch-specific wheels). If this is green, an
+# Intel DMG is feasible via a macos-15-intel matrix leg in the signing workflow.
+#
+# NOTE: macos-15-intel is the LAST x86_64 image GitHub will offer — x86_64 macOS
+# CI is fully retired ~Aug 2027 (Apple dropped Intel). Intel support is therefore
+# a time-limited, shrinking target; weigh that before investing further.
 
 on:
   workflow_dispatch:
@@ -18,7 +22,7 @@ on:
 
 jobs:
   build-macos-intel-dev:
-    runs-on: macos-13   # Intel runner
+    runs-on: macos-15-intel   # current Intel runner (macos-13 retired Dec 2025)
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
