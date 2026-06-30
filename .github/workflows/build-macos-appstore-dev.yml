@@ -95,6 +95,28 @@ jobs:
           chmod +x packaging/build_app_headless.sh
           ./packaging/build_app_headless.sh
 
+      - name: Inspect built Info.plist (App Store keys baked correctly?)
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP=$(find analyzer/dist -maxdepth 2 -name "*.app" | head -n 1)
+          PLIST="$APP/Contents/Info.plist"
+          echo "=== $PLIST ==="
+          plutil -p "$PLIST"
+          # Assert the App-Store-critical keys are present and well-formed.
+          get() { /usr/libexec/PlistBuddy -c "Print :$1" "$PLIST" 2>/dev/null || echo "<missing>"; }
+          BID=$(get CFBundleIdentifier); VER=$(get CFBundleShortVersionString)
+          BLD=$(get CFBundleVersion); CAT=$(get LSApplicationCategoryType)
+          ENC=$(get ITSAppUsesNonExemptEncryption); MIN=$(get LSMinimumSystemVersion)
+          echo "id=$BID short=$VER build=$BLD category=$CAT enc=$ENC min=$MIN"
+          fail=0
+          [ "$BID" = "org.projectkestrel.desktop" ] || { echo "::error::bundle id wrong: $BID"; fail=1; }
+          echo "$VER" | grep -Eq '^[0-9]+(\.[0-9]+)*$' || { echo "::error::CFBundleShortVersionString not numeric: $VER"; fail=1; }
+          echo "$BLD" | grep -Eq '^[0-9]+(\.[0-9]+)*$' || { echo "::error::CFBundleVersion not numeric: $BLD"; fail=1; }
+          [ "$CAT" = "public.app-category.photography" ] || { echo "::error::category wrong: $CAT"; fail=1; }
+          [ "$fail" = "0" ] || exit 1
+          echo "Info.plist App Store keys OK"
+
       - name: Run --validate against frozen App Store binary
         id: validate
         continue-on-error: true
