@@ -28,6 +28,8 @@ jobs:
       KESTREL_APPSTORE_VERSION: "1.0"
       KESTREL_APPSTORE_BUILD: "1"
       KESTREL_BUNDLE_ID: org.projectkestrel.desktop
+      # TEMPORARY universal2 probe — revert to "" (native arm64) after.
+      KESTREL_TARGET_ARCH: universal2
       APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -103,6 +105,25 @@ jobs:
         run: |
           chmod +x packaging/build_app_headless.sh
           ./packaging/build_app_headless.sh
+
+      - name: Verify binary architectures (universal2 probe)
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="$APP_BUNDLE/Contents/MacOS/ProjectKestrel"
+          echo "=== main binary archs ==="
+          lipo -archs "$BIN" || file "$BIN"
+          echo "=== sample of bundled native libs ==="
+          find "$APP_BUNDLE" -type f \( -name "*.dylib" -o -name "*.so" \) | head -8 | while read -r f; do
+            printf '%-60s ' "$(basename "$f")"; lipo -archs "$f" 2>/dev/null || echo "(thin?)"
+          done
+          ARCHS=$(lipo -archs "$BIN" 2>/dev/null || echo "")
+          echo "main binary archs: $ARCHS"
+          if echo "$ARCHS" | grep -q x86_64 && echo "$ARCHS" | grep -q arm64; then
+            echo "✅ universal2 (x86_64 + arm64) confirmed"
+          else
+            echo "::warning::main binary is NOT universal2 (archs: $ARCHS)"
+          fi
 
       - name: Inspect built Info.plist (App Store keys baked correctly?)
         shell: bash
