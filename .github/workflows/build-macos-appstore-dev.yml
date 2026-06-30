@@ -8,6 +8,11 @@ name: Build macOS App Store Dev (unsigned)
 
 on:
   workflow_dispatch:
+  # Branch-scoped so iterating on the App Store port auto-validates on a real
+  # Mac runner. (workflow_dispatch alone can't reach a workflow that isn't on
+  # the default branch yet.) Remove or narrow once this lands on main.
+  push:
+    branches: [ mac-app-store ]
 
 jobs:
   build-macos-appstore-dev:
