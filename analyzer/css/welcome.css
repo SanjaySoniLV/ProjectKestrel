@@ -210,13 +210,10 @@
 }
 
 .wln-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  display: flex;
+  flex-direction: column;
   gap: 12px;
   margin: 18px 0 0;
-}
-@media (max-width: 620px) {
-  .wln-cards { grid-template-columns: 1fr; }
 }
 
 .wln-card {
@@ -276,6 +273,17 @@
   flex: 1 1 auto;
 }
 .wln-card-body b { color: #dfe5ee; }
+.wln-card-list {
+  margin: 10px 0 0;
+  padding-left: 20px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #bcc4d0;
+  flex: 1 1 auto;
+}
+.wln-card-list li { margin-top: 5px; }
+.wln-card-list li:first-child { margin-top: 0; }
+.wln-card-list b { color: #dfe5ee; font-weight: 700; }
 .wln-card-link {
   margin-top: 11px;
   align-self: flex-start;
@@ -285,6 +293,13 @@
   text-decoration: none;
 }
 .wln-card-link:hover { color: #7bbfff; text-decoration: underline; }
+.wln-card-links {
+  margin-top: 11px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+}
+.wln-card-links .wln-card-link { margin-top: 0; }
 .wln-card-hint {
   margin-top: 11px;
   font-size: 11.5px;
@@ -306,8 +321,6 @@
 .wln-note a { color: var(--brand); text-decoration: none; }
 .wln-note a:hover { text-decoration: underline; }
 .wln-sign {
-  display: block;
-  margin-top: 7px;
   font-style: italic;
   color: var(--muted);
 }

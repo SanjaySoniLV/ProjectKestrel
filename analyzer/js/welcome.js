@@ -2,48 +2,63 @@
     // Welcome panel: "What's New" banner + rotating tip carousel
     // ====================================================================
 
-    // The in-app launch note. This is the BAKED-IN FALLBACK — at runtime the app
-    // first tries to fetch the same shape from projectkestrel.org/whats-new.json
-    // (via the fetch_remote_whats_new bridge method) so the copy can be edited
-    // without shipping an update. Remote content is run through sanitizeRichText()
-    // (tag allowlist) before it reaches innerHTML; the markup skeleton + welcome.css
-    // always come from this build. Bump `version` to re-surface the note to
-    // everyone (locally or by changing it in whats-new.json).
-    //
-    // Keep this object in sync with Kestrel Website/whats-new.json.
+    // The in-app "What's New" note shown on the welcome screen. It ships baked
+    // into the build: bump `version` to re-surface it to everyone, and it is
+    // dismissed per-version via the `last_seen_whats_new_version` setting.
+    // (A previous version also fetched an editable copy from
+    // projectkestrel.org/whats-new.json; that remote-override path was removed —
+    // the note now lives entirely in the app.)
     const WHATS_NEW = {
       version: 'rock-wren',
       eyebrow: 'v(Rock Wren)',
       title: 'What’s New in Project Kestrel',
-      subtitle: 'Updates across Project Kestrel, Perch &amp; Cloud Compute',
+      subtitle: 'Updates across Project Kestrel, Perch & Cloud Compute',
       cards: [
         {
           // Desktop app logo — bundled at the static-server root (see .spec datas).
           iconImg: 'logo.png',
           name: 'Project Kestrel',
           tag: 'New in v(Rock Wren)',
-          body: "A single <b>Preview Exposure Compensation</b> slider — now in both the scene viewer and Settings — replaces the old exposure checkboxes, alongside a new highlight <b>clipping mask</b> and <b>“% clipped”</b> readout for spotting blown highlights. Sign-in is far more reliable on Windows, plus fixes for Perch sharing, read-only installs, and macOS stability.",
+          bullets: [
+            'A unified <b>Preview Exposure Compensation</b> slider — in both the scene viewer and Settings — replaces the old exposure checkboxes.',
+            'A new highlight clipping mask and “% clipped” readout for spotting blown-out highlights.',
+            'Much more reliable sign-in on Windows, plus Perch sharing, read-only install, and macOS fixes.',
+            'projectkestrel.org got a full refresh — and together we crossed <b>2 million photos analyzed</b>!',
+          ],
         },
         {
           // Perch logo (rufous hummingbird) — bundled at the static-server root.
           iconImg: 'perch-logo.png',
           name: 'Perch',
           tag: 'What’s new',
-          // TODO(Sanjay): replace with the real Perch copy for this release.
-          body: "<b>[DRAFT — replace]</b> Recent improvements to Perch, your shared birding timelines.",
-          link: { label: 'Visit Perch →', href: 'https://perch.projectkestrel.org/' },
+          bullets: [
+            'Spotlight a standout shot as a dedicated <b>timeline note</b>.',
+            'Upload your own photos — edited shots or environment pics — to embed in your timeline.',
+            '<b>Perch Groups</b> is out of beta: merge timelines with friends to see one trip through every lens.',
+            'A new dark theme and stronger privacy controls (blocking & moderation).',
+          ],
+          links: [
+            { label: 'See an example Perch →', href: 'https://perch.projectkestrel.org/perch.html?slug=99wgeuhdo6' },
+            { label: 'Learn about Perch →', href: 'https://perch.projectkestrel.org/' },
+          ],
         },
         {
           icon: '⚡',
           name: 'Cloud Compute',
           tag: 'What’s new',
-          // TODO(Sanjay): replace with the real Cloud Compute copy for this release.
-          body: "<b>[DRAFT — replace]</b> Recent improvements to Cloud Compute, which offloads analysis to cloud GPUs.",
+          bullets: [
+            'New <b>Backlog Packs</b>: non-expiring credits, no subscription — 10,000 photos for $15 or 25,000 for $30.',
+            'Higher monthly limits — <b>Blue Jay</b> $20/mo for 15,000 images, <b>Sandpiper</b> $50/mo for 50,000 images.',
+          ],
           hint: 'Find it in the Analyze Folders dialog.',
+          links: [
+            { label: 'Purchase a Backlog Pack →', href: 'https://myaccount.projectkestrel.org/plan' },
+          ],
         },
       ],
-      // Kept for the website banner / changelog tooling.
-      headline: "New in v(Rock Wren) — A smarter exposure preview and rock-solid sign-in!",
+      note: 'Thank you for supporting the solo dev of Project Kestrel.',
+      sign: '— Sanjay',
+      blogLink: { label: 'Read the full v(Rock Wren) release notes →', href: 'https://projectkestrel.org/notes/rock-wren/' },
     };
 
     const WELCOME_TIPS = [
@@ -94,11 +109,10 @@
     ];
 
     // Sanitize a developer-authored rich-text string so it is safe to drop into
-    // innerHTML even when it arrives from the network (whats-new.json). Only a
-    // tiny formatting allowlist survives; everything else is downgraded to text.
-    // <a> is forced to https + safe rel/target. The markup *structure* around
-    // these values is always local (see below), so this guards the one place
-    // remote content reaches the DOM.
+    // innerHTML. Only a tiny formatting allowlist survives; everything else is
+    // downgraded to text, and <a> is forced to https + safe rel/target. The note
+    // content is build-local, so this is defense-in-depth rather than a hard
+    // boundary — but it keeps the one innerHTML path honest.
     function sanitizeRichText(html) {
       var allowed = { B: [], STRONG: [], I: [], EM: [], BR: [], A: ['href'] };
       var tpl = document.createElement('template');
@@ -156,35 +170,33 @@
 
     // A card icon image must be a bundled asset served from the static-server
     // root: a bare filename with an image extension, no path separators, scheme,
-    // or traversal. Intentionally strict because card.iconImg can also arrive
-    // from the remote whats-new.json — only same-origin bundled logos may load,
-    // never an arbitrary remote/tracking URL.
+    // or traversal. Intentionally strict — only same-origin bundled logos load.
     function safeAssetFile(f) {
       var s = String(f == null ? '' : f);
       return /^[a-z0-9][a-z0-9._-]*\.(png|svg|webp|jpe?g)$/i.test(s) ? s : null;
     }
 
-    // Validate a candidate note (local or remote) has the minimum shape.
-    function isValidNote(n) {
-      return !!(n && typeof n.version === 'string' && n.version && n.title &&
-                Array.isArray(n.cards) && n.cards.length);
-    }
-
-    // Build the note's inner HTML. Every value is sanitized; the surrounding
-    // structure is always local, so this is safe for remote content too.
+    // Build the note's inner HTML from the baked-in WHATS_NEW shape.
     function buildNoteHTML(note) {
-      var intro = (note.intro || []).map(function(p) {
-        return '<p class="wln-intro">' + sr(p) + '</p>';
-      }).join('');
-
       var cards = (note.cards || []).map(function(c) {
         var cta = '';
-        var cardHref = c.link && c.link.href ? safeHttpsUrl(c.link.href) : null;
-        if (cardHref) {
-          cta = '<a class="wln-card-link" href="' + escapeAttr(cardHref) +
-            '" target="_blank" rel="noopener noreferrer">' + sr(c.link.label || 'Learn more →') + '</a>';
-        } else if (c.hint) {
-          cta = '<div class="wln-card-hint">' + sr(c.hint) + '</div>';
+        // A card may carry a single `link` or a `links[]` array (one or more CTAs).
+        var linkList = Array.isArray(c.links) ? c.links : (c.link ? [c.link] : []);
+        var linkHtml = linkList.map(function(lk) {
+          var href = lk && lk.href ? safeHttpsUrl(lk.href) : null;
+          if (!href) return '';
+          return '<a class="wln-card-link" href="' + escapeAttr(href) +
+            '" target="_blank" rel="noopener noreferrer">' + sr(lk.label || 'Learn more →') + '</a>';
+        }).filter(Boolean).join('');
+        cta = (c.hint ? '<div class="wln-card-hint">' + sr(c.hint) + '</div>' : '') +
+              (linkHtml ? '<div class="wln-card-links">' + linkHtml + '</div>' : '');
+        var bodyHtml = '';
+        if (Array.isArray(c.bullets) && c.bullets.length) {
+          bodyHtml = '<ul class="wln-card-list">' +
+            c.bullets.map(function(b) { return '<li>' + sr(b) + '</li>'; }).join('') +
+            '</ul>';
+        } else if (c.body) {
+          bodyHtml = '<p class="wln-card-body">' + sr(c.body) + '</p>';
         }
         var iconFile = safeAssetFile(c.iconImg);
         var iconHtml = iconFile
@@ -199,7 +211,7 @@
                 '<div class="wln-card-tag">' + sr(c.tag || '') + '</div>' +
               '</div>' +
             '</div>' +
-            '<p class="wln-card-body">' + sr(c.body || '') + '</p>' +
+            bodyHtml +
             cta +
           '</div>';
       }).join('');
@@ -217,13 +229,10 @@
           '<span class="wln-eyebrow">🎉&nbsp; ' + sr(note.eyebrow || '') + '</span>' +
           '<h2 class="wln-title">' + sr(note.title || '') + '</h2>' +
           (note.subtitle ? '<div class="wln-subtitle">' + sr(note.subtitle) + '</div>' : '') +
-          (note.greeting ? '<p class="wln-greeting">' + sr(note.greeting) + '</p>' : '') +
-          intro +
-          (note.announce ? '<p class="wln-announce">' + sr(note.announce) + '</p>' : '') +
           '<div class="wln-cards">' + cards + '</div>' +
           ((note.note || note.sign)
             ? '<div class="wln-note">' + sr(note.note || '') +
-                (note.sign ? '<span class="wln-sign">' + sr(note.sign) + '</span>' : '') +
+                (note.sign ? ' <span class="wln-sign">' + sr(note.sign) + '</span>' : '') +
               '</div>'
             : '') +
           blogBtn +
@@ -234,20 +243,12 @@
       var banner = document.getElementById('welcomeWhatsNew');
       if (!banner) return;
 
-      var userDismissed = false;   // once the user closes it, never re-show this session
-      var renderedHTML = null;     // what's currently in the DOM (skip identical re-renders)
-      var lastSeen = null;         // the dismissed version, read once below
-
-      function showNote(note, html) {
-        html = html || buildNoteHTML(note);
-        banner.innerHTML = html;
+      function showNote(note) {
+        banner.innerHTML = buildNoteHTML(note);
         banner.classList.remove('hidden');
-        renderedHTML = html;
         var dismiss = banner.querySelector('#wwnDismiss');
         if (dismiss) dismiss.addEventListener('click', async function() {
-          userDismissed = true;
           banner.classList.add('hidden');
-          renderedHTML = null;
           if (hasPywebviewApi) {
             try {
               var r2 = await window.pywebview.api.get_settings();
@@ -259,48 +260,17 @@
         });
       }
 
-      function hideNote() {
-        banner.classList.add('hidden');
-        renderedHTML = null;
-      }
-
-      // Render (or hide) for a candidate note, honoring per-version gating.
-      // No-ops if the user already dismissed, or if the rendered HTML is
-      // identical (so a remote payload equal to the local one never flickers).
-      // `allowHide` is only true for the local pass: a stale/rolled-back remote
-      // payload must never hide a note the local copy legitimately showed.
-      function reconcile(note, allowHide) {
-        if (userDismissed || !isValidNote(note)) return;
-        if (note.version !== lastSeen) {
-          var html = buildNoteHTML(note);
-          if (html !== renderedHTML) showNote(note, html);
-        } else if (allowHide) {
-          hideNote();
-        }
-      }
-
       (async function() {
-        // 1) Read the gating setting (a fast LOCAL bridge call — no network).
+        // Gate on the per-version "last seen" setting (a fast LOCAL bridge call).
+        // The note is baked into the build — bump WHATS_NEW.version to re-show it.
+        var lastSeen = null;
         if (hasPywebviewApi) {
           try {
             var res = await window.pywebview.api.get_settings();
             lastSeen = res && res.settings && res.settings.last_seen_whats_new_version;
           } catch (_) {}
         }
-
-        // 2) LOCAL-FIRST: render the baked-in note immediately so there is no
-        //    flash of empty space while the network call is in flight.
-        reconcile(WHATS_NEW, true);
-
-        // 3) RECONCILE: fetch the remote copy in the background and only update
-        //    the DOM if it differs (edited copy or a newer version). On any
-        //    failure (slow/no wifi, bad endpoint, malformed) the local note
-        //    simply stays put.
-        if (hasPywebviewApi && window.pywebview.api.fetch_remote_whats_new) {
-          window.pywebview.api.fetch_remote_whats_new().then(function(rr) {
-            if (rr && rr.success) reconcile(rr.data);
-          }).catch(function() {});
-        }
+        if (WHATS_NEW.version !== lastSeen) showNote(WHATS_NEW);
       })();
     })();
 
