@@ -28,8 +28,12 @@ jobs:
       KESTREL_APPSTORE_VERSION: "1.0"
       KESTREL_APPSTORE_BUILD: "1"
       KESTREL_BUNDLE_ID: org.projectkestrel.desktop
-      # TEMPORARY universal2 probe — revert to "" (native arm64) after.
-      KESTREL_TARGET_ARCH: universal2
+      # arm64-only (native on the runner). universal2 is NOT feasible by flag:
+      # PyInstaller needs every native lib fat, but PIL/_avif.so, onnxruntime,
+      # opencv, rawpy ship arch-specific wheels (probed 2026-06-30, run #4).
+      # Apple Silicon only — a valid App Store target; Intel support is a
+      # separate fat-wheels effort. Leave empty for native.
+      KESTREL_TARGET_ARCH: ""
       APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -120,9 +124,10 @@ jobs:
           ARCHS=$(lipo -archs "$BIN" 2>/dev/null || echo "")
           echo "main binary archs: $ARCHS"
           if echo "$ARCHS" | grep -q x86_64 && echo "$ARCHS" | grep -q arm64; then
-            echo "✅ universal2 (x86_64 + arm64) confirmed"
+            echo "universal2 (x86_64 + arm64) confirmed"
           else
-            echo "::warning::main binary is NOT universal2 (archs: $ARCHS)"
+            # arm64-only is the intended default (see KESTREL_TARGET_ARCH note).
+            echo "arm64-only build (Apple Silicon) — intended default"
           fi
 
       - name: Inspect built Info.plist (App Store keys baked correctly?)
