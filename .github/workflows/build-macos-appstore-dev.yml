@@ -110,23 +110,28 @@ jobs:
           chmod +x packaging/build_app_headless.sh
           ./packaging/build_app_headless.sh
 
-      - name: Verify binary architectures (universal2 probe)
+      - name: Verify binary architectures
         shell: bash
         run: |
-          set -euo pipefail
+          # No `set -e`: a `find|head` SIGPIPE under pipefail must not abort the
+          # listing (this is informational — arm64-only is the intended default).
+          set -u
           BIN="$APP_BUNDLE/Contents/MacOS/ProjectKestrel"
           echo "=== main binary archs ==="
-          lipo -archs "$BIN" || file "$BIN"
+          lipo -archs "$BIN" || file "$BIN" || true
           echo "=== sample of bundled native libs ==="
-          find "$APP_BUNDLE" -type f \( -name "*.dylib" -o -name "*.so" \) | head -8 | while read -r f; do
+          find "$APP_BUNDLE" -type f \( -name "*.dylib" -o -name "*.so" \) > "${RUNNER_TEMP}/libs.txt" 2>/dev/null || true
+          n=0
+          while IFS= read -r f; do
+            [ "$n" -ge 8 ] && break
             printf '%-60s ' "$(basename "$f")"; lipo -archs "$f" 2>/dev/null || echo "(thin?)"
-          done
+            n=$((n+1))
+          done < "${RUNNER_TEMP}/libs.txt"
           ARCHS=$(lipo -archs "$BIN" 2>/dev/null || echo "")
           echo "main binary archs: $ARCHS"
           if echo "$ARCHS" | grep -q x86_64 && echo "$ARCHS" | grep -q arm64; then
             echo "universal2 (x86_64 + arm64) confirmed"
           else
-            # arm64-only is the intended default (see KESTREL_TARGET_ARCH note).
             echo "arm64-only build (Apple Silicon) — intended default"
           fi
 
