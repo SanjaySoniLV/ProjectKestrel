@@ -49,6 +49,17 @@ except ImportError:
     except ImportError:
         _launch_editor = None
 
+# macOS App Sandbox helpers. Import-safe everywhere (no-ops off-mac / off-sandbox);
+# used only by the Mac App Store build to route folder access through powerbox +
+# security-scoped bookmarks and to open files/Finder via NSWorkspace.
+try:
+    import mac_sandbox as _mac_sandbox
+except ImportError:
+    try:
+        from analyzer import mac_sandbox as _mac_sandbox
+    except ImportError:
+        _mac_sandbox = None
+
 from kestrel_analyzer.config import (
     JPEG_EXTENSIONS as _JPEG_EXTENSIONS,
     RAW_EXTENSIONS as _RAW_EXTENSIONS,
@@ -405,6 +416,17 @@ class Api:
         # the analyze dialog doesn't hit the Worker on every keystroke.
         self._cc_usage_cache: dict | None = None
         self._cc_usage_cache_at: float = 0.0
+
+        # macOS App Sandbox: re-acquire access to every previously-chosen photo
+        # folder via its stored security-scoped bookmark, held for the whole
+        # session. No-op on every other build (Windows/Linux/Developer-ID mac).
+        if _mac_sandbox is not None:
+            try:
+                n = _mac_sandbox.activate_all_bookmarks()
+                if n:
+                    info(f'[sandbox] Re-activated {n} folder bookmark(s) for this session.')
+            except Exception as e:
+                warn(f'[sandbox] bookmark activation failed: {e}')
 
     def _invalidate_account_caches(self) -> None:
         """Drop every identity-scoped cache (Perch account, Perch usage, and
@@ -811,12 +833,51 @@ class Api:
         save_persisted_settings(settings)
         return {'success': True}
     
+    @staticmethod
+    def _pywebview_folder_dialog(allow_multiple: bool):
+        """Open pywebview's native folder picker; return list[str] of paths.
+
+        On macOS this routes through NSOpenPanel/powerbox, which is the only
+        sandbox-legal folder picker (osascript needs Apple Events, tkinter is
+        unavailable). Used by the sandboxed App Store build, and as the
+        Windows/Linux multi-select picker. Returns [] on cancel/unavailable.
+        """
+        import webview
+        wins = getattr(webview, 'windows', None)
+        if not wins:
+            return []
+        win = wins[0]
+        dialog_kind = None
+        file_dialog = getattr(webview, 'FileDialog', None)
+        if file_dialog is not None and hasattr(file_dialog, 'FOLDER'):
+            dialog_kind = file_dialog.FOLDER
+        elif hasattr(webview, 'FOLDER_DIALOG'):
+            dialog_kind = webview.FOLDER_DIALOG
+        if dialog_kind is None:
+            return []
+        result = win.create_file_dialog(dialog_kind, allow_multiple=allow_multiple)
+        if not result:
+            return []
+        return [str(p) for p in result if p]
+
     def choose_directory(self):
         """Open native folder picker dialog.
         Returns: absolute path to selected folder, or None if cancelled.
         """
         try:
-            if sys.platform == 'darwin':
+            sandboxed = (
+                sys.platform == 'darwin'
+                and _mac_sandbox is not None
+                and _mac_sandbox.is_sandboxed()
+            )
+            if sandboxed:
+                # Sandbox: powerbox folder panel + persist a security-scoped
+                # bookmark so the grant survives across launches.
+                paths = self._pywebview_folder_dialog(allow_multiple=False)
+                folder = paths[0] if paths else ''
+                if folder:
+                    _mac_sandbox.remember_folder(folder)
+            elif sys.platform == 'darwin':
                 script = 'POSIX path of (choose folder with prompt "Select folder containing analyzed photos")'
                 result = subprocess.run(
                     ['osascript', '-e', script],
@@ -857,6 +918,22 @@ class Api:
         - Linux: pywebview's GTK/Qt backend; same fallback as Windows.
         """
         try:
+            if (
+                sys.platform == 'darwin'
+                and _mac_sandbox is not None
+                and _mac_sandbox.is_sandboxed()
+            ):
+                # Sandbox: powerbox multi-folder panel + persist a
+                # security-scoped bookmark per chosen folder.
+                paths = self._pywebview_folder_dialog(allow_multiple=True)
+                if not paths:
+                    info('[API] choose_directories -> cancelled')
+                    return []
+                for p in paths:
+                    _mac_sandbox.remember_folder(p)
+                info(f'[API] choose_directories (sandbox) -> {len(paths)} path(s)')
+                return paths
+
             if sys.platform == 'darwin':
                 # AppleScript returns one alias per line when "with multiple
                 # selections allowed" is used. POSIX path of {…} converts each
@@ -938,7 +1015,15 @@ class Api:
                     # Fallback for Windows if startfile is somehow missing (e.g. specialized python builds)
                     subprocess.run(['explorer', root_real], check=False)
             elif sys.platform == 'darwin':
-                subprocess.run(['open', root_real], check=False)
+                # Sandbox can't Popen /usr/bin/open; route through NSWorkspace.
+                if (
+                    _mac_sandbox is not None
+                    and _mac_sandbox.is_sandboxed()
+                    and _mac_sandbox.open_default(root_real)
+                ):
+                    pass
+                else:
+                    subprocess.run(['open', root_real], check=False)
             else:
                 subprocess.run(['xdg-open', root_real], check=False)
             return {'success': True, 'path': root_real}
@@ -951,6 +1036,35 @@ class Api:
         Returns: absolute path to selected file, or None if cancelled.
         """
         try:
+            if (
+                sys.platform == 'darwin'
+                and _mac_sandbox is not None
+                and _mac_sandbox.is_sandboxed()
+            ):
+                # Sandbox: powerbox open panel (NSOpenPanel treats .app bundles
+                # as selectable files). Persist a security-scoped bookmark so we
+                # can re-open files with this editor on later launches.
+                import webview
+                wins = getattr(webview, 'windows', None)
+                if not wins:
+                    return None
+                win = wins[0]
+                file_dialog = getattr(webview, 'FileDialog', None)
+                open_kind = (
+                    file_dialog.OPEN if (file_dialog is not None and hasattr(file_dialog, 'OPEN'))
+                    else getattr(webview, 'OPEN_DIALOG', None)
+                )
+                if open_kind is None:
+                    return None
+                result = win.create_file_dialog(
+                    open_kind,
+                    allow_multiple=False,
+                    file_types=('Applications (*.app)', 'All files (*.*)'),
+                )
+                chosen = (str(result[0]) if result else '') or ''
+                if chosen:
+                    _mac_sandbox.remember_folder(chosen)
+                return chosen or None
             if sys.platform == 'darwin':
                 import subprocess as _sp
                 script = 'POSIX path of (choose file of type {"app","APPL"} with prompt "Select an application")'
@@ -1760,7 +1874,15 @@ class Api:
             if p == 'Windows':
                 subprocess.Popen(['explorer', os.path.normpath(path)])
             elif p == 'Darwin':
-                subprocess.Popen(['open', path])
+                # Sandbox can't Popen /usr/bin/open; route through NSWorkspace.
+                if (
+                    _mac_sandbox is not None
+                    and _mac_sandbox.is_sandboxed()
+                    and _mac_sandbox.open_default(path)
+                ):
+                    pass
+                else:
+                    subprocess.Popen(['open', path])
             else:
                 subprocess.Popen(['xdg-open', path])
             return {'success': True}
@@ -1793,7 +1915,14 @@ class Api:
             if editor_name not in _ALLOWED_EDITORS:
                 editor_name = 'system'
 
-            _launch_editor(target, editor_name)
+            # Under the App Sandbox, hold security-scoped access to the folder
+            # while LaunchServices hands the file to the editor (no-op off
+            # sandbox; editor_launch itself routes through NSWorkspace there).
+            if _mac_sandbox is not None and _mac_sandbox.is_sandboxed():
+                with _mac_sandbox.access_for(resolved_root):
+                    _launch_editor(target, editor_name)
+            else:
+                _launch_editor(target, editor_name)
             return {'success': True, 'path': target}
         except Exception as e:
             error(f'[API] open_in_editor error: {e}')

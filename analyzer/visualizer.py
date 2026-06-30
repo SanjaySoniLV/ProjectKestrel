@@ -1064,6 +1064,15 @@ def main():
         # context menu with "Inspect" (DevTools) so the JS console is reachable.
         # Off by default for shipped builds; toggle for diagnostic sessions.
         _kestrel_debug = os.environ.get('KESTREL_DEBUG', '').strip().lower() in ('1', 'true', 'yes', 'on')
+        # Hard-disable in the macOS App Sandbox build: pywebview's Cocoa backend
+        # flips WKWebView's inspector via a private KVC key when debug=True,
+        # which is grounds for App Store rejection. Never honour the env there.
+        try:
+            import mac_sandbox as _ms
+            if _ms.is_sandboxed():
+                _kestrel_debug = False
+        except Exception:
+            pass
         webview.start(debug=_kestrel_debug)
     finally:
         # Signal in-flight cloud-compute uploads to stop FIRST. Their

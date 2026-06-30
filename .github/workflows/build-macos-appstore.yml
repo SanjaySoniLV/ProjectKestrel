@@ -1,0 +1,222 @@
+name: Build macOS App Store (signed .pkg)
+
+# ============================================================================
+# SCAFFOLD — produces a sandboxed, signed, App-Store-ready .pkg and (optionally)
+# uploads it to App Store Connect. It CANNOT run green until the new secrets
+# below are added; the "Preflight" step fails fast with a clear message if any
+# are missing. This is intentionally separate from build-macos.yml (the
+# Developer ID direct-download DMG), which is left untouched (dual-track).
+#
+# REQUIRED NEW SECRETS (added by the repo owner in Settings > Secrets):
+#   APPLE_APPSTORE_CERT_P12        base64 of the "Apple Distribution" cert (.p12)
+#   APPLE_APPSTORE_CERT_PASSWORD   password for that .p12
+#   APPLE_INSTALLER_CERT_P12       base64 of the "Apple Distribution" *installer*
+#                                  cert, aka "3rd Party Mac Developer Installer" (.p12)
+#   APPLE_INSTALLER_CERT_PASSWORD  password for that .p12
+#   APPLE_PROVISIONING_PROFILE     base64 of the Mac App Store provisioning
+#                                  profile (.provisionprofile) for the App ID
+#   APPLE_TEAM_ID                  (already present) Apple Developer Team ID
+#   APPLE_ID / APPLE_APP_PASSWORD  (already present) for the App Store upload
+#
+# REQUIRED INPUTS (workflow_dispatch):
+#   bundle_id        reverse-DNS App ID, MUST match the provisioning profile
+#   version          CFBundleShortVersionString (e.g. 1.0.0)
+#   build_number     CFBundleVersion (monotonic; e.g. a run number)
+#   upload           whether to push the .pkg to App Store Connect
+#
+# Real device validation of the sandbox/bookmark/entitlement behavior still
+# has to happen on a Mac after install — CI only proves it builds, signs, and
+# passes pkgutil/altool validation.
+# ============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundle_id:
+        description: "Reverse-DNS App ID (must match the provisioning profile)"
+        required: true
+        default: "org.projectkestrel.desktop"
+      version:
+        description: "CFBundleShortVersionString (e.g. 1.0.0)"
+        required: true
+        default: "1.0.0"
+      build_number:
+        description: "CFBundleVersion (monotonic integer/dotted)"
+        required: true
+        default: "1"
+      upload:
+        description: "Upload the .pkg to App Store Connect after building"
+        type: boolean
+        required: true
+        default: false
+
+jobs:
+  build-macos-appstore:
+    runs-on: macos-latest
+    env:
+      KESTREL_SPEC: ProjectKestrel-macos-appstore.spec
+      KESTREL_BUNDLE_ID: ${{ github.event.inputs.bundle_id }}
+      KESTREL_APPSTORE_VERSION: ${{ github.event.inputs.version }}
+      KESTREL_APPSTORE_BUILD: ${{ github.event.inputs.build_number }}
+      ENTITLEMENTS: analyzer/entitlements/ProjectKestrel.appstore.entitlements
+    steps:
+      - name: Preflight — required secrets present
+        shell: bash
+        env:
+          APPLE_APPSTORE_CERT_P12: ${{ secrets.APPLE_APPSTORE_CERT_P12 }}
+          APPLE_APPSTORE_CERT_PASSWORD: ${{ secrets.APPLE_APPSTORE_CERT_PASSWORD }}
+          APPLE_INSTALLER_CERT_P12: ${{ secrets.APPLE_INSTALLER_CERT_P12 }}
+          APPLE_INSTALLER_CERT_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERT_PASSWORD }}
+          APPLE_PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for v in APPLE_APPSTORE_CERT_P12 APPLE_APPSTORE_CERT_PASSWORD \
+                   APPLE_INSTALLER_CERT_P12 APPLE_INSTALLER_CERT_PASSWORD \
+                   APPLE_PROVISIONING_PROFILE APPLE_TEAM_ID; do
+            if [ -z "${!v:-}" ]; then missing+=("$v"); fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Missing required secrets: ${missing[*]}"
+            echo "Add them in repo Settings > Secrets and variables > Actions, then re-run."
+            exit 1
+          fi
+          echo "All required secrets present."
+
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Create venv and install dependencies
+        shell: bash
+        run: |
+          python -m venv .venv2
+          source .venv2/bin/activate
+          python -m pip install --upgrade pip
+          pip install -r requirements-macos.txt
+          pip install pyinstaller
+
+      - name: Generate .icns from logo.png
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="assets/logo.png"
+          ICONSET="${RUNNER_TEMP}/Kestrel.iconset"
+          rm -rf "$ICONSET"; mkdir -p "$ICONSET"
+          for sz in 16 32 128 256 512; do
+            sips -z $sz $sz "$SRC" --out "$ICONSET/icon_${sz}x${sz}.png" >/dev/null
+            dbl=$((sz*2))
+            sips -z $dbl $dbl "$SRC" --out "$ICONSET/icon_${sz}x${sz}@2x.png" >/dev/null
+          done
+          iconutil -c icns "$ICONSET" -o assets/logo.icns
+
+      - name: Build sandboxed app (App Store spec)
+        shell: bash
+        run: |
+          chmod +x packaging/build_app_headless.sh
+          ./packaging/build_app_headless.sh
+
+      - name: Install signing certs into a temporary keychain
+        shell: bash
+        env:
+          APPLE_APPSTORE_CERT_P12: ${{ secrets.APPLE_APPSTORE_CERT_P12 }}
+          APPLE_APPSTORE_CERT_PASSWORD: ${{ secrets.APPLE_APPSTORE_CERT_PASSWORD }}
+          APPLE_INSTALLER_CERT_P12: ${{ secrets.APPLE_INSTALLER_CERT_P12 }}
+          APPLE_INSTALLER_CERT_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/appstore.keychain-db"
+          KEYCHAIN_PASS="kestrel-ci"
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+
+          echo "$APPLE_APPSTORE_CERT_P12" | base64 --decode > "$RUNNER_TEMP/app.p12"
+          echo "$APPLE_INSTALLER_CERT_P12" | base64 --decode > "$RUNNER_TEMP/installer.p12"
+          security import "$RUNNER_TEMP/app.p12" -k "$KEYCHAIN" -P "$APPLE_APPSTORE_CERT_PASSWORD" \
+            -T /usr/bin/codesign
+          security import "$RUNNER_TEMP/installer.p12" -k "$KEYCHAIN" -P "$APPLE_INSTALLER_CERT_PASSWORD" \
+            -T /usr/bin/productbuild
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN" >/dev/null
+          # Prepend to the search list so codesign/productbuild find the identities.
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/app.p12" "$RUNNER_TEMP/installer.p12"
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
+      - name: Embed provisioning profile + sign (inside-out) + .pkg
+        shell: bash
+        env:
+          APPLE_PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          APP=$(find analyzer/dist -maxdepth 2 -name "*.app" | head -n 1)
+          if [ -z "$APP" ]; then echo "::error::no .app built"; exit 1; fi
+          echo "App bundle: $APP"
+
+          APP_IDENTITY="Apple Distribution: Sanjay Soni (${APPLE_TEAM_ID})"
+          INSTALLER_IDENTITY="3rd Party Mac Developer Installer: Sanjay Soni (${APPLE_TEAM_ID})"
+
+          # Embed the provisioning profile.
+          echo "$APPLE_PROVISIONING_PROFILE" | base64 --decode > "$APP/Contents/embedded.provisionprofile"
+
+          # Inside-out: sign every nested Mach-O first, then the bundle, all with
+          # the sandbox entitlements + hardened runtime. Library validation stays
+          # ON (no --deep, no disable-library-validation) — every dylib is signed
+          # with the same identity here.
+          find "$APP" -type f \( -name "*.dylib" -o -name "*.so" \) -print0 | while IFS= read -r -d '' lib; do
+            codesign --force --timestamp --options runtime \
+              --entitlements "$ENTITLEMENTS" --sign "$APP_IDENTITY" "$lib"
+          done
+          # Nested Mach-O executables under Contents/MacOS (PyInstaller bootloader, etc.)
+          find "$APP/Contents/MacOS" -type f -perm +111 -print0 2>/dev/null | while IFS= read -r -d '' bin; do
+            codesign --force --timestamp --options runtime \
+              --entitlements "$ENTITLEMENTS" --sign "$APP_IDENTITY" "$bin" || true
+          done
+          # Finally the whole bundle.
+          codesign --force --timestamp --options runtime \
+            --entitlements "$ENTITLEMENTS" --sign "$APP_IDENTITY" "$APP"
+
+          echo "=== verify codesign ==="
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign --display --entitlements - "$APP" || true
+
+          # Build the App Store .pkg signed with the installer identity.
+          mkdir -p artifact
+          productbuild --component "$APP" /Applications \
+            --sign "$INSTALLER_IDENTITY" \
+            artifact/ProjectKestrel-appstore.pkg
+          echo "=== pkg built ==="
+          pkgutil --check-signature artifact/ProjectKestrel-appstore.pkg || true
+
+      - name: Validate / upload to App Store Connect
+        if: ${{ github.event.inputs.upload == 'true' }}
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          echo "Validating the package…"
+          xcrun altool --validate-app -f artifact/ProjectKestrel-appstore.pkg \
+            -t macos -u "$APPLE_ID" -p "$APPLE_APP_PASSWORD"
+          echo "Uploading to App Store Connect…"
+          xcrun altool --upload-app -f artifact/ProjectKestrel-appstore.pkg \
+            -t macos -u "$APPLE_ID" -p "$APPLE_APP_PASSWORD"
+
+      - name: Upload .pkg artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-appstore-pkg
+          path: artifact/
+          if-no-files-found: warn

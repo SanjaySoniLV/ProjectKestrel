@@ -1,0 +1,184 @@
+name: Build macOS App Store Dev (unsigned)
+
+# Validation harness for the sandboxed App Store build variant.
+# UNSIGNED: it proves the App Store PyInstaller spec packages cleanly, the new
+# sandbox code paths import and don't crash, and the frozen app still validates
+# + wires up its UI. Real sandbox/bookmark/entitlement behavior can only be
+# verified by a SIGNED build on a real Mac (see build-macos-appstore.yml).
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-macos-appstore-dev:
+    runs-on: macos-latest
+    env:
+      KESTREL_SPEC: ProjectKestrel-macos-appstore.spec
+      KESTREL_APPSTORE_VERSION: "1.0"
+      KESTREL_APPSTORE_BUILD: "1"
+      KESTREL_BUNDLE_ID: org.projectkestrel.desktop
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Create venv and install dependencies
+        shell: bash
+        run: |
+          python -m venv .venv2
+          source .venv2/bin/activate
+          python -m pip install --upgrade pip
+          pip install -r requirements-macos.txt
+          pip install pyinstaller pytest
+
+      - name: Generate .icns from logo.png
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="assets/logo.png"
+          if [ ! -f "$SRC" ]; then echo "::warning::$SRC missing; skipping icon"; exit 0; fi
+          ICONSET="${RUNNER_TEMP}/Kestrel.iconset"
+          rm -rf "$ICONSET"; mkdir -p "$ICONSET"
+          for sz in 16 32 128 256 512; do
+            sips -z $sz $sz "$SRC" --out "$ICONSET/icon_${sz}x${sz}.png" >/dev/null
+            dbl=$((sz*2))
+            sips -z $dbl $dbl "$SRC" --out "$ICONSET/icon_${sz}x${sz}@2x.png" >/dev/null
+          done
+          iconutil -c icns "$ICONSET" -o assets/logo.icns
+          echo "Built assets/logo.icns ($(du -h assets/logo.icns | cut -f1))"
+
+      - name: Run pytest (skip ui marker) — exercises mac_sandbox on real PyObjC
+        id: pretest
+        continue-on-error: true
+        shell: bash
+        run: |
+          source .venv2/bin/activate
+          python -m pytest analyzer/tests/ -m "not ui" -q --tb=short
+
+      - name: Warn if pre-build pytest failed
+        if: ${{ always() && steps.pretest.outcome == 'failure' }}
+        shell: bash
+        run: echo "::warning::Pre-build pytest failed on App Store dev build; continuing to PyInstaller."
+
+      - name: Forced-sandbox import smoke (source)
+        shell: bash
+        run: |
+          set -euo pipefail
+          source .venv2/bin/activate
+          cd analyzer
+          KESTREL_FORCE_SANDBOX=1 python -c "
+          import mac_sandbox as m
+          assert m.is_sandboxed() is True, 'force-sandbox env not honoured'
+          assert m.have_pyobjc() is True, 'PyObjC (Foundation/AppKit) failed to load on macOS'
+          # These must not raise even though the unsigned binary lacks the
+          # security-scope entitlement (they degrade to None/0).
+          m.create_bookmark('/tmp')
+          m.activate_all_bookmarks()
+          print('forced-sandbox import smoke OK')
+          "
+
+      - name: Run App Store headless build (sandboxed spec)
+        shell: bash
+        run: |
+          chmod +x packaging/build_app_headless.sh
+          ./packaging/build_app_headless.sh
+
+      - name: Run --validate against frozen App Store binary
+        id: validate
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          VALIDATE_OUTPUT="${RUNNER_TEMP}/validate-result.json"
+          rm -f "${VALIDATE_OUTPUT}"
+          analyzer/dist/ProjectKestrel/ProjectKestrel \
+            --cli --validate --no-gpu \
+            --validate-images test_imgs \
+            --validate-output "${VALIDATE_OUTPUT}"
+          if [ ! -f "${VALIDATE_OUTPUT}" ]; then
+            echo "Frozen --validate did not produce a result JSON"; exit 1
+          fi
+          echo "=== validate-result.json ==="; cat "${VALIDATE_OUTPUT}"
+          cp "${VALIDATE_OUTPUT}" validate-result.json
+          ok=$(python3 -c "import json; print(str(json.load(open('${VALIDATE_OUTPUT}')).get('ok')).lower())")
+          if [ "${ok}" != "true" ]; then echo "Validation reported failure (ok=${ok})"; exit 1; fi
+
+      - name: Warn if frozen --validate failed
+        if: ${{ always() && steps.validate.outcome == 'failure' }}
+        shell: bash
+        run: echo "::warning::Frozen App Store --validate failed; continuing to publish artifacts."
+
+      - name: UI probe (visualizer.html) against frozen App Store binary
+        id: ui_probe
+        continue-on-error: true
+        timeout-minutes: 4
+        shell: bash
+        run: |
+          set +e
+          BIN="analyzer/dist/ProjectKestrel/ProjectKestrel"
+          PAT="dist/ProjectKestrel/ProjectKestrel"
+          OUT="${RUNNER_TEMP}/ui-probe-result.json"; rm -f "$OUT"
+          ELOG="${RUNNER_TEMP}/ui-probe.err"
+          "$BIN" --api-probe --probe-target visualizer \
+            --probe-output "$OUT" --probe-timeout 90 --port 8799 >"$ELOG" 2>&1 &
+          start=$SECONDS
+          while [ $((SECONDS-start)) -lt 110 ]; do
+            [ -f "$OUT" ] && { echo "result JSON appeared at t=$((SECONDS-start))s"; break; }
+            pgrep -f "$PAT" >/dev/null || { echo "probe exited at t=$((SECONDS-start))s before writing JSON"; break; }
+            sleep 1
+          done
+          pkill -9 -f "$PAT" 2>/dev/null
+          echo "=== probe stderr tail(15, non-GET) ==="; grep -vE 'GET /' "$ELOG" 2>/dev/null | tail -15
+          if [ ! -f "$OUT" ]; then echo "UI probe did not produce a result JSON"; exit 1; fi
+          cat "$OUT"; cp "$OUT" ui-probe-result.json
+          ok=$(python3 -c "import json; print(str(json.load(open('$OUT')).get('ok')).lower())" 2>/dev/null)
+          echo "ok=$ok"
+          if [ "$ok" != "true" ]; then echo "UI probe reported failure (ok=$ok)"; exit 1; fi
+          echo "App Store UI probe PASSED"
+
+      - name: Warn if UI probe failed
+        if: ${{ always() && steps.ui_probe.outcome == 'failure' }}
+        shell: bash
+        run: echo "::warning::Frozen App Store UI probe failed; visualizer.html did not see window.pywebview.api."
+
+      - name: Collect .app
+        shell: bash
+        run: |
+          set -e
+          mkdir -p artifact
+          APP_PATH=$(find analyzer/dist -maxdepth 2 -name "*.app" | head -n 1 || true)
+          if [ -z "$APP_PATH" ]; then echo "No .app found to upload"; exit 1; fi
+          echo "Found .app: $APP_PATH"
+          cp -a "$APP_PATH" artifact/
+
+      - name: Upload App Store dev .app
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-appstore-dev-app
+          path: artifact/
+
+      - name: Upload validate-result.json
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-appstore-dev-validate-result
+          path: validate-result.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload ui-probe-result.json
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-appstore-dev-ui-probe-result
+          path: ui-probe-result.json
+          if-no-files-found: warn
+          retention-days: 14

@@ -11,6 +11,22 @@ import sys
 
 from settings_utils import load_persisted_settings, debug, info, warn, log
 
+# macOS App Sandbox helper (import-safe no-op everywhere else). Under the
+# sandbox we cannot Popen /usr/bin/open or third-party editor binaries; opening
+# files in other apps must go through NSWorkspace (LaunchServices-brokered).
+try:
+    import mac_sandbox as _mac_sandbox
+except ImportError:
+    try:
+        from analyzer import mac_sandbox as _mac_sandbox
+    except ImportError:
+        _mac_sandbox = None
+
+
+def _sandboxed() -> bool:
+    return _mac_sandbox is not None and _mac_sandbox.is_sandboxed()
+
+
 # Cache for discovered darktable executable on Windows
 _DARKTABLE_EXE = None
 
@@ -129,7 +145,15 @@ def launch(path: str, editor: str):
             # something goes sideways.
             info(f'[editor] launching custom editor: exe={custom_exe!r} target={path!r}')
             try:
-                if sys.platform == 'darwin' and custom_exe.endswith('.app'):
+                if sys.platform == 'darwin' and _sandboxed() and custom_exe.endswith('.app'):
+                    # Sandbox: open the file with the user-chosen .app via
+                    # NSWorkspace; the .app was bookmarked when picked.
+                    if _mac_sandbox.open_in_app_at_path(path, custom_exe):
+                        return
+                    if _mac_sandbox.open_default(path):
+                        return
+                    warn(f'[editor] sandbox NSWorkspace open failed for {custom_exe!r}; falling back')
+                elif sys.platform == 'darwin' and custom_exe.endswith('.app'):
                     subprocess.Popen(['open', '-a', custom_exe, path]); return
                 else:
                     subprocess.Popen([custom_exe, path]); return
@@ -306,16 +330,42 @@ def launch(path: str, editor: str):
             if info.get('mac_app'):
                 apps_to_try.append(info['mac_app'])
             apps_to_try.extend(info.get('mac_app_fallbacks', []))
-            for app_name in apps_to_try:
-                try:
-                    cmd = ['open', '-a', app_name, path]
-                    debug(f"[LAUNCH] macOS: running: {cmd}")
-                    subprocess.Popen(cmd)
-                    return
-                except Exception as e:
-                    debug(f"[LAUNCH] macOS {app_name} launch failed: {e}")
+            # Sandbox: locate the .app by display name and open via NSWorkspace
+            # (LaunchServices-brokered); subprocess 'open -a' is unavailable.
+            if _sandboxed():
+                for app_name in apps_to_try:
+                    try:
+                        if _mac_sandbox.open_in_app_named(path, app_name):
+                            debug(f"[LAUNCH] macOS sandbox: opened with {app_name!r}")
+                            return
+                    except Exception as e:
+                        debug(f"[LAUNCH] macOS sandbox {app_name} open failed: {e}")
+                # Fall through to system-default NSWorkspace open below.
+            else:
+                for app_name in apps_to_try:
+                    try:
+                        cmd = ['open', '-a', app_name, path]
+                        debug(f"[LAUNCH] macOS: running: {cmd}")
+                        subprocess.Popen(cmd)
+                        return
+                    except Exception as e:
+                        debug(f"[LAUNCH] macOS {app_name} launch failed: {e}")
             if not apps_to_try:
                 warn(f'{editor} not available on macOS, falling back to system default')
+
+        # Sandbox system-default: NSWorkspace open / reveal (no subprocess).
+        if _sandboxed():
+            try:
+                if _mac_sandbox.open_default(path):
+                    return
+            except Exception as e:
+                debug(f"[LAUNCH] macOS sandbox open_default raised: {e}")
+            try:
+                if _mac_sandbox.reveal_in_finder(path):
+                    return
+            except Exception as e:
+                debug(f"[LAUNCH] macOS sandbox reveal raised: {e}")
+            return
 
         # System default: try a couple of strategies and log results
         try:

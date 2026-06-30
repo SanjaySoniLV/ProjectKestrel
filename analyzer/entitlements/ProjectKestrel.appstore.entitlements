@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  App Store (sandboxed) entitlements for Project Kestrel.
+
+  Used ONLY by the Mac App Store build variant (ProjectKestrel-macos-appstore.spec /
+  build-macos-appstore.yml). The direct-download Developer ID build (build-macos.yml)
+  is intentionally NOT sandboxed and does not use this file.
+
+  Rationale per key:
+    app-sandbox                       Required for App Store. Turns on the sandbox.
+    files.user-selected.read-write    The whole app model is "point at a photo folder";
+                                      we read originals and write .kestrel/, .xmp sidecars,
+                                      crops/exports inside the user-granted folder.
+    files.bookmarks.app-scope         Persist access to chosen folders across launches via
+                                      security-scoped bookmarks (see mac_sandbox.py).
+    network.client                    Outbound HTTPS: auth/clerk, cloud-compute, telemetry.
+    network.server                    Loopback HTTP server that serves the local UI, plus
+                                      the OAuth callback listener (both 127.0.0.1 only).
+
+  Deliberately NOT included:
+    cs.allow-jit / allow-unsigned-executable-memory  — inference is 100% ONNX Runtime (AOT);
+      no TensorFlow/PyTorch/JIT. WebKit's JS JIT runs in Apple's own entitled XPC process.
+    cs.disable-library-validation     — App Store forbids it; every bundled dylib is signed
+      with the same Team ID at packaging time instead.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+    <key>com.apple.security.files.bookmarks.app-scope</key>
+    <true/>
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.network.server</key>
+    <true/>
+</dict>
+</plist>

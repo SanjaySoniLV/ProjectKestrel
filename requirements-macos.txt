@@ -22,6 +22,13 @@ requests==2.34.2
 pywebview==6.2.1
 keyring
 
+# macOS App Sandbox helpers (security-scoped bookmarks, NSWorkspace) in
+# mac_sandbox.py talk to Cocoa via PyObjC. pywebview's Cocoa backend already
+# pulls these transitively; pinned explicitly so the App Store build can rely
+# on Foundation/AppKit being present and PyInstaller collects them.
+pyobjc-core
+pyobjc-framework-Cocoa
+
 # installer
 pyinstaller==6.20.0
 
