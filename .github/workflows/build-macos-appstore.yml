@@ -162,8 +162,20 @@ jobs:
           if [ -z "$APP" ]; then echo "::error::no .app built"; exit 1; fi
           echo "App bundle: $APP"
 
-          APP_IDENTITY="Apple Distribution: Sanjay Soni (${APPLE_TEAM_ID})"
-          INSTALLER_IDENTITY="3rd Party Mac Developer Installer: Sanjay Soni (${APPLE_TEAM_ID})"
+          # Resolve signing identities from the keychain by their Apple-assigned
+          # prefix, so this works whether the Team is an individual ("… Sanjay
+          # Soni …") or an organization ("… Project Kestrel LLC …"). Apple sets
+          # the certificate CN on issue, not from our CSR.
+          IDENTITIES=$(security find-identity -v "$KEYCHAIN")
+          echo "$IDENTITIES"
+          APP_IDENTITY=$(printf '%s\n' "$IDENTITIES" | grep -o -m1 '"Apple Distribution:[^"]*"' | tr -d '"' || true)
+          INSTALLER_IDENTITY=$(printf '%s\n' "$IDENTITIES" | grep -o -m1 '"3rd Party Mac Developer Installer:[^"]*"' | tr -d '"' || true)
+          if [ -z "$APP_IDENTITY" ] || [ -z "$INSTALLER_IDENTITY" ]; then
+            echo "::error::Signing identity not found (app='$APP_IDENTITY' installer='$INSTALLER_IDENTITY')"
+            exit 1
+          fi
+          echo "App identity:       $APP_IDENTITY"
+          echo "Installer identity: $INSTALLER_IDENTITY"
 
           # Embed the provisioning profile.
           echo "$APPLE_PROVISIONING_PROFILE" | base64 --decode > "$APP/Contents/embedded.provisionprofile"
