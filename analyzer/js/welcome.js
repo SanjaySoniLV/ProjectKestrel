@@ -47,12 +47,12 @@
           name: 'Cloud Compute',
           tag: 'What’s new',
           bullets: [
-            'New <b>Backlog Packs</b>: non-expiring credits, no subscription — 10,000 photos for $15 or 25,000 for $30.',
-            'Higher monthly limits — <b>Blue Jay</b> $20/mo for 15,000 images, <b>Sandpiper</b> $50/mo for 50,000 images.',
+            'New <b>Backlog Packs</b>: one-time, non-expiring Cloud Compute credits — no subscription required.',
+            'More generous monthly allowances on both the <b>Blue Jay</b> and <b>Sandpiper</b> plans.',
           ],
           hint: 'Find it in the Analyze Folders dialog.',
           links: [
-            { label: 'Purchase a Backlog Pack →', href: 'https://myaccount.projectkestrel.org/plan' },
+            { label: 'Learn What’s New in Cloud Compute →', href: 'https://projectkestrel.org/notes/flexible-options-to-use-cloud-compute/' },
           ],
         },
       ],
