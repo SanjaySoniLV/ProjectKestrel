@@ -10,6 +10,8 @@ release/
 .venv-macos/
 analyzer/build/
 analyzer/dist/
+# Build artifact written by the PyInstaller specs (baked distribution channel).
+analyzer/dist_channel.txt
 cloudflare-workers/
 cloudflare-workers_secret/
 query_analytics/

@@ -37,6 +37,19 @@ SETTINGS_FILENAME = 'settings.json'
 _MAX_PATH_CHARS = 4096
 _MAX_TEXT_CHARS = 4096
 
+# macOS security-scoped folder bookmarks: {granted_realpath: base64_bookmark}.
+# These are load-bearing for the sandboxed App Store build (they're how a
+# previously-chosen photo folder stays readable across launches), so they get an
+# explicit sanitizer below rather than the generic passthrough — whose
+# _PASSTHROUGH_MAX_STR cap would silently truncate, and thus CORRUPT, a large
+# bookmark blob. A security-scoped bookmark base64s to a few KB; the cap here has
+# generous headroom for deep / network paths.
+_MAX_BOOKMARK_ENTRIES = 1024
+_MAX_BOOKMARK_B64_CHARS = 65536
+_B64_ALPHABET = frozenset(
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\r\n'
+)
+
 _ALLOWED_EDITORS = {
     'system', 'darktable', 'lightroom', 'photoshop', 'capture_one',
     'affinity', 'gimp', 'rawtherapee', 'luminar', 'dxo', 'on1',
@@ -365,6 +378,41 @@ def _passthrough_setting_value(value: Any, depth: int = 0) -> Any | None:
     return None
 
 
+def _is_base64ish(s: str) -> bool:
+    """True if *s* is a non-empty string over the base64 alphabet (+ whitespace).
+
+    ``set(s)`` collapses to at most ~66 distinct characters, so this is cheap
+    even for a 64 KB blob.
+    """
+    return bool(s) and set(s) <= _B64_ALPHABET
+
+
+def _sanitize_mac_folder_bookmarks(value: Any) -> dict[str, str]:
+    """Validate the ``mac_folder_bookmarks`` map: {realpath: base64_bookmark}.
+
+    Drops non-string keys/values, over-long paths or blobs, and non-base64
+    values. Caps the number of entries. Returns a (possibly empty) dict; the
+    caller always stores the result so this key never reaches the passthrough
+    handler (which would truncate an over-cap blob).
+    """
+    out: dict[str, str] = {}
+    if not isinstance(value, dict):
+        return out
+    for i, (k, v) in enumerate(value.items()):
+        if i >= _MAX_BOOKMARK_ENTRIES:
+            break
+        if not isinstance(k, str) or not isinstance(v, str):
+            continue
+        if not k or len(k) > _MAX_PATH_CHARS:
+            continue
+        if len(v) > _MAX_BOOKMARK_B64_CHARS:
+            continue
+        if not _is_base64ish(v):
+            continue
+        out[k] = v
+    return out
+
+
 def _merge_forward_compatible_keys(out: dict[str, Any], data: dict, emit_log: bool) -> None:
     """Attach unknown keys from *data* onto *out* (keys not already set by core sanitization)."""
     skipped: list[str] = []
@@ -590,6 +638,12 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
         pending = _sanitize_pending_analytics(data.get('pending_analytics'))
         if pending is not None:
             out['pending_analytics'] = pending
+
+    # macOS security-scoped folder bookmarks (App Store / sandboxed build). Set
+    # explicitly whenever present so the key is handled here and never falls
+    # through to passthrough, whose per-string cap would corrupt a large blob.
+    if 'mac_folder_bookmarks' in data:
+        out['mac_folder_bookmarks'] = _sanitize_mac_folder_bookmarks(data.get('mac_folder_bookmarks'))
 
     # Forward compatibility: preserve unknown keys (e.g. settings added by a
     # newer build) so an older Kestrel doesn't drop them on the round-trip.

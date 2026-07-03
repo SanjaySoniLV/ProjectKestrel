@@ -60,6 +60,17 @@ except ImportError:
     except ImportError:
         _mac_sandbox = None
 
+# Distribution channel ('direct' website build vs 'appstore' sandboxed build),
+# baked at build time. Import-safe everywhere; used by the frontend to branch
+# What's New / cloud-compute CTAs on channel without cutting a new release.
+try:
+    import dist_channel as _dist_channel
+except ImportError:
+    try:
+        from analyzer import dist_channel as _dist_channel
+    except ImportError:
+        _dist_channel = None
+
 from kestrel_analyzer.config import (
     JPEG_EXTENSIONS as _JPEG_EXTENSIONS,
     RAW_EXTENSIONS as _RAW_EXTENSIONS,
@@ -1469,6 +1480,24 @@ class Api:
             return {'success': True, 'platform': 'windows'}
         else:
             return {'success': True, 'platform': 'linux'}
+
+    def get_dist_channel(self):
+        """Return this build's distribution channel.
+
+        ``'direct'``  -> website download (notarized DMG / Windows installer / Store).
+        ``'appstore'``-> the sandboxed Mac App Store build.
+
+        The frontend uses this to branch What's New copy and cloud-compute CTAs
+        (e.g. App-Store-safe language) without needing a new release. Independent
+        of sandbox detection — see dist_channel.py. Defaults to 'direct' if the
+        helper is unavailable for any reason.
+        """
+        try:
+            if _dist_channel is not None:
+                return {'success': True, 'channel': _dist_channel.get_channel()}
+        except Exception:
+            pass
+        return {'success': True, 'channel': 'direct'}
 
     def is_windows_store_app(self):
         """Check if running as a Windows Store app."""

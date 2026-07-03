@@ -29,6 +29,16 @@ import os
 from PyInstaller.utils.hooks import collect_dynamic_libs
 from PyInstaller.utils.hooks import collect_all
 
+# Bake the distribution channel into the bundle (read at runtime by
+# dist_channel.py). This is the Mac App Store build, so it defaults to
+# 'appstore'; CI may still override via KESTREL_DIST_CHANNEL.
+_dist_channel = os.environ.get("KESTREL_DIST_CHANNEL", "appstore").strip().lower()
+if _dist_channel not in ("direct", "appstore"):
+    _dist_channel = "appstore"
+with open("dist_channel.txt", "w", encoding="utf-8") as _dcf:
+    _dcf.write(_dist_channel)
+print(f"[spec] dist_channel = {_dist_channel}")
+
 print(os.listdir("sample_sets"))
 
 # --- Read the human-readable release codename (e.g. "Rock Wren") for reference;
@@ -55,7 +65,7 @@ if not os.path.exists(_icns):
     _icns = None
 
 # Identical payload to ProjectKestrel-macos.spec, plus mac_sandbox.py.
-datas = [('models', 'models'), ('kestrel_telemetry.py', '.'), ('build_attestation.py', '.'), ('folder_inspector.py', '.'), ('cli.py', '.'), ('VERSION.txt', '.'), ('kestrel_analyzer', 'kestrel_analyzer'), ('visualizer.html', '.'), ('css', 'css'), ('js', 'js'), ('csv_parser.js', '.'), ('culling.html', '.'), ('logo.png', '.'), ('perch-logo.png', '.'), ('logo.ico', '.'), ('settings_utils.py', '.'), ('editor_launch.py', '.'), ('queue_manager.py', '.'), ('api_bridge.py', '.'), ('mac_sandbox.py', '.')]
+datas = [('models', 'models'), ('kestrel_telemetry.py', '.'), ('build_attestation.py', '.'), ('folder_inspector.py', '.'), ('cli.py', '.'), ('VERSION.txt', '.'), ('kestrel_analyzer', 'kestrel_analyzer'), ('visualizer.html', '.'), ('css', 'css'), ('js', 'js'), ('csv_parser.js', '.'), ('culling.html', '.'), ('logo.png', '.'), ('perch-logo.png', '.'), ('logo.ico', '.'), ('settings_utils.py', '.'), ('editor_launch.py', '.'), ('queue_manager.py', '.'), ('api_bridge.py', '.'), ('mac_sandbox.py', '.'), ('dist_channel.py', '.'), ('dist_channel.txt', '.')]
 
 if os.path.exists('build_attestation.json'):
     datas.append(('build_attestation.json', '.'))
@@ -66,7 +76,7 @@ else:
 sample_sets_tree = Tree('sample_sets', prefix='sample_sets')
 datas += [(item[0], item[1]) for item in sample_sets_tree]
 binaries = []
-hiddenimports = ['pywebview', 'certifi', 'PIL', 'exifread', 'settings_utils', 'editor_launch', 'queue_manager', 'api_bridge', 'build_attestation', 'mac_sandbox', 'Foundation', 'AppKit']
+hiddenimports = ['pywebview', 'certifi', 'PIL', 'exifread', 'settings_utils', 'editor_launch', 'queue_manager', 'api_bridge', 'build_attestation', 'mac_sandbox', 'dist_channel', 'Foundation', 'AppKit']
 binaries += collect_dynamic_libs('onnxruntime')
 tmp_ret = collect_all('msvc-runtime')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]

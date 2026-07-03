@@ -26,8 +26,8 @@ keyring
 # mac_sandbox.py talk to Cocoa via PyObjC. pywebview's Cocoa backend already
 # pulls these transitively; pinned explicitly so the App Store build can rely
 # on Foundation/AppKit being present and PyInstaller collects them.
-pyobjc-core
-pyobjc-framework-Cocoa
+pyobjc-core==12.2.1
+pyobjc-framework-Cocoa==12.2.1
 
 # installer
 pyinstaller==6.20.0
