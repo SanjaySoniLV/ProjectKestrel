@@ -49,6 +49,29 @@ except Exception:
 
     def redact_user_paths_in_obj(obj):  # type: ignore[no-redef]
         return obj
+
+# Distribution channel ('direct' website build vs 'appstore' sandboxed build),
+# baked at build time. Every telemetry payload is tagged with it (see _post_json)
+# so the worker can cohort events by how the build was distributed.
+try:
+    import dist_channel as _dist_channel_mod
+except Exception:
+    try:
+        from analyzer import dist_channel as _dist_channel_mod  # type: ignore
+    except Exception:
+        _dist_channel_mod = None  # type: ignore[assignment]
+
+
+def _get_dist_channel() -> str:
+    """Return the build's distribution channel, defaulting to 'direct'. Failsafe."""
+    try:
+        if _dist_channel_mod is not None:
+            return _dist_channel_mod.get_channel()
+    except Exception:
+        pass
+    return 'direct'
+
+
 # ---------------------------------------------------------------------------
 # Configuration — the shared secret and endpoint URL
 # ---------------------------------------------------------------------------
@@ -158,6 +181,15 @@ def _post_json(endpoint: str, payload: dict) -> None:
         return
     url = f"{KESTREL_API_URL}{endpoint}"
     try:
+        # Tag every payload with the distribution channel (direct vs appstore) so
+        # the worker can record DMG/installer/Store vs App Store cohorts. Shallow-
+        # copied so the caller's dict is never mutated; an explicit 'channel'
+        # already on the payload is left untouched.
+        try:
+            if isinstance(payload, dict) and 'channel' not in payload:
+                payload = {**payload, 'channel': _get_dist_channel()}
+        except Exception:
+            pass
         data = json.dumps(payload).encode('utf-8')
         headers = {
             'Content-Type': 'application/json',
