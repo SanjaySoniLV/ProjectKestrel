@@ -162,3 +162,55 @@ class TestGetRecentLogTailRedaction:
         assert 'all done' in tail_text
         # Filename preserved in the runtime entry.
         assert runtime_tails[0]['file'] == 'kestrel_runtime_20260516T000000Z.log'
+
+
+class TestDistChannelTag:
+    """Every outbound payload must carry the distribution channel (see _post_json)."""
+
+    @pytest.fixture
+    def capture_post(self, monkeypatch):
+        """Intercept the JSON body that _post_json would serialise and POST."""
+        captured = {}
+
+        class _FakeReq:
+            def __init__(self, url, data=None, headers=None, method=None):
+                captured['data'] = data
+
+        class _FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr(kestrel_telemetry.urllib.request, 'Request', _FakeReq)
+        monkeypatch.setattr(
+            kestrel_telemetry.urllib.request, 'urlopen', lambda *a, **k: _FakeResp()
+        )
+
+        def _body():
+            return json.loads(captured['data'].decode('utf-8'))
+
+        return _body
+
+    def test_channel_injected(self, capture_post, monkeypatch):
+        monkeypatch.setattr(kestrel_telemetry, '_get_dist_channel', lambda: 'appstore')
+        kestrel_telemetry._post_json('/api/test', {'foo': 'bar'})
+        body = capture_post()
+        assert body['channel'] == 'appstore'
+        assert body['foo'] == 'bar'
+
+    def test_explicit_channel_preserved(self, capture_post, monkeypatch):
+        monkeypatch.setattr(kestrel_telemetry, '_get_dist_channel', lambda: 'appstore')
+        kestrel_telemetry._post_json('/api/test', {'channel': 'special'})
+        assert capture_post()['channel'] == 'special'
+
+    def test_caller_dict_not_mutated(self, capture_post, monkeypatch):
+        monkeypatch.setattr(kestrel_telemetry, '_get_dist_channel', lambda: 'appstore')
+        payload = {'foo': 'bar'}
+        kestrel_telemetry._post_json('/api/test', payload)
+        assert 'channel' not in payload  # shallow-copied, original untouched
+
+    def test_get_dist_channel_defaults_direct(self, monkeypatch):
+        monkeypatch.setattr(kestrel_telemetry, '_dist_channel_mod', None)
+        assert kestrel_telemetry._get_dist_channel() == 'direct'
