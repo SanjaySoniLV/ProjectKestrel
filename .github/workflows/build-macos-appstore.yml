@@ -102,7 +102,19 @@ jobs:
           source .venv2/bin/activate
           python -m pip install --upgrade pip
           pip install -r requirements-macos.txt
-          pip install pyinstaller
+          pip install pyinstaller pytest
+
+      - name: Test gate — pytest (skip ui marker)
+        shell: bash
+        run: |
+          set -euo pipefail
+          source .venv2/bin/activate
+          # Hard gate: block the build (and therefore the upload) if the portable
+          # test suite regresses. Same set the dev workflow runs. This is where the
+          # sandbox MIME regression (test_visualizer_mime_sandbox.py) goes red — it
+          # needs no app launch, so it works even though the App-Store-signed app
+          # itself cannot run in CI (it is SIGKILLed outside the App Store context).
+          python -m pytest analyzer/tests/ -m "not ui" -q --tb=short
 
       - name: Generate .icns from logo.png
         shell: bash
