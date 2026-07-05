@@ -389,6 +389,50 @@ def _safe_under(base: str, candidate: str) -> bool:
 
 
 class Handler(SimpleHTTPRequestHandler):
+    # Static extension -> Content-Type table. We resolve MIME types from this map
+    # instead of the stdlib ``mimetypes`` module. SimpleHTTPRequestHandler's default
+    # ``guess_type()`` calls ``mimetypes.init()``, which reads system MIME files
+    # (e.g. ``/etc/apache2/mime.types``). Under the macOS App Sandbox (the Mac App
+    # Store build) that read is DENIED — ``PermissionError: [Errno 1] Operation not
+    # permitted`` — which raised on *every* GET and left the WebView blank white.
+    # This table covers everything the app serves; unknown extensions fall back to
+    # octet-stream and never touch ``/etc``. (No effect on the Windows/DMG builds,
+    # which could read the system files fine — this is a sandbox-only fix.)
+    _MIME_TYPES = {
+        '.html': 'text/html; charset=utf-8',
+        '.htm':  'text/html; charset=utf-8',
+        '.css':  'text/css; charset=utf-8',
+        '.js':   'text/javascript; charset=utf-8',
+        '.mjs':  'text/javascript; charset=utf-8',
+        '.json': 'application/json; charset=utf-8',
+        '.map':  'application/json; charset=utf-8',
+        '.svg':  'image/svg+xml',
+        '.png':  'image/png',
+        '.jpg':  'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.gif':  'image/gif',
+        '.webp': 'image/webp',
+        '.avif': 'image/avif',
+        '.ico':  'image/x-icon',
+        '.bmp':  'image/bmp',
+        '.woff': 'font/woff',
+        '.woff2': 'font/woff2',
+        '.ttf':  'font/ttf',
+        '.otf':  'font/otf',
+        '.wasm': 'application/wasm',
+        '.txt':  'text/plain; charset=utf-8',
+        '.csv':  'text/csv; charset=utf-8',
+        '.xml':  'application/xml; charset=utf-8',
+        '.webmanifest': 'application/manifest+json',
+    }
+
+    def guess_type(self, path):  # type: ignore[override]
+        """Resolve Content-Type from a static table, never from the system
+        ``mimetypes`` files (blocked by the macOS App Sandbox — see _MIME_TYPES)."""
+        import posixpath
+        ext = posixpath.splitext(str(path))[1].lower()
+        return self._MIME_TYPES.get(ext, 'application/octet-stream')
+
     # Serve from directory of this script (project root) by default.
     def translate_path(self, path: str) -> str:  # type: ignore[override]
         """Resolve file paths robustly across dev, frozen, and installed builds.
