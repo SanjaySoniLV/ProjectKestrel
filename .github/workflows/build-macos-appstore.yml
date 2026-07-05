@@ -180,20 +180,45 @@ jobs:
           # Embed the provisioning profile.
           echo "$APPLE_PROVISIONING_PROFILE" | base64 --decode > "$APP/Contents/embedded.provisionprofile"
 
-          # Inside-out: sign every nested Mach-O first, then the bundle, all with
-          # the sandbox entitlements + hardened runtime. Library validation stays
-          # ON (no --deep, no disable-library-validation) — every dylib is signed
-          # with the same identity here.
-          find "$APP" -type f \( -name "*.dylib" -o -name "*.so" \) -print0 | while IFS= read -r -d '' lib; do
-            codesign --force --timestamp --options runtime \
-              --entitlements "$ENTITLEMENTS" --sign "$APP_IDENTITY" "$lib"
+          # Inside-out signing (App Store). Only the MAIN app executable carries
+          # entitlements (sandbox + application-identifier + team-identifier); all
+          # nested code is signed with the hardened runtime and NO entitlements,
+          # deepest-first, so the outer seals stay valid. Frameworks are signed as
+          # concrete versioned bundles — a name-based find misses e.g.
+          # Python.framework/Versions/3.11/Python, whose stale signature tripped
+          # ITMS-90238 (nested code failed Apple's server-side team requirement).
+
+          # 1) every dylib / .so anywhere (incl. inside frameworks), no entitlements
+          find "$APP" -type f \( -name "*.dylib" -o -name "*.so" \) -print0 | while IFS= read -r -d '' f; do
+            codesign --force --timestamp --options runtime --sign "$APP_IDENTITY" "$f"
           done
-          # Nested Mach-O executables under Contents/MacOS (PyInstaller bootloader, etc.)
-          find "$APP/Contents/MacOS" -type f -perm +111 -print0 2>/dev/null | while IFS= read -r -d '' bin; do
-            codesign --force --timestamp --options runtime \
-              --entitlements "$ENTITLEMENTS" --sign "$APP_IDENTITY" "$bin" || true
+          # 2) each nested .framework, signed as its concrete version bundle
+          find "$APP" -type d -name "*.framework" -print0 | while IFS= read -r -d '' fw; do
+            if [ -d "$fw/Versions" ]; then
+              for v in "$fw/Versions"/*/ ; do
+                if [ ! -d "$v" ]; then continue; fi
+                if [ "$(basename "$v")" = "Current" ]; then continue; fi
+                codesign --force --timestamp --options runtime --sign "$APP_IDENTITY" "${v%/}"
+              done
+            else
+              codesign --force --timestamp --options runtime --sign "$APP_IDENTITY" "$fw"
+            fi
           done
-          # Finally the whole bundle.
+          # 3) any remaining Mach-O executables (detect by magic), minus the main
+          #    executable (gets entitlements via the bundle in step 4) and anything
+          #    already sealed above
+          MAIN_EXE=$(plutil -extract CFBundleExecutable raw "$APP/Contents/Info.plist" 2>/dev/null || echo "")
+          while IFS= read -r -d '' f; do
+            case "$f" in
+              "$APP/Contents/MacOS/$MAIN_EXE") continue ;;
+              *.dylib|*.so) continue ;;
+              *"/Versions/"*) continue ;;
+            esac
+            if file -b "$f" | grep -q "Mach-O"; then
+              codesign --force --timestamp --options runtime --sign "$APP_IDENTITY" "$f" || true
+            fi
+          done < <(find "$APP" -type f -perm +111 -print0)
+          # 4) finally the whole app bundle WITH entitlements (signs the main exec)
           codesign --force --timestamp --options runtime \
             --entitlements "$ENTITLEMENTS" --sign "$APP_IDENTITY" "$APP"
 
@@ -208,6 +233,39 @@ jobs:
             artifact/ProjectKestrel-appstore.pkg
           echo "=== pkg built ==="
           pkgutil --check-signature artifact/ProjectKestrel-appstore.pkg || true
+
+      - name: Validate code signatures (team requirement)
+        shell: bash
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -uo pipefail
+          APP=$(find analyzer/dist -maxdepth 2 -name "*.app" | head -n 1)
+          echo "Validating signatures in: $APP"
+          # This mirrors Apple's server-side test-requirement (the ITMS-90238 gate):
+          # the app AND every nested framework/dylib/.so must chain to a leaf cert
+          # whose OU is our Team ID. Warn-only — it never blocks the upload, but a
+          # foreign/ad-hoc nested signature shows up here in ~7 min instead of via
+          # an Apple email hours later.
+          REQ="anchor apple generic and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
+          fail=0
+          codesign --verify --deep --strict --verbose=2 "$APP" || { echo "::warning::codesign --verify --deep --strict reported problems"; fail=1; }
+          while IFS= read -r -d '' item; do
+            if ! codesign --verify -R="$REQ" "$item" >/dev/null 2>&1; then
+              echo "::warning::nested code fails the team requirement: ${item#$APP/}"
+              codesign -dvv "$item" 2>&1 | grep -E "Authority=|TeamIdentifier=" | sed 's/^/    /' || true
+              fail=1
+            fi
+          done < <(find "$APP" \( -type d -name "*.framework" -o -type f \( -name "*.dylib" -o -name "*.so" \) \) -print0)
+          codesign --verify -R="$REQ" "$APP" >/dev/null 2>&1 || { echo "::warning::the app bundle fails the team requirement"; fail=1; }
+          if [ "$fail" -ne 0 ]; then
+            echo "=================================================================="
+            echo "  SIGNATURE VALIDATION FAILED (warn-only). Apple will likely"
+            echo "  reject this build with ITMS-90238. Fix signing before trusting it."
+            echo "=================================================================="
+          else
+            echo "OK - the app and all nested frameworks/dylibs satisfy the team requirement ($APPLE_TEAM_ID)."
+          fi
 
       - name: Validate / upload to App Store Connect
         if: ${{ github.event.inputs.upload == 'true' }}
