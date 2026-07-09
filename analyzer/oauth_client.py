@@ -27,6 +27,7 @@ import http.server
 import json
 import secrets
 import socket
+import sys
 import threading
 import time
 import urllib.error
@@ -87,6 +88,15 @@ LOOPBACK_HOST       = "127.0.0.1"
 # as a best-effort fallback: it's already registered with Clerk and is free on
 # most boots, so it costs nothing to keep and only ever helps.
 LOOPBACK_PORTS      = (17893, 27184, 37265, 47632, 53682)
+
+# macOS custom-scheme redirect used by the ASWebAuthenticationSession transport
+# (see mac_oauth.py). Apple's Guideline 4 forbids bouncing the user to the
+# default browser; ASWebAuthenticationSession captures this custom scheme
+# in-app instead of a loopback HTTP server. ``MAC_REDIRECT_URI`` must be
+# registered as an allowed redirect URL on the Clerk OAuth application, and
+# ``MAC_CALLBACK_SCHEME`` is that URI's scheme (what the session intercepts).
+MAC_CALLBACK_SCHEME = "kestrel"
+MAC_REDIRECT_URI    = f"{MAC_CALLBACK_SCHEME}://callback"
 
 
 def _redirect_uri(port: int) -> str:
@@ -451,6 +461,116 @@ def build_bundle(token_response: dict, *, now: Optional[float] = None) -> dict:
     }
 
 
+def _load_mac_oauth():
+    """Return the ``mac_oauth`` module if its ASWebAuthenticationSession
+    transport is usable on this build, else ``None``. Never raises."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        import mac_oauth  # type: ignore
+    except ImportError:  # pragma: no cover - package-style import path
+        try:
+            from analyzer import mac_oauth  # type: ignore
+        except Exception:
+            return None
+    except Exception:
+        return None
+    try:
+        return mac_oauth if mac_oauth.is_available() else None
+    except Exception:
+        return None
+
+
+def _is_macos_sandboxed() -> bool:
+    """True on the sandboxed (App Store) macOS build. Never raises."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        import mac_sandbox  # type: ignore
+    except ImportError:  # pragma: no cover
+        try:
+            from analyzer import mac_sandbox  # type: ignore
+        except Exception:
+            return False
+    except Exception:
+        return False
+    try:
+        return bool(mac_sandbox.is_sandboxed())
+    except Exception:
+        return False
+
+
+def run_authorization_flow_mac(
+    mac_oauth,
+    progress_cb: Optional[Callable[[str], None]] = None,
+    *,
+    url_validator: Optional[Callable[[str], bool]] = None,
+    cancel_event: Optional[threading.Event] = None,
+) -> dict:
+    """macOS PKCE flow over ASWebAuthenticationSession (no loopback server).
+
+    Mirrors :func:`run_authorization_flow` but uses the ``kestrel://callback``
+    custom scheme captured in-app by ``mac_oauth.authenticate``. The token
+    exchange is identical (``exchange_code`` / ``build_bundle``).
+    """
+    def _progress(label: str) -> None:
+        if progress_cb is not None:
+            try:
+                progress_cb(label)
+            except Exception:
+                pass
+
+    _progress("starting")
+    verifier, challenge = _gen_pkce()
+    state = _gen_state()
+    redirect_uri = MAC_REDIRECT_URI
+    url = _build_authorize_url(state, challenge, redirect_uri)
+
+    if url_validator is not None and not url_validator(url):
+        return {"ok": False, "error": "unsafe_authorize_url"}
+    if cancel_event is not None and cancel_event.is_set():
+        return {"ok": False, "error": "cancelled"}
+
+    _progress("awaiting_callback")
+    res = mac_oauth.authenticate(
+        url, MAC_CALLBACK_SCHEME, timeout=FLOW_TIMEOUT_SEC, cancel_event=cancel_event
+    )
+    if res.get("error"):
+        return {"ok": False, "error": res["error"], "error_description": res.get("error_description")}
+
+    parsed = urllib.parse.urlparse(res.get("callback_url") or "")
+    q = urllib.parse.parse_qs(parsed.query)
+    code = (q.get("code") or [None])[0]
+    returned_state = (q.get("state") or [None])[0]
+    err = (q.get("error") or [None])[0]
+    err_desc = (q.get("error_description") or [None])[0]
+
+    if not code:
+        # Clerk returned ?error=...&state=... (or nothing usable).
+        if err or err_desc:
+            return {"ok": False, "error": "no_code", "error_description": err_desc or err}
+        return {"ok": False, "error": "no_code"}
+
+    if not hmac.compare_digest(returned_state or "", state):
+        return {"ok": False, "error": "state_mismatch"}
+
+    _progress("exchanging")
+    tok = exchange_code(code, verifier, redirect_uri)
+    if tok.get("error"):
+        return {
+            "ok": False,
+            "error":             tok["error"],
+            "error_description": tok.get("error_description"),
+        }
+
+    bundle = build_bundle(tok)
+    if not bundle.get("access_token"):
+        return {"ok": False, "error": "missing_access_token"}
+
+    _progress("done")
+    return {"ok": True, "bundle": bundle}
+
+
 def run_authorization_flow(
     progress_cb: Optional[Callable[[str], None]] = None,
     *,
@@ -471,6 +591,30 @@ def run_authorization_flow(
                 progress_cb(label)
             except Exception:
                 pass
+
+    # macOS: prefer the ASWebAuthenticationSession transport (Guideline 4). It
+    # is used whenever AuthenticationServices is bundled — always on the App
+    # Store build, and on the direct-download build too if the wrapper is
+    # present. The loopback+browser path below is the Windows/Linux transport.
+    if sys.platform == "darwin":
+        mac = _load_mac_oauth()
+        if mac is not None:
+            return run_authorization_flow_mac(
+                mac, progress_cb, url_validator=url_validator, cancel_event=cancel_event
+            )
+        # No ASWebAuthenticationSession available. The sandboxed App Store build
+        # must NOT fall back to opening the external browser — that is exactly
+        # the behavior Apple rejected — so surface an error instead. The
+        # unsandboxed direct-download build may safely use the loopback flow.
+        if _is_macos_sandboxed():
+            return {
+                "ok": False,
+                "error": "aswebauth_unavailable",
+                "error_description": (
+                    "In-app sign-in (ASWebAuthenticationSession) is unavailable on "
+                    "this build. Please update Project Kestrel."
+                ),
+            }
 
     _progress("starting")
     verifier, challenge = _gen_pkce()

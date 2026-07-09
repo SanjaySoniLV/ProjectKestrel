@@ -65,7 +65,7 @@ if not os.path.exists(_icns):
     _icns = None
 
 # Identical payload to ProjectKestrel-macos.spec, plus mac_sandbox.py.
-datas = [('models', 'models'), ('kestrel_telemetry.py', '.'), ('build_attestation.py', '.'), ('folder_inspector.py', '.'), ('cli.py', '.'), ('VERSION.txt', '.'), ('kestrel_analyzer', 'kestrel_analyzer'), ('visualizer.html', '.'), ('css', 'css'), ('js', 'js'), ('csv_parser.js', '.'), ('culling.html', '.'), ('logo.png', '.'), ('perch-logo.png', '.'), ('logo.ico', '.'), ('settings_utils.py', '.'), ('editor_launch.py', '.'), ('queue_manager.py', '.'), ('api_bridge.py', '.'), ('mac_sandbox.py', '.'), ('dist_channel.py', '.'), ('dist_channel.txt', '.')]
+datas = [('models', 'models'), ('kestrel_telemetry.py', '.'), ('build_attestation.py', '.'), ('folder_inspector.py', '.'), ('cli.py', '.'), ('VERSION.txt', '.'), ('kestrel_analyzer', 'kestrel_analyzer'), ('visualizer.html', '.'), ('css', 'css'), ('js', 'js'), ('csv_parser.js', '.'), ('culling.html', '.'), ('logo.png', '.'), ('perch-logo.png', '.'), ('logo.ico', '.'), ('settings_utils.py', '.'), ('editor_launch.py', '.'), ('queue_manager.py', '.'), ('api_bridge.py', '.'), ('mac_sandbox.py', '.'), ('mac_oauth.py', '.'), ('dist_channel.py', '.'), ('dist_channel.txt', '.')]
 
 if os.path.exists('build_attestation.json'):
     datas.append(('build_attestation.json', '.'))
@@ -76,10 +76,17 @@ else:
 sample_sets_tree = Tree('sample_sets', prefix='sample_sets')
 datas += [(item[0], item[1]) for item in sample_sets_tree]
 binaries = []
-hiddenimports = ['pywebview', 'certifi', 'PIL', 'exifread', 'settings_utils', 'editor_launch', 'queue_manager', 'api_bridge', 'build_attestation', 'mac_sandbox', 'dist_channel', 'Foundation', 'AppKit']
+hiddenimports = ['pywebview', 'certifi', 'PIL', 'exifread', 'settings_utils', 'editor_launch', 'queue_manager', 'api_bridge', 'build_attestation', 'mac_sandbox', 'mac_oauth', 'dist_channel', 'Foundation', 'AppKit']
 binaries += collect_dynamic_libs('onnxruntime')
 tmp_ret = collect_all('msvc-runtime')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# AuthenticationServices (ASWebAuthenticationSession) — the in-app sign-in
+# sheet used by mac_oauth.py. collect_all pulls the PyObjC wrapper's compiled
+# extension + lazy-loader metadata so `from AuthenticationServices import ...`
+# resolves inside the frozen App Store bundle. (App Store build only; the DMG
+# spec excludes it to stay on the loopback flow.)
+tmp_as = collect_all('AuthenticationServices')
+datas += tmp_as[0]; binaries += tmp_as[1]; hiddenimports += tmp_as[2]
 
 print("=== Verifying source files exist ===")
 for src, dst in datas:
@@ -95,7 +102,20 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=['runtime_hook.py'],
-    excludes=[],
+    # Tk/Tcl are excluded from the App Store build: PyInstaller only bundles
+    # libtk8.6.dylib / libtcl8.6.dylib when the _tkinter C-extension is
+    # collected, and libtk8.6.dylib references the private AppKit symbol
+    # _NSWindowDidOrderOnScreenNotification — an automatic Guideline 2.5.1
+    # rejection. Kestrel only ever used Tk as a *fallback* confirm dialog on
+    # macOS; that path is now a native NSAlert (see mac_sandbox.run_confirm),
+    # so nothing on macOS imports tkinter at runtime and the whole library can
+    # be dropped. (The direct-download macOS spec is left untouched.)
+    excludes=[
+        'tkinter', '_tkinter', 'Tkinter',
+        'tkinter.ttk', 'tkinter.tix', 'tkinter.filedialog',
+        'tkinter.messagebox', 'tkinter.simpledialog',
+        'turtle', 'turtledemo',
+    ],
     noarchive=False,
     optimize=0,
 )

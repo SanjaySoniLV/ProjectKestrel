@@ -136,6 +136,34 @@ jobs:
           chmod +x packaging/build_app_headless.sh
           ./packaging/build_app_headless.sh
 
+      - name: Verify Tk removed + AuthenticationServices bundled
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP=$(find analyzer/dist -maxdepth 2 -name "*.app" | head -n 1)
+          if [ -z "$APP" ]; then echo "::error::no .app built"; exit 1; fi
+          echo "App bundle: $APP"
+          # Guideline 2.5.1: PyInstaller only ships libtk8.6.dylib (which
+          # references the private AppKit symbol _NSWindowDidOrderOnScreenNotification)
+          # when the _tkinter C-extension is collected. Fail hard if Tk/Tcl slipped
+          # back into the bundle so this rejection can never silently return.
+          TKHITS=$(find "$APP" \( -iname 'libtk*' -o -iname 'libtcl*' -o -iname '_tkinter*' \) 2>/dev/null || true)
+          if [ -n "$TKHITS" ]; then
+            echo "::error::Tk/Tcl found in the App Store bundle (Guideline 2.5.1 — private API):"
+            echo "$TKHITS"
+            exit 1
+          fi
+          echo "OK - no Tk/Tcl in the bundle."
+          # Positive check (Guideline 4 fix): the ASWebAuthenticationSession
+          # PyObjC wrapper must be present, or macOS in-app sign-in has no
+          # transport and the sandboxed build would error on sign-in.
+          if find "$APP" -path '*AuthenticationServices*' 2>/dev/null | grep -q .; then
+            echo "OK - AuthenticationServices bundled."
+          else
+            echo "::error::AuthenticationServices wrapper missing from the bundle — in-app sign-in would be unavailable."
+            exit 1
+          fi
+
       - name: Install signing certs into a temporary keychain
         shell: bash
         env:

@@ -28,6 +28,13 @@ keyring
 # on Foundation/AppKit being present and PyInstaller collects them.
 pyobjc-core==12.2.1
 pyobjc-framework-Cocoa==12.2.1
+# ASWebAuthenticationSession (the in-app sign-in sheet) for the Mac App Store
+# build — Apple's Guideline 4 forbids bouncing sign-in to the default browser.
+# Wraps the AuthenticationServices framework; carries the completion-handler
+# block metadata PyObjC needs to call it from Python (see mac_oauth.py). Only
+# the App Store spec bundles it; the direct-download DMG spec excludes it and
+# keeps the loopback flow.
+pyobjc-framework-AuthenticationServices==12.2.1
 
 # installer
 pyinstaller==6.20.0

@@ -1969,6 +1969,19 @@ class Api:
             if not _is_safe_external_url(url):
                 warn(f'[security] open_url refused unsafe URL: {url!r}')
                 return {'success': False, 'error': 'URL scheme not allowed'}
+            # In the macOS App Sandbox, webbrowser.open() shells out to
+            # /usr/bin/open, which the sandbox blocks — external links would
+            # silently do nothing. Route through NSWorkspace (LaunchServices
+            # brokers it, no entitlement needed). Fall back to webbrowser only
+            # if that path is unavailable.
+            if (
+                sys.platform == 'darwin'
+                and _mac_sandbox is not None
+                and _mac_sandbox.is_sandboxed()
+            ):
+                if _mac_sandbox.open_external_url(url):
+                    return {'success': True}
+                warn('[API] open_url: NSWorkspace open failed; trying webbrowser')
             webbrowser.open(url)
             return {'success': True}
         except Exception as e:

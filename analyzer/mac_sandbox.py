@@ -102,6 +102,18 @@ def _load_cocoa():
                     "NSURL": Foundation.NSURL,
                     "NSData": Foundation.NSData,
                     "NSWorkspace": AppKit.NSWorkspace,
+                    # UI + threading bits for native confirm dialogs (NSAlert)
+                    # and main-thread dispatch. These are used by every macOS
+                    # build (direct + App Store), not just the sandbox — they
+                    # are what let us drop the Tk/Tcl dependency entirely, whose
+                    # libtk8.6.dylib references a private AppKit symbol that the
+                    # App Store rejects (Guideline 2.5.1).
+                    "NSAlert": AppKit.NSAlert,
+                    "NSThread": Foundation.NSThread,
+                    "NSOperationQueue": Foundation.NSOperationQueue,
+                    "ALERT_STYLE_WARNING": getattr(
+                        AppKit, "NSAlertStyleWarning", 0
+                    ),
                     # Bookmark option masks (values are stable Apple constants;
                     # referenced by name when the constant is exported, with a
                     # literal fallback for older PyObjC that omits it).
@@ -435,6 +447,29 @@ def open_default(path: str) -> bool:
         return False
 
 
+def open_external_url(url: str) -> bool:
+    """Open an http(s)/mailto URL in the default browser via NSWorkspace.
+
+    The sandbox forbids ``Popen``-ing ``/usr/bin/open`` (which is what
+    ``webbrowser.open`` does under the hood on macOS), so external links —
+    Manage-account, privacy policy, the account-deletion page — silently no-op
+    in the App Store build unless routed through NSWorkspace, which
+    LaunchServices brokers without any special entitlement. Returns success.
+    ``NSURL.URLWithString_`` (not ``fileURLWithPath_``) so the http scheme is
+    preserved. Callers should have already validated the scheme.
+    """
+    syms = _load_cocoa()
+    if syms is None:
+        return False
+    try:
+        nsurl = syms["NSURL"].URLWithString_(url)
+        if nsurl is None:
+            return False
+        return bool(syms["NSWorkspace"].sharedWorkspace().openURL_(nsurl))
+    except Exception:
+        return False
+
+
 def _open_with_app_url(file_path: str, app_url) -> bool:
     syms = _load_cocoa()
     if syms is None or app_url is None:
@@ -496,3 +531,109 @@ def open_in_app_named(file_path: str, app_display_name: str) -> bool:
             if open_in_app_at_path(file_path, app_path):
                 return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Main-thread dispatch + native confirm dialogs (Tk-free)
+# ---------------------------------------------------------------------------
+#
+# The App Store bundle must not ship Tk/Tcl: libtk8.6.dylib references the
+# private AppKit symbol _NSWindowDidOrderOnScreenNotification, which App Review
+# rejects under Guideline 2.5.1. Tk was only ever a *fallback* confirm-dialog
+# path on macOS; NSAlert (below) replaces it natively so the whole library can
+# be excluded from the build. These are safe on every macOS build (they only
+# need PyObjC, which the Cocoa pywebview backend already pulls in), so the
+# direct-download DMG gets the nicer native dialog too.
+
+
+def run_on_main_and_wait(fn, timeout: Optional[float] = None):
+    """Run ``fn()`` on the AppKit main thread and return its result.
+
+    AppKit UI calls (NSAlert.runModal, ASWebAuthenticationSession.start) must
+    happen on the main thread. If we are already there, ``fn`` is called
+    inline; otherwise it is dispatched to the main run loop via
+    ``NSOperationQueue.mainQueue`` and this call blocks (up to ``timeout``)
+    until it finishes. Re-raises any exception ``fn`` raised. Returns ``None``
+    off-mac / without PyObjC.
+    """
+    syms = _load_cocoa()
+    if syms is None:
+        return None
+    ns_thread = syms.get("NSThread")
+    try:
+        if ns_thread is not None and ns_thread.isMainThread():
+            return fn()
+    except Exception:
+        # If the thread check itself fails, fall through to the dispatch path.
+        pass
+
+    box: dict = {}
+    done = threading.Event()
+
+    def _block():
+        try:
+            box["value"] = fn()
+        except Exception as e:  # noqa: BLE001 — propagated to the caller below
+            box["error"] = e
+        finally:
+            done.set()
+
+    try:
+        syms["NSOperationQueue"].mainQueue().addOperationWithBlock_(_block)
+    except Exception as e:
+        # Couldn't even schedule — surface it rather than hang.
+        raise e
+    if not done.wait(timeout):
+        raise TimeoutError("main-thread operation did not complete in time")
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
+# NSAlert maps the first added button to this response, incrementing by one for
+# each subsequent button (NSAlertFirstButtonReturn == 1000).
+_NS_ALERT_FIRST_BUTTON_RETURN = 1000
+
+
+def run_confirm(title: str, message: str, buttons) -> Optional[int]:
+    """Show a modal native ``NSAlert`` and return the clicked button index.
+
+    ``buttons`` is an ordered list of labels. The FIRST label is the default
+    (Return key) and rightmost button; a label of exactly ``"Cancel"`` is also
+    bound to Esc by AppKit. Returns the 0-based index of the clicked button, or
+    ``None`` off-mac / without PyObjC / on any error (callers treat ``None`` as
+    "couldn't ask" and pick their own safe default).
+
+    Runs on the main thread (dispatching if needed), so it is safe to call from
+    a pywebview window-close handler regardless of the calling thread.
+    """
+    syms = _load_cocoa()
+    if syms is None:
+        return None
+    labels = [str(b) for b in (buttons or []) if str(b)]
+    if not labels:
+        return None
+
+    def _present() -> Optional[int]:
+        try:
+            alert = syms["NSAlert"].alloc().init()
+            alert.setMessageText_(str(title or ""))
+            alert.setInformativeText_(str(message or ""))
+            try:
+                alert.setAlertStyle_(syms.get("ALERT_STYLE_WARNING", 0))
+            except Exception:
+                pass
+            for label in labels:
+                alert.addButtonWithTitle_(label)
+            response = int(alert.runModal())
+            idx = response - _NS_ALERT_FIRST_BUTTON_RETURN
+            if 0 <= idx < len(labels):
+                return idx
+            return None
+        except Exception:
+            return None
+
+    try:
+        return run_on_main_and_wait(_present, timeout=600.0)
+    except Exception:
+        return None

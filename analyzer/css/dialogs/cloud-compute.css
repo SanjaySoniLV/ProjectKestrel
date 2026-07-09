@@ -507,6 +507,27 @@ dialog.kdlg.cloud-account-dlg {
   background: rgba(224, 83, 59, 0.12);
 }
 .cloud-account-signout:disabled { opacity: 0.5; cursor: default; }
+/* Account deletion (App Store Guideline 5.1.1(v)): kept discoverable in the
+   account controls but visually muted so it doesn't compete with Sign out. */
+.cloud-account-delete {
+  font-size: 12px;
+  padding: 6px 12px;
+  flex: 0 0 auto;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted, #99a);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.cloud-account-delete:hover:not(:disabled) {
+  color: #e0533b;
+  border-color: #e0533b;
+  background: rgba(224, 83, 59, 0.12);
+  text-decoration: none;
+}
+.cloud-account-delete:disabled { opacity: 0.5; cursor: default; }
 
 .account-columns {
   display: grid;
