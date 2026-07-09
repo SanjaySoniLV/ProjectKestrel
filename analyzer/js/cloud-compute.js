@@ -1278,10 +1278,10 @@
 
     const _CC_MYACCOUNT_URL = 'https://myaccount.projectkestrel.org';
     // Account-deletion page (App Store Guideline 5.1.1(v)). Deletion is
-    // initiated here in-app and completed on the account page (Clerk's
-    // UserProfile has a typed-confirmation "Delete account" flow), so there is
-    // no risk of accidental deletion from the button alone.
-    const _CC_ACCOUNT_DELETE_URL = 'https://myaccount.projectkestrel.org/account';
+    // initiated here in-app and completed on the dedicated deletion page, which
+    // has its own typed confirmation, so there is no risk of accidental
+    // deletion from the button alone.
+    const _CC_ACCOUNT_DELETE_URL = 'https://myaccount.projectkestrel.org/delete/';
     let _ccAccountRefreshTimer = null;
 
     function _ccAccountDlg() { return document.getElementById('cloudAccountDlg'); }
