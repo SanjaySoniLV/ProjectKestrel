@@ -952,6 +952,16 @@
   font-size: 13px;
 }
 
+/* Each .folder-group-header is position:sticky with z-index:10, which
+   creates a per-header stacking context. Sibling headers therefore paint
+   in DOM order, so a later folder row can obscure an earlier row's open
+   Folder Actions menu even though the menu is z-index:1000 within its own
+   header. Raise the owning header above other headers only while its menu
+   is present. */
+.folder-group-header:has(.folder-group-actions-menu) {
+  z-index: 1001;
+}
+
 .folder-group-actions-item {
   padding: 8px 14px;
   cursor: pointer;
