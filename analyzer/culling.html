@@ -1127,6 +1127,21 @@
           </div>
         </div>
       </div>
+      <!-- Embed into JPEG originals (opt-in; only shown when writing XMP AND
+           the folder contains JPEGs). Unchecked on every open — it modifies
+           the user's original files, so it must be a conscious choice. -->
+      <div class="dlg-option-card hidden" id="xmpEmbedJpegCard">
+        <label class="dlg-option-label">
+          <input type="checkbox" id="xmpEmbedJpegCheck" />
+          <span class="dlg-option-icon">&#x1F5BC;&#xFE0F;</span>
+          <div class="dlg-option-body">
+            <b>Also embed metadata into JPEG originals <span id="xmpEmbedJpegCount" style="font-weight:600;color:#9a8050;"></span></b>
+            <span>Adobe Lightroom ignores <code>.xmp</code> sidecars for JPEGs — embedding writes the ratings and tags <b>inside</b> each JPEG so Lightroom can read them.<br>
+            <b style="color:#e0a050;">&#x26A0; This modifies your original JPEG files in place.</b> Photo data is left untouched, but as with any file edit, use at your own risk — back up if unsure. RAW files are never modified.</span>
+          </div>
+        </label>
+      </div>
+
       <!-- XMP early-access note (shown when checked) -->
       <div class="dlg-xmp-note" id="xmpNote">
         &#x26A0; <b>Write XMP files <em>before</em> importing into your photo editor.</b> Once a program like Lightroom or Capture One has imported a photo, it typically ignores new sidecar files and manages metadata in its own catalogue instead. Write XMP first, then import, for best results.
@@ -2375,6 +2390,16 @@
       el('#dlgProgress').classList.add('hidden');
       el('#dlgProgressActions').style.display = 'none';
 
+      // Embed-into-JPEG is opt-out on every open (modifies originals). Reset it
+      // unchecked and refresh the JPEG count shown on the card.
+      const embedCheck = el('#xmpEmbedJpegCheck');
+      if (embedCheck) embedCheck.checked = false;
+      const embedCount = el('#xmpEmbedJpegCount');
+      if (embedCount) {
+        const n = _folderJpegCount();
+        embedCount.textContent = n ? `(${n} JPEG${n === 1 ? '' : 's'})` : '';
+      }
+
       _updateExecuteBtn();
       // Hydrate XMP field selection from persisted settings (fire-and-forget)
       _hydrateXmpFieldSelection();
@@ -2393,6 +2418,19 @@
       if (autoLabel) autoLabel.disabled = !xmpChecked;
       if (autoLabelCard) autoLabelCard.classList.toggle('hidden', !xmpChecked);
       if (fieldsCard) fieldsCard.classList.toggle('hidden', !xmpChecked);
+      // Embed-into-JPEG sub-option: only when writing XMP AND the folder has JPEGs.
+      const embedCard = el('#xmpEmbedJpegCard');
+      if (embedCard) embedCard.classList.toggle('hidden', !(xmpChecked && _folderHasJpeg()));
+    }
+
+    // ---- JPEG detection (for the embed-into-original option) ----
+    // Lightroom ignores .xmp sidecars for JPEGs, so we offer to embed XMP
+    // directly into JPEG originals — but only when the folder has JPEGs.
+    function _folderJpegCount() {
+      return rows.filter(r => /\.jpe?g$/i.test(r.filename || '')).length;
+    }
+    function _folderHasJpeg() {
+      return _folderJpegCount() > 0;
     }
 
     // ---- XMP field selection (which sections of the .xmp packet to write) ----
@@ -2449,8 +2487,18 @@
       const doXmp  = el('#doXmpCheck')?.checked  || false;
       const doMove = el('#doMoveCheck')?.checked || false;
       const doAutoLabels = doXmp && (el('#doAutoLabelCheck')?.checked ?? true);
+      const doEmbedJpeg = doXmp && _folderHasJpeg() && (el('#xmpEmbedJpegCheck')?.checked || false);
       const doPromoteVerified = !!el('#doPromoteVerifiedCheck')?.checked;
       if (!doXmp && !doMove && !doPromoteVerified) return;
+
+      // Human-readable suffix describing embedded JPEG results, appended to the
+      // sidecar-count step detail when embedding was requested.
+      const embedSuffix = (r) => {
+        if (!doEmbedJpeg) return '';
+        let s = r && r.embedded ? `, ${r.embedded} embedded in JPEG${r.embedded === 1 ? '' : 's'}` : '';
+        if (r && r.embed_errors && r.embed_errors.length) s += `, ${r.embed_errors.length} embed failed`;
+        return s;
+      };
 
       // Snapshot + persist the user's XMP field selection for this write.
       const xmpFieldSel = _readXmpFieldSelection();
@@ -2468,7 +2516,7 @@
         { id: 'promote', label: 'Confirming auto-categorized decisions',  cond: doPromoteVerified },
         { id: 'save',   label: 'Saving database',                    always: true },
         { id: 'backup', label: 'Backing up kestrel_database.csv',    cond: doMove },
-        { id: 'xmp',    label: 'Writing XMP sidecar files',          cond: doXmp  },
+        { id: 'xmp',    label: doEmbedJpeg ? 'Writing XMP sidecars + embedding into JPEGs' : 'Writing XMP sidecar files', cond: doXmp  },
         { id: 'move',   label: 'Moving rejects to _KESTREL_Rejects', cond: doMove },
       ];
       const stepsEl = el('#dlgStepsList');
@@ -2535,7 +2583,7 @@
           }));
 
           // First pass: detect conflicts (existing non-Kestrel XMPs)
-          const firstXmpRes = await window.pywebview.api.write_xmp_metadata(rootPath, xmpPayload, false, doAutoLabels, xmpFieldSel);
+          const firstXmpRes = await window.pywebview.api.write_xmp_metadata(rootPath, xmpPayload, false, doAutoLabels, xmpFieldSel, doEmbedJpeg);
           if (!firstXmpRes.success) {
             setStep('xmp', 'failed', firstXmpRes.error || '');
             anyFailed = true;
@@ -2549,21 +2597,21 @@
             setStep('xmp', 'running');
             if (overwriteExternal) {
               // Second pass: overwrite the conflicting files too
-              const secondXmpRes = await window.pywebview.api.write_xmp_metadata(rootPath, xmpPayload, true, doAutoLabels, xmpFieldSel);
+              const secondXmpRes = await window.pywebview.api.write_xmp_metadata(rootPath, xmpPayload, true, doAutoLabels, xmpFieldSel, doEmbedJpeg);
               if (!secondXmpRes.success) {
                 setStep('xmp', 'failed', secondXmpRes.error || '');
                 anyFailed = true;
               } else {
-                setStep('xmp', 'done', `${secondXmpRes.written} file${secondXmpRes.written === 1 ? '' : 's'} written`);
+                setStep('xmp', 'done', `${secondXmpRes.written} file${secondXmpRes.written === 1 ? '' : 's'} written${embedSuffix(secondXmpRes)}`);
               }
             } else {
               // User chose to skip conflicts; count only what was written in the first pass
               const written = firstXmpRes.written || 0;
               const skipped = firstXmpRes.skipped_conflicts.length;
-              setStep('xmp', 'done', `${written} written, ${skipped} skipped`);
+              setStep('xmp', 'done', `${written} written, ${skipped} skipped${embedSuffix(firstXmpRes)}`);
             }
           } else {
-            setStep('xmp', 'done', `${firstXmpRes.written} file${firstXmpRes.written === 1 ? '' : 's'} written`);
+            setStep('xmp', 'done', `${firstXmpRes.written} file${firstXmpRes.written === 1 ? '' : 's'} written${embedSuffix(firstXmpRes)}`);
           }
         }
 

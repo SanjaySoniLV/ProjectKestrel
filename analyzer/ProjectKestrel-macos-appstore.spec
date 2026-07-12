@@ -80,6 +80,11 @@ hiddenimports = ['pywebview', 'certifi', 'PIL', 'exifread', 'settings_utils', 'e
 binaries += collect_dynamic_libs('onnxruntime')
 tmp_ret = collect_all('msvc-runtime')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# pyexiv2 bundles the exiv2 C++ library as a native extension inside the wheel
+# (used to embed XMP into JPEG originals). collect_all pulls in the compiled
+# module and its bundled shared libs so the frozen app can import it.
+tmp_ret = collect_all('pyexiv2')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 print("=== Verifying source files exist ===")
 for src, dst in datas:

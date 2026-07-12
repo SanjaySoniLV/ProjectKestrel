@@ -30,6 +30,11 @@ hiddenimports = ['pywebview','PIL','exifread','settings_utils','editor_launch','
 binaries += collect_dynamic_libs('onnxruntime')
 tmp_ret = collect_all('msvc-runtime')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# pyexiv2 bundles the exiv2 C++ library as a native extension inside the wheel
+# (used to embed XMP into JPEG originals). collect_all pulls in the compiled
+# module and its bundled shared libs so the frozen app can import it.
+tmp_ret = collect_all('pyexiv2')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 # optree removed: was a transitive dependency of torch via speciesnet (now eliminated)
 
 
