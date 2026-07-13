@@ -5863,7 +5863,58 @@ class Api:
         Returns immediately. On success the worker thread persists the OAuth
         bundle to the keychain and calls ``window.onAuthSignIn(token)``; on
         failure it calls ``window.onAuthSignInFailed({error, description})``.
-        Refuses to start a second concurrent flow.
+        Refuses to start a second concurrent flow. This is the loopback (Win/Linux)
+        / ASWebAuthenticationSession (macOS) transport used for Google + email.
+        """
+        return self._begin_sign_in(None)
+
+    def start_apple_native_sign_in(self):
+        """Start native "Sign in with Apple" (ASAuthorizationController).
+
+        macOS App Store build only. Same success/failure contract as
+        ``start_oauth_sign_in`` — persists the same OAuth token bundle and calls
+        ``window.onAuthSignIn`` / ``window.onAuthSignInFailed`` — but the
+        credential is captured in Apple's native system sheet (Guideline 4),
+        then bridged to a Clerk session and the standard OAuth token bundle.
+        """
+        if _oauth is None:
+            return {"success": False, "error": "oauth_module_unavailable"}
+        try:
+            apple = _oauth._load_apple_signin()
+        except Exception:
+            apple = None
+        if apple is None:
+            return {"success": False, "error": "apple_unavailable"}
+        return self._begin_sign_in(self._apple_flow)
+
+    def _apple_flow(self, cancel_event):
+        """Worker flow-callable: native Apple credential → Clerk → token bundle.
+
+        Returns the same ``{"ok": bool, "bundle"|"error": ...}`` contract as
+        ``oauth_client.run_authorization_flow`` so ``_oauth_worker`` handles it
+        identically.
+        """
+        apple = _oauth._load_apple_signin()
+        if apple is None:
+            return {
+                "ok": False,
+                "error": "apple_unavailable",
+                "error_description": "Native Sign in with Apple is unavailable on this build.",
+            }
+        return _oauth.run_apple_native_flow(
+            apple,
+            progress_cb=self._oauth_progress_cb,
+            url_validator=_is_safe_external_url,
+            cancel_event=cancel_event,
+        )
+
+    def _begin_sign_in(self, flow_fn=None):
+        """Shared launcher for the sign-in transports.
+
+        ``flow_fn`` is ``None`` for the standard OAuth/loopback/ASWeb flow, or a
+        ``(cancel_event) -> result`` callable (native Apple). Refuses to start a
+        second concurrent flow; a stale in-flight flow is cancelled and reaped so
+        this click can start fresh.
         """
         if _oauth is None:
             return {"success": False, "error": "oauth_module_unavailable"}
@@ -5906,6 +5957,7 @@ class Api:
                 self._oauth_status = "starting"
                 thread = _t.Thread(
                     target=self._oauth_worker, args=(cancel_event,),
+                    kwargs={"flow_fn": flow_fn},
                     name="oauth-flow", daemon=True,
                 )
                 self._oauth_thread = thread
@@ -5919,27 +5971,33 @@ class Api:
             self._oauth_status = "idle"
             self._oauth_cancel_event = None
             self._oauth_thread = None
-            print(f"[API] start_oauth_sign_in() -> Error: {e}", flush=True)
+            print(f"[API] _begin_sign_in() -> Error: {e}", flush=True)
             return {"success": False, "error": str(e)}
 
     def _oauth_progress_cb(self, label: str) -> None:
         self._oauth_status = str(label)
 
-    def _oauth_worker(self, cancel_event=None) -> None:
-        """Background thread that drives ``oauth_client.run_authorization_flow``.
+    def _oauth_worker(self, cancel_event=None, flow_fn=None) -> None:
+        """Background thread that drives a sign-in flow to completion.
 
-        Persists the result on success and notifies JS either way. Always
-        clears ``_oauth_in_flight`` in ``finally`` so a botched flow doesn't
-        permanently block re-attempts. ``cancel_event`` lets a newer sign-in
-        attempt supersede this one (the user closed the OAuth tab and clicked
-        "Sign In" again).
+        ``flow_fn`` is ``None`` for the standard OAuth transport
+        (``oauth_client.run_authorization_flow``) or a ``(cancel_event) -> result``
+        callable (native Apple). Either way the result is the same
+        ``{"ok": ...}`` contract. Persists the result on success and notifies JS
+        either way. Always clears ``_oauth_in_flight`` in ``finally`` so a botched
+        flow doesn't permanently block re-attempts. ``cancel_event`` lets a newer
+        sign-in attempt supersede this one (the user closed the OAuth tab and
+        clicked "Sign In" again).
         """
         try:
-            result = _oauth.run_authorization_flow(
-                progress_cb=self._oauth_progress_cb,
-                url_validator=_is_safe_external_url,
-                cancel_event=cancel_event,
-            )
+            if flow_fn is not None:
+                result = flow_fn(cancel_event)
+            else:
+                result = _oauth.run_authorization_flow(
+                    progress_cb=self._oauth_progress_cb,
+                    url_validator=_is_safe_external_url,
+                    cancel_event=cancel_event,
+                )
             if not result.get("ok"):
                 err = str(result.get("error") or "unknown")
                 desc = str(result.get("error_description") or "")

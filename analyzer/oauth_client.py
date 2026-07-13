@@ -23,6 +23,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import http.cookiejar
 import http.server
 import json
 import secrets
@@ -97,6 +98,32 @@ LOOPBACK_PORTS      = (17893, 27184, 37265, 47632, 53682)
 # ``MAC_CALLBACK_SCHEME`` is that URI's scheme (what the session intercepts).
 MAC_CALLBACK_SCHEME = "kestrel"
 MAC_REDIRECT_URI    = f"{MAC_CALLBACK_SCHEME}://callback"
+
+# ── Native "Sign in with Apple" bridge (macOS App Store build) ────────────────
+#
+# Apple's Guideline 4 requires Sign in with Apple to complete *natively* (the
+# ASAuthorizationController system sheet), not via any web redirect — so for the
+# Apple button specifically we can't use the ASWeb/OAuth-authorize web flow.
+# Instead, mac_apple_signin.py yields an Apple identity token, which we exchange
+# with Clerk's *Frontend API* (a different surface than the OAuth IdP): a
+# ``strategy=oauth_token_apple`` sign-in that establishes a Clerk session. We
+# then carry that session cookie straight into the SAME ``/oauth/authorize``
+# endpoint the loopback/ASWeb flows use, so it hands back a ``kestrel://callback``
+# code and the downstream token bundle (access + refresh) is byte-for-byte the
+# same shape. Net effect: only the *credential capture* is Apple-native; the
+# token model, refresh path, and Worker validation are unchanged.
+#
+# ``oauth_token_apple`` is confirmed enabled on the production Clerk instance
+# (it appears in the sign-in attempt's supported_first_factors). Clerk validates
+# the id_token's embedded nonce claim (set to SHA-256 of a raw nonce on the
+# native request), so we pass only the token — no separate nonce param, matching
+# Clerk's own iOS SDK.
+CLERK_FAPI_SIGN_INS_URL = "https://clerk.projectkestrel.org/v1/client/sign_ins"
+CLERK_APPLE_STRATEGY    = "oauth_token_apple"
+# Sent as the Origin on Frontend-API calls. Clerk's prod FAPI accepts requests
+# from the instance's own account-portal origin; the stdlib UA would trip
+# Cloudflare Bot Fight Mode, so we reuse the named UA from _token_request.
+CLERK_ACCOUNT_ORIGIN    = "https://myaccount.projectkestrel.org"
 
 
 def _redirect_uri(port: int) -> str:
@@ -562,6 +589,253 @@ def run_authorization_flow_mac(
             "error":             tok["error"],
             "error_description": tok.get("error_description"),
         }
+
+    bundle = build_bundle(tok)
+    if not bundle.get("access_token"):
+        return {"ok": False, "error": "missing_access_token"}
+
+    _progress("done")
+    return {"ok": True, "bundle": bundle}
+
+
+# User-Agent shared by the OAuth token endpoint and the Frontend-API bridge.
+# Cloudflare Bot Fight Mode blocks the stdlib UA ("Python-urllib/3.x"); this
+# named-client string identifies us honestly and doesn't trip the rule.
+_KESTREL_UA = "ProjectKestrel-Desktop/oauth (+https://projectkestrel.org)"
+
+
+def _load_apple_signin():
+    """Return the ``mac_apple_signin`` module if native Sign in with Apple is
+    usable on this build, else ``None``. Never raises."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        import mac_apple_signin  # type: ignore
+    except ImportError:  # pragma: no cover - package-style import path
+        try:
+            from analyzer import mac_apple_signin  # type: ignore
+        except Exception:
+            return None
+    except Exception:
+        return None
+    try:
+        return mac_apple_signin if mac_apple_signin.is_available() else None
+    except Exception:
+        return None
+
+
+class _NoFollowRedirect(urllib.request.HTTPRedirectHandler):
+    """Redirect handler that never follows — so a 3xx surfaces as an HTTPError
+    whose headers still carry the ``Location``. We need the raw redirect target
+    because it's a custom ``kestrel://`` scheme urllib can't fetch, and it's the
+    value that carries the OAuth ``code``."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401
+        return None
+
+
+def _fapi_apple_sign_in(jar: "http.cookiejar.CookieJar", id_token: str) -> dict:
+    """Exchange an Apple identity token for a Clerk session via the Frontend API.
+
+    ``POST /v1/client/sign_ins`` with ``strategy=oauth_token_apple`` &
+    ``token=<id_token>``. On success Clerk sets the ``__client`` session cookie
+    into ``jar`` (which the subsequent authorize call reuses). Clerk validates
+    the nonce claim embedded in the id_token, so no separate nonce param.
+
+    Returns ``{"ok": True}`` on a clean sign-in, else ``{"error", "error_description"}``.
+    Never raises.
+    """
+    body = urllib.parse.urlencode({
+        "strategy": CLERK_APPLE_STRATEGY,
+        "token":    id_token,
+    }).encode("ascii")
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=_ssl_context()),
+        urllib.request.HTTPCookieProcessor(jar),
+    )
+    req = urllib.request.Request(
+        CLERK_FAPI_SIGN_INS_URL,
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept":       "application/json",
+            "Origin":       CLERK_ACCOUNT_ORIGIN,
+            "User-Agent":   _KESTREL_UA,
+        },
+    )
+    try:
+        with opener.open(req, timeout=15.0) as resp:
+            raw = resp.read()
+    except urllib.error.HTTPError as e:
+        err_body = ""
+        try:
+            err_body = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        parsed: dict = {}
+        if err_body.lstrip().startswith("{"):
+            try:
+                parsed = json.loads(err_body)
+            except Exception:
+                pass
+        msg = ""
+        errs = parsed.get("errors")
+        if isinstance(errs, list) and errs:
+            first = errs[0] if isinstance(errs[0], dict) else {}
+            msg = first.get("long_message") or first.get("message") or ""
+        return {
+            "error": "apple_signin_rejected",
+            "error_description": msg or err_body.strip()[:300] or f"HTTP {e.code}",
+        }
+    except (urllib.error.URLError, TimeoutError, socket.timeout, OSError) as e:
+        return {"error": "network", "error_description": str(e)}
+
+    # A 2xx with an ``errors`` array can still indicate a soft failure.
+    try:
+        data = json.loads(raw)
+    except Exception:
+        data = {}
+    errs = data.get("errors") if isinstance(data, dict) else None
+    if isinstance(errs, list) and errs:
+        first = errs[0] if isinstance(errs[0], dict) else {}
+        return {
+            "error": "apple_signin_rejected",
+            "error_description": first.get("long_message") or first.get("message") or "sign-in error",
+        }
+    return {"ok": True}
+
+
+def _authorize_with_session(jar: "http.cookiejar.CookieJar", authorize_url: str) -> dict:
+    """Drive ``/oauth/authorize`` with the Clerk session cookie already in ``jar``.
+
+    Because the user is now signed in (via the Frontend-API Apple sign-in) and
+    this is a first-party OAuth client with consent pre-granted, Clerk answers
+    with a 302 straight to ``kestrel://callback?code=...&state=...`` — no UI.
+    We don't follow the custom-scheme redirect; we read the ``Location`` off the
+    resulting HTTPError.
+
+    Returns ``{"code", "state"}`` or ``{"error", "error_description"}``. Never raises.
+    """
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=_ssl_context()),
+        urllib.request.HTTPCookieProcessor(jar),
+        _NoFollowRedirect(),
+    )
+    req = urllib.request.Request(
+        authorize_url,
+        method="GET",
+        headers={
+            "Accept":     "text/html,application/xhtml+xml",
+            "Origin":     CLERK_ACCOUNT_ORIGIN,
+            "User-Agent": _KESTREL_UA,
+        },
+    )
+    location: Optional[str] = None
+    try:
+        with opener.open(req, timeout=15.0) as resp:
+            # 2xx means authorize rendered a page instead of redirecting — i.e.
+            # the session wasn't recognized or interaction is required.
+            status = getattr(resp, "status", None) or resp.getcode()
+            return {
+                "error": "apple_bridge_no_redirect",
+                "error_description": f"authorize returned HTTP {status} without a redirect",
+            }
+    except urllib.error.HTTPError as e:
+        # 3xx (redirect not followed) or a scheme-blocked redirect — either way
+        # the Location header carries the code URL.
+        try:
+            location = e.headers.get("Location") or e.headers.get("location")
+        except Exception:
+            location = None
+        if not location:
+            return {
+                "error": "apple_bridge_no_redirect",
+                "error_description": f"authorize {e.code} without a Location header",
+            }
+    except (urllib.error.URLError, TimeoutError, socket.timeout, OSError) as e:
+        return {"error": "network", "error_description": str(e)}
+
+    parsed = urllib.parse.urlparse(location)
+    if parsed.scheme != MAC_CALLBACK_SCHEME:
+        return {
+            "error": "apple_bridge_bad_redirect",
+            "error_description": f"unexpected redirect target: {location[:200]}",
+        }
+    q = urllib.parse.parse_qs(parsed.query)
+    code = (q.get("code") or [None])[0]
+    state = (q.get("state") or [None])[0]
+    err = (q.get("error") or [None])[0]
+    err_desc = (q.get("error_description") or [None])[0]
+    if not code:
+        return {
+            "error": "apple_bridge_no_code",
+            "error_description": err_desc or err or location[:200],
+        }
+    return {"code": code, "state": state}
+
+
+def run_apple_native_flow(
+    apple_signin,
+    progress_cb: Optional[Callable[[str], None]] = None,
+    *,
+    url_validator: Optional[Callable[[str], bool]] = None,
+    cancel_event: Optional[threading.Event] = None,
+) -> dict:
+    """Native Sign in with Apple → Clerk session → OAuth2 token bundle.
+
+    Returns ``{"ok": bool, "bundle"|"error": ...}`` — the SAME contract as
+    :func:`run_authorization_flow`, so ``api_bridge``'s worker persists and
+    notifies identically. Steps:
+
+      1. ``apple_signin.authenticate()`` presents the native ASAuthorization
+         sheet and returns the Apple identity token.
+      2. ``_fapi_apple_sign_in`` exchanges it for a Clerk session (cookie jar).
+      3. ``_authorize_with_session`` runs the standard ``/oauth/authorize`` with
+         that session to obtain a ``kestrel://callback`` code.
+      4. ``exchange_code`` / ``build_bundle`` — identical to the other transports.
+    """
+    def _progress(label: str) -> None:
+        if progress_cb is not None:
+            try:
+                progress_cb(label)
+            except Exception:
+                pass
+
+    _progress("apple_starting")
+    cred = apple_signin.authenticate(timeout=FLOW_TIMEOUT_SEC, cancel_event=cancel_event)
+    if cred.get("error"):
+        return {"ok": False, "error": cred["error"], "error_description": cred.get("error_description")}
+    id_token = cred.get("identity_token") or ""
+    if not id_token:
+        return {"ok": False, "error": "apple_no_identity_token"}
+
+    if cancel_event is not None and cancel_event.is_set():
+        return {"ok": False, "error": "cancelled"}
+
+    _progress("apple_exchanging")
+    jar = http.cookiejar.CookieJar()
+    si = _fapi_apple_sign_in(jar, id_token)
+    if si.get("error"):
+        return {"ok": False, "error": si["error"], "error_description": si.get("error_description")}
+
+    verifier, challenge = _gen_pkce()
+    state = _gen_state()
+    authorize_url = _build_authorize_url(state, challenge, MAC_REDIRECT_URI)
+    if url_validator is not None and not url_validator(authorize_url):
+        return {"ok": False, "error": "unsafe_authorize_url"}
+
+    _progress("apple_authorizing")
+    authz = _authorize_with_session(jar, authorize_url)
+    if authz.get("error"):
+        return {"ok": False, "error": authz["error"], "error_description": authz.get("error_description")}
+    if not hmac.compare_digest(authz.get("state") or "", state):
+        return {"ok": False, "error": "state_mismatch"}
+
+    _progress("exchanging")
+    tok = exchange_code(authz["code"], verifier, MAC_REDIRECT_URI)
+    if tok.get("error"):
+        return {"ok": False, "error": tok["error"], "error_description": tok.get("error_description")}
 
     bundle = build_bundle(tok)
     if not bundle.get("access_token"):

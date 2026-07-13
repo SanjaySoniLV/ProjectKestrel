@@ -27,6 +27,13 @@
     network.client                      Outbound HTTPS: auth/clerk, cloud-compute, telemetry.
     network.server                      Loopback HTTP server that serves the local UI, plus
                                         the OAuth callback listener (both 127.0.0.1 only).
+    developer.applesignin               Native "Sign in with Apple" (ASAuthorizationController),
+                                        required by Guideline 4 so the Apple button completes in
+                                        the native system sheet, not a web redirect. The App ID
+                                        must have the "Sign in with Apple" capability enabled and
+                                        the provisioning profile regenerated to authorize this
+                                        entitlement, or signing/upload fails. Value ["Default"]
+                                        uses the primary App ID as the Apple grouping.
 
   Deliberately NOT included:
     cs.allow-jit / allow-unsigned-executable-memory: inference is 100% ONNX Runtime (AOT),
@@ -52,5 +59,9 @@
     <true/>
     <key>com.apple.security.network.server</key>
     <true/>
+    <key>com.apple.developer.applesignin</key>
+    <array>
+        <string>Default</string>
+    </array>
 </dict>
 </plist>

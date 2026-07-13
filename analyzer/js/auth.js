@@ -126,10 +126,75 @@
         try { window.KestrelNotifications.onAuthState(signedIn); } catch (_) {}
       }
 
+      // Distribution channel gates the sign-in UI: only the macOS App Store
+      // build ('appstore') has the native Sign in with Apple transport, so only
+      // it shows the chooser (Apple + web). Cached; prewarmed below.
+      let _distChannel = null;
+      async function _ensureDistChannel() {
+        if (_distChannel !== null) return _distChannel;
+        try {
+          if (window.pywebview?.api?.get_dist_channel) {
+            const r = await window.pywebview.api.get_dist_channel();
+            _distChannel = (r && r.channel) || 'direct';
+          } else {
+            _distChannel = 'direct';
+          }
+        } catch (_) { _distChannel = 'direct'; }
+        return _distChannel;
+      }
+
+      function _startWebSignIn() {
+        // OAuth + PKCE: on Win/Linux Python opens the system browser + a loopback
+        // callback server; on macOS it uses ASWebAuthenticationSession. Either
+        // way it notifies us via window.onAuthSignIn(...). Covers Google + email.
+        if (hasPywebviewApi && window.pywebview?.api?.start_oauth_sign_in) {
+          try {
+            window.pywebview.api.start_oauth_sign_in();
+            if (typeof showToast === 'function') {
+              showToast('Sign-in in progress — complete sign-in in the window that opens, then return here.', 8000);
+            }
+          } catch (e) {
+            console.warn('start_oauth_sign_in failed:', e);
+          }
+        } else if (typeof showToast === 'function') {
+          showToast('Sign-in unavailable in this environment.', 5000);
+        }
+      }
+
+      function _startAppleSignIn() {
+        // Native Sign in with Apple (ASAuthorizationController). App Store build
+        // only; notifies via the same window.onAuthSignIn(...) callback.
+        if (window.pywebview?.api?.start_apple_native_sign_in) {
+          try {
+            window.pywebview.api.start_apple_native_sign_in();
+            if (typeof showToast === 'function') {
+              showToast('Continue in the Apple sign-in window…', 8000);
+            }
+          } catch (e) {
+            console.warn('start_apple_native_sign_in failed:', e);
+          }
+        }
+      }
+
+      async function openSignInUI() {
+        let channel = 'direct';
+        try { channel = await _ensureDistChannel(); } catch (_) {}
+        // Guideline 4.8: present Sign in with Apple alongside the third-party
+        // (Google) option. Only the App Store build can do native Apple, so only
+        // it gets the chooser; every other build goes straight to the web flow.
+        if (channel === 'appstore' && window.pywebview?.api?.start_apple_native_sign_in) {
+          const dlg = document.getElementById('signInChooserDlg');
+          if (dlg) {
+            try { dlg.showModal(); return; } catch (_) { /* fall through */ }
+          }
+        }
+        _startWebSignIn();
+      }
+
       accountBtn.addEventListener('click', () => {
         // §4a: when signed in, the account button opens the Account & Cloud
         // Compute panel instead of re-triggering sign-in. Signed-out (incl.
-        // session-expired) keeps the OAuth sign-in flow.
+        // session-expired) opens the sign-in UI.
         if (accountBtn.classList.contains('signed-in')) {
           if (typeof window.openCloudAccountPanel === 'function') {
             window.openCloudAccountPanel();
@@ -138,25 +203,30 @@
           }
           return;
         }
-        // OAuth + PKCE: Python opens the system browser, runs a loopback
-        // callback server on 127.0.0.1:53682, exchanges the code for a token
-        // pair, and notifies us via window.onAuthSignIn(...).
-        if (hasPywebviewApi && window.pywebview?.api?.start_oauth_sign_in) {
-          try {
-            window.pywebview.api.start_oauth_sign_in();
-            if (typeof showToast === 'function') {
-              showToast('Sign-in in progress — complete sign-in in your browser, then return here.', 8000);
-            }
-          } catch (e) {
-            console.warn('start_oauth_sign_in failed:', e);
-          }
-        } else {
-          // No bridge available — desktop app should always have it; surface this.
-          if (typeof showToast === 'function') {
-            showToast('Sign-in unavailable in this environment.', 5000);
-          }
-        }
+        openSignInUI();
       });
+
+      // Wire the sign-in chooser (present only in the App Store build markup,
+      // but harmless to wire when absent).
+      const _siDlg = document.getElementById('signInChooserDlg');
+      const _siApple = document.getElementById('signInAppleBtn');
+      const _siWeb = document.getElementById('signInWebBtn');
+      const _siClose = document.getElementById('signInChooserClose');
+      if (_siApple) _siApple.addEventListener('click', () => {
+        try { _siDlg?.close(); } catch (_) {}
+        _startAppleSignIn();
+      });
+      if (_siWeb) _siWeb.addEventListener('click', () => {
+        try { _siDlg?.close(); } catch (_) {}
+        _startWebSignIn();
+      });
+      if (_siClose) _siClose.addEventListener('click', () => {
+        try { _siDlg?.close(); } catch (_) {}
+      });
+
+      // Prewarm the channel so the first sign-in click doesn't wait on a bridge
+      // round-trip before deciding which UI to show.
+      _ensureDistChannel();
     }
 
     // Called by Python after a successful OAuth sign-in or refresh that
@@ -205,6 +275,15 @@
         case 'state_mismatch':  msg = 'Sign-in failed (state mismatch). Click Sign In to try again.'; break;
         case 'flow_in_progress': msg = 'Sign-in is already in progress. Complete it in your browser.'; break;
         case 'browser_open_failed': msg = 'Could not open your browser. Sign in manually at myaccount.projectkestrel.org and try again.'; break;
+        // Native Sign in with Apple (App Store build).
+        case 'apple_unavailable': msg = 'Sign in with Apple isn’t available on this build. Use Continue with Google or email.'; break;
+        case 'apple_present_failed':
+        case 'apple_auth_error':
+        case 'apple_no_identity_token': msg = 'Apple sign-in didn’t complete. Please try again.'; break;
+        case 'apple_signin_rejected': msg = 'Apple sign-in couldn’t be verified. Try again, or use Continue with Google or email.'; break;
+        case 'apple_bridge_no_redirect':
+        case 'apple_bridge_no_code':
+        case 'apple_bridge_bad_redirect': msg = 'Couldn’t finish signing in after Apple. Please try again.'; break;
         default:                msg = `Sign-in failed: ${err}${desc ? ' — ' + desc : ''}`;
       }
       if (typeof showToast === 'function') showToast(msg, 8000);
