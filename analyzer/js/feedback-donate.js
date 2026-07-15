@@ -139,15 +139,43 @@
     document.getElementById('analyticsAccept').addEventListener('click', () => handleAnalyticsConsent(true));
     document.getElementById('analyticsDecline').addEventListener('click', () => handleAnalyticsConsent(false));
 
-    // ─── Donation / Support ──────────────────────────────────────────────────────
-    const DONATE_URL = 'https://donate.stripe.com/aFa28kbrLeb45mFgFE1ZS00';
+    // ─── Support ─────────────────────────────────────────────────────────────
+    // The destination is resolved by the backend (api_bridge.get_support_url),
+    // never hardcoded here: /support-me carries the donate option, /support has
+    // no payment path at all. Apple's anti-steering rule exempts the US
+    // storefront and no other, so the App Store build has to ask StoreKit before
+    // it's allowed to link out. Don't reintroduce a literal donate URL.
+    const SUPPORT_URL_FALLBACK = 'https://projectkestrel.org/support';
     const DONATE_THRESHOLD_KEY = 'kestrel-donate-thresholds-shown-v1';
 
-    function openDonateLink() {
+    let _supportUrlPromise = null;
+
+    /** Resolve (and cache) this build's support URL.
+     *
+     *  Fails closed to the no-payment page. The asymmetry is deliberate: a
+     *  missing donate link costs a click, while a stray one on a non-US App
+     *  Store build costs the listing. Prewarmed below, so the click path is
+     *  normally already resolved. */
+    function _ensureSupportUrl() {
+      if (_supportUrlPromise) return _supportUrlPromise;
+      _supportUrlPromise = (async () => {
+        try {
+          if (hasPywebviewApi && window.pywebview?.api?.get_support_url) {
+            const r = await window.pywebview.api.get_support_url();
+            if (r?.success && r.url) return r.url;
+          }
+        } catch (_) { }
+        return SUPPORT_URL_FALLBACK;
+      })();
+      return _supportUrlPromise;
+    }
+
+    async function openSupportLink() {
+      const url = await _ensureSupportUrl();
       if (hasPywebviewApi && window.pywebview?.api?.open_url) {
-        window.pywebview.api.open_url(DONATE_URL);
+        window.pywebview.api.open_url(url);
       } else {
-        try { window.open(DONATE_URL, '_blank', 'noopener,noreferrer'); } catch (_) { }
+        try { window.open(url, '_blank', 'noopener,noreferrer'); } catch (_) { }
       }
     }
 
@@ -248,10 +276,12 @@
       }
     }
 
-    document.getElementById('donateBtnMain')?.addEventListener('click', openDonateLink);
+    document.getElementById('donateBtnMain')?.addEventListener('click', openSupportLink);
     // Note: donateDlg button listeners are wired in the inline script after the dialog HTML,
     // because that dialog is defined after this script block and wouldn't be in the DOM yet.
-    // ─── End Donation ─────────────────────────────────────────────────────
+    // Resolve the support URL up front so the click path doesn't wait on the bridge.
+    _ensureSupportUrl();
+    // ─── End Support ──────────────────────────────────────────────────────
 
     async function readMetadata() {
       if (!rootPath || !window.pywebview?.api?.read_kestrel_metadata) {

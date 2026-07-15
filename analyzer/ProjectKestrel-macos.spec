@@ -65,7 +65,11 @@ a = Analysis(
     # AuthenticationServices is guarded), so it simply reports "unavailable" and
     # oauth_client falls back to loopback. Only the App Store spec ships the
     # ASWebAuthenticationSession transport (see requirements-macos.txt).
-    excludes=['AuthenticationServices'],
+    # StoreKit is excluded for the same reason: it exists only to read the App
+    # Store storefront, which a direct-download build has no notion of.
+    # api_bridge.get_support_url() short-circuits on dist_channel before ever
+    # reaching it, so the DMG always gets the full /support-me page.
+    excludes=['AuthenticationServices', 'StoreKit'],
     noarchive=False,
     optimize=0,
 )

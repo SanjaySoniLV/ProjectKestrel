@@ -65,7 +65,7 @@ if not os.path.exists(_icns):
     _icns = None
 
 # Identical payload to ProjectKestrel-macos.spec, plus mac_sandbox.py.
-datas = [('models', 'models'), ('kestrel_telemetry.py', '.'), ('build_attestation.py', '.'), ('folder_inspector.py', '.'), ('cli.py', '.'), ('VERSION.txt', '.'), ('kestrel_analyzer', 'kestrel_analyzer'), ('visualizer.html', '.'), ('css', 'css'), ('js', 'js'), ('csv_parser.js', '.'), ('culling.html', '.'), ('logo.png', '.'), ('perch-logo.png', '.'), ('logo.ico', '.'), ('settings_utils.py', '.'), ('editor_launch.py', '.'), ('queue_manager.py', '.'), ('api_bridge.py', '.'), ('mac_sandbox.py', '.'), ('mac_oauth.py', '.'), ('mac_apple_signin.py', '.'), ('dist_channel.py', '.'), ('dist_channel.txt', '.')]
+datas = [('models', 'models'), ('kestrel_telemetry.py', '.'), ('build_attestation.py', '.'), ('folder_inspector.py', '.'), ('cli.py', '.'), ('VERSION.txt', '.'), ('kestrel_analyzer', 'kestrel_analyzer'), ('visualizer.html', '.'), ('css', 'css'), ('js', 'js'), ('csv_parser.js', '.'), ('culling.html', '.'), ('logo.png', '.'), ('perch-logo.png', '.'), ('logo.ico', '.'), ('settings_utils.py', '.'), ('editor_launch.py', '.'), ('queue_manager.py', '.'), ('api_bridge.py', '.'), ('mac_sandbox.py', '.'), ('mac_oauth.py', '.'), ('mac_apple_signin.py', '.'), ('mac_storefront.py', '.'), ('dist_channel.py', '.'), ('dist_channel.txt', '.')]
 
 if os.path.exists('build_attestation.json'):
     datas.append(('build_attestation.json', '.'))
@@ -76,7 +76,7 @@ else:
 sample_sets_tree = Tree('sample_sets', prefix='sample_sets')
 datas += [(item[0], item[1]) for item in sample_sets_tree]
 binaries = []
-hiddenimports = ['pywebview', 'certifi', 'PIL', 'exifread', 'settings_utils', 'editor_launch', 'queue_manager', 'api_bridge', 'build_attestation', 'mac_sandbox', 'mac_oauth', 'mac_apple_signin', 'dist_channel', 'Foundation', 'AppKit']
+hiddenimports = ['pywebview', 'certifi', 'PIL', 'exifread', 'settings_utils', 'editor_launch', 'queue_manager', 'api_bridge', 'build_attestation', 'mac_sandbox', 'mac_oauth', 'mac_apple_signin', 'mac_storefront', 'dist_channel', 'Foundation', 'AppKit']
 binaries += collect_dynamic_libs('onnxruntime')
 tmp_ret = collect_all('msvc-runtime')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
@@ -87,6 +87,12 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 # spec excludes it to stay on the loopback flow.)
 tmp_as = collect_all('AuthenticationServices')
 datas += tmp_as[0]; binaries += tmp_as[1]; hiddenimports += tmp_as[2]
+# StoreKit (SKStorefront) — mac_storefront.py asks which App Store storefront the
+# account is on, because Apple's anti-steering rule exempts the US storefront and
+# no other (Guideline 3.1.1(a)). Same collect_all reasoning as above. App Store
+# build only; the DMG never asks (get_support_url short-circuits on channel).
+tmp_sk = collect_all('StoreKit')
+datas += tmp_sk[0]; binaries += tmp_sk[1]; hiddenimports += tmp_sk[2]
 
 print("=== Verifying source files exist ===")
 for src, dst in datas:

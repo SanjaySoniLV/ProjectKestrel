@@ -700,7 +700,7 @@
         case 'perch_storage_limit_reached':
           return {
             title: 'Perch is full',
-            body: `This perch has hit the storage limit (${limitMB != null ? limitMB + ' MB' : 'plan cap'}). Upgrade for more storage per perch, or split the upload across multiple perches.${tierLine}`,
+            body: `This perch has hit the storage limit (${limitMB != null ? limitMB + ' MB' : 'plan cap'}). Split the upload across multiple perches, or get in touch from your account portal — extra storage can often be arranged.${tierLine}`,
           };
         case 'perch_image_limit_reached':
           return {
@@ -715,7 +715,7 @@
         case 'asset_too_large':
           return {
             title: 'File too large for your plan',
-            body: `${filename ? `"${filename}" is` : 'A file is'} larger than your plan's per-file limit (${limitMB != null ? limitMB + ' MB' : 'plan cap'}). Upgrade for higher per-file limits.${tierLine}`,
+            body: `${filename ? `"${filename}" is` : 'A file is'} larger than your plan's per-file limit (${limitMB != null ? limitMB + ' MB' : 'plan cap'}). Get in touch from your account portal if you need a higher limit.${tierLine}`,
           };
         default:
           return {
@@ -728,7 +728,12 @@
     function _perchSwapToPlanLimitState(card, prog) {
       if (!card) return;
       const copy = _perchPlanLimitCopy(prog);
-      const upgradeUrl = (prog && prog.upgradeUrl) || 'https://myaccount.projectkestrel.org/perch';
+      // Account management, not a purchase CTA. Perch tiers grant no extra
+      // storage today — caps are lifted per-account on request — so "Upgrade"
+      // would sell a fix that doesn't exist. It would also void the App Store's
+      // 3.1.3(f) IAP exemption, which requires no purchase calls-to-action.
+      const manageUrl = (prog && (prog.manageUrl || prog.upgradeUrl))
+        || 'https://myaccount.projectkestrel.org/perch';
       const esc = (s) => String(s).replace(/[<>&"']/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]));
       card.className = 'perch-upload-card is-error';
       card.innerHTML = `
@@ -738,13 +743,13 @@
         </div>
         <div class="perch-upload-card-body">
           <div class="perch-upload-card-err">${esc(copy.body)}</div>
-          <button type="button" class="perch-upload-card-cta" data-role="upgrade">Upgrade plan →</button>
+          <button type="button" class="perch-upload-card-cta" data-role="manage">Manage my account →</button>
         </div>
       `;
-      const upgrade = card.querySelector('[data-role="upgrade"]');
-      if (upgrade) {
-        upgrade.addEventListener('click', () => {
-          try { window.pywebview.api.open_perch_url(upgradeUrl); } catch {}
+      const manage = card.querySelector('[data-role="manage"]');
+      if (manage) {
+        manage.addEventListener('click', () => {
+          try { window.pywebview.api.open_perch_url(manageUrl); } catch {}
         });
       }
       const dismiss = card.querySelector('[data-role="dismiss"]');
@@ -755,8 +760,8 @@
 
     function _perchSwapToErrorState(card, prog, rootPath) {
       if (!card) return;
-      // Stage 7: tier-cap denials get their own card with an Upgrade CTA
-      // (no Retry — retrying without upgrading would just 403 again).
+      // Stage 7: tier-cap denials get their own card with an account CTA
+      // (no Retry — retrying against the same cap would just 403 again).
       if (prog && prog.message === 'plan_limit_exceeded') {
         _perchSwapToPlanLimitState(card, prog);
         return;

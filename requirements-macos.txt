@@ -35,6 +35,12 @@ pyobjc-framework-Cocoa==12.2.1
 # the App Store spec bundles it; the direct-download DMG spec excludes it and
 # keeps the loopback flow.
 pyobjc-framework-AuthenticationServices==12.2.1
+# SKStorefront (which App Store storefront the account is on) for the Mac App
+# Store build. Apple's anti-steering rule is storefront-scoped — the US
+# storefront is exempt, everywhere else is not — so the build must ask StoreKit
+# before showing any external purchase link (see mac_storefront.py). Only the
+# App Store spec bundles it; the DMG spec excludes it and never asks.
+pyobjc-framework-StoreKit==12.2.1
 
 # installer
 pyinstaller==6.20.0

@@ -71,6 +71,32 @@ except ImportError:
     except ImportError:
         _dist_channel = None
 
+# Support-page URLs. /support-me carries the donate option; /support is the same
+# page with no payment path at all. Which one the app opens is decided by
+# get_support_url() — see the note there on why this is storefront-scoped.
+SUPPORT_URL_FULL = 'https://projectkestrel.org/support-me'
+SUPPORT_URL_NO_PAYMENT = 'https://projectkestrel.org/support'
+
+
+def _load_storefront():
+    """Return the ``mac_storefront`` module if StoreKit storefront lookup is
+    usable on this build, else ``None``. Never raises."""
+    if sys.platform != 'darwin':
+        return None
+    try:
+        import mac_storefront  # type: ignore
+    except ImportError:  # pragma: no cover - package-style import path
+        try:
+            from analyzer import mac_storefront  # type: ignore
+        except Exception:
+            return None
+    except Exception:
+        return None
+    try:
+        return mac_storefront if mac_storefront.is_available() else None
+    except Exception:
+        return None
+
 from kestrel_analyzer.config import (
     JPEG_EXTENSIONS as _JPEG_EXTENSIONS,
     RAW_EXTENSIONS as _RAW_EXTENSIONS,
@@ -1498,6 +1524,47 @@ class Api:
         except Exception:
             pass
         return {'success': True, 'channel': 'direct'}
+
+    def get_support_url(self):
+        """Return the URL the "Support Project Kestrel" CTAs should open.
+
+        ``/support-me`` includes the donate option; ``/support`` is the same page
+        with no payment path at all. ``donate`` reports which one you got.
+
+        Apple's anti-steering rule is **storefront-scoped, not geographic**. The
+        US storefront is explicitly carved out of it (Guideline 3.1.1(a), and the
+        3.1.3 preamble); every other storefront is not. So the App Store build
+        may link out to Stripe for US-storefront customers only, and asks
+        StoreKit which it has. Non-App-Store builds short-circuit on channel and
+        never touch StoreKit — that also keeps the DMG/Windows paths free of any
+        new dependency.
+
+        Deliberately NOT IP geolocation: the rule keys on the App Store account's
+        storefront, not where the machine is. See mac_storefront.py.
+
+        Fails closed — any unresolved state yields the no-payment page.
+        """
+        channel = 'direct'
+        try:
+            if _dist_channel is not None:
+                channel = _dist_channel.get_channel()
+        except Exception:
+            pass
+
+        if channel != 'appstore':
+            return {'success': True, 'url': SUPPORT_URL_FULL, 'donate': True}
+
+        storefront = _load_storefront()
+        if storefront is None:
+            return {'success': True, 'url': SUPPORT_URL_NO_PAYMENT, 'donate': False}
+        try:
+            is_us = bool(storefront.is_us_storefront())
+        except Exception:
+            is_us = False
+
+        if is_us:
+            return {'success': True, 'url': SUPPORT_URL_FULL, 'donate': True}
+        return {'success': True, 'url': SUPPORT_URL_NO_PAYMENT, 'donate': False}
 
     def is_windows_store_app(self):
         """Check if running as a Windows Store app."""
