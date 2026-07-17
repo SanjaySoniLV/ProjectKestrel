@@ -281,6 +281,7 @@
         case 'apple_auth_error':
         case 'apple_no_identity_token': msg = 'Apple sign-in didn’t complete. Please try again.'; break;
         case 'apple_signin_rejected': msg = 'Apple sign-in couldn’t be verified. Try again, or use Continue with Google or email.'; break;
+        case 'apple_signup_rejected':
         case 'apple_signin_incomplete':
         case 'apple_signup_incomplete': msg = 'Apple sign-in couldn’t finish setting up your account. Try again, or use Continue with Google or email.'; break;
         case 'apple_bridge_no_redirect':

@@ -639,6 +639,40 @@ class _NoFollowRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def _clerk_first_error(errs) -> tuple:
+    """``(long_message, code)`` from a Clerk ``errors[]`` array; ``("", "")`` if
+    absent. Clerk's machine ``code`` (e.g. ``oauth_token_invalid``) is far more
+    diagnostic than the human message, so we surface both."""
+    if isinstance(errs, list) and errs and isinstance(errs[0], dict):
+        first = errs[0]
+        return (
+            first.get("long_message") or first.get("message") or "",
+            first.get("code") or "",
+        )
+    return ("", "")
+
+
+def _decode_jwt_claims(token: str) -> dict:
+    """Best-effort **UNVERIFIED** decode of a JWT payload, for diagnostics only.
+
+    Never raises; returns ``{}`` on any problem. This does NOT verify the
+    signature and must never gate an auth decision — it exists solely so we can
+    log which ``aud``/``iss``/``nonce`` the Apple token carries when Clerk
+    rejects it.
+    """
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:
+            return {}
+        seg = parts[1]
+        seg += "=" * (-len(seg) % 4)  # restore base64 padding
+        payload = base64.urlsafe_b64decode(seg.encode("ascii"))
+        data = json.loads(payload)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
 def _fapi_post(jar: "http.cookiejar.CookieJar", url: str, fields: dict) -> dict:
     """POST form-encoded ``fields`` to a Clerk Frontend-API endpoint, carrying
     (and updating) the session cookie in ``jar``.
@@ -679,15 +713,11 @@ def _fapi_post(jar: "http.cookiejar.CookieJar", url: str, fields: dict) -> dict:
                 parsed = json.loads(err_body)
             except Exception:
                 pass
-        msg = ""
-        errs = parsed.get("errors")
-        if isinstance(errs, list) and errs:
-            first = errs[0] if isinstance(errs[0], dict) else {}
-            msg = first.get("long_message") or first.get("message") or ""
-        return {
-            "error": "apple_signin_rejected",
-            "error_description": msg or err_body.strip()[:300] or f"HTTP {e.code}",
-        }
+        msg, code = _clerk_first_error(parsed.get("errors"))
+        desc = msg or err_body.strip()[:300] or f"HTTP {e.code}"
+        if code:
+            desc = f"{desc} [clerk_code={code}]"
+        return {"error": "apple_signin_rejected", "error_description": desc, "clerk_code": code}
     except (urllib.error.URLError, TimeoutError, socket.timeout, OSError) as e:
         return {"error": "network", "error_description": str(e)}
 
@@ -698,11 +728,11 @@ def _fapi_post(jar: "http.cookiejar.CookieJar", url: str, fields: dict) -> dict:
         data = {}
     errs = data.get("errors") if isinstance(data, dict) else None
     if isinstance(errs, list) and errs:
-        first = errs[0] if isinstance(errs[0], dict) else {}
-        return {
-            "error": "apple_signin_rejected",
-            "error_description": first.get("long_message") or first.get("message") or "sign-in error",
-        }
+        msg, code = _clerk_first_error(errs)
+        desc = msg or "sign-in error"
+        if code:
+            desc = f"{desc} [clerk_code={code}]"
+        return {"error": "apple_signin_rejected", "error_description": desc, "clerk_code": code}
     return {"data": data if isinstance(data, dict) else {}}
 
 
@@ -753,8 +783,10 @@ def _fapi_apple_sign_in(jar: "http.cookiejar.CookieJar", id_token: str) -> dict:
         "token":    id_token,
     })
     if r.get("error"):
+        print(f"[apple] sign_in rejected: {r.get('error_description')!r}", flush=True)
         return r
     status, ffv = _fapi_resource_status(r["data"])
+    print(f"[apple] sign_in status={status!r} verification={ffv!r}", flush=True)
     if status == "complete":
         return {"ok": True}
     # New/unlinked Apple identity: Clerk verified the token but there's no user
@@ -783,8 +815,15 @@ def _fapi_apple_sign_up_transfer(jar: "http.cookiejar.CookieJar") -> dict:
     """
     r = _fapi_post(jar, CLERK_FAPI_SIGN_UPS_URL, {"transfer": "true"})
     if r.get("error"):
+        # _fapi_post tags every rejection as apple_signin_rejected; re-tag so the
+        # log makes clear it was the sign-up transfer (not the sign-in) Clerk
+        # refused — these are debugged very differently.
+        if r.get("error") == "apple_signin_rejected":
+            r = dict(r, error="apple_signup_rejected")
+        print(f"[apple] sign_up(transfer) rejected: {r.get('error_description')!r}", flush=True)
         return r
     status, _ = _fapi_resource_status(r["data"])
+    print(f"[apple] sign_up(transfer) status={status!r}", flush=True)
     if status == "complete":
         return {"ok": True}
     return {
@@ -896,6 +935,17 @@ def run_apple_native_flow(
     id_token = cred.get("identity_token") or ""
     if not id_token:
         return {"ok": False, "error": "apple_no_identity_token"}
+
+    # Diagnostic (UNVERIFIED decode): the claims Clerk must match. aud should be
+    # the app bundle id; a nonce is always present. Helps localise a Clerk
+    # rejection to audience vs nonce vs issuer without another guess-and-build.
+    _c = _decode_jwt_claims(id_token)
+    print(
+        f"[apple] id_token aud={_c.get('aud')!r} iss={_c.get('iss')!r} "
+        f"nonce_present={bool(_c.get('nonce'))} email_present={bool(_c.get('email'))} "
+        f"is_private_email={_c.get('is_private_email')!r}",
+        flush=True,
+    )
 
     if cancel_event is not None and cancel_event.is_set():
         return {"ok": False, "error": "cancelled"}

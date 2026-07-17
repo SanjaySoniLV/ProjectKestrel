@@ -329,6 +329,43 @@ def test_fapi_apple_sign_up_transfer_missing_requirements(monkeypatch):
     assert "missing_requirements" in (res.get("error_description") or "")
 
 
+def test_fapi_apple_sign_up_transfer_rejection_is_retagged(monkeypatch):
+    # Clerk *rejects* the transfer (errors[]), e.g. a consumed Apple nonce. The
+    # shared _fapi_post tags every rejection apple_signin_rejected; the transfer
+    # must re-tag it apple_signup_rejected and surface Clerk's machine code, so
+    # the log localises the failure to the sign-up step, not the sign-in.
+    def _on_open(req):
+        return _FakeResp(status=200, body=(
+            b'{"errors":[{"long_message":"failed security validations",'
+            b'"code":"oauth_token_invalid"}]}'
+        ))
+
+    monkeypatch.setattr(oauth_client.urllib.request, "build_opener",
+                        lambda *a, **k: _FakeOpener(_on_open))
+    res = oauth_client._fapi_apple_sign_up_transfer(object())
+    assert res.get("error") == "apple_signup_rejected"
+    assert "oauth_token_invalid" in (res.get("error_description") or "")
+
+
+# ── _decode_jwt_claims: diagnostic-only unverified decode ─────────────────────
+
+def test_decode_jwt_claims_reads_payload():
+    import base64 as _b64
+    import json as _json
+
+    payload = {"aud": "org.projectkestrel.desktop", "iss": "https://appleid.apple.com", "nonce": "abc"}
+    seg = _b64.urlsafe_b64encode(_json.dumps(payload).encode()).rstrip(b"=").decode()
+    token = "hdr." + seg + ".sig"
+    claims = oauth_client._decode_jwt_claims(token)
+    assert claims["aud"] == "org.projectkestrel.desktop"
+    assert claims["nonce"] == "abc"
+
+
+def test_decode_jwt_claims_malformed_is_empty():
+    assert oauth_client._decode_jwt_claims("not-a-jwt") == {}
+    assert oauth_client._decode_jwt_claims("") == {}
+
+
 # ── run_apple_native_flow: sign-up transfer branch ───────────────────────────
 
 def test_apple_native_flow_transfers_new_identity(monkeypatch):
