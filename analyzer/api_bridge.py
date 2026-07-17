@@ -465,6 +465,45 @@ class Api:
             except Exception as e:
                 warn(f'[sandbox] bookmark activation failed: {e}')
 
+        # App Store build only: open StoreKit's connection at launch so the
+        # storefront (which decides the Support-link destination) is resolved
+        # well before the user clicks Support. SKPaymentQueue.storefront is nil
+        # until an observer is attached and StoreKit connects asynchronously —
+        # priming now avoids a nil-and-fail-closed on the first click. Best
+        # effort, backgrounded so it never blocks startup; get_support_url also
+        # primes lazily as a fallback. See mac_storefront.prime().
+        self._maybe_prime_storefront()
+
+    def _maybe_prime_storefront(self) -> None:
+        """Kick off StoreKit priming in the background on the App Store build."""
+        if sys.platform != 'darwin':
+            return
+        try:
+            channel = _dist_channel.get_channel() if _dist_channel is not None else 'direct'
+        except Exception:
+            channel = 'direct'
+        if channel != 'appstore':
+            return
+
+        def _prime():
+            try:
+                sf = _load_storefront()
+                if sf is None:
+                    print('[API] storefront prime: StoreKit unavailable in this bundle', flush=True)
+                    return
+                sf.prime()
+                # Warm the cache so the first Support click is instant.
+                country = sf.get_storefront_country()
+                print(f'[API] storefront prime: country={country!r}', flush=True)
+            except Exception as e:
+                print(f'[API] storefront prime error: {e}', flush=True)
+
+        try:
+            import threading as _t
+            _t.Thread(target=_prime, name='storefront-prime', daemon=True).start()
+        except Exception:
+            pass
+
     def _invalidate_account_caches(self) -> None:
         """Drop every identity-scoped cache (Perch account, Perch usage, and
         Cloud Compute usage) so a sign-out / account-switch / token rotation
@@ -1556,15 +1595,24 @@ class Api:
 
         storefront = _load_storefront()
         if storefront is None:
+            # StoreKit didn't load in this bundle — fail closed, and say so
+            # visibly (mac_storefront's own logging isn't wired to stdout).
+            print('[API] support_url: channel=appstore storekit=unavailable -> /support', flush=True)
             return {'success': True, 'url': SUPPORT_URL_NO_PAYMENT, 'donate': False}
         try:
-            is_us = bool(storefront.is_us_storefront())
-        except Exception:
-            is_us = False
+            country = storefront.get_storefront_country()
+        except Exception as e:
+            country = None
+            print(f'[API] support_url: storefront lookup error: {e}', flush=True)
 
-        if is_us:
-            return {'success': True, 'url': SUPPORT_URL_FULL, 'donate': True}
-        return {'success': True, 'url': SUPPORT_URL_NO_PAYMENT, 'donate': False}
+        is_us = country == storefront.US_STOREFRONT_CODE
+        url = SUPPORT_URL_FULL if is_us else SUPPORT_URL_NO_PAYMENT
+        # One visible line to disambiguate the outcome on-device: country=None
+        # means StoreKit loaded but the storefront never resolved (priming);
+        # a real code like 'GBR' means a genuine non-US storefront.
+        print(f'[API] support_url: channel=appstore country={country!r} -> '
+              f"{'/support-me' if is_us else '/support'}", flush=True)
+        return {'success': True, 'url': url, 'donate': is_us}
 
     def is_windows_store_app(self):
         """Check if running as a Windows Store app."""

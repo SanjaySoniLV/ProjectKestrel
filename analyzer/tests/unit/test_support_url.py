@@ -41,15 +41,19 @@ class _Boom:
 
 
 class _Storefront:
-    def __init__(self, us):
-        self._us = us
+    US_STOREFRONT_CODE = "USA"
 
-    def is_us_storefront(self):
-        return self._us
+    def __init__(self, country):
+        self._country = country
+
+    def get_storefront_country(self):
+        return self._country
 
 
 class _StorefrontBoom:
-    def is_us_storefront(self):
+    US_STOREFRONT_CODE = "USA"
+
+    def get_storefront_country(self):
         raise RuntimeError("StoreKit blew up")
 
 
@@ -86,13 +90,21 @@ def test_dist_channel_error_defaults_to_direct(monkeypatch):
 
 def test_appstore_us_storefront_gets_donate(monkeypatch):
     monkeypatch.setattr(api_bridge, "_dist_channel", _Chan("appstore"))
-    monkeypatch.setattr(api_bridge, "_load_storefront", lambda: _Storefront(True))
+    monkeypatch.setattr(api_bridge, "_load_storefront", lambda: _Storefront("USA"))
     assert _call() == {"success": True, "url": FULL, "donate": True}
 
 
 def test_appstore_non_us_storefront_gets_no_payment_page(monkeypatch):
     monkeypatch.setattr(api_bridge, "_dist_channel", _Chan("appstore"))
-    monkeypatch.setattr(api_bridge, "_load_storefront", lambda: _Storefront(False))
+    monkeypatch.setattr(api_bridge, "_load_storefront", lambda: _Storefront("GBR"))
+    assert _call() == {"success": True, "url": NO_PAY, "donate": False}
+
+
+def test_appstore_unresolved_storefront_fails_closed(monkeypatch):
+    # StoreKit loaded but the storefront hasn't resolved (country=None) — the
+    # real-world nil case. Must fail closed to the no-payment page.
+    monkeypatch.setattr(api_bridge, "_dist_channel", _Chan("appstore"))
+    monkeypatch.setattr(api_bridge, "_load_storefront", lambda: _Storefront(None))
     assert _call() == {"success": True, "url": NO_PAY, "donate": False}
 
 
@@ -135,6 +147,12 @@ def _fake_storekit(monkeypatch, sequence):
 
     monkeypatch.setattr(mac_storefront, "_country_cache", None, raising=False)
     monkeypatch.setattr(mac_storefront, "_load", lambda: {"SKPaymentQueue": _PaymentQueue})
+    # Priming needs real PyObjC (objc/Foundation) — stub it so these read tests
+    # stay pure, and pin retries to a single read so the per-call read-count
+    # assertions below measure exactly one storefront() call per invocation.
+    monkeypatch.setattr(mac_storefront, "prime", lambda: True)
+    monkeypatch.setattr(mac_storefront, "_READ_RETRIES", 1, raising=False)
+    monkeypatch.setattr(mac_storefront, "_READ_RETRY_SLEEP", 0, raising=False)
     return calls
 
 
@@ -178,3 +196,15 @@ def test_empty_country_code_fails_closed(monkeypatch):
     _fake_storekit(monkeypatch, [""])
     assert mac_storefront.get_storefront_country() is None
     assert mac_storefront.is_us_storefront() is False
+
+
+def test_storefront_retry_resolves_within_window(monkeypatch):
+    # A single call retries across the async resolution window: storefront() is
+    # nil twice, then resolves. One get_storefront_country() call must ride it
+    # out and return the country (this is what priming + retry buys us on the
+    # first Support click, vs. the old fail-closed-on-first-nil behaviour).
+    calls = _fake_storekit(monkeypatch, [None, None, "USA"])
+    monkeypatch.setattr(mac_storefront, "_READ_RETRIES", 5, raising=False)
+    monkeypatch.setattr(mac_storefront, "_READ_RETRY_SLEEP", 0, raising=False)
+    assert mac_storefront.get_storefront_country() == "USA"
+    assert len(calls) == 3  # two nils, then the resolved read — all in one call
