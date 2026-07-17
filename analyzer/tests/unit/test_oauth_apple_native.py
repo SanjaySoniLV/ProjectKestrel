@@ -263,3 +263,98 @@ def test_fapi_apple_sign_in_http_error(monkeypatch):
                         lambda *a, **k: _FakeOpener(_on_open))
     res = oauth_client._fapi_apple_sign_in(object(), "IDTOKEN")
     assert res.get("error") == "apple_signin_rejected"
+
+
+def test_fapi_apple_sign_in_transferable(monkeypatch):
+    # A first-time Apple identity: token verified, but no user to sign in yet, so
+    # Clerk marks the first-factor verification 'transferable'. We signal the
+    # caller to convert it to a sign-up rather than reporting a bogus success.
+    def _on_open(req):
+        return _FakeResp(status=200, body=(
+            b'{"response":{"status":"needs_identifier",'
+            b'"first_factor_verification":{"status":"transferable",'
+            b'"strategy":"oauth_token_apple"}},"client":{}}'
+        ))
+
+    monkeypatch.setattr(oauth_client.urllib.request, "build_opener",
+                        lambda *a, **k: _FakeOpener(_on_open))
+    res = oauth_client._fapi_apple_sign_in(object(), "IDTOKEN")
+    assert res == {"transfer": True}
+
+
+def test_fapi_apple_sign_in_incomplete_is_error(monkeypatch):
+    # 200, no errors[], but the sign-in neither completed nor is transferable —
+    # the old code returned {"ok": True} here and authorize then bounced to the
+    # sign-in page. Now it's a diagnosable error carrying the real status.
+    def _on_open(req):
+        return _FakeResp(status=200, body=b'{"response":{"status":"needs_second_factor"},"client":{}}')
+
+    monkeypatch.setattr(oauth_client.urllib.request, "build_opener",
+                        lambda *a, **k: _FakeOpener(_on_open))
+    res = oauth_client._fapi_apple_sign_in(object(), "IDTOKEN")
+    assert res.get("error") == "apple_signin_incomplete"
+    assert "needs_second_factor" in (res.get("error_description") or "")
+
+
+# ── _fapi_apple_sign_up_transfer: create-account-on-first-Apple-sign-in ───────
+
+def test_fapi_apple_sign_up_transfer_ok(monkeypatch):
+    captured = {}
+
+    def _on_open(req):
+        captured["body"] = req.data.decode("ascii")
+        captured["url"] = req.full_url
+        return _FakeResp(status=200, body=b'{"response":{"status":"complete"},"client":{}}')
+
+    monkeypatch.setattr(oauth_client.urllib.request, "build_opener",
+                        lambda *a, **k: _FakeOpener(_on_open))
+    res = oauth_client._fapi_apple_sign_up_transfer(object())
+    assert res == {"ok": True}
+    # transfer=true against the sign_ups endpoint (Clerk pulls the verified Apple
+    # identity from the transferable sign-in; no other fields needed).
+    assert "transfer=true" in captured["body"]
+    assert captured["url"] == oauth_client.CLERK_FAPI_SIGN_UPS_URL
+
+
+def test_fapi_apple_sign_up_transfer_missing_requirements(monkeypatch):
+    # The instance demands a field Apple didn't provide — surface it, don't
+    # silently proceed to a session-less authorize.
+    def _on_open(req):
+        return _FakeResp(status=200, body=b'{"response":{"status":"missing_requirements"},"client":{}}')
+
+    monkeypatch.setattr(oauth_client.urllib.request, "build_opener",
+                        lambda *a, **k: _FakeOpener(_on_open))
+    res = oauth_client._fapi_apple_sign_up_transfer(object())
+    assert res.get("error") == "apple_signup_incomplete"
+    assert "missing_requirements" in (res.get("error_description") or "")
+
+
+# ── run_apple_native_flow: sign-up transfer branch ───────────────────────────
+
+def test_apple_native_flow_transfers_new_identity(monkeypatch):
+    # sign-in says 'transferable' → the flow must run the sign-up transfer, then
+    # proceed to authorize/exchange exactly as the existing-user path does.
+    calls = []
+    monkeypatch.setattr(oauth_client, "_fapi_apple_sign_in", lambda jar, tok: {"transfer": True})
+    monkeypatch.setattr(oauth_client, "_fapi_apple_sign_up_transfer",
+                        lambda jar: calls.append("signup") or {"ok": True})
+    monkeypatch.setattr(oauth_client, "_authorize_with_session", _echo_state_authorize)
+    monkeypatch.setattr(oauth_client, "exchange_code", _token_ok)
+
+    res = oauth_client.run_apple_native_flow(_FakeApple({"identity_token": "idtok"}))
+
+    assert res["ok"] is True
+    assert res["bundle"]["access_token"] == "AT"
+    assert calls == ["signup"]  # the transfer actually ran
+
+
+def test_apple_native_flow_signup_transfer_failure_aborts(monkeypatch):
+    # If account creation fails, surface it and never reach authorize/exchange.
+    monkeypatch.setattr(oauth_client, "_fapi_apple_sign_in", lambda jar, tok: {"transfer": True})
+    monkeypatch.setattr(oauth_client, "_fapi_apple_sign_up_transfer",
+                        lambda jar: {"error": "apple_signup_incomplete", "error_description": "status=missing_requirements"})
+    monkeypatch.setattr(oauth_client, "_authorize_with_session",
+                        lambda *a, **k: pytest.fail("must not authorize after a failed sign-up transfer"))
+    res = oauth_client.run_apple_native_flow(_FakeApple({"identity_token": "idtok"}))
+    assert res["ok"] is False
+    assert res["error"] == "apple_signup_incomplete"

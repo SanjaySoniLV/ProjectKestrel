@@ -119,6 +119,11 @@ MAC_REDIRECT_URI    = f"{MAC_CALLBACK_SCHEME}://callback"
 # native request), so we pass only the token — no separate nonce param, matching
 # Clerk's own iOS SDK.
 CLERK_FAPI_SIGN_INS_URL = "https://clerk.projectkestrel.org/v1/client/sign_ins"
+# Companion sign-up endpoint. A first-time Apple identity (no linked user yet)
+# yields a *transferable* sign-in; POSTing ``transfer=true`` here converts that
+# verified Apple credential into a new account — Clerk's "sign in or up" pattern,
+# and what Guideline 4.8 expects of a Sign-in-with-Apple button.
+CLERK_FAPI_SIGN_UPS_URL = "https://clerk.projectkestrel.org/v1/client/sign_ups"
 CLERK_APPLE_STRATEGY    = "oauth_token_apple"
 # Sent as the Origin on Frontend-API calls. Clerk's prod FAPI accepts requests
 # from the instance's own account-portal origin; the stdlib UA would trip
@@ -634,27 +639,22 @@ class _NoFollowRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _fapi_apple_sign_in(jar: "http.cookiejar.CookieJar", id_token: str) -> dict:
-    """Exchange an Apple identity token for a Clerk session via the Frontend API.
+def _fapi_post(jar: "http.cookiejar.CookieJar", url: str, fields: dict) -> dict:
+    """POST form-encoded ``fields`` to a Clerk Frontend-API endpoint, carrying
+    (and updating) the session cookie in ``jar``.
 
-    ``POST /v1/client/sign_ins`` with ``strategy=oauth_token_apple`` &
-    ``token=<id_token>``. On success Clerk sets the ``__client`` session cookie
-    into ``jar`` (which the subsequent authorize call reuses). Clerk validates
-    the nonce claim embedded in the id_token, so no separate nonce param.
-
-    Returns ``{"ok": True}`` on a clean sign-in, else ``{"error", "error_description"}``.
-    Never raises.
+    Returns ``{"data": <parsed-json-dict>}`` on a 2xx that carries no ``errors``
+    array, else ``{"error", "error_description"}``. Never raises. On a completed
+    sign-in/up Clerk sets the ``__client`` session cookie into ``jar``, which the
+    subsequent ``/oauth/authorize`` call reuses.
     """
-    body = urllib.parse.urlencode({
-        "strategy": CLERK_APPLE_STRATEGY,
-        "token":    id_token,
-    }).encode("ascii")
+    body = urllib.parse.urlencode(fields).encode("ascii")
     opener = urllib.request.build_opener(
         urllib.request.HTTPSHandler(context=_ssl_context()),
         urllib.request.HTTPCookieProcessor(jar),
     )
     req = urllib.request.Request(
-        CLERK_FAPI_SIGN_INS_URL,
+        url,
         data=body,
         method="POST",
         headers={
@@ -691,7 +691,7 @@ def _fapi_apple_sign_in(jar: "http.cookiejar.CookieJar", id_token: str) -> dict:
     except (urllib.error.URLError, TimeoutError, socket.timeout, OSError) as e:
         return {"error": "network", "error_description": str(e)}
 
-    # A 2xx with an ``errors`` array can still indicate a soft failure.
+    # A 2xx with an ``errors`` array is still a soft failure.
     try:
         data = json.loads(raw)
     except Exception:
@@ -703,7 +703,94 @@ def _fapi_apple_sign_in(jar: "http.cookiejar.CookieJar", id_token: str) -> dict:
             "error": "apple_signin_rejected",
             "error_description": first.get("long_message") or first.get("message") or "sign-in error",
         }
-    return {"ok": True}
+    return {"data": data if isinstance(data, dict) else {}}
+
+
+def _fapi_resource_status(data: dict) -> tuple:
+    """Pull ``(status, first_factor_verification_status)`` from a Clerk sign-in
+    or sign-up FAPI response. Clerk nests the resource under ``response`` (and
+    mirrors it inside ``client``); we read ``response`` and fall back to the top
+    level. Returns ``("", "")`` when absent — never raises.
+    """
+    resource = None
+    if isinstance(data, dict):
+        resource = data.get("response")
+        if not isinstance(resource, dict):
+            resource = data
+    if not isinstance(resource, dict):
+        return "", ""
+    status = resource.get("status") or ""
+    ffv = resource.get("first_factor_verification")
+    ffv_status = ffv.get("status") if isinstance(ffv, dict) else ""
+    return status, (ffv_status or "")
+
+
+def _fapi_apple_sign_in(jar: "http.cookiejar.CookieJar", id_token: str) -> dict:
+    """Exchange an Apple identity token for a Clerk session via the Frontend API.
+
+    ``POST /v1/client/sign_ins`` with ``strategy=oauth_token_apple`` &
+    ``token=<id_token>``. Clerk validates the nonce claim embedded in the
+    id_token, so no separate nonce param.
+
+    Three outcomes (never raises):
+      * ``{"ok": True}``       — an existing user with Apple linked signed in;
+                                 the session cookie is now in ``jar``.
+      * ``{"transfer": True}`` — the Apple identity has no matching user yet, so
+                                 Clerk marks the verification ``transferable``;
+                                 the caller converts it into a sign-up.
+      * ``{"error", ...}``     — token rejected, network error, or a sign-in that
+                                 neither completed nor is transferable (the real
+                                 Clerk ``status`` rides along for diagnosis).
+
+    The previous version returned ``{"ok": True}`` for *any* 2xx without an
+    ``errors`` array — so a non-complete sign-in (the transferable first-time
+    case) was reported as success, and the downstream ``/oauth/authorize`` then
+    had no session and bounced to the account-portal sign-in page
+    (``apple_bridge_bad_redirect``). We now require a genuine ``complete``.
+    """
+    r = _fapi_post(jar, CLERK_FAPI_SIGN_INS_URL, {
+        "strategy": CLERK_APPLE_STRATEGY,
+        "token":    id_token,
+    })
+    if r.get("error"):
+        return r
+    status, ffv = _fapi_resource_status(r["data"])
+    if status == "complete":
+        return {"ok": True}
+    # New/unlinked Apple identity: Clerk verified the token but there's no user
+    # to sign in, so the first-factor verification is 'transferable' — the hook
+    # to create an account from the verified Apple identity.
+    if ffv == "transferable" or status == "transferable":
+        return {"transfer": True}
+    return {
+        "error": "apple_signin_incomplete",
+        "error_description": f"sign_in did not complete (status={status or '?'}, verification={ffv or '?'})",
+    }
+
+
+def _fapi_apple_sign_up_transfer(jar: "http.cookiejar.CookieJar") -> dict:
+    """Convert a ``transferable`` Apple sign-in into a new Clerk account.
+
+    Clerk's "sign in or up" pattern: when ``oauth_token_apple`` names an Apple
+    identity with no existing user, the sign-in verification is ``transferable``.
+    ``POST /v1/client/sign_ups`` with ``transfer=true`` tells Clerk to create the
+    user from that already-verified Apple identity (email + name ride in from the
+    id_token), establishing a session in the same ``jar``.
+
+    Returns ``{"ok": True}`` on a completed sign-up, else ``{"error", ...}`` with
+    the real ``status`` (e.g. ``missing_requirements`` if the instance demands a
+    field Apple didn't provide) so the failure is diagnosable. Never raises.
+    """
+    r = _fapi_post(jar, CLERK_FAPI_SIGN_UPS_URL, {"transfer": "true"})
+    if r.get("error"):
+        return r
+    status, _ = _fapi_resource_status(r["data"])
+    if status == "complete":
+        return {"ok": True}
+    return {
+        "error": "apple_signup_incomplete",
+        "error_description": f"sign_up did not complete (status={status or '?'})",
+    }
 
 
 def _authorize_with_session(jar: "http.cookiejar.CookieJar", authorize_url: str) -> dict:
@@ -818,6 +905,16 @@ def run_apple_native_flow(
     si = _fapi_apple_sign_in(jar, id_token)
     if si.get("error"):
         return {"ok": False, "error": si["error"], "error_description": si.get("error_description")}
+    if si.get("transfer"):
+        # First-time Apple identity — no linked user yet. Create the account
+        # from the verified Apple credential (Guideline 4.8 "sign in or up"),
+        # which establishes the session the authorize step below needs.
+        if cancel_event is not None and cancel_event.is_set():
+            return {"ok": False, "error": "cancelled"}
+        _progress("apple_creating_account")
+        su = _fapi_apple_sign_up_transfer(jar)
+        if su.get("error"):
+            return {"ok": False, "error": su["error"], "error_description": su.get("error_description")}
 
     verifier, challenge = _gen_pkce()
     state = _gen_state()
