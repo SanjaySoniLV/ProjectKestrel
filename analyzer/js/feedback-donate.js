@@ -148,26 +148,38 @@
     const SUPPORT_URL_FALLBACK = 'https://projectkestrel.org/support';
     const DONATE_THRESHOLD_KEY = 'kestrel-donate-thresholds-shown-v1';
 
-    let _supportUrlPromise = null;
+    // Cache ONLY a confident (donate) result. The no-payment page is also the
+    // fail-closed answer the backend returns while the App Store storefront is
+    // still resolving right after launch — so caching it permanently (as an
+    // earlier version did) would strand a US user on /support for the whole
+    // session even though the storefront later resolves to USA. By locking in
+    // only the positive answer and re-asking otherwise, the click path recovers
+    // as soon as the storefront is ready. A genuinely non-US user simply
+    // re-queries (cheap) and keeps getting /support.
+    let _supportUrlSticky = null;   // set once we get a donate:true result
+    let _supportUrlInflight = null; // dedupe concurrent lookups
 
-    /** Resolve (and cache) this build's support URL.
-     *
-     *  Fails closed to the no-payment page. The asymmetry is deliberate: a
-     *  missing donate link costs a click, while a stray one on a non-US App
-     *  Store build costs the listing. Prewarmed below, so the click path is
-     *  normally already resolved. */
+    /** Resolve this build's support URL. Fails closed to the no-payment page —
+     *  a missing donate link costs a click, while a stray one on a non-US App
+     *  Store build costs the listing. */
     function _ensureSupportUrl() {
-      if (_supportUrlPromise) return _supportUrlPromise;
-      _supportUrlPromise = (async () => {
+      if (_supportUrlSticky) return Promise.resolve(_supportUrlSticky);
+      if (_supportUrlInflight) return _supportUrlInflight;
+      _supportUrlInflight = (async () => {
         try {
           if (hasPywebviewApi && window.pywebview?.api?.get_support_url) {
             const r = await window.pywebview.api.get_support_url();
-            if (r?.success && r.url) return r.url;
+            if (r?.success && r.url) {
+              if (r.donate === true) _supportUrlSticky = r.url;  // lock in only the positive answer
+              return r.url;
+            }
           }
         } catch (_) { }
         return SUPPORT_URL_FALLBACK;
       })();
-      return _supportUrlPromise;
+      const p = _supportUrlInflight;
+      p.finally(() => { if (_supportUrlInflight === p) _supportUrlInflight = null; });
+      return p;
     }
 
     async function openSupportLink() {
