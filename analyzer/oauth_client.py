@@ -131,6 +131,13 @@ CLERK_FAPI_SIGN_UPS_URL = "https://clerk.projectkestrel.org/v1/client/sign_ups"
 # an authenticated client. Skipping it leaves authorize unauthenticated, so it
 # bounces to the account-portal sign-in page (``apple_bridge_bad_redirect``).
 CLERK_FAPI_SESSIONS_URL = "https://clerk.projectkestrel.org/v1/client/sessions"
+# Umbrella-wide Clerk JWT template the desktop + MyAccount mint session tokens
+# from (Clerk Dashboard). It carries the audience the Workers enforce once
+# CLERK_AUDIENCE is provisioned; without it a default session token has no aud
+# and would break the day that's flipped on. We fall back to the default token
+# if the template is unavailable, mirroring the other token-fetch sites. See
+# Perch Docs "Auth & Identity/Auth System.md".
+CLERK_JWT_TEMPLATE      = "kestrel_api"
 CLERK_APPLE_STRATEGY    = "oauth_token_apple"
 # Sent as the Origin on Frontend-API calls. Clerk's prod FAPI accepts requests
 # from the instance's own account-portal origin; the stdlib UA would trip
@@ -906,26 +913,31 @@ def _clerk_cookie_suffix(jar) -> str:
 
 
 def _fapi_get_session_token(jar: "http.cookiejar.CookieJar", session_id: str) -> Optional[str]:
-    """Mint a session JWT via ``POST .../sessions/{id}/tokens``.
+    """Mint a Clerk session JWT for the active session.
 
-    This is what clerk-js does right after ``setActive`` to materialise the
-    ``__session`` cookie that ``/oauth/authorize`` authenticates against. Returns
-    the JWT string, or ``None`` on any failure. Never raises.
+    Prefers the ``kestrel_api`` JWT template
+    (``POST .../sessions/{id}/tokens/kestrel_api``) so the token carries the same
+    audience the MyAccount site's ``getToken({template:'kestrel_api'})`` does;
+    falls back to the default session token (``.../tokens``) if the template is
+    unavailable. This JWT is the credential the Worker validates. Returns the JWT
+    string, or ``None`` if both attempts fail. Never raises.
     """
-    url = f"{CLERK_FAPI_SESSIONS_URL}/{urllib.parse.quote(session_id, safe='')}/tokens"
-    r = _fapi_post(jar, url, {})
-    if r.get("error"):
-        print(f"[apple] session token mint failed: {r.get('error_description')!r}", flush=True)
-        return None
-    data = r.get("data")
-    if not isinstance(data, dict):
-        return None
-    jwt = data.get("jwt")
-    if not jwt:
-        resp = data.get("response")
-        if isinstance(resp, dict):
-            jwt = resp.get("jwt")
-    return jwt or None
+    base = f"{CLERK_FAPI_SESSIONS_URL}/{urllib.parse.quote(session_id, safe='')}/tokens"
+    for url, label in ((f"{base}/{CLERK_JWT_TEMPLATE}", CLERK_JWT_TEMPLATE), (base, "default")):
+        r = _fapi_post(jar, url, {})
+        if r.get("error"):
+            print(f"[apple] session token mint ({label}) failed: {r.get('error_description')!r}", flush=True)
+            continue
+        data = r.get("data")
+        jwt = None
+        if isinstance(data, dict):
+            jwt = data.get("jwt")
+            if not jwt and isinstance(data.get("response"), dict):
+                jwt = data["response"].get("jwt")
+        if jwt:
+            print(f"[apple] session token minted via {label}", flush=True)
+            return jwt
+    return None
 
 
 def _set_session_cookie(jar: "http.cookiejar.CookieJar", jwt: str) -> None:

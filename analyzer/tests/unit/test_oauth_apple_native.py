@@ -363,7 +363,7 @@ def test_apple_native_flow_activates_session(monkeypatch):
     assert minted.get("sid") == "sess_live"   # and minted the session token
 
 
-def test_fapi_get_session_token_parses_jwt(monkeypatch):
+def test_fapi_get_session_token_prefers_kestrel_api_template(monkeypatch):
     captured = {}
 
     def _on_open(req):
@@ -374,7 +374,27 @@ def test_fapi_get_session_token_parses_jwt(monkeypatch):
                         lambda *a, **k: _FakeOpener(_on_open))
     jwt = oauth_client._fapi_get_session_token(object(), "sess_A")
     assert jwt == "HDR.BODY.SIG"
-    assert captured["url"] == oauth_client.CLERK_FAPI_SESSIONS_URL + "/sess_A/tokens"
+    # Minted from the kestrel_api template, not the raw default token.
+    assert captured["url"] == oauth_client.CLERK_FAPI_SESSIONS_URL + "/sess_A/tokens/kestrel_api"
+
+
+def test_fapi_get_session_token_falls_back_to_default(monkeypatch):
+    # If the template mint 404s (template unprovisioned), fall back to the
+    # default session token — matching the other token-fetch sites.
+    urls = []
+
+    def _on_open(req):
+        urls.append(req.full_url)
+        if req.full_url.endswith("/tokens/kestrel_api"):
+            raise _http_error(code=404, body=b'{"errors":[{"message":"template not found"}]}')
+        return _FakeResp(status=200, body=b'{"jwt":"DEFAULT.JWT"}')
+
+    monkeypatch.setattr(oauth_client.urllib.request, "build_opener",
+                        lambda *a, **k: _FakeOpener(_on_open))
+    jwt = oauth_client._fapi_get_session_token(object(), "sess_A")
+    assert jwt == "DEFAULT.JWT"
+    assert urls[0].endswith("/tokens/kestrel_api")   # tried the template first
+    assert urls[1].endswith("/sess_A/tokens")        # then the default
 
 
 def test_set_session_cookie_installs_session(monkeypatch):
