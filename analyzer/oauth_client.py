@@ -124,6 +124,13 @@ CLERK_FAPI_SIGN_INS_URL = "https://clerk.projectkestrel.org/v1/client/sign_ins"
 # verified Apple credential into a new account — Clerk's "sign in or up" pattern,
 # and what Guideline 4.8 expects of a Sign-in-with-Apple button.
 CLERK_FAPI_SIGN_UPS_URL = "https://clerk.projectkestrel.org/v1/client/sign_ups"
+# A freshly completed sign-in/up creates a session but doesn't make it the
+# client's *active* one. Clerk's ``setActive`` maps to
+# ``POST /v1/client/sessions/{id}/touch``, which sets the short-lived
+# ``__session`` cookie — the credential ``/oauth/authorize`` reads to recognise
+# an authenticated client. Skipping it leaves authorize unauthenticated, so it
+# bounces to the account-portal sign-in page (``apple_bridge_bad_redirect``).
+CLERK_FAPI_SESSIONS_URL = "https://clerk.projectkestrel.org/v1/client/sessions"
 CLERK_APPLE_STRATEGY    = "oauth_token_apple"
 # Sent as the Origin on Frontend-API calls. Clerk's prod FAPI accepts requests
 # from the instance's own account-portal origin; the stdlib UA would trip
@@ -755,6 +762,58 @@ def _fapi_resource_status(data: dict) -> tuple:
     return status, (ffv_status or "")
 
 
+def _created_session_id(data: dict) -> str:
+    """The session id a completed sign-in/up created, or ``""``.
+
+    Prefers ``response.created_session_id``; falls back to the client's
+    ``last_active_session_id`` or first session. Never raises.
+    """
+    if not isinstance(data, dict):
+        return ""
+    resource = data.get("response")
+    if not isinstance(resource, dict):
+        resource = data
+    sid = resource.get("created_session_id") if isinstance(resource, dict) else None
+    if sid:
+        return str(sid)
+    client = data.get("client")
+    if isinstance(client, dict):
+        las = client.get("last_active_session_id")
+        if las:
+            return str(las)
+        sessions = client.get("sessions")
+        if isinstance(sessions, list) and sessions and isinstance(sessions[0], dict):
+            sid = sessions[0].get("id")
+            if sid:
+                return str(sid)
+    return ""
+
+
+def _jar_cookie_names(jar) -> str:
+    """Comma-joined cookie NAMES in ``jar`` (never values), for diagnostics."""
+    try:
+        names = sorted({c.name for c in jar})
+        return ",".join(names) if names else "(none)"
+    except Exception:
+        return "(unknown)"
+
+
+def _fapi_touch_session(jar: "http.cookiejar.CookieJar", session_id: str) -> dict:
+    """Activate ``session_id`` — Clerk's ``setActive`` at the Frontend-API level.
+
+    ``POST /v1/client/sessions/{id}/touch`` marks the session active and sets the
+    short-lived ``__session`` cookie into ``jar``. ``/oauth/authorize`` reads that
+    cookie to recognise an authenticated client; without this step a freshly
+    completed sign-in/up isn't yet the active session and authorize bounces to
+    the sign-in page. Returns ``{"ok": True}`` or ``{"error", ...}``. Never raises.
+    """
+    url = f"{CLERK_FAPI_SESSIONS_URL}/{urllib.parse.quote(session_id, safe='')}/touch"
+    r = _fapi_post(jar, url, {})
+    if r.get("error"):
+        return r
+    return {"ok": True}
+
+
 def _fapi_apple_sign_in(jar: "http.cookiejar.CookieJar", id_token: str) -> dict:
     """Exchange an Apple identity token for a Clerk session via the Frontend API.
 
@@ -788,7 +847,7 @@ def _fapi_apple_sign_in(jar: "http.cookiejar.CookieJar", id_token: str) -> dict:
     status, ffv = _fapi_resource_status(r["data"])
     print(f"[apple] sign_in status={status!r} verification={ffv!r}", flush=True)
     if status == "complete":
-        return {"ok": True}
+        return {"ok": True, "session_id": _created_session_id(r["data"])}
     # New/unlinked Apple identity: Clerk verified the token but there's no user
     # to sign in, so the first-factor verification is 'transferable' — the hook
     # to create an account from the verified Apple identity.
@@ -825,7 +884,7 @@ def _fapi_apple_sign_up_transfer(jar: "http.cookiejar.CookieJar") -> dict:
     status, _ = _fapi_resource_status(r["data"])
     print(f"[apple] sign_up(transfer) status={status!r}", flush=True)
     if status == "complete":
-        return {"ok": True}
+        return {"ok": True, "session_id": _created_session_id(r["data"])}
     return {
         "error": "apple_signup_incomplete",
         "error_description": f"sign_up did not complete (status={status or '?'})",
@@ -955,6 +1014,7 @@ def run_apple_native_flow(
     si = _fapi_apple_sign_in(jar, id_token)
     if si.get("error"):
         return {"ok": False, "error": si["error"], "error_description": si.get("error_description")}
+    session_id = si.get("session_id") or ""
     if si.get("transfer"):
         # First-time Apple identity — no linked user yet. Create the account
         # from the verified Apple credential (Guideline 4.8 "sign in or up"),
@@ -965,6 +1025,23 @@ def run_apple_native_flow(
         su = _fapi_apple_sign_up_transfer(jar)
         if su.get("error"):
             return {"ok": False, "error": su["error"], "error_description": su.get("error_description")}
+        session_id = su.get("session_id") or session_id
+
+    print(
+        f"[apple] after sign_in/up: cookies={_jar_cookie_names(jar)} "
+        f"session_id_present={bool(session_id)}",
+        flush=True,
+    )
+
+    # Activate the session (Clerk setActive) so /oauth/authorize sees an
+    # authenticated client instead of bouncing to the sign-in page.
+    if session_id:
+        _progress("apple_activating")
+        touch = _fapi_touch_session(jar, session_id)
+        if touch.get("error"):
+            print(f"[apple] session touch failed: {touch.get('error_description')!r}", flush=True)
+        else:
+            print(f"[apple] after touch: cookies={_jar_cookie_names(jar)}", flush=True)
 
     verifier, challenge = _gen_pkce()
     state = _gen_state()

@@ -231,12 +231,12 @@ def test_fapi_apple_sign_in_ok(monkeypatch):
     def _on_open(req):
         captured["body"] = req.data.decode("ascii")
         captured["url"] = req.full_url
-        return _FakeResp(status=200, body=b'{"response":{"status":"complete"},"client":{}}')
+        return _FakeResp(status=200, body=b'{"response":{"status":"complete","created_session_id":"sess_A"},"client":{}}')
 
     monkeypatch.setattr(oauth_client.urllib.request, "build_opener",
                         lambda *a, **k: _FakeOpener(_on_open))
     res = oauth_client._fapi_apple_sign_in(object(), "IDTOKEN")
-    assert res == {"ok": True}
+    assert res == {"ok": True, "session_id": "sess_A"}
     # Correct strategy + token on the Frontend-API call.
     assert "strategy=oauth_token_apple" in captured["body"]
     assert "token=IDTOKEN" in captured["body"]
@@ -304,12 +304,12 @@ def test_fapi_apple_sign_up_transfer_ok(monkeypatch):
     def _on_open(req):
         captured["body"] = req.data.decode("ascii")
         captured["url"] = req.full_url
-        return _FakeResp(status=200, body=b'{"response":{"status":"complete"},"client":{}}')
+        return _FakeResp(status=200, body=b'{"response":{"status":"complete","created_session_id":"sess_B"},"client":{}}')
 
     monkeypatch.setattr(oauth_client.urllib.request, "build_opener",
                         lambda *a, **k: _FakeOpener(_on_open))
     res = oauth_client._fapi_apple_sign_up_transfer(object())
-    assert res == {"ok": True}
+    assert res == {"ok": True, "session_id": "sess_B"}
     # transfer=true against the sign_ups endpoint (Clerk pulls the verified Apple
     # identity from the transferable sign-in; no other fields needed).
     assert "transfer=true" in captured["body"]
@@ -345,6 +345,61 @@ def test_fapi_apple_sign_up_transfer_rejection_is_retagged(monkeypatch):
     res = oauth_client._fapi_apple_sign_up_transfer(object())
     assert res.get("error") == "apple_signup_rejected"
     assert "oauth_token_invalid" in (res.get("error_description") or "")
+
+
+# ── session activation (setActive / touch) ───────────────────────────────────
+
+def test_created_session_id_prefers_response_field():
+    data = {"response": {"status": "complete", "created_session_id": "sess_X"}, "client": {}}
+    assert oauth_client._created_session_id(data) == "sess_X"
+
+
+def test_created_session_id_falls_back_to_client():
+    data = {"response": {"status": "complete"},
+            "client": {"last_active_session_id": "sess_Y", "sessions": [{"id": "sess_Z"}]}}
+    assert oauth_client._created_session_id(data) == "sess_Y"
+
+
+def test_created_session_id_absent_is_empty():
+    assert oauth_client._created_session_id({"response": {"status": "complete"}, "client": {}}) == ""
+
+
+def test_fapi_touch_session_hits_touch_endpoint(monkeypatch):
+    captured = {}
+
+    def _on_open(req):
+        captured["url"] = req.full_url
+        return _FakeResp(status=200, body=b'{"response":{"status":"active"}}')
+
+    monkeypatch.setattr(oauth_client.urllib.request, "build_opener",
+                        lambda *a, **k: _FakeOpener(_on_open))
+    res = oauth_client._fapi_touch_session(object(), "sess_A")
+    assert res == {"ok": True}
+    assert captured["url"] == oauth_client.CLERK_FAPI_SESSIONS_URL + "/sess_A/touch"
+
+
+def test_apple_native_flow_activates_session(monkeypatch):
+    # A completed sign-up returns a session id; the flow must touch (activate)
+    # it before authorize, or authorize bounces to sign-in
+    # (apple_bridge_bad_redirect). Assert the touch fired with that id.
+    touched = {}
+
+    def _touch(jar, sid):
+        touched["sid"] = sid
+        return {"ok": True}
+
+    monkeypatch.setattr(oauth_client, "_fapi_apple_sign_in",
+                        lambda jar, tok: {"transfer": True})
+    monkeypatch.setattr(oauth_client, "_fapi_apple_sign_up_transfer",
+                        lambda jar: {"ok": True, "session_id": "sess_live"})
+    monkeypatch.setattr(oauth_client, "_fapi_touch_session", _touch)
+    monkeypatch.setattr(oauth_client, "_authorize_with_session", _echo_state_authorize)
+    monkeypatch.setattr(oauth_client, "exchange_code", _token_ok)
+
+    res = oauth_client.run_apple_native_flow(_FakeApple({"identity_token": "idtok"}))
+
+    assert res["ok"] is True
+    assert touched.get("sid") == "sess_live"  # activated the created session
 
 
 # ── _decode_jwt_claims: diagnostic-only unverified decode ─────────────────────
