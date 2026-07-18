@@ -500,6 +500,87 @@ def build_bundle(token_response: dict, *, now: Optional[float] = None) -> dict:
     }
 
 
+# ── Clerk-session bundle (native Apple path) ─────────────────────────────────
+#
+# The native Apple flow does NOT run the OAuth2 authorize/token dance. Instead it
+# establishes a Clerk session (Frontend API) and mints a short-lived Clerk
+# **session JWT**, which our Worker validates directly (same Clerk JWKS + issuer
+# as the OAuth access tokens — see the Worker's ``verifyAuth``; no audience is
+# enforced today). The durable credential is the ``__client`` cookie value, which
+# re-mints session tokens on demand. This bundle carries ``kind="clerk_session"``
+# so ``api_bridge``'s refresh layer re-mints (rather than OAuth-refreshes) and
+# tolerates the ~60s token lifetime.
+CLERK_SESSION_BUNDLE_KIND = "clerk_session"
+
+# Session JWTs live ~60s. Re-mint when within this many seconds of expiry.
+CLERK_SESSION_REMINT_BUFFER_SEC = 15
+
+
+def build_session_bundle(
+    session_jwt: str,
+    client_cookie: str,
+    session_id: str,
+    *,
+    now: Optional[float] = None,
+) -> dict:
+    """Keychain bundle wrapping a Clerk session JWT (native Apple path).
+
+    ``access_token`` is the session JWT (what the Worker sees). ``expires_at`` is
+    read from the JWT's own ``exp`` claim. ``clerk_client`` (the ``__client``
+    cookie) + ``clerk_session_id`` are the durable credentials the refresh layer
+    uses to re-mint. Same ``{access_token, expires_at, ...}`` surface as the OAuth
+    bundle, so ``get_auth_token`` keeps working; the ``kind`` field routes refresh.
+    """
+    t = now if now is not None else time.time()
+    claims = _decode_jwt_claims(session_jwt)
+    exp = claims.get("exp")
+    try:
+        expires_at = float(exp) if exp is not None else t + 55.0
+    except (TypeError, ValueError):
+        expires_at = t + 55.0
+    return {
+        "kind":              CLERK_SESSION_BUNDLE_KIND,
+        "access_token":      session_jwt,
+        "refresh_token":     "",  # unused for this kind; re-mint via clerk_client
+        "expires_at":        expires_at,
+        "token_type":        "Bearer",
+        "scope":             "",
+        "obtained_at":       t,
+        "clerk_client":      client_cookie or "",
+        "clerk_session_id":  session_id or "",
+    }
+
+
+def _install_client_cookie(jar: "http.cookiejar.CookieJar", value: str) -> None:
+    """Seed a jar with the durable ``__client`` cookie so FAPI calls (token mint)
+    authenticate as the signed-in client. Never raises."""
+    domain = urllib.parse.urlparse(CLERK_FAPI_SESSIONS_URL).hostname or "clerk.projectkestrel.org"
+    try:
+        jar.set_cookie(http.cookiejar.Cookie(
+            version=0, name="__client", value=value,
+            port=None, port_specified=False,
+            domain=domain, domain_specified=True, domain_initial_dot=False,
+            path="/", path_specified=True,
+            secure=True, expires=None, discard=True,
+            comment=None, comment_url=None, rest={"HttpOnly": None}, rfc2109=False,
+        ))
+    except Exception:
+        pass
+
+
+def remint_session_token(client_cookie: str, session_id: str) -> Optional[str]:
+    """Mint a fresh Clerk session JWT from the durable ``__client`` credential.
+
+    Used by the refresh layer for ``clerk_session`` bundles. Returns the new JWT
+    or ``None`` (transient failure or the session ended). Never raises.
+    """
+    if not client_cookie or not session_id:
+        return None
+    jar = http.cookiejar.CookieJar()
+    _install_client_cookie(jar, client_cookie)
+    return _fapi_get_session_token(jar, session_id)
+
+
 def _load_mac_oauth():
     """Return the ``mac_oauth`` module if its ASWebAuthenticationSession
     transport is usable on this build, else ``None``. Never raises."""
@@ -1109,45 +1190,33 @@ def run_apple_native_flow(
     #   1. touch — mark the session active on the client (sets __client_uat)
     #   2. mint a session token and install it as __session — the cookie the
     #      authorize endpoint actually authenticates against.
-    if session_id:
-        _progress("apple_activating")
-        touch = _fapi_touch_session(jar, session_id)
-        if touch.get("error"):
-            print(f"[apple] session touch failed: {touch.get('error_description')!r}", flush=True)
-        uat = _jar_cookie_value(jar, "__client_uat")
-        token = _fapi_get_session_token(jar, session_id)
-        if token:
-            _set_session_cookie(jar, token)
-        print(
-            f"[apple] after activate: __client_uat={uat!r} "
-            f"session_token={'yes' if token else 'no'} cookies={_jar_cookie_names(jar)}",
-            flush=True,
-        )
+    if not session_id:
+        return {"ok": False, "error": "apple_no_session_id",
+                "error_description": "sign-in/up completed without a session id"}
 
-    verifier, challenge = _gen_pkce()
-    state = _gen_state()
-    authorize_url = _build_authorize_url(state, challenge, MAC_REDIRECT_URI)
-    if url_validator is not None and not url_validator(authorize_url):
-        return {"ok": False, "error": "unsafe_authorize_url"}
-
-    _progress("apple_authorizing")
-    authz = _authorize_with_session(jar, authorize_url)
-    if authz.get("error"):
-        return {"ok": False, "error": authz["error"], "error_description": authz.get("error_description")}
-    if not hmac.compare_digest(authz.get("state") or "", state):
-        return {"ok": False, "error": "state_mismatch"}
-
-    _progress("exchanging")
-    tok = exchange_code(authz["code"], verifier, MAC_REDIRECT_URI)
-    if tok.get("error"):
-        return {"ok": False, "error": tok["error"], "error_description": tok.get("error_description")}
-
-    bundle = build_bundle(tok)
-    if not bundle.get("access_token"):
-        return {"ok": False, "error": "missing_access_token"}
+    # Activate the session, then mint a Clerk **session JWT**. That JWT — not an
+    # OAuth authorization code — is the credential our Worker validates (same
+    # Clerk JWKS + issuer; see the Worker's verifyAuth). So the native path skips
+    # /oauth/authorize entirely: no consent screen, no browser-only cookie
+    # choreography. The durable ``__client`` cookie re-mints tokens on demand.
+    _progress("apple_activating")
+    touch = _fapi_touch_session(jar, session_id)
+    if touch.get("error"):
+        print(f"[apple] session touch failed: {touch.get('error_description')!r}", flush=True)
+    uat = _jar_cookie_value(jar, "__client_uat")
+    token = _fapi_get_session_token(jar, session_id)
+    client_cookie = _jar_cookie_value(jar, "__client")
+    print(
+        f"[apple] session mint: __client_uat={uat!r} token={'yes' if token else 'no'} "
+        f"client_cookie={'yes' if client_cookie else 'no'}",
+        flush=True,
+    )
+    if not token:
+        return {"ok": False, "error": "apple_no_session_token",
+                "error_description": "could not mint a Clerk session token"}
 
     _progress("done")
-    return {"ok": True, "bundle": bundle}
+    return {"ok": True, "bundle": build_session_bundle(token, client_cookie, session_id)}
 
 
 def run_authorization_flow(

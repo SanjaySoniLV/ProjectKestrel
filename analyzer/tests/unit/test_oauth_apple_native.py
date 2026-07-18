@@ -34,57 +34,41 @@ class _FakeApple:
         return dict(self._cred)
 
 
-def _token_ok(*_a, **_k):
-    return {
-        "access_token":  "AT",
-        "refresh_token": "RT",
-        "expires_in":    3600,
-        "token_type":    "Bearer",
-        "scope":         "openid email profile",
-    }
-
-
-def _echo_state_authorize(jar, authorize_url):
-    """Fake ``_authorize_with_session`` that returns the code + the SAME state
-    embedded in the authorize URL, so the flow's state check passes."""
-    import urllib.parse
-    st = urllib.parse.parse_qs(urllib.parse.urlparse(authorize_url).query).get("state", [None])[0]
-    return {"code": "CODE", "state": st}
+def _mock_session_established(monkeypatch, *, token="hdr.body.sig"):
+    """Wire the activate+mint FAPI helpers so an Apple flow reaches a minted
+    Clerk session token and returns a clerk_session bundle."""
+    monkeypatch.setattr(oauth_client, "_fapi_touch_session", lambda jar, sid: {"ok": True})
+    monkeypatch.setattr(oauth_client, "_fapi_get_session_token", lambda jar, sid: token)
 
 
 # ── run_apple_native_flow orchestration ──────────────────────────────────────
 
 def test_apple_native_happy_path(monkeypatch):
+    # Existing user: sign-in completes with a session id; the flow mints a Clerk
+    # session JWT and returns a clerk_session bundle — no /oauth/authorize.
     apple = _FakeApple({"identity_token": "idtok", "raw_nonce": "n"})
-    monkeypatch.setattr(oauth_client, "_fapi_apple_sign_in", lambda jar, tok: {"ok": True})
-    monkeypatch.setattr(oauth_client, "_authorize_with_session", _echo_state_authorize)
-    monkeypatch.setattr(oauth_client, "exchange_code", _token_ok)
+    monkeypatch.setattr(oauth_client, "_fapi_apple_sign_in",
+                        lambda jar, tok: {"ok": True, "session_id": "sess_1"})
+    _mock_session_established(monkeypatch, token="hdr.body.sig")
 
     res = oauth_client.run_apple_native_flow(apple)
 
     assert res["ok"] is True
-    assert res["bundle"]["access_token"] == "AT"
-    assert res["bundle"]["refresh_token"] == "RT"
+    assert res["bundle"]["kind"] == "clerk_session"
+    assert res["bundle"]["access_token"] == "hdr.body.sig"
+    assert res["bundle"]["clerk_session_id"] == "sess_1"
 
 
-def test_apple_native_exchange_uses_custom_scheme_redirect(monkeypatch):
-    """The token exchange must use the kestrel:// redirect that authorize echoed —
-    matching what Clerk saw — or Clerk rejects with invalid_grant."""
-    seen = {}
-    monkeypatch.setattr(oauth_client, "_fapi_apple_sign_in", lambda jar, tok: {"ok": True})
-    monkeypatch.setattr(oauth_client, "_authorize_with_session", _echo_state_authorize)
-
-    def _capture_exchange(code, verifier, redirect_uri):
-        seen["redirect_uri"] = redirect_uri
-        seen["code"] = code
-        return _token_ok()
-
-    monkeypatch.setattr(oauth_client, "exchange_code", _capture_exchange)
+def test_apple_native_no_session_token_fails(monkeypatch):
+    # Session established but the mint returns nothing -> clean error, no bundle
+    # (never hand back an empty credential).
+    monkeypatch.setattr(oauth_client, "_fapi_apple_sign_in",
+                        lambda jar, tok: {"ok": True, "session_id": "sess_1"})
+    monkeypatch.setattr(oauth_client, "_fapi_touch_session", lambda jar, sid: {"ok": True})
+    monkeypatch.setattr(oauth_client, "_fapi_get_session_token", lambda jar, sid: None)
     res = oauth_client.run_apple_native_flow(_FakeApple({"identity_token": "idtok"}))
-
-    assert res["ok"] is True
-    assert seen["redirect_uri"] == oauth_client.MAC_REDIRECT_URI == "kestrel://callback"
-    assert seen["code"] == "CODE"
+    assert res["ok"] is False
+    assert res["error"] == "apple_no_session_token"
 
 
 def test_apple_native_credential_cancelled(monkeypatch):
@@ -107,40 +91,11 @@ def test_apple_native_missing_identity_token(monkeypatch):
 def test_apple_native_fapi_rejected(monkeypatch):
     monkeypatch.setattr(oauth_client, "_fapi_apple_sign_in",
                         lambda jar, tok: {"error": "apple_signin_rejected", "error_description": "bad token"})
-    monkeypatch.setattr(oauth_client, "_authorize_with_session",
-                        lambda *a, **k: pytest.fail("must not authorize after a rejected sign-in"))
+    monkeypatch.setattr(oauth_client, "_fapi_get_session_token",
+                        lambda *a, **k: pytest.fail("must not mint a token after a rejected sign-in"))
     res = oauth_client.run_apple_native_flow(_FakeApple({"identity_token": "idtok"}))
     assert res["ok"] is False
     assert res["error"] == "apple_signin_rejected"
-
-
-def test_apple_native_authorize_no_code(monkeypatch):
-    monkeypatch.setattr(oauth_client, "_fapi_apple_sign_in", lambda jar, tok: {"ok": True})
-    monkeypatch.setattr(oauth_client, "_authorize_with_session",
-                        lambda jar, url: {"error": "apple_bridge_no_code", "error_description": "no code"})
-    res = oauth_client.run_apple_native_flow(_FakeApple({"identity_token": "idtok"}))
-    assert res["ok"] is False
-    assert res["error"] == "apple_bridge_no_code"
-
-
-def test_apple_native_state_mismatch(monkeypatch):
-    monkeypatch.setattr(oauth_client, "_fapi_apple_sign_in", lambda jar, tok: {"ok": True})
-    monkeypatch.setattr(oauth_client, "_authorize_with_session",
-                        lambda jar, url: {"code": "CODE", "state": "WRONG"})
-    monkeypatch.setattr(oauth_client, "exchange_code",
-                        lambda *a, **k: pytest.fail("must not exchange on state mismatch"))
-    res = oauth_client.run_apple_native_flow(_FakeApple({"identity_token": "idtok"}))
-    assert res["ok"] is False
-    assert res["error"] == "state_mismatch"
-
-
-def test_apple_native_url_validator_blocks(monkeypatch):
-    monkeypatch.setattr(oauth_client, "_fapi_apple_sign_in", lambda jar, tok: {"ok": True})
-    res = oauth_client.run_apple_native_flow(
-        _FakeApple({"identity_token": "idtok"}), url_validator=lambda u: False
-    )
-    assert res["ok"] is False
-    assert res["error"] == "unsafe_authorize_url"
 
 
 # ── _authorize_with_session: redirect / Location parsing ─────────────────────
@@ -379,9 +334,8 @@ def test_fapi_touch_session_hits_touch_endpoint(monkeypatch):
 
 
 def test_apple_native_flow_activates_session(monkeypatch):
-    # A completed sign-up returns a session id; the flow must touch (activate)
-    # it before authorize, or authorize bounces to sign-in
-    # (apple_bridge_bad_redirect). Assert the touch fired with that id.
+    # A completed sign-up returns a session id; the flow must touch (activate) it
+    # AND mint the session token from it before returning the bundle.
     touched = {}
 
     def _touch(jar, sid):
@@ -400,12 +354,11 @@ def test_apple_native_flow_activates_session(monkeypatch):
                         lambda jar: {"ok": True, "session_id": "sess_live"})
     monkeypatch.setattr(oauth_client, "_fapi_touch_session", _touch)
     monkeypatch.setattr(oauth_client, "_fapi_get_session_token", _mint)
-    monkeypatch.setattr(oauth_client, "_authorize_with_session", _echo_state_authorize)
-    monkeypatch.setattr(oauth_client, "exchange_code", _token_ok)
 
     res = oauth_client.run_apple_native_flow(_FakeApple({"identity_token": "idtok"}))
 
     assert res["ok"] is True
+    assert res["bundle"]["kind"] == "clerk_session"
     assert touched.get("sid") == "sess_live"  # activated the created session
     assert minted.get("sid") == "sess_live"   # and minted the session token
 
@@ -472,29 +425,72 @@ def test_decode_jwt_claims_malformed_is_empty():
 # ── run_apple_native_flow: sign-up transfer branch ───────────────────────────
 
 def test_apple_native_flow_transfers_new_identity(monkeypatch):
-    # sign-in says 'transferable' → the flow must run the sign-up transfer, then
-    # proceed to authorize/exchange exactly as the existing-user path does.
+    # sign-in says 'transferable' → the flow runs the sign-up transfer, then mints
+    # a session token from the created session and returns a clerk_session bundle.
     calls = []
     monkeypatch.setattr(oauth_client, "_fapi_apple_sign_in", lambda jar, tok: {"transfer": True})
     monkeypatch.setattr(oauth_client, "_fapi_apple_sign_up_transfer",
-                        lambda jar: calls.append("signup") or {"ok": True})
-    monkeypatch.setattr(oauth_client, "_authorize_with_session", _echo_state_authorize)
-    monkeypatch.setattr(oauth_client, "exchange_code", _token_ok)
+                        lambda jar: calls.append("signup") or {"ok": True, "session_id": "sess_new"})
+    _mock_session_established(monkeypatch, token="hdr.body.sig")
 
     res = oauth_client.run_apple_native_flow(_FakeApple({"identity_token": "idtok"}))
 
     assert res["ok"] is True
-    assert res["bundle"]["access_token"] == "AT"
+    assert res["bundle"]["kind"] == "clerk_session"
+    assert res["bundle"]["clerk_session_id"] == "sess_new"
     assert calls == ["signup"]  # the transfer actually ran
 
 
 def test_apple_native_flow_signup_transfer_failure_aborts(monkeypatch):
-    # If account creation fails, surface it and never reach authorize/exchange.
+    # If account creation fails, surface it and never mint a session token.
     monkeypatch.setattr(oauth_client, "_fapi_apple_sign_in", lambda jar, tok: {"transfer": True})
     monkeypatch.setattr(oauth_client, "_fapi_apple_sign_up_transfer",
                         lambda jar: {"error": "apple_signup_incomplete", "error_description": "status=missing_requirements"})
-    monkeypatch.setattr(oauth_client, "_authorize_with_session",
-                        lambda *a, **k: pytest.fail("must not authorize after a failed sign-up transfer"))
+    monkeypatch.setattr(oauth_client, "_fapi_get_session_token",
+                        lambda *a, **k: pytest.fail("must not mint a token after a failed sign-up transfer"))
     res = oauth_client.run_apple_native_flow(_FakeApple({"identity_token": "idtok"}))
     assert res["ok"] is False
     assert res["error"] == "apple_signup_incomplete"
+
+
+# ── clerk_session bundle + re-mint (native Apple credential) ──────────────────
+
+def test_build_session_bundle_reads_exp_from_jwt():
+    import base64 as _b64
+    import json as _json
+    exp = 1893456000  # fixed far-future timestamp
+    seg = _b64.urlsafe_b64encode(_json.dumps({"exp": exp, "sub": "user_1"}).encode()).rstrip(b"=").decode()
+    jwt = "hdr." + seg + ".sig"
+    b = oauth_client.build_session_bundle(jwt, "CLIENTCOOKIE", "sess_9", now=1000.0)
+    assert b["kind"] == "clerk_session"
+    assert b["access_token"] == jwt
+    assert b["expires_at"] == float(exp)
+    assert b["clerk_client"] == "CLIENTCOOKIE"
+    assert b["clerk_session_id"] == "sess_9"
+    assert b["refresh_token"] == ""
+
+
+def test_build_session_bundle_falls_back_when_no_exp():
+    b = oauth_client.build_session_bundle("no.jwt.here", "c", "s", now=1000.0)
+    # Unparseable exp -> a short forward window from `now`, never 0/None.
+    assert b["expires_at"] > 1000.0
+
+
+def test_remint_session_token_seeds_client_cookie(monkeypatch):
+    seen = {}
+
+    def _mint(jar, sid):
+        seen["client"] = oauth_client._jar_cookie_value(jar, "__client")
+        seen["sid"] = sid
+        return "NEW.SESSION.JWT"
+
+    monkeypatch.setattr(oauth_client, "_fapi_get_session_token", _mint)
+    out = oauth_client.remint_session_token("CLIENTCOOKIE", "sess_9")
+    assert out == "NEW.SESSION.JWT"
+    assert seen["client"] == "CLIENTCOOKIE"  # durable credential seeded for auth
+    assert seen["sid"] == "sess_9"
+
+
+def test_remint_session_token_requires_inputs():
+    assert oauth_client.remint_session_token("", "sess") is None
+    assert oauth_client.remint_session_token("client", "") is None

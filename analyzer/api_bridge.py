@@ -2833,6 +2833,10 @@ class Api:
         """
         if _oauth is None:
             return bundle  # OAuth module unavailable — nothing we can do
+        # Native Apple bundles carry a Clerk session JWT, refreshed by re-minting
+        # from the durable __client credential — not the OAuth refresh grant.
+        if bundle.get("kind") == getattr(_oauth, "CLERK_SESSION_BUNDLE_KIND", "clerk_session"):
+            return self._refresh_clerk_session(bundle)
         try:
             expires_at = float(bundle.get("expires_at") or 0)
         except (TypeError, ValueError):
@@ -2883,6 +2887,53 @@ class Api:
         finally:
             lock.release()
 
+    def _refresh_clerk_session(self, bundle: dict) -> dict | None:
+        """Re-mint the Clerk session JWT for a ``clerk_session`` (native Apple)
+        bundle when it's within the re-mint buffer of expiry.
+
+        Session JWTs live ~60s; we mint a fresh one from the durable ``__client``
+        credential on demand. Returns the (possibly updated) bundle, or the
+        unchanged bundle on a transient failure — ``get_auth_token``'s staleness
+        floor surfaces signed-out once the token has actually expired. Mirrors
+        the locking/double-check pattern of ``_refresh_if_needed``.
+        """
+        buffer = getattr(_oauth, "CLERK_SESSION_REMINT_BUFFER_SEC", 15)
+        try:
+            expires_at = float(bundle.get("expires_at") or 0)
+        except (TypeError, ValueError):
+            expires_at = 0.0
+        if expires_at - time.time() >= buffer:
+            return bundle
+        client = bundle.get("clerk_client") or ""
+        sid = bundle.get("clerk_session_id") or ""
+        if not client or not sid:
+            return bundle
+
+        lock = self._get_oauth_lock()
+        if not lock.acquire(timeout=10.0):
+            return bundle
+        try:
+            # Another caller may have re-minted while we waited for the lock.
+            current = _keyring_load() or {}
+            if (current.get("access_token")
+                    and current.get("access_token") != bundle.get("access_token")):
+                try:
+                    if float(current.get("expires_at") or 0) - time.time() >= buffer:
+                        return current
+                except (TypeError, ValueError):
+                    pass
+            token = _oauth.remint_session_token(client, sid)
+            if not token:
+                # Transient (network) or the session ended. Keep the old bundle;
+                # the staleness floor will surface signed-out once it expires.
+                return current or bundle
+            new_bundle = _oauth.build_session_bundle(token, client, sid)
+            _keyring_save(new_bundle)
+            self._invalidate_account_caches()
+            return new_bundle
+        finally:
+            lock.release()
+
     def get_auth_token(self):
         """Return current OAuth access token; trigger lazy refresh near expiry.
 
@@ -2901,7 +2952,11 @@ class Api:
             if not access_token:
                 return {"success": True, "token": None}
             ttl = _auth_jwt_seconds_until_exp(str(access_token))
-            if ttl is None or ttl < 60:
+            # Clerk session JWTs (native Apple) are ~60s and re-minted on demand,
+            # so a fresh one legitimately has < 60s left — use a small floor for
+            # that kind. OAuth access tokens keep the original 60s staleness floor.
+            floor = 5 if bundle.get("kind") == "clerk_session" else 60
+            if ttl is None or ttl < floor:
                 # Token is past its useful life and refresh didn't (or couldn't)
                 # extend it — surface signed-out so the UI prompts re-auth.
                 return {"success": True, "token": None}
