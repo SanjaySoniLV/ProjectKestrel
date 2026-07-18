@@ -388,11 +388,18 @@ def test_apple_native_flow_activates_session(monkeypatch):
         touched["sid"] = sid
         return {"ok": True}
 
+    minted = {}
+
+    def _mint(jar, sid):
+        minted["sid"] = sid
+        return "hdr.body.sig"
+
     monkeypatch.setattr(oauth_client, "_fapi_apple_sign_in",
                         lambda jar, tok: {"transfer": True})
     monkeypatch.setattr(oauth_client, "_fapi_apple_sign_up_transfer",
                         lambda jar: {"ok": True, "session_id": "sess_live"})
     monkeypatch.setattr(oauth_client, "_fapi_touch_session", _touch)
+    monkeypatch.setattr(oauth_client, "_fapi_get_session_token", _mint)
     monkeypatch.setattr(oauth_client, "_authorize_with_session", _echo_state_authorize)
     monkeypatch.setattr(oauth_client, "exchange_code", _token_ok)
 
@@ -400,6 +407,47 @@ def test_apple_native_flow_activates_session(monkeypatch):
 
     assert res["ok"] is True
     assert touched.get("sid") == "sess_live"  # activated the created session
+    assert minted.get("sid") == "sess_live"   # and minted the session token
+
+
+def test_fapi_get_session_token_parses_jwt(monkeypatch):
+    captured = {}
+
+    def _on_open(req):
+        captured["url"] = req.full_url
+        return _FakeResp(status=200, body=b'{"object":"token","jwt":"HDR.BODY.SIG"}')
+
+    monkeypatch.setattr(oauth_client.urllib.request, "build_opener",
+                        lambda *a, **k: _FakeOpener(_on_open))
+    jwt = oauth_client._fapi_get_session_token(object(), "sess_A")
+    assert jwt == "HDR.BODY.SIG"
+    assert captured["url"] == oauth_client.CLERK_FAPI_SESSIONS_URL + "/sess_A/tokens"
+
+
+def test_set_session_cookie_installs_session(monkeypatch):
+    import http.cookiejar
+    jar = http.cookiejar.CookieJar()
+    oauth_client._set_session_cookie(jar, "HDR.BODY.SIG")
+    names = {c.name: c.value for c in jar}
+    assert names.get("__session") == "HDR.BODY.SIG"
+
+
+def test_set_session_cookie_matches_production_suffix():
+    import http.cookiejar
+    jar = http.cookiejar.CookieJar()
+    # Seed a suffixed __client_uat like Clerk production sets, so the session
+    # cookie is installed under the same suffix too.
+    jar.set_cookie(http.cookiejar.Cookie(
+        version=0, name="__client_uat_xccWTl", value="1",
+        port=None, port_specified=False,
+        domain="clerk.projectkestrel.org", domain_specified=True, domain_initial_dot=False,
+        path="/", path_specified=True, secure=True, expires=None, discard=False,
+        comment=None, comment_url=None, rest={}, rfc2109=False,
+    ))
+    oauth_client._set_session_cookie(jar, "JWT")
+    names = {c.name for c in jar}
+    assert "__session" in names
+    assert "__session_xccWTl" in names
 
 
 # ── _decode_jwt_claims: diagnostic-only unverified decode ─────────────────────

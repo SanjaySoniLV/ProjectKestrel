@@ -798,6 +798,76 @@ def _jar_cookie_names(jar) -> str:
         return "(unknown)"
 
 
+def _jar_cookie_value(jar, name: str) -> Optional[str]:
+    """Value of the named cookie in ``jar``, or ``None``. Used only for the
+    ``__client_uat`` timestamp (not a secret) in diagnostics."""
+    try:
+        for c in jar:
+            if c.name == name:
+                return c.value
+    except Exception:
+        pass
+    return None
+
+
+def _clerk_cookie_suffix(jar) -> str:
+    """Clerk's production cookies are suffixed (e.g. ``__client_uat_xxx``). Derive
+    that suffix from a ``__client_uat*`` cookie so we can set the session cookie
+    under the same suffix as well. ``""`` when unsuffixed."""
+    base = "__client_uat"
+    try:
+        for c in jar:
+            if c.name.startswith(base) and len(c.name) > len(base):
+                return c.name[len(base):]
+    except Exception:
+        pass
+    return ""
+
+
+def _fapi_get_session_token(jar: "http.cookiejar.CookieJar", session_id: str) -> Optional[str]:
+    """Mint a session JWT via ``POST .../sessions/{id}/tokens``.
+
+    This is what clerk-js does right after ``setActive`` to materialise the
+    ``__session`` cookie that ``/oauth/authorize`` authenticates against. Returns
+    the JWT string, or ``None`` on any failure. Never raises.
+    """
+    url = f"{CLERK_FAPI_SESSIONS_URL}/{urllib.parse.quote(session_id, safe='')}/tokens"
+    r = _fapi_post(jar, url, {})
+    if r.get("error"):
+        print(f"[apple] session token mint failed: {r.get('error_description')!r}", flush=True)
+        return None
+    data = r.get("data")
+    if not isinstance(data, dict):
+        return None
+    jwt = data.get("jwt")
+    if not jwt:
+        resp = data.get("response")
+        if isinstance(resp, dict):
+            jwt = resp.get("jwt")
+    return jwt or None
+
+
+def _set_session_cookie(jar: "http.cookiejar.CookieJar", jwt: str) -> None:
+    """Install the minted session JWT as the ``__session`` cookie on the Clerk
+    FAPI domain (and its suffixed variant, matching Clerk's production naming) so
+    ``/oauth/authorize`` reads an authenticated session. Never raises."""
+    domain = urllib.parse.urlparse(CLERK_FAPI_SESSIONS_URL).hostname or "clerk.projectkestrel.org"
+    suffix = _clerk_cookie_suffix(jar)
+    names = ["__session"] + ([f"__session{suffix}"] if suffix else [])
+    for name in names:
+        try:
+            jar.set_cookie(http.cookiejar.Cookie(
+                version=0, name=name, value=jwt,
+                port=None, port_specified=False,
+                domain=domain, domain_specified=True, domain_initial_dot=False,
+                path="/", path_specified=True,
+                secure=True, expires=None, discard=True,
+                comment=None, comment_url=None, rest={"HttpOnly": None}, rfc2109=False,
+            ))
+        except Exception:
+            pass
+
+
 def _fapi_touch_session(jar: "http.cookiejar.CookieJar", session_id: str) -> dict:
     """Activate ``session_id`` — Clerk's ``setActive`` at the Frontend-API level.
 
@@ -1034,14 +1104,25 @@ def run_apple_native_flow(
     )
 
     # Activate the session (Clerk setActive) so /oauth/authorize sees an
-    # authenticated client instead of bouncing to the sign-in page.
+    # authenticated client instead of bouncing to the sign-in page. Two steps,
+    # mirroring what clerk-js does in the browser:
+    #   1. touch — mark the session active on the client (sets __client_uat)
+    #   2. mint a session token and install it as __session — the cookie the
+    #      authorize endpoint actually authenticates against.
     if session_id:
         _progress("apple_activating")
         touch = _fapi_touch_session(jar, session_id)
         if touch.get("error"):
             print(f"[apple] session touch failed: {touch.get('error_description')!r}", flush=True)
-        else:
-            print(f"[apple] after touch: cookies={_jar_cookie_names(jar)}", flush=True)
+        uat = _jar_cookie_value(jar, "__client_uat")
+        token = _fapi_get_session_token(jar, session_id)
+        if token:
+            _set_session_cookie(jar, token)
+        print(
+            f"[apple] after activate: __client_uat={uat!r} "
+            f"session_token={'yes' if token else 'no'} cookies={_jar_cookie_names(jar)}",
+            flush=True,
+        )
 
     verifier, challenge = _gen_pkce()
     state = _gen_state()
