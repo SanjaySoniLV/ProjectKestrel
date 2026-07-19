@@ -161,9 +161,12 @@ CLERK_APPLE_STRATEGY    = "oauth_token_apple"
 # token (below) instead of the ``__client`` cookie, and the mode is exempt from
 # Smart CAPTCHA. Appended to every FAPI URL on the Apple path via ``_native_url``.
 CLERK_NATIVE_QUERY      = "_is_native=1"
-# Sent as the Origin on Frontend-API calls. Clerk's prod FAPI accepts requests
-# from the instance's own account-portal origin; the stdlib UA would trip
-# Cloudflare Bot Fight Mode, so we reuse the named UA from _token_request.
+# Sent as the Origin ONLY on the bootstrap FAPI call (before we hold a native
+# client token) — Clerk rejects a request carrying both Origin and Authorization
+# (``origin_authorization_headers_conflict``), so once authenticated we send the
+# Bearer token instead and omit Origin. Clerk's prod FAPI accepts the instance's
+# own account-portal origin. (The named UA — not stdlib's — dodges Cloudflare
+# Bot Fight Mode on every call.)
 CLERK_ACCOUNT_ORIGIN    = "https://myaccount.projectkestrel.org"
 
 
@@ -823,11 +826,18 @@ def _fapi_post(sess: "_NativeSession", url: str, fields: dict) -> dict:
     headers = {
         "Content-Type": "application/x-www-form-urlencoded",
         "Accept":       "application/json",
-        "Origin":       CLERK_ACCOUNT_ORIGIN,
         "User-Agent":   _KESTREL_UA,
     }
+    # Clerk rejects a request that carries BOTH ``Origin`` and ``Authorization``
+    # (``origin_authorization_headers_conflict``): in a native context it wants
+    # the Bearer token and no Origin; in a browser context the browser sets Origin
+    # and there's no Authorization. So we send exactly one — ``Authorization`` once
+    # we hold the native client token, or ``Origin`` on the bootstrap call (the
+    # first ``sign_ins``, before any token exists) which Clerk's CORS still expects.
     if sess.client_token:
         headers["Authorization"] = f"Bearer {sess.client_token}"
+    else:
+        headers["Origin"] = CLERK_ACCOUNT_ORIGIN
     opener = urllib.request.build_opener(
         urllib.request.HTTPSHandler(context=_ssl_context()),
     )

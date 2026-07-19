@@ -178,6 +178,7 @@ def test_fapi_post_native_mode_sends_flag_and_bearer_captures_token(monkeypatch)
     def _on_open(req):
         captured["url"] = req.full_url
         captured["auth"] = req.get_header("Authorization")
+        captured["origin"] = req.get_header("Origin")
         # Clerk returns the (rotated) native client token in the Authorization
         # response header — with a Bearer prefix we must strip.
         return _FakeResp(status=200, body=b'{"response":{"status":"complete"}}',
@@ -190,14 +191,17 @@ def test_fapi_post_native_mode_sends_flag_and_bearer_captures_token(monkeypatch)
     assert "data" in r
     assert "_is_native=1" in captured["url"]              # native mode flag on URL
     assert captured["auth"] == "Bearer INITIAL.TOKEN"     # sent the held token
+    # Clerk forbids Origin+Authorization together — once authenticated, no Origin.
+    assert captured["origin"] is None
     assert sess.client_token == "ROTATED.TOKEN"           # captured the rotated one
 
 
-def test_fapi_post_first_call_has_no_bearer(monkeypatch):
+def test_fapi_post_first_call_sends_origin_not_bearer(monkeypatch):
     captured = {}
 
     def _on_open(req):
         captured["auth"] = req.get_header("Authorization")
+        captured["origin"] = req.get_header("Origin")
         return _FakeResp(status=200, body=b'{"response":{}}',
                          headers={"Authorization": "FIRST.TOKEN"})
 
@@ -205,7 +209,8 @@ def test_fapi_post_first_call_has_no_bearer(monkeypatch):
                         lambda *a, **k: _FakeOpener(_on_open))
     sess = oauth_client._NativeSession()  # no token yet
     oauth_client._fapi_post(sess, oauth_client.CLERK_FAPI_SIGN_INS_URL, {})
-    assert captured["auth"] is None                       # no Authorization sent
+    assert captured["auth"] is None                       # no Authorization yet
+    assert captured["origin"] == oauth_client.CLERK_ACCOUNT_ORIGIN  # bootstrap Origin
     assert sess.client_token == "FIRST.TOKEN"             # established from response
 
 
