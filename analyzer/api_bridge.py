@@ -6827,7 +6827,11 @@ class Api:
                 return {'success': False, 'error': 'Invalid cache path'}
 
             if os.path.exists(cache_dir):
-                shutil.rmtree(cache_dir)
+                # ignore_errors=True: on macOS the Finder / Spotlight can prune
+                # AppleDouble ``._<name>`` sidecar files between rmtree's scandir
+                # and unlink, causing ENOENT for entries we listed a moment ago;
+                # matches the pattern used by every other cache rmtree in this file.
+                shutil.rmtree(cache_dir, ignore_errors=True)
                 info(f'[cache] cleanup_culling_cache: removed {cache_dir}')
                 return {'success': True}
             return {'success': True}
