@@ -465,44 +465,13 @@ class Api:
             except Exception as e:
                 warn(f'[sandbox] bookmark activation failed: {e}')
 
-        # App Store build only: open StoreKit's connection at launch so the
-        # storefront (which decides the Support-link destination) is resolved
-        # well before the user clicks Support. SKPaymentQueue.storefront is nil
-        # until an observer is attached and StoreKit connects asynchronously —
-        # priming now avoids a nil-and-fail-closed on the first click. Best
-        # effort, backgrounded so it never blocks startup; get_support_url also
-        # primes lazily as a fallback. See mac_storefront.prime().
-        self._maybe_prime_storefront()
-
-    def _maybe_prime_storefront(self) -> None:
-        """Kick off StoreKit priming in the background on the App Store build."""
-        if sys.platform != 'darwin':
-            return
-        try:
-            channel = _dist_channel.get_channel() if _dist_channel is not None else 'direct'
-        except Exception:
-            channel = 'direct'
-        if channel != 'appstore':
-            return
-
-        def _prime():
-            try:
-                sf = _load_storefront()
-                if sf is None:
-                    print('[API] storefront prime: StoreKit unavailable in this bundle', flush=True)
-                    return
-                sf.prime()
-                # Warm the cache so the first Support click is instant.
-                country = sf.get_storefront_country()
-                print(f'[API] storefront prime: country={country!r}', flush=True)
-            except Exception as e:
-                print(f'[API] storefront prime error: {e}', flush=True)
-
-        try:
-            import threading as _t
-            _t.Thread(target=_prime, name='storefront-prime', daemon=True).start()
-        except Exception:
-            pass
+        # (StoreKit priming used to run here: the storefront decided the
+        # Support-link destination, and SKPaymentQueue.storefront stays nil
+        # until an observer is attached, so we warmed it at launch to avoid a
+        # fail-closed on the first click. get_support_url no longer consults the
+        # storefront — see its docstring — so the App Store build now opens no
+        # StoreKit connection at all. Restore this alongside the gate if that
+        # ever changes; mac_storefront.prime() is still there.)
 
     def _invalidate_account_caches(self) -> None:
         """Drop every identity-scoped cache (Perch account, Perch usage, and
@@ -1570,18 +1539,25 @@ class Api:
         ``/support-me`` includes the donate option; ``/support`` is the same page
         with no payment path at all. ``donate`` reports which one you got.
 
-        Apple's anti-steering rule is **storefront-scoped, not geographic**. The
-        US storefront is explicitly carved out of it (Guideline 3.1.1(a), and the
-        3.1.3 preamble); every other storefront is not. So the App Store build
-        may link out to Stripe for US-storefront customers only, and asks
-        StoreKit which it has. Non-App-Store builds short-circuit on channel and
-        never touch StoreKit — that also keeps the DMG/Windows paths free of any
-        new dependency.
+        The App Store build **always** gets ``/support``, unconditionally.
 
-        Deliberately NOT IP geolocation: the rule keys on the App Store account's
-        storefront, not where the machine is. See mac_storefront.py.
+        This used to be storefront-gated: Apple's anti-steering rule is
+        storefront-scoped rather than geographic, and the US storefront is
+        carved out of it (Guideline 3.1.1(a), and the 3.1.3 preamble), so the
+        build asked StoreKit whether it was entitled to show the donate link and
+        did so only for US-storefront customers. That gate was correct on the
+        text of the rule and was rejected twice in review anyway — the second
+        rejection screenshotted the Support button itself as the offending
+        link, without engaging with the storefront logic. Arguing it further
+        costs review cycles we care about more than we care about the donate
+        link in this one build, so the App Store build no longer links to a
+        payment path at all.
 
-        Fails closed — any unresolved state yields the no-payment page.
+        ``mac_storefront`` stays in the tree — it is correct, tested, and the
+        gate can be restored by consulting it here again if Apple's enforcement
+        ever matches its own guideline text. Nothing else calls it now.
+
+        Non-App-Store builds (DMG, Windows) are unaffected and keep ``/support-me``.
         """
         channel = 'direct'
         try:
@@ -1593,26 +1569,8 @@ class Api:
         if channel != 'appstore':
             return {'success': True, 'url': SUPPORT_URL_FULL, 'donate': True}
 
-        storefront = _load_storefront()
-        if storefront is None:
-            # StoreKit didn't load in this bundle — fail closed, and say so
-            # visibly (mac_storefront's own logging isn't wired to stdout).
-            print('[API] support_url: channel=appstore storekit=unavailable -> /support', flush=True)
-            return {'success': True, 'url': SUPPORT_URL_NO_PAYMENT, 'donate': False}
-        try:
-            country = storefront.get_storefront_country()
-        except Exception as e:
-            country = None
-            print(f'[API] support_url: storefront lookup error: {e}', flush=True)
-
-        is_us = country == storefront.US_STOREFRONT_CODE
-        url = SUPPORT_URL_FULL if is_us else SUPPORT_URL_NO_PAYMENT
-        # One visible line to disambiguate the outcome on-device: country=None
-        # means StoreKit loaded but the storefront never resolved (priming);
-        # a real code like 'GBR' means a genuine non-US storefront.
-        print(f'[API] support_url: channel=appstore country={country!r} -> '
-              f"{'/support-me' if is_us else '/support'}", flush=True)
-        return {'success': True, 'url': url, 'donate': is_us}
+        print('[API] support_url: channel=appstore -> /support (no payment path)', flush=True)
+        return {'success': True, 'url': SUPPORT_URL_NO_PAYMENT, 'donate': False}
 
     def is_windows_store_app(self):
         """Check if running as a Windows Store app."""

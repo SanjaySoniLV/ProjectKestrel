@@ -1,11 +1,15 @@
-"""Tests for the storefront-gated support URL (Apple Guideline 3.1.1(a)).
+"""Tests for the support URL split (Apple Guideline 3.1.1).
 
 ``/support-me`` carries the donate option; ``/support`` has no payment path at
-all. Apple's anti-steering rule exempts the US storefront and no other, so the
-App Store build must *positively confirm* a US storefront before it may link
-out — every other outcome, including any error, has to fail closed to
-``/support``. These tests pin that asymmetry, since getting it wrong in the
-permissive direction costs the App Store listing.
+all. The App Store build gets ``/support`` unconditionally — the storefront gate
+that used to allow US-storefront customers the donate link was rejected in
+review twice and has been retired (see ``api_bridge.get_support_url``). What
+these tests pin now is that *no* App Store code path can reach ``/support-me``,
+whatever StoreKit says, and that the DMG/Windows builds are untouched.
+
+``mac_storefront`` is no longer consulted by ``get_support_url`` but stays in
+the tree against a future restoration, so its own behaviour is still covered
+below.
 
 ``get_support_url`` never touches ``self``, so we call it unbound rather than
 standing up a full ``Api`` instance.
@@ -86,37 +90,35 @@ def test_dist_channel_error_defaults_to_direct(monkeypatch):
     assert _call() == {"success": True, "url": FULL, "donate": True}
 
 
-# ── App Store storefront gate ────────────────────────────────────────────────
+# ── App Store: no payment path, unconditionally ──────────────────────────────
 
-def test_appstore_us_storefront_gets_donate(monkeypatch):
+@pytest.mark.parametrize(
+    "storefront",
+    [
+        pytest.param(lambda: _Storefront("USA"), id="us-storefront"),
+        pytest.param(lambda: _Storefront("GBR"), id="non-us-storefront"),
+        pytest.param(lambda: _Storefront(None), id="storefront-unresolved"),
+        pytest.param(lambda: None, id="storekit-unavailable"),
+        pytest.param(lambda: _StorefrontBoom(), id="storekit-raises"),
+    ],
+)
+def test_appstore_always_gets_no_payment_page(monkeypatch, storefront):
+    # A US storefront used to earn the donate link under Guideline 3.1.1(a)'s
+    # carve-out. Review rejected that twice, so there is no longer any storefront
+    # value — or failure — that yields /support-me in the App Store build.
     monkeypatch.setattr(api_bridge, "_dist_channel", _Chan("appstore"))
-    monkeypatch.setattr(api_bridge, "_load_storefront", lambda: _Storefront("USA"))
-    assert _call() == {"success": True, "url": FULL, "donate": True}
-
-
-def test_appstore_non_us_storefront_gets_no_payment_page(monkeypatch):
-    monkeypatch.setattr(api_bridge, "_dist_channel", _Chan("appstore"))
-    monkeypatch.setattr(api_bridge, "_load_storefront", lambda: _Storefront("GBR"))
+    monkeypatch.setattr(api_bridge, "_load_storefront", storefront)
     assert _call() == {"success": True, "url": NO_PAY, "donate": False}
 
 
-def test_appstore_unresolved_storefront_fails_closed(monkeypatch):
-    # StoreKit loaded but the storefront hasn't resolved (country=None) — the
-    # real-world nil case. Must fail closed to the no-payment page.
+def test_appstore_does_not_consult_storekit(monkeypatch):
+    # Not just a dead branch — the lookup is gone. Pinned so a future refactor
+    # can't quietly reintroduce a storefront-dependent answer.
     monkeypatch.setattr(api_bridge, "_dist_channel", _Chan("appstore"))
-    monkeypatch.setattr(api_bridge, "_load_storefront", lambda: _Storefront(None))
-    assert _call() == {"success": True, "url": NO_PAY, "donate": False}
-
-
-def test_appstore_storekit_unavailable_fails_closed(monkeypatch):
-    monkeypatch.setattr(api_bridge, "_dist_channel", _Chan("appstore"))
-    monkeypatch.setattr(api_bridge, "_load_storefront", lambda: None)
-    assert _call() == {"success": True, "url": NO_PAY, "donate": False}
-
-
-def test_appstore_storekit_error_fails_closed(monkeypatch):
-    monkeypatch.setattr(api_bridge, "_dist_channel", _Chan("appstore"))
-    monkeypatch.setattr(api_bridge, "_load_storefront", lambda: _StorefrontBoom())
+    monkeypatch.setattr(
+        api_bridge, "_load_storefront",
+        lambda: pytest.fail("appstore must not consult StoreKit for the support URL"),
+    )
     assert _call() == {"success": True, "url": NO_PAY, "donate": False}
 
 
