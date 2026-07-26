@@ -25,6 +25,7 @@
   <link rel="stylesheet" href="css/welcome.css" />
   <link rel="stylesheet" href="css/timeline.css" />
   <link rel="stylesheet" href="css/legal-banner.css" />
+  <link rel="stylesheet" href="css/raw-warn-banner.css" />
   <link rel="stylesheet" href="css/dialogs/base.css" />
   <link rel="stylesheet" href="css/dialogs/kdlg.css" />
   <link rel="stylesheet" href="css/dialogs/scene.css" />
@@ -51,6 +52,16 @@
         rel="noopener" class="legal-notice-link">View Privacy Policy</a>
       <button id="legalAgreeBtn" class="legal-notice-btn">Agree &amp; Dismiss</button>
     </div>
+  </div>
+  <div id="rawWarnNotice" class="raw-warn-banner hidden" role="alert">
+    <span id="rawWarnMsg" class="raw-warn-msg"></span>
+    <div class="raw-warn-actions">
+      <a id="rawWarnLearnMore" href="https://www.projectkestrel.org/notes/nikon-unsupported-raws"
+        target="_blank" rel="noopener" class="raw-warn-link">Learn More</a>
+      <button id="rawWarnDontShowBtn" class="raw-warn-btn">Don&rsquo;t Show Again</button>
+    </div>
+    <button id="rawWarnCloseBtn" class="raw-warn-close" type="button"
+      aria-label="Dismiss this warning">&times;</button>
   </div>
   <div class="app-body">
   <header>
@@ -1566,6 +1577,7 @@
   <script src="js/folder-tree.js"></script>
   <script src="js/analyze-dialog.js"></script>
   <script src="js/queue.js"></script>
+  <script src="js/raw-warn.js"></script>
   <script src="js/multi-folder.js"></script>
   <script src="js/csv-init.js"></script>
   <script src="js/event-wiring.js"></script>
