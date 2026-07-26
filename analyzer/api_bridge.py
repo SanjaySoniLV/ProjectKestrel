@@ -2647,9 +2647,24 @@ class Api:
             settings = load_persisted_settings()
             queue_state = _queue_manager.get_persisted_recovery_state()
             unclean_utc = str(settings.get('last_unclean_shutdown_utc', '') or '').strip()
-            exit_reason = str(settings.get('last_exit_reason', '') or '').strip().lower()
+            raw_reason = str(settings.get('last_exit_reason', '') or '').strip().lower()
+            exit_reason = raw_reason
+            coerced = False
             if exit_reason not in ('clean', 'os_shutdown', 'crash', 'unknown'):
                 exit_reason = 'unknown' if unclean_utc else 'clean'
+                coerced = True
+            # The frontend shows the recovery dialog when unclean_shutdown is
+            # true and exit_reason is 'crash'/'unknown'/''. Log what we hand
+            # it so a crash-report log tail records the decision inputs, not
+            # just the outcome. See visualizer._log_shutdown_state.
+            will_prompt = bool(unclean_utc) and exit_reason in ('crash', 'unknown')
+            info(
+                f'[shutdown] recovery_status: raw_last_exit_reason={raw_reason!r} '
+                f'resolved={exit_reason} coerced={coerced} '
+                f'unclean_utc={unclean_utc or "none"} will_prompt={will_prompt} '
+                f'session_started={str(settings.get("app_session_started_utc", "") or "none")} '
+                f'last_closed={str(settings.get("last_session_closed_utc", "") or "none")}'
+            )
             return {
                 'success': True,
                 'unclean_shutdown': bool(unclean_utc),
@@ -2658,6 +2673,7 @@ class Api:
                 'queue_recovery': queue_state,
             }
         except Exception as e:
+            error(f'[shutdown] recovery_status: failed to read recovery state: {e}')
             return {'success': False, 'error': str(e)}
 
     # Phase 3: restore_analysis_queue removed — feature replaced by the
@@ -2667,12 +2683,18 @@ class Api:
         """Clear persisted unclean-shutdown flag and optionally queue recovery snapshot."""
         try:
             settings = load_persisted_settings()
+            had_flag = str(settings.get('last_unclean_shutdown_utc', '') or '').strip()
             settings.pop('last_unclean_shutdown_utc', None)
             if bool(clear_queue_state):
                 settings.pop('queue_recovery_state', None)
             save_persisted_settings(settings)
+            info(
+                f'[shutdown] recovery_cleared: unclean_utc={had_flag or "none"} '
+                f'queue_state_cleared={bool(clear_queue_state)}'
+            )
             return {'success': True}
         except Exception as e:
+            error(f'[shutdown] recovery_cleared: failed: {e}')
             return {'success': False, 'error': str(e)}
 
     def send_recovery_crash_report(self):
