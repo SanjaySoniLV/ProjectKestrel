@@ -27,6 +27,7 @@ import http.server
 import json
 import secrets
 import socket
+import sys
 import threading
 import time
 import urllib.error
@@ -87,6 +88,86 @@ LOOPBACK_HOST       = "127.0.0.1"
 # as a best-effort fallback: it's already registered with Clerk and is free on
 # most boots, so it costs nothing to keep and only ever helps.
 LOOPBACK_PORTS      = (17893, 27184, 37265, 47632, 53682)
+
+# macOS custom-scheme redirect used by the ASWebAuthenticationSession transport
+# (see mac_oauth.py). Apple's Guideline 4 forbids bouncing the user to the
+# default browser; ASWebAuthenticationSession captures this custom scheme
+# in-app instead of a loopback HTTP server. ``MAC_REDIRECT_URI`` must be
+# registered as an allowed redirect URL on the Clerk OAuth application, and
+# ``MAC_CALLBACK_SCHEME`` is that URI's scheme (what the session intercepts).
+MAC_CALLBACK_SCHEME = "kestrel"
+MAC_REDIRECT_URI    = f"{MAC_CALLBACK_SCHEME}://callback"
+
+# ── Native "Sign in with Apple" bridge (macOS App Store build) ────────────────
+#
+# Apple's Guideline 4 requires Sign in with Apple to complete *natively* (the
+# ASAuthorizationController system sheet), not via any web redirect — so for the
+# Apple button specifically we can't use the ASWeb/OAuth-authorize web flow.
+# Instead, mac_apple_signin.py yields an Apple identity token, which we exchange
+# with Clerk's *Frontend API* (a different surface than the OAuth IdP): a
+# ``strategy=oauth_token_apple`` sign-in that establishes a Clerk session, then
+# we mint a Clerk **session JWT** and hand it straight to the Worker (same Clerk
+# JWKS + issuer as the OAuth access tokens — see the Worker's ``verifyAuth``; no
+# audience is enforced today). There is NO ``/oauth/authorize`` step on the Apple
+# path. Net effect: only the *credential capture* is Apple-native; the token
+# model, refresh path, and Worker validation are unchanged.
+#
+# **Transport: Clerk _native mode_ (``_is_native=1`` + Bearer client token).**
+# We drive the Frontend API exactly as Clerk's own iOS/Expo SDKs do — the mode
+# Clerk documents and commits to for non-browser clients — rather than replaying
+# a *browser* session in a cookie jar (the earlier approach, an unsupported hack
+# that kept surfacing browser-only steps: Smart-CAPTCHA, ``setActive`` cookies,
+# an ``/oauth/authorize`` consent screen). In native mode every FAPI request
+# carries ``?_is_native=1`` and authenticates with an ``Authorization: Bearer
+# <client_token>`` header instead of the ``__client`` cookie; each response
+# returns the (rotated) client token in its ``Authorization`` header, which we
+# capture and carry forward. That client token is the durable credential stored
+# in the bundle (``clerk_client``) and used to re-mint session JWTs on demand.
+#
+# Why this matters beyond cleanliness: **native mode is CAPTCHA-exempt.** Clerk
+# applies Smart CAPTCHA (Turnstile) only to *browser* clients; a native client
+# bypasses it, so account creation (the sign-up transfer) no longer needs a
+# Turnstile token our headless client can't render — which lets Clerk Bot
+# Protection be turned back ON in the dashboard (protecting the web MyAccount
+# sign-up) without breaking this flow. See Perch Docs "Desktop App/macOS App
+# Store Build.md".
+#
+# ``oauth_token_apple`` is confirmed enabled on the production Clerk instance
+# (it appears in the sign-in attempt's supported_first_factors). Clerk validates
+# the id_token's embedded nonce claim (set to SHA-256 of a raw nonce on the
+# native request), so we pass only the token — no separate nonce param, matching
+# Clerk's own iOS SDK.
+CLERK_FAPI_SIGN_INS_URL = "https://clerk.projectkestrel.org/v1/client/sign_ins"
+# Companion sign-up endpoint. A first-time Apple identity (no linked user yet)
+# yields a *transferable* sign-in; POSTing ``transfer=true`` here converts that
+# verified Apple credential into a new account — Clerk's "sign in or up" pattern,
+# and what Guideline 4.8 expects of a Sign-in-with-Apple button.
+CLERK_FAPI_SIGN_UPS_URL = "https://clerk.projectkestrel.org/v1/client/sign_ups"
+# A freshly completed sign-in/up creates a session but doesn't make it the
+# client's *active* one. Clerk's ``setActive`` maps to
+# ``POST /v1/client/sessions/{id}/touch``. We mint the session JWT from the
+# activated session's ``.../tokens/{template}`` endpoint.
+CLERK_FAPI_SESSIONS_URL = "https://clerk.projectkestrel.org/v1/client/sessions"
+# Umbrella-wide Clerk JWT template the desktop + MyAccount mint session tokens
+# from (Clerk Dashboard). It carries the audience the Workers enforce once
+# CLERK_AUDIENCE is provisioned; without it a default session token has no aud
+# and would break the day that's flipped on. We fall back to the default token
+# if the template is unavailable, mirroring the other token-fetch sites. See
+# Perch Docs "Auth & Identity/Auth System.md".
+CLERK_JWT_TEMPLATE      = "kestrel_api"
+CLERK_APPLE_STRATEGY    = "oauth_token_apple"
+# Query flag that puts a Frontend-API request in *native mode* — the surface
+# Clerk's iOS/Expo SDKs use. In this mode the client authenticates with a Bearer
+# token (below) instead of the ``__client`` cookie, and the mode is exempt from
+# Smart CAPTCHA. Appended to every FAPI URL on the Apple path via ``_native_url``.
+CLERK_NATIVE_QUERY      = "_is_native=1"
+# Sent as the Origin ONLY on the bootstrap FAPI call (before we hold a native
+# client token) — Clerk rejects a request carrying both Origin and Authorization
+# (``origin_authorization_headers_conflict``), so once authenticated we send the
+# Bearer token instead and omit Origin. Clerk's prod FAPI accepts the instance's
+# own account-portal origin. (The named UA — not stdlib's — dodges Cloudflare
+# Bot Fight Mode on every call.)
+CLERK_ACCOUNT_ORIGIN    = "https://myaccount.projectkestrel.org"
 
 
 def _redirect_uri(port: int) -> str:
@@ -451,6 +532,643 @@ def build_bundle(token_response: dict, *, now: Optional[float] = None) -> dict:
     }
 
 
+# ── Clerk-session bundle (native Apple path) ─────────────────────────────────
+#
+# The native Apple flow does NOT run the OAuth2 authorize/token dance. Instead it
+# establishes a Clerk session (Frontend API, native mode) and mints a short-lived
+# Clerk **session JWT**, which our Worker validates directly (same Clerk JWKS +
+# issuer as the OAuth access tokens — see the Worker's ``verifyAuth``; no audience
+# is enforced today). The durable credential is the native-mode **client token**
+# (the Bearer that authenticates the client, Clerk's equivalent of the ``__client``
+# cookie), which re-mints session tokens on demand. This bundle carries
+# ``kind="clerk_session"`` so ``api_bridge``'s refresh layer re-mints (rather than
+# OAuth-refreshes) and tolerates the ~60s token lifetime.
+CLERK_SESSION_BUNDLE_KIND = "clerk_session"
+
+# Session JWTs live ~60s. Re-mint when within this many seconds of expiry.
+CLERK_SESSION_REMINT_BUFFER_SEC = 15
+
+
+class _NativeSession:
+    """Carries the Clerk *native-mode* client token across a sequence of
+    Frontend-API calls.
+
+    In native mode (``_is_native=1``) Clerk authenticates the client with an
+    ``Authorization: Bearer <client_token>`` header instead of the ``__client``
+    cookie, and returns a (possibly rotated) client token in *each* response's
+    ``Authorization`` header. This object holds the latest token so the next call
+    sends it, and so the caller can persist it as the durable credential once the
+    flow completes. The first request has no token — the initial ``sign_ins`` call
+    establishes the native client and returns its first token in the header.
+    """
+
+    __slots__ = ("client_token",)
+
+    def __init__(self, client_token: str = "") -> None:
+        self.client_token = client_token or ""
+
+
+def _native_url(url: str) -> str:
+    """Append the native-mode flag to a Frontend-API URL (``?_is_native=1`` or
+    ``&_is_native=1`` if it already carries a query)."""
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}{CLERK_NATIVE_QUERY}"
+
+
+def _capture_client_token(sess: "_NativeSession", headers) -> None:
+    """Read the rotated native-mode client token from a response's
+    ``Authorization`` header (present on both success and error responses) and
+    store it on ``sess``. Strips an optional ``Bearer`` prefix. Never raises."""
+    try:
+        raw = headers.get("Authorization") if headers is not None else None
+    except Exception:
+        raw = None
+    if not raw:
+        return
+    tok = raw.strip()
+    if tok[:7].lower() == "bearer ":
+        tok = tok[7:].strip()
+    if tok:
+        sess.client_token = tok
+
+
+def build_session_bundle(
+    session_jwt: str,
+    client_token: str,
+    session_id: str,
+    *,
+    now: Optional[float] = None,
+) -> dict:
+    """Keychain bundle wrapping a Clerk session JWT (native Apple path).
+
+    ``access_token`` is the session JWT (what the Worker sees). ``expires_at`` is
+    read from the JWT's own ``exp`` claim. ``clerk_client`` (the native-mode
+    client **Bearer token**) + ``clerk_session_id`` are the durable credentials
+    the refresh layer uses to re-mint. Same ``{access_token, expires_at, ...}``
+    surface as the OAuth bundle, so ``get_auth_token`` keeps working; the ``kind``
+    field routes refresh.
+    """
+    t = now if now is not None else time.time()
+    claims = _decode_jwt_claims(session_jwt)
+    exp = claims.get("exp")
+    try:
+        expires_at = float(exp) if exp is not None else t + 55.0
+    except (TypeError, ValueError):
+        expires_at = t + 55.0
+    return {
+        "kind":              CLERK_SESSION_BUNDLE_KIND,
+        "access_token":      session_jwt,
+        "refresh_token":     "",  # unused for this kind; re-mint via clerk_client
+        "expires_at":        expires_at,
+        "token_type":        "Bearer",
+        "scope":             "",
+        "obtained_at":       t,
+        "clerk_client":      client_token or "",
+        "clerk_session_id":  session_id or "",
+    }
+
+
+def remint_session_token(client_token: str, session_id: str) -> Optional[str]:
+    """Mint a fresh Clerk session JWT from the durable native-mode client token.
+
+    Used by the refresh layer for ``clerk_session`` bundles. Returns the new JWT
+    or ``None`` (transient failure or the session ended). Never raises.
+    """
+    if not client_token or not session_id:
+        return None
+    sess = _NativeSession(client_token)
+    return _fapi_get_session_token(sess, session_id)
+
+
+def _load_mac_oauth():
+    """Return the ``mac_oauth`` module if its ASWebAuthenticationSession
+    transport is usable on this build, else ``None``. Never raises."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        import mac_oauth  # type: ignore
+    except ImportError:  # pragma: no cover - package-style import path
+        try:
+            from analyzer import mac_oauth  # type: ignore
+        except Exception:
+            return None
+    except Exception:
+        return None
+    try:
+        return mac_oauth if mac_oauth.is_available() else None
+    except Exception:
+        return None
+
+
+def _is_macos_sandboxed() -> bool:
+    """True on the sandboxed (App Store) macOS build. Never raises."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        import mac_sandbox  # type: ignore
+    except ImportError:  # pragma: no cover
+        try:
+            from analyzer import mac_sandbox  # type: ignore
+        except Exception:
+            return False
+    except Exception:
+        return False
+    try:
+        return bool(mac_sandbox.is_sandboxed())
+    except Exception:
+        return False
+
+
+def run_authorization_flow_mac(
+    mac_oauth,
+    progress_cb: Optional[Callable[[str], None]] = None,
+    *,
+    url_validator: Optional[Callable[[str], bool]] = None,
+    cancel_event: Optional[threading.Event] = None,
+) -> dict:
+    """macOS PKCE flow over ASWebAuthenticationSession (no loopback server).
+
+    Mirrors :func:`run_authorization_flow` but uses the ``kestrel://callback``
+    custom scheme captured in-app by ``mac_oauth.authenticate``. The token
+    exchange is identical (``exchange_code`` / ``build_bundle``).
+    """
+    def _progress(label: str) -> None:
+        if progress_cb is not None:
+            try:
+                progress_cb(label)
+            except Exception:
+                pass
+
+    _progress("starting")
+    verifier, challenge = _gen_pkce()
+    state = _gen_state()
+    redirect_uri = MAC_REDIRECT_URI
+    url = _build_authorize_url(state, challenge, redirect_uri)
+
+    if url_validator is not None and not url_validator(url):
+        return {"ok": False, "error": "unsafe_authorize_url"}
+    if cancel_event is not None and cancel_event.is_set():
+        return {"ok": False, "error": "cancelled"}
+
+    _progress("awaiting_callback")
+    res = mac_oauth.authenticate(
+        url, MAC_CALLBACK_SCHEME, timeout=FLOW_TIMEOUT_SEC, cancel_event=cancel_event
+    )
+    if res.get("error"):
+        return {"ok": False, "error": res["error"], "error_description": res.get("error_description")}
+
+    parsed = urllib.parse.urlparse(res.get("callback_url") or "")
+    q = urllib.parse.parse_qs(parsed.query)
+    code = (q.get("code") or [None])[0]
+    returned_state = (q.get("state") or [None])[0]
+    err = (q.get("error") or [None])[0]
+    err_desc = (q.get("error_description") or [None])[0]
+
+    if not code:
+        # Clerk returned ?error=...&state=... (or nothing usable).
+        if err or err_desc:
+            return {"ok": False, "error": "no_code", "error_description": err_desc or err}
+        return {"ok": False, "error": "no_code"}
+
+    if not hmac.compare_digest(returned_state or "", state):
+        return {"ok": False, "error": "state_mismatch"}
+
+    _progress("exchanging")
+    tok = exchange_code(code, verifier, redirect_uri)
+    if tok.get("error"):
+        return {
+            "ok": False,
+            "error":             tok["error"],
+            "error_description": tok.get("error_description"),
+        }
+
+    bundle = build_bundle(tok)
+    if not bundle.get("access_token"):
+        return {"ok": False, "error": "missing_access_token"}
+
+    _progress("done")
+    return {"ok": True, "bundle": bundle}
+
+
+# User-Agent shared by the OAuth token endpoint and the Frontend-API bridge.
+# Cloudflare Bot Fight Mode blocks the stdlib UA ("Python-urllib/3.x"); this
+# named-client string identifies us honestly and doesn't trip the rule.
+_KESTREL_UA = "ProjectKestrel-Desktop/oauth (+https://projectkestrel.org)"
+
+
+def _load_apple_signin():
+    """Return the ``mac_apple_signin`` module if native Sign in with Apple is
+    usable on this build, else ``None``. Never raises."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        import mac_apple_signin  # type: ignore
+    except ImportError:  # pragma: no cover - package-style import path
+        try:
+            from analyzer import mac_apple_signin  # type: ignore
+        except Exception:
+            return None
+    except Exception:
+        return None
+    try:
+        return mac_apple_signin if mac_apple_signin.is_available() else None
+    except Exception:
+        return None
+
+
+def _clerk_first_error(errs) -> tuple:
+    """``(long_message, code)`` from a Clerk ``errors[]`` array; ``("", "")`` if
+    absent. Clerk's machine ``code`` (e.g. ``oauth_token_invalid``) is far more
+    diagnostic than the human message, so we surface both."""
+    if isinstance(errs, list) and errs and isinstance(errs[0], dict):
+        first = errs[0]
+        return (
+            first.get("long_message") or first.get("message") or "",
+            first.get("code") or "",
+        )
+    return ("", "")
+
+
+def _decode_jwt_claims(token: str) -> dict:
+    """Best-effort **UNVERIFIED** decode of a JWT payload, for diagnostics only.
+
+    Never raises; returns ``{}`` on any problem. This does NOT verify the
+    signature and must never gate an auth decision — it exists solely so we can
+    log which ``aud``/``iss``/``nonce`` the Apple token carries when Clerk
+    rejects it.
+    """
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:
+            return {}
+        seg = parts[1]
+        seg += "=" * (-len(seg) % 4)  # restore base64 padding
+        payload = base64.urlsafe_b64decode(seg.encode("ascii"))
+        data = json.loads(payload)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _fapi_post(sess: "_NativeSession", url: str, fields: dict) -> dict:
+    """POST form-encoded ``fields`` to a Clerk Frontend-API endpoint in *native
+    mode* (``_is_native=1`` + Bearer client token).
+
+    Authenticates with ``Authorization: Bearer <sess.client_token>`` when a token
+    is held (the first call has none — the sign-in establishes the client), and
+    updates ``sess.client_token`` from the response's ``Authorization`` header
+    (present on success *and* error responses, so the token keeps rotating even
+    across a soft failure). Returns ``{"data": <parsed-json-dict>}`` on a 2xx that
+    carries no ``errors`` array, else ``{"error", "error_description"}``. Never
+    raises.
+    """
+    body = urllib.parse.urlencode(fields).encode("ascii")
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept":       "application/json",
+        "User-Agent":   _KESTREL_UA,
+    }
+    # Clerk rejects a request that carries BOTH ``Origin`` and ``Authorization``
+    # (``origin_authorization_headers_conflict``): in a native context it wants
+    # the Bearer token and no Origin; in a browser context the browser sets Origin
+    # and there's no Authorization. So we send exactly one — ``Authorization`` once
+    # we hold the native client token, or ``Origin`` on the bootstrap call (the
+    # first ``sign_ins``, before any token exists) which Clerk's CORS still expects.
+    if sess.client_token:
+        headers["Authorization"] = f"Bearer {sess.client_token}"
+    else:
+        headers["Origin"] = CLERK_ACCOUNT_ORIGIN
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=_ssl_context()),
+    )
+    req = urllib.request.Request(
+        _native_url(url),
+        data=body,
+        method="POST",
+        headers=headers,
+    )
+    try:
+        with opener.open(req, timeout=15.0) as resp:
+            _capture_client_token(sess, getattr(resp, "headers", None))
+            raw = resp.read()
+    except urllib.error.HTTPError as e:
+        # The rotated client token may still ride on an error response — capture
+        # it so a follow-up call isn't silently unauthenticated.
+        _capture_client_token(sess, getattr(e, "headers", None))
+        err_body = ""
+        try:
+            err_body = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        parsed: dict = {}
+        if err_body.lstrip().startswith("{"):
+            try:
+                parsed = json.loads(err_body)
+            except Exception:
+                pass
+        msg, code = _clerk_first_error(parsed.get("errors"))
+        desc = msg or err_body.strip()[:300] or f"HTTP {e.code}"
+        if code:
+            desc = f"{desc} [clerk_code={code}]"
+        return {"error": "apple_signin_rejected", "error_description": desc, "clerk_code": code}
+    except (urllib.error.URLError, TimeoutError, socket.timeout, OSError) as e:
+        return {"error": "network", "error_description": str(e)}
+
+    # A 2xx with an ``errors`` array is still a soft failure.
+    try:
+        data = json.loads(raw)
+    except Exception:
+        data = {}
+    errs = data.get("errors") if isinstance(data, dict) else None
+    if isinstance(errs, list) and errs:
+        msg, code = _clerk_first_error(errs)
+        desc = msg or "sign-in error"
+        if code:
+            desc = f"{desc} [clerk_code={code}]"
+        return {"error": "apple_signin_rejected", "error_description": desc, "clerk_code": code}
+    return {"data": data if isinstance(data, dict) else {}}
+
+
+def _fapi_resource_status(data: dict) -> tuple:
+    """Pull ``(status, first_factor_verification_status)`` from a Clerk sign-in
+    or sign-up FAPI response. Clerk nests the resource under ``response`` (and
+    mirrors it inside ``client``); we read ``response`` and fall back to the top
+    level. Returns ``("", "")`` when absent — never raises.
+    """
+    resource = None
+    if isinstance(data, dict):
+        resource = data.get("response")
+        if not isinstance(resource, dict):
+            resource = data
+    if not isinstance(resource, dict):
+        return "", ""
+    status = resource.get("status") or ""
+    ffv = resource.get("first_factor_verification")
+    ffv_status = ffv.get("status") if isinstance(ffv, dict) else ""
+    return status, (ffv_status or "")
+
+
+def _created_session_id(data: dict) -> str:
+    """The session id a completed sign-in/up created, or ``""``.
+
+    Prefers ``response.created_session_id``; falls back to the client's
+    ``last_active_session_id`` or first session. Never raises.
+    """
+    if not isinstance(data, dict):
+        return ""
+    resource = data.get("response")
+    if not isinstance(resource, dict):
+        resource = data
+    sid = resource.get("created_session_id") if isinstance(resource, dict) else None
+    if sid:
+        return str(sid)
+    client = data.get("client")
+    if isinstance(client, dict):
+        las = client.get("last_active_session_id")
+        if las:
+            return str(las)
+        sessions = client.get("sessions")
+        if isinstance(sessions, list) and sessions and isinstance(sessions[0], dict):
+            sid = sessions[0].get("id")
+            if sid:
+                return str(sid)
+    return ""
+
+
+def _fapi_get_session_token(sess: "_NativeSession", session_id: str) -> Optional[str]:
+    """Mint a Clerk session JWT for the active session.
+
+    Prefers the ``kestrel_api`` JWT template
+    (``POST .../sessions/{id}/tokens/kestrel_api``) so the token carries the same
+    audience the MyAccount site's ``getToken({template:'kestrel_api'})`` does;
+    falls back to the default session token (``.../tokens``) if the template is
+    unavailable. This JWT is the credential the Worker validates. Returns the JWT
+    string, or ``None`` if both attempts fail. Never raises.
+    """
+    base = f"{CLERK_FAPI_SESSIONS_URL}/{urllib.parse.quote(session_id, safe='')}/tokens"
+    for url, label in ((f"{base}/{CLERK_JWT_TEMPLATE}", CLERK_JWT_TEMPLATE), (base, "default")):
+        r = _fapi_post(sess, url, {})
+        if r.get("error"):
+            print(f"[apple] session token mint ({label}) failed: {r.get('error_description')!r}", flush=True)
+            continue
+        data = r.get("data")
+        jwt = None
+        if isinstance(data, dict):
+            jwt = data.get("jwt")
+            if not jwt and isinstance(data.get("response"), dict):
+                jwt = data["response"].get("jwt")
+        if jwt:
+            print(f"[apple] session token minted via {label}", flush=True)
+            return jwt
+    return None
+
+
+def _fapi_touch_session(sess: "_NativeSession", session_id: str) -> dict:
+    """Activate ``session_id`` — Clerk's ``setActive`` at the Frontend-API level.
+
+    ``POST /v1/client/sessions/{id}/touch`` marks the session the client's active
+    one, so the subsequent token mint targets it. Returns ``{"ok": True}`` or
+    ``{"error", ...}``. Never raises.
+    """
+    url = f"{CLERK_FAPI_SESSIONS_URL}/{urllib.parse.quote(session_id, safe='')}/touch"
+    r = _fapi_post(sess, url, {})
+    if r.get("error"):
+        return r
+    return {"ok": True}
+
+
+def _fapi_apple_sign_in(sess: "_NativeSession", id_token: str) -> dict:
+    """Exchange an Apple identity token for a Clerk session via the Frontend API.
+
+    ``POST /v1/client/sign_ins`` with ``strategy=oauth_token_apple`` &
+    ``token=<id_token>``. Clerk validates the nonce claim embedded in the
+    id_token, so no separate nonce param. This is the first native-mode call, so
+    it establishes the client and ``sess.client_token`` is populated from the
+    response ``Authorization`` header.
+
+    Three outcomes (never raises):
+      * ``{"ok": True}``       — an existing user with Apple linked signed in.
+      * ``{"transfer": True}`` — the Apple identity has no matching user yet, so
+                                 Clerk marks the verification ``transferable``;
+                                 the caller converts it into a sign-up.
+      * ``{"error", ...}``     — token rejected, network error, or a sign-in that
+                                 neither completed nor is transferable (the real
+                                 Clerk ``status`` rides along for diagnosis).
+
+    We require a genuine ``complete`` before reporting success: a non-complete
+    sign-in (the transferable first-time case) must route to the sign-up transfer,
+    not be reported as a signed-in session.
+    """
+    r = _fapi_post(sess, CLERK_FAPI_SIGN_INS_URL, {
+        "strategy": CLERK_APPLE_STRATEGY,
+        "token":    id_token,
+    })
+    if r.get("error"):
+        print(f"[apple] sign_in rejected: {r.get('error_description')!r}", flush=True)
+        return r
+    status, ffv = _fapi_resource_status(r["data"])
+    print(f"[apple] sign_in status={status!r} verification={ffv!r}", flush=True)
+    if status == "complete":
+        return {"ok": True, "session_id": _created_session_id(r["data"])}
+    # New/unlinked Apple identity: Clerk verified the token but there's no user
+    # to sign in, so the first-factor verification is 'transferable' — the hook
+    # to create an account from the verified Apple identity.
+    if ffv == "transferable" or status == "transferable":
+        return {"transfer": True}
+    return {
+        "error": "apple_signin_incomplete",
+        "error_description": f"sign_in did not complete (status={status or '?'}, verification={ffv or '?'})",
+    }
+
+
+def _fapi_apple_sign_up_transfer(sess: "_NativeSession") -> dict:
+    """Convert a ``transferable`` Apple sign-in into a new Clerk account.
+
+    Clerk's "sign in or up" pattern: when ``oauth_token_apple`` names an Apple
+    identity with no existing user, the sign-in verification is ``transferable``.
+    ``POST /v1/client/sign_ups`` with ``transfer=true`` tells Clerk to create the
+    user from that already-verified Apple identity (email + name ride in from the
+    id_token), establishing a session on the same native-mode client.
+
+    In *native mode* this call is **exempt from Smart CAPTCHA** — account creation
+    doesn't require a Turnstile token, which is what lets Clerk Bot Protection stay
+    ON in the dashboard without breaking this flow. (In browser/cookie mode the
+    same call demanded ``captcha_missing_token``.)
+
+    Returns ``{"ok": True}`` on a completed sign-up, else ``{"error", ...}`` with
+    the real ``status`` (e.g. ``missing_requirements`` if the instance demands a
+    field Apple didn't provide) so the failure is diagnosable. Never raises.
+    """
+    r = _fapi_post(sess, CLERK_FAPI_SIGN_UPS_URL, {"transfer": "true"})
+    if r.get("error"):
+        # _fapi_post tags every rejection as apple_signin_rejected; re-tag so the
+        # log makes clear it was the sign-up transfer (not the sign-in) Clerk
+        # refused — these are debugged very differently.
+        if r.get("error") == "apple_signin_rejected":
+            r = dict(r, error="apple_signup_rejected")
+        print(f"[apple] sign_up(transfer) rejected: {r.get('error_description')!r}", flush=True)
+        return r
+    status, _ = _fapi_resource_status(r["data"])
+    print(f"[apple] sign_up(transfer) status={status!r}", flush=True)
+    if status == "complete":
+        return {"ok": True, "session_id": _created_session_id(r["data"])}
+    return {
+        "error": "apple_signup_incomplete",
+        "error_description": f"sign_up did not complete (status={status or '?'})",
+    }
+
+
+def run_apple_native_flow(
+    apple_signin,
+    progress_cb: Optional[Callable[[str], None]] = None,
+    *,
+    url_validator: Optional[Callable[[str], bool]] = None,
+    cancel_event: Optional[threading.Event] = None,
+) -> dict:
+    """Native Sign in with Apple → Clerk session (native mode) → session-JWT bundle.
+
+    Returns ``{"ok": bool, "bundle"|"error": ...}`` — the SAME contract as
+    :func:`run_authorization_flow`, so ``api_bridge``'s worker persists and
+    notifies identically. Steps (all Frontend-API calls run in *native mode*,
+    ``_is_native=1`` + Bearer client token — see the module header):
+
+      1. ``apple_signin.authenticate()`` presents the native ASAuthorization
+         sheet and returns the Apple identity token.
+      2. ``_fapi_apple_sign_in`` exchanges it for a Clerk session; a first-time
+         Apple identity routes through ``_fapi_apple_sign_up_transfer``.
+      3. ``_fapi_touch_session`` activates the session; ``_fapi_get_session_token``
+         mints a Clerk **session JWT** — the credential the Worker validates.
+      4. ``build_session_bundle`` wraps it (``kind="clerk_session"``) with the
+         durable native-mode client token for on-demand re-minting.
+
+    There is NO ``/oauth/authorize`` step: the session JWT is handed straight to
+    the Worker (same Clerk JWKS + issuer as OAuth access tokens).
+    """
+    def _progress(label: str) -> None:
+        if progress_cb is not None:
+            try:
+                progress_cb(label)
+            except Exception:
+                pass
+
+    _progress("apple_starting")
+    cred = apple_signin.authenticate(timeout=FLOW_TIMEOUT_SEC, cancel_event=cancel_event)
+    if cred.get("error"):
+        return {"ok": False, "error": cred["error"], "error_description": cred.get("error_description")}
+    id_token = cred.get("identity_token") or ""
+    if not id_token:
+        return {"ok": False, "error": "apple_no_identity_token"}
+
+    # Diagnostic (UNVERIFIED decode): the claims Clerk must match. aud should be
+    # the app bundle id; a nonce is always present. Helps localise a Clerk
+    # rejection to audience vs nonce vs issuer without another guess-and-build.
+    _c = _decode_jwt_claims(id_token)
+    print(
+        f"[apple] id_token aud={_c.get('aud')!r} iss={_c.get('iss')!r} "
+        f"nonce_present={bool(_c.get('nonce'))} email_present={bool(_c.get('email'))} "
+        f"is_private_email={_c.get('is_private_email')!r}",
+        flush=True,
+    )
+
+    if cancel_event is not None and cancel_event.is_set():
+        return {"ok": False, "error": "cancelled"}
+
+    _progress("apple_exchanging")
+    sess = _NativeSession()
+    si = _fapi_apple_sign_in(sess, id_token)
+    if si.get("error"):
+        return {"ok": False, "error": si["error"], "error_description": si.get("error_description")}
+    session_id = si.get("session_id") or ""
+    if si.get("transfer"):
+        # First-time Apple identity — no linked user yet. Create the account from
+        # the verified Apple credential (Guideline 4.8 "sign in or up"). Native
+        # mode is CAPTCHA-exempt, so this succeeds even with Bot Protection ON.
+        if cancel_event is not None and cancel_event.is_set():
+            return {"ok": False, "error": "cancelled"}
+        _progress("apple_creating_account")
+        su = _fapi_apple_sign_up_transfer(sess)
+        if su.get("error"):
+            return {"ok": False, "error": su["error"], "error_description": su.get("error_description")}
+        session_id = su.get("session_id") or session_id
+
+    print(
+        f"[apple] after sign_in/up: client_token={'yes' if sess.client_token else 'no'} "
+        f"session_id_present={bool(session_id)}",
+        flush=True,
+    )
+
+    if not session_id:
+        return {"ok": False, "error": "apple_no_session_id",
+                "error_description": "sign-in/up completed without a session id"}
+
+    # Activate the session (Clerk setActive), then mint a Clerk **session JWT**.
+    # That JWT — not an OAuth authorization code — is the credential our Worker
+    # validates (same Clerk JWKS + issuer; see the Worker's verifyAuth). The
+    # durable native-mode client token re-mints tokens on demand.
+    _progress("apple_activating")
+    touch = _fapi_touch_session(sess, session_id)
+    if touch.get("error"):
+        print(f"[apple] session touch failed: {touch.get('error_description')!r}", flush=True)
+    token = _fapi_get_session_token(sess, session_id)
+    client_token = sess.client_token
+    print(
+        f"[apple] session mint: token={'yes' if token else 'no'} "
+        f"client_token={'yes' if client_token else 'no'}",
+        flush=True,
+    )
+    if not token:
+        return {"ok": False, "error": "apple_no_session_token",
+                "error_description": "could not mint a Clerk session token"}
+    if not client_token:
+        # Without the durable client token we can't re-mint when the ~60s JWT
+        # expires — the user would be silently signed out. Surface it instead.
+        return {"ok": False, "error": "apple_no_client_token",
+                "error_description": "native-mode client token missing from FAPI responses"}
+
+    _progress("done")
+    return {"ok": True, "bundle": build_session_bundle(token, client_token, session_id)}
+
+
 def run_authorization_flow(
     progress_cb: Optional[Callable[[str], None]] = None,
     *,
@@ -471,6 +1189,30 @@ def run_authorization_flow(
                 progress_cb(label)
             except Exception:
                 pass
+
+    # macOS: prefer the ASWebAuthenticationSession transport (Guideline 4). It
+    # is used whenever AuthenticationServices is bundled — always on the App
+    # Store build, and on the direct-download build too if the wrapper is
+    # present. The loopback+browser path below is the Windows/Linux transport.
+    if sys.platform == "darwin":
+        mac = _load_mac_oauth()
+        if mac is not None:
+            return run_authorization_flow_mac(
+                mac, progress_cb, url_validator=url_validator, cancel_event=cancel_event
+            )
+        # No ASWebAuthenticationSession available. The sandboxed App Store build
+        # must NOT fall back to opening the external browser — that is exactly
+        # the behavior Apple rejected — so surface an error instead. The
+        # unsandboxed direct-download build may safely use the loopback flow.
+        if _is_macos_sandboxed():
+            return {
+                "ok": False,
+                "error": "aswebauth_unavailable",
+                "error_description": (
+                    "In-app sign-in (ASWebAuthenticationSession) is unavailable on "
+                    "this build. Please update Project Kestrel."
+                ),
+            }
 
     _progress("starting")
     verifier, challenge = _gen_pkce()

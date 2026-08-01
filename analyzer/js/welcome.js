@@ -362,7 +362,7 @@
       var dlg = document.getElementById('donateDlg');
       document.getElementById('donateDlgGoBtn').addEventListener('click', function() {
         dlg.close();
-        openDonateLink();
+        openSupportLink();
       });
       document.getElementById('donateDlgFeedbackBtn').addEventListener('click', function() {
         dlg.close();

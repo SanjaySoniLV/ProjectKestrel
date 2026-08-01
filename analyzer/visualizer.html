@@ -145,7 +145,7 @@
         <button id="openSettings" class="segmented-strip-item" title="Open Kestrel settings" aria-label="Settings">⚙</button>
         <button id="openFeedback" class="segmented-strip-item" title="Send feedback, report a bug, or share a suggestion">Feedback</button>
         <button id="helpBtnMain" class="segmented-strip-item" title="Start guided tutorial">Tutorial</button>
-        <button id="donateBtnMain" class="segmented-strip-item donate-item" title="Support Project Kestrel — Donate">💛 Donate</button>
+        <button id="donateBtnMain" class="segmented-strip-item donate-item" title="Support Project Kestrel">💛 Support</button>
       </div>
     </div>
   </header>
@@ -1228,6 +1228,25 @@
     </div>
   </dialog>
 
+  <!-- Sign-in chooser. Presented by auth.js ONLY on the macOS App Store build
+       ('appstore' channel), where native Sign in with Apple is available. Per
+       Guideline 4.8, Sign in with Apple is offered alongside the third-party
+       (Google) / email option. Every other build skips this and goes straight to
+       the web/loopback sign-in. -->
+  <dialog id="signInChooserDlg" class="kdlg signin-chooser-dlg" aria-labelledby="signInChooserTitle">
+    <div class="signin-chooser-body">
+      <button id="signInChooserClose" class="cloud-account-close signin-chooser-close" title="Close" aria-label="Close">✕</button>
+      <h3 id="signInChooserTitle" class="signin-chooser-title">Sign in to Project Kestrel</h3>
+      <p class="signin-chooser-sub">Use Cloud Compute, Perch, and sync your account across devices.</p>
+      <button id="signInAppleBtn" class="signin-apple-btn" type="button">
+        <span class="signin-apple-logo" aria-hidden="true"></span>
+        <span class="signin-apple-text">Sign in with Apple</span>
+      </button>
+      <button id="signInWebBtn" class="signin-web-btn" type="button">Continue with Google or email</button>
+      <p class="signin-chooser-fineprint">Apple sign-in opens the system panel. Google &amp; email open a secure in-app sign-in sheet.</p>
+    </div>
+  </dialog>
+
   <!-- Account panel (signed-in). Two columns: Cloud Compute (left) and Perch
        (right), each with usage then history — mirrors myaccount.projectkestrel.org.
        Rendered by cloud-compute.js. -->
@@ -1246,6 +1265,7 @@
         </div>
         <button id="cloudAccountManageBtn" class="primary" type="button">Manage my account ↗</button>
         <button id="cloudAccountSignOutBtn" class="cloud-account-signout" type="button">Sign out</button>
+        <button id="cloudAccountDeleteBtn" class="cloud-account-delete" type="button" title="Permanently delete your Project Kestrel account and data">Delete account</button>
       </div>
 
       <div class="account-columns">
@@ -1502,7 +1522,7 @@
       <p>Thank you for using Project Kestrel! I’m a solo student developer and birder who built Kestrel because I love taking wildlife photos — but not sorting through them. If Kestrel has been useful to you, please consider supporting its development, or share your thoughts and feedback!</p>
       <p style="font-size:12px;color:#607080;">Project Kestrel is free &amp; open-source. Every <a href="https://github.com/SanjaySoniLV/ProjectKestrel" target="_blank">contribution</a> helps keep it growing.</p>
       <div class="donate-dlg-btns">
-        <button class="donate-main-btn" id="donateDlgGoBtn">💛 Donate</button>
+        <button class="donate-main-btn" id="donateDlgGoBtn">💛 Support Project Kestrel</button>
         <button class="primary" id="donateDlgFeedbackBtn" style="font-size:13px;padding:13px 20px;height:auto;">💬 Send Feedback</button>
       </div>
       <button id="donateDlgClose" class="donate-dlg-close-btn">Close</button>

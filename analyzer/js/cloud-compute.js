@@ -1277,6 +1277,11 @@
     // so the fastest path is: open panel → see what to download → click.
 
     const _CC_MYACCOUNT_URL = 'https://myaccount.projectkestrel.org';
+    // Account-deletion page (App Store Guideline 5.1.1(v)). Deletion is
+    // initiated here in-app and completed on the dedicated deletion page, which
+    // has its own typed confirmation, so there is no risk of accidental
+    // deletion from the button alone.
+    const _CC_ACCOUNT_DELETE_URL = 'https://myaccount.projectkestrel.org/delete/';
     let _ccAccountRefreshTimer = null;
 
     function _ccAccountDlg() { return document.getElementById('cloudAccountDlg'); }
@@ -1806,6 +1811,20 @@
         } catch (err) {
           showToast(`Sign out failed: ${err?.message || err}`, 5000);
           btn.disabled = false;
+        }
+      });
+      // Account deletion (App Store Guideline 5.1.1(v)). Initiated in-app;
+      // completed on the account page, which has its own typed confirmation.
+      document.getElementById('cloudAccountDeleteBtn')?.addEventListener('click', () => {
+        if (window.pywebview?.api?.open_url) {
+          try {
+            window.pywebview.api.open_url(_CC_ACCOUNT_DELETE_URL);
+            showToast('Opening account deletion in your browser. Follow the steps there to permanently delete your Project Kestrel account and all associated data.', 9000);
+          } catch {
+            showToast('Could not open the deletion page. Visit myaccount.projectkestrel.org to delete your account.', 6000);
+          }
+        } else {
+          showToast('Account deletion is available at myaccount.projectkestrel.org.', 6000);
         }
       });
       // Delegated per-row actions (download / locate).

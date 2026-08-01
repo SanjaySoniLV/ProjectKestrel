@@ -140,6 +140,11 @@ def test_bind_first_port_succeeds(monkeypatch):
 # ── Flow-level wiring: a bind failure aborts before opening the browser ───────
 
 def test_flow_aborts_without_opening_browser_when_no_port(monkeypatch):
+    # This guards the loopback (Windows/Linux) transport. On macOS the flow
+    # diverts to ASWebAuthenticationSession before ever binding a port, so pin
+    # the platform to a loopback OS to exercise the path this test is about —
+    # otherwise it fails on the macOS CI runner with aswebauth_start_failed.
+    monkeypatch.setattr(oauth_client.sys, "platform", "win32")
     behavior = {p: _oserror(10013, winerror=10013) for p in oauth_client.LOOPBACK_PORTS}
     _patch_bind(monkeypatch, behavior)
 

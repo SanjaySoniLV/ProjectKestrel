@@ -507,6 +507,27 @@ dialog.kdlg.cloud-account-dlg {
   background: rgba(224, 83, 59, 0.12);
 }
 .cloud-account-signout:disabled { opacity: 0.5; cursor: default; }
+/* Account deletion (App Store Guideline 5.1.1(v)): kept discoverable in the
+   account controls but visually muted so it doesn't compete with Sign out. */
+.cloud-account-delete {
+  font-size: 12px;
+  padding: 6px 12px;
+  flex: 0 0 auto;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted, #99a);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.cloud-account-delete:hover:not(:disabled) {
+  color: #e0533b;
+  border-color: #e0533b;
+  background: rgba(224, 83, 59, 0.12);
+  text-decoration: none;
+}
+.cloud-account-delete:disabled { opacity: 0.5; cursor: default; }
 
 .account-columns {
   display: grid;
@@ -782,3 +803,99 @@ dialog.kdlg.cloud-account-dlg {
   color: #9bb8ff;
 }
 .perch-account-row-state.complete { background: #1e3a2a; color: #7ec89a; }
+
+/* ── Sign-in chooser (macOS App Store build) ─────────────────────────────────
+   Shown only on the 'appstore' channel, where native Sign in with Apple is
+   available. Presents SIWA alongside the web (Google/email) option per
+   Guideline 4.8.
+
+   The selector must be `dialog.kdlg.signin-chooser-dlg` (specificity 0,0,2,1):
+   the base `dialog.kdlg` rule in kdlg.css strips all sizing to `width:auto;
+   max-width:none; height:auto; max-height:none`, expecting each dialog to
+   re-apply a size via a `.kdlg--*` modifier. This chooser carries no size
+   modifier, so a plain `.signin-chooser-dlg` (0,0,1,0) LOSES to `dialog.kdlg`
+   and the modal renders unconstrained (full-viewport). Winning the cascade
+   here — and pinning both axes — keeps it a compact centered card. */
+dialog.kdlg.signin-chooser-dlg {
+  width: min(92vw, 380px);
+  max-width: min(92vw, 380px);
+  height: fit-content;
+  max-height: 92vh;
+}
+.signin-chooser-body {
+  position: relative;
+  padding: 24px 24px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.signin-chooser-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+}
+.signin-chooser-title {
+  margin: 0;
+  font-size: 18px;
+  color: var(--fg, #eee);
+  text-align: center;
+}
+.signin-chooser-sub {
+  margin: 0 0 6px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--muted, #99a);
+  text-align: center;
+}
+/* Apple's Human Interface Guidelines: black button (white in light contexts),
+   Apple logo + "Sign in with Apple", modest corner radius, full width. The
+   logo glyph (U+F8FF) renders as the Apple mark in WebKit on Apple platforms —
+   and this button only ever appears on the macOS App Store build. */
+.signin-apple-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 16px;
+  background: #000;
+  color: #fff;
+  border: 1px solid #000;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 500;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  cursor: pointer;
+}
+.signin-apple-btn:hover { background: #1a1a1a; }
+.signin-apple-btn:active { background: #262626; }
+.signin-apple-logo::before {
+  content: "\f8ff";           /* Apple logo glyph (WebKit/Apple platforms) */
+  font-size: 17px;
+  line-height: 1;
+  position: relative;
+  top: -1px;
+}
+.signin-web-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 16px;
+  background: var(--panel, #1a1a24);
+  color: var(--fg, #eee);
+  border: 1px solid var(--border, #2a2a3a);
+  border-radius: 8px;
+  font-size: 15px;
+  cursor: pointer;
+}
+.signin-web-btn:hover { border-color: var(--brand, #6b9eff); }
+.signin-chooser-fineprint {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted, #778);
+  text-align: center;
+}

@@ -617,3 +617,59 @@ class TestSampleSetMirror:
         self._pin_temp_root(monkeypatch, tmp_path / "never_created")
         # Must not raise.
         api.cleanup_sample_set_mirrors()
+
+
+class TestClerkSessionRefresh:
+    """The native-Apple bundle (kind=clerk_session) re-mints a short-lived Clerk
+    session JWT from the durable __client credential instead of OAuth-refreshing."""
+
+    def _bundle(self, expires_at):
+        return {
+            "kind": "clerk_session",
+            "access_token": "OLD.JWT",
+            "expires_at": expires_at,
+            "clerk_client": "CLIENTCOOKIE",
+            "clerk_session_id": "sess_1",
+        }
+
+    def test_refresh_if_needed_dispatches_clerk_session(self, api, monkeypatch):
+        sentinel = {"dispatched": True}
+        monkeypatch.setattr(api, "_refresh_clerk_session", lambda b: sentinel)
+        out = api._refresh_if_needed(
+            {"kind": "clerk_session", "access_token": "x", "expires_at": 0}
+        )
+        assert out is sentinel
+
+    def test_skips_remint_when_fresh(self, api, monkeypatch):
+        import time as _t
+        monkeypatch.setattr(api_bridge._oauth, "remint_session_token",
+                            lambda *a, **k: pytest.fail("must not re-mint a fresh session"))
+        b = self._bundle(_t.time() + 300)  # well beyond the ~15s re-mint buffer
+        assert api._refresh_clerk_session(b) is b
+
+    def test_remints_when_near_expiry(self, api, monkeypatch):
+        import base64 as _b64
+        import json as _json
+        import time as _t
+        saved = {}
+        seg = _b64.urlsafe_b64encode(
+            _json.dumps({"exp": int(_t.time()) + 3600, "sub": "user_1"}).encode()
+        ).rstrip(b"=").decode()
+        new_jwt = "hdr." + seg + ".sig"
+        monkeypatch.setattr(api_bridge._oauth, "remint_session_token", lambda c, s: new_jwt)
+        monkeypatch.setattr(api_bridge, "_keyring_load", lambda: None)
+        monkeypatch.setattr(api_bridge, "_keyring_save", lambda bundle: saved.update(bundle))
+
+        out = api._refresh_clerk_session(self._bundle(_t.time() + 5))  # within buffer
+
+        assert out["access_token"] == new_jwt
+        assert out["kind"] == "clerk_session"
+        assert saved.get("access_token") == new_jwt  # persisted to keychain
+
+    def test_remint_failure_keeps_old_bundle(self, api, monkeypatch):
+        import time as _t
+        b = self._bundle(_t.time() + 5)
+        monkeypatch.setattr(api_bridge._oauth, "remint_session_token", lambda c, s: None)
+        monkeypatch.setattr(api_bridge, "_keyring_load", lambda: None)
+        # Transient failure -> keep the (still-briefly-valid) bundle, don't sign out.
+        assert api._refresh_clerk_session(b) is b

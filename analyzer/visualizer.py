@@ -1033,23 +1033,36 @@ def main():
                             return False
                         return False
                     else:
-                        # Tkinter fallback
-                        import tkinter as _tk
-                        from tkinter import messagebox as _mb
-                        root = _tk.Tk()
-                        root.withdraw()
                         if _queue_manager.is_paused:
                             msg = 'Analysis is paused. Exit Project Kestrel? You can re-open later to resume.'
                         else:
                             msg = 'Analysis is in progress. Cancel analysis and exit?'
-                        res = _mb.askyesnocancel('Analysis in progress', msg)
-                        root.destroy()
-                        # askyesnocancel returns True=Yes, False=No, None=Cancel
-                        if res is True:
+                        # macOS: native NSAlert (Tk is excluded from the App
+                        # Store build — its libtk8.6.dylib references a private
+                        # API). Linux/source builds keep the Tk messagebox.
+                        choice = None
+                        if sys.platform == 'darwin':
+                            try:
+                                import mac_sandbox as _ms
+                                labels = ['Minimize', 'Quit Anyway', 'Cancel']
+                                idx = _ms.run_confirm('Analysis in progress', msg, labels)
+                                choice = labels[idx] if idx is not None else 'Minimize'
+                            except Exception:
+                                choice = 'Minimize'  # safe default: don't lose work
+                        else:
+                            import tkinter as _tk
+                            from tkinter import messagebox as _mb
+                            root = _tk.Tk()
+                            root.withdraw()
+                            res = _mb.askyesnocancel('Analysis in progress', msg)
+                            root.destroy()
+                            # askyesnocancel: True=Yes(quit), False=No(minimize), None=Cancel
+                            choice = {True: 'Quit Anyway', False: 'Minimize'}.get(res, 'Cancel')
+                        if choice == 'Quit Anyway':
                             _cancel_analysis_wait_for_worker_and_telemetry()
                             _cleanup_preview_cache_before_exit()
                             return True
-                        if res is False:
+                        if choice == 'Minimize':
                             try:
                                 win.minimize()
                             except Exception:
@@ -1079,16 +1092,26 @@ def main():
                             return True
                         return False  # No - don't close
                     else:
-                        import tkinter as _tk
-                        from tkinter import messagebox as _mb
-                        root = _tk.Tk()
-                        root.withdraw()
-                        res = _mb.askyesno(
-                            'Unsaved Changes',
-                            'You have unsaved changes that will be lost. Close anyway?'
-                        )
-                        root.destroy()
-                        if res:
+                        _msg = 'You have unsaved changes that will be lost. Close anyway?'
+                        # macOS: native NSAlert (Tk excluded from the App Store
+                        # build). Linux/source builds keep the Tk messagebox.
+                        discard = False
+                        if sys.platform == 'darwin':
+                            try:
+                                import mac_sandbox as _ms
+                                labels = ['Cancel', 'Discard Changes']
+                                idx = _ms.run_confirm('Unsaved Changes', _msg, labels)
+                                discard = (idx == 1)
+                            except Exception:
+                                discard = False  # safe default: don't discard
+                        else:
+                            import tkinter as _tk
+                            from tkinter import messagebox as _mb
+                            root = _tk.Tk()
+                            root.withdraw()
+                            discard = bool(_mb.askyesno('Unsaved Changes', _msg))
+                            root.destroy()
+                        if discard:
                             _cleanup_preview_cache_before_exit()
                             return True
                         return False
