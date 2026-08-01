@@ -405,7 +405,16 @@
                   applySceneZoomTransform(curImg, sceneZoomThumbEl, zoomLastX, zoomLastY, sceneZoomScale);
                 }
               };
-              if (box) box.dataset.rawLabel = `RAW (${formatExposureEv(expCorrEffective)} EV)`;
+              // When the Python side fell back to the embedded full-res
+              // JPEG preview (LibRaw can't decode HE/HE* Z8 NEFs), the
+              // exposure-correction EV is not applied — label it that
+              // way so the user isn't misled by an EV number that had
+              // no effect. Otherwise show the actual applied EV.
+              if (box) {
+                box.dataset.rawLabel = (res && res.fallback === 'embedded_jpeg_preview')
+                  ? 'RAW (embedded preview)'
+                  : `RAW (${formatExposureEv(expCorrEffective)} EV)`;
+              }
               box.classList.add('raw-loaded');
               if (sceneZoomThumbEl) {
                 applySceneZoomTransform(curImg, sceneZoomThumbEl, zoomLastX, zoomLastY, sceneZoomScale);
