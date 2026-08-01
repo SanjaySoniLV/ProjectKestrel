@@ -47,7 +47,7 @@ pyinstaller==6.20.0
 
 # EXIF reading
 exifread
-pillow==12.2.0
+pillow==12.3.0
 
 # speciesnet, segment-anything-hq, timm removed: ensemble logic is inlined in
 # kestrel_analyzer/ml/_speciesnet_ensemble.py; SAM-HQ runs via ONNX Runtime.
