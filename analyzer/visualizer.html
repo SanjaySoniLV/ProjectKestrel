@@ -860,11 +860,31 @@
           <option value="balanced" selected>Balanced &mdash; recommended for most photographers</option>
           <option value="lenient">Lenient</option>
           <option value="very_lenient">Very Lenient &mdash; most rewarding; lowest bar for 4&ndash;5 stars</option>
+          <option value="custom">Custom &mdash; set your own thresholds</option>
         </select>
       </div>
       <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Controls how quality scores are
         converted to star ratings. Each profile uses fixed quality-score thresholds — stricter profiles require
         a higher score to earn 4 or 5 stars. Changes take effect immediately for loaded folders.</div>
+
+      <!-- Custom thresholds editor. Only shown when the Custom profile is
+           selected; the same 0.00–1.00 number line the Culling Assistant
+           draws, except here the star markers are the draggable part. -->
+      <div class="rating-custom-editor hidden" id="ratingCustomEditor">
+        <div class="rating-custom-track" id="ratingCustomTrack" role="group"
+             aria-label="Custom star rating thresholds">
+          <div class="rating-custom-bands" id="ratingCustomBands" aria-hidden="true"></div>
+          <div class="rating-custom-handles" id="ratingCustomHandles"></div>
+        </div>
+        <div class="rating-custom-axis" aria-hidden="true">
+          <span>0.00</span><span>0.25</span><span>0.50</span><span>0.75</span><span>1.00</span>
+        </div>
+        <div class="rating-custom-readout" id="ratingCustomReadout"></div>
+        <div class="rating-custom-actions">
+          <button type="button" class="btn" id="ratingCustomReset">Reset to Balanced</button>
+          <span class="muted" style="font-size:11.5px">Drag a star to move the score it needs. Arrow keys nudge by 0.01.</span>
+        </div>
+      </div>
 
 
       <h4 style="margin:12px 0 8px;padding-top:8px;border-top:1px solid #1d2230;color:#a0a8b8;font-size:13px;text-transform:uppercase;letter-spacing:0.5px">Data &amp; Preview</h4>

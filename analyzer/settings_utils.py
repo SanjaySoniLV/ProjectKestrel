@@ -55,7 +55,11 @@ _ALLOWED_EDITORS = {
     'affinity', 'gimp', 'rawtherapee', 'luminar', 'dxo', 'on1',
     'acdsee', 'paintshop', 'faststone', 'xnview', 'irfanview', 'custom',
 }
-_ALLOWED_RATING_PROFILES = {'very_strict', 'strict', 'balanced', 'lenient', 'very_lenient'}
+# 'custom' carries no built-in thresholds — its cutoffs live in
+# `rating_thresholds_custom` and are resolved by ratings.resolve_thresholds.
+_ALLOWED_RATING_PROFILES = {
+    'very_strict', 'strict', 'balanced', 'lenient', 'very_lenient', 'custom',
+}
 _ALLOWED_EXPOSURE_QUALITY = {'lenient', 'balanced', 'aggressive'}
 _ALLOWED_WILDLIFE_MODEL_MODES = {'fast', 'accurate'}
 _ALLOWED_QUEUE_DETECTOR_NAMES = {'mdv5a', 'mdv1000-cedar'}
@@ -475,6 +479,17 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
 
     if 'rating_profile' in data:
         out['rating_profile'] = _coerce_enum(data.get('rating_profile'), _ALLOWED_RATING_PROFILES, default='balanced')
+    if 'rating_thresholds_custom' in data:
+        # Normalized here rather than trusted from the frontend: these cutoffs
+        # decide every auto star rating, and an out-of-order or out-of-range set
+        # would make a star band unreachable. Always yields a valid dict.
+        try:
+            from kestrel_analyzer.ratings import normalize_custom_thresholds
+        except ImportError:
+            from analyzer.kestrel_analyzer.ratings import normalize_custom_thresholds  # type: ignore
+        out['rating_thresholds_custom'] = normalize_custom_thresholds(
+            data.get('rating_thresholds_custom')
+        )
     _set_float('detection_threshold', default=0.25, min_value=0.1, max_value=0.99, digits=4)
     _set_float('scene_time_threshold', default=1.0, min_value=0.0, max_value=60.0, digits=4)
     _set_float('mask_threshold', default=0.5, min_value=0.5, max_value=0.95, digits=4)

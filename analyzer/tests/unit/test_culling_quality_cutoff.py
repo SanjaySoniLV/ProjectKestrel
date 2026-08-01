@@ -45,7 +45,9 @@ class TestRatingThresholdsBridge(unittest.TestCase):
     def test_serves_from_the_ratings_module_not_a_copy(self):
         body = self.src.split("def get_rating_thresholds(self)", 1)[1].split("\n    def ", 1)[0]
         self.assertIn("RATING_PROFILES", body)
-        self.assertIn("get_profile_thresholds", body)
+        # Whichever resolver is in use, the thresholds must come from
+        # kestrel_analyzer.ratings rather than a local table.
+        self.assertRegex(body, r"(resolve_thresholds|get_profile_thresholds)")
         self.assertIn("rating_profile", body)
         # A hardcoded threshold number here would silently drift from ratings.py.
         self.assertNotRegex(body, r"0\.(85|60|40|15)\b")
