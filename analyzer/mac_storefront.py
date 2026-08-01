@@ -47,6 +47,7 @@ from __future__ import annotations
 import logging
 import sys
 import threading
+import time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,20 @@ _load_attempted = False
 # Cache successful lookups only (see module docstring — nil is transient).
 _country_lock = threading.Lock()
 _country_cache: Optional[str] = None
+
+# Priming: SKPaymentQueue.storefront is resolved asynchronously by StoreKit and
+# stays nil until the app opens a StoreKit connection — which merely *reading*
+# the property never does. Attaching a transaction observer is the documented
+# trigger. We hold a strong ref so it isn't collected. See prime().
+_prime_lock = threading.Lock()
+_observer = None
+_prime_attempted = False
+
+# How long a single get_storefront_country() call will wait for a freshly-primed
+# storefront to resolve before giving up (fail-closed). Bounded so a Support
+# click never hangs; startup priming means the value is usually ready already.
+_READ_RETRIES = 5
+_READ_RETRY_SLEEP = 0.25
 
 
 def _load() -> Optional[dict]:
@@ -94,12 +109,75 @@ def is_available() -> bool:
     return _load() is not None
 
 
+def prime() -> bool:
+    """Open StoreKit's connection so ``SKPaymentQueue.storefront`` will resolve.
+
+    The property is populated asynchronously and stays nil until the app
+    attaches a transaction observer to the default queue — the documented way to
+    establish the connection. We ship no in-app-purchase products, so this
+    observer is a no-op whose only job is to prime the queue; its required
+    ``paymentQueue:updatedTransactions:`` selector never fires. Idempotent and
+    thread-safe — call once early on the App Store build (and it's also called
+    lazily on first read as a fallback). Returns True if an observer is attached.
+    Never raises.
+    """
+    global _observer, _prime_attempted
+
+    symbols = _load()
+    if symbols is None:
+        return False
+
+    with _prime_lock:
+        if _observer is not None:
+            return True
+        if _prime_attempted:
+            # A previous attempt failed hard; don't thrash StoreKit on every read.
+            return False
+        _prime_attempted = True
+        try:
+            import objc  # noqa: F401  (registers the ObjC bridge)
+            from Foundation import NSObject
+
+            class _KestrelStorefrontPrimer(NSObject):
+                # Required SKPaymentTransactionObserver selector. No IAP products
+                # exist, so this is never called; it exists only so that
+                # addTransactionObserver: is legal and StoreKit opens the
+                # connection that resolves .storefront.
+                def paymentQueue_updatedTransactions_(self, queue, transactions):
+                    pass
+
+            obs = _KestrelStorefrontPrimer.alloc().init()
+            symbols["SKPaymentQueue"].defaultQueue().addTransactionObserver_(obs)
+            _observer = obs
+            logger.info("StoreKit primed (transaction observer attached)")
+            return True
+        except Exception as e:  # pragma: no cover - requires a real StoreKit
+            logger.warning("StoreKit prime failed: %s", e)
+            return False
+
+
+def _read_storefront_country(symbols: dict) -> Optional[str]:
+    """One synchronous read of the resolved storefront country, or None."""
+    queue = symbols["SKPaymentQueue"].defaultQueue()
+    storefront = queue.storefront() if queue is not None else None
+    if storefront is None:
+        return None
+    code = storefront.countryCode()
+    if not code:
+        return None
+    return str(code).strip().upper()
+
+
 def get_storefront_country() -> Optional[str]:
     """The App Store account's storefront as ISO alpha-3 (e.g. ``"USA"``).
 
     Returns ``None`` when the storefront can't be determined — off-mac, no
     StoreKit, no signed-in App Store account, or StoreKit hasn't resolved one
     yet. Callers must treat ``None`` as "not the US storefront".
+
+    Primes StoreKit if it hasn't been already, then reads the storefront with a
+    short bounded retry to cover the async resolution window. Only successful
+    lookups are cached (nil is transient).
     """
     global _country_cache
 
@@ -111,26 +189,56 @@ def get_storefront_country() -> Optional[str]:
     if symbols is None:
         return None
 
-    try:
-        queue = symbols["SKPaymentQueue"].defaultQueue()
-        storefront = queue.storefront() if queue is not None else None
-        if storefront is None:
-            # Transient: not signed in, or StoreKit still resolving. Don't
-            # cache — a later call may succeed.
-            logger.debug("SKStorefront not yet resolved")
+    # Ensure the connection is open, then give the async resolve a brief window.
+    prime()
+    country: Optional[str] = None
+    for attempt in range(_READ_RETRIES):
+        try:
+            country = _read_storefront_country(symbols)
+        except Exception as e:  # pragma: no cover - requires a real StoreKit
+            logger.warning("SKStorefront lookup failed: %s", e)
             return None
-        code = storefront.countryCode()
-        if not code:
-            return None
-        country = str(code).strip().upper()
-    except Exception as e:  # pragma: no cover - requires a real StoreKit
-        logger.warning("SKStorefront lookup failed: %s", e)
+        if country:
+            break
+        # Transient: StoreKit still resolving. Don't cache — wait and retry.
+        if attempt < _READ_RETRIES - 1:
+            time.sleep(_READ_RETRY_SLEEP)
+
+    if not country:
+        logger.debug("SKStorefront not yet resolved after priming")
         return None
 
     with _country_lock:
         _country_cache = country
     logger.info("App Store storefront: %s", country)
     return country
+
+
+def probe() -> dict:
+    """Return a small dict describing the storefront-lookup state, for logging.
+
+    Purely diagnostic — never raises, never caches. Lets the caller emit one
+    visible line distinguishing the failure modes: StoreKit-not-bundled
+    (``import_ok`` False) vs storefront-still-nil (``import_ok`` True but
+    ``country`` None) vs a genuine non-US storefront (a real country code).
+    """
+    out = {
+        "platform": sys.platform,
+        "import_ok": False,
+        "primed": False,
+        "country": None,
+        "error": None,
+    }
+    symbols = _load()
+    out["import_ok"] = symbols is not None
+    if symbols is None:
+        return out
+    try:
+        out["primed"] = prime()
+        out["country"] = get_storefront_country()
+    except Exception as e:  # pragma: no cover - requires a real StoreKit
+        out["error"] = str(e)
+    return out
 
 
 def is_us_storefront() -> bool:

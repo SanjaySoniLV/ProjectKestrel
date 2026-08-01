@@ -807,10 +807,20 @@ dialog.kdlg.cloud-account-dlg {
 /* ── Sign-in chooser (macOS App Store build) ─────────────────────────────────
    Shown only on the 'appstore' channel, where native Sign in with Apple is
    available. Presents SIWA alongside the web (Google/email) option per
-   Guideline 4.8. */
-.signin-chooser-dlg {
-  max-width: 380px;
+   Guideline 4.8.
+
+   The selector must be `dialog.kdlg.signin-chooser-dlg` (specificity 0,0,2,1):
+   the base `dialog.kdlg` rule in kdlg.css strips all sizing to `width:auto;
+   max-width:none; height:auto; max-height:none`, expecting each dialog to
+   re-apply a size via a `.kdlg--*` modifier. This chooser carries no size
+   modifier, so a plain `.signin-chooser-dlg` (0,0,1,0) LOSES to `dialog.kdlg`
+   and the modal renders unconstrained (full-viewport). Winning the cascade
+   here — and pinning both axes — keeps it a compact centered card. */
+dialog.kdlg.signin-chooser-dlg {
   width: min(92vw, 380px);
+  max-width: min(92vw, 380px);
+  height: fit-content;
+  max-height: 92vh;
 }
 .signin-chooser-body {
   position: relative;

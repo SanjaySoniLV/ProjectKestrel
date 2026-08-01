@@ -1,11 +1,15 @@
-"""Tests for the storefront-gated support URL (Apple Guideline 3.1.1(a)).
+"""Tests for the support URL split (Apple Guideline 3.1.1).
 
 ``/support-me`` carries the donate option; ``/support`` has no payment path at
-all. Apple's anti-steering rule exempts the US storefront and no other, so the
-App Store build must *positively confirm* a US storefront before it may link
-out — every other outcome, including any error, has to fail closed to
-``/support``. These tests pin that asymmetry, since getting it wrong in the
-permissive direction costs the App Store listing.
+all. The App Store build gets ``/support`` unconditionally — the storefront gate
+that used to allow US-storefront customers the donate link was rejected in
+review twice and has been retired (see ``api_bridge.get_support_url``). What
+these tests pin now is that *no* App Store code path can reach ``/support-me``,
+whatever StoreKit says, and that the DMG/Windows builds are untouched.
+
+``mac_storefront`` is no longer consulted by ``get_support_url`` but stays in
+the tree against a future restoration, so its own behaviour is still covered
+below.
 
 ``get_support_url`` never touches ``self``, so we call it unbound rather than
 standing up a full ``Api`` instance.
@@ -41,15 +45,19 @@ class _Boom:
 
 
 class _Storefront:
-    def __init__(self, us):
-        self._us = us
+    US_STOREFRONT_CODE = "USA"
 
-    def is_us_storefront(self):
-        return self._us
+    def __init__(self, country):
+        self._country = country
+
+    def get_storefront_country(self):
+        return self._country
 
 
 class _StorefrontBoom:
-    def is_us_storefront(self):
+    US_STOREFRONT_CODE = "USA"
+
+    def get_storefront_country(self):
         raise RuntimeError("StoreKit blew up")
 
 
@@ -82,29 +90,35 @@ def test_dist_channel_error_defaults_to_direct(monkeypatch):
     assert _call() == {"success": True, "url": FULL, "donate": True}
 
 
-# ── App Store storefront gate ────────────────────────────────────────────────
+# ── App Store: no payment path, unconditionally ──────────────────────────────
 
-def test_appstore_us_storefront_gets_donate(monkeypatch):
+@pytest.mark.parametrize(
+    "storefront",
+    [
+        pytest.param(lambda: _Storefront("USA"), id="us-storefront"),
+        pytest.param(lambda: _Storefront("GBR"), id="non-us-storefront"),
+        pytest.param(lambda: _Storefront(None), id="storefront-unresolved"),
+        pytest.param(lambda: None, id="storekit-unavailable"),
+        pytest.param(lambda: _StorefrontBoom(), id="storekit-raises"),
+    ],
+)
+def test_appstore_always_gets_no_payment_page(monkeypatch, storefront):
+    # A US storefront used to earn the donate link under Guideline 3.1.1(a)'s
+    # carve-out. Review rejected that twice, so there is no longer any storefront
+    # value — or failure — that yields /support-me in the App Store build.
     monkeypatch.setattr(api_bridge, "_dist_channel", _Chan("appstore"))
-    monkeypatch.setattr(api_bridge, "_load_storefront", lambda: _Storefront(True))
-    assert _call() == {"success": True, "url": FULL, "donate": True}
-
-
-def test_appstore_non_us_storefront_gets_no_payment_page(monkeypatch):
-    monkeypatch.setattr(api_bridge, "_dist_channel", _Chan("appstore"))
-    monkeypatch.setattr(api_bridge, "_load_storefront", lambda: _Storefront(False))
+    monkeypatch.setattr(api_bridge, "_load_storefront", storefront)
     assert _call() == {"success": True, "url": NO_PAY, "donate": False}
 
 
-def test_appstore_storekit_unavailable_fails_closed(monkeypatch):
+def test_appstore_does_not_consult_storekit(monkeypatch):
+    # Not just a dead branch — the lookup is gone. Pinned so a future refactor
+    # can't quietly reintroduce a storefront-dependent answer.
     monkeypatch.setattr(api_bridge, "_dist_channel", _Chan("appstore"))
-    monkeypatch.setattr(api_bridge, "_load_storefront", lambda: None)
-    assert _call() == {"success": True, "url": NO_PAY, "donate": False}
-
-
-def test_appstore_storekit_error_fails_closed(monkeypatch):
-    monkeypatch.setattr(api_bridge, "_dist_channel", _Chan("appstore"))
-    monkeypatch.setattr(api_bridge, "_load_storefront", lambda: _StorefrontBoom())
+    monkeypatch.setattr(
+        api_bridge, "_load_storefront",
+        lambda: pytest.fail("appstore must not consult StoreKit for the support URL"),
+    )
     assert _call() == {"success": True, "url": NO_PAY, "donate": False}
 
 
@@ -135,6 +149,12 @@ def _fake_storekit(monkeypatch, sequence):
 
     monkeypatch.setattr(mac_storefront, "_country_cache", None, raising=False)
     monkeypatch.setattr(mac_storefront, "_load", lambda: {"SKPaymentQueue": _PaymentQueue})
+    # Priming needs real PyObjC (objc/Foundation) — stub it so these read tests
+    # stay pure, and pin retries to a single read so the per-call read-count
+    # assertions below measure exactly one storefront() call per invocation.
+    monkeypatch.setattr(mac_storefront, "prime", lambda: True)
+    monkeypatch.setattr(mac_storefront, "_READ_RETRIES", 1, raising=False)
+    monkeypatch.setattr(mac_storefront, "_READ_RETRY_SLEEP", 0, raising=False)
     return calls
 
 
@@ -178,3 +198,15 @@ def test_empty_country_code_fails_closed(monkeypatch):
     _fake_storekit(monkeypatch, [""])
     assert mac_storefront.get_storefront_country() is None
     assert mac_storefront.is_us_storefront() is False
+
+
+def test_storefront_retry_resolves_within_window(monkeypatch):
+    # A single call retries across the async resolution window: storefront() is
+    # nil twice, then resolves. One get_storefront_country() call must ride it
+    # out and return the country (this is what priming + retry buys us on the
+    # first Support click, vs. the old fail-closed-on-first-nil behaviour).
+    calls = _fake_storekit(monkeypatch, [None, None, "USA"])
+    monkeypatch.setattr(mac_storefront, "_READ_RETRIES", 5, raising=False)
+    monkeypatch.setattr(mac_storefront, "_READ_RETRY_SLEEP", 0, raising=False)
+    assert mac_storefront.get_storefront_country() == "USA"
+    assert len(calls) == 3  # two nils, then the resolved read — all in one call

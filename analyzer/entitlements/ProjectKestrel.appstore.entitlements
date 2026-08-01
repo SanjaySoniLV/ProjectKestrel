@@ -25,8 +25,27 @@
     files.bookmarks.app-scope           Persist access to chosen folders across launches via
                                         security-scoped bookmarks (see mac_sandbox.py).
     network.client                      Outbound HTTPS: auth/clerk, cloud-compute, telemetry.
-    network.server                      Loopback HTTP server that serves the local UI, plus
-                                        the OAuth callback listener (both 127.0.0.1 only).
+    network.server                      REQUIRED, and load-bearing: the app's entire UI is
+                                        served by a loopback HTTP server. visualizer.py binds
+                                        a ThreadingHTTPServer on 127.0.0.1 and the WKWebView
+                                        window loads http://127.0.0.1:<port>/ — App Sandbox
+                                        blocks bind()/listen() without this key even on
+                                        loopback, so removing it launches to a blank window.
+                                        The surface is static-file GET only (bundled HTML/JS/
+                                        CSS/images); every control route was permanently
+                                        removed (LEGACY_HTTP_API_ENABLED = False) and all
+                                        privileged work goes over the pywebview bridge.
+                                        NOT for OAuth: the App Store build signs in via native
+                                        Sign in with Apple / ASWebAuthenticationSession and
+                                        never binds the loopback callback listener that
+                                        oauth_client.py uses on Windows and Linux.
+                                        Apple's automated pre-review scan flags this key as
+                                        "no matching functionality" because the bind() lives
+                                        inside CPython's _socket extension, driven by bytecode
+                                        in the frozen PYZ archive — static analysis cannot see
+                                        it. That is a false positive; the justification is
+                                        kept in App Review Information so it rides along with
+                                        every submission.
     developer.applesignin               Native "Sign in with Apple" (ASAuthorizationController),
                                         required by Guideline 4 so the Apple button completes in
                                         the native system sheet, not a web redirect. The App ID

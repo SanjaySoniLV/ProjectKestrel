@@ -465,6 +465,14 @@ class Api:
             except Exception as e:
                 warn(f'[sandbox] bookmark activation failed: {e}')
 
+        # (StoreKit priming used to run here: the storefront decided the
+        # Support-link destination, and SKPaymentQueue.storefront stays nil
+        # until an observer is attached, so we warmed it at launch to avoid a
+        # fail-closed on the first click. get_support_url no longer consults the
+        # storefront — see its docstring — so the App Store build now opens no
+        # StoreKit connection at all. Restore this alongside the gate if that
+        # ever changes; mac_storefront.prime() is still there.)
+
     def _invalidate_account_caches(self) -> None:
         """Drop every identity-scoped cache (Perch account, Perch usage, and
         Cloud Compute usage) so a sign-out / account-switch / token rotation
@@ -1531,18 +1539,25 @@ class Api:
         ``/support-me`` includes the donate option; ``/support`` is the same page
         with no payment path at all. ``donate`` reports which one you got.
 
-        Apple's anti-steering rule is **storefront-scoped, not geographic**. The
-        US storefront is explicitly carved out of it (Guideline 3.1.1(a), and the
-        3.1.3 preamble); every other storefront is not. So the App Store build
-        may link out to Stripe for US-storefront customers only, and asks
-        StoreKit which it has. Non-App-Store builds short-circuit on channel and
-        never touch StoreKit — that also keeps the DMG/Windows paths free of any
-        new dependency.
+        The App Store build **always** gets ``/support``, unconditionally.
 
-        Deliberately NOT IP geolocation: the rule keys on the App Store account's
-        storefront, not where the machine is. See mac_storefront.py.
+        This used to be storefront-gated: Apple's anti-steering rule is
+        storefront-scoped rather than geographic, and the US storefront is
+        carved out of it (Guideline 3.1.1(a), and the 3.1.3 preamble), so the
+        build asked StoreKit whether it was entitled to show the donate link and
+        did so only for US-storefront customers. That gate was correct on the
+        text of the rule and was rejected twice in review anyway — the second
+        rejection screenshotted the Support button itself as the offending
+        link, without engaging with the storefront logic. Arguing it further
+        costs review cycles we care about more than we care about the donate
+        link in this one build, so the App Store build no longer links to a
+        payment path at all.
 
-        Fails closed — any unresolved state yields the no-payment page.
+        ``mac_storefront`` stays in the tree — it is correct, tested, and the
+        gate can be restored by consulting it here again if Apple's enforcement
+        ever matches its own guideline text. Nothing else calls it now.
+
+        Non-App-Store builds (DMG, Windows) are unaffected and keep ``/support-me``.
         """
         channel = 'direct'
         try:
@@ -1554,16 +1569,7 @@ class Api:
         if channel != 'appstore':
             return {'success': True, 'url': SUPPORT_URL_FULL, 'donate': True}
 
-        storefront = _load_storefront()
-        if storefront is None:
-            return {'success': True, 'url': SUPPORT_URL_NO_PAYMENT, 'donate': False}
-        try:
-            is_us = bool(storefront.is_us_storefront())
-        except Exception:
-            is_us = False
-
-        if is_us:
-            return {'success': True, 'url': SUPPORT_URL_FULL, 'donate': True}
+        print('[API] support_url: channel=appstore -> /support (no payment path)', flush=True)
         return {'success': True, 'url': SUPPORT_URL_NO_PAYMENT, 'donate': False}
 
     def is_windows_store_app(self):
@@ -2785,6 +2791,10 @@ class Api:
         """
         if _oauth is None:
             return bundle  # OAuth module unavailable — nothing we can do
+        # Native Apple bundles carry a Clerk session JWT, refreshed by re-minting
+        # from the durable __client credential — not the OAuth refresh grant.
+        if bundle.get("kind") == getattr(_oauth, "CLERK_SESSION_BUNDLE_KIND", "clerk_session"):
+            return self._refresh_clerk_session(bundle)
         try:
             expires_at = float(bundle.get("expires_at") or 0)
         except (TypeError, ValueError):
@@ -2835,6 +2845,53 @@ class Api:
         finally:
             lock.release()
 
+    def _refresh_clerk_session(self, bundle: dict) -> dict | None:
+        """Re-mint the Clerk session JWT for a ``clerk_session`` (native Apple)
+        bundle when it's within the re-mint buffer of expiry.
+
+        Session JWTs live ~60s; we mint a fresh one from the durable ``__client``
+        credential on demand. Returns the (possibly updated) bundle, or the
+        unchanged bundle on a transient failure — ``get_auth_token``'s staleness
+        floor surfaces signed-out once the token has actually expired. Mirrors
+        the locking/double-check pattern of ``_refresh_if_needed``.
+        """
+        buffer = getattr(_oauth, "CLERK_SESSION_REMINT_BUFFER_SEC", 15)
+        try:
+            expires_at = float(bundle.get("expires_at") or 0)
+        except (TypeError, ValueError):
+            expires_at = 0.0
+        if expires_at - time.time() >= buffer:
+            return bundle
+        client = bundle.get("clerk_client") or ""
+        sid = bundle.get("clerk_session_id") or ""
+        if not client or not sid:
+            return bundle
+
+        lock = self._get_oauth_lock()
+        if not lock.acquire(timeout=10.0):
+            return bundle
+        try:
+            # Another caller may have re-minted while we waited for the lock.
+            current = _keyring_load() or {}
+            if (current.get("access_token")
+                    and current.get("access_token") != bundle.get("access_token")):
+                try:
+                    if float(current.get("expires_at") or 0) - time.time() >= buffer:
+                        return current
+                except (TypeError, ValueError):
+                    pass
+            token = _oauth.remint_session_token(client, sid)
+            if not token:
+                # Transient (network) or the session ended. Keep the old bundle;
+                # the staleness floor will surface signed-out once it expires.
+                return current or bundle
+            new_bundle = _oauth.build_session_bundle(token, client, sid)
+            _keyring_save(new_bundle)
+            self._invalidate_account_caches()
+            return new_bundle
+        finally:
+            lock.release()
+
     def get_auth_token(self):
         """Return current OAuth access token; trigger lazy refresh near expiry.
 
@@ -2853,7 +2910,11 @@ class Api:
             if not access_token:
                 return {"success": True, "token": None}
             ttl = _auth_jwt_seconds_until_exp(str(access_token))
-            if ttl is None or ttl < 60:
+            # Clerk session JWTs (native Apple) are ~60s and re-minted on demand,
+            # so a fresh one legitimately has < 60s left — use a small floor for
+            # that kind. OAuth access tokens keep the original 60s staleness floor.
+            floor = 5 if bundle.get("kind") == "clerk_session" else 60
+            if ttl is None or ttl < floor:
                 # Token is past its useful life and refresh didn't (or couldn't)
                 # extend it — surface signed-out so the UI prompts re-auth.
                 return {"success": True, "token": None}
@@ -6298,12 +6359,19 @@ class Api:
         overwrite_external: bool = False,
         use_auto_labels: bool = False,
         fields=None,
+        embed_jpeg: bool = False,
     ):
         """Write XMP sidecar files for each image, embedding star rating and culling label.
 
         ``fields`` is an optional dict selecting which sections to write
         (``rating``, ``label``, ``species``, ``family``, ``quality``).
         Omitting it writes everything, preserving legacy behaviour.
+
+        ``embed_jpeg`` (default False) additionally embeds the same XMP fields
+        directly into each JPEG original's own XMP segment, in place. This is
+        what makes Kestrel's ratings/labels visible to Adobe Lightroom, which
+        ignores .xmp sidecars for JPEGs. It modifies the original JPEG files
+        (pixel data untouched); non-JPEG files are unaffected.
         """
         if _write_xmp_metadata is None:
             return {'success': False, 'error': 'metadata_writer module not available'}
@@ -6316,6 +6384,7 @@ class Api:
             overwrite_external,
             use_auto_labels,
             fields=fields if isinstance(fields, dict) else None,
+            embed_jpeg=bool(embed_jpeg),
         )
 
     def _restore_file_with_sidecars(self, reject_dir: str, root_path: str, filename: str):
@@ -6735,42 +6804,80 @@ class Api:
                 f'[raw-preview] Processing RAW file {filename} '
                 f'(exp={exp_correction:+.3f}, mode={render_mode}, cache={use_cache})'
             )
-            with rawpy.imread(full_path) as raw:
-                try:
-                    sizes = raw.sizes
-                    raw_sizes = {
-                        'width': int(getattr(sizes, 'width', 0) or 0),
-                        'height': int(getattr(sizes, 'height', 0) or 0),
-                        'raw_width': int(getattr(sizes, 'raw_width', 0) or 0),
-                        'raw_height': int(getattr(sizes, 'raw_height', 0) or 0),
-                        'iwidth': int(getattr(sizes, 'iwidth', 0) or 0),
-                        'iheight': int(getattr(sizes, 'iheight', 0) or 0),
-                        'flip': int(getattr(sizes, 'flip', 0) or 0),
-                    }
-                except Exception:
-                    raw_sizes = {}
+            rgb = None
+            raw_sizes = {}
+            used_embedded_fallback = False
+            embedded_fallback_reason = None
+            embedded_jpeg_bytes = None
+            embedded_jpeg_dims = None
+            try:
+                with rawpy.imread(full_path) as raw:
+                    try:
+                        sizes = raw.sizes
+                        raw_sizes = {
+                            'width': int(getattr(sizes, 'width', 0) or 0),
+                            'height': int(getattr(sizes, 'height', 0) or 0),
+                            'raw_width': int(getattr(sizes, 'raw_width', 0) or 0),
+                            'raw_height': int(getattr(sizes, 'raw_height', 0) or 0),
+                            'iwidth': int(getattr(sizes, 'iwidth', 0) or 0),
+                            'iheight': int(getattr(sizes, 'iheight', 0) or 0),
+                            'flip': int(getattr(sizes, 'flip', 0) or 0),
+                        }
+                    except Exception:
+                        raw_sizes = {}
 
-                linear_scale = float(max(0.25, min(8.0, 2.0 ** exp_correction)))
-                if use_no_auto_bright:
-                    rgb = raw.postprocess(
-                        no_auto_bright=True,
-                        exp_shift=linear_scale,
-                        exp_preserve_highlights=_preserve_highlights_for_stops(exp_correction),
-                    )
-                else:
-                    if exp_correction != 0.0:
+                    linear_scale = float(max(0.25, min(8.0, 2.0 ** exp_correction)))
+                    if use_no_auto_bright:
                         rgb = raw.postprocess(
+                            no_auto_bright=True,
                             exp_shift=linear_scale,
                             exp_preserve_highlights=_preserve_highlights_for_stops(exp_correction),
                         )
                     else:
-                        rgb = raw.postprocess()
+                        if exp_correction != 0.0:
+                            rgb = raw.postprocess(
+                                exp_shift=linear_scale,
+                                exp_preserve_highlights=_preserve_highlights_for_stops(exp_correction),
+                            )
+                        else:
+                            rgb = raw.postprocess()
+            except rawpy.LibRawFileUnsupportedError as raw_err:
+                # LibRaw parsed the container but couldn't decompress the
+                # sensor data. Most common trigger: Nikon Z8 / Z9 High-
+                # Efficiency (HE / HE*) NEFs, which use intoPIX's
+                # proprietary TicoRAW codec that neither LibRaw nor rawpy
+                # can decode. The full-resolution embedded JPEG preview
+                # is still extractable and matches the sensor pixel
+                # count to within crop margins — good enough to serve as
+                # the RAW zoom instead of falling all the way back to
+                # the low-resolution thumbnail stub on the JS side.
+                # Exposure correction is not available on this path
+                # (the embedded JPEG is a fixed in-camera render).
+                embedded_jpeg_bytes, embedded_jpeg_dims = (
+                    self._extract_full_res_embedded_jpeg(full_path)
+                )
+                if embedded_jpeg_bytes is None:
+                    # No embedded preview either — propagate the original
+                    # LibRaw error to the outer handler for logging.
+                    raise
+                used_embedded_fallback = True
+                embedded_fallback_reason = str(raw_err)
+                debug(
+                    f'[raw-preview] RAW decode unsupported for {filename}; '
+                    f'served embedded {embedded_jpeg_dims[0]}x{embedded_jpeg_dims[1]} '
+                    f'JPEG preview instead ({raw_err})'
+                )
 
-            img = Image.fromarray(rgb)
+            if used_embedded_fallback:
+                jpg_bytes = embedded_jpeg_bytes
+                img_width, img_height = embedded_jpeg_dims
+            else:
+                img = Image.fromarray(rgb)
+                buf = BytesIO()
+                img.save(buf, format='JPEG', quality=90, subsampling=0, optimize=False, progressive=False)
+                jpg_bytes = buf.getvalue()
+                img_width, img_height = img.width, img.height
 
-            buf = BytesIO()
-            img.save(buf, format='JPEG', quality=90, subsampling=0, optimize=False, progressive=False)
-            jpg_bytes = buf.getvalue()
             wrote_cache = False
             if use_cache:
                 os.makedirs(cache_dir, exist_ok=True)
@@ -6793,22 +6900,84 @@ class Api:
                 'cache_written': bool(wrote_cache),
                 'storage_preview_path': storage_preview_path,
                 'raw_sizes': raw_sizes,
-                'postprocess_rgb_shape': list(rgb.shape) if hasattr(rgb, 'shape') else [],
-                'postprocess_rgb_dtype': str(getattr(rgb, 'dtype', '')),
                 'jpeg_bytes': int(len(jpg_bytes)),
                 'jpeg_kb': round(len(jpg_bytes) / 1024.0, 2),
-                'jpeg_dimensions': {'width': int(img.width), 'height': int(img.height)},
+                'jpeg_dimensions': {'width': int(img_width), 'height': int(img_height)},
             })
+            if used_embedded_fallback:
+                debug_meta['fallback'] = 'embedded_jpeg_preview'
+                debug_meta['fallback_reason'] = embedded_fallback_reason
+            else:
+                debug_meta['postprocess_rgb_shape'] = list(rgb.shape) if hasattr(rgb, 'shape') else []
+                debug_meta['postprocess_rgb_dtype'] = str(getattr(rgb, 'dtype', ''))
             if debug_logging_enabled:
                 debug(f'[raw-preview] debug: {json.dumps(debug_meta, sort_keys=True)}')
-            if use_cache:
-                debug(f'[raw-preview] Done, {len(jpg_bytes)//1024}KB JPEG ({img.width}x{img.height}), cached as {cache_name}')
+            if used_embedded_fallback:
+                debug(
+                    f'[raw-preview] Done (embedded fallback), '
+                    f'{len(jpg_bytes)//1024}KB JPEG ({img_width}x{img_height})'
+                    + (f', cached as {cache_name}' if wrote_cache else ', cache disabled')
+                )
+            elif use_cache:
+                debug(f'[raw-preview] Done, {len(jpg_bytes)//1024}KB JPEG ({img_width}x{img_height}), cached as {cache_name}')
             else:
-                debug(f'[raw-preview] Done, {len(jpg_bytes)//1024}KB JPEG ({img.width}x{img.height}), cache disabled')
-            return {'success': True, 'data': b64, 'mime': 'image/jpeg', 'debug': debug_meta}
+                debug(f'[raw-preview] Done, {len(jpg_bytes)//1024}KB JPEG ({img_width}x{img_height}), cache disabled')
+            response = {'success': True, 'data': b64, 'mime': 'image/jpeg', 'debug': debug_meta}
+            if used_embedded_fallback:
+                response['fallback'] = 'embedded_jpeg_preview'
+                response['fallback_reason'] = embedded_fallback_reason
+            return response
         except Exception as e:
             error(f'[API] read_raw_full error: {e} (filename={filename}, root_path={root_path_real if "root_path_real" in locals() else root_path})')
             return {'success': False, 'error': str(e)}
+
+    def _extract_full_res_embedded_jpeg(self, full_path: str):
+        """Reopen a RAW container and pull out the largest embedded JPEG
+        preview as (bytes, (width, height)), or (None, None) if none is
+        recoverable. A fresh rawpy.imread handle is required because a
+        prior failed postprocess() leaves the previous handle in an
+        out-of-order state.
+
+        Applies the JPEG's own EXIF Orientation tag so the returned
+        bytes are already upright. When the JPEG needs no rotation (the
+        common Z8 case for a landscape shot), the original in-camera
+        JPEG bytes are returned untouched to preserve full quality —
+        Pillow only re-encodes when it also has to rotate.
+
+        Used by read_raw_full() as the fallback path when LibRaw can
+        parse the container but not decode the sensor data (Nikon Z8/Z9
+        HE / HE* NEFs, the most common real-world trigger).
+        """
+        import rawpy
+        from io import BytesIO
+        from PIL import Image, ImageOps
+        try:
+            with rawpy.imread(full_path) as raw:
+                thumb = raw.extract_thumb()
+        except (rawpy.LibRawNoThumbnailError,
+                rawpy.LibRawUnsupportedThumbnailError,
+                rawpy.LibRawFileUnsupportedError,
+                rawpy.LibRawIOError):
+            return None, None
+        except Exception:
+            return None, None
+        if thumb is None or not getattr(thumb, 'data', None):
+            return None, None
+        if thumb.format != rawpy.ThumbFormat.JPEG:
+            return None, None
+        try:
+            with Image.open(BytesIO(thumb.data)) as prev_img:
+                exif_orient = prev_img.getexif().get(0x0112, 1)
+                if exif_orient in (None, 1):
+                    return thumb.data, (int(prev_img.width), int(prev_img.height))
+                oriented = ImageOps.exif_transpose(prev_img)
+                if oriented.mode != 'RGB':
+                    oriented = oriented.convert('RGB')
+                obuf = BytesIO()
+                oriented.save(obuf, format='JPEG', quality=95, subsampling=0)
+                return obuf.getvalue(), (int(oriented.width), int(oriented.height))
+        except Exception:
+            return None, None
 
     def cleanup_culling_cache(self, root_path: str):
         """Remove the .kestrel/culling_TMP folder to free up space."""
