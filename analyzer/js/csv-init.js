@@ -308,6 +308,7 @@
           rows = [];
           header = [];
           if (typeof renderScenes === 'function') renderScenes();
+          hideRawWarnBanner();
         } catch (e) { console.warn('[clear] renderScenes error', e); }
         setStatus('Idle');
       });
