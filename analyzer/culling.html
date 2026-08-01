@@ -906,6 +906,70 @@
       min-width: 24px;
       text-align: left;
     }
+    /* Quality-score cutoff: a 0.00–1.00 slider with the active profile's star
+       thresholds drawn underneath, so the number always reads against the star
+       scale used everywhere else in the app. */
+    .auto-cat-panel .quality-cutoff-group {
+      min-width: 250px;
+    }
+    .auto-cat-panel .quality-scale-wrap {
+      position: relative;
+      width: 190px;
+      padding-bottom: 15px;
+    }
+    .auto-cat-panel .quality-scale-wrap input[type="range"] {
+      width: 100%;
+      display: block;
+      margin: 0;
+      position: relative;
+      z-index: 1;
+    }
+    .auto-cat-panel .quality-scale-ticks {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 15px;
+      pointer-events: none;
+    }
+    .auto-cat-panel .quality-tick {
+      position: absolute;
+      top: 0;
+      /* left is set inline from the threshold's position on the 0–1 scale */
+      transform: translateX(-50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      font-size: 9px;
+      line-height: 1;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .auto-cat-panel .quality-tick::before {
+      content: '';
+      width: 1px;
+      height: 4px;
+      background: #3a4557;
+      margin-bottom: 2px;
+    }
+    /* The star bands at or above the cutoff are the ones that will be
+       accepted — brighten those so the split is readable at a glance. */
+    .auto-cat-panel .quality-tick.above {
+      color: #f5c542;
+    }
+    .auto-cat-panel .quality-tick.above::before {
+      background: #f5c542;
+    }
+    .auto-cat-panel .quality-scale-note {
+      font-size: 10px;
+      color: var(--muted);
+      line-height: 1.3;
+      max-width: 250px;
+    }
+    .auto-cat-panel .slider-val#qualityCutoffVal {
+      min-width: 34px;
+      font-variant-numeric: tabular-nums;
+    }
     .auto-cat-panel .unrated-group {
       justify-content: flex-end;
     }
@@ -991,12 +1055,20 @@
       </div>
       <!-- Auto-categorize settings panel (hidden by default) -->
       <div class="auto-cat-panel hidden" id="autoCatPanel">
-        <div class="slider-group">
-          <label for="qualityCutoffSlider">Accept if rated above</label>
+        <div class="slider-group quality-cutoff-group">
+          <label for="qualityCutoffSlider">Accept if quality is at least</label>
           <div class="slider-row">
-            <input type="range" id="qualityCutoffSlider" min="0" max="5" value="3" step="1" />
-            <span class="slider-val" id="qualityCutoffVal">★3</span>
+            <div class="quality-scale-wrap">
+              <input type="range" id="qualityCutoffSlider" min="0" max="1" value="0.60" step="0.01"
+                     aria-describedby="qualityScaleTicks" />
+              <!-- Star cutoffs for the active rating profile, drawn at their
+                   quality positions so the score always reads against the
+                   star scale the rest of the app uses. -->
+              <div class="quality-scale-ticks" id="qualityScaleTicks" aria-hidden="true"></div>
+            </div>
+            <span class="slider-val" id="qualityCutoffVal">0.60</span>
           </div>
+          <div class="quality-scale-note" id="qualityCutoffNote"></div>
         </div>
         <div class="slider-group">
           <label for="minPerSceneSlider">Min Accepted Per Scene</label>
@@ -1810,29 +1882,129 @@
       return list;
     }
 
+    // ---- Rating profile thresholds ----
+    // Quality-score cutoff for each star band, from the active rating_profile
+    // setting. Seeded with the 'balanced' defaults from
+    // kestrel_analyzer/ratings.py so the panel is usable before the bridge
+    // answers (and if it never does, e.g. browser preview).
+    let _ratingThresholds = { five: 0.85, four: 0.60, three: 0.40, two: 0.15 };
+    const _STAR_KEYS = [
+      { star: 2, key: 'two' },
+      { star: 3, key: 'three' },
+      { star: 4, key: 'four' },
+      { star: 5, key: 'five' },
+    ];
+
+    async function loadRatingThresholds() {
+      try {
+        const res = await window.pywebview.api.get_rating_thresholds();
+        const t = res?.success ? res.thresholds : null;
+        if (t && ['five', 'four', 'three', 'two'].every(k => Number.isFinite(Number(t[k])))) {
+          _ratingThresholds = {
+            five: Number(t.five), four: Number(t.four),
+            three: Number(t.three), two: Number(t.two),
+          };
+        }
+      } catch (e) { console.warn('loadRatingThresholds:', e); }
+      renderQualityScaleTicks();
+      updateSliderLabels(true);
+    }
+
+    // Lowest quality score that still earns `star`. Star 1 is everything below
+    // the two-star cutoff, so its floor is 0.
+    function qualityFloorForStar(star) {
+      const hit = _STAR_KEYS.find(s => s.star === star);
+      return hit ? Number(_ratingThresholds[hit.key]) : 0;
+    }
+
+    // Mirror of quality_to_rating() in kestrel_analyzer/ratings.py.
+    function starForQuality(q) {
+      const v = Number(q);
+      if (!Number.isFinite(v) || v < 0) return 0;
+      if (v >= _ratingThresholds.five)  return 5;
+      if (v >= _ratingThresholds.four)  return 4;
+      if (v >= _ratingThresholds.three) return 3;
+      if (v >= _ratingThresholds.two)   return 2;
+      return 1;
+    }
+
+    // The quality score an image effectively sits at for cutoff purposes.
+    // A manual star rating is an explicit user statement, so it wins over the
+    // computed score: treat the image as sitting at the floor of that band.
+    function effectiveQuality(row) {
+      if (getOrigin(row) === 'manual') {
+        const star = getRating(row);
+        // A manual 0 means "unrated" and is handled by the unrated default,
+        // never by the cutoff comparison.
+        if (star > 0) return qualityFloorForStar(star);
+      }
+      return parseNumber(row?.quality);
+    }
+
+    function renderQualityScaleTicks() {
+      const host = el('#qualityScaleTicks');
+      if (!host) return;
+      const cutoff = getSliderValues().qualityCutoff;
+      host.innerHTML = '';
+      for (const { star, key } of _STAR_KEYS) {
+        const pos = Number(_ratingThresholds[key]);
+        if (!Number.isFinite(pos)) continue;
+        const tick = document.createElement('div');
+        tick.className = 'quality-tick' + (pos >= cutoff ? ' above' : '');
+        tick.style.left = (Math.max(0, Math.min(1, pos)) * 100) + '%';
+        tick.appendChild(document.createTextNode('★' + star));
+        host.appendChild(tick);
+      }
+    }
+
     // ---- Auto-categorize helpers ----
     function getSliderValues() {
-      const cutoff  = parseInt(el('#qualityCutoffSlider')?.value ?? '3', 10);
+      const rawCutoff = parseFloat(el('#qualityCutoffSlider')?.value ?? '0.60');
+      const qualityCutoff = Number.isFinite(rawCutoff) ? Math.max(0, Math.min(1, rawCutoff)) : 0.60;
       const minKeep = parseInt(el('#minPerSceneSlider')?.value  ?? '0', 10);
       const maxRaw  = parseInt(el('#maxPerSceneSlider')?.value  ?? '0', 10);
       const maxKeep = maxRaw === 0 ? Infinity : maxRaw;
       const unratedDefault = (el('#unratedDefaultSelect')?.value === 'accept') ? 'accept' : 'reject';
-      return { cutoff, minKeep, maxKeep, unratedDefault };
+      return { qualityCutoff, minKeep, maxKeep, unratedDefault };
     }
 
     let _autoRulesLoaded = false; // set true after first settings load so initial load doesn't flash
     function updateSliderLabels(fromLoad = false) {
-      const { cutoff, minKeep, maxKeep, unratedDefault } = getSliderValues();
+      const { qualityCutoff, minKeep, maxKeep, unratedDefault } = getSliderValues();
       const qEl   = el('#qualityCutoffVal');
       const minEl = el('#minPerSceneVal');
       const maxEl = el('#maxPerSceneVal');
-      if (qEl)   qEl.textContent   = '\u2605' + cutoff;
+      const cutoffText = qualityCutoff.toFixed(2);
+      if (qEl)   qEl.textContent   = cutoffText;
       if (minEl) minEl.textContent = String(minKeep);
       if (maxEl) maxEl.textContent = maxKeep === Infinity ? '\u221e' : String(maxKeep);
+
+      // Say which star band the cutoff currently lands in, so the score stays
+      // legible to anyone who thinks in stars.
+      const noteEl = el('#qualityCutoffNote');
+      if (noteEl) {
+        const star = starForQuality(qualityCutoff);
+        const floor = qualityFloorForStar(star);
+        if (qualityCutoff <= 0) {
+          noteEl.textContent = 'Accepts every rated image.';
+        } else if (Math.abs(qualityCutoff - floor) < 0.005) {
+          // Cutoff sits exactly on a star boundary \u2014 the whole band is in.
+          noteEl.textContent = `Accepts \u2605${star} and above (\u2605${star} starts at ${floor.toFixed(2)}).`;
+        } else if (star >= 5) {
+          noteEl.textContent = 'Inside the \u26055 band \u2014 accepts only the strongest \u26055 images.';
+        } else {
+          // Cutoff splits a band: only the upper part of it is accepted, so
+          // don't claim the whole star level is in.
+          noteEl.textContent =
+            `Inside the \u2605${star} band \u2014 accepts \u2605${star + 1} and above, plus stronger \u2605${star} images.`;
+        }
+      }
+      renderQualityScaleTicks();
+
       const unratedLabel = unratedDefault === 'accept' ? 'Auto-Accept' : 'Auto-Reject';
       const summary = el('#autoCatSummary');
       if (summary) summary.textContent =
-        `Rated > \u2605${cutoff} \u00b7 Min ${minKeep} \u00b7 Max ${maxKeep === Infinity ? '\u221e' : maxKeep} \u00b7 Unrated \u2192 ${unratedLabel}`;
+        `Quality \u2265 ${cutoffText} \u00b7 Min ${minKeep} \u00b7 Max ${maxKeep === Infinity ? '\u221e' : maxKeep} \u00b7 Unrated \u2192 ${unratedLabel}`;
       // Highlight Re-apply button when rules change (but not on initial page load)
       if (!fromLoad && _autoRulesLoaded) {
         el('#reapplyAutoBtn')?.classList.add('needs-reapply');
@@ -1840,7 +2012,7 @@
     }
 
     function applyAutoCategorize(preserveManual = true) {
-      const { cutoff, minKeep, maxKeep, unratedDefault } = getSliderValues();
+      const { qualityCutoff, minKeep, maxKeep, unratedDefault } = getSliderValues();
       for (const scene of scenes) {
         // Sort by rating desc, then quality score desc
         const sorted = scene.images.slice().sort((a, b) => {
@@ -1853,7 +2025,7 @@
           sorted.filter(r => {
             const rt = getRating(r);
             if (rt === 0) return unratedDefault === 'accept';
-            return rt > cutoff;
+            return effectiveQuality(r) >= qualityCutoff;
           })
                 .map(r => r.filename)
         );
@@ -2850,11 +3022,26 @@
           if (sl) { sl.value = rawZoom; if (lb) lb.textContent = rawZoom + '\u00d7'; }
         }
         // Auto-categorize slider settings
-        const qCutoff = parseInt(s.culling_quality_cutoff, 10);
         const minPS   = parseInt(s.culling_min_per_scene,  10);
         const maxPS   = parseInt(s.culling_max_per_scene,  10);
         const unratedDefault = String(s.culling_unrated_default || 'reject').toLowerCase();
-        if (qCutoff >= 0 && qCutoff <= 5)  { const sl = el('#qualityCutoffSlider'); if (sl) sl.value = qCutoff; }
+
+        // The cutoff is a quality score now. Fall back to the legacy star
+        // cutoff (culling_quality_cutoff, an int 0–5 meaning "accept stars
+        // above this") by converting it to the floor of the lowest star it
+        // accepted, which preserves the user's existing split.
+        const qScore = parseFloat(s.culling_quality_score_cutoff);
+        const legacyStar = parseInt(s.culling_quality_cutoff, 10);
+        let cutoff = null;
+        if (Number.isFinite(qScore) && qScore >= 0 && qScore <= 1) {
+          cutoff = qScore;
+        } else if (Number.isFinite(legacyStar) && legacyStar >= 0 && legacyStar <= 5) {
+          cutoff = legacyStar >= 5 ? 1 : qualityFloorForStar(legacyStar + 1);
+        }
+        if (cutoff !== null) {
+          const sl = el('#qualityCutoffSlider');
+          if (sl) sl.value = String(Math.max(0, Math.min(1, cutoff)));
+        }
         if (minPS   >= 0 && minPS   <= 5)  { const sl = el('#minPerSceneSlider');   if (sl) sl.value = minPS; }
         if (maxPS   >= 0 && maxPS   <= 20) { const sl = el('#maxPerSceneSlider');   if (sl) sl.value = maxPS; }
         const unratedSel = el('#unratedDefaultSelect');
@@ -2862,6 +3049,8 @@
         updateSliderLabels(true);
         _autoRulesLoaded = true;
       } catch (e) { console.warn('loadCullingSettings:', e); }
+      // Settled marker for UI tests driving this page headlessly.
+      window.__cullingSettingsLoaded = true;
     }
 
     function saveCullingSettings() {
@@ -2872,7 +3061,11 @@
           const s = (res?.success ? res.settings : {}) || {};
           s.culling_card_zoom       = parseInt(document.getElementById('cardZoomSlider')?.value, 10) || 150;
           s.culling_raw_zoom        = parseInt(document.getElementById('previewZoomSlider')?.value, 10) || 5;
-          s.culling_quality_cutoff  = parseInt(el('#qualityCutoffSlider')?.value, 10) || 3;
+          const _cut = getSliderValues().qualityCutoff;
+          s.culling_quality_score_cutoff = Number(_cut.toFixed(2));
+          // Keep the legacy star key roughly in step so an older build reading
+          // these settings still lands on a comparable split.
+          s.culling_quality_cutoff  = Math.max(0, starForQuality(_cut) - 1);
           s.culling_min_per_scene   = parseInt(el('#minPerSceneSlider')?.value,   10) || 0;
           s.culling_max_per_scene   = parseInt(el('#maxPerSceneSlider')?.value,   10) || 0;
           s.culling_unrated_default = (el('#unratedDefaultSelect')?.value === 'accept') ? 'accept' : 'reject';
@@ -3393,6 +3586,10 @@
         return;
       }
 
+      // Thresholds first: loadCullingSettings converts a legacy star cutoff
+      // into a quality score using them, so stale defaults here would migrate
+      // the user onto the wrong split.
+      await loadRatingThresholds();
       updateSliderLabels(); // apply defaults before settings load
       await loadCullingSettings();
 

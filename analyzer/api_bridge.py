@@ -2152,6 +2152,45 @@ class Api:
             error(f'[API] get_settings error: {e}')
             return {'success': False, 'error': str(e), 'settings': {}}
 
+    def get_rating_thresholds(self):
+        """Return the active rating profile's quality-score cutoffs for each star.
+
+        The frontend needs these to draw star positions on a quality-score
+        number line (Culling Assistant) and to convert a manual star rating
+        back into the quality band it represents. Served from
+        ``kestrel_analyzer.ratings`` so the table has exactly one definition.
+
+        Returns:
+            {
+              'success': bool,
+              'profile': str,                # active rating_profile setting
+              'thresholds': {'five': float, 'four': float, 'three': float, 'two': float},
+              'profiles': {name: thresholds, ...},   # every built-in profile
+              'error': str,
+            }
+        """
+        try:
+            try:
+                from kestrel_analyzer.ratings import RATING_PROFILES, get_profile_thresholds
+            except ImportError:
+                from analyzer.kestrel_analyzer.ratings import (  # type: ignore
+                    RATING_PROFILES,
+                    get_profile_thresholds,
+                )
+
+            settings = load_persisted_settings()
+            profile = str(settings.get('rating_profile', 'balanced') or 'balanced').lower()
+            return {
+                'success': True,
+                'profile': profile,
+                'thresholds': dict(get_profile_thresholds(profile)),
+                'profiles': {k: dict(v) for k, v in RATING_PROFILES.items()},
+                'error': '',
+            }
+        except Exception as e:
+            error(f'[API] get_rating_thresholds error: {e}')
+            return {'success': False, 'error': str(e), 'profile': '', 'thresholds': {}, 'profiles': {}}
+
     def save_settings_data(self, settings_dict):
         """Persist settings from JavaScript (wraps save_persisted_settings)."""
         try:
