@@ -6359,12 +6359,19 @@ class Api:
         overwrite_external: bool = False,
         use_auto_labels: bool = False,
         fields=None,
+        embed_jpeg: bool = False,
     ):
         """Write XMP sidecar files for each image, embedding star rating and culling label.
 
         ``fields`` is an optional dict selecting which sections to write
         (``rating``, ``label``, ``species``, ``family``, ``quality``).
         Omitting it writes everything, preserving legacy behaviour.
+
+        ``embed_jpeg`` (default False) additionally embeds the same XMP fields
+        directly into each JPEG original's own XMP segment, in place. This is
+        what makes Kestrel's ratings/labels visible to Adobe Lightroom, which
+        ignores .xmp sidecars for JPEGs. It modifies the original JPEG files
+        (pixel data untouched); non-JPEG files are unaffected.
         """
         if _write_xmp_metadata is None:
             return {'success': False, 'error': 'metadata_writer module not available'}
@@ -6377,6 +6384,7 @@ class Api:
             overwrite_external,
             use_auto_labels,
             fields=fields if isinstance(fields, dict) else None,
+            embed_jpeg=bool(embed_jpeg),
         )
 
     def _restore_file_with_sidecars(self, reject_dir: str, root_path: str, filename: str):

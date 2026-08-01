@@ -4,12 +4,21 @@
 Writes XMP sidecar files (.xmp) embedding star ratings, culling labels,
 and analysis metadata (species, family, quality score) alongside image
 files. Compatible with Adobe Lightroom, darktable, and Capture One.
+
+For JPEG files, an optional ``embed_jpeg`` mode additionally writes the same
+XMP fields *directly into the JPEG's APP1 XMP segment* (via exiv2/pyexiv2).
+Adobe Lightroom only reads .xmp sidecars for RAW files — for JPEGs it expects
+the XMP to live inside the file — so embedding is the only way ratings/labels
+Kestrel writes become visible to Lightroom on a JPEG. This modifies the
+original file in place (pixel data is left untouched; only the metadata
+segment is rewritten), so it is strictly opt-in.
 """
 
 import os
 
 # XMP namespace URIs
 _KESTREL_NS = 'http://ns.projectkestrel.app/xmp/1.0/'
+_KESTREL_NS_PREFIX = 'kestrel'
 _NS_RDF = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#'
 _NS_XMP = 'http://ns.adobe.com/xap/1.0/'
 _NS_DC = 'http://purl.org/dc/elements/1.1/'
@@ -17,6 +26,9 @@ _NS_LR = 'http://ns.adobe.com/lightroom/1.0/'
 
 # Species/family values that indicate no meaningful detection
 _EMPTY_LABELS = {'', 'unknown', 'no bird', 'n/a'}
+
+# File extensions treated as JPEG for the embed-in-original path.
+_JPEG_EXTS = {'.jpg', '.jpeg'}
 
 
 def _safe_sidecar_path(root: str, filename: str) -> str | None:
@@ -238,12 +250,148 @@ def _is_kestrel_xmp(path: str) -> bool:
         return False
 
 
+def _is_jpeg(filename: str) -> bool:
+    """Return True if ``filename`` has a JPEG extension (case-insensitive)."""
+    return os.path.splitext(filename)[1].lower() in _JPEG_EXTS
+
+
+# pyexiv2 is a heavyweight native dependency (it bundles the exiv2 C++
+# library). Import it lazily so the sidecar path — and the whole module —
+# keeps working in environments where it is not installed. The import result
+# is cached: a successful module, or the exception that explains why it is
+# unavailable.
+_pyexiv2_mod = None
+_pyexiv2_err: Exception | None = None
+_kestrel_ns_registered = False
+
+
+def _load_pyexiv2():
+    """Return the imported ``pyexiv2`` module, or raise a clear RuntimeError."""
+    global _pyexiv2_mod, _pyexiv2_err, _kestrel_ns_registered
+    if _pyexiv2_mod is not None:
+        return _pyexiv2_mod
+    if _pyexiv2_err is not None:
+        raise RuntimeError(f'pyexiv2 unavailable: {_pyexiv2_err}')
+    try:
+        import pyexiv2  # type: ignore
+    except Exception as e:  # pragma: no cover - import environment specific
+        _pyexiv2_err = e
+        raise RuntimeError(f'pyexiv2 unavailable: {e}')
+    _pyexiv2_mod = pyexiv2
+    # Register the Kestrel XMP namespace once so ``kestrel:*`` properties
+    # serialise with our prefix. Safe to attempt once; ignore if the runtime
+    # already knows it.
+    if not _kestrel_ns_registered:
+        try:
+            pyexiv2.registerNs(_KESTREL_NS, _KESTREL_NS_PREFIX)
+        except Exception:
+            pass
+        _kestrel_ns_registered = True
+    return pyexiv2
+
+
+def _build_embed_xmp_dict(
+    rating: int,
+    label: str,
+    cull_status: str,
+    filename: str,
+    species: str,
+    family: str,
+    quality_score: float,
+    fields: dict,
+) -> dict:
+    """Build the ``{Xmp.* : value}`` dict written into a JPEG's XMP segment.
+
+    Mirrors the field-gating of :func:`_build_xmp_packet` exactly so the
+    embedded metadata matches the sidecar Kestrel would write for the same
+    image. Only the selected fields are returned; ``kestrel:CullStatus`` and
+    ``kestrel:SourceFile`` are always included as the Kestrel-authored marker.
+    """
+    f = _normalize_fields(fields)
+    rating = max(0, min(5, rating))
+    write_rating = f['rating']
+    has_species = f['species'] and _is_meaningful(species)
+    has_family = f['family'] and _is_meaningful(family)
+    has_quality = f['quality'] and quality_score >= 0.0
+    write_label = f['label'] and bool(label)
+
+    xd: dict = {}
+    if write_rating:
+        xd['Xmp.xmp.Rating'] = str(rating)
+    if write_label:
+        xd['Xmp.xmp.Label'] = label
+    xd['Xmp.kestrel.CullStatus'] = cull_status
+    xd['Xmp.kestrel.SourceFile'] = filename
+    if has_species:
+        xd['Xmp.kestrel.Species'] = species
+    if has_family:
+        xd['Xmp.kestrel.Family'] = family
+    if has_quality:
+        xd['Xmp.kestrel.QualityScore'] = f'{quality_score:.4f}'
+
+    subject = []
+    if write_rating:
+        subject.append(f'Kestrel|Rating|{rating} Star')
+    if has_species:
+        subject.append(f'Kestrel|Species|{species}')
+    if has_family:
+        subject.append(f'Kestrel|Family|{family}')
+    if subject:
+        xd['Xmp.dc.subject'] = subject
+
+    desc_parts = []
+    if has_species:
+        desc_parts.append(f'Species: {species}')
+    if has_family:
+        desc_parts.append(f'Family: {family}')
+    if has_quality:
+        desc_parts.append(f'Quality: {quality_score:.3f}')
+    if write_rating:
+        desc_parts.append(f'Rating: {"*" * rating}')
+    if desc_parts:
+        # pyexiv2 renders this as a LangAlt (dc:description is a lang-alt).
+        xd['Xmp.dc.description'] = f'lang="x-default" {" | ".join(desc_parts)}'
+
+    return xd
+
+
+def _embed_xmp_in_jpeg(
+    image_path: str,
+    rating: int,
+    label: str,
+    cull_status: str,
+    filename: str,
+    species: str,
+    family: str,
+    quality_score: float,
+    fields: dict,
+) -> None:
+    """Embed Kestrel XMP fields directly into a JPEG's APP1 XMP segment.
+
+    Uses exiv2 (via pyexiv2), which rewrites *only* the metadata segment and
+    leaves the compressed image data byte-for-byte identical. Existing XMP in
+    the file is preserved (merge, not clobber) — only the Kestrel-owned
+    properties are set/updated. Raises on any failure so the caller can record
+    it per-file without aborting the batch.
+    """
+    pyexiv2 = _load_pyexiv2()
+    xd = _build_embed_xmp_dict(
+        rating, label, cull_status, filename, species, family, quality_score, fields
+    )
+    img = pyexiv2.Image(image_path)
+    try:
+        img.modify_xmp(xd)
+    finally:
+        img.close()
+
+
 def write_xmp_metadata(
     root_path: str,
     image_data,
     overwrite_external: bool = False,
     use_auto_labels: bool = False,
     fields: dict | None = None,
+    embed_jpeg: bool = False,
 ):
     """Write XMP sidecar files for each image, embedding star rating, culling
     label, and analysis metadata (species, family, quality score).
@@ -283,9 +431,21 @@ def write_xmp_metadata(
                 each value is coerced to bool. Missing keys default to True so
                 callers that omit the argument keep legacy "write everything"
                 behaviour.
+        embed_jpeg: If True, additionally embed the same XMP fields directly
+                into each JPEG's own XMP segment (in place, via exiv2). This
+                modifies the original JPEG files and is what makes Kestrel's
+                ratings visible to Adobe Lightroom, which ignores .xmp sidecars
+                for JPEGs. Non-JPEG files are unaffected. Pixel data is left
+                untouched. Off by default.
 
     Returns:
-        { success, written, skipped_conflicts: [filenames], errors }
+        { success, written, skipped_conflicts: [filenames], errors,
+          embedded, embed_errors: [strings] }
+
+        ``written`` counts sidecar files; ``embedded`` counts JPEGs whose
+        in-file XMP was updated. ``embed_errors`` holds per-file embed
+        failures (e.g. pyexiv2 unavailable) — these never abort the sidecar
+        write.
     """
     field_flags = _normalize_fields(fields)
     try:
@@ -295,6 +455,8 @@ def write_xmp_metadata(
         written = 0
         skipped_conflicts = []
         errors = []
+        embedded = 0
+        embed_errors = []
 
         for entry in (image_data or []):
             try:
@@ -338,6 +500,31 @@ def write_xmp_metadata(
                 xmp_path = base + '.xmp'
                 xmp_filename = os.path.basename(xmp_path)
 
+                # Embed XMP directly into JPEG originals when requested. This is
+                # independent of the sidecar write below — it merges into the
+                # file's own XMP segment (Lightroom ignores .xmp sidecars for
+                # JPEGs) and only runs when the real image file is present.
+                # Failures are recorded per-file and never abort the batch or
+                # the sidecar write.
+                if embed_jpeg and _is_jpeg(filename) and os.path.isfile(resolved_image):
+                    try:
+                        _embed_xmp_in_jpeg(
+                            resolved_image,
+                            rating=rating,
+                            label=label,
+                            cull_status=cull_status,
+                            filename=filename,
+                            species=species,
+                            family=family,
+                            quality_score=quality_score,
+                            fields=field_flags,
+                        )
+                        embedded += 1
+                        info(f'[metadata] embed_jpeg: embedded XMP into {filename}')
+                    except Exception as embed_err:
+                        embed_errors.append(f'{filename}: {embed_err}')
+                        warn(f'[metadata] embed_jpeg: failed for {filename}: {embed_err}')
+
                 # Safety check: if XMP already exists, verify origin
                 if os.path.exists(xmp_path):
                     if not _is_kestrel_xmp(xmp_path):
@@ -368,12 +555,18 @@ def write_xmp_metadata(
             except Exception as entry_err:
                 errors.append(f'{entry.get("filename", "?")}: {entry_err}')
 
-        info(f'[metadata] write_xmp_metadata: written={written}, conflicts={len(skipped_conflicts)}, errors={len(errors)}')
+        info(
+            f'[metadata] write_xmp_metadata: written={written}, '
+            f'conflicts={len(skipped_conflicts)}, errors={len(errors)}, '
+            f'embedded={embedded}, embed_errors={len(embed_errors)}'
+        )
         return {
             'success': True,
             'written': written,
             'skipped_conflicts': skipped_conflicts,
             'errors': errors,
+            'embedded': embedded,
+            'embed_errors': embed_errors,
         }
 
     except Exception as e:
