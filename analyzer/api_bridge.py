@@ -2390,6 +2390,13 @@ class Api:
             debug_info.append(f'[dev-file] {file_candidate}: exists={file_exists}')
             if file_exists and file_candidate not in candidates:
                 candidates.append(file_candidate)
+
+            module_candidate = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sample_sets')
+            module_candidate = os.path.normpath(module_candidate)
+            module_exists = os.path.isdir(module_candidate)
+            debug_info.append(f'[dev-module] {module_candidate}: exists={module_exists}')
+            if module_exists and module_candidate not in candidates:
+                candidates.append(module_candidate)
             
             if not candidates and sys.platform.startswith('win'):
                 debug_info.append('[fallback] Starting Program Files search...')

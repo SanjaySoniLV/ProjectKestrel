@@ -619,6 +619,60 @@ class TestSampleSetMirror:
         api.cleanup_sample_set_mirrors()
 
 
+class TestSampleSetDiscoveryPaths:
+    """Discovery should include in-repo analyzer/sample_sets in dev mode."""
+
+    def _make_sample_set(self, root: Path, name: str) -> Path:
+        set_dir = root / name
+        kestrel = set_dir / ".kestrel"
+        kestrel.mkdir(parents=True)
+        (kestrel / "kestrel_database_readonly.csv").write_text("header\nrow\n")
+        return set_dir
+
+    def test_dev_discovers_module_local_sample_sets(self, api, tmp_path, monkeypatch):
+        """When <repo>/sample_sets is absent, use <repo>/analyzer/sample_sets."""
+        project_root = tmp_path / "ProjectKestrel"
+        analyzer_dir = project_root / "analyzer"
+        analyzer_dir.mkdir(parents=True)
+        module_set = self._make_sample_set(analyzer_dir / "sample_sets", "tutorial_set")
+
+        monkeypatch.setattr(api_bridge, "__file__", str(analyzer_dir / "api_bridge.py"))
+        monkeypatch.setattr(sys, "frozen", False, raising=False)
+        monkeypatch.setattr(
+            api, "_mirror_sample_set_to_temp", lambda bundled_path, _debug: bundled_path
+        )
+
+        workdir = tmp_path / "workdir"
+        workdir.mkdir()
+        monkeypatch.chdir(workdir)
+
+        result = api.get_sample_sets_paths()
+        assert result["success"] is True
+        assert result["paths"] == [str(module_set)]
+
+    def test_dev_prefers_repo_root_sample_sets_when_present(self, api, tmp_path, monkeypatch):
+        """Preserve existing behavior: <repo>/sample_sets remains first choice."""
+        project_root = tmp_path / "ProjectKestrel"
+        root_set = self._make_sample_set(project_root / "sample_sets", "root_set")
+        analyzer_dir = project_root / "analyzer"
+        analyzer_set = self._make_sample_set(analyzer_dir / "sample_sets", "analyzer_set")
+        assert analyzer_set.is_dir()  # fixture sanity
+
+        monkeypatch.setattr(api_bridge, "__file__", str(analyzer_dir / "api_bridge.py"))
+        monkeypatch.setattr(sys, "frozen", False, raising=False)
+        monkeypatch.setattr(
+            api, "_mirror_sample_set_to_temp", lambda bundled_path, _debug: bundled_path
+        )
+
+        workdir = tmp_path / "workdir"
+        workdir.mkdir()
+        monkeypatch.chdir(workdir)
+
+        result = api.get_sample_sets_paths()
+        assert result["success"] is True
+        assert result["paths"] == [str(root_set)]
+
+
 class TestCleanupCullingCache:
     """cleanup_culling_cache must tolerate ENOENT during rmtree.
 
