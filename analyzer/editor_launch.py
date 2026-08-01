@@ -303,16 +303,16 @@ def launch(path: str, editor: str):
         },
     }
 
-    info = _EDITOR_REGISTRY.get(editor)
+    entry = _EDITOR_REGISTRY.get(editor)
 
     # Windows
     if sys.platform.startswith('win'):
-        if info:
+        if entry:
             # Special finder for darktable
-            if 'win_find' in info:
-                candidates = info['win_find']()
+            if 'win_find' in entry:
+                candidates = entry['win_find']()
             else:
-                candidates = info.get('win_candidates', [])
+                candidates = entry.get('win_candidates', [])
             for exe in candidates:
                 if exe and os.path.exists(exe):
                     try:
@@ -325,11 +325,11 @@ def launch(path: str, editor: str):
 
     # macOS
     if sys.platform == 'darwin':
-        if info:
+        if entry:
             apps_to_try = []
-            if info.get('mac_app'):
-                apps_to_try.append(info['mac_app'])
-            apps_to_try.extend(info.get('mac_app_fallbacks', []))
+            if entry.get('mac_app'):
+                apps_to_try.append(entry['mac_app'])
+            apps_to_try.extend(entry.get('mac_app_fallbacks', []))
             # Sandbox: locate the .app by display name and open via NSWorkspace
             # (LaunchServices-brokered); subprocess 'open -a' is unavailable.
             if _sandboxed():
@@ -398,8 +398,8 @@ def launch(path: str, editor: str):
         return
 
     # Linux / other
-    if info:
-        for cmd_args in info.get('linux', []):
+    if entry:
+        for cmd_args in entry.get('linux', []):
             try:
                 subprocess.Popen(cmd_args + [path]); return
             except FileNotFoundError:
