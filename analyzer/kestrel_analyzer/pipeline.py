@@ -40,7 +40,7 @@ from .exposure_compensation import (
     linear_to_srgb_u8,
 )
 from .image_utils import decode_embedded_preview, read_image, read_image_for_pipeline
-from .ratings import quality_to_rating, get_profile_thresholds
+from .ratings import quality_to_rating, resolve_thresholds
 from .similarity import compute_image_similarity_akaze, compute_similarity_timestamp
 from .raw_exif import get_capture_time
 from .logging_utils import get_log_path, log_event, log_exception, log_warning
@@ -499,7 +499,9 @@ class AnalysisPipeline:
             try:
                 sett = load_persisted_settings() or {}
                 rating_profile = str(sett.get('rating_profile', 'balanced') or 'balanced').strip().lower() or 'balanced'
-                rating_thresholds = get_profile_thresholds(rating_profile)
+                rating_thresholds = resolve_thresholds(
+                    rating_profile, sett.get('rating_thresholds_custom')
+                )
                 raw_eq = str(sett.get('exposure_quality', 'balanced') or 'balanced').strip().lower()
                 if raw_eq in {'lenient', 'balanced', 'aggressive'}:
                     exposure_quality = raw_eq

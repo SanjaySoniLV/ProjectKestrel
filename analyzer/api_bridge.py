@@ -1841,13 +1841,13 @@ class Api:
 
             try:
                 from kestrel_analyzer.ratings import (
-                    get_profile_thresholds,
                     quality_to_rating,
+                    resolve_thresholds,
                 )
             except ImportError:
                 from analyzer.kestrel_analyzer.ratings import (
-                    get_profile_thresholds,
                     quality_to_rating,
+                    resolve_thresholds,
                 )
 
             folder_path, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
@@ -1865,7 +1865,7 @@ class Api:
 
             settings = load_persisted_settings()
             profile = settings.get('rating_profile', 'balanced')
-            thresholds = get_profile_thresholds(profile)
+            thresholds = resolve_thresholds(profile, settings.get('rating_thresholds_custom'))
 
             df = pd.read_csv(csv_path)
             if df.empty:
@@ -2171,19 +2171,20 @@ class Api:
         """
         try:
             try:
-                from kestrel_analyzer.ratings import RATING_PROFILES, get_profile_thresholds
+                from kestrel_analyzer.ratings import RATING_PROFILES, resolve_thresholds
             except ImportError:
                 from analyzer.kestrel_analyzer.ratings import (  # type: ignore
                     RATING_PROFILES,
-                    get_profile_thresholds,
+                    resolve_thresholds,
                 )
 
             settings = load_persisted_settings()
             profile = str(settings.get('rating_profile', 'balanced') or 'balanced').lower()
+            thresholds = resolve_thresholds(profile, settings.get('rating_thresholds_custom'))
             return {
                 'success': True,
                 'profile': profile,
-                'thresholds': dict(get_profile_thresholds(profile)),
+                'thresholds': dict(thresholds),
                 'profiles': {k: dict(v) for k, v in RATING_PROFILES.items()},
                 'error': '',
             }
