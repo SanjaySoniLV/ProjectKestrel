@@ -58,6 +58,24 @@ class TestQuestionMarkup(unittest.TestCase):
     def test_species_help_text_states_the_north_american_limit(self):
         self.assertIn("only recognizes North American birds", self.html)
 
+    def test_wildlife_help_does_not_claim_a_per_image_cost(self):
+        """wildlife_enabled is a post-classification routing gate, not a model switch.
+
+        In speciesnet_sam_hq._get_prediction_inner the classifier and ensemble
+        run over every MegaDetector animal box *before*
+        route_with_classifier_tiebreak(wildlife_enabled=...) decides whether to
+        keep the result. Turning it off skips no inference — it only discards
+        non-bird predictions, so the extra cost is the SAM mask decode and crop
+        work for detections that would otherwise have been dropped, and it is
+        zero on a shoot with no non-bird animals. Claiming a flat per-image
+        cost tells users to disable it for a speedup they will not get.
+        """
+        help_texts = re.findall(r'<div class="adlg-question-help muted">(.*?)</div>', self.html, re.S)
+        wildlife_help = next((h for h in help_texts if "non-bird species" in h), None)
+        self.assertIsNotNone(wildlife_help, "wildlife help text not found")
+        self.assertNotIn("per image", wildlife_help.lower())
+        self.assertIn("small impact on total processing time", wildlife_help)
+
     def test_every_answer_radio_exists(self):
         for rid in list(ANSWER_MIRRORS) + list(ANSWER_ALTERNATES):
             with self.subTest(radio=rid):
