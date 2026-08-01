@@ -6227,38 +6227,78 @@ class Api:
             print(f"[API] sign_out() -> Error: {e}", flush=True)
             return {"success": False, "error": str(e)}
 
-    def _find_sidecar_file(self, root_path: str, filename: str, ext: str = '.xmp'):
+    def _build_dir_index(self, root_path: str) -> dict:
+        """Map lowercased entry name -> real on-disk name for one directory.
+
+        Companion lookup has to be case-insensitive: cameras write
+        ``IMG_2265.JPG`` while ``_culling_companion_extensions`` is normalized
+        to lowercase (``_normalize_extensions`` lowercases unconditionally). A
+        literal ``os.path.exists(base + '.jpg')`` therefore misses the real
+        file on a case-sensitive filesystem, and the JPG silently stays behind
+        when its RAW is rejected. Windows and macOS mask this because their
+        filesystems fold case for us; Linux does not.
+
+        This mirrors the convention `select_camera_images`
+        (kestrel_analyzer/config.py) already applies when it decides a
+        same-stem JPG belongs to a RAW.
+
+        Returns {} if the directory is unreadable, so callers degrade to
+        "no companions found" rather than raising.
+        """
+        try:
+            return {entry.lower(): entry for entry in os.listdir(root_path)}
+        except OSError:
+            return {}
+
+    def _find_sidecar_file(self, root_path: str, filename: str, ext: str = '.xmp',
+                           dir_index: dict | None = None):
         """Find sidecar file with given extension for an image file.
-        
+
         Checks multiple naming conventions:
         - filename + ext (e.g., IMG_001.CR3.xmp)
         - name_without_ext + ext (e.g., IMG_001.xmp for IMG_001.CR3)
-        
+
+        Matching is case-insensitive; the returned name is the real on-disk
+        spelling, so callers can join it to a path directly.
+
+        ``dir_index`` is an optional pre-built listing from
+        ``_build_dir_index``. Pass it when resolving many files in one
+        directory to avoid re-listing per file; omit it and one is built here.
+
         Returns the filename (not path) if found, None otherwise.
         Searches in the same directory as the image.
         """
-        # Check primary naming: filename + ext (e.g., IMG_001.CR3.xmp)
-        sidecar_path = os.path.join(root_path, filename + ext)
-        if os.path.exists(sidecar_path):
-            return filename + ext
-        
-        # Check secondary naming: name_without_ext + ext (e.g., IMG_001.xmp)
+        index = self._build_dir_index(root_path) if dir_index is None else dir_index
+
+        # Primary naming: filename + ext (e.g., IMG_001.CR3.xmp)
+        hit = index.get((filename + ext).lower())
+        if hit:
+            return hit
+
+        # Secondary naming: name_without_ext + ext (e.g., IMG_001.xmp)
         if '.' in filename:
             base_name = filename.rsplit('.', 1)[0]
-            alt_sidecar_path = os.path.join(root_path, base_name + ext)
-            if os.path.exists(alt_sidecar_path):
-                return base_name + ext
-        
+            hit = index.get((base_name + ext).lower())
+            if hit:
+                return hit
+
         return None
 
-    def _find_companion_files(self, root_path: str, filename: str) -> list[str]:
-        """Find configured companion files (XMP + JPEG variants) for an image."""
+    def _find_companion_files(self, root_path: str, filename: str,
+                              dir_index: dict | None = None) -> list[str]:
+        """Find configured companion files (XMP + JPEG variants) for an image.
+
+        ``dir_index`` is an optional pre-built listing from
+        ``_build_dir_index``. Without it this lists the directory once per
+        call; batch callers should build the index once and pass it in.
+        """
         companions: list[str] = []
         seen: set[str] = set()
         filename_key = str(filename or '').lower()
+        index = self._build_dir_index(root_path) if dir_index is None else dir_index
 
         for ext in self._culling_companion_extensions:
-            companion = self._find_sidecar_file(root_path, filename, ext)
+            companion = self._find_sidecar_file(root_path, filename, ext, dir_index=index)
             if not companion:
                 continue
             key = companion.lower()
@@ -6269,9 +6309,15 @@ class Api:
 
         return companions
 
-    def _move_file_with_sidecars(self, root_path: str, filename: str, reject_dir: str):
+    def _move_file_with_sidecars(self, root_path: str, filename: str, reject_dir: str,
+                                 dir_index: dict | None = None):
         """Move a file and its configured companion files to reject directory.
-        
+
+        ``dir_index`` is an optional pre-built listing of ``root_path`` shared
+        across a batch. It can go stale as files move out during the batch, but
+        every move below is already guarded by ``os.path.exists``, so a stale
+        entry degrades to a logged warning rather than an error.
+
         Returns (success: bool, moved_files: list[str])
         """
         moved_files = []
@@ -6288,7 +6334,7 @@ class Api:
         except Exception:
             return False, moved_files
 
-        companion_files = self._find_companion_files(root_path, filename)
+        companion_files = self._find_companion_files(root_path, filename, dir_index=dir_index)
         if companion_files:
             for companion in companion_files:
                 companion_src = os.path.join(root_path, companion)
@@ -6340,8 +6386,14 @@ class Api:
                 else:
                     errors.append(f'{raw}: invalid filename')
 
+            # One listing for the whole batch: every file here lives in
+            # root_real, so re-listing per file (x6 companion extensions)
+            # would be O(files x dirsize) on a folder that can hold thousands.
+            dir_index = self._build_dir_index(root_real)
             for fn in sanitized_filenames:
-                success, moved_files = self._move_file_with_sidecars(root_real, fn, reject_dir)
+                success, moved_files = self._move_file_with_sidecars(
+                    root_real, fn, reject_dir, dir_index=dir_index
+                )
                 if success:
                     moved.extend(moved_files)
                 else:
@@ -6379,8 +6431,12 @@ class Api:
             fields=fields if isinstance(fields, dict) else None,
         )
 
-    def _restore_file_with_sidecars(self, reject_dir: str, root_path: str, filename: str):
+    def _restore_file_with_sidecars(self, reject_dir: str, root_path: str, filename: str,
+                                    dir_index: dict | None = None):
         """Restore a file and its configured companion files from reject directory.
+
+        ``dir_index`` is an optional pre-built listing of ``reject_dir`` shared
+        across a batch; see ``_move_file_with_sidecars`` on staleness.
 
         Returns (success: bool, restored_files: list[str])
         """
@@ -6398,7 +6454,7 @@ class Api:
         except Exception:
             return False, restored_files
 
-        companion_files = self._find_companion_files(reject_dir, filename)
+        companion_files = self._find_companion_files(reject_dir, filename, dir_index=dir_index)
         if companion_files:
             for companion in companion_files:
                 companion_src = os.path.join(reject_dir, companion)
@@ -6449,8 +6505,13 @@ class Api:
                 else:
                     errors.append(f'{raw}: invalid filename')
 
+            # One listing for the whole batch — same reasoning as the reject
+            # path, over the rejects folder instead of the shoot folder.
+            restore_index = self._build_dir_index(reject_dir)
             for fn in sanitized_filenames:
-                success, restored_files = self._restore_file_with_sidecars(reject_dir, root_real, fn)
+                success, restored_files = self._restore_file_with_sidecars(
+                    reject_dir, root_real, fn, dir_index=restore_index
+                )
                 if success:
                     restored.extend(restored_files)
                 else:
@@ -6505,12 +6566,14 @@ class Api:
 
             reject_filenames = []
             excluded = set()
+            # Read-only scan, so one listing is safe and strictly correct here.
+            scan_index = self._build_dir_index(reject_dir)
             for name in candidates:
                 key = name.lower()
                 if key in excluded:
                     continue
                 reject_filenames.append(name)
-                companions = self._find_companion_files(reject_dir, name)
+                companions = self._find_companion_files(reject_dir, name, dir_index=scan_index)
                 for comp in companions:
                     excluded.add(comp.lower())
 

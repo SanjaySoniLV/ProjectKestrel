@@ -3,6 +3,7 @@
 Uses set_e_raw_jpg_mix fixtures for RAW+JPG companion file testing.
 """
 
+import os
 import pytest
 import shutil
 from pathlib import Path
@@ -205,3 +206,110 @@ class TestRawJpgMixFixtures:
         # Originals gone
         assert not (workdir / raw_file.name).exists()
         assert not (workdir / jpg_companion.name).exists()
+
+
+class TestCompanionCaseInsensitivity:
+    """Companion lookup must not depend on filesystem case-folding.
+
+    Companion extensions are normalized to lowercase by
+    `_normalize_extensions`, but cameras write `IMG_2265.JPG`. The lookup used
+    to probe the literal lowercase path, which Windows and macOS resolve for
+    us and Linux does not — so on a case-sensitive filesystem the JPG stayed
+    behind while the reject reported success with zero errors. There is no
+    Linux job in CI, so nothing caught it.
+    """
+
+    @pytest.fixture
+    def api(self):
+        return api_bridge.Api()
+
+    def _shoot(self, tmp_path, raw_name, companion_name):
+        workdir = tmp_path / "workdir"
+        workdir.mkdir()
+        (workdir / raw_name).write_bytes(b"\x00" * 64)
+        (workdir / companion_name).write_bytes(b"\xff" * 64)
+        return workdir
+
+    @pytest.mark.parametrize("companion_name", [
+        "IMG_9001.JPG",   # as the camera writes it
+        "IMG_9001.jpg",   # already lowercase
+        "IMG_9001.JpG",   # mixed, e.g. renamed by another tool
+    ])
+    def test_jpg_companion_moves_regardless_of_extension_case(
+        self, api, tmp_path, companion_name
+    ):
+        workdir = self._shoot(tmp_path, "IMG_9001.CR2", companion_name)
+
+        result = api.move_rejects_to_folder(str(workdir), ["IMG_9001.CR2"])
+        assert result["success"] is True
+        assert result["errors"] == []
+
+        reject_dir = workdir / "_KESTREL_Rejects"
+        assert (reject_dir / "IMG_9001.CR2").exists()
+        # Moved under its real on-disk spelling, not a case-folded guess.
+        assert (reject_dir / companion_name).exists()
+        assert not (workdir / companion_name).exists()
+
+    def test_xmp_sidecar_moves_regardless_of_extension_case(self, api, tmp_path):
+        """The XMP path had the identical flaw, not just the JPEG one."""
+        workdir = self._shoot(tmp_path, "IMG_9002.CR2", "IMG_9002.XMP")
+
+        result = api.move_rejects_to_folder(str(workdir), ["IMG_9002.CR2"])
+        assert result["success"] is True
+
+        reject_dir = workdir / "_KESTREL_Rejects"
+        assert (reject_dir / "IMG_9002.XMP").exists()
+        assert not (workdir / "IMG_9002.XMP").exists()
+
+    def test_undo_restores_uppercase_companion(self, api, tmp_path):
+        """Restore uses the same lookup, so it must round-trip."""
+        workdir = self._shoot(tmp_path, "IMG_9003.CR2", "IMG_9003.JPG")
+        reject_dir = workdir / "_KESTREL_Rejects"
+
+        api.move_rejects_to_folder(str(workdir), ["IMG_9003.CR2"])
+        # Assert the midpoint explicitly. Without it this test passes even when
+        # the companion was never moved: the JPG would still be sitting in
+        # workdir and the post-undo assertions would hold vacuously.
+        assert (reject_dir / "IMG_9003.JPG").exists()
+        assert not (workdir / "IMG_9003.JPG").exists()
+
+        result = api.undo_reject_move(str(workdir), ["IMG_9003.CR2"])
+        assert result["success"] is True
+
+        assert (workdir / "IMG_9003.CR2").exists()
+        assert (workdir / "IMG_9003.JPG").exists()
+        assert not (reject_dir / "IMG_9003.JPG").exists()
+
+    def test_batch_lists_each_directory_once(self, api, tmp_path, monkeypatch):
+        """The batch shares one directory listing across all rejected files.
+
+        Guards the O(files x extensions x dirsize) regression: without the
+        shared index this listed the folder 6x per file.
+        """
+        workdir = tmp_path / "workdir"
+        workdir.mkdir()
+        names = []
+        for i in range(10):
+            raw = f"IMG_8{i:03d}.CR2"
+            (workdir / raw).write_bytes(b"\x00" * 16)
+            (workdir / f"IMG_8{i:03d}.JPG").write_bytes(b"\xff" * 16)
+            names.append(raw)
+
+        real_listdir = os.listdir
+        calls = []
+
+        def counting_listdir(path):
+            calls.append(str(path))
+            return real_listdir(path)
+
+        monkeypatch.setattr(api_bridge.os, "listdir", counting_listdir)
+        result = api.move_rejects_to_folder(str(workdir), names)
+        assert result["success"] is True
+
+        listings_of_workdir = [c for c in calls if os.path.realpath(c) == os.path.realpath(str(workdir))]
+        assert len(listings_of_workdir) == 1, (
+            f"expected 1 listing of the shoot folder, got {len(listings_of_workdir)}"
+        )
+        reject_dir = workdir / "_KESTREL_Rejects"
+        for i in range(10):
+            assert (reject_dir / f"IMG_8{i:03d}.JPG").exists()
