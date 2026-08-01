@@ -4498,9 +4498,15 @@ class Api:
         """Run a real-image upload-throughput probe against the staging bucket.
 
         Returns ``{ok, mbps, samples_uploaded, total_bytes, elapsed_ms,
-        errors}``. Errors surface as ``{ok: False, error}``; the Worker's
-        ``file_too_large`` rejection is propagated verbatim so the dialog can
-        explain the 200 MB cap.
+        errors, pipeline}``. Errors surface as ``{ok: False, error}``; the
+        Worker's ``file_too_large`` rejection is propagated verbatim so the
+        dialog can explain the 200 MB cap.
+
+        ``pipeline`` carries the Worker's own dispatch/scale-out constants
+        (thresholds, container cap, spawn cooldown, cold start, per-container
+        throughput) so the analyze dialog's job-time estimate models the
+        deployed pipeline rather than a hardcoded copy that goes stale when a
+        threshold moves. ``None`` against an older Worker.
         """
         root_real, err = self._validate_root_dir(
             folder_path, context="cloud_compute_upload_test", require_exists=True

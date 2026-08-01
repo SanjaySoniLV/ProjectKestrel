@@ -899,3 +899,21 @@ dialog.kdlg.signin-chooser-dlg {
   color: var(--muted, #778);
   text-align: center;
 }
+
+/* Live bottleneck read-out — sits alongside the two phase pills and names
+   which half of the pipeline is currently the constraint. Deliberately
+   lower-contrast than the phase pills: it's context, not status. */
+.cloud-bottleneck-pill {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 1px 7px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted, #888);
+  cursor: help;
+}
+.cloud-bottleneck-pill.upload   { color: #9bb8ff; border-color: #35406040; }
+.cloud-bottleneck-pill.compute  { color: #ffc060; border-color: #4a3a2040; }
+.cloud-bottleneck-pill.balanced { color: #6bcf6b; border-color: #24401f40; }
