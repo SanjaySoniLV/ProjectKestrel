@@ -23,7 +23,7 @@ Project Kestrel uses machine learning to organize your bird photo collection. It
 | Platform | Where |
 |---|---|
 | **Windows** | [Microsoft Store](https://apps.microsoft.com/detail/9NQR2WFFNP5J) (auto-updates) or the [installer](https://projectkestrel.org/download?platform=windows) |
-| **macOS** | [Download the DMG](https://projectkestrel.org/download?platform=macos) — Apple Silicon only; Intel Macs are not currently supported |
+| **macOS** | [Download the DMG](https://projectkestrel.org/download?platform=macos) — Apple Silicon only. Intel Mac users should check [projectkestrel.org/download](https://projectkestrel.org/download) to see if an official Intel build is available; otherwise see [Building on Intel (x86_64) Macs](DEVELOPMENT.md#building-on-intel-x86_64-macs) to build from source |
 | **Linux** | Run from source — see [Running from Source](#-running-from-source) |
 
 All builds are also on the [GitHub Releases page](https://github.com/SanjaySoniLV/ProjectKestrel/releases). Releases are named after birds; the current one is **v(Rock Wren)**. See the [changelog](https://projectkestrel.org/notes/?cat=changelog) for what's new, or the [guides](https://projectkestrel.org/notes/?cat=guides) if you're just getting started.
