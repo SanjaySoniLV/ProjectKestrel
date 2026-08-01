@@ -1028,53 +1028,62 @@
         <!-- ═══ Column 2: Review Settings ═══ -->
         <div class="analyze-dlg-col analyze-dlg-col-settings">
           <div class="analyze-dlg-col-title">⚙ Review settings</div>
+          <!-- Phrased as questions about the shoot rather than as model
+               settings: the user knows what they photographed, not which
+               classifier that implies. Each answer pair mirrors to the hidden
+               input below it, which is what the Start handler in
+               event-wiring.js reads — the read path is unchanged. -->
           <div class="analyze-dlg-settings-critical">
-            <!-- Wildlife detection model — horizontal radio pair for compactness. -->
-            <div class="adlg-radio-group">
-              <div class="adlg-radio-label">Wildlife detection model</div>
-              <div class="adlg-radio-horiz">
+
+            <div class="adlg-question">
+              <div class="adlg-question-text">What subjects does this shoot contain?</div>
+              <div class="adlg-answer-pair" role="radiogroup" aria-label="Subjects in this shoot">
                 <label class="adlg-radio-row adlg-radio-row-horiz">
-                  <input type="radio" name="adlgWildlifeModelMode" id="adlgWildlifeModelModeAccurate" value="accurate" checked />
+                  <input type="radio" name="adlgSubjectScope" id="adlgSubjectScopeBirds" value="birds" checked />
                   <div class="adlg-radio-text">
-                    <span class="adlg-radio-name">Accurate</span>
-                    <span class="adlg-radio-hint muted">Larger model with stronger recall. Slower but catches more subjects, especially distant or partially-obscured birds.</span>
+                    <span class="adlg-radio-name">Birds only</span>
                   </div>
                 </label>
                 <label class="adlg-radio-row adlg-radio-row-horiz">
-                  <input type="radio" name="adlgWildlifeModelMode" id="adlgWildlifeModelModeFast" value="fast" />
+                  <input type="radio" name="adlgSubjectScope" id="adlgSubjectScopeWildlife" value="wildlife" />
                   <div class="adlg-radio-text">
-                    <span class="adlg-radio-name">Fast</span>
-                    <span class="adlg-radio-hint muted">Smaller model — significantly faster but may miss some detections. Good for quick first passes.</span>
+                    <span class="adlg-radio-name">Birds and other wildlife</span>
                   </div>
                 </label>
               </div>
-              <!-- Legacy <select> kept hidden so settings hydrate logic that reads/writes
-                   #adlgWildlifeModelMode keeps working; the radios mirror to it. -->
-              <select id="adlgWildlifeModelMode" class="hidden" aria-hidden="true">
-                <option value="fast">Fast</option>
-                <option value="accurate" selected>Accurate</option>
-              </select>
+              <div class="adlg-question-help muted">Including other wildlife finds 1,200+ non-bird species — squirrels, deer, bears and more. It adds noticeable time per image.</div>
             </div>
-            <label class="adlg-toggle-row">
-              <input id="analyzeSpeciesDetection" type="checkbox" checked />
-              <div class="adlg-toggle-text">
-                <span class="adlg-toggle-label">Identify bird species &amp; family</span>
-                <span class="adlg-toggle-hint muted">Runs the bird species classifier on each cropped bird. Optimized for North American species — disable if shooting elsewhere. Detection &amp; quality scoring are unaffected.</span>
+            <input id="analyzeWildlife" type="checkbox" class="hidden" aria-hidden="true" tabindex="-1" />
+
+            <div class="adlg-question">
+              <div class="adlg-question-text">Does this shoot contain North American birds?</div>
+              <div class="adlg-answer-pair" role="radiogroup" aria-label="Bird species identification">
+                <label class="adlg-radio-row adlg-radio-row-horiz">
+                  <input type="radio" name="adlgSpeciesScope" id="adlgSpeciesScopeYes" value="yes" checked />
+                  <div class="adlg-radio-text">
+                    <span class="adlg-radio-name">Yes, identify species</span>
+                  </div>
+                </label>
+                <label class="adlg-radio-row adlg-radio-row-horiz">
+                  <input type="radio" name="adlgSpeciesScope" id="adlgSpeciesScopeNo" value="no" />
+                  <div class="adlg-radio-text">
+                    <span class="adlg-radio-name">No, skip species identification</span>
+                  </div>
+                </label>
               </div>
-            </label>
-            <div class="adlg-setting-row">
-              <label for="adlgMaxBirdCrops">Maximum subjects per image</label>
-              <input id="adlgMaxBirdCrops" type="number" min="1" max="20" step="1" value="10"
-                style="width:80px" />
+              <div class="adlg-question-help muted">Kestrel's bird species classifier only recognizes North American birds. Skipping it makes analysis faster; finding your subjects and scoring their quality work exactly the same either way.</div>
             </div>
-            <div class="adlg-hint muted">Each additional subject increases processing time. Lower this to cap the number of subjects processed per image.</div>
-            <label class="adlg-toggle-row">
-              <input id="analyzeWildlife" type="checkbox" />
-              <div class="adlg-toggle-text">
-                <span class="adlg-toggle-label">Detect non-bird wildlife <span class="adlg-tag">experimental</span></span>
-                <span class="adlg-toggle-hint muted">Detects 1,200+ non-bird species (squirrels, deer, bears, etc.) using SpeciesNet. Adds noticeable processing time per image.</span>
+            <input id="analyzeSpeciesDetection" type="checkbox" class="hidden" aria-hidden="true" tabindex="-1" checked />
+
+            <div class="adlg-question">
+              <div class="adlg-question-text">How many subjects should Kestrel analyze in each image?</div>
+              <div class="adlg-setting-row">
+                <label for="adlgMaxBirdCrops">At most</label>
+                <input id="adlgMaxBirdCrops" type="number" min="1" max="20" step="1" value="10"
+                  style="width:80px" />
               </div>
-            </label>
+              <div class="adlg-question-help muted">Every extra subject adds processing time. Lower this for flock shots where you only care about the closest few birds.</div>
+            </div>
           </div>
 
           <!-- "More options" expanded by default. Subheadings group settings
@@ -1112,13 +1121,25 @@
               </div>
 
               <div class="adlg-subgroup">
-                <div class="adlg-subgroup-title">Wildlife detection</div>
+                <div class="adlg-subgroup-title">Finding subjects</div>
+                <!-- Was a prominent Fast/Accurate radio pair in the critical
+                     block. Accurate is right for essentially every shoot, so it
+                     is now the default and lives down here instead of asking
+                     every user to make the call up front. -->
+                <div class="adlg-setting-row">
+                  <label for="adlgWildlifeModelMode">Detection model</label>
+                  <select id="adlgWildlifeModelMode" style="flex:1;max-width:200px">
+                    <option value="accurate" selected>Accurate (recommended)</option>
+                    <option value="fast">Fast</option>
+                  </select>
+                </div>
+                <div class="adlg-hint muted">Accurate is the right choice for almost every shoot. Fast uses a smaller model that finishes sooner but misses distant and partly-hidden birds.</div>
                 <div class="adlg-setting-row">
                   <label for="adlgDetectionThreshold">Detection confidence</label>
                   <input id="adlgDetectionThreshold" type="number" min="0.1" max="0.99" step="0.05" value="0.15"
                     style="width:80px" />
                 </div>
-                <div class="adlg-hint muted">Minimum MegaDetector animal confidence (0.10–0.99). Lower values find more subjects.</div>
+                <div class="adlg-hint muted">How sure Kestrel must be that it found an animal before analyzing it (0.10–0.99). Lower values find more subjects.</div>
                 <!-- Live warning when the user picks a value much above the
                      recommended baseline. Wildlife detection models are quite
                      accurate, so high thresholds tend to miss real subjects. -->

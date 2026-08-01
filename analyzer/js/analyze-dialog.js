@@ -1107,6 +1107,53 @@
     }
 
     // ── Dialog open / settings hydration ────────────────────────────────────────
+    // ── Shoot questions ↔ hidden checkboxes ───────────────────────────────────
+    // The two "what did you shoot" questions are the visible controls for
+    // #analyzeWildlife and #analyzeSpeciesDetection. Those checkboxes stay in
+    // the DOM (hidden) because event-wiring.js reads them when Start is
+    // clicked, and the cloud-compute snapshot reads them too — mirroring keeps
+    // that single read path intact while the user only ever sees the questions.
+    //
+    // Listeners are attached at load rather than on dialog open: a throw
+    // anywhere earlier in the open path would otherwise leave the answers
+    // visually live but disconnected, silently analyzing with the wrong scope.
+    const _ANSWER_PAIRS = [
+      { on: 'adlgSubjectScopeWildlife', off: 'adlgSubjectScopeBirds', box: 'analyzeWildlife' },
+      { on: 'adlgSpeciesScopeYes', off: 'adlgSpeciesScopeNo', box: 'analyzeSpeciesDetection' },
+    ];
+
+    // Push the checkbox state out to the radios (settings → UI).
+    function syncAnalyzeAnswersFromSettings() {
+      for (const { on, off, box } of _ANSWER_PAIRS) {
+        const onEl = document.getElementById(on);
+        const offEl = document.getElementById(off);
+        const boxEl = document.getElementById(box);
+        if (!onEl || !offEl || !boxEl) continue;
+        onEl.checked = !!boxEl.checked;
+        offEl.checked = !boxEl.checked;
+      }
+    }
+
+    // Attach the radios → checkbox mirror once (UI → settings).
+    function wireAnalyzeAnswerMirrors() {
+      for (const { on, off, box } of _ANSWER_PAIRS) {
+        const onEl = document.getElementById(on);
+        const offEl = document.getElementById(off);
+        const boxEl = document.getElementById(box);
+        if (!onEl || !offEl || !boxEl || onEl.dataset.wiredMirror) continue;
+        onEl.dataset.wiredMirror = '1';
+        const sync = () => { boxEl.checked = !!onEl.checked; };
+        onEl.addEventListener('change', sync);
+        offEl.addEventListener('change', sync);
+      }
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', wireAnalyzeAnswerMirrors, { once: true });
+    } else {
+      wireAnalyzeAnswerMirrors();
+    }
+
     async function openAnalyzeDialog() {
       if (!hasPywebviewApi) {
         alert('Analysis queue is only available in the desktop (pywebview) mode.\n\nRun kestrel_visualizer as a desktop app to use this feature.');
@@ -1123,26 +1170,13 @@
           }
         }).catch(() => {});
       }
-      // Hydrate critical settings from persisted values. The radios mirror to
-      // the hidden #adlgWildlifeModelMode <select> so existing read/write paths
-      // (event-wiring.js Start handler) keep working unchanged.
-      const _hiddenModelSelect = document.getElementById('adlgWildlifeModelMode');
+      // Detection model now lives as a plain <select> in More options →
+      // Finding subjects, defaulting to Accurate. Anything that isn't an
+      // explicit 'fast' resolves to 'accurate'.
+      const _modelSelect = document.getElementById('adlgWildlifeModelMode');
       const savedMode = String(getSetting('wildlife_model_mode', 'accurate') || 'accurate').toLowerCase();
       const modeFinal = (savedMode === 'fast') ? 'fast' : 'accurate';
-      if (_hiddenModelSelect) _hiddenModelSelect.value = modeFinal;
-      const _modeAccurate = document.getElementById('adlgWildlifeModelModeAccurate');
-      const _modeFast = document.getElementById('adlgWildlifeModelModeFast');
-      if (_modeAccurate && _modeFast) {
-        _modeAccurate.checked = (modeFinal === 'accurate');
-        _modeFast.checked = (modeFinal === 'fast');
-        // Mirror radio change → hidden select (so the existing read path works).
-        const _syncModeRadios = () => {
-          const v = _modeAccurate.checked ? 'accurate' : 'fast';
-          if (_hiddenModelSelect) _hiddenModelSelect.value = v;
-        };
-        _modeAccurate.addEventListener('change', _syncModeRadios);
-        _modeFast.addEventListener('change', _syncModeRadios);
-      }
+      if (_modelSelect) _modelSelect.value = modeFinal;
 
       // Hydrate "More options" settings from persisted values (same keys as before).
       // Default 0.15 now matches the suggested-baseline message shown by the
@@ -1184,6 +1218,9 @@
       if (_adlgWildlife) _adlgWildlife.checked = !!getSetting('wildlife_enabled', false);
       const _adlgSpecies = document.getElementById('analyzeSpeciesDetection');
       if (_adlgSpecies) _adlgSpecies.checked = getSetting('species_detection_enabled') !== false;
+
+      // Point the visible answers at the freshly-hydrated checkbox state.
+      syncAnalyzeAnswersFromSettings();
 
       // Unlock checkbox state — reset every open. User must explicitly re-tick
       // it to unlock destructive re-analysis on each queue.
