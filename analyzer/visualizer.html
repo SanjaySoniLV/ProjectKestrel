@@ -758,6 +758,15 @@
   <dialog id="settingsDlg" class="kdlg kdlg--md kdlg--tall kdlg--flex">
     <div class="settings-body">
       <h3 style="margin:0">Settings</h3>
+      <!-- Analysis options (species identification, non-bird wildlife detection,
+           detection confidence, GPU) live in the Analyze dialog's "Review
+           settings" column, not here — they are chosen per analysis run. Users
+           reasonably look for them in Settings first, so point the way. -->
+      <div class="muted" style="font-size:12px;margin:6px 0 0">
+        Looking for analysis options — species identification, non-bird wildlife
+        detection, detection confidence, or GPU use? Those are chosen per run in
+        the <b>Analyze</b> dialog, under &ldquo;Review settings&rdquo;.
+      </div>
 
       <h4 style="margin:12px 0 8px;padding-top:8px;border-top:1px solid #1d2230;color:#a0a8b8;font-size:13px;text-transform:uppercase;letter-spacing:0.5px">UI &amp; Editor</h4>
 

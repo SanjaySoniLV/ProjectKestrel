@@ -1123,3 +1123,20 @@
   color: #cfe2ff;
   border-color: #7eb8e0;
 }
+
+/* Pre-flight bottleneck chip under the cloud est. time stat. Tells the user
+   whether the quoted number is bounded by their connection or by Cloud
+   Compute, so a slow estimate points at something actionable. */
+.adlg-cloud-regime {
+  display: block;
+  margin-top: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--muted, #8a93a5);
+  cursor: help;
+}
+.adlg-cloud-regime--upload   { color: #7eb8e0; }
+.adlg-cloud-regime--compute  { color: #e0b070; }
+.adlg-cloud-regime--balanced { color: #7fc98a; }

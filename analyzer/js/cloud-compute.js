@@ -578,6 +578,51 @@
       })[phase] || phase;
     }
 
+    // ── Live bottleneck read-out ─────────────────────────────────────────────
+    //
+    // Mirrors the pre-flight regime chip in the analyze dialog, but derived from
+    // live counts instead of a model, so the user can see whether the number
+    // they were quoted is playing out. The signal is the un-analyzed backlog:
+    // the worker only spawns another Modal container once the backlog reaches
+    // SCALE_THRESHOLD, so a persistently large backlog means compute is
+    // saturated, while a backlog near zero during an active upload means the
+    // workers are idling on bytes.
+    //
+    // Unlike the analyze dialog's estimate — which uses the thresholds the
+    // Worker serves in the upload-test `pipeline` block — these stay local
+    // constants on purpose: a live job may have had no speed test in this
+    // session, so there's no served descriptor to read. They only pick which
+    // of three LABELS to show, never a number, so drift shifts a boundary
+    // slightly rather than producing a wrong estimate. Still worth keeping
+    // roughly in step with the worker's src/lib/constants.ts.
+    const _CC_SCALE_THRESHOLD = 200;     // backlog at which another container spawns
+    const _CC_DISPATCH_THRESHOLD = 100;  // backlog before the first dispatch
+
+    function _ccBottleneck(state, uploadPhase, analysisPhase) {
+      // Only meaningful while both halves are genuinely in flight.
+      if (analysisPhase !== 'analyzing') return null;
+      const uploaded = Number(state.uploadedCount || 0);
+      const analyzed = Number(state.analyzedCount || 0);
+      const backlog = Math.max(0, uploaded - analyzed);
+      if (uploadPhase !== 'uploading') {
+        // Bytes are all in; from here the only thing left is compute.
+        return { key: 'compute', label: 'Compute-limited',
+                 tip: 'All images are uploaded — the remaining time is analysis.' };
+      }
+      if (backlog >= _CC_SCALE_THRESHOLD) {
+        return { key: 'compute', label: 'Compute-limited',
+                 tip: `${backlog} uploaded images are waiting to be analyzed — `
+                    + 'Cloud Compute is the bottleneck.' };
+      }
+      if (backlog < _CC_DISPATCH_THRESHOLD) {
+        return { key: 'upload', label: 'Upload-limited',
+                 tip: 'Analysis is keeping up with your upload — the job is '
+                    + 'bounded by how fast images reach the cloud.' };
+      }
+      return { key: 'balanced', label: 'Balanced',
+               tip: 'Upload and analysis are advancing at roughly the same rate.' };
+    }
+
     // ── §3: terminal-reason → friendly explanation ───────────────────────
     //
     // Single source of truth mapping a job's terminal reason (worker
@@ -777,6 +822,7 @@
       const retrieved = rawRetrieved;
       const uploadPhase = _ccUploadPhase(state);
       const analysisPhase = _ccAnalysisPhase(state);
+      const bottleneck = _ccBottleneck(state, uploadPhase, analysisPhase);
       const uploadPct = total > 0 ? Math.min(100, Math.round((uploaded / total) * 100)) : 0;
       const analysisPct = total > 0 ? Math.min(100, Math.round((analyzed / total) * 100)) : 0;
       const retrievedPct = total > 0 ? Math.min(100, Math.round((retrieved / total) * 100)) : 0;
@@ -844,6 +890,7 @@
           <div class="cloud-phase-row">
             <span class="cloud-phase-pill upload ${uploadPhase}">↑ ${_ccUploadPhaseLabel(uploadPhase)}</span>
             <span class="cloud-phase-pill analysis ${analysisPhase}">⚙ ${_ccAnalysisPhaseLabel(analysisPhase)}</span>
+            ${bottleneck ? `<span class="cloud-bottleneck-pill ${bottleneck.key}" title="${escapeHtml(bottleneck.tip)}">${escapeHtml(bottleneck.label)}</span>` : ''}
           </div>
           <div class="cloud-bar-block">
             <div class="cloud-bar-label">${uploaded} / ${total} uploaded${anchor}</div>
