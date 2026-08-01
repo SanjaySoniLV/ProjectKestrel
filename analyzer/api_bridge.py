@@ -6849,6 +6849,17 @@ class Api:
             base = os.path.splitext(os.path.basename(filename))[0]
             cache_name = f'{base}_{cache_token}_preview.jpg'
             cache_path = os.path.join(cache_dir, cache_name)
+            # The embedded-JPEG fallback gets its OWN cache slot (same token, so
+            # it invalidates on the same inputs). Both paths return a JPEG, so
+            # the bytes are interchangeable — what is NOT interchangeable is the
+            # claim the response makes about them. A fallback preview is a fixed
+            # in-camera render with no exposure shift applied; if a cache hit
+            # can't tell the two apart it drops the `fallback` flag, and
+            # scene-zoom.js re-labels the image "RAW (+X.XX EV)" — telling the
+            # user an EV correction was applied that never was, and can't be.
+            # Splitting the filename is what makes the flag survive a cache hit.
+            embedded_cache_name = f'{base}_{cache_token}_preview_embedded.jpg'
+            embedded_cache_path = os.path.join(cache_dir, embedded_cache_name)
 
             debug_meta = {
                 'filename': filename,
@@ -6869,24 +6880,40 @@ class Api:
                 'cache_token': cache_token,
             }
 
-            if use_cache and os.path.exists(cache_path):
+            hit_path = None
+            hit_was_embedded = False
+            if use_cache:
+                if os.path.exists(cache_path):
+                    hit_path = cache_path
+                elif os.path.exists(embedded_cache_path):
+                    hit_path = embedded_cache_path
+                    hit_was_embedded = True
+            if hit_path:
                 debug(
                     f'[raw-preview] cache hit for {filename} '
-                    f'(exp={exp_correction:+.3f}, mode={render_mode})'
+                    f'(exp={exp_correction:+.3f}, mode={render_mode}'
+                    f'{", embedded fallback" if hit_was_embedded else ""})'
                 )
-                with open(cache_path, 'rb') as f:
+                with open(hit_path, 'rb') as f:
                     cache_bytes = f.read()
-                cache_stat = os.stat(cache_path)
+                cache_stat = os.stat(hit_path)
                 debug_meta.update({
                     'cache_hit': True,
                     'cache_file_bytes': int(len(cache_bytes)),
                     'cache_file_mtime_ns': int(cache_stat.st_mtime_ns),
-                    'storage_preview_path': cache_path,
+                    'storage_preview_path': hit_path,
                 })
+                if hit_was_embedded:
+                    debug_meta['fallback'] = 'embedded_jpeg_preview'
                 if debug_logging_enabled:
                     debug(f'[raw-preview] debug: {json.dumps(debug_meta, sort_keys=True)}')
                 b64 = base64.b64encode(cache_bytes).decode('ascii')
-                return {'success': True, 'data': b64, 'mime': 'image/jpeg', 'debug': debug_meta}
+                response = {'success': True, 'data': b64, 'mime': 'image/jpeg', 'debug': debug_meta}
+                if hit_was_embedded:
+                    # Same flag the fresh-decode path sets, so scene-zoom.js
+                    # labels a cached fallback identically to a fresh one.
+                    response['fallback'] = 'embedded_jpeg_preview'
+                return response
 
             import rawpy
             from PIL import Image
@@ -6969,14 +6996,18 @@ class Api:
                 jpg_bytes = buf.getvalue()
                 img_width, img_height = img.width, img.height
 
+            # Route the fallback to its own cache slot so the next hit can still
+            # report it as an embedded preview rather than an EV-corrected RAW.
+            write_cache_path = embedded_cache_path if used_embedded_fallback else cache_path
+            write_cache_name = embedded_cache_name if used_embedded_fallback else cache_name
             wrote_cache = False
             if use_cache:
                 os.makedirs(cache_dir, exist_ok=True)
-                with open(cache_path, 'wb') as f:
+                with open(write_cache_path, 'wb') as f:
                     f.write(jpg_bytes)
                 wrote_cache = True
 
-            storage_preview_path = cache_path
+            storage_preview_path = write_cache_path
             if not wrote_cache:
                 # Even when cache is disabled, persist one debug copy for inspection.
                 os.makedirs(cache_dir, exist_ok=True)
@@ -7007,10 +7038,10 @@ class Api:
                 debug(
                     f'[raw-preview] Done (embedded fallback), '
                     f'{len(jpg_bytes)//1024}KB JPEG ({img_width}x{img_height})'
-                    + (f', cached as {cache_name}' if wrote_cache else ', cache disabled')
+                    + (f', cached as {write_cache_name}' if wrote_cache else ', cache disabled')
                 )
             elif use_cache:
-                debug(f'[raw-preview] Done, {len(jpg_bytes)//1024}KB JPEG ({img_width}x{img_height}), cached as {cache_name}')
+                debug(f'[raw-preview] Done, {len(jpg_bytes)//1024}KB JPEG ({img_width}x{img_height}), cached as {write_cache_name}')
             else:
                 debug(f'[raw-preview] Done, {len(jpg_bytes)//1024}KB JPEG ({img_width}x{img_height}), cache disabled')
             response = {'success': True, 'data': b64, 'mime': 'image/jpeg', 'debug': debug_meta}

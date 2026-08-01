@@ -239,10 +239,17 @@ class TestReadRawFullHeFallback:
         # A JPEG must have landed in the culling_TMP cache alongside the
         # image. Same file → subsequent calls hit that cache instead of
         # re-running the failing rawpy.postprocess.
+        #
+        # The fallback uses its OWN cache name (`..._preview_embedded.jpg`)
+        # rather than the normal `..._preview.jpg`, so a later cache hit can
+        # still tell the caller these bytes are an embedded preview and not an
+        # EV-corrected RAW render. See TestEmbeddedFallbackCacheSlot.
         cache_dir = he_scene["root"] / ".kestrel" / "culling_TMP"
-        jpegs = list(cache_dir.glob("*_preview.jpg"))
+        jpegs = list(cache_dir.glob("*_preview_embedded.jpg"))
         assert len(jpegs) == 1
         assert jpegs[0].read_bytes() == he_scene["embedded_bytes"]
+        # And it must NOT occupy the normal RAW-render slot.
+        assert list(cache_dir.glob("*_preview.jpg")) == []
 
     def test_he_with_no_embedded_preview_reports_original_error(self, he_scene):
         """If both the RAW decode AND the embedded preview extraction
@@ -287,3 +294,98 @@ class TestReadRawFullHeFallback:
         assert "fallback" not in result
         assert result["debug"].get("fallback") is None
         assert "postprocess_rgb_shape" in result["debug"]
+
+
+class TestEmbeddedFallbackCacheSlot:
+    """The `fallback` flag must survive a cache hit.
+
+    Both code paths return a JPEG, so the cached bytes are interchangeable —
+    what is not interchangeable is the claim the response makes about them.
+    A fallback preview is a fixed in-camera render with no exposure shift
+    applied. If a cache hit can't distinguish the two it drops the flag, and
+    scene-zoom.js re-labels the image "RAW (+X.XX EV)" — telling the user an
+    EV correction happened that never did and cannot.
+
+    Because the exposure value is part of the cache key, moving the EV slider
+    is a cache MISS and re-fires the fallback, so the flag looks correct there.
+    The regression only shows on re-viewing at an EV already viewed — i.e. the
+    ordinary zoom-in / zoom-out / zoom-in-again loop.
+    """
+
+    def test_cached_fallback_still_reports_the_flag(self, tmp_path):
+        root = tmp_path / "shoot"
+        root.mkdir()
+        nef = root / "DSC_7191.NEF"
+        nef.write_bytes(b"\x00")
+
+        unsupported = MagicMock()
+        unsupported.sizes = MagicMock(
+            width=8280, height=5520, raw_width=8280, raw_height=5520,
+            iwidth=8280, iheight=5520, flip=0,
+        )
+        unsupported.postprocess.side_effect = rawpy.LibRawFileUnsupportedError(
+            b"Unsupported file format or not RAW file"
+        )
+        unsupported.__enter__.return_value = unsupported
+        unsupported.__exit__.return_value = False
+
+        embedded_bytes = _make_jpeg_bytes((8256, 5504))
+        preview_raw = _mock_raw_thumb(
+            thumb_format=rawpy.ThumbFormat.JPEG, thumb_data=embedded_bytes,
+        )
+
+        api = api_bridge.Api()
+        with patch.object(
+            rawpy, "imread", side_effect=[unsupported, preview_raw],
+        ):
+            first = api.read_raw_full(nef.name, str(root))
+        assert first["success"] is True
+        assert first.get("fallback") == "embedded_jpeg_preview"
+
+        # Second view of the same file at the same EV: served from cache, so
+        # rawpy must not be touched at all — but the flag must still be there.
+        with patch.object(
+            rawpy, "imread", side_effect=AssertionError("should have hit cache"),
+        ):
+            second = api.read_raw_full(nef.name, str(root))
+
+        assert second["success"] is True
+        assert second["debug"]["cache_hit"] is True
+        assert second.get("fallback") == "embedded_jpeg_preview"
+        assert second["debug"].get("fallback") == "embedded_jpeg_preview"
+        import base64
+        assert base64.b64decode(second["data"]) == embedded_bytes
+
+    def test_cached_normal_render_does_not_claim_fallback(self, tmp_path):
+        """The inverse: a cached ordinary RAW render must NOT gain the flag."""
+        import numpy as np
+        root = tmp_path / "shoot"
+        root.mkdir()
+        nef = root / "DSC_0002.NEF"
+        nef.write_bytes(b"\x00")
+
+        rgb = np.zeros((64, 96, 3), dtype=np.uint8)
+        ok_raw = MagicMock()
+        ok_raw.sizes = MagicMock(
+            width=96, height=64, raw_width=96, raw_height=64,
+            iwidth=96, iheight=64, flip=0,
+        )
+        ok_raw.postprocess.return_value = rgb
+        ok_raw.__enter__.return_value = ok_raw
+        ok_raw.__exit__.return_value = False
+
+        api = api_bridge.Api()
+        with patch.object(rawpy, "imread", return_value=ok_raw):
+            first = api.read_raw_full(nef.name, str(root))
+        assert first["success"] is True
+        assert "fallback" not in first
+
+        with patch.object(
+            rawpy, "imread", side_effect=AssertionError("should have hit cache"),
+        ):
+            second = api.read_raw_full(nef.name, str(root))
+
+        assert second["success"] is True
+        assert second["debug"]["cache_hit"] is True
+        assert "fallback" not in second
+        assert second["debug"].get("fallback") is None
