@@ -10,17 +10,28 @@ __all__ = ["BirdSpeciesClassifier", "QualityClassifier", "SpeciesNetSAMHQWrapper
 # Platform-aware GPU execution provider for ONNX Runtime.
 # macOS: CoreMLExecutionProvider (Apple Neural Engine / GPU via Core ML)
 # Windows: DmlExecutionProvider (DirectX 12 GPU via DirectML)
-GPU_EP = "CoreMLExecutionProvider" if sys.platform == "darwin" else "DmlExecutionProvider"
+# Linux/other: no bundled GPU EP in this project build (CPU-only fallback)
+def _gpu_ep_for_platform(platform: str) -> str | None:
+    if platform == "darwin":
+        return "CoreMLExecutionProvider"
+    if platform.startswith("win"):
+        return "DmlExecutionProvider"
+    return None
+
+
+GPU_EP = _gpu_ep_for_platform(sys.platform)
 
 
 def gpu_providers() -> list[str]:
     """Return ONNX Runtime execution providers list for GPU acceleration on the current platform."""
-    return [GPU_EP, "CPUExecutionProvider"]
+    if GPU_EP:
+        return [GPU_EP, "CPUExecutionProvider"]
+    return ["CPUExecutionProvider"]
 
 
 def is_gpu_active(active_providers: list[str]) -> bool:
     """Return True if the platform GPU execution provider is active."""
-    return GPU_EP in active_providers
+    return bool(GPU_EP) and GPU_EP in active_providers
 
 
 def __getattr__(name: str) -> Any:

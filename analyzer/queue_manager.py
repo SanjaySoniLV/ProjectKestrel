@@ -486,6 +486,8 @@ class QueueManager:
                 pass
 
             try:
+                fatal_error: Exception | None = None
+
                 def _on_progress(processed, total, _it=item):
                     with self._lock:
                         if _it.initial_processed == 0 and processed > 0 and _it.processed == 0:
@@ -577,6 +579,15 @@ class QueueManager:
                     with self._lock:
                         _it.current_species_results = list(data.get('results') or [])
 
+                def _on_error(raw_file, exc, _it=item):
+                    nonlocal fatal_error
+                    if str(raw_file) != 'fatal':
+                        return
+                    fatal_error = exc if isinstance(exc, Exception) else RuntimeError(str(exc))
+                    with self._lock:
+                        _it.error = str(exc)
+                        _it.current_status_msg = f'Fatal error: {exc}'
+
                 self._pipeline.process_folder(
                     item.path,
                     pause_event=self._pause_event,
@@ -589,6 +600,7 @@ class QueueManager:
                         'on_crops': _on_crops,
                         'on_quality': _on_quality,
                         'on_species': _on_species,
+                        'on_error': _on_error,
                     },
                     analyzer_name='visualizer-queue',
                     wildlife_enabled=self._wildlife_enabled,
@@ -600,6 +612,8 @@ class QueueManager:
                     parallel_prefetch=self._parallel_prefetch,
                     retry_errored=self._retry_errored,
                 )
+                if fatal_error is not None:
+                    raise fatal_error
                 with self._lock:
                     if self._cancel_event.is_set():
                         item.status = 'cancelled'

@@ -533,6 +533,7 @@ class TestSampleSetMirror:
             staticmethod(lambda: str(root)),
         )
 
+
     def test_mirror_copies_tree_and_restores_db(self, api, tmp_path, monkeypatch):
         """First-use mirror: copytree happens and DB is reset from readonly src."""
         bundled = self._make_sample_set(tmp_path / "bundled", "backyard_birds",

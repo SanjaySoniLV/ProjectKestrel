@@ -2555,6 +2555,22 @@ class Api:
             no-op rather than destructive.
         """
         try:
+            def _coerce_bool_flag(value, *, default=False):
+                if isinstance(value, bool):
+                    return value
+                if isinstance(value, (int, float)):
+                    return value != 0
+                if isinstance(value, str):
+                    norm = value.strip().lower()
+                    if norm in {'1', 'true', 't', 'yes', 'y', 'on'}:
+                        return True
+                    if norm in {'0', 'false', 'f', 'no', 'n', 'off', ''}:
+                        return False
+                    return bool(default)
+                if value is None:
+                    return bool(default)
+                return bool(value)
+
             if isinstance(paths, str):
                 paths = json.loads(paths)
             if not isinstance(paths, list):
@@ -2614,8 +2630,14 @@ class Api:
                             real = str(raw_key)
                     if real is not None:
                         validated_per_item_options[real] = {
-                            'delete_kestrel_on_start': bool(opts.get('delete_kestrel_on_start')),
-                            'skip_if_already_done': bool(opts.get('skip_if_already_done')),
+                            'delete_kestrel_on_start': _coerce_bool_flag(
+                                opts.get('delete_kestrel_on_start'),
+                                default=False,
+                            ),
+                            'skip_if_already_done': _coerce_bool_flag(
+                                opts.get('skip_if_already_done'),
+                                default=False,
+                            ),
                         }
 
             sett = load_persisted_settings()
@@ -2651,16 +2673,16 @@ class Api:
             except (TypeError, ValueError):
                 parallel_prefetch = 3
             parallel_prefetch = max(1, min(5, parallel_prefetch))
-            return _queue_manager.enqueue(validated_paths, use_gpu=bool(use_gpu),
-                                          wildlife_enabled=bool(wildlife_enabled),
-                                          species_detection_enabled=bool(species_detection_enabled),
+            return _queue_manager.enqueue(validated_paths, use_gpu=_coerce_bool_flag(use_gpu, default=True),
+                                          wildlife_enabled=_coerce_bool_flag(wildlife_enabled, default=True),
+                                          species_detection_enabled=_coerce_bool_flag(species_detection_enabled, default=True),
                                           detection_threshold=detection_threshold,
                                           scene_time_threshold=scene_time_threshold,
                                           mask_threshold=mask_threshold,
                                           max_bird_crops=max_bird_crops,
                                           parallel_prefetch=parallel_prefetch,
                                           detector_name=detector_name,
-                                          retry_errored=bool(retry_errored),
+                                          retry_errored=_coerce_bool_flag(retry_errored, default=False),
                                           per_item_options=validated_per_item_options)
         except Exception as e:
             error(f'[API] start_analysis_queue error: {e}')
