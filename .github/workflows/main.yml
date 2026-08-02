@@ -96,7 +96,17 @@ jobs:
           # Windows build uses onnxruntime-directml (DirectML GPU acceleration).
           # See requirements-windows.txt.
           pip install -r requirements-windows.txt
-          pip install pyinstaller
+          pip install pyinstaller pytest
+
+      # Hard gate, not continue-on-error: this produces the shipped Windows
+      # installer. The dev workflow only warns on failure, so nothing was
+      # actually blocking a regression from reaching a release artifact.
+      - name: Test gate — pytest (skip ui marker)
+        shell: powershell
+        run: |
+          .\.venv2\Scripts\Activate.ps1
+          python -m pytest analyzer/tests/ -m "not ui" -q --tb=short
+          if ($LASTEXITCODE -ne 0) { throw "pytest gate failed" }
 
       - name: Smoke test CLI from source (repo root, first 2 test images)
         shell: powershell
