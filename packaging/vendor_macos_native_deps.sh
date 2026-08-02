@@ -36,8 +36,20 @@ set -euo pipefail
 PY="${1:?usage: vendor_macos_native_deps.sh <path-to-venv-python>}"
 BIN_DIR="$(dirname "$PY")"
 
-echo "==> Installing Homebrew inih (source of libINIReader)"
-brew list inih >/dev/null 2>&1 || brew install inih
+# The full set of Homebrew libraries libexiv2.dylib links against, from otool -L
+# on a macos-latest runner:
+#   /opt/homebrew/opt/inih/lib/libINIReader.0.dylib
+#   /opt/homebrew/opt/inih/lib/libinih.0.dylib
+#   /opt/homebrew/opt/brotli/lib/libbrotlidec.1.dylib
+#   /opt/homebrew/opt/brotli/lib/libbrotlicommon.1.dylib
+#   /opt/homebrew/opt/gettext/lib/libintl.8.dylib
+# (/usr/lib/* are OS-provided and always present, so they need no vendoring.)
+# delocate can only copy a dependency that exists on disk, so install all three
+# formulae even though the runner usually already has brotli and gettext.
+echo "==> Installing Homebrew deps that libexiv2 links against"
+for formula in inih brotli gettext; do
+  brew list "$formula" >/dev/null 2>&1 || brew install "$formula"
+done
 
 echo "==> Installing delocate"
 "$PY" -m pip install --quiet delocate
@@ -54,13 +66,14 @@ echo "==> pyexiv2 lib dir: $LIB_DIR"
 echo "==> Load commands BEFORE:"
 otool -L "$LIB_DIR"/libexiv2.dylib | sed -n '2,20p' || true
 
-# --lib-sdir=vendored, not the default ".dylibs": a dot-prefixed directory is
-# easy for packaging tools to treat as hidden and skip, and this has to survive
-# PyInstaller's collect_all.
+# -L vendored, not the default ".dylibs": a dot-prefixed directory is easy for
+# packaging tools to treat as hidden and skip, and this has to survive
+# PyInstaller's collect_all. (The flag is -L / --lib-path; delocate-path has no
+# --lib-sdir, which is a delocate-wheel option.)
 if [[ -x "$BIN_DIR/delocate-path" ]]; then
-  "$BIN_DIR/delocate-path" --lib-sdir=vendored "$LIB_DIR"
+  "$BIN_DIR/delocate-path" -L vendored "$LIB_DIR"
 else
-  "$PY" -m delocate.cmd.delocate_path --lib-sdir=vendored "$LIB_DIR"
+  "$PY" -m delocate.cmd.delocate_path -L vendored "$LIB_DIR"
 fi
 
 echo "==> Load commands AFTER:"
