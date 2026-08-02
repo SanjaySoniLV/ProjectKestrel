@@ -31,7 +31,7 @@ jobs:
       # script resolves the prefix via delocate rather than hardcoding either.
       - name: Vendor pyexiv2 native deps (fixes JPEG XMP embedding off-Homebrew)
         shell: bash
-        run: packaging/vendor_macos_native_deps.sh .venv2/bin/python
+        run: bash packaging/vendor_macos_native_deps.sh .venv2/bin/python
 
       # Hard gate, not continue-on-error: this is a release artifact.
       - name: Test gate — pytest (skip ui marker)

@@ -113,7 +113,7 @@ jobs:
       # runs that import raises OSError and kills pytest collection outright.
       - name: Vendor pyexiv2 native deps (fixes JPEG XMP embedding off-Homebrew)
         shell: bash
-        run: packaging/vendor_macos_native_deps.sh .venv2/bin/python
+        run: bash packaging/vendor_macos_native_deps.sh .venv2/bin/python
 
       - name: Test gate — pytest (skip ui marker)
         # Skippable ONLY for fast iteration builds via bypass_tests=true. Every
