@@ -547,9 +547,30 @@ def test_remint_session_token_uses_client_token(monkeypatch):
 
     monkeypatch.setattr(oauth_client, "_fapi_get_session_token", _mint)
     out = oauth_client.remint_session_token("CLIENTTOK", "sess_9")
-    assert out == "NEW.SESSION.JWT"
+    # No rotation happened, so the caller gets its own token back unchanged.
+    assert out == ("NEW.SESSION.JWT", "CLIENTTOK")
     assert seen["client"] == "CLIENTTOK"  # durable native client token used for auth
     assert seen["sid"] == "sess_9"
+
+
+def test_remint_session_token_returns_rotated_client_token(monkeypatch):
+    """Clerk rotates the native-mode client token on every FAPI response; the
+    re-mint must hand the new one back so the bundle stays usable."""
+
+    def _mint(sess, sid):
+        sess.client_token = "ROTATED.CLIENTTOK"  # what _fapi_post captures
+        return "NEW.SESSION.JWT"
+
+    monkeypatch.setattr(oauth_client, "_fapi_get_session_token", _mint)
+    out = oauth_client.remint_session_token("OLD.CLIENTTOK", "sess_9")
+    assert out == ("NEW.SESSION.JWT", "ROTATED.CLIENTTOK")
+
+
+def test_remint_session_token_returns_none_when_mint_fails(monkeypatch):
+    monkeypatch.setattr(
+        oauth_client, "_fapi_get_session_token", lambda sess, sid: None
+    )
+    assert oauth_client.remint_session_token("CLIENTTOK", "sess_9") is None
 
 
 def test_remint_session_token_requires_inputs():

@@ -1171,8 +1171,20 @@ class Api:
                     'data': ''
                 }
             
-            with open(csv_path, 'r', encoding='utf-8') as f:
-                data = f.read()
+            # The analysis pipeline saves this CSV after every processed image
+            # while this auto-refresh read runs, and on Windows the two collide
+            # transiently even though the save is atomic. read_database_text
+            # retries through that; a bare open() surfaces it to the user as a
+            # spurious "permission denied". See kestrel_analyzer.database.
+            try:
+                try:
+                    from kestrel_analyzer.database import read_database_text
+                except ImportError:  # package-style import path
+                    from analyzer.kestrel_analyzer.database import read_database_text  # type: ignore[no-redef]
+                data = read_database_text(csv_path)
+            except ImportError:
+                with open(csv_path, 'r', encoding='utf-8') as f:
+                    data = f.read()
 
             self._track_cache_root(parent_folder)
             
@@ -1481,26 +1493,41 @@ class Api:
             return {'success': False, 'error': str(e), 'map': {}}
 
     def fetch_remote_version(self):
-        """Fetch version.json from projectkestrel.org to bypass CORS in JS."""
+        """Fetch the release manifest from projectkestrel.org to bypass CORS in JS.
+
+        Prefers ``version_v2.json`` — ``{schema, releases:[{version,
+        effective_date, ...}]}`` — which lets the client compare numeric
+        versions and defer the in-app prompt until a scheduled date. Falls back
+        to the v1 ``version.json`` array if v2 is unreachable; the JS side
+        accepts either shape.
+        """
         try:
             import urllib.request
             import urllib.error
             import json
             import ssl
             import certifi
-            
-            url = "https://projectkestrel.org/version.json"
+
             ctx = ssl.create_default_context(cafile=certifi.where())
-            
-            req = urllib.request.Request(
-                url,
-                headers={'User-Agent': 'ProjectKestrel/1.0'},
-                method='GET'
-            )
-            
-            with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
-                data = json.loads(resp.read().decode('utf-8'))
-                return {'success': True, 'data': data}
+            last_err = None
+
+            for url in ("https://projectkestrel.org/version_v2.json",
+                        "https://projectkestrel.org/version.json"):
+                req = urllib.request.Request(
+                    url,
+                    headers={'User-Agent': 'ProjectKestrel/1.0'},
+                    method='GET'
+                )
+                try:
+                    with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+                        data = json.loads(resp.read().decode('utf-8'))
+                        return {'success': True, 'data': data}
+                except Exception as e:
+                    # v2 is absent on an older/rolled-back site; try v1 before
+                    # reporting failure.
+                    last_err = e
+
+            raise last_err if last_err else RuntimeError('no version manifest')
         except Exception as e:
             error(f'[API] fetch_remote_version error: {e}')
             return {'success': False, 'error': str(e)}
@@ -2949,11 +2976,16 @@ class Api:
                         return current
                 except (TypeError, ValueError):
                     pass
-            token = _oauth.remint_session_token(client, sid)
-            if not token:
+            minted = _oauth.remint_session_token(client, sid)
+            if not minted:
                 # Transient (network) or the session ended. Keep the old bundle;
                 # the staleness floor will surface signed-out once it expires.
                 return current or bundle
+            # Clerk rotates the native-mode client token on every Frontend-API
+            # response, so persist the token the mint came back with rather than
+            # the one we sent — otherwise the next re-mint presents a superseded
+            # credential and the user is silently signed out.
+            token, client = minted
             new_bundle = _oauth.build_session_bundle(token, client, sid)
             _keyring_save(new_bundle)
             self._invalidate_account_caches()

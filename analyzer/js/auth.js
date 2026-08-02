@@ -406,6 +406,83 @@
       }
     }
 
+    // Parse a dotted version string ("6.2.0.0") into a comparable array.
+    // Returns null for anything unparseable so callers can fall back.
+    function parseVersionNumber(raw) {
+      if (typeof raw !== 'string' && typeof raw !== 'number') return null;
+      const parts = String(raw).trim().split('.');
+      if (!parts.length || parts.some(p => !/^\d+$/.test(p))) return null;
+      return parts.map(Number);
+    }
+
+    // Compare two parsed version arrays of possibly different length.
+    // Returns >0 if a is newer, <0 if b is newer, 0 if equal.
+    function compareVersionNumbers(a, b) {
+      const len = Math.max(a.length, b.length);
+      for (let i = 0; i < len; i++) {
+        const diff = (a[i] || 0) - (b[i] || 0);
+        if (diff !== 0) return diff;
+      }
+      return 0;
+    }
+
+    // This build's numeric version, from the bundled VERSION_NUMBER.txt.
+    // Cached after the first read; null when the file is missing (older
+    // builds, or a source checkout that has not been packaged).
+    let _appVersionNumber;
+    async function getLocalVersionNumber() {
+      if (_appVersionNumber !== undefined) return _appVersionNumber;
+      _appVersionNumber = null;
+      try {
+        const resp = await fetch('VERSION_NUMBER.txt', { cache: 'no-store' });
+        if (resp.ok) _appVersionNumber = parseVersionNumber(await resp.text());
+      } catch (e) { /* offline or not bundled - stay null */ }
+      return _appVersionNumber;
+    }
+
+    // Pick the newest release a client should be told about right now.
+    //
+    // Two gates, both of which the old name-equality check lacked:
+    //   1. effective_date - a release can go live on GitHub and the stores
+    //      while the in-app prompt is scheduled for later, so the Microsoft
+    //      Store and App Store reviews have time to land and every channel
+    //      points at the same version when users start being nudged.
+    //   2. numeric version - only prompt for something strictly newer than
+    //      what is installed. A dev build carrying a higher number than
+    //      anything published stops being nagged on every launch.
+    //
+    // Falls back to the old codename comparison when this build has no
+    // VERSION_NUMBER.txt, so older clients reading a v2 manifest still work.
+    function selectApplicableRelease(releases, localNumber, localName, now) {
+      const normalize = s => String(s || '')
+        .replace(/^v\(/ig, '').replace(/\)$/g, '').trim();
+      const localNorm = normalize(localName);
+
+      for (const rel of releases) {
+        if (!rel || !rel.name) continue;
+
+        // Gate 1: not yet effective for in-app prompting.
+        const effective = rel.effective_date || rel.date;
+        if (effective) {
+          const when = Date.parse(`${effective}T00:00:00Z`);
+          if (!Number.isNaN(when) && now < when) continue;
+        }
+
+        // Gate 2: strictly newer than what is installed.
+        const remoteNumber = parseVersionNumber(rel.version);
+        if (localNumber && remoteNumber) {
+          if (compareVersionNumbers(remoteNumber, localNumber) <= 0) return null;
+        } else if (normalize(rel.name) === localNorm) {
+          // No numbers to compare on one side; the codename match means this
+          // is the installed build, so there is nothing newer to offer.
+          return null;
+        }
+
+        return rel;
+      }
+      return null;
+    }
+
     // Check remote version from JSON endpoint
     async function checkRemoteVersion() {
       try {
@@ -428,31 +505,43 @@
           } catch (e) { /* ignore */ }
         }
         
-        let versionList;
+        // Prefer the v2 manifest (numeric versions + effective dates); the
+        // bridge fetch bypasses CORS, the direct fetch is the fallback. The
+        // v1 version.json stays published for builds that predate v2.
+        let manifest;
         if (window.pywebview?.api?.fetch_remote_version) {
           const res = await window.pywebview.api.fetch_remote_version();
           if (res && res.success && res.data) {
-            versionList = res.data;
+            manifest = res.data;
           }
         }
-        
-        if (!versionList) {
-          const resp = await fetch('https://projectkestrel.org/version.json', { cache: 'no-store' });
-          if (!resp.ok) return;
-          versionList = await resp.json();
+
+        if (!manifest) {
+          for (const url of ['https://projectkestrel.org/version_v2.json',
+                             'https://projectkestrel.org/version.json']) {
+            try {
+              const resp = await fetch(url, { cache: 'no-store' });
+              if (!resp.ok) continue;
+              manifest = await resp.json();
+              break;
+            } catch (e) { /* try the next URL */ }
+          }
         }
-        
-        if (!Array.isArray(versionList) || versionList.length === 0) return;
-        
-        const latestVersion = versionList[0]; // first entry is latest
-        
-        // Compare versions: check if latest name differs from current
-        if (!latestVersion.name) return;
-        const normalizedLocal = (currentVer || '').replace(/^v\(/ig, '').replace(/\)$/g, '').trim();
-        const normalizedRemote = latestVersion.name.replace(/^v\(/ig, '').replace(/\)$/g, '').trim();
-        
-        if (normalizedRemote === normalizedLocal) return;
-        
+        if (!manifest) return;
+
+        // v2 is {schema, releases:[...]}; v1 is a bare array. Accept both so a
+        // rollback of the website does not break the client.
+        const versionList = Array.isArray(manifest)
+          ? manifest
+          : (Array.isArray(manifest.releases) ? manifest.releases : null);
+        if (!versionList || versionList.length === 0) return;
+
+        const localNumber = await getLocalVersionNumber();
+        const latestVersion = selectApplicableRelease(
+          versionList, localNumber, currentVer, Date.now()
+        );
+        if (!latestVersion) return;
+
         // Show update notification
         showVersionUpdateNotification(latestVersion);
       } catch (e) {

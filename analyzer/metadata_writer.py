@@ -500,12 +500,27 @@ def write_xmp_metadata(
                 xmp_path = base + '.xmp'
                 xmp_filename = os.path.basename(xmp_path)
 
-                # Embed XMP directly into JPEG originals when requested. This is
-                # independent of the sidecar write below — it merges into the
-                # file's own XMP segment (Lightroom ignores .xmp sidecars for
-                # JPEGs) and only runs when the real image file is present.
-                # Failures are recorded per-file and never abort the batch or
-                # the sidecar write.
+                # Safety check: if XMP already exists, verify origin
+                if os.path.exists(xmp_path):
+                    if not _is_kestrel_xmp(xmp_path):
+                        if not overwrite_external:
+                            skipped_conflicts.append(xmp_filename)
+                            warn(f'[metadata] write_xmp: skipping external XMP {xmp_path}')
+                            continue
+                        else:
+                            info(f'[metadata] write_xmp: overwriting external XMP {xmp_path} (user confirmed)')
+
+                # Embed XMP directly into JPEG originals when requested. This
+                # merges into the file's own XMP segment (Lightroom ignores
+                # .xmp sidecars for JPEGs) and only runs when the real image
+                # file is present. Failures are recorded per-file and never
+                # abort the batch or the sidecar write.
+                #
+                # This MUST stay below the conflict check above: it rewrites the
+                # user's original in place, so it may only run for files the
+                # batch is actually cleared to write. Running it first meant a
+                # file whose sidecar was withheld pending confirmation had
+                # already been modified.
                 if embed_jpeg and _is_jpeg(filename) and os.path.isfile(resolved_image):
                     try:
                         _embed_xmp_in_jpeg(
@@ -524,16 +539,6 @@ def write_xmp_metadata(
                     except Exception as embed_err:
                         embed_errors.append(f'{filename}: {embed_err}')
                         warn(f'[metadata] embed_jpeg: failed for {filename}: {embed_err}')
-
-                # Safety check: if XMP already exists, verify origin
-                if os.path.exists(xmp_path):
-                    if not _is_kestrel_xmp(xmp_path):
-                        if not overwrite_external:
-                            skipped_conflicts.append(xmp_filename)
-                            warn(f'[metadata] write_xmp: skipping external XMP {xmp_path}')
-                            continue
-                        else:
-                            info(f'[metadata] write_xmp: overwriting external XMP {xmp_path} (user confirmed)')
 
                 xmp_content = _build_xmp_packet(
                     rating=rating,

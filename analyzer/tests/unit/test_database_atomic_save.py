@@ -17,7 +17,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from kestrel_analyzer.database import _to_csv_atomic, save_database
+from kestrel_analyzer.database import (
+    _to_csv_atomic,
+    read_database_csv,
+    save_database,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -74,6 +78,18 @@ class TestAtomicCsvWrite:
         Against the pre-fix ``database.to_csv(db_path, index=False)`` this fails
         within a few hundred milliseconds with the two signatures seen in crash
         reports: ``No columns to parse from file`` and ``EOF inside string``.
+
+        The reader goes through ``read_database_csv`` because that is what every
+        reader in the app uses. On Windows the atomic write guarantees
+        all-or-nothing content but not a collision-free ``open()``: a reader can
+        still catch the destination mid-rename and get ``PermissionError``, which
+        both sides absorb by retrying. A bare ``pd.read_csv`` here would be
+        testing a call path the app does not have.
+
+        The reader pauses briefly between reads to model the UI's auto-refresh
+        timer. A zero-gap reopen loop can starve the writer past its retry window
+        on Windows — see ``retry_on_file_lock`` — which is an artifact of the
+        test harness rather than a race the app can hit.
         """
         db_path = str(tmp_path / "kestrel_database.csv")
         df = _frame()
@@ -82,17 +98,22 @@ class TestAtomicCsvWrite:
         stop = threading.Event()
         errors = []
         reads = []
+        write_errors = []
 
         def writer():
             while not stop.is_set():
-                save_database(df, db_path)
+                try:
+                    save_database(df, db_path)
+                except Exception as exc:  # noqa: BLE001 - recording for assert
+                    write_errors.append(f"{type(exc).__name__}: {exc}")
 
         def reader():
             while not stop.is_set():
                 try:
-                    reads.append(len(pd.read_csv(db_path)))
+                    reads.append(len(read_database_csv(db_path)))
                 except Exception as exc:  # noqa: BLE001 - recording for assert
                     errors.append(f"{type(exc).__name__}: {exc}")
+                stop.wait(0.01)  # poll like the UI timer, don't spin
 
         threads = [threading.Thread(target=writer), threading.Thread(target=reader)]
         for t in threads:
@@ -103,6 +124,11 @@ class TestAtomicCsvWrite:
             t.join()
 
         assert not errors, f"{len(errors)} partial read(s), e.g. {errors[0]}"
+        # A save that raises is a silently lost write — the failure mode the
+        # writer-side retry exists to close.
+        assert not write_errors, (
+            f"{len(write_errors)} dropped save(s), e.g. {write_errors[0]}"
+        )
         assert reads, "reader never completed a read"
         # Every successful read must see the whole database, never a prefix.
         assert set(reads) == {len(df)}

@@ -764,7 +764,8 @@ class TestClerkSessionRefresh:
             _json.dumps({"exp": int(_t.time()) + 3600, "sub": "user_1"}).encode()
         ).rstrip(b"=").decode()
         new_jwt = "hdr." + seg + ".sig"
-        monkeypatch.setattr(api_bridge._oauth, "remint_session_token", lambda c, s: new_jwt)
+        monkeypatch.setattr(api_bridge._oauth, "remint_session_token",
+                            lambda c, s: (new_jwt, "ROTATED.CLIENT"))
         monkeypatch.setattr(api_bridge, "_keyring_load", lambda: None)
         monkeypatch.setattr(api_bridge, "_keyring_save", lambda bundle: saved.update(bundle))
 
@@ -773,6 +774,10 @@ class TestClerkSessionRefresh:
         assert out["access_token"] == new_jwt
         assert out["kind"] == "clerk_session"
         assert saved.get("access_token") == new_jwt  # persisted to keychain
+        # Clerk rotates the native-mode client token on every response; the
+        # rebuilt bundle must carry the new one, not the token we sent.
+        assert out["clerk_client"] == "ROTATED.CLIENT"
+        assert saved.get("clerk_client") == "ROTATED.CLIENT"
 
     def test_remint_failure_keeps_old_bundle(self, api, monkeypatch):
         import time as _t
