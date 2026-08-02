@@ -27,6 +27,10 @@ jobs:
           pip install -r requirements-macos.txt
           pip install pyinstaller pytest
 
+      - name: Vendor pyexiv2 native deps (fixes JPEG XMP embedding off-Homebrew)
+        shell: bash
+        run: bash packaging/vendor_macos_native_deps.sh .venv2/bin/python
+
       - name: Run pytest from source (skip ui marker)
         id: pretest
         continue-on-error: true
