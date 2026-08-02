@@ -27,10 +27,13 @@ jobs:
           pip install -r requirements-macos.txt
           pip install pyinstaller pytest
 
+      - name: Vendor pyexiv2 native deps (fixes JPEG XMP embedding off-Homebrew)
+        shell: bash
+        run: bash packaging/vendor_macos_native_deps.sh .venv2/bin/python
+
       # TEMPORARY (branch fix/pyexiv2-macos): ground truth for the pyexiv2
-      # dylib repair. Purely informational — never fails the build — because
-      # three attempts at this fix were each based on inference from a single
-      # error line. Dump the whole picture once instead.
+      # dylib repair. Purely informational — never fails the build. Now runs
+      # AFTER the vendoring so it shows the repaired state.
       - name: DIAGNOSTIC — pyexiv2 native layout
         continue-on-error: true
         shell: bash
