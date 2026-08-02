@@ -144,6 +144,20 @@ jobs:
           chmod +x packaging/build_app_headless.sh
           ./packaging/build_app_headless.sh
 
+      # Proves the repaired pyexiv2 native libraries survived PyInstaller into
+      # the bundle. Gating: a broken bundle fails silently at runtime
+      # (metadata_writer degrades to a per-file embed_errors entry), so this is
+      # the only thing standing between that and a shipped release.
+      - name: Metadata probe (JPEG XMP embed) against frozen binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="${RUNNER_TEMP}/metadata-probe.json"
+          rm -f "$OUT"
+          analyzer/dist/ProjectKestrel/ProjectKestrel --cli --selftest-metadata --json-out "$OUT"
+          echo "=== metadata-probe.json ==="
+          cat "$OUT"
+
       - name: Smoke test built executable (first 2 test images)
         id: smoke_test
         continue-on-error: true

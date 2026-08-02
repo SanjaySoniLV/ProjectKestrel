@@ -178,6 +178,30 @@ jobs:
             echo "::error::AuthenticationServices wrapper missing from the bundle — in-app sign-in would be unavailable."
             exit 1
           fi
+          # pyexiv2's vendored native deps (see packaging/vendor_macos_native_deps.sh).
+          # The DMG workflows run --selftest-metadata against the frozen binary to
+          # prove embedding actually works; this build cannot, because the
+          # App-Store-signed app is SIGKILLed outside the App Store context. So
+          # check the libraries are present and carry no absolute Homebrew paths —
+          # the two ways this regresses. Without them JPEG metadata embedding
+          # fails silently on every user's Mac.
+          LIBEXIV2=$(find "$APP" -name 'libexiv2*.dylib' | head -n 1)
+          if [ -z "$LIBEXIV2" ]; then
+            echo "::error::libexiv2 missing from the bundle — JPEG metadata embedding would fail silently."
+            exit 1
+          fi
+          for dep in libINIReader libinih libbrotlidec libbrotlicommon libintl; do
+            if ! find "$APP" -name "${dep}*.dylib" | grep -q .; then
+              echo "::error::${dep} missing from the bundle — libexiv2 cannot load off-Homebrew."
+              exit 1
+            fi
+          done
+          if otool -L "$LIBEXIV2" | tail -n +2 | awk '{print $1}' | grep -qE '^(/opt/homebrew|/usr/local)/'; then
+            echo "::error::bundled libexiv2 still references an absolute Homebrew path:"
+            otool -L "$LIBEXIV2" | grep -E '/(opt/homebrew|usr/local)/'
+            exit 1
+          fi
+          echo "OK - pyexiv2 native deps bundled with relocatable paths."
 
       - name: Install signing certs into a temporary keychain
         shell: bash
