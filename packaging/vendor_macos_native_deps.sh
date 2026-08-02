@@ -1,102 +1,145 @@
 #!/usr/bin/env bash
 #
-# Vendor pyexiv2's external native dependencies into its own package directory.
+# Vendor pyexiv2's external Homebrew dependencies into its own lib/ directory.
 #
-# WHY THIS EXISTS
+# THE PROBLEM
 #
-# pyexiv2's macOS wheel ships its own libexiv2.dylib, but that dylib carries an
-# ABSOLUTE load path to Homebrew's libINIReader:
+# pyexiv2's macOS wheel ships pyexiv2/lib/libexiv2.dylib, but that dylib was
+# never delocated: its load commands still point at the Homebrew prefix of the
+# machine it was built on.
 #
-#     /opt/homebrew/opt/inih/lib/libINIReader.0.dylib      (arm64)
-#     /usr/local/opt/inih/lib/libINIReader.0.dylib         (x86_64)
+#   $ otool -L .../pyexiv2/lib/libexiv2.dylib
+#     /opt/homebrew/opt/inih/lib/libINIReader.0.dylib
+#     /opt/homebrew/opt/inih/lib/libinih.0.dylib
+#     /opt/homebrew/opt/brotli/lib/libbrotlidec.1.dylib
+#     /opt/homebrew/opt/brotli/lib/libbrotlicommon.1.dylib
+#     /opt/homebrew/opt/gettext/lib/libintl.8.dylib
 #
-# The wheel was never delocated, so that path is baked in. Homebrew does not
-# exist on a typical user's Mac, so `import pyexiv2` raises
+# Homebrew does not exist on a typical user's Mac, so `import pyexiv2` raises
+# OSError there and the opt-in "embed XMP into JPEG originals" feature fails on
+# every file — silently, because metadata_writer._load_pyexiv2() degrades to a
+# per-file embed_errors entry rather than raising. The user gets no metadata and
+# no meaningful explanation.
 #
-#     OSError: dlopen(...libexiv2.dylib): Library not loaded: .../libINIReader.0.dylib
+# WHY NOT delocate
 #
-# and the opt-in "embed XMP into JPEG originals" feature fails on every file —
-# silently, because metadata_writer._load_pyexiv2() degrades to a per-file
-# embed_errors entry rather than crashing. The user just gets no metadata.
+# delocate is the obvious tool and it does not work here. pyexiv2/lib/__init__.py
+# loads the library with an explicit ctypes.CDLL(<lib_dir>/libexiv2.dylib)
+# preload, and libexiv2.dylib's install name is @rpath/libexiv2.28.dylib. The
+# preload is what makes that @rpath reference resolve at runtime — the image is
+# already loaded under that name by the time exiv2api.so needs it. There is no
+# file named libexiv2.28.dylib on disk and exiv2api.so carries no LC_RPATH, so
+# delocate's static graph walk fails with "@rpath/libexiv2.28.dylib not found"
+# before it ever gets to the dependencies that actually need fixing.
 #
-# PyInstaller's collect_all('pyexiv2') copies the package's own files, but it
-# does not rewrite external load commands and cannot collect a library that is
-# not part of the wheel. So the repair has to happen in the venv, BEFORE
-# PyInstaller freezes it and before anything is signed.
+# Since only libexiv2.dylib has bad load commands, rewriting them directly is
+# both sufficient and more predictable than fighting delocate's model.
 #
-# delocate is the tool wheel builders use for exactly this: it walks the load
-# commands, copies each external dependency in beside the library, and rewrites
-# the paths to be relative (@loader_path). Homebrew's inih must be installed
-# first, because delocate can only copy a dependency that actually exists.
+# WHAT THIS DOES
+#
+# Walk libexiv2.dylib's dependency graph. For every dependency under a Homebrew
+# prefix, copy it next to libexiv2.dylib and rewrite the reference to
+# @loader_path/<name>, recursing so transitive deps (libINIReader -> libinih,
+# libbrotlidec -> libbrotlicommon) are handled too. /usr/lib/* is left alone:
+# those ship with macOS.
+#
+# Files land directly in pyexiv2/lib/ so PyInstaller's collect_all('pyexiv2')
+# picks them up as ordinary package binaries.
 #
 # Usage: packaging/vendor_macos_native_deps.sh <path-to-venv-python>
 
 set -euo pipefail
 
 PY="${1:?usage: vendor_macos_native_deps.sh <path-to-venv-python>}"
-BIN_DIR="$(dirname "$PY")"
 
-# The full set of Homebrew libraries libexiv2.dylib links against, from otool -L
-# on a macos-latest runner:
-#   /opt/homebrew/opt/inih/lib/libINIReader.0.dylib
-#   /opt/homebrew/opt/inih/lib/libinih.0.dylib
-#   /opt/homebrew/opt/brotli/lib/libbrotlidec.1.dylib
-#   /opt/homebrew/opt/brotli/lib/libbrotlicommon.1.dylib
-#   /opt/homebrew/opt/gettext/lib/libintl.8.dylib
-# (/usr/lib/* are OS-provided and always present, so they need no vendoring.)
-# delocate can only copy a dependency that exists on disk, so install all three
-# formulae even though the runner usually already has brotli and gettext.
-echo "==> Installing Homebrew deps that libexiv2 links against"
+# Homebrew prefixes differ by arch: /opt/homebrew on arm64, /usr/local on x86_64.
+# Match both rather than hardcoding, so this works on the Intel runner too.
+BREW_RE='^(/opt/homebrew|/usr/local)/'
+
+echo "==> Installing the Homebrew formulae libexiv2 links against"
 for formula in inih brotli gettext; do
   brew list "$formula" >/dev/null 2>&1 || brew install "$formula"
 done
 
-echo "==> Installing delocate"
-"$PY" -m pip install --quiet delocate
-
-# Locate pyexiv2 WITHOUT importing it — importing triggers the very dlopen that
-# is broken until this script has run.
+# Locate pyexiv2 WITHOUT importing it — importing triggers the broken dlopen.
 LIB_DIR="$("$PY" -c 'import sysconfig, os; print(os.path.join(sysconfig.get_paths()["purelib"], "pyexiv2", "lib"))')"
-if [[ ! -d "$LIB_DIR" ]]; then
-  echo "ERROR: pyexiv2 lib directory not found at $LIB_DIR" >&2
-  exit 1
-fi
+[[ -d "$LIB_DIR" ]] || { echo "ERROR: pyexiv2 lib dir not found at $LIB_DIR" >&2; exit 1; }
 echo "==> pyexiv2 lib dir: $LIB_DIR"
 
-echo "==> Load commands BEFORE:"
-otool -L "$LIB_DIR"/libexiv2.dylib | sed -n '2,20p' || true
+echo "==> BEFORE:"
+otool -L "$LIB_DIR/libexiv2.dylib" | sed -n '2,30p'
 
-# -L vendored, not the default ".dylibs": a dot-prefixed directory is easy for
-# packaging tools to treat as hidden and skip, and this has to survive
-# PyInstaller's collect_all. (The flag is -L / --lib-path; delocate-path has no
-# --lib-sdir, which is a delocate-wheel option.)
-if [[ -x "$BIN_DIR/delocate-path" ]]; then
-  "$BIN_DIR/delocate-path" -L vendored "$LIB_DIR"
-else
-  "$PY" -m delocate.cmd.delocate_path -L vendored "$LIB_DIR"
-fi
+# Re-signing is not optional. On Apple Silicon every binary needs a valid
+# signature, and install_name_tool invalidates it — an unsigned-after-edit dylib
+# is killed by dyld at load time. Ad-hoc (-) signing is what the later real
+# signing step expects to find.
+resign() {
+  codesign --force --sign - "$1" 2>/dev/null || true
+}
 
-echo "==> Load commands AFTER:"
-otool -L "$LIB_DIR"/libexiv2.dylib | sed -n '2,20p' || true
+# Breadth-first over the dependency graph, since the Homebrew libs depend on
+# each other (libINIReader -> libinih, libbrotlidec -> libbrotlicommon).
+process_queue=("$LIB_DIR/libexiv2.dylib")
+declare -a copied=()
 
-echo "==> Vendored libraries:"
-ls -la "$LIB_DIR/vendored" 2>/dev/null || echo "  (none copied — see the check below)"
+while [[ ${#process_queue[@]} -gt 0 ]]; do
+  current="${process_queue[0]}"
+  process_queue=("${process_queue[@]:1}")
+  [[ -f "$current" ]] || continue
 
-# Fail the build here rather than shipping a silently broken feature. This is
-# the exact import that fails on a machine without Homebrew.
+  # Skip the leading line of otool -L (the file's own path) and the install-name
+  # line, then take the path column of each dependency.
+  while read -r dep; do
+    [[ -n "$dep" ]] || continue
+    [[ "$dep" =~ $BREW_RE ]] || continue          # /usr/lib/* ships with macOS
+
+    base="$(basename "$dep")"
+    dest="$LIB_DIR/$base"
+
+    if [[ ! -f "$dest" ]]; then
+      if [[ ! -f "$dep" ]]; then
+        echo "ERROR: dependency $dep does not exist on this machine" >&2
+        exit 1
+      fi
+      echo "    copying $base"
+      cp "$dep" "$dest"
+      chmod u+w "$dest"
+      # Its own id must not point back at the Homebrew prefix either.
+      install_name_tool -id "@loader_path/$base" "$dest"
+      resign "$dest"
+      copied+=("$base")
+      process_queue+=("$dest")                    # recurse into its deps
+    fi
+
+    echo "    $(basename "$current"): $dep -> @loader_path/$base"
+    chmod u+w "$current"
+    install_name_tool -change "$dep" "@loader_path/$base" "$current"
+    resign "$current"
+  done < <(otool -L "$current" | tail -n +2 | awk '{print $1}')
+done
+
+echo "==> Copied ${#copied[@]} libraries: ${copied[*]:-none}"
+
+echo "==> AFTER:"
+otool -L "$LIB_DIR/libexiv2.dylib" | sed -n '2,30p'
+
+# Any surviving absolute Homebrew path means the app would still break off-CI,
+# so fail here rather than shipping it. Check every binary, not just libexiv2.
+echo "==> Verifying no Homebrew paths remain"
+leaked=0
+for f in "$LIB_DIR"/*.dylib "$LIB_DIR"/*.so; do
+  [[ -e "$f" ]] || continue
+  if otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -qE "$BREW_RE"; then
+    echo "ERROR: $(basename "$f") still references a Homebrew path:" >&2
+    otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -E "$BREW_RE" >&2
+    leaked=1
+  fi
+done
+[[ $leaked -eq 0 ]] || exit 1
+
+# The real proof: this is the exact import that fails on a machine without
+# Homebrew. Do not let a build reach signing or upload if it cannot load.
 echo "==> Verifying pyexiv2 imports"
-"$PY" - <<'PYEOF'
-import pyexiv2
-print("pyexiv2 OK:", getattr(pyexiv2, "__version__", "unknown"))
-PYEOF
-
-# A remaining absolute Homebrew path means delocate did not fully resolve the
-# graph, and the app would still break off-CI even though the import worked here.
-if otool -L "$LIB_DIR"/libexiv2.dylib | grep -qE '/(opt/homebrew|usr/local)/'; then
-  echo "ERROR: libexiv2.dylib still references an absolute Homebrew path;" >&2
-  echo "       the shipped app would fail on a Mac without Homebrew." >&2
-  otool -L "$LIB_DIR"/libexiv2.dylib | grep -E '/(opt/homebrew|usr/local)/' >&2
-  exit 1
-fi
+"$PY" -c "import pyexiv2; print('pyexiv2 OK:', pyexiv2.__version__, '/ exiv2', pyexiv2.__exiv2_version__)"
 
 echo "==> pyexiv2 native dependencies vendored successfully."
