@@ -14,6 +14,7 @@
         sceneGrid.innerHTML = '';
         // Re-render so scene-grid.js can flip the welcome panel back on.
         try { if (typeof renderScenes === 'function') renderScenes(); } catch (_) { }
+        try { hideRawWarnBanner(); } catch (_) { }
         setStatus('No folders selected — check folders in the tree to load scenes');
       }
     }, 400);
@@ -144,6 +145,7 @@
       treeActivePath = paths.length === 1 ? paths[0] : null;
       renderFolderTree();
       await renderScenes();
+      try { refreshRawWarnBanner(); } catch (_) { }
       showProgress('Done', 100);
       await sleep(400);
       hideProgress();
@@ -202,6 +204,7 @@
 
         // Now render with rootPath set
         await renderScenes();
+        try { refreshRawWarnBanner(); } catch (_) { }
 
         // Also save in settings for file opening (use rootHint for consistency)
         const settings = loadSettings();

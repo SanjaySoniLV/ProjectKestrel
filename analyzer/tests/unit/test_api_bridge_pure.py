@@ -619,6 +619,114 @@ class TestSampleSetMirror:
         api.cleanup_sample_set_mirrors()
 
 
+class TestSampleSetDiscoveryPaths:
+    """Discovery should include in-repo analyzer/sample_sets in dev mode."""
+
+    def _make_sample_set(self, root: Path, name: str) -> Path:
+        set_dir = root / name
+        kestrel = set_dir / ".kestrel"
+        kestrel.mkdir(parents=True)
+        (kestrel / "kestrel_database_readonly.csv").write_text("header\nrow\n")
+        return set_dir
+
+    def test_dev_discovers_module_local_sample_sets(self, api, tmp_path, monkeypatch):
+        """When <repo>/sample_sets is absent, use <repo>/analyzer/sample_sets."""
+        project_root = tmp_path / "ProjectKestrel"
+        analyzer_dir = project_root / "analyzer"
+        analyzer_dir.mkdir(parents=True)
+        module_set = self._make_sample_set(analyzer_dir / "sample_sets", "tutorial_set")
+
+        monkeypatch.setattr(api_bridge, "__file__", str(analyzer_dir / "api_bridge.py"))
+        monkeypatch.setattr(sys, "frozen", False, raising=False)
+        monkeypatch.setattr(
+            api, "_mirror_sample_set_to_temp", lambda bundled_path, _debug: bundled_path
+        )
+
+        workdir = tmp_path / "workdir"
+        workdir.mkdir()
+        monkeypatch.chdir(workdir)
+
+        result = api.get_sample_sets_paths()
+        assert result["success"] is True
+        assert result["paths"] == [str(module_set)]
+
+    def test_dev_prefers_repo_root_sample_sets_when_present(self, api, tmp_path, monkeypatch):
+        """Preserve existing behavior: <repo>/sample_sets remains first choice."""
+        project_root = tmp_path / "ProjectKestrel"
+        root_set = self._make_sample_set(project_root / "sample_sets", "root_set")
+        analyzer_dir = project_root / "analyzer"
+        analyzer_set = self._make_sample_set(analyzer_dir / "sample_sets", "analyzer_set")
+        assert analyzer_set.is_dir()  # fixture sanity
+
+        monkeypatch.setattr(api_bridge, "__file__", str(analyzer_dir / "api_bridge.py"))
+        monkeypatch.setattr(sys, "frozen", False, raising=False)
+        monkeypatch.setattr(
+            api, "_mirror_sample_set_to_temp", lambda bundled_path, _debug: bundled_path
+        )
+
+        workdir = tmp_path / "workdir"
+        workdir.mkdir()
+        monkeypatch.chdir(workdir)
+
+        result = api.get_sample_sets_paths()
+        assert result["success"] is True
+        assert result["paths"] == [str(root_set)]
+
+
+class TestCleanupCullingCache:
+    """cleanup_culling_cache must tolerate ENOENT during rmtree.
+
+    Motivating field reports: macOS Finder / Spotlight can prune AppleDouble
+    ``._<name>`` sidecar files between rmtree's directory scan and the actual
+    unlink, and rmtree without ``ignore_errors`` propagates the resulting
+    ENOENT. The cache is a best-effort space reclaim; a missing sidecar must
+    not turn into an ``[API] cleanup_culling_cache error`` in the log.
+    """
+
+    def _make_culling_cache(self, root: Path) -> Path:
+        cache_dir = root / ".kestrel" / "culling_TMP"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "IMG_0001_abc_preview.jpg").write_bytes(b"jpg")
+        return cache_dir
+
+    def test_removes_existing_cache(self, api, tmp_path):
+        self._make_culling_cache(tmp_path)
+        res = api.cleanup_culling_cache(str(tmp_path))
+        assert res == {"success": True}
+        assert not (tmp_path / ".kestrel" / "culling_TMP").exists()
+
+    def test_noop_when_cache_absent(self, api, tmp_path):
+        (tmp_path / ".kestrel").mkdir()
+        res = api.cleanup_culling_cache(str(tmp_path))
+        assert res == {"success": True}
+
+    def test_tolerates_disappearing_entries(self, api, tmp_path, monkeypatch):
+        """A file that vanishes mid-rmtree (Finder-pruned AppleDouble) is not
+        surfaced as a failure — the return value stays ``success=True`` and
+        the whole tree is still removed."""
+        import shutil as _shutil
+        cache_dir = self._make_culling_cache(tmp_path)
+
+        real_rmtree = _shutil.rmtree
+        called = {}
+
+        def fake_rmtree(path, *args, ignore_errors=False, **kwargs):
+            called["ignore_errors"] = ignore_errors
+            # Simulate the macOS race: raise the exact ENOENT rmtree would
+            # raise on its own if the caller did not pass ignore_errors.
+            if not ignore_errors:
+                raise FileNotFoundError(2, "No such file or directory",
+                                        "._IMG_0001_abc_preview.jpg")
+            return real_rmtree(path, *args, ignore_errors=True, **kwargs)
+
+        monkeypatch.setattr("api_bridge.shutil.rmtree", fake_rmtree)
+
+        res = api.cleanup_culling_cache(str(tmp_path))
+        assert res == {"success": True}
+        assert called["ignore_errors"] is True
+        assert not cache_dir.exists()
+
+
 class TestClerkSessionRefresh:
     """The native-Apple bundle (kind=clerk_session) re-mints a short-lived Clerk
     session JWT from the durable __client credential instead of OAuth-refreshing."""
@@ -656,7 +764,8 @@ class TestClerkSessionRefresh:
             _json.dumps({"exp": int(_t.time()) + 3600, "sub": "user_1"}).encode()
         ).rstrip(b"=").decode()
         new_jwt = "hdr." + seg + ".sig"
-        monkeypatch.setattr(api_bridge._oauth, "remint_session_token", lambda c, s: new_jwt)
+        monkeypatch.setattr(api_bridge._oauth, "remint_session_token",
+                            lambda c, s: (new_jwt, "ROTATED.CLIENT"))
         monkeypatch.setattr(api_bridge, "_keyring_load", lambda: None)
         monkeypatch.setattr(api_bridge, "_keyring_save", lambda bundle: saved.update(bundle))
 
@@ -665,6 +774,10 @@ class TestClerkSessionRefresh:
         assert out["access_token"] == new_jwt
         assert out["kind"] == "clerk_session"
         assert saved.get("access_token") == new_jwt  # persisted to keychain
+        # Clerk rotates the native-mode client token on every response; the
+        # rebuilt bundle must carry the new one, not the token we sent.
+        assert out["clerk_client"] == "ROTATED.CLIENT"
+        assert saved.get("clerk_client") == "ROTATED.CLIENT"
 
     def test_remint_failure_keeps_old_bundle(self, api, monkeypatch):
         import time as _t

@@ -8,7 +8,7 @@
   <Identity
     Name="47873DoveVision.DoveEyeImageCullingAccelerated"
     Publisher="CN=3068A254-E666-49EB-8E3B-BB19CAE3D346"
-    Version="6.1.0.0" />
+    Version="6.2.0.0" />
 
   <Properties>
     <DisplayName>Project Kestrel</DisplayName>

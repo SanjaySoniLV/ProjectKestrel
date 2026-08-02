@@ -9,8 +9,8 @@
     // projectkestrel.org/whats-new.json; that remote-override path was removed —
     // the note now lives entirely in the app.)
     const WHATS_NEW = {
-      version: 'rock-wren',
-      eyebrow: 'v(Rock Wren)',
+      version: 'dusky-grouse',
+      eyebrow: 'v(Dusky Grouse)',
       title: 'What’s New in Project Kestrel',
       subtitle: 'Updates across Project Kestrel, Perch & Cloud Compute',
       cards: [
@@ -18,12 +18,16 @@
           // Desktop app logo — bundled at the static-server root (see .spec datas).
           iconImg: 'logo.png',
           name: 'Project Kestrel',
-          tag: 'New in v(Rock Wren)',
+          tag: 'New in v(Dusky Grouse)',
           bullets: [
-            'A unified <b>Preview Exposure Compensation</b> slider — in both the scene viewer and Settings — replaces the old exposure checkboxes.',
-            'A new highlight clipping mask and “% clipped” readout for spotting blown-out highlights.',
-            'Much more reliable sign-in on Windows, plus Perch sharing, read-only install, and macOS fixes.',
-            'projectkestrel.org got a full refresh — and together we crossed <b>2 million photos analyzed</b>!',
+            // Worded to read correctly on both channels: welcome.js has no
+            // access to dist_channel, so this must not assume the reader is on
+            // the free build (nor read as a purchase pitch on the App Store one).
+            'Project Kestrel is now on the <b>Mac App Store</b> — a way to support development, with automatic updates handled for you. It adds <b>no extra features</b>: the free download stays free, open source, and identical.',
+            'The Analyze dialog now asks <b>plain questions about your shoot</b> instead of model settings — what you photographed, whether the birds are North American, and how many subjects per image to analyze.',
+            'New <b>Custom rating profile</b>: drag each star to the quality score it should require. The Culling Assistant now cuts on the <b>quality score</b> too, with your star thresholds drawn right on the slider. Find this in <b>Settings</b>.',
+            'Optional <b>XMP embedded into JPEG originals</b>, so Lightroom finally reads your Kestrel ratings if you shoot JPEGs.',
+            'Nearly a dozen <b>bug fixes and stability improvements</b> across Windows and macOS.',
           ],
         },
         {
@@ -32,13 +36,10 @@
           name: 'Perch',
           tag: 'What’s new',
           bullets: [
-            'Spotlight a standout shot as a dedicated <b>timeline note</b>.',
-            'Upload your own photos — edited shots or environment pics — to embed in your timeline.',
-            '<b>Perch Groups</b> is out of beta: merge timelines with friends to see one trip through every lens.',
-            'A new dark theme and stronger privacy controls (blocking & moderation).',
+            'You can now <b>follow other birders</b> on Perch. Follow someone from their profile page and any perch they publish publicly appears in your <b>Following</b> feed, newest first.',
           ],
           links: [
-            { label: 'See an example Perch →', href: 'https://perch.projectkestrel.org/perch.html?slug=99wgeuhdo6' },
+            { label: 'See your Following feed →', href: 'https://perch.projectkestrel.org/following.html' },
             { label: 'Learn about Perch →', href: 'https://perch.projectkestrel.org/' },
           ],
         },
@@ -47,18 +48,15 @@
           name: 'Cloud Compute',
           tag: 'What’s new',
           bullets: [
-            'New <b>Backlog Packs</b>: one-time, non-expiring Cloud Compute credits — no subscription required.',
-            'More generous monthly allowances on both the <b>Blue Jay</b> and <b>Sandpiper</b> plans.',
+            '<b>Much more accurate time estimates.</b> The estimate now simulates the real worker pipeline.',
+            'A new indicator tells you whether <b>your upload speed or the cloud</b> is the constraint — before you start, and live while a job runs.',
           ],
           hint: 'Find it in the Analyze Folders dialog.',
-          links: [
-            { label: 'Learn What’s New in Cloud Compute →', href: 'https://projectkestrel.org/notes/flexible-options-to-use-cloud-compute/' },
-          ],
         },
       ],
       note: 'Thank you for supporting the solo dev of Project Kestrel.',
       sign: '— Sanjay',
-      blogLink: { label: 'Read the full v(Rock Wren) release notes →', href: 'https://projectkestrel.org/notes/rock-wren/' },
+      blogLink: { label: 'Read the full v(Dusky Grouse) release notes →', href: 'https://projectkestrel.org/notes/dusky-grouse/' },
     };
 
     const WELCOME_TIPS = [

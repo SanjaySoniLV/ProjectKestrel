@@ -14,7 +14,7 @@ with open('dist_channel.txt', 'w', encoding='utf-8') as _dcf:
 print(f'[spec] dist_channel = {_dist_channel}')
 
 # models/ includes bundled SpeciesNet (models/speciesnet/info.json + weights) and SAM-HQ checkpoints.
-datas = [('models', 'models'), ('kestrel_telemetry.py', '.'), ('build_attestation.py', '.'), ('folder_inspector.py', '.'), ('cli.py', '.'), ('VERSION.txt', '.'), ('kestrel_analyzer', 'kestrel_analyzer'), ('visualizer.html', '.'), ('css', 'css'), ('js', 'js'), ('csv_parser.js', '.'), ('culling.html', '.'), ('logo.png', '.'), ('perch-logo.png', '.'), ('logo.ico', '.'), ('sample_sets', 'sample_sets'), ('settings_utils.py', '.'), ('editor_launch.py', '.'), ('queue_manager.py', '.'), ('api_bridge.py', '.'), ('mac_sandbox.py', '.'), ('dist_channel.py', '.'), ('dist_channel.txt', '.')]
+datas = [('models', 'models'), ('kestrel_telemetry.py', '.'), ('build_attestation.py', '.'), ('folder_inspector.py', '.'), ('cli.py', '.'), ('VERSION.txt', '.'), ('VERSION_NUMBER.txt', '.'), ('kestrel_analyzer', 'kestrel_analyzer'), ('visualizer.html', '.'), ('css', 'css'), ('js', 'js'), ('csv_parser.js', '.'), ('culling.html', '.'), ('logo.png', '.'), ('perch-logo.png', '.'), ('logo.ico', '.'), ('sample_sets', 'sample_sets'), ('settings_utils.py', '.'), ('editor_launch.py', '.'), ('queue_manager.py', '.'), ('api_bridge.py', '.'), ('mac_sandbox.py', '.'), ('dist_channel.py', '.'), ('dist_channel.txt', '.')]
 
 # CI generates build_attestation.json with the HMAC attestation for official builds.
 # Source builds and dev workflows skip generation, in which case the bundle just
@@ -29,6 +29,11 @@ binaries = []
 hiddenimports = ['pywebview','PIL','exifread','settings_utils','editor_launch','queue_manager','api_bridge','build_attestation','mac_sandbox','dist_channel']
 binaries += collect_dynamic_libs('onnxruntime')
 tmp_ret = collect_all('msvc-runtime')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# pyexiv2 bundles the exiv2 C++ library as a native extension inside the wheel
+# (used to embed XMP into JPEG originals). collect_all pulls in the compiled
+# module and its bundled shared libs so the frozen app can import it.
+tmp_ret = collect_all('pyexiv2')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 # optree removed: was a transitive dependency of torch via speciesnet (now eliminated)
 

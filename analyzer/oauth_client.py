@@ -34,7 +34,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple
 
 # certifi-backed TLS context — bare urlopen() fails CERTIFICATE_VERIFY_FAILED
 # in a frozen macOS .app. See net_tls. Dual import for root-vs-package sys.path.
@@ -628,16 +628,29 @@ def build_session_bundle(
     }
 
 
-def remint_session_token(client_token: str, session_id: str) -> Optional[str]:
+def remint_session_token(
+    client_token: str, session_id: str
+) -> Optional[Tuple[str, str]]:
     """Mint a fresh Clerk session JWT from the durable native-mode client token.
 
-    Used by the refresh layer for ``clerk_session`` bundles. Returns the new JWT
-    or ``None`` (transient failure or the session ended). Never raises.
+    Used by the refresh layer for ``clerk_session`` bundles. Returns
+    ``(session_jwt, client_token)`` or ``None`` (transient failure or the
+    session ended). Never raises.
+
+    The returned client token is the one carried by ``sess`` *after* the call,
+    not the one passed in: Clerk rotates the native-mode client token on every
+    Frontend-API response and ``_fapi_post`` captures the new value onto the
+    session. The caller must persist it — rebuilding the keychain bundle with
+    the stale token means the next re-mint authenticates with a superseded
+    credential and the user is silently signed out.
     """
     if not client_token or not session_id:
         return None
     sess = _NativeSession(client_token)
-    return _fapi_get_session_token(sess, session_id)
+    jwt = _fapi_get_session_token(sess, session_id)
+    if not jwt:
+        return None
+    return jwt, (sess.client_token or client_token)
 
 
 def _load_mac_oauth():

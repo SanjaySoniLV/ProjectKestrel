@@ -702,8 +702,14 @@ class CloudComputeClient:
         test... N/10``.
 
         Returns ``{mbps, samples_uploaded, total_bytes, elapsed_ms,
-        bytes_per_sample, errors}``. Raises :class:`CloudComputeError` if the
-        Worker rejects the request (e.g. a 200 MB file size cap is hit).
+        bytes_per_sample, errors, pipeline}``. Raises :class:`CloudComputeError`
+        if the Worker rejects the request (e.g. a 200 MB file size cap is hit).
+
+        ``pipeline`` is the Worker's dispatch/scale-out descriptor (thresholds,
+        container cap, cold start, per-container throughput) used by the
+        analyze dialog's job-time estimate. It is passed through verbatim and
+        is ``None`` against a Worker too old to serve it — the estimate falls
+        back to its own built-in values, so this is advisory, never fatal.
         """
         folder = Path(folder).resolve()
         if not folder.is_dir():
@@ -787,6 +793,7 @@ class CloudComputeClient:
         ok_results = [r for r in results if 200 <= r[0] < 300]
         total_bytes = sum(r[1] for r in ok_results)
         mbps = (total_bytes / 1_048_576) / elapsed_total if elapsed_total > 0 else 0.0
+        pipeline = resp.get("pipeline")
         return {
             "mbps": mbps,
             "samples_uploaded": len(ok_results),
@@ -795,6 +802,7 @@ class CloudComputeClient:
             "elapsed_ms": int(elapsed_total * 1000),
             "bytes_per_sample": sizes,
             "errors": errors,
+            "pipeline": pipeline if isinstance(pipeline, dict) else None,
         }
 
     # ─── End-to-end orchestrator ─────────────────────────────────────────

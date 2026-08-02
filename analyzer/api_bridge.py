@@ -1171,8 +1171,20 @@ class Api:
                     'data': ''
                 }
             
-            with open(csv_path, 'r', encoding='utf-8') as f:
-                data = f.read()
+            # The analysis pipeline saves this CSV after every processed image
+            # while this auto-refresh read runs, and on Windows the two collide
+            # transiently even though the save is atomic. read_database_text
+            # retries through that; a bare open() surfaces it to the user as a
+            # spurious "permission denied". See kestrel_analyzer.database.
+            try:
+                try:
+                    from kestrel_analyzer.database import read_database_text
+                except ImportError:  # package-style import path
+                    from analyzer.kestrel_analyzer.database import read_database_text  # type: ignore[no-redef]
+                data = read_database_text(csv_path)
+            except ImportError:
+                with open(csv_path, 'r', encoding='utf-8') as f:
+                    data = f.read()
 
             self._track_cache_root(parent_folder)
             
@@ -1481,26 +1493,41 @@ class Api:
             return {'success': False, 'error': str(e), 'map': {}}
 
     def fetch_remote_version(self):
-        """Fetch version.json from projectkestrel.org to bypass CORS in JS."""
+        """Fetch the release manifest from projectkestrel.org to bypass CORS in JS.
+
+        Prefers ``version_v2.json`` — ``{schema, releases:[{version,
+        effective_date, ...}]}`` — which lets the client compare numeric
+        versions and defer the in-app prompt until a scheduled date. Falls back
+        to the v1 ``version.json`` array if v2 is unreachable; the JS side
+        accepts either shape.
+        """
         try:
             import urllib.request
             import urllib.error
             import json
             import ssl
             import certifi
-            
-            url = "https://projectkestrel.org/version.json"
+
             ctx = ssl.create_default_context(cafile=certifi.where())
-            
-            req = urllib.request.Request(
-                url,
-                headers={'User-Agent': 'ProjectKestrel/1.0'},
-                method='GET'
-            )
-            
-            with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
-                data = json.loads(resp.read().decode('utf-8'))
-                return {'success': True, 'data': data}
+            last_err = None
+
+            for url in ("https://projectkestrel.org/version_v2.json",
+                        "https://projectkestrel.org/version.json"):
+                req = urllib.request.Request(
+                    url,
+                    headers={'User-Agent': 'ProjectKestrel/1.0'},
+                    method='GET'
+                )
+                try:
+                    with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+                        data = json.loads(resp.read().decode('utf-8'))
+                        return {'success': True, 'data': data}
+                except Exception as e:
+                    # v2 is absent on an older/rolled-back site; try v1 before
+                    # reporting failure.
+                    last_err = e
+
+            raise last_err if last_err else RuntimeError('no version manifest')
         except Exception as e:
             error(f'[API] fetch_remote_version error: {e}')
             return {'success': False, 'error': str(e)}
@@ -1841,13 +1868,13 @@ class Api:
 
             try:
                 from kestrel_analyzer.ratings import (
-                    get_profile_thresholds,
                     quality_to_rating,
+                    resolve_thresholds,
                 )
             except ImportError:
                 from analyzer.kestrel_analyzer.ratings import (
-                    get_profile_thresholds,
                     quality_to_rating,
+                    resolve_thresholds,
                 )
 
             folder_path, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
@@ -1865,7 +1892,7 @@ class Api:
 
             settings = load_persisted_settings()
             profile = settings.get('rating_profile', 'balanced')
-            thresholds = get_profile_thresholds(profile)
+            thresholds = resolve_thresholds(profile, settings.get('rating_thresholds_custom'))
 
             df = pd.read_csv(csv_path)
             if df.empty:
@@ -2152,6 +2179,46 @@ class Api:
             error(f'[API] get_settings error: {e}')
             return {'success': False, 'error': str(e), 'settings': {}}
 
+    def get_rating_thresholds(self):
+        """Return the active rating profile's quality-score cutoffs for each star.
+
+        The frontend needs these to draw star positions on a quality-score
+        number line (Culling Assistant) and to convert a manual star rating
+        back into the quality band it represents. Served from
+        ``kestrel_analyzer.ratings`` so the table has exactly one definition.
+
+        Returns:
+            {
+              'success': bool,
+              'profile': str,                # active rating_profile setting
+              'thresholds': {'five': float, 'four': float, 'three': float, 'two': float},
+              'profiles': {name: thresholds, ...},   # every built-in profile
+              'error': str,
+            }
+        """
+        try:
+            try:
+                from kestrel_analyzer.ratings import RATING_PROFILES, resolve_thresholds
+            except ImportError:
+                from analyzer.kestrel_analyzer.ratings import (  # type: ignore
+                    RATING_PROFILES,
+                    resolve_thresholds,
+                )
+
+            settings = load_persisted_settings()
+            profile = str(settings.get('rating_profile', 'balanced') or 'balanced').lower()
+            thresholds = resolve_thresholds(profile, settings.get('rating_thresholds_custom'))
+            return {
+                'success': True,
+                'profile': profile,
+                'thresholds': dict(thresholds),
+                'profiles': {k: dict(v) for k, v in RATING_PROFILES.items()},
+                'error': '',
+            }
+        except Exception as e:
+            error(f'[API] get_rating_thresholds error: {e}')
+            return {'success': False, 'error': str(e), 'profile': '', 'thresholds': {}, 'profiles': {}}
+
     def save_settings_data(self, settings_dict):
         """Persist settings from JavaScript (wraps save_persisted_settings)."""
         try:
@@ -2350,6 +2417,13 @@ class Api:
             debug_info.append(f'[dev-file] {file_candidate}: exists={file_exists}')
             if file_exists and file_candidate not in candidates:
                 candidates.append(file_candidate)
+
+            module_candidate = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sample_sets')
+            module_candidate = os.path.normpath(module_candidate)
+            module_exists = os.path.isdir(module_candidate)
+            debug_info.append(f'[dev-module] {module_candidate}: exists={module_exists}')
+            if module_exists and module_candidate not in candidates:
+                candidates.append(module_candidate)
             
             if not candidates and sys.platform.startswith('win'):
                 debug_info.append('[fallback] Starting Program Files search...')
@@ -2647,9 +2721,24 @@ class Api:
             settings = load_persisted_settings()
             queue_state = _queue_manager.get_persisted_recovery_state()
             unclean_utc = str(settings.get('last_unclean_shutdown_utc', '') or '').strip()
-            exit_reason = str(settings.get('last_exit_reason', '') or '').strip().lower()
+            raw_reason = str(settings.get('last_exit_reason', '') or '').strip().lower()
+            exit_reason = raw_reason
+            coerced = False
             if exit_reason not in ('clean', 'os_shutdown', 'crash', 'unknown'):
                 exit_reason = 'unknown' if unclean_utc else 'clean'
+                coerced = True
+            # The frontend shows the recovery dialog when unclean_shutdown is
+            # true and exit_reason is 'crash'/'unknown'/''. Log what we hand
+            # it so a crash-report log tail records the decision inputs, not
+            # just the outcome. See visualizer._log_shutdown_state.
+            will_prompt = bool(unclean_utc) and exit_reason in ('crash', 'unknown')
+            info(
+                f'[shutdown] recovery_status: raw_last_exit_reason={raw_reason!r} '
+                f'resolved={exit_reason} coerced={coerced} '
+                f'unclean_utc={unclean_utc or "none"} will_prompt={will_prompt} '
+                f'session_started={str(settings.get("app_session_started_utc", "") or "none")} '
+                f'last_closed={str(settings.get("last_session_closed_utc", "") or "none")}'
+            )
             return {
                 'success': True,
                 'unclean_shutdown': bool(unclean_utc),
@@ -2658,6 +2747,7 @@ class Api:
                 'queue_recovery': queue_state,
             }
         except Exception as e:
+            error(f'[shutdown] recovery_status: failed to read recovery state: {e}')
             return {'success': False, 'error': str(e)}
 
     # Phase 3: restore_analysis_queue removed — feature replaced by the
@@ -2667,12 +2757,18 @@ class Api:
         """Clear persisted unclean-shutdown flag and optionally queue recovery snapshot."""
         try:
             settings = load_persisted_settings()
+            had_flag = str(settings.get('last_unclean_shutdown_utc', '') or '').strip()
             settings.pop('last_unclean_shutdown_utc', None)
             if bool(clear_queue_state):
                 settings.pop('queue_recovery_state', None)
             save_persisted_settings(settings)
+            info(
+                f'[shutdown] recovery_cleared: unclean_utc={had_flag or "none"} '
+                f'queue_state_cleared={bool(clear_queue_state)}'
+            )
             return {'success': True}
         except Exception as e:
+            error(f'[shutdown] recovery_cleared: failed: {e}')
             return {'success': False, 'error': str(e)}
 
     def send_recovery_crash_report(self):
@@ -2880,11 +2976,16 @@ class Api:
                         return current
                 except (TypeError, ValueError):
                     pass
-            token = _oauth.remint_session_token(client, sid)
-            if not token:
+            minted = _oauth.remint_session_token(client, sid)
+            if not minted:
                 # Transient (network) or the session ended. Keep the old bundle;
                 # the staleness floor will surface signed-out once it expires.
                 return current or bundle
+            # Clerk rotates the native-mode client token on every Frontend-API
+            # response, so persist the token the mint came back with rather than
+            # the one we sent — otherwise the next re-mint presents a superseded
+            # credential and the user is silently signed out.
+            token, client = minted
             new_bundle = _oauth.build_session_bundle(token, client, sid)
             _keyring_save(new_bundle)
             self._invalidate_account_caches()
@@ -4498,9 +4599,15 @@ class Api:
         """Run a real-image upload-throughput probe against the staging bucket.
 
         Returns ``{ok, mbps, samples_uploaded, total_bytes, elapsed_ms,
-        errors}``. Errors surface as ``{ok: False, error}``; the Worker's
-        ``file_too_large`` rejection is propagated verbatim so the dialog can
-        explain the 200 MB cap.
+        errors, pipeline}``. Errors surface as ``{ok: False, error}``; the
+        Worker's ``file_too_large`` rejection is propagated verbatim so the
+        dialog can explain the 200 MB cap.
+
+        ``pipeline`` carries the Worker's own dispatch/scale-out constants
+        (thresholds, container cap, spawn cooldown, cold start, per-container
+        throughput) so the analyze dialog's job-time estimate models the
+        deployed pipeline rather than a hardcoded copy that goes stale when a
+        threshold moves. ``None`` against an older Worker.
         """
         root_real, err = self._validate_root_dir(
             folder_path, context="cloud_compute_upload_test", require_exists=True
@@ -6227,38 +6334,78 @@ class Api:
             print(f"[API] sign_out() -> Error: {e}", flush=True)
             return {"success": False, "error": str(e)}
 
-    def _find_sidecar_file(self, root_path: str, filename: str, ext: str = '.xmp'):
+    def _build_dir_index(self, root_path: str) -> dict:
+        """Map lowercased entry name -> real on-disk name for one directory.
+
+        Companion lookup has to be case-insensitive: cameras write
+        ``IMG_2265.JPG`` while ``_culling_companion_extensions`` is normalized
+        to lowercase (``_normalize_extensions`` lowercases unconditionally). A
+        literal ``os.path.exists(base + '.jpg')`` therefore misses the real
+        file on a case-sensitive filesystem, and the JPG silently stays behind
+        when its RAW is rejected. Windows and macOS mask this because their
+        filesystems fold case for us; Linux does not.
+
+        This mirrors the convention `select_camera_images`
+        (kestrel_analyzer/config.py) already applies when it decides a
+        same-stem JPG belongs to a RAW.
+
+        Returns {} if the directory is unreadable, so callers degrade to
+        "no companions found" rather than raising.
+        """
+        try:
+            return {entry.lower(): entry for entry in os.listdir(root_path)}
+        except OSError:
+            return {}
+
+    def _find_sidecar_file(self, root_path: str, filename: str, ext: str = '.xmp',
+                           dir_index: dict | None = None):
         """Find sidecar file with given extension for an image file.
-        
+
         Checks multiple naming conventions:
         - filename + ext (e.g., IMG_001.CR3.xmp)
         - name_without_ext + ext (e.g., IMG_001.xmp for IMG_001.CR3)
-        
+
+        Matching is case-insensitive; the returned name is the real on-disk
+        spelling, so callers can join it to a path directly.
+
+        ``dir_index`` is an optional pre-built listing from
+        ``_build_dir_index``. Pass it when resolving many files in one
+        directory to avoid re-listing per file; omit it and one is built here.
+
         Returns the filename (not path) if found, None otherwise.
         Searches in the same directory as the image.
         """
-        # Check primary naming: filename + ext (e.g., IMG_001.CR3.xmp)
-        sidecar_path = os.path.join(root_path, filename + ext)
-        if os.path.exists(sidecar_path):
-            return filename + ext
-        
-        # Check secondary naming: name_without_ext + ext (e.g., IMG_001.xmp)
+        index = self._build_dir_index(root_path) if dir_index is None else dir_index
+
+        # Primary naming: filename + ext (e.g., IMG_001.CR3.xmp)
+        hit = index.get((filename + ext).lower())
+        if hit:
+            return hit
+
+        # Secondary naming: name_without_ext + ext (e.g., IMG_001.xmp)
         if '.' in filename:
             base_name = filename.rsplit('.', 1)[0]
-            alt_sidecar_path = os.path.join(root_path, base_name + ext)
-            if os.path.exists(alt_sidecar_path):
-                return base_name + ext
-        
+            hit = index.get((base_name + ext).lower())
+            if hit:
+                return hit
+
         return None
 
-    def _find_companion_files(self, root_path: str, filename: str) -> list[str]:
-        """Find configured companion files (XMP + JPEG variants) for an image."""
+    def _find_companion_files(self, root_path: str, filename: str,
+                              dir_index: dict | None = None) -> list[str]:
+        """Find configured companion files (XMP + JPEG variants) for an image.
+
+        ``dir_index`` is an optional pre-built listing from
+        ``_build_dir_index``. Without it this lists the directory once per
+        call; batch callers should build the index once and pass it in.
+        """
         companions: list[str] = []
         seen: set[str] = set()
         filename_key = str(filename or '').lower()
+        index = self._build_dir_index(root_path) if dir_index is None else dir_index
 
         for ext in self._culling_companion_extensions:
-            companion = self._find_sidecar_file(root_path, filename, ext)
+            companion = self._find_sidecar_file(root_path, filename, ext, dir_index=index)
             if not companion:
                 continue
             key = companion.lower()
@@ -6269,9 +6416,15 @@ class Api:
 
         return companions
 
-    def _move_file_with_sidecars(self, root_path: str, filename: str, reject_dir: str):
+    def _move_file_with_sidecars(self, root_path: str, filename: str, reject_dir: str,
+                                 dir_index: dict | None = None):
         """Move a file and its configured companion files to reject directory.
-        
+
+        ``dir_index`` is an optional pre-built listing of ``root_path`` shared
+        across a batch. It can go stale as files move out during the batch, but
+        every move below is already guarded by ``os.path.exists``, so a stale
+        entry degrades to a logged warning rather than an error.
+
         Returns (success: bool, moved_files: list[str])
         """
         moved_files = []
@@ -6288,7 +6441,7 @@ class Api:
         except Exception:
             return False, moved_files
 
-        companion_files = self._find_companion_files(root_path, filename)
+        companion_files = self._find_companion_files(root_path, filename, dir_index=dir_index)
         if companion_files:
             for companion in companion_files:
                 companion_src = os.path.join(root_path, companion)
@@ -6340,8 +6493,14 @@ class Api:
                 else:
                     errors.append(f'{raw}: invalid filename')
 
+            # One listing for the whole batch: every file here lives in
+            # root_real, so re-listing per file (x6 companion extensions)
+            # would be O(files x dirsize) on a folder that can hold thousands.
+            dir_index = self._build_dir_index(root_real)
             for fn in sanitized_filenames:
-                success, moved_files = self._move_file_with_sidecars(root_real, fn, reject_dir)
+                success, moved_files = self._move_file_with_sidecars(
+                    root_real, fn, reject_dir, dir_index=dir_index
+                )
                 if success:
                     moved.extend(moved_files)
                 else:
@@ -6359,12 +6518,19 @@ class Api:
         overwrite_external: bool = False,
         use_auto_labels: bool = False,
         fields=None,
+        embed_jpeg: bool = False,
     ):
         """Write XMP sidecar files for each image, embedding star rating and culling label.
 
         ``fields`` is an optional dict selecting which sections to write
         (``rating``, ``label``, ``species``, ``family``, ``quality``).
         Omitting it writes everything, preserving legacy behaviour.
+
+        ``embed_jpeg`` (default False) additionally embeds the same XMP fields
+        directly into each JPEG original's own XMP segment, in place. This is
+        what makes Kestrel's ratings/labels visible to Adobe Lightroom, which
+        ignores .xmp sidecars for JPEGs. It modifies the original JPEG files
+        (pixel data untouched); non-JPEG files are unaffected.
         """
         if _write_xmp_metadata is None:
             return {'success': False, 'error': 'metadata_writer module not available'}
@@ -6377,10 +6543,15 @@ class Api:
             overwrite_external,
             use_auto_labels,
             fields=fields if isinstance(fields, dict) else None,
+            embed_jpeg=bool(embed_jpeg),
         )
 
-    def _restore_file_with_sidecars(self, reject_dir: str, root_path: str, filename: str):
+    def _restore_file_with_sidecars(self, reject_dir: str, root_path: str, filename: str,
+                                    dir_index: dict | None = None):
         """Restore a file and its configured companion files from reject directory.
+
+        ``dir_index`` is an optional pre-built listing of ``reject_dir`` shared
+        across a batch; see ``_move_file_with_sidecars`` on staleness.
 
         Returns (success: bool, restored_files: list[str])
         """
@@ -6398,7 +6569,7 @@ class Api:
         except Exception:
             return False, restored_files
 
-        companion_files = self._find_companion_files(reject_dir, filename)
+        companion_files = self._find_companion_files(reject_dir, filename, dir_index=dir_index)
         if companion_files:
             for companion in companion_files:
                 companion_src = os.path.join(reject_dir, companion)
@@ -6449,8 +6620,13 @@ class Api:
                 else:
                     errors.append(f'{raw}: invalid filename')
 
+            # One listing for the whole batch — same reasoning as the reject
+            # path, over the rejects folder instead of the shoot folder.
+            restore_index = self._build_dir_index(reject_dir)
             for fn in sanitized_filenames:
-                success, restored_files = self._restore_file_with_sidecars(reject_dir, root_real, fn)
+                success, restored_files = self._restore_file_with_sidecars(
+                    reject_dir, root_real, fn, dir_index=restore_index
+                )
                 if success:
                     restored.extend(restored_files)
                 else:
@@ -6505,12 +6681,14 @@ class Api:
 
             reject_filenames = []
             excluded = set()
+            # Read-only scan, so one listing is safe and strictly correct here.
+            scan_index = self._build_dir_index(reject_dir)
             for name in candidates:
                 key = name.lower()
                 if key in excluded:
                     continue
                 reject_filenames.append(name)
-                companions = self._find_companion_files(reject_dir, name)
+                companions = self._find_companion_files(reject_dir, name, dir_index=scan_index)
                 for comp in companions:
                     excluded.add(comp.lower())
 
@@ -6750,6 +6928,17 @@ class Api:
             base = os.path.splitext(os.path.basename(filename))[0]
             cache_name = f'{base}_{cache_token}_preview.jpg'
             cache_path = os.path.join(cache_dir, cache_name)
+            # The embedded-JPEG fallback gets its OWN cache slot (same token, so
+            # it invalidates on the same inputs). Both paths return a JPEG, so
+            # the bytes are interchangeable — what is NOT interchangeable is the
+            # claim the response makes about them. A fallback preview is a fixed
+            # in-camera render with no exposure shift applied; if a cache hit
+            # can't tell the two apart it drops the `fallback` flag, and
+            # scene-zoom.js re-labels the image "RAW (+X.XX EV)" — telling the
+            # user an EV correction was applied that never was, and can't be.
+            # Splitting the filename is what makes the flag survive a cache hit.
+            embedded_cache_name = f'{base}_{cache_token}_preview_embedded.jpg'
+            embedded_cache_path = os.path.join(cache_dir, embedded_cache_name)
 
             debug_meta = {
                 'filename': filename,
@@ -6770,24 +6959,40 @@ class Api:
                 'cache_token': cache_token,
             }
 
-            if use_cache and os.path.exists(cache_path):
+            hit_path = None
+            hit_was_embedded = False
+            if use_cache:
+                if os.path.exists(cache_path):
+                    hit_path = cache_path
+                elif os.path.exists(embedded_cache_path):
+                    hit_path = embedded_cache_path
+                    hit_was_embedded = True
+            if hit_path:
                 debug(
                     f'[raw-preview] cache hit for {filename} '
-                    f'(exp={exp_correction:+.3f}, mode={render_mode})'
+                    f'(exp={exp_correction:+.3f}, mode={render_mode}'
+                    f'{", embedded fallback" if hit_was_embedded else ""})'
                 )
-                with open(cache_path, 'rb') as f:
+                with open(hit_path, 'rb') as f:
                     cache_bytes = f.read()
-                cache_stat = os.stat(cache_path)
+                cache_stat = os.stat(hit_path)
                 debug_meta.update({
                     'cache_hit': True,
                     'cache_file_bytes': int(len(cache_bytes)),
                     'cache_file_mtime_ns': int(cache_stat.st_mtime_ns),
-                    'storage_preview_path': cache_path,
+                    'storage_preview_path': hit_path,
                 })
+                if hit_was_embedded:
+                    debug_meta['fallback'] = 'embedded_jpeg_preview'
                 if debug_logging_enabled:
                     debug(f'[raw-preview] debug: {json.dumps(debug_meta, sort_keys=True)}')
                 b64 = base64.b64encode(cache_bytes).decode('ascii')
-                return {'success': True, 'data': b64, 'mime': 'image/jpeg', 'debug': debug_meta}
+                response = {'success': True, 'data': b64, 'mime': 'image/jpeg', 'debug': debug_meta}
+                if hit_was_embedded:
+                    # Same flag the fresh-decode path sets, so scene-zoom.js
+                    # labels a cached fallback identically to a fresh one.
+                    response['fallback'] = 'embedded_jpeg_preview'
+                return response
 
             import rawpy
             from PIL import Image
@@ -6796,50 +7001,92 @@ class Api:
                 f'[raw-preview] Processing RAW file {filename} '
                 f'(exp={exp_correction:+.3f}, mode={render_mode}, cache={use_cache})'
             )
-            with rawpy.imread(full_path) as raw:
-                try:
-                    sizes = raw.sizes
-                    raw_sizes = {
-                        'width': int(getattr(sizes, 'width', 0) or 0),
-                        'height': int(getattr(sizes, 'height', 0) or 0),
-                        'raw_width': int(getattr(sizes, 'raw_width', 0) or 0),
-                        'raw_height': int(getattr(sizes, 'raw_height', 0) or 0),
-                        'iwidth': int(getattr(sizes, 'iwidth', 0) or 0),
-                        'iheight': int(getattr(sizes, 'iheight', 0) or 0),
-                        'flip': int(getattr(sizes, 'flip', 0) or 0),
-                    }
-                except Exception:
-                    raw_sizes = {}
+            rgb = None
+            raw_sizes = {}
+            used_embedded_fallback = False
+            embedded_fallback_reason = None
+            embedded_jpeg_bytes = None
+            embedded_jpeg_dims = None
+            try:
+                with rawpy.imread(full_path) as raw:
+                    try:
+                        sizes = raw.sizes
+                        raw_sizes = {
+                            'width': int(getattr(sizes, 'width', 0) or 0),
+                            'height': int(getattr(sizes, 'height', 0) or 0),
+                            'raw_width': int(getattr(sizes, 'raw_width', 0) or 0),
+                            'raw_height': int(getattr(sizes, 'raw_height', 0) or 0),
+                            'iwidth': int(getattr(sizes, 'iwidth', 0) or 0),
+                            'iheight': int(getattr(sizes, 'iheight', 0) or 0),
+                            'flip': int(getattr(sizes, 'flip', 0) or 0),
+                        }
+                    except Exception:
+                        raw_sizes = {}
 
-                linear_scale = float(max(0.25, min(8.0, 2.0 ** exp_correction)))
-                if use_no_auto_bright:
-                    rgb = raw.postprocess(
-                        no_auto_bright=True,
-                        exp_shift=linear_scale,
-                        exp_preserve_highlights=_preserve_highlights_for_stops(exp_correction),
-                    )
-                else:
-                    if exp_correction != 0.0:
+                    linear_scale = float(max(0.25, min(8.0, 2.0 ** exp_correction)))
+                    if use_no_auto_bright:
                         rgb = raw.postprocess(
+                            no_auto_bright=True,
                             exp_shift=linear_scale,
                             exp_preserve_highlights=_preserve_highlights_for_stops(exp_correction),
                         )
                     else:
-                        rgb = raw.postprocess()
+                        if exp_correction != 0.0:
+                            rgb = raw.postprocess(
+                                exp_shift=linear_scale,
+                                exp_preserve_highlights=_preserve_highlights_for_stops(exp_correction),
+                            )
+                        else:
+                            rgb = raw.postprocess()
+            except rawpy.LibRawFileUnsupportedError as raw_err:
+                # LibRaw parsed the container but couldn't decompress the
+                # sensor data. Most common trigger: Nikon Z8 / Z9 High-
+                # Efficiency (HE / HE*) NEFs, which use intoPIX's
+                # proprietary TicoRAW codec that neither LibRaw nor rawpy
+                # can decode. The full-resolution embedded JPEG preview
+                # is still extractable and matches the sensor pixel
+                # count to within crop margins — good enough to serve as
+                # the RAW zoom instead of falling all the way back to
+                # the low-resolution thumbnail stub on the JS side.
+                # Exposure correction is not available on this path
+                # (the embedded JPEG is a fixed in-camera render).
+                embedded_jpeg_bytes, embedded_jpeg_dims = (
+                    self._extract_full_res_embedded_jpeg(full_path)
+                )
+                if embedded_jpeg_bytes is None:
+                    # No embedded preview either — propagate the original
+                    # LibRaw error to the outer handler for logging.
+                    raise
+                used_embedded_fallback = True
+                embedded_fallback_reason = str(raw_err)
+                debug(
+                    f'[raw-preview] RAW decode unsupported for {filename}; '
+                    f'served embedded {embedded_jpeg_dims[0]}x{embedded_jpeg_dims[1]} '
+                    f'JPEG preview instead ({raw_err})'
+                )
 
-            img = Image.fromarray(rgb)
+            if used_embedded_fallback:
+                jpg_bytes = embedded_jpeg_bytes
+                img_width, img_height = embedded_jpeg_dims
+            else:
+                img = Image.fromarray(rgb)
+                buf = BytesIO()
+                img.save(buf, format='JPEG', quality=90, subsampling=0, optimize=False, progressive=False)
+                jpg_bytes = buf.getvalue()
+                img_width, img_height = img.width, img.height
 
-            buf = BytesIO()
-            img.save(buf, format='JPEG', quality=90, subsampling=0, optimize=False, progressive=False)
-            jpg_bytes = buf.getvalue()
+            # Route the fallback to its own cache slot so the next hit can still
+            # report it as an embedded preview rather than an EV-corrected RAW.
+            write_cache_path = embedded_cache_path if used_embedded_fallback else cache_path
+            write_cache_name = embedded_cache_name if used_embedded_fallback else cache_name
             wrote_cache = False
             if use_cache:
                 os.makedirs(cache_dir, exist_ok=True)
-                with open(cache_path, 'wb') as f:
+                with open(write_cache_path, 'wb') as f:
                     f.write(jpg_bytes)
                 wrote_cache = True
 
-            storage_preview_path = cache_path
+            storage_preview_path = write_cache_path
             if not wrote_cache:
                 # Even when cache is disabled, persist one debug copy for inspection.
                 os.makedirs(cache_dir, exist_ok=True)
@@ -6854,22 +7101,84 @@ class Api:
                 'cache_written': bool(wrote_cache),
                 'storage_preview_path': storage_preview_path,
                 'raw_sizes': raw_sizes,
-                'postprocess_rgb_shape': list(rgb.shape) if hasattr(rgb, 'shape') else [],
-                'postprocess_rgb_dtype': str(getattr(rgb, 'dtype', '')),
                 'jpeg_bytes': int(len(jpg_bytes)),
                 'jpeg_kb': round(len(jpg_bytes) / 1024.0, 2),
-                'jpeg_dimensions': {'width': int(img.width), 'height': int(img.height)},
+                'jpeg_dimensions': {'width': int(img_width), 'height': int(img_height)},
             })
+            if used_embedded_fallback:
+                debug_meta['fallback'] = 'embedded_jpeg_preview'
+                debug_meta['fallback_reason'] = embedded_fallback_reason
+            else:
+                debug_meta['postprocess_rgb_shape'] = list(rgb.shape) if hasattr(rgb, 'shape') else []
+                debug_meta['postprocess_rgb_dtype'] = str(getattr(rgb, 'dtype', ''))
             if debug_logging_enabled:
                 debug(f'[raw-preview] debug: {json.dumps(debug_meta, sort_keys=True)}')
-            if use_cache:
-                debug(f'[raw-preview] Done, {len(jpg_bytes)//1024}KB JPEG ({img.width}x{img.height}), cached as {cache_name}')
+            if used_embedded_fallback:
+                debug(
+                    f'[raw-preview] Done (embedded fallback), '
+                    f'{len(jpg_bytes)//1024}KB JPEG ({img_width}x{img_height})'
+                    + (f', cached as {write_cache_name}' if wrote_cache else ', cache disabled')
+                )
+            elif use_cache:
+                debug(f'[raw-preview] Done, {len(jpg_bytes)//1024}KB JPEG ({img_width}x{img_height}), cached as {write_cache_name}')
             else:
-                debug(f'[raw-preview] Done, {len(jpg_bytes)//1024}KB JPEG ({img.width}x{img.height}), cache disabled')
-            return {'success': True, 'data': b64, 'mime': 'image/jpeg', 'debug': debug_meta}
+                debug(f'[raw-preview] Done, {len(jpg_bytes)//1024}KB JPEG ({img_width}x{img_height}), cache disabled')
+            response = {'success': True, 'data': b64, 'mime': 'image/jpeg', 'debug': debug_meta}
+            if used_embedded_fallback:
+                response['fallback'] = 'embedded_jpeg_preview'
+                response['fallback_reason'] = embedded_fallback_reason
+            return response
         except Exception as e:
             error(f'[API] read_raw_full error: {e} (filename={filename}, root_path={root_path_real if "root_path_real" in locals() else root_path})')
             return {'success': False, 'error': str(e)}
+
+    def _extract_full_res_embedded_jpeg(self, full_path: str):
+        """Reopen a RAW container and pull out the largest embedded JPEG
+        preview as (bytes, (width, height)), or (None, None) if none is
+        recoverable. A fresh rawpy.imread handle is required because a
+        prior failed postprocess() leaves the previous handle in an
+        out-of-order state.
+
+        Applies the JPEG's own EXIF Orientation tag so the returned
+        bytes are already upright. When the JPEG needs no rotation (the
+        common Z8 case for a landscape shot), the original in-camera
+        JPEG bytes are returned untouched to preserve full quality —
+        Pillow only re-encodes when it also has to rotate.
+
+        Used by read_raw_full() as the fallback path when LibRaw can
+        parse the container but not decode the sensor data (Nikon Z8/Z9
+        HE / HE* NEFs, the most common real-world trigger).
+        """
+        import rawpy
+        from io import BytesIO
+        from PIL import Image, ImageOps
+        try:
+            with rawpy.imread(full_path) as raw:
+                thumb = raw.extract_thumb()
+        except (rawpy.LibRawNoThumbnailError,
+                rawpy.LibRawUnsupportedThumbnailError,
+                rawpy.LibRawFileUnsupportedError,
+                rawpy.LibRawIOError):
+            return None, None
+        except Exception:
+            return None, None
+        if thumb is None or not getattr(thumb, 'data', None):
+            return None, None
+        if thumb.format != rawpy.ThumbFormat.JPEG:
+            return None, None
+        try:
+            with Image.open(BytesIO(thumb.data)) as prev_img:
+                exif_orient = prev_img.getexif().get(0x0112, 1)
+                if exif_orient in (None, 1):
+                    return thumb.data, (int(prev_img.width), int(prev_img.height))
+                oriented = ImageOps.exif_transpose(prev_img)
+                if oriented.mode != 'RGB':
+                    oriented = oriented.convert('RGB')
+                obuf = BytesIO()
+                oriented.save(obuf, format='JPEG', quality=95, subsampling=0)
+                return obuf.getvalue(), (int(oriented.width), int(oriented.height))
+        except Exception:
+            return None, None
 
     def cleanup_culling_cache(self, root_path: str):
         """Remove the .kestrel/culling_TMP folder to free up space."""
@@ -6888,7 +7197,11 @@ class Api:
                 return {'success': False, 'error': 'Invalid cache path'}
 
             if os.path.exists(cache_dir):
-                shutil.rmtree(cache_dir)
+                # ignore_errors=True: on macOS the Finder / Spotlight can prune
+                # AppleDouble ``._<name>`` sidecar files between rmtree's scandir
+                # and unlink, causing ENOENT for entries we listed a moment ago;
+                # matches the pattern used by every other cache rmtree in this file.
+                shutil.rmtree(cache_dir, ignore_errors=True)
                 info(f'[cache] cleanup_culling_cache: removed {cache_dir}')
                 return {'success': True}
             return {'success': True}

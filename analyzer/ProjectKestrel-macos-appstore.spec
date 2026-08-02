@@ -65,7 +65,7 @@ if not os.path.exists(_icns):
     _icns = None
 
 # Identical payload to ProjectKestrel-macos.spec, plus mac_sandbox.py.
-datas = [('models', 'models'), ('kestrel_telemetry.py', '.'), ('build_attestation.py', '.'), ('folder_inspector.py', '.'), ('cli.py', '.'), ('VERSION.txt', '.'), ('kestrel_analyzer', 'kestrel_analyzer'), ('visualizer.html', '.'), ('css', 'css'), ('js', 'js'), ('csv_parser.js', '.'), ('culling.html', '.'), ('logo.png', '.'), ('perch-logo.png', '.'), ('logo.ico', '.'), ('settings_utils.py', '.'), ('editor_launch.py', '.'), ('queue_manager.py', '.'), ('api_bridge.py', '.'), ('mac_sandbox.py', '.'), ('mac_oauth.py', '.'), ('mac_apple_signin.py', '.'), ('mac_storefront.py', '.'), ('dist_channel.py', '.'), ('dist_channel.txt', '.')]
+datas = [('models', 'models'), ('kestrel_telemetry.py', '.'), ('build_attestation.py', '.'), ('folder_inspector.py', '.'), ('cli.py', '.'), ('VERSION.txt', '.'), ('VERSION_NUMBER.txt', '.'), ('kestrel_analyzer', 'kestrel_analyzer'), ('visualizer.html', '.'), ('css', 'css'), ('js', 'js'), ('csv_parser.js', '.'), ('culling.html', '.'), ('logo.png', '.'), ('perch-logo.png', '.'), ('logo.ico', '.'), ('settings_utils.py', '.'), ('editor_launch.py', '.'), ('queue_manager.py', '.'), ('api_bridge.py', '.'), ('mac_sandbox.py', '.'), ('mac_oauth.py', '.'), ('mac_apple_signin.py', '.'), ('dist_channel.py', '.'), ('dist_channel.txt', '.')]
 
 if os.path.exists('build_attestation.json'):
     datas.append(('build_attestation.json', '.'))
@@ -76,9 +76,14 @@ else:
 sample_sets_tree = Tree('sample_sets', prefix='sample_sets')
 datas += [(item[0], item[1]) for item in sample_sets_tree]
 binaries = []
-hiddenimports = ['pywebview', 'certifi', 'PIL', 'exifread', 'settings_utils', 'editor_launch', 'queue_manager', 'api_bridge', 'build_attestation', 'mac_sandbox', 'mac_oauth', 'mac_apple_signin', 'mac_storefront', 'dist_channel', 'Foundation', 'AppKit']
+hiddenimports = ['pywebview', 'certifi', 'PIL', 'exifread', 'settings_utils', 'editor_launch', 'queue_manager', 'api_bridge', 'build_attestation', 'mac_sandbox', 'mac_oauth', 'mac_apple_signin', 'dist_channel', 'Foundation', 'AppKit']
 binaries += collect_dynamic_libs('onnxruntime')
 tmp_ret = collect_all('msvc-runtime')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# pyexiv2 bundles the exiv2 C++ library as a native extension inside the wheel
+# (used to embed XMP into JPEG originals). collect_all pulls in the compiled
+# module and its bundled shared libs so the frozen app can import it.
+tmp_ret = collect_all('pyexiv2')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 # AuthenticationServices (ASWebAuthenticationSession) — the in-app sign-in
 # sheet used by mac_oauth.py. collect_all pulls the PyObjC wrapper's compiled
@@ -87,12 +92,7 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 # spec excludes it to stay on the loopback flow.)
 tmp_as = collect_all('AuthenticationServices')
 datas += tmp_as[0]; binaries += tmp_as[1]; hiddenimports += tmp_as[2]
-# StoreKit (SKStorefront) — mac_storefront.py asks which App Store storefront the
-# account is on, because Apple's anti-steering rule exempts the US storefront and
-# no other (Guideline 3.1.1(a)). Same collect_all reasoning as above. App Store
-# build only; the DMG never asks (get_support_url short-circuits on channel).
-tmp_sk = collect_all('StoreKit')
-datas += tmp_sk[0]; binaries += tmp_sk[1]; hiddenimports += tmp_sk[2]
+# StoreKit is deliberately NOT collected — see the excludes list in Analysis().
 
 print("=== Verifying source files exist ===")
 for src, dst in datas:
@@ -116,11 +116,23 @@ a = Analysis(
     # macOS; that path is now a native NSAlert (see mac_sandbox.run_confirm),
     # so nothing on macOS imports tkinter at runtime and the whole library can
     # be dropped. (The direct-download macOS spec is left untouched.)
+    #
+    # StoreKit is excluded too. It was collected for mac_storefront.py, which
+    # gated the external Support link on the US storefront (Guideline 3.1.1(a)).
+    # That gate was retired in 45a76f6 — the app now always opens the payment-free
+    # /support page — so nothing calls into StoreKit at runtime and the framework
+    # would ship as dead weight. Apple's automated pre-review analysis flags
+    # capabilities that have no matching functionality, and a linked framework
+    # with no code path behind it is exactly that shape. mac_storefront.py stays
+    # in the source tree (it is correct and tested, should the gate ever return)
+    # but is no longer part of the shipped payload. The DMG spec excludes it for
+    # its own reason — a direct-download build has no storefront to read.
     excludes=[
         'tkinter', '_tkinter', 'Tkinter',
         'tkinter.ttk', 'tkinter.tix', 'tkinter.filedialog',
         'tkinter.messagebox', 'tkinter.simpledialog',
         'turtle', 'turtledemo',
+        'StoreKit',
     ],
     noarchive=False,
     optimize=0,

@@ -57,39 +57,192 @@
       return el;
     }
 
-    // Cloud destination est. time:
-    //   max(upload_seconds, analysis_floor_seconds)
-    // where analysis_floor = images × 0.5s (sustained 2 imgs/sec on Modal),
-    // and upload_seconds is computed from the speed-test result if present.
-    // Returns null when destination=cloud and no speed test has run yet.
-    const _CLOUD_ANALYSIS_FLOOR_SECS_PER_IMG = 0.5; // 2 imgs/sec sustained
+    // ── Cloud destination est. time ────────────────────────────────────────────
+    //
+    // The old model was `max(upload_seconds, images × 0.5s)`. The 0.5 s/img
+    // analysis floor assumed 2 img/sec sustained, but a job that scales out to
+    // its full container allowance sustains ~3 img/sec — so the floor carried a
+    // permanent ~50% pessimism that dominated the estimate on fast connections.
+    //
+    // The model below simulates the actual worker pipeline instead:
+    //   1. Nothing is analyzed until CLOUDCOMPUTE_DISPATCH_THRESHOLD images
+    //      (or the whole job, if smaller) have landed in R2 staging.
+    //   2. One Modal container starts, after a cold-start delay.
+    //   3. Whenever the un-analyzed uploaded backlog reaches SCALE_THRESHOLD,
+    //      the worker splits the range and spawns another container — up to
+    //      maxContainersPerJob, subject to a spawn cooldown.
+    //   4. Each container sustains ~1 img/sec.
+    // Analysis can never run ahead of the bytes, so the two phases interleave;
+    // simulating them together is what makes the estimate track reality on both
+    // slow and fast connections.
+    //
+    // The pipeline parameters are SERVED BY THE WORKER, in the `pipeline` block
+    // of the POST /api/upload-test response — the same speed test that gives us
+    // the transfer rate. They are read from the module the scheduler itself
+    // reads, so they cannot drift the way a hardcoded copy does (the deployed
+    // thresholds moved 250→100 and 500→200 at one point, which a mirrored copy
+    // would have silently missed).
+    //
+    // The values below are FALLBACKS ONLY, for an older Worker that doesn't
+    // serve the block, or a malformed response. They match the deployed values
+    // as of 2026-08; if they're ever what's actually in use, the estimate is
+    // still reasonable — just not authoritative.
+    const _CLOUD_FALLBACK_PIPELINE = {
+      containerImagesPerSec:   1.0,   // one Modal container, sustained
+      maxContainers:           3,     // limits.maxContainersPerJob
+      dispatchThreshold:       100,   // CLOUDCOMPUTE_DISPATCH_THRESHOLD
+      scaleThreshold:          200,   // SCALE_THRESHOLD (backlog to split)
+      spawnCooldownSeconds:    20,    // SPAWN_COOLDOWN_SEC
+      containerStartupSeconds: 22,    // measured Modal cold start
+    };
+    // Was effectively +50% (via the 0.5 s/img floor). The simulation models the
+    // ramp explicitly, so the residual margin only needs to cover jitter.
+    const _CLOUD_EST_MARGIN = 1.05;
 
+    // Merge the served descriptor over the fallbacks, field by field, so a
+    // Worker that grows/drops one key doesn't invalidate the rest. Every value
+    // must be a finite positive number to be taken.
+    function _cloudPipelineParams() {
+      const served = (typeof _cloudSpeedTestResult !== 'undefined' && _cloudSpeedTestResult)
+        ? _cloudSpeedTestResult.pipeline
+        : null;
+      const out = Object.assign({}, _CLOUD_FALLBACK_PIPELINE);
+      if (served && typeof served === 'object') {
+        for (const key of Object.keys(_CLOUD_FALLBACK_PIPELINE)) {
+          const v = Number(served[key]);
+          if (isFinite(v) && v > 0) out[key] = v;
+        }
+      }
+      return out;
+    }
+
+    // Simulate the upload/analysis pipeline. `uploadRate` is images/sec, or
+    // Infinity to model "bytes are already there" (used to isolate the
+    // compute-bound completion time). Returns seconds to the last analyzed image.
+    function _simulateCloudJob(totalImages, uploadRate, params) {
+      const p = params || _cloudPipelineParams();
+      const n = Math.max(0, Math.floor(totalImages));
+      if (n === 0) return 0;
+      const instant = !(uploadRate > 0) || !isFinite(uploadRate);
+      // Aim for ~2000 steps regardless of job size: fine enough to resolve the
+      // spawn cooldown on short jobs, coarse enough that a 20k-image job on a
+      // slow line doesn't stall the UI thread. This runs on every summary
+      // refresh and once per queued folder.
+      const horizon = instant
+        ? n / (p.maxContainers * p.containerImagesPerSec)
+        : n / uploadRate + n / p.containerImagesPerSec;
+      const dt = Math.min(60, Math.max(0.25, (horizon + p.containerStartupSeconds) / 2000));
+      const firstDispatchAt = Math.min(n, p.dispatchThreshold);
+
+      let t = 0;
+      let analyzed = 0;
+      let spawned = 0;          // containers spawned so far
+      let lastSpawnAt = -Infinity;
+      const readyAt = [];       // wall-clock time each container starts working
+      // Hard iteration bound: a stalled model must not spin the UI thread.
+      const maxSteps = 200000;
+
+      for (let step = 0; step < maxSteps && analyzed < n; step++) {
+        const uploaded = instant ? n : Math.min(n, uploadRate * t);
+        const backlog = uploaded - analyzed;
+
+        // Spawn decisions. The first container waits for the dispatch
+        // threshold; later ones wait for the backlog to justify a split.
+        const canSpawn = spawned < p.maxContainers
+          && (t - lastSpawnAt) >= p.spawnCooldownSeconds;
+        if (canSpawn) {
+          const trigger = spawned === 0
+            ? uploaded >= firstDispatchAt
+            : backlog >= p.scaleThreshold;
+          if (trigger) {
+            readyAt.push(t + p.containerStartupSeconds);
+            spawned++;
+            lastSpawnAt = t;
+          }
+        }
+
+        let active = 0;
+        for (let i = 0; i < readyAt.length; i++) if (readyAt[i] <= t) active++;
+        if (active > 0) {
+          // Analysis is clamped by what has actually been uploaded.
+          const capacity = active * p.containerImagesPerSec * dt;
+          analyzed = Math.min(n, analyzed + Math.min(capacity, Math.max(0, backlog)));
+        }
+        t += dt;
+      }
+      return t;
+    }
+
+    // Returns:
+    //   secs        — modelled wall-clock estimate (null before a speed test)
+    //   uploadSecs  — pure transfer time for the bytes
+    //   analysisSecs— pure compute time if the bytes were already staged
+    //   regime      — 'upload' | 'balanced' | 'compute' (null without a test)
     function _getCloudEstSeconds(totalImages) {
       const result = (typeof _cloudSpeedTestResult !== 'undefined') ? _cloudSpeedTestResult : null;
-      const analysisSecs = totalImages * _CLOUD_ANALYSIS_FLOOR_SECS_PER_IMG;
+      const p = _cloudPipelineParams();
+      const computeSecs = _simulateCloudJob(totalImages, Infinity, p);
       if (!result || !(result.mbps > 0) || !(result.samples_uploaded > 0)) {
-        return { secs: null, analysisSecs, uploadSecs: null, hasTest: false };
+        return { secs: null, analysisSecs: computeSecs, uploadSecs: null, regime: null, hasTest: false };
       }
       const avgBytes = Number(result.total_bytes || 0) / Number(result.samples_uploaded || 1);
-      if (!(avgBytes > 0)) return { secs: null, analysisSecs, uploadSecs: null, hasTest: true };
-      const totalMB = (totalImages * avgBytes) / 1_048_576;
-      const uploadSecs = totalMB / Number(result.mbps);
-      return {
-        secs: Math.max(analysisSecs, uploadSecs),
-        analysisSecs,
-        uploadSecs,
-        hasTest: true,
-      };
+      if (!(avgBytes > 0)) {
+        return { secs: null, analysisSecs: computeSecs, uploadSecs: null, regime: null, hasTest: true };
+      }
+      const avgMB = avgBytes / 1_048_576;
+      const uploadRate = Number(result.mbps) / avgMB;             // images/sec
+      const uploadSecs = totalImages / uploadRate;
+      const secs = _simulateCloudJob(totalImages, uploadRate, p) * _CLOUD_EST_MARGIN;
+
+      // Which side is the binding constraint? Both reference times come out of
+      // the same model, so the comparison is apples-to-apples. The dead band
+      // keeps the label from flickering when the two are within noise.
+      let regime = 'balanced';
+      if (computeSecs > 0) {
+        const ratio = uploadSecs / computeSecs;
+        if (ratio > 1.15) regime = 'upload';
+        else if (ratio < 0.87) regime = 'compute';
+      }
+      return { secs, analysisSecs: computeSecs, uploadSecs, regime, hasTest: true };
+    }
+
+    const _CLOUD_REGIME_TEXT = {
+      upload:   { label: 'Limited by your upload speed',  cls: 'upload' },
+      balanced: { label: 'Balanced',                      cls: 'balanced' },
+      compute:  { label: 'Limited by Cloud Compute speed', cls: 'compute' },
+    };
+
+    function _buildCloudRegimeChip(regime, uploadSecs, computeSecs) {
+      const spec = _CLOUD_REGIME_TEXT[regime];
+      if (!spec) return null;
+      const el = document.createElement('span');
+      el.className = `adlg-cloud-regime adlg-cloud-regime--${spec.cls}`;
+      el.textContent = spec.label;
+      const tip = regime === 'upload'
+        ? `Your connection needs ~${_formatDuration(uploadSecs)} to send these images; `
+          + `Cloud Compute could analyze them in ~${_formatDuration(computeSecs)}. `
+          + 'A faster upload would finish sooner.'
+        : regime === 'compute'
+          ? `These images upload in ~${_formatDuration(uploadSecs)} but take `
+            + `~${_formatDuration(computeSecs)} to analyze — Cloud Compute is the bottleneck.`
+          : `Upload (~${_formatDuration(uploadSecs)}) and analysis `
+            + `(~${_formatDuration(computeSecs)}) take about the same time.`;
+      el.setAttribute('title', tip);
+      el.setAttribute('aria-label', tip);
+      return el;
     }
 
     // Always-on "?" badge for cloud est. time. Phrasing differs from the local
     // baseline badge — the cloud "?" stays permanent because the estimate is
     // beta and depends on transfer speed + Modal worker availability.
     function _buildCloudUncertainBadge() {
+      const p = _cloudPipelineParams();
       const tip =
-        'Cloud Compute is in beta. Estimates use the higher of (a) projected ' +
-        'upload time and (b) a 2-images-per-second analysis floor. Actual time ' +
-        'depends on transfer speed and Modal worker availability.';
+        'Cloud Compute is in beta. The estimate models your measured upload ' +
+        'speed against Cloud Compute analyzing roughly ' +
+        `${p.containerImagesPerSec} image/sec per worker, scaling up to ` +
+        `${p.maxContainers} workers as the backlog grows. Actual time ` +
+        'depends on transfer speed and worker availability.';
       const el = document.createElement('span');
       el.className = 'est-time-uncertain est-time-uncertain--cloud';
       el.setAttribute('title', tip);
@@ -832,15 +985,18 @@
         let timeDim = true;
         let timeBadgeKind = null; // null | 'local-baseline' | 'cloud'
         let timeBadgeSampledImgs = 0;
+        let cloudRegimeChip = null;
         const isCloud = _isCloudDestination();
         if (isCloud) {
           if (totalImagesToProcess >= _EST_MIN_IMAGES_TO_ESTIMATE) {
-            const { secs, hasTest } = _getCloudEstSeconds(totalImagesToProcess);
+            const { secs, hasTest, regime, uploadSecs, analysisSecs } =
+              _getCloudEstSeconds(totalImagesToProcess);
             if (secs != null) {
               timeValue = `~${_formatDuration(secs)}`;
               timeLabel = 'est. time (cloud · beta)';
               timeDim = false;
               timeBadgeKind = 'cloud';
+              cloudRegimeChip = _buildCloudRegimeChip(regime, uploadSecs, analysisSecs);
             } else {
               // Cloud destination, no speed test yet — show "?" prominently
               // and let the panel below host the Run Speed Test button.
@@ -881,6 +1037,12 @@
         } else if (timeBadgeKind === 'cloud') {
           const valueEl = headline.querySelector('#_analyzeDlgTimeStatValue');
           if (valueEl) valueEl.appendChild(_buildCloudUncertainBadge());
+        }
+        // Which side of the pipeline is the bottleneck — sits under the
+        // est. time stat so the number and its explanation read together.
+        if (cloudRegimeChip) {
+          const statEl = headline.querySelector('#_analyzeDlgTimeStatValue')?.parentElement;
+          if (statEl) statEl.appendChild(cloudRegimeChip);
         }
       }
 
@@ -945,6 +1107,53 @@
     }
 
     // ── Dialog open / settings hydration ────────────────────────────────────────
+    // ── Shoot questions ↔ hidden checkboxes ───────────────────────────────────
+    // The two "what did you shoot" questions are the visible controls for
+    // #analyzeWildlife and #analyzeSpeciesDetection. Those checkboxes stay in
+    // the DOM (hidden) because event-wiring.js reads them when Start is
+    // clicked, and the cloud-compute snapshot reads them too — mirroring keeps
+    // that single read path intact while the user only ever sees the questions.
+    //
+    // Listeners are attached at load rather than on dialog open: a throw
+    // anywhere earlier in the open path would otherwise leave the answers
+    // visually live but disconnected, silently analyzing with the wrong scope.
+    const _ANSWER_PAIRS = [
+      { on: 'adlgSubjectScopeWildlife', off: 'adlgSubjectScopeBirds', box: 'analyzeWildlife' },
+      { on: 'adlgSpeciesScopeYes', off: 'adlgSpeciesScopeNo', box: 'analyzeSpeciesDetection' },
+    ];
+
+    // Push the checkbox state out to the radios (settings → UI).
+    function syncAnalyzeAnswersFromSettings() {
+      for (const { on, off, box } of _ANSWER_PAIRS) {
+        const onEl = document.getElementById(on);
+        const offEl = document.getElementById(off);
+        const boxEl = document.getElementById(box);
+        if (!onEl || !offEl || !boxEl) continue;
+        onEl.checked = !!boxEl.checked;
+        offEl.checked = !boxEl.checked;
+      }
+    }
+
+    // Attach the radios → checkbox mirror once (UI → settings).
+    function wireAnalyzeAnswerMirrors() {
+      for (const { on, off, box } of _ANSWER_PAIRS) {
+        const onEl = document.getElementById(on);
+        const offEl = document.getElementById(off);
+        const boxEl = document.getElementById(box);
+        if (!onEl || !offEl || !boxEl || onEl.dataset.wiredMirror) continue;
+        onEl.dataset.wiredMirror = '1';
+        const sync = () => { boxEl.checked = !!onEl.checked; };
+        onEl.addEventListener('change', sync);
+        offEl.addEventListener('change', sync);
+      }
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', wireAnalyzeAnswerMirrors, { once: true });
+    } else {
+      wireAnalyzeAnswerMirrors();
+    }
+
     async function openAnalyzeDialog() {
       if (!hasPywebviewApi) {
         alert('Analysis queue is only available in the desktop (pywebview) mode.\n\nRun kestrel_visualizer as a desktop app to use this feature.');
@@ -961,26 +1170,13 @@
           }
         }).catch(() => {});
       }
-      // Hydrate critical settings from persisted values. The radios mirror to
-      // the hidden #adlgWildlifeModelMode <select> so existing read/write paths
-      // (event-wiring.js Start handler) keep working unchanged.
-      const _hiddenModelSelect = document.getElementById('adlgWildlifeModelMode');
+      // Detection model now lives as a plain <select> in More options →
+      // Finding subjects, defaulting to Accurate. Anything that isn't an
+      // explicit 'fast' resolves to 'accurate'.
+      const _modelSelect = document.getElementById('adlgWildlifeModelMode');
       const savedMode = String(getSetting('wildlife_model_mode', 'accurate') || 'accurate').toLowerCase();
       const modeFinal = (savedMode === 'fast') ? 'fast' : 'accurate';
-      if (_hiddenModelSelect) _hiddenModelSelect.value = modeFinal;
-      const _modeAccurate = document.getElementById('adlgWildlifeModelModeAccurate');
-      const _modeFast = document.getElementById('adlgWildlifeModelModeFast');
-      if (_modeAccurate && _modeFast) {
-        _modeAccurate.checked = (modeFinal === 'accurate');
-        _modeFast.checked = (modeFinal === 'fast');
-        // Mirror radio change → hidden select (so the existing read path works).
-        const _syncModeRadios = () => {
-          const v = _modeAccurate.checked ? 'accurate' : 'fast';
-          if (_hiddenModelSelect) _hiddenModelSelect.value = v;
-        };
-        _modeAccurate.addEventListener('change', _syncModeRadios);
-        _modeFast.addEventListener('change', _syncModeRadios);
-      }
+      if (_modelSelect) _modelSelect.value = modeFinal;
 
       // Hydrate "More options" settings from persisted values (same keys as before).
       // Default 0.15 now matches the suggested-baseline message shown by the
@@ -1022,6 +1218,9 @@
       if (_adlgWildlife) _adlgWildlife.checked = !!getSetting('wildlife_enabled', false);
       const _adlgSpecies = document.getElementById('analyzeSpeciesDetection');
       if (_adlgSpecies) _adlgSpecies.checked = getSetting('species_detection_enabled') !== false;
+
+      // Point the visible answers at the freshly-hydrated checkbox state.
+      syncAnalyzeAnswersFromSettings();
 
       // Unlock checkbox state — reset every open. User must explicitly re-tick
       // it to unlock destructive re-analysis on each queue.

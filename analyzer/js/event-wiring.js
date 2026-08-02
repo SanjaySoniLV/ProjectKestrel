@@ -305,6 +305,9 @@
             // UI-driven settings writes include the persisted legal flags.
             await hydrateSettingsFromServer();
             document.getElementById('legalNotice').classList.add('hidden');
+            // The RAW warning stacks beneath the legal banner; with that gone
+            // it should move back up to the top strip.
+            try { refreshRawWarnBanner(); } catch (_) { }
             showToast('Terms accepted. Welcome to Project Kestrel!', 4000);
           }
         } catch (e) {
