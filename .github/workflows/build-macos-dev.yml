@@ -84,6 +84,21 @@ jobs:
           chmod +x packaging/build_app_headless.sh
           ./packaging/build_app_headless.sh
 
+      # The question a venv test cannot answer: did the repaired pyexiv2 native
+      # libraries survive PyInstaller into the app bundle? Runs the FROZEN
+      # binary, embeds XMP into a JPEG it generates, and reads it back. Gating:
+      # a broken bundle fails this silently at runtime (metadata_writer degrades
+      # to a per-file error), so a warning would be worthless here.
+      - name: Metadata probe (JPEG XMP embed) against frozen binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="${RUNNER_TEMP}/metadata-probe.json"
+          rm -f "$OUT"
+          analyzer/dist/ProjectKestrel/ProjectKestrel --cli --selftest-metadata --json-out "$OUT"
+          echo "=== metadata-probe.json ==="
+          cat "$OUT"
+
       - name: Place CI auth bundle (test account)
         shell: bash
         env:
