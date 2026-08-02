@@ -315,6 +315,63 @@ def _classify_prior_session(settings: dict) -> str:
     return 'clean'
 
 
+def _is_concurrent_instance(
+    prev_pid: int, prev_pid_alive: Optional[bool], current_pid: int
+) -> bool:
+    """True when the "previous" session's process is still running.
+
+    That is the signature of a second copy of Kestrel starting alongside a
+    live one rather than a relaunch after the first one died. ``prev_pid``
+    is 0 on installs upgrading from a build that never recorded it, and
+    ``prev_pid_alive`` is ``None`` when liveness could not be determined —
+    both are treated as "not concurrent" so the caller keeps its old
+    behaviour.
+    """
+    return bool(prev_pid_alive) and prev_pid > 0 and prev_pid != current_pid
+
+
+def _should_flag_unclean(
+    prev_reason: str,
+    prev_started: str,
+    prev_pid: int,
+    prev_pid_alive: Optional[bool],
+    current_pid: int,
+) -> bool:
+    """Decide whether the prior session should raise the recovery dialog.
+
+    Only 'crash' and 'unknown' are recoverable outcomes: 'os_shutdown' is
+    deliberately suppressed so a reboot or logoff does not look like a crash.
+
+    The concurrent-instance carve-out
+    --------------------------------
+    ``app_session_exit_reason`` is set to 'unknown' for the whole lifetime of
+    a running session and only rewritten at exit. So when a *second* copy of
+    Kestrel launches while the first is still running, it reads the first
+    one's in-flight 'unknown' marker and — before this guard — concluded the
+    "previous" session had died uncleanly, prompting for a crash report
+    seconds after startup with nothing wrong.
+
+    Crash-report log tails show this directly: sessions where the runtime log
+    contains two startup banners and two page loads (two instances appending
+    to the same second-resolution log file) are exactly the sessions that
+    produced a recovery-dialog report, while single-instance sessions on the
+    same install produced none.
+
+    A prior pid that is *still alive* is the signature of that case, so treat
+    it as "not a prior session at all" rather than an unclean shutdown. The
+    carve-out is deliberately limited to 'unknown': a recorded 'crash' means
+    the top-level handler actually ran and caught an exception, which is
+    worth surfacing regardless of what else is running.
+    """
+    if prev_reason not in ('crash', 'unknown') or not prev_started:
+        return False
+    if prev_reason == 'unknown' and _is_concurrent_instance(
+        prev_pid, prev_pid_alive, current_pid
+    ):
+        return False
+    return True
+
+
 def _mark_session_start() -> None:
     """Mark this app session as active and detect unclean prior shutdown.
 
@@ -327,6 +384,10 @@ def _mark_session_start() -> None:
         prev_reason = _classify_prior_session(settings)
         prev_started = str(settings.get('app_session_started_utc', '') or '').strip()
         prev_pid = int(settings.get('app_session_pid', 0) or 0)
+        # True here means the previous session's process is somehow still
+        # running — i.e. this is a second instance starting alongside the
+        # first, not a relaunch after a crash. See _should_flag_unclean.
+        prev_pid_alive = _pid_is_alive(prev_pid)
 
         # Full classification inputs, so a crash-report log tail shows exactly
         # what the detector saw rather than just its verdict.
@@ -336,19 +397,15 @@ def _mark_session_start() -> None:
             classified=prev_reason,
             prev_started=prev_started or "''",
             prev_pid=prev_pid or None,
-            # True here means the previous session's process is somehow still
-            # running — i.e. a second instance is about to overwrite its
-            # bookkeeping. Prime suspect for the false positives.
-            prev_pid_alive=_pid_is_alive(prev_pid),
+            prev_pid_alive=prev_pid_alive,
             legacy_closed_cleanly=settings.get('app_session_closed_cleanly'),
             already_migrated=bool(settings.get(EXIT_REASON_MIGRATION_KEY)),
             last_closed=str(settings.get('last_session_closed_utc', '') or '') or None,
         )
 
-        # Only 'crash' and 'unknown' get surfaced as recoverable unclean
-        # shutdowns. 'os_shutdown' is intentionally suppressed so PC reboots
-        # don't generate false crash dialogs.
-        if prev_reason in ('crash', 'unknown') and prev_started:
+        if _should_flag_unclean(
+            prev_reason, prev_started, prev_pid, prev_pid_alive, os.getpid()
+        ):
             settings['last_unclean_shutdown_utc'] = prev_started
             _log_shutdown_state(
                 'session_start: FLAGGING prior session unclean',
@@ -362,6 +419,14 @@ def _mark_session_start() -> None:
                 'session_start: prior session OK',
                 reason=prev_reason,
                 cleared_stale_flag=had_flag or None,
+                # Set when the recovery prompt was suppressed because the
+                # "previous" session is in fact still running (second
+                # instance). Distinguishes this from a genuinely clean prior
+                # exit in future crash-report log tails.
+                concurrent_instance=True if (
+                    prev_reason in ('crash', 'unknown') and prev_started
+                    and _is_concurrent_instance(prev_pid, prev_pid_alive, os.getpid())
+                ) else None,
             )
         settings['last_exit_reason'] = prev_reason
         settings[EXIT_REASON_MIGRATION_KEY] = True
