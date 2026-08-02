@@ -27,6 +27,41 @@ jobs:
           pip install -r requirements-macos.txt
           pip install pyinstaller pytest
 
+      # TEMPORARY (branch fix/pyexiv2-macos): ground truth for the pyexiv2
+      # dylib repair. Purely informational — never fails the build — because
+      # three attempts at this fix were each based on inference from a single
+      # error line. Dump the whole picture once instead.
+      - name: DIAGNOSTIC — pyexiv2 native layout
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          LIB_DIR="$(.venv2/bin/python -c 'import sysconfig,os; print(os.path.join(sysconfig.get_paths()["purelib"],"pyexiv2","lib"))')"
+          echo "############ LIB_DIR = $LIB_DIR"
+          echo "############ FULL LISTING"
+          ls -la "$LIB_DIR"
+          echo "############ PACKAGE ROOT LISTING"
+          ls -la "$LIB_DIR/.."
+          echo "############ FILE TYPES"
+          file "$LIB_DIR"/* 2>/dev/null
+          for f in "$LIB_DIR"/*.dylib "$LIB_DIR"/*.so; do
+            [ -e "$f" ] || continue
+            echo "############ otool -L $(basename "$f")"
+            otool -L "$f"
+            echo "############ otool -D (install name) $(basename "$f")"
+            otool -D "$f"
+            echo "############ LC_RPATH entries for $(basename "$f")"
+            otool -l "$f" | grep -A2 LC_RPATH || echo "  (none)"
+          done
+          echo "############ HOW pyexiv2 LOADS THE LIB (its __init__)"
+          sed -n '1,60p' "$LIB_DIR/../__init__.py"
+          echo "############ grep for CDLL / dlopen in the package"
+          grep -rn "CDLL\|dlopen\|LoadLibrary\|add_dll_directory" "$LIB_DIR/.." --include=*.py | head -20
+          echo "############ does import work right now?"
+          .venv2/bin/python -c "import pyexiv2; print('IMPORT OK', pyexiv2.__version__)" 2>&1 | tail -5
+          echo "############ END DIAGNOSTIC"
+          exit 0
+
       - name: Run pytest from source (skip ui marker)
         id: pretest
         continue-on-error: true
