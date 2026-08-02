@@ -302,7 +302,35 @@ jobs:
       - name: Install Inno Setup 6
         shell: powershell
         run: |
-          Invoke-WebRequest -Uri https://jrsoftware.org/download.php/is.exe -OutFile is.exe
+          # Pinned to a versioned GitHub release asset, NOT jrsoftware.org/download.php/is.exe.
+          # That old redirector now lands on an HTML download page (302 -> /isdl.php,
+          # Content-Type: text/html), so the "installer" it saved was ~10 KB of markup and
+          # Start-Process failed with "The file or directory is corrupted and unreadable."
+          # Stay on 6.x: the ISCC path checked below is version-specific, and Inno Setup 7
+          # installs elsewhere.
+          $ErrorActionPreference = "Stop"
+          $url    = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe"
+          $sha256 = "9C73C3BAE7ED48D44112A0F48E66742C00090BDB5BEF71D9D3C056C66E97B732"
+
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            try {
+              Invoke-WebRequest -Uri $url -OutFile is.exe -MaximumRedirection 5
+              # Verify we got the real binary before trying to run it, so a bad download
+              # reports what actually went wrong instead of a confusing exec error.
+              $got = (Get-FileHash is.exe -Algorithm SHA256).Hash
+              if ($got -ne $sha256) { throw "checksum mismatch: got $got, expected $sha256" }
+              $head = [System.IO.File]::ReadAllBytes((Resolve-Path is.exe))[0..1]
+              if ($head[0] -ne 0x4D -or $head[1] -ne 0x5A) { throw "not a PE binary (no MZ header)" }
+              Write-Host "Downloaded and verified Inno Setup 6.7.3."
+              break
+            } catch {
+              Write-Host "Attempt $attempt failed: $($_.Exception.Message)"
+              if ($attempt -eq 3) { throw }
+              Remove-Item is.exe -ErrorAction SilentlyContinue
+              Start-Sleep -Seconds (5 * $attempt)
+            }
+          }
+
           Start-Process -FilePath .\is.exe -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-" -Wait
           if (-not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
             throw "Inno Setup not found after install"
