@@ -25,7 +25,20 @@ jobs:
           source .venv2/bin/activate
           python -m pip install --upgrade pip
           pip install -r requirements-macos.txt
-          pip install pyinstaller
+          pip install pyinstaller pytest
+
+      # x86_64 runner: Homebrew lives at /usr/local, not /opt/homebrew. The
+      # script resolves the prefix via delocate rather than hardcoding either.
+      - name: Vendor pyexiv2 native deps (fixes JPEG XMP embedding off-Homebrew)
+        shell: bash
+        run: bash packaging/vendor_macos_native_deps.sh .venv2/bin/python
+
+      # Hard gate, not continue-on-error: this is a release artifact.
+      - name: Test gate — pytest (skip ui marker)
+        shell: bash
+        run: |
+          source .venv2/bin/activate
+          python -m pytest analyzer/tests/ -m "not ui" -q --tb=short
 
       - name: Smoke test CLI from source (repo root, first 2 test images)
         shell: bash

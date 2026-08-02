@@ -109,6 +109,12 @@ jobs:
           pip install -r requirements-macos.txt
           pip install pyinstaller pytest
 
+      # Must run BEFORE the gate below: the gate imports pyexiv2, and until this
+      # runs that import raises OSError and kills pytest collection outright.
+      - name: Vendor pyexiv2 native deps (fixes JPEG XMP embedding off-Homebrew)
+        shell: bash
+        run: bash packaging/vendor_macos_native_deps.sh .venv2/bin/python
+
       - name: Test gate — pytest (skip ui marker)
         # Skippable ONLY for fast iteration builds via bypass_tests=true. Every
         # release build must leave this on. Guarded so an accidental empty input
