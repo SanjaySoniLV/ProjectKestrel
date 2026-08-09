@@ -2353,10 +2353,16 @@
           const parts2 = String(scene.id).split(':');
           const oldSceneCount = parts2.pop();
           const sd = _initScenedata(rpForSplit);
-          const movedFilenames = sceneRowsBefore.filter(r => _splitSelected.has(r.filename || r.export_path || '')).map(r => r.filename || '').filter(Boolean);
-          const remainFilenames = sceneRowsBefore.filter(r => !_splitSelected.has(r.filename || r.export_path || '')).map(r => r.filename || '').filter(Boolean);
+          const movedRows = sceneRowsBefore.filter(r => _splitSelected.has(r.filename || r.export_path || ''));
+          const remainRows = sceneRowsBefore.filter(r => !_splitSelected.has(r.filename || r.export_path || ''));
+          const movedFilenames = movedRows.map(r => r.filename || '').filter(Boolean);
+          const remainFilenames = remainRows.map(r => r.filename || '').filter(Boolean);
           if (sd.scenes[oldSceneCount]) {
             sd.scenes[oldSceneCount].image_filenames = remainFilenames;
+            // An approved scene shows its stored tags instead of the ones its
+            // rows imply, so without this the original scene keeps species
+            // that only the images we just moved out accounted for.
+            _pruneFinalizedSceneTagsAfterRemoval(sd.scenes[oldSceneCount], remainRows, movedRows);
           }
           sd.scenes[newSceneCount] = {
             scene_id: newSceneCount,
