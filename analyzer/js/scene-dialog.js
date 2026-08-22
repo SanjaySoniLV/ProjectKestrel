@@ -1904,8 +1904,13 @@
             }
           }
           break;
+        // Cull decisions. ZXC is the home-row set; 789 is the right-hand
+        // alternate (top row or numpad with NumLock on), which sits directly
+        // above the 1–5 rating keys on a numpad and keeps the whole review
+        // flow on one hand for left-handed mouse users.
         case 'z':
         case 'Z':
+        case '7':
           e.preventDefault();
           if (images[currentImageIndex]) {
             setCullStatus(images[currentImageIndex], 'accept');
@@ -1914,6 +1919,7 @@
           break;
         case 'x':
         case 'X':
+        case '8':
           e.preventDefault();
           if (images[currentImageIndex]) {
             setCullStatus(images[currentImageIndex], '');
@@ -1922,6 +1928,7 @@
           break;
         case 'c':
         case 'C':
+        case '9':
           e.preventDefault();
           if (images[currentImageIndex]) {
             setCullStatus(images[currentImageIndex], 'reject');
