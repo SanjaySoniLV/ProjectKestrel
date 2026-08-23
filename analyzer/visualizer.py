@@ -1336,6 +1336,34 @@ def main():
             pass
         webview.start(debug=_kestrel_debug)
     finally:
+        # Record the clean exit FIRST, before any teardown work.
+        #
+        # Reaching this point means webview.start() returned, which happens
+        # only once the UI window has closed — i.e. the user quit. That fact
+        # is already established here; everything below is best-effort
+        # housekeeping that cannot retroactively make the exit unclean.
+        #
+        # This used to run at the very end of the block, after the cloud-upload
+        # signal, two cache cleanups and server.shutdown(). Any of those can
+        # block indefinitely (server.shutdown() waits for the serve_forever
+        # loop, which a wedged request handler can hold open) or be cut short
+        # by the OS reaping the process during quit. When that happened the
+        # 'clean' marker was never written, app_session_exit_reason stayed
+        # 'unknown', and the *next* launch reported a false unclean shutdown.
+        #
+        # Crash reports show exactly this: prior-session logs that stop partway
+        # through the teardown — e.g. on the cleanup_culling_cache line — with
+        # no 'Server stopped.' and no clean_exit lines, followed by a recovery
+        # prompt on the following launch.
+        #
+        # Ordering is still correct for the non-clean cases:
+        #   - shutdown_watch's 'os_shutdown' and the crash handler's 'crash'
+        #     are preserved rather than overwritten (see _mark_session_clean_exit).
+        #   - shutdown_watch firing later still overwrites 'clean' with
+        #     'os_shutdown'; neither value raises a recovery prompt.
+        #   - an exception raised by the teardown below propagates to the
+        #     top-level handler, which records 'crash' over this 'clean'.
+        _mark_session_clean_exit(source='main:finally')
         # Signal in-flight cloud-compute uploads to stop FIRST. Their
         # ThreadPoolExecutor registers an atexit join of (non-daemon) worker
         # threads, so a still-running upload would otherwise keep uploading
@@ -1367,13 +1395,11 @@ def main():
         except Exception as e:
             warn('Server shutdown error:', e)
         log('Server stopped.')
-        # Mark clean exit here (inside finally) so it runs even if server
-        # shutdown raises, preventing a false "unclean shutdown" on next launch.
-        # NOTE: in the recovery-dialog false-positive reports, 'Server stopped.'
-        # is very often the final line of the captured log. The [shutdown]
-        # lines emitted below are what distinguish "this call never returned"
-        # from "it ran and the write was lost".
-        _mark_session_clean_exit(source='main:finally')
+        # The exit reason is already persisted (top of this block). This line
+        # only records that the teardown itself ran to completion: a log tail
+        # that reaches clean_exit but never reaches here identifies a hang or
+        # kill during shutdown, which is still worth diagnosing even though it
+        # no longer misreports as a crash.
         _log_shutdown_state('main: exit path complete', pid=os.getpid())
 
 
