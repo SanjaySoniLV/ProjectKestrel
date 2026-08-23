@@ -783,6 +783,11 @@
       e.preventDefault();
 
       if (isEnter) {
+        // Mirror the mouse path: opening a scene by click also moves the
+        // shift-click anchor (see the card click handler), so opening one by
+        // keyboard must too, or the anchor is left behind at whichever card
+        // was last clicked.
+        _lastSelectedIdx = _visibleSceneOrder.indexOf(String(_focusedCardId));
         openSceneDialog(_focusedCardId);
         return;
       }
@@ -815,7 +820,18 @@
       }
 
       if (nextIdx >= 0 && nextIdx < cards.length) {
-        _focusGridCard(cards[nextIdx].dataset.sceneId);
+        const nextId = cards[nextIdx].dataset.sceneId;
+        _focusGridCard(nextId);
+        // Keep the shift-click anchor with the focused card. Without this,
+        // arrowing across the grid leaves _lastSelectedIdx wherever the last
+        // mouse click happened, and the next Shift+Click selects everything
+        // between that stale card and the clicked one rather than starting a
+        // fresh range from where the user actually is.
+        //
+        // Safe against clobbering a range selection: this handler returns
+        // early while selectedSceneIds is non-empty, so arrow keys never move
+        // the anchor mid-selection.
+        _lastSelectedIdx = _visibleSceneOrder.indexOf(String(nextId));
       }
     }
     document.addEventListener('keydown', _gridKeyHandler);
