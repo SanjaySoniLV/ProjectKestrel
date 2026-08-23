@@ -2979,18 +2979,30 @@
         }
 
         rejectFilenames = state.reject_filenames;
-        moveCompleted = true;
         undoBtn.style.display = '';
         undoBtn.disabled = false;
 
-        const doneBtn = el('#doneCullingBtn');
-        if (doneBtn) doneBtn.disabled = true;
-
+        // Deliberately does NOT set moveCompleted / disable Done Culling.
+        //
+        // moveCompleted guards against moving twice within one session: after
+        // executeActions() performs a move, Done Culling stays disabled until
+        // the user undoes it. That guard is session-scoped and correct.
+        //
+        // get_reject_restore_state() answers a different question — it reports
+        // can_restore whenever a _KESTREL_Rejects folder holds images, which is
+        // the normal, permanent end state of any completed cull. Latching
+        // moveCompleted from it disabled Done Culling forever on every folder
+        // the user had ever culled, so a second pass (re-analyse, reject a few
+        // more) could not be completed at all; the only way to re-enable the
+        // button was Undo Move, which throws away the first pass.
+        //
+        // The prior move is already finished and its files are already in the
+        // reject folder. Offer Undo for it, but let a new pass proceed.
         const parsedCount = parseInt(state.reject_count, 10);
         const count = Number.isFinite(parsedCount) && parsedCount >= 0 ? parsedCount : rejectFilenames.length;
         const suffix = count === 1 ? '' : 's';
         if (state.has_csv_backup) {
-          el('#statusLabel').textContent = `Previous reject move detected (${count} file${suffix}). Click "Undo Move" to restore.`;
+          el('#statusLabel').textContent = `Previous reject move detected (${count} file${suffix}). Continue culling, or click "Undo Move" to restore them.`;
         } else {
           el('#statusLabel').textContent = `Previous reject move detected (${count} file${suffix}). Undo can restore files, but backup CSV is missing.`;
           showToast('Previous reject move detected. Backup CSV is missing; Undo will restore files only.', 5500);
