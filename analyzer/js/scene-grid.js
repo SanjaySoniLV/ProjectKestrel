@@ -69,7 +69,8 @@
       const minC = parseFloat(el('#speciesConf').value) || 0;
       const search = el('#search').value;
       const sortBy = el('#sortBy').value;
-      const onlyReviewedScenes = !!document.getElementById('filterScenesManualRated')?.checked;
+      const reviewStateFilter = document.getElementById('filterSceneReviewState')?.value
+        || getSetting('sceneReviewFilter', 'all');
       const groupByFolder = document.getElementById('groupByFolder')?.checked ?? getSetting('groupByFolder', true);
       const groupByTime = document.getElementById('groupByTime')?.checked ?? getSetting('groupByTime', true);
       const showBirdThumbs = document.getElementById('showBirdThumbs')?.checked ?? getSetting('showBirdThumbs', false);
@@ -90,12 +91,17 @@
         if (refreshed) _currentScene = refreshed;
       }
 
-      // Apply scene-level manual-reviewed filter without mutating global scenes.
+      // Apply the scene-level review-state filter without mutating global scenes.
       // Reviewed means any of:
       //  - scene tags finalized by user, or scene renamed by user
       //  - manual/verified accept-reject culling decision on any image
       //  - manual star rating on any image
-      const visibleScenes = onlyReviewedScenes ? scenes.filter(isManuallyReviewedScene) : scenes;
+      // 'unreviewed' is the exact complement: scenes carrying no user-assigned
+      // trait at all, i.e. the ones that still need work.
+      const visibleScenes =
+        reviewStateFilter === 'reviewed' ? scenes.filter(isManuallyReviewedScene)
+        : reviewStateFilter === 'unreviewed' ? scenes.filter(s => !isManuallyReviewedScene(s))
+        : scenes;
 
       // Batched hydration of bird-catalog records for every species pill we're
       // about to paint when the show-scientific-names toggle is on. Collect
@@ -409,6 +415,14 @@
         const countEl = document.createElement('span');
         countEl.className = 'meta-count';
         countEl.textContent = `📸 ${s.imageCount}`;
+        // Break the count down on hover rather than on the tile: the split is
+        // useful when triaging but not worth the visual weight on every card.
+        if (s.cullCounts) {
+          const { accepted, rejected, undecided } = s.cullCounts;
+          countEl.title = accepted || rejected
+            ? `${accepted} accepted · ${undecided} undecided · ${rejected} rejected`
+            : `${s.imageCount} image${s.imageCount === 1 ? '' : 's'}, none decided yet`;
+        }
         meta.appendChild(countEl);
         metaRow.appendChild(meta);
 
