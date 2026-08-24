@@ -12,8 +12,10 @@ stall lost the 'clean' marker, leaving ``app_session_exit_reason`` at
 Crash reports showed prior-session logs stopping partway through the teardown
 with no 'Server stopped.' and no clean_exit lines.
 
-These tests read the source with ``ast`` rather than importing it, so they run
-in environments without the GUI dependencies ``visualizer`` pulls in at import.
+``main()`` cannot be executed in a test — it binds a socket and then blocks in
+``webview.start()`` — so the ordering is asserted against the parsed source
+instead. (``visualizer`` itself imports fine headless; it guards ``import
+webview``. Executing ``main()`` is the part that is out of reach.)
 """
 
 import ast
@@ -50,22 +52,31 @@ def _main_finally_body():
 
     tries = [n for n in main_fn.body if isinstance(n, ast.Try) and n.finalbody]
     assert tries, 'main() has no try/finally'
-    # The shutdown sequence is the last top-level try/finally in main().
-    return tries[-1].finalbody
+    # If main() ever grows a second try/finally these assertions would silently
+    # retarget, so make that a loud failure rather than a quiet mis-test.
+    assert len(tries) == 1, (
+        f'main() has {len(tries)} top-level try/finally blocks; this test can no '
+        f'longer tell which one is the shutdown sequence'
+    )
+    return tries[0].finalbody
 
 
 def _called_names(nodes):
-    """Every called function/attribute name in ``nodes``, in source order."""
+    """Every called function/attribute name in ``nodes``, in source order.
+
+    Sorted by (line, column) rather than (line, name) so two calls on one line
+    keep their source order instead of being ordered alphabetically.
+    """
     names = []
     for node in nodes:
         for sub in ast.walk(node):
             if isinstance(sub, ast.Call):
                 fn = sub.func
                 if isinstance(fn, ast.Name):
-                    names.append((sub.lineno, fn.id))
+                    names.append((sub.lineno, sub.col_offset, fn.id))
                 elif isinstance(fn, ast.Attribute):
-                    names.append((sub.lineno, fn.attr))
-    return [name for _, name in sorted(names)]
+                    names.append((sub.lineno, sub.col_offset, fn.attr))
+    return [name for _, _, name in sorted(names)]
 
 
 class TestCleanExitOrdering:

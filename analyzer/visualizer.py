@@ -1364,7 +1364,8 @@ def main():
         #   - an exception raised by the teardown below propagates to the
         #     top-level handler, which records 'crash' over this 'clean'.
         _mark_session_clean_exit(source='main:finally')
-        # Signal in-flight cloud-compute uploads to stop FIRST. Their
+        # Signal in-flight cloud-compute uploads to stop before the cache
+        # cleanups and server shutdown below. Their
         # ThreadPoolExecutor registers an atexit join of (non-daemon) worker
         # threads, so a still-running upload would otherwise keep uploading
         # every queued image and hang the process after the window has closed.
