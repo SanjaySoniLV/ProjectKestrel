@@ -404,11 +404,15 @@ def _mark_session_start() -> None:
 def _mark_session_clean_exit(source: str = 'unspecified') -> None:
     """Mark this session closed cleanly and clear stale unclean-shutdown recovery.
 
-    Preserves a previously-recorded 'os_shutdown' or 'crash' reason — the
-    main() finally block fires after webview.start() returns, which happens
-    both on user-initiated quit (truly clean) AND when the OS closes our
-    window during reboot/logoff. In the latter case shutdown_watch has
-    already recorded 'os_shutdown' and we must not overwrite it.
+    Preserves a previously-recorded 'os_shutdown' or 'crash' reason — main()
+    calls this once webview.start() has returned, which happens both on
+    user-initiated quit (truly clean) AND when the OS closes our window during
+    reboot/logoff. In the latter case shutdown_watch has already recorded
+    'os_shutdown' and we must not overwrite it.
+
+    Callers are responsible for not calling this on a crash path: main()'s
+    finally block also runs when startup raises, and gates the call on
+    webview.start() having returned.
     """
     _log_shutdown_state('clean_exit: entered', source=source, pid=os.getpid())
     try:
@@ -1159,6 +1163,12 @@ def main():
     t = threading.Thread(target=_serve, daemon=True)
     t.start()
     api = None
+    # Set only once webview.start() has returned, i.e. the UI window closed and
+    # the user really did quit. The try below opens well before that call, so
+    # the finally also runs when Api(), create_window() or webview.start()
+    # itself raises — those are crashes, not clean exits, and must not be
+    # marked 'clean'. See the finally block for why that distinction matters.
+    _webview_returned = False
     try:
         log('Starting windowed UI via pywebview...')
         api = Api() # start maximized
@@ -1335,13 +1345,24 @@ def main():
         except Exception:
             pass
         webview.start(debug=_kestrel_debug)
+        _webview_returned = True
     finally:
-        # Record the clean exit FIRST, before any teardown work.
+        # Record the clean exit FIRST, before any teardown work — but only if
+        # webview.start() actually returned.
         #
-        # Reaching this point means webview.start() returned, which happens
-        # only once the UI window has closed — i.e. the user quit. That fact
-        # is already established here; everything below is best-effort
-        # housekeeping that cannot retroactively make the exit unclean.
+        # The gate matters: this try opens ~175 lines above webview.start(), so
+        # the finally also runs when Api(), create_window() or webview.start()
+        # raises. Marking those 'clean' would suppress the recovery prompt for
+        # a genuine startup crash — and writing it early makes that worse than
+        # it was, because the window between this line and the top-level
+        # handler's 'crash' now spans the whole teardown below. A hang there
+        # (or the user force-quitting through it) would leave 'clean' standing
+        # for a session that crashed, which is the exact inverse of the bug
+        # this change fixes.
+        #
+        # Past the gate, the user has quit and the exit really is clean;
+        # everything below is best-effort housekeeping that cannot
+        # retroactively make it unclean.
         #
         # This used to run at the very end of the block, after the cloud-upload
         # signal, two cache cleanups and server.shutdown(). Any of those can
@@ -1363,7 +1384,8 @@ def main():
         #     'os_shutdown'; neither value raises a recovery prompt.
         #   - an exception raised by the teardown below propagates to the
         #     top-level handler, which records 'crash' over this 'clean'.
-        _mark_session_clean_exit(source='main:finally')
+        if _webview_returned:
+            _mark_session_clean_exit(source='main:finally')
         # Signal in-flight cloud-compute uploads to stop before the cache
         # cleanups and server shutdown below. Their
         # ThreadPoolExecutor registers an atexit join of (non-daemon) worker
