@@ -6457,6 +6457,12 @@ class Api:
                 companion_dst = os.path.join(reject_dir, companion)
                 try:
                     if os.path.exists(companion_src):
+                        # Same reasoning as the primary file above: an existing
+                        # sidecar in the rejects folder holds the edits for the
+                        # photo already there, and shutil.move would drop them.
+                        if os.path.exists(companion_dst):
+                            warn(f'[reject] Refusing to overwrite existing companion in rejects folder: {companion}')
+                            continue
                         shutil.move(companion_src, companion_dst)
                         moved_files.append(companion)
                     else:
@@ -6485,6 +6491,10 @@ class Api:
             os.makedirs(reject_dir, exist_ok=True)
             moved = []
             errors = []
+            # Filenames whose photo is still in the shoot folder. The caller
+            # drops the rows it asked us to move; it must not drop these, or
+            # the photo disappears from the database while sitting on disk.
+            failed = []
 
             if isinstance(filenames, list):
                 raw_filenames = filenames
@@ -6501,6 +6511,8 @@ class Api:
                     sanitized_filenames.append(clean)
                 else:
                     errors.append(f'{raw}: invalid filename')
+                    if isinstance(raw, str):
+                        failed.append(raw)
 
             # One listing for the whole batch: every file here lives in
             # root_real, so re-listing per file (x6 companion extensions)
@@ -6514,8 +6526,15 @@ class Api:
                     moved.extend(moved_files)
                 else:
                     errors.append(f'{fn}: move failed')
+                    failed.append(fn)
             info(f'[reject] moved {len(moved)} file(s) (including sidecars), errors {len(errors)}')
-            return {'success': True, 'moved': len(moved), 'errors': errors, 'reject_folder': reject_real}
+            return {
+                'success': True,
+                'moved': len(moved),
+                'errors': errors,
+                'failed_filenames': failed,
+                'reject_folder': reject_real,
+            }
         except Exception as e:
             error(f'[API] move_rejects_to_folder error: {e}')
             return {'success': False, 'error': str(e)}
@@ -6590,6 +6609,12 @@ class Api:
                 companion_src = os.path.join(reject_dir, companion)
                 companion_dst = os.path.join(root_path, companion)
                 try:
+                    if not os.path.exists(companion_src):
+                        warn(f'[reject-undo] companion detected but not found at: {companion_src}')
+                        continue
+                    if os.path.exists(companion_dst):
+                        warn(f'[reject-undo] Refusing to overwrite existing companion while restoring: {companion}')
+                        continue
                     shutil.move(companion_src, companion_dst)
                     restored_files.append(companion)
                 except Exception as e:
@@ -6754,9 +6779,19 @@ class Api:
             # and Undo restores from it — so a second reject move would
             # otherwise destroy the first move's undo point with no warning.
             # Rotating to a timestamped copy keeps every earlier restore point
-            # recoverable by hand, using the same OLD_* convention
-            # ``database._perform_db_upgrade`` already uses for schema upgrades.
-            rotated = self._rotate_existing_backups(kestrel_dir, csv_backup, scenedata_backup)
+            # recoverable by hand. The OLD_* convention is borrowed from
+            # ``database._perform_db_upgrade``, but the names carry a
+            # `precull_` marker so the two never mix: those fire once per
+            # schema upgrade and must be kept, these fire on every cull pass
+            # and are pruned to the newest few.
+            # Rotate a slot only when its replacement is actually about to be
+            # written. scenedata is optional, and archiving its `_old` file
+            # without writing a new one would leave Undo able to restore the
+            # CSV but not the scene data it belongs to.
+            rotate_pairs = [(csv_backup, 'precull_kestrel_database', '.csv')]
+            if os.path.exists(scenedata_path):
+                rotate_pairs.append((scenedata_backup, 'precull_kestrel_scenedata', '.json'))
+            rotated = self._rotate_existing_backups(kestrel_dir, rotate_pairs)
 
             # Backup CSV
             shutil.copy2(csv_path, csv_backup)
@@ -6780,8 +6815,17 @@ class Api:
             error(f"[API] backup_kestrel_db error: {e}")
             return {"success": False, "error": str(e), "backup_csv": "", "backup_scenedata": ""}
 
-    def _rotate_existing_backups(self, kestrel_dir: str, csv_backup: str, scenedata_backup: str) -> bool:
-        """Move any existing ``*_old`` backups aside under a timestamped name.
+    #: How many timestamped ``OLD_*`` copies to keep per file. Unlike the
+    #: schema-upgrade backups this shares a name with, rotation here happens on
+    #: every reject move, so an actively culled folder would otherwise
+    #: accumulate a full database copy per pass forever.
+    _BACKUP_ARCHIVE_RETENTION = 3
+
+    def _rotate_existing_backups(self, kestrel_dir: str, pairs) -> bool:
+        """Move existing ``*_old`` backups aside under a timestamped name.
+
+        ``pairs`` is a sequence of ``(existing_backup_path, stem, extension)``;
+        only slots whose replacement is about to be written should be passed.
 
         Returns True if anything was rotated. Best-effort: a failure here must
         not abort the caller's own backup, because failing to take the new
@@ -6791,22 +6835,47 @@ class Api:
         try:
             from datetime import datetime
             timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-            pairs = (
-                (csv_backup, f"OLD_kestrel_database_{timestamp}.csv"),
-                (scenedata_backup, f"OLD_kestrel_scenedata_{timestamp}.json"),
-            )
-            for existing, archived_name in pairs:
+            for existing, stem, ext in pairs:
                 if not os.path.exists(existing):
                     continue
-                archived = os.path.join(kestrel_dir, archived_name)
+                prefix = f"OLD_{stem}_"
+                archived = os.path.join(kestrel_dir, f"{prefix}{timestamp}{ext}")
+                # Two moves inside one second would collide. Suffix rather than
+                # skip: skipping leaves the previous undo point to be
+                # overwritten by the copy2 that follows.
                 if os.path.exists(archived):
-                    continue  # same-second rotation already happened; keep the first
+                    for n in range(1, 100):
+                        candidate = os.path.join(kestrel_dir, f"{prefix}{timestamp}_{n}{ext}")
+                        if not os.path.exists(candidate):
+                            archived = candidate
+                            break
+                    else:
+                        continue
                 os.replace(existing, archived)
                 rotated = True
                 info(f"[backup] Previous backup preserved as {os.path.basename(archived)}")
+                self._prune_backup_archives(kestrel_dir, prefix, ext)
         except Exception as e:
             warn(f"[backup] Could not rotate previous backup (continuing): {e}")
         return rotated
+
+    def _prune_backup_archives(self, kestrel_dir: str, prefix: str, ext: str) -> None:
+        """Keep only the newest ``_BACKUP_ARCHIVE_RETENTION`` archived copies."""
+        try:
+            archives = sorted(
+                name for name in os.listdir(kestrel_dir)
+                if name.startswith(prefix) and name.endswith(ext)
+            )
+            # Names are prefix + %Y%m%d_%H%M%S [+ _n] + ext, so lexical order is
+            # chronological and the tail is the newest.
+            for stale in archives[:-self._BACKUP_ARCHIVE_RETENTION]:
+                try:
+                    os.remove(os.path.join(kestrel_dir, stale))
+                    debug(f"[backup] Pruned old archive {stale}")
+                except Exception as e:
+                    warn(f"[backup] Could not prune {stale}: {e}")
+        except Exception as e:
+            warn(f"[backup] Could not prune old archives (continuing): {e}")
 
     def restore_kestrel_db_backup(self, root_path: str):
         """Restore both kestrel_database.csv and kestrel_scenedata.json from backups.

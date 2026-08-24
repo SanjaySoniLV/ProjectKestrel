@@ -2811,8 +2811,16 @@
           }
           setStep('move', 'done', `${moveRes.moved} file${moveRes.moved === 1 ? '' : 's'} moved`);
 
-          // Post-move: strip rejects from working data
-          const rejectSet = new Set(rejectFilenames);
+          // Post-move: strip rejects from working data.
+          //
+          // Only the ones that actually left the folder. move_rejects_to_folder
+          // reports success even when individual files fail (a name collision
+          // in _KESTREL_Rejects, a permission error), and dropping a row whose
+          // photo is still on disk deletes its rating, labels and crop choice
+          // from the database while the file itself stays put — invisible
+          // until a re-analysis, and not repairable by Undo.
+          const failedSet = new Set(moveRes.failed_filenames || []);
+          const rejectSet = new Set(rejectFilenames.filter(fn => !failedSet.has(fn)));
           rows = rows.filter(r => !rejectSet.has(r.filename));
           for (const fn of rejectSet) cullingState.delete(fn);
           cleanupScenedataForRejects(rejectSet);
@@ -2847,7 +2855,17 @@
 
         if (moveRes && moveRes.errors && moveRes.errors.length > 0) {
           console.warn('Move errors:', moveRes.errors);
-          showToast(`${moveRes.errors.length} file(s) had move errors \u2014 check console`, 5000);
+          // Name them: these photos are still in the shoot folder and still in
+          // the database, so the user needs to know which ones to deal with.
+          const stuck = moveRes.failed_filenames || [];
+          const shown = stuck.slice(0, 3).join(', ');
+          const more = stuck.length > 3 ? ` and ${stuck.length - 3} more` : '';
+          showToast(
+            stuck.length
+              ? `Could not move ${shown}${more} \u2014 left in place, still in your library`
+              : `${moveRes.errors.length} file(s) had move errors \u2014 check console`,
+            8000
+          );
         }
 
       } catch (e) {

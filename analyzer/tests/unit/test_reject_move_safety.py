@@ -73,7 +73,7 @@ class TestBackupRotation:
 
         archived = sorted(
             p for p in os.listdir(shoot / '.kestrel')
-            if p.startswith('OLD_kestrel_database_')
+            if p.startswith('OLD_precull_kestrel_database_')
         )
         assert archived, 'no timestamped archive of the previous backup'
         content = (shoot / '.kestrel' / archived[0]).read_text()
@@ -84,7 +84,7 @@ class TestBackupRotation:
         api.backup_kestrel_db(str(shoot))
         archived = [
             p for p in os.listdir(shoot / '.kestrel')
-            if p.startswith('OLD_kestrel_scenedata_')
+            if p.startswith('OLD_precull_kestrel_scenedata_')
         ]
         assert archived
 
@@ -98,6 +98,137 @@ class TestBackupRotation:
         # state, so undoing the second move rolls back exactly that move.
         current = (shoot / '.kestrel' / 'kestrel_database_old.csv').read_text()
         assert 'NEWEST.CR3' in current
+
+
+class TestArchiveHousekeeping:
+    def test_schema_upgrade_backups_are_never_pruned(self, api, shoot):
+        """``database._perform_db_upgrade`` writes OLD_kestrel_database_*.csv.
+
+        Those fire once per schema upgrade and are the only copy of the
+        pre-upgrade database. Rotation here fires on every cull pass, so the
+        two must not share a namespace or pruning would eat them.
+        """
+        kdir = shoot / '.kestrel'
+        upgrade_backup = kdir / 'OLD_kestrel_database_20200101_000000.csv'
+        upgrade_backup.write_text('filename,quality\nPRE_UPGRADE.CR3,0.9\n')
+
+        for i in range(api._BACKUP_ARCHIVE_RETENTION + 3):
+            (kdir / 'kestrel_database.csv').write_text(f'filename,quality\nP{i}.CR3,0.5\n')
+            api.backup_kestrel_db(str(shoot))
+
+        assert upgrade_backup.exists(), 'schema-upgrade backup was pruned'
+        assert 'PRE_UPGRADE.CR3' in upgrade_backup.read_text()
+
+    def test_archives_are_capped(self, api, shoot):
+        kdir = shoot / '.kestrel'
+        for i in range(api._BACKUP_ARCHIVE_RETENTION + 4):
+            (kdir / 'kestrel_database.csv').write_text(f'filename,quality\nP{i}.CR3,0.5\n')
+            api.backup_kestrel_db(str(shoot))
+
+        archives = [p for p in os.listdir(kdir) if p.startswith('OLD_precull_kestrel_database_')]
+        assert len(archives) <= api._BACKUP_ARCHIVE_RETENTION, (
+            f'{len(archives)} archives kept; a culled folder would grow without bound'
+        )
+
+    def test_same_second_rotations_do_not_lose_a_restore_point(self, api, shoot):
+        """Two moves inside one second must not collapse into one archive."""
+        kdir = shoot / '.kestrel'
+        (kdir / 'kestrel_database.csv').write_text('filename,quality\nFIRST.CR3,0.9\n')
+        api.backup_kestrel_db(str(shoot))
+        (kdir / 'kestrel_database.csv').write_text('filename,quality\nSECOND.CR3,0.5\n')
+        api.backup_kestrel_db(str(shoot))
+        (kdir / 'kestrel_database.csv').write_text('filename,quality\nTHIRD.CR3,0.1\n')
+        api.backup_kestrel_db(str(shoot))
+
+        archived = [p for p in os.listdir(kdir) if p.startswith('OLD_precull_kestrel_database_')]
+        bodies = [(kdir / name).read_text() for name in archived]
+        assert any('FIRST.CR3' in b for b in bodies), 'first restore point lost'
+        assert any('SECOND.CR3' in b for b in bodies), 'second restore point lost'
+
+    def test_scenedata_slot_is_not_stranded_when_there_is_no_scenedata(self, api, shoot):
+        """Rotating a slot whose replacement is never written breaks Undo.
+
+        Undo restores the CSV and the scene data together; archiving the
+        scenedata backup while writing no new one leaves them mismatched.
+        """
+        (shoot / '.kestrel' / 'kestrel_scenedata.json').unlink()
+        api.backup_kestrel_db(str(shoot))
+        (shoot / '.kestrel' / 'kestrel_scenedata_old.json').write_text('{"version":"2.0"}')
+
+        api.backup_kestrel_db(str(shoot))
+
+        assert (shoot / '.kestrel' / 'kestrel_scenedata_old.json').exists(), (
+            'scenedata backup slot was rotated away with nothing to replace it'
+        )
+
+
+class TestFailedMovesAreReported:
+    """The caller drops the rows it asked us to move, so it needs the failures.
+
+    A row dropped for a photo still sitting in the shoot folder takes its
+    rating, labels and crop choice out of the database while the file itself
+    stays put — invisible until a re-analysis, and not repairable by Undo.
+    """
+
+    def test_collision_is_named_in_failed_filenames(self, api, shoot):
+        rejects = shoot / '_KESTREL_Rejects'
+        (rejects / 'IMG_0001.CR3').write_text('card-A-original')
+        (shoot / 'IMG_0001.CR3').write_text('card-B-different-photo')
+        (shoot / 'IMG_0007.CR3').write_text('moves-fine')
+
+        res = api.move_rejects_to_folder(str(shoot), ['IMG_0001.CR3', 'IMG_0007.CR3'])
+
+        assert res['success']
+        assert res['failed_filenames'] == ['IMG_0001.CR3']
+        assert (shoot / 'IMG_0001.CR3').exists()
+        assert not (shoot / 'IMG_0007.CR3').exists()
+
+    def test_clean_batch_reports_nothing_failed(self, api, shoot):
+        (shoot / 'IMG_0010.CR3').write_text('a')
+        (shoot / 'IMG_0011.CR3').write_text('b')
+
+        res = api.move_rejects_to_folder(str(shoot), ['IMG_0010.CR3', 'IMG_0011.CR3'])
+
+        assert res['success']
+        assert res['failed_filenames'] == []
+
+    def test_missing_file_is_reported_as_failed(self, api, shoot):
+        res = api.move_rejects_to_folder(str(shoot), ['NOT_THERE.CR3'])
+        assert res['success']
+        assert res['failed_filenames'] == ['NOT_THERE.CR3']
+
+
+class TestCompanionFilesAreGuardedToo:
+    """The sidecar carries the edits; overwriting it loses them just the same."""
+
+    def test_move_refuses_to_clobber_an_existing_sidecar(self, api, shoot):
+        rejects = shoot / '_KESTREL_Rejects'
+        (rejects / 'IMG_0003.xmp').write_text('card-A-edits')
+        (shoot / 'IMG_0003.CR3').write_text('card-B-raw')
+        (shoot / 'IMG_0003.xmp').write_text('card-B-edits')
+
+        ok, moved = api._move_file_with_sidecars(
+            str(shoot), 'IMG_0003.CR3', str(rejects), None
+        )
+
+        assert ok, 'the primary file had no collision and should still move'
+        assert 'IMG_0003.xmp' not in moved
+        assert (rejects / 'IMG_0003.xmp').read_text() == 'card-A-edits'
+        assert (shoot / 'IMG_0003.xmp').exists(), 'sidecar must be left in place'
+
+    def test_restore_refuses_to_clobber_an_existing_sidecar(self, api, shoot):
+        rejects = shoot / '_KESTREL_Rejects'
+        (rejects / 'IMG_0004.CR3').write_text('rejected-raw')
+        (rejects / 'IMG_0004.xmp').write_text('old-edits')
+        (shoot / 'IMG_0004.xmp').write_text('newer-edits')
+
+        ok, restored = api._restore_file_with_sidecars(
+            str(rejects), str(shoot), 'IMG_0004.CR3', None
+        )
+
+        assert ok
+        assert 'IMG_0004.xmp' not in restored
+        assert (shoot / 'IMG_0004.xmp').read_text() == 'newer-edits'
 
 
 class TestMoveDoesNotOverwrite:
