@@ -2657,11 +2657,21 @@
     // ---- Execute selected actions ----
     async function executeActions() {
       const doXmp  = el('#doXmpCheck')?.checked  || false;
-      const doMove = el('#doMoveCheck')?.checked || false;
+      // "Move rejects" only means anything if this pass actually rejected
+      // something. Running the move step with an empty set would still take a
+      // fresh backup and reset rejectFilenames to [], which strands any
+      // earlier move: Undo would then restore nothing and hide itself. Treat a
+      // zero-reject pass as "no move requested".
+      const wantsMove = el('#doMoveCheck')?.checked || false;
+      const pendingRejectCount = rows.filter(r => cullingState.get(r.filename) === 'reject').length;
+      const doMove = wantsMove && pendingRejectCount > 0;
       const doAutoLabels = doXmp && (el('#doAutoLabelCheck')?.checked ?? true);
       const doEmbedJpeg = doXmp && _folderHasJpeg() && (el('#xmpEmbedJpegCheck')?.checked || false);
       const doPromoteVerified = !!el('#doPromoteVerifiedCheck')?.checked;
-      if (!doXmp && !doMove && !doPromoteVerified) return;
+      // Guard on what the user asked for, not on doMove: a zero-reject pass
+      // with "move" ticked should still run (and report "nothing to move")
+      // rather than silently doing nothing.
+      if (!doXmp && !wantsMove && !doPromoteVerified) return;
 
       // Human-readable suffix describing embedded JPEG results, appended to the
       // sidecar-count step detail when embedding was requested.
@@ -3002,7 +3012,7 @@
         const count = Number.isFinite(parsedCount) && parsedCount >= 0 ? parsedCount : rejectFilenames.length;
         const suffix = count === 1 ? '' : 's';
         if (state.has_csv_backup) {
-          el('#statusLabel').textContent = `Previous reject move detected (${count} file${suffix}). Continue culling, or click "Undo Move" to restore them.`;
+          el('#statusLabel').textContent = `Previous reject move detected (${count} file${suffix}). Continue culling, or click "Undo Move" now to restore them — finishing another move replaces this undo point.`;
         } else {
           el('#statusLabel').textContent = `Previous reject move detected (${count} file${suffix}). Undo can restore files, but backup CSV is missing.`;
           showToast('Previous reject move detected. Backup CSV is missing; Undo will restore files only.', 5500);

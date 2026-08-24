@@ -6434,6 +6434,15 @@ class Api:
         dst = os.path.join(reject_dir, filename)
         try:
             if os.path.exists(src):
+                # Never clobber a file already in the rejects folder. Cameras
+                # reuse filenames across cards (IMG_0001 per card), so a second
+                # import into the same shoot folder can collide with a photo
+                # rejected earlier — and shutil.move overwrites silently on
+                # every platform. Refusing loses nothing; overwriting destroys
+                # an original.
+                if os.path.exists(dst):
+                    warn(f'[reject] Refusing to overwrite existing file in rejects folder: {filename}')
+                    return False, moved_files
                 shutil.move(src, dst)
                 moved_files.append(filename)
             else:
@@ -6562,6 +6571,12 @@ class Api:
         dst = os.path.join(root_path, filename)
         try:
             if os.path.exists(src):
+                # Same reasoning as the move path: if the user has re-imported
+                # or re-created this filename since the reject move, restoring
+                # over it would destroy the newer file.
+                if os.path.exists(dst):
+                    warn(f'[reject] Refusing to overwrite existing file while restoring: {filename}')
+                    return False, restored_files
                 shutil.move(src, dst)
                 restored_files.append(filename)
             else:
@@ -6734,6 +6749,15 @@ class Api:
             if not os.path.exists(csv_path):
                 return {"success": False, "error": "kestrel_database.csv not found", "backup_csv": "", "backup_scenedata": ""}
 
+            # Preserve any backup already sitting in the slot before we
+            # overwrite it. There is only one canonical `_old` name per file,
+            # and Undo restores from it — so a second reject move would
+            # otherwise destroy the first move's undo point with no warning.
+            # Rotating to a timestamped copy keeps every earlier restore point
+            # recoverable by hand, using the same OLD_* convention
+            # ``database._perform_db_upgrade`` already uses for schema upgrades.
+            rotated = self._rotate_existing_backups(kestrel_dir, csv_backup, scenedata_backup)
+
             # Backup CSV
             shutil.copy2(csv_path, csv_backup)
             info(f"[backup] CSV backed up to {csv_backup}")
@@ -6749,11 +6773,40 @@ class Api:
                 "success": True,
                 "backup_csv": csv_backup,
                 "backup_scenedata": scenedata_backup if scenedata_backed else "",
+                "rotated_previous": rotated,
                 "error": ""
             }
         except Exception as e:
             error(f"[API] backup_kestrel_db error: {e}")
             return {"success": False, "error": str(e), "backup_csv": "", "backup_scenedata": ""}
+
+    def _rotate_existing_backups(self, kestrel_dir: str, csv_backup: str, scenedata_backup: str) -> bool:
+        """Move any existing ``*_old`` backups aside under a timestamped name.
+
+        Returns True if anything was rotated. Best-effort: a failure here must
+        not abort the caller's own backup, because failing to take the new
+        backup is strictly worse than failing to preserve the previous one.
+        """
+        rotated = False
+        try:
+            from datetime import datetime
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            pairs = (
+                (csv_backup, f"OLD_kestrel_database_{timestamp}.csv"),
+                (scenedata_backup, f"OLD_kestrel_scenedata_{timestamp}.json"),
+            )
+            for existing, archived_name in pairs:
+                if not os.path.exists(existing):
+                    continue
+                archived = os.path.join(kestrel_dir, archived_name)
+                if os.path.exists(archived):
+                    continue  # same-second rotation already happened; keep the first
+                os.replace(existing, archived)
+                rotated = True
+                info(f"[backup] Previous backup preserved as {os.path.basename(archived)}")
+        except Exception as e:
+            warn(f"[backup] Could not rotate previous backup (continuing): {e}")
+        return rotated
 
     def restore_kestrel_db_backup(self, root_path: str):
         """Restore both kestrel_database.csv and kestrel_scenedata.json from backups.
