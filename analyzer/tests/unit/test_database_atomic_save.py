@@ -189,14 +189,33 @@ class TestAtomicTextWrite:
         good = p.read_bytes()
         real_fdopen = _dbmod.os.fdopen
 
-        def wrapping_fdopen(*a, **k):
-            f = real_fdopen(*a, **k)
+        class FlushBoom:
+            """Delegates to the real fdopen file; flush is not assignable on TextIOWrapper."""
 
-            def boom_flush():
+            def __init__(self, real):
+                self._real = real
+
+            def write(self, *a, **k):
+                return self._real.write(*a, **k)
+
+            def flush(self):
                 raise OSError(errno.ENOSPC, "No space left on device")
 
-            f.flush = boom_flush
-            return f
+            def fileno(self):
+                return self._real.fileno()
+
+            def close(self):
+                return self._real.close()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.close()
+                return False
+
+        def wrapping_fdopen(*a, **k):
+            return FlushBoom(real_fdopen(*a, **k))
 
         monkeypatch.setattr(_dbmod.os, "fdopen", wrapping_fdopen)
         with pytest.raises(OSError):
