@@ -17,6 +17,7 @@ segment is rewritten), so it is strictly opt-in.
 import hashlib
 import json
 import os
+import re
 import tempfile
 
 # XMP namespace URIs
@@ -262,6 +263,16 @@ def _is_kestrel_xmp(path: str) -> bool:
 # sidecar is only overwritten without confirmation if its hash still matches.
 _XMP_FINGERPRINT_FILE = 'xmp_fingerprints.json'
 
+# A valid fingerprint is exactly what hashlib.sha256().hexdigest() produces:
+# 64 lowercase hex chars. Anything else in the store is corrupt/foreign and is
+# treated as "no fingerprint" (legacy fallback) rather than a hash to compare.
+_SHA256_HEX_RE = re.compile(r'\A[0-9a-f]{64}\Z')
+
+
+def _is_sha256_hex(value) -> bool:
+    """True iff ``value`` is a 64-char lowercase hex sha256 digest string."""
+    return isinstance(value, str) and _SHA256_HEX_RE.match(value) is not None
+
 
 def _file_sha256(path: str) -> str | None:
     """Return the hex sha256 of a file's bytes, or None if unreadable."""
@@ -290,13 +301,15 @@ def _load_xmp_fingerprints(root: str) -> dict:
             data = json.load(f)
         if not isinstance(data, dict):
             return {}
-        # Keep only usable entries. A fingerprint must be a string sha256; a
-        # null or other non-string value (e.g. from an older/corrupt store)
-        # would otherwise behave like "no fingerprint" and silently allow an
-        # overwrite of a file whose fingerprint is actually unknown. Dropping
-        # them makes such a sidecar fall back to legacy handling explicitly.
+        # Keep only usable entries. A fingerprint must be a real sha256 hex
+        # digest. A null/other-typed value (older/corrupt store) or a
+        # non-sha256 string would otherwise be misused: a null behaves like
+        # "no fingerprint" and could silently allow an overwrite, while a
+        # bogus string would never match the file's real hash and wrongly
+        # route an untouched sidecar through the conflict path. Dropping both
+        # makes a corrupt store fall back cleanly to legacy handling.
         return {k: v for k, v in data.items()
-                if isinstance(k, str) and isinstance(v, str)}
+                if isinstance(k, str) and _is_sha256_hex(v)}
     except Exception:
         return {}
 
@@ -543,6 +556,15 @@ def write_xmp_metadata(
         if not root_path or not os.path.isdir(root_path):
             return {'success': False, 'error': 'Invalid root path'}
 
+        # Canonicalize the root once. `_safe_sidecar_path` resolves each sidecar
+        # to an absolute realpath under realpath(root), so the fingerprint key
+        # (and the store location) must be derived from the same canonical root.
+        # Using the raw `root_path` here made keys unstable: a relative root, a
+        # different CWD, or a symlinked path could yield a different relpath
+        # (even with '..' components) for the same file, missing a previously
+        # recorded fingerprint and silently re-enabling overwrites.
+        root_real = os.path.realpath(root_path)
+
         written = 0
         skipped_conflicts = []
         errors = []
@@ -551,7 +573,7 @@ def write_xmp_metadata(
 
         # Hashes of sidecars as Kestrel last wrote them; used to tell "ours and
         # unchanged" (safe to overwrite) from "ours but edited externally".
-        fingerprints = _load_xmp_fingerprints(root_path)
+        fingerprints = _load_xmp_fingerprints(root_real)
 
         for entry in (image_data or []):
             try:
@@ -586,7 +608,7 @@ def write_xmp_metadata(
                 # with traversal segments (``../sensitive``) or an absolute
                 # path would otherwise let the caller write .xmp files
                 # anywhere on disk. See FINDING-02.
-                resolved_image = _safe_sidecar_path(root_path, filename)
+                resolved_image = _safe_sidecar_path(root_real, filename)
                 if resolved_image is None:
                     errors.append(f'{filename}: rejected (unsafe filename)')
                     warn(f'[metadata][security] write_xmp_metadata rejected unsafe filename: {filename!r}')
@@ -594,7 +616,9 @@ def write_xmp_metadata(
                 base, _ext = os.path.splitext(resolved_image)
                 xmp_path = base + '.xmp'
                 xmp_filename = os.path.basename(xmp_path)
-                fp_key = os.path.relpath(xmp_path, root_path)
+                # Key relative to the canonical root -> a stable basename-level
+                # key regardless of how the caller spelled root_path.
+                fp_key = os.path.relpath(xmp_path, root_real)
 
                 # Safety check: if XMP already exists, only overwrite it silently
                 # when it is a Kestrel sidecar that is unchanged since we wrote it
@@ -676,7 +700,7 @@ def write_xmp_metadata(
                 errors.append(f'{entry.get("filename", "?")}: {entry_err}')
 
         if written:
-            _save_xmp_fingerprints(root_path, fingerprints)
+            _save_xmp_fingerprints(root_real, fingerprints)
 
         info(
             f'[metadata] write_xmp_metadata: written={written}, '

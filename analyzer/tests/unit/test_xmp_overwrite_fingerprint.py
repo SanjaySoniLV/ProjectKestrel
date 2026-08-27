@@ -97,16 +97,20 @@ def test_non_kestrel_external_xmp_is_skipped(tmp_path):
     assert 'A.xmp' in r['skipped_conflicts']
 
 
-def test_load_fingerprints_drops_non_string_values(tmp_path):
-    """A store with null/non-string values (older or corrupt) must not feed
-    ambiguous entries downstream; only hex-string fingerprints are kept."""
+def test_load_fingerprints_keeps_only_sha256_hex(tmp_path):
+    """A store with null/non-string/non-sha256 values (older or corrupt) must
+    not feed ambiguous entries downstream; only real 64-char hex sha256
+    digests are kept. Everything else falls back to legacy handling."""
     import json
 
+    good = "a" * 64  # a valid 64-char lowercase hex digest shape
     kdir = tmp_path / ".kestrel"
     kdir.mkdir()
     (kdir / "xmp_fingerprints.json").write_text(
         json.dumps({
-            "good.xmp": "abc123",
+            "good.xmp": good,
+            "short.xmp": "abc123",          # too short to be sha256
+            "upper.xmp": "A" * 64,          # uppercase -> not hexdigest() output
             "null.xmp": None,
             "num.xmp": 42,
             "list.xmp": ["x"],
@@ -115,7 +119,64 @@ def test_load_fingerprints_drops_non_string_values(tmp_path):
     )
 
     fps = mw._load_xmp_fingerprints(str(tmp_path))
-    assert fps == {"good.xmp": "abc123"}
+    assert fps == {"good.xmp": good}
+
+
+def test_corrupt_nonhex_fingerprint_falls_back_to_legacy_not_conflict(tmp_path):
+    """A corrupt store holding a non-sha256 string for an existing Kestrel
+    sidecar must be ignored (legacy overwrite), NOT routed through the conflict
+    path -- otherwise an untouched sidecar would be wrongly flagged."""
+    import json
+
+    _write(tmp_path)  # creates A.xmp + a valid fingerprint
+    store = tmp_path / ".kestrel" / "xmp_fingerprints.json"
+    data = json.loads(store.read_text(encoding='utf-8'))
+    key = next(iter(data))
+    data[key] = "not-a-real-sha256"  # corrupt the recorded value
+    store.write_text(json.dumps(data), encoding='utf-8')
+
+    # The sidecar itself was NOT edited; with the bogus fingerprint dropped it
+    # is treated as a legacy Kestrel sidecar and overwritten, not a conflict.
+    r = mw.write_xmp_metadata(str(tmp_path), [_entry()])
+    assert r['written'] == 1
+    assert r['skipped_conflicts'] == []
+
+
+def test_fingerprint_key_is_stable_across_relative_and_symlinked_roots(tmp_path, monkeypatch):
+    """The overwrite protection must hold when the same folder is addressed via
+    a relative path or a symlink: an externally edited sidecar must still be
+    detected as a conflict, not silently overwritten due to an unstable key."""
+    shoot = tmp_path / "shoot"
+    shoot.mkdir()
+    (shoot / "A.CR3").write_bytes(b"raw-placeholder")
+
+    # First write via an absolute root records the fingerprint.
+    assert mw.write_xmp_metadata(str(shoot), [_entry()])['written'] == 1
+
+    # Simulate an external edit that keeps the Kestrel namespace.
+    xmp = shoot / "A.xmp"
+    edited = xmp.read_text(encoding='utf-8') + "\n<!-- edited elsewhere -->\n"
+    xmp.write_text(edited, encoding='utf-8')
+
+    # Address the SAME folder via a relative path (different CWD) ...
+    monkeypatch.chdir(tmp_path)
+    r_rel = mw.write_xmp_metadata("shoot", [_entry()])
+    assert r_rel['written'] == 0
+    assert 'A.xmp' in r_rel['skipped_conflicts']
+    assert xmp.read_text(encoding='utf-8') == edited
+
+    # ... and via a symlink to it. Both must resolve to the same key and keep
+    # protecting the edit. (Symlink support is universal on POSIX; skip if the
+    # platform/filesystem can't create one.)
+    link = tmp_path / "link_to_shoot"
+    try:
+        link.symlink_to(shoot, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not supported here")
+    r_link = mw.write_xmp_metadata(str(link), [_entry()])
+    assert r_link['written'] == 0
+    assert 'A.xmp' in r_link['skipped_conflicts']
+    assert xmp.read_text(encoding='utf-8') == edited
 
 
 def test_failed_post_write_hash_is_not_persisted_as_null(tmp_path, monkeypatch):
