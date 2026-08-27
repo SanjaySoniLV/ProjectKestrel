@@ -168,6 +168,27 @@ def test_logged_showwarning_does_not_drop_concurrent_threads(tmp_path, monkeypat
     assert any("from-thread-2" in m for m in seen)
 
 
+def test_concurrent_log_warning_keeps_valid_json(tmp_path):
+    """Overlapping log_event writes must not tear or drop the JSON log."""
+    log_path = str(tmp_path / "kestrel.log.json")
+    n = 8
+    barrier = threading.Barrier(n)
+
+    def worker(i: int) -> None:
+        barrier.wait()
+        log_warning(log_path, f"msg-{i}", stage="unit")
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    entries = json.loads(Path(log_path).read_text(encoding="utf-8"))
+    messages = {e["message"] for e in entries}
+    assert {f"msg-{i}" for i in range(n)} <= messages
+
+
 def test_logged_showwarning_records_category_and_stage(tmp_path):
     log_path = str(tmp_path / "kestrel.log.json")
     stage_ctx = {"stage": "list_files", "file": "IMG_001.CR3"}

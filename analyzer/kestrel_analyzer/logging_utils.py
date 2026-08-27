@@ -29,6 +29,9 @@ except (ImportError, ValueError):
         def error(*_a, **_kw): pass  # type: ignore[no-redef]
 
 
+_log_write_lock = threading.RLock()
+
+
 def utc_now_naive() -> datetime:
     """UTC now as a naive datetime.
 
@@ -85,10 +88,14 @@ def _read_log_entries(log_path: str) -> list:
 
 def log_event(log_path: str, entry: Dict[str, Any]) -> None:
     entry_with_time = {"timestamp_utc": _utc_timestamp(), **entry}
-    entries = _read_log_entries(log_path)
-    entries.append(entry_with_time)
-    with open(log_path, "w", encoding="utf-8") as handle:
-        json.dump(entries, handle, indent=2)
+    # Decoder threads can hit the warning hook concurrently. Serialize the
+    # read-modify-write so overlapping log_warning/log_exception calls cannot
+    # tear the JSON file or drop earlier session entries.
+    with _log_write_lock:
+        entries = _read_log_entries(log_path)
+        entries.append(entry_with_time)
+        with open(log_path, "w", encoding="utf-8") as handle:
+            json.dump(entries, handle, indent=2)
 
 
 def log_exception(
