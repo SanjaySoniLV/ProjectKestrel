@@ -32,7 +32,7 @@ import threading
 import time
 
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, TextIO
 
 # --- Extracted modules ---
@@ -170,7 +170,7 @@ def _enable_runtime_log_capture() -> str:
     try:
         runtime_dir = os.path.join(base_log_dir, 'logs')
         os.makedirs(runtime_dir, exist_ok=True)
-        ts = datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
+        ts = datetime.now(timezone.utc).replace(tzinfo=None).strftime('%Y%m%dT%H%M%SZ')
         runtime_log_path = os.path.join(runtime_dir, f'kestrel_runtime_{ts}.log')
 
         _RUNTIME_LOG_HANDLE = open(runtime_log_path, 'a', encoding='utf-8', buffering=1)
@@ -182,7 +182,7 @@ def _enable_runtime_log_capture() -> str:
 
 
 def _utc_now_iso() -> str:
-    return datetime.utcnow().isoformat() + 'Z'
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + 'Z'
 
 
 # Settings key holding the previous session's outcome. One of:
@@ -378,7 +378,7 @@ def _mark_session_start() -> None:
         )
 
         try:
-            today_utc = datetime.utcnow().strftime('%Y-%m-%d')
+            today_utc = datetime.now(timezone.utc).strftime('%Y-%m-%d')
             last_ping = str(settings.get('last_open_ping_utc', '') or '').strip()
             legal_agreed = str(settings.get('legal_agreed_version', '') or '').strip()
             if (

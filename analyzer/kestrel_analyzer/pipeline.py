@@ -43,7 +43,13 @@ from .image_utils import decode_embedded_preview, read_image, read_image_for_pip
 from .ratings import quality_to_rating, resolve_thresholds
 from .similarity import compute_image_similarity_akaze, compute_similarity_timestamp
 from .raw_exif import get_capture_time
-from .logging_utils import get_log_path, log_event, log_exception, log_warning
+from .logging_utils import (
+    get_log_path,
+    log_event,
+    log_exception,
+    log_warning,
+    make_logged_showwarning,
+)
 
 try:
     from ..settings_utils import load_persisted_settings, debug as _debug, info as _info, error as _error
@@ -547,21 +553,12 @@ class AnalysisPipeline:
         stage_ctx = {"stage": "startup", "file": None}
 
         original_showwarning = warnings.showwarning
-
-        def _showwarning(message, category, filename, lineno, file=None, line=None):
-            log_warning(
-                self._log_path,
-                message,
-                category=category,
-                filename=filename,
-                lineno=lineno,
-                stage=stage_ctx["stage"],
-                context={"file": stage_ctx["file"], "folder": folder},
-            )
-            if original_showwarning:
-                original_showwarning(message, category, filename, lineno, file=file, line=line)
-
-        warnings.showwarning = _showwarning
+        warnings.showwarning = make_logged_showwarning(
+            self._log_path,
+            stage_ctx,
+            folder=folder,
+            original_showwarning=original_showwarning,
+        )
 
         try:
             stage_ctx["stage"] = "list_files"

@@ -1,7 +1,7 @@
 import json
 import os
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -28,12 +28,24 @@ except (ImportError, ValueError):
         def error(*_a, **_kw): pass  # type: ignore[no-redef]
 
 
+def _utc_now_naive() -> datetime:
+    """UTC now as a naive datetime.
+
+    The deprecated naive-UTC constructor emits DeprecationWarning on
+    Python 3.12+. If a ``warnings.showwarning`` hook logs via
+    :func:`log_warning` (which stamps the entry with this helper), that
+    warning would re-enter the hook and raise RecursionError.
+    ``datetime.now(timezone.utc)`` is silent.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def _utc_timestamp() -> str:
-    return datetime.utcnow().isoformat() + "Z"
+    return _utc_now_naive().isoformat() + "Z"
 
 
 def _file_timestamp() -> str:
-    return datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    return _utc_now_naive().strftime("%Y%m%dT%H%M%SZ")
 
 
 def resolve_log_dir(folder: Optional[str]) -> str:
@@ -96,6 +108,45 @@ def log_exception(
             "traceback": traceback.format_exc(),
         },
     )
+
+
+def make_logged_showwarning(
+    log_path: str,
+    stage_ctx: Dict[str, Any],
+    folder: Optional[str] = None,
+    original_showwarning=None,
+):
+    """Build a ``warnings.showwarning`` hook that writes to the JSON log.
+
+    The hook is re-entrancy-safe: if logging itself emits a warning (the
+    historical ``datetime.utcnow`` DeprecationWarning, or any other), the
+    nested call returns immediately instead of stacking until RecursionError.
+    """
+    in_handler = False
+
+    def _showwarning(message, category, filename, lineno, file=None, line=None):
+        nonlocal in_handler
+        if in_handler:
+            return
+        in_handler = True
+        try:
+            log_warning(
+                log_path,
+                message,
+                category=category,
+                filename=filename,
+                lineno=lineno,
+                stage=stage_ctx.get("stage"),
+                context={"file": stage_ctx.get("file"), "folder": folder},
+            )
+            if original_showwarning:
+                original_showwarning(
+                    message, category, filename, lineno, file=file, line=line
+                )
+        finally:
+            in_handler = False
+
+    return _showwarning
 
 
 def log_warning(
