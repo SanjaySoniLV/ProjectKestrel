@@ -180,7 +180,14 @@ def _build_scenedata_from_legacy_db(database: pd.DataFrame) -> dict:
             filename = str(row.get("filename", ""))
             if not filename:
                 continue
-            origin = str(row.get("rating_origin", "")).lower() if has_origin else ""
+            if has_origin:
+                raw_origin = row.get("rating_origin", "")
+                # A blank field is read by pd.read_csv as NaN, so str(NaN) would
+                # be 'nan' rather than ''. Normalize NaN/None/whitespace to ''
+                # so a blank origin is treated as "no explicit origin".
+                origin = "" if pd.isna(raw_origin) else str(raw_origin).strip().lower()
+            else:
+                origin = ""
             rating_val = row.get("rating", None)
             try:
                 r = int(float(rating_val))
