@@ -142,6 +142,41 @@ def test_corrupt_nonhex_fingerprint_falls_back_to_legacy_not_conflict(tmp_path):
     assert r['skipped_conflicts'] == []
 
 
+def test_save_fingerprints_closes_fd_when_fdopen_fails(tmp_path, monkeypatch):
+    """If os.fdopen fails, the mkstemp descriptor must be closed (not leaked)
+    and the temp file cleaned up, and the best-effort save must swallow the
+    error rather than propagate it."""
+    import os as _os
+
+    created = {}
+    real_mkstemp = mw.tempfile.mkstemp
+
+    def spy_mkstemp(*a, **k):
+        fd, path = real_mkstemp(*a, **k)
+        created['fd'] = fd
+        created['path'] = path
+        return fd, path
+
+    closed = []
+    real_close = mw.os.close
+
+    def spy_close(fd):
+        closed.append(fd)
+        return real_close(fd)
+
+    monkeypatch.setattr(mw.tempfile, 'mkstemp', spy_mkstemp)
+    monkeypatch.setattr(mw.os, 'close', spy_close)
+    monkeypatch.setattr(mw.os, 'fdopen',
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
+
+    # Best-effort: must not raise.
+    mw._save_xmp_fingerprints(str(tmp_path), {'A.xmp': 'a' * 64})
+
+    assert created['fd'] in closed, "mkstemp fd was not closed -> leaked"
+    assert not _os.path.exists(created['path']), "temp file left behind"
+    assert not (tmp_path / '.kestrel' / 'xmp_fingerprints.json').exists()
+
+
 def test_fingerprint_key_is_stable_across_relative_and_symlinked_roots(tmp_path, monkeypatch):
     """The overwrite protection must hold when the same folder is addressed via
     a relative path or a symlink: an externally edited sidecar must still be

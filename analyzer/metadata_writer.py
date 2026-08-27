@@ -315,13 +315,25 @@ def _load_xmp_fingerprints(root: str) -> dict:
 
 
 def _save_xmp_fingerprints(root: str, fingerprints: dict) -> None:
-    """Persist the fingerprint map atomically (best-effort; never raises)."""
+    """Persist the fingerprint map atomically.
+
+    Best-effort: ordinary errors (I/O, permissions, serialization) are logged
+    and swallowed so a failed persist never breaks a metadata write. Only
+    KeyboardInterrupt/SystemExit are intentionally allowed to propagate.
+    """
     try:
         kdir = os.path.join(root, '.kestrel')
         os.makedirs(kdir, exist_ok=True)
         fd, tmp = tempfile.mkstemp(prefix='.xmp_fp_', suffix='.tmp', dir=kdir)
         try:
-            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            # os.fdopen takes ownership of fd on success; if it raises, fd
+            # hasn't been wrapped yet and would leak, so close it explicitly.
+            try:
+                f = os.fdopen(fd, 'w', encoding='utf-8')
+            except BaseException:
+                os.close(fd)
+                raise
+            with f:
                 json.dump(fingerprints, f, indent=2)
             os.replace(tmp, _xmp_fingerprint_path(root))
         except BaseException:
