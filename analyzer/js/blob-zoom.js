@@ -74,15 +74,13 @@
         return val;
       }
       set(key, val) {
-        if (super.has(key)) {
-          // Replacing an existing key: revoke the URL we're dropping so a
-          // duplicate load (e.g. two concurrent getBlobUrlForPath calls for the
-          // same uncached image) doesn't orphan the first blob: URL. Guard
-          // against the no-op case where the same URL is re-set.
-          const prev = super.get(key);
-          if (prev !== val) _revokeBlobUrl(prev);
-          super.delete(key);
-        }
+        // Callers must not overwrite an existing key with a *different* URL:
+        // getBlobUrlForPath de-duplicates concurrent loads so the same key is
+        // never re-created (see there). We therefore never revoke here — the
+        // stored URL may already be handed to an <img> that is still loading,
+        // and revoking it early would break that load. Re-inserting only bumps
+        // recency for the LRU order.
+        if (super.has(key)) super.delete(key);
         super.set(key, val);
         // Evict least-recently-used entries beyond the cap, freeing their blobs.
         while (super.size > BLOB_URL_CACHE_MAX) {
@@ -127,6 +125,14 @@
         try {
           const result = await window.pywebview.api.read_image_file(rel, effectiveRoot);
           if (result && result.success && result.data) {
+            // De-duplicate concurrent loads: another request for the same image
+            // may have populated the cache while we awaited the IPC read. If so,
+            // reuse the existing URL rather than creating (and later having to
+            // revoke) a second one — that avoids revoking a URL a caller might
+            // already be using. The has()->createObjectURL()->set() sequence
+            // below runs without an await in between, so it is atomic on the JS
+            // event loop and cannot create a duplicate entry.
+            if (blobUrlCache.has(cacheKey)) return blobUrlCache.get(cacheKey);
             // Use a blob: URL instead of a data: URL so the browser can decode
             // the image asynchronously on its decode thread rather than blocking
             // the main thread with synchronous base64 + JPEG/PNG parsing.
