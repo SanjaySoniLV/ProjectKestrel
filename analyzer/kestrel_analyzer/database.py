@@ -329,7 +329,7 @@ def save_scenedata(scenedata: dict, kestrel_dir: str) -> None:
     truncate the existing file.
     """
     scenedata_path = os.path.join(kestrel_dir, SCENEDATA_FILENAME)
-    write_text_atomic(scenedata_path, json.dumps(scenedata, indent=2))
+    write_json_atomic(scenedata_path, scenedata, indent=2)
 
 
 def ensure_columns(database: pd.DataFrame) -> pd.DataFrame:
@@ -477,16 +477,12 @@ def _to_csv_atomic(database: pd.DataFrame, db_path: str) -> None:
         raise
 
 
-def write_text_atomic(path: str, text: str, encoding: str = "utf-8") -> None:
-    """Write ``text`` to ``path`` atomically (temp file + ``os.replace``).
+def _write_file_atomic(path: str, write_fn, encoding: str = "utf-8") -> None:
+    """Atomically write by calling ``write_fn(file)`` on a temp file, then replace.
 
-    Plain ``open(path, "w")`` truncates the destination and streams into it, so
-    a crash/power loss mid-write leaves a partial file behind. For JSON
-    (kestrel_scenedata.json) that means losing the user's ratings/tags/cull
-    decisions; for the UI's raw-text CSV save it means a truncated database.
-    Writing to a unique temp file in the same directory and ``os.replace``-ing
-    it into place gives readers/crashes an all-or-nothing view. Mirrors
-    ``_to_csv_atomic`` and ``settings_utils.save_settings``.
+    ``write_fn`` receives an open text file (encoding/newline already set) and
+    must write the full payload into it. Shared by ``write_text_atomic`` and
+    ``write_json_atomic``. Mirrors ``_to_csv_atomic`` / ``settings_utils.save_settings``.
     """
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
@@ -502,7 +498,7 @@ def write_text_atomic(path: str, text: str, encoding: str = "utf-8") -> None:
             os.close(tmp_fd)
             raise
         with f:
-            f.write(text)
+            write_fn(f)
             try:
                 f.flush()
                 os.fsync(f.fileno())
@@ -519,6 +515,31 @@ def write_text_atomic(path: str, text: str, encoding: str = "utf-8") -> None:
         except OSError:
             pass
         raise
+
+
+def write_text_atomic(path: str, text: str, encoding: str = "utf-8") -> None:
+    """Write ``text`` to ``path`` atomically (temp file + ``os.replace``).
+
+    Plain ``open(path, "w")`` truncates the destination and streams into it, so
+    a crash/power loss mid-write leaves a partial file behind. For the UI's
+    raw-text CSV save that means a truncated database. Writing to a unique temp
+    file in the same directory and ``os.replace``-ing it into place gives
+    readers/crashes an all-or-nothing view.
+    """
+    _write_file_atomic(path, lambda f: f.write(text), encoding=encoding)
+
+
+def write_json_atomic(path: str, obj, indent: int = 2) -> None:
+    """Serialize ``obj`` to JSON at ``path`` atomically via streaming ``json.dump``.
+
+    Unlike ``write_text_atomic(json.dumps(obj))``, this never materializes the
+    full serialized string in memory -- important for large scenedata payloads
+    (ratings, tags, cull decisions).
+    """
+    def _dump(f):
+        json.dump(obj, f, indent=indent)
+
+    _write_file_atomic(path, _dump)
 
 
 def save_database(database: pd.DataFrame, db_path: str) -> None:

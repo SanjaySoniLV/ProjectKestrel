@@ -24,6 +24,7 @@ from kestrel_analyzer.database import (
     read_database_csv,
     save_database,
     save_scenedata,
+    write_json_atomic,
     write_text_atomic,
 )
 import kestrel_analyzer.database as _dbmod
@@ -157,7 +158,7 @@ class TestAtomicCsvWrite:
 
 
 class TestAtomicTextWrite:
-    """write_text_atomic backs the scenedata (ratings/tags/cull) + UI CSV writes."""
+    """write_text_atomic backs the UI CSV write path."""
 
     def test_writes_content_and_leaves_no_temp(self, tmp_path):
         p = tmp_path / "kestrel_scenedata.json"
@@ -181,6 +182,53 @@ class TestAtomicTextWrite:
         assert p.read_bytes() == good
         assert [x.name for x in tmp_path.iterdir()] == ["kestrel_scenedata.json"]
 
+
+class TestAtomicJsonWrite:
+    """write_json_atomic streams json.dump into the temp file (no dumps buffer)."""
+
+    def test_roundtrips_and_leaves_no_temp(self, tmp_path):
+        p = tmp_path / "kestrel_scenedata.json"
+        obj = {"version": "2.0", "image_ratings": {"IMG_1.CR3": 5}, "scenes": {}}
+        write_json_atomic(str(p), obj, indent=2)
+        assert json.loads(p.read_text()) == obj
+        assert [x.name for x in tmp_path.iterdir()] == ["kestrel_scenedata.json"]
+
+    def test_streams_via_dump_not_dumps(self, tmp_path, monkeypatch):
+        """Peak-memory path: serialize directly into the temp file."""
+        dumped = {"via": None}
+
+        real_dump = json.dump
+        real_dumps = json.dumps
+
+        def tracking_dump(obj, fp, *a, **k):
+            dumped["via"] = "dump"
+            return real_dump(obj, fp, *a, **k)
+
+        def tracking_dumps(*a, **k):
+            dumped["via"] = "dumps"
+            return real_dumps(*a, **k)
+
+        monkeypatch.setattr(_dbmod.json, "dump", tracking_dump)
+        monkeypatch.setattr(_dbmod.json, "dumps", tracking_dumps)
+
+        write_json_atomic(str(tmp_path / "kestrel_scenedata.json"), {"a": 1}, indent=2)
+        assert dumped["via"] == "dump"
+
+    def test_existing_file_survives_a_failed_write(self, tmp_path, monkeypatch):
+        p = tmp_path / "kestrel_scenedata.json"
+        write_json_atomic(str(p), {"good": True}, indent=2)
+        good = p.read_bytes()
+
+        def boom(*_a, **_k):
+            raise OSError("simulated crash during replace")
+
+        monkeypatch.setattr(_dbmod.os, "replace", boom)
+        with pytest.raises(OSError):
+            write_json_atomic(str(p), {"partial": True}, indent=2)
+
+        assert p.read_bytes() == good
+        assert [x.name for x in tmp_path.iterdir()] == ["kestrel_scenedata.json"]
+
     def test_save_scenedata_is_atomic_and_roundtrips(self, tmp_path, monkeypatch):
         scenedata = {"version": "2.0", "image_ratings": {"IMG_1.CR3": 5}, "scenes": {}}
         save_scenedata(scenedata, str(tmp_path))
@@ -199,3 +247,11 @@ class TestAtomicTextWrite:
         assert out.read_bytes() == good
         # no stray temp files
         assert sorted(x.name for x in tmp_path.iterdir()) == ["kestrel_scenedata.json"]
+
+    def test_save_scenedata_does_not_call_dumps(self, tmp_path, monkeypatch):
+        def fail_dumps(*_a, **_k):
+            raise AssertionError("json.dumps must not be used")
+
+        monkeypatch.setattr(_dbmod.json, "dumps", fail_dumps)
+        save_scenedata({"version": "2.0", "image_ratings": {}, "scenes": {}}, str(tmp_path))
+        assert (tmp_path / "kestrel_scenedata.json").exists()

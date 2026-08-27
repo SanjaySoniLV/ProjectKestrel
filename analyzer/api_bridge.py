@@ -60,6 +60,15 @@ except ImportError:
     except ImportError:
         _mac_sandbox = None
 
+try:
+    from kestrel_analyzer.database import write_json_atomic, write_text_atomic
+except ImportError:
+    try:
+        from analyzer.kestrel_analyzer.database import write_json_atomic, write_text_atomic
+    except ImportError:
+        write_json_atomic = None  # type: ignore[assignment]
+        write_text_atomic = None  # type: ignore[assignment]
+
 # Distribution channel ('direct' website build vs 'appstore' sandboxed build),
 # baked at build time. Import-safe everywhere; used by the frontend to branch
 # What's New / cloud-compute CTAs on channel without cutting a new release.
@@ -1837,10 +1846,6 @@ class Api:
                 return {'success': False, 'error': f'CSV not found: {csv_path}'}
             # Atomic write: the analysis pipeline / auto-refresh may read this
             # same file, and a crash mid-write must not truncate the database.
-            try:
-                from kestrel_analyzer.database import write_text_atomic
-            except ImportError:
-                from analyzer.kestrel_analyzer.database import write_text_atomic  # type: ignore[no-redef]
             write_text_atomic(csv_path, csv_content, encoding='utf-8-sig')
             return {'success': True, 'path': csv_path}
         except Exception as e:
@@ -1991,11 +1996,8 @@ class Api:
 
             # Atomic write: scenedata holds the user's ratings/tags/cull
             # decisions; a crash mid-write must not truncate the existing file.
-            try:
-                from kestrel_analyzer.database import write_text_atomic
-            except ImportError:
-                from analyzer.kestrel_analyzer.database import write_text_atomic  # type: ignore[no-redef]
-            write_text_atomic(scenedata_path, json.dumps(scenedata, indent=2))
+            # Stream via json.dump so large payloads don't peak on json.dumps.
+            write_json_atomic(scenedata_path, scenedata, indent=2)
             return {'success': True, 'path': scenedata_path, 'error': ''}
         except Exception as e:
             error(f'[API] write_kestrel_scenedata({folder_path!r}) error: {e}')
