@@ -74,7 +74,15 @@
         return val;
       }
       set(key, val) {
-        if (super.has(key)) super.delete(key);
+        if (super.has(key)) {
+          // Replacing an existing key: revoke the URL we're dropping so a
+          // duplicate load (e.g. two concurrent getBlobUrlForPath calls for the
+          // same uncached image) doesn't orphan the first blob: URL. Guard
+          // against the no-op case where the same URL is re-set.
+          const prev = super.get(key);
+          if (prev !== val) _revokeBlobUrl(prev);
+          super.delete(key);
+        }
         super.set(key, val);
         // Evict least-recently-used entries beyond the cap, freeing their blobs.
         while (super.size > BLOB_URL_CACHE_MAX) {
