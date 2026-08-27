@@ -499,15 +499,24 @@ def copy_file_atomic(src_path: str, dst_path: str) -> None:
         except BaseException:
             os.close(tmp_fd)
             raise
-        with dst_f, open(src_path, "rb") as src_f:
-            shutil.copyfileobj(src_f, dst_f)
-            dst_f.flush()
-            try:
-                os.fsync(dst_f.fileno())
-            except OSError:
-                # fsync can legitimately fail on some network filesystems; the
-                # replace below still gives readers an all-or-nothing view.
-                pass
+        # Close dst_f in a finally rather than relying on the with-statement's
+        # ordering: if opening the source (or the copy) raises, the destination
+        # handle must still be released. A leaked handle on Windows can block
+        # the os.replace below and strand the .tmp file. close() on an
+        # already-closed handle is a harmless no-op.
+        try:
+            with open(src_path, "rb") as src_f:
+                shutil.copyfileobj(src_f, dst_f)
+                dst_f.flush()
+                try:
+                    os.fsync(dst_f.fileno())
+                except OSError:
+                    # fsync can legitimately fail on some network filesystems;
+                    # the replace below still gives readers an all-or-nothing
+                    # view.
+                    pass
+        finally:
+            dst_f.close()
         # Preserve mode/mtime as the previous shutil.copy2 did (best-effort).
         try:
             shutil.copystat(src_path, tmp)

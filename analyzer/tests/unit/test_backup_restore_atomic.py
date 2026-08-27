@@ -51,6 +51,23 @@ def test_existing_dst_survives_a_failed_replace(tmp_path, monkeypatch):
     assert sorted(p.name for p in tmp_path.iterdir()) == ["live", "src"]
 
 
+def test_missing_source_raises_and_leaves_no_temp(tmp_path):
+    """If opening the source fails, the pre-created temp handle must still be
+    closed and the .tmp removed. A leaked destination handle would otherwise
+    strand the .tmp (and on Windows block later replaces)."""
+    src = tmp_path / "does_not_exist"
+    dst = tmp_path / "live"
+    dst.write_bytes(b"GOOD")
+
+    with pytest.raises((FileNotFoundError, OSError)):
+        copy_file_atomic(str(src), str(dst))
+
+    assert dst.read_bytes() == b"GOOD", "live file must be untouched"
+    # No stranded temp file -> the destination handle was released so cleanup
+    # could remove it.
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["live"]
+
+
 def test_restore_kestrel_db_backup_roundtrips_without_temp_leftovers(tmp_path):
     api = api_bridge.Api()
     kdir = tmp_path / ".kestrel"
