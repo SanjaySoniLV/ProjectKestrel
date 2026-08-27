@@ -152,7 +152,13 @@ class _TeeStream:
         if self._original_stream is not None:
             try:
                 return self._original_stream.fileno()
-            except Exception:
+            except (AttributeError, ValueError, OSError):
+                # Expected when the wrapped object has no real descriptor:
+                # a stream that doesn't implement fileno (AttributeError), a
+                # closed stream (ValueError), or one that raises
+                # io.UnsupportedOperation (a subclass of OSError/ValueError).
+                # Anything else is unexpected and should propagate rather than
+                # be silently redirected to the log handle.
                 pass
         return self._log_handle.fileno()
 

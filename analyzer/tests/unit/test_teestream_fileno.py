@@ -22,29 +22,27 @@ pytestmark = pytest.mark.unit
 
 
 def test_fileno_falls_back_to_log_handle_when_stream_is_none(tmp_path):
-    logf = open(tmp_path / "log.txt", "w")
-    try:
+    with open(tmp_path / "log.txt", "w") as logf:
         tee = visualizer._TeeStream(None, logf)
         assert tee.fileno() == logf.fileno()
-    finally:
-        logf.close()
 
 
 def test_fileno_prefers_original_stream_when_present(tmp_path):
-    logf = open(tmp_path / "log.txt", "w")
-    realf = open(tmp_path / "real.txt", "w")
-    try:
+    # Context managers close both files even if the second open raises, so a
+    # partial-initialization failure can't leak the first handle.
+    with open(tmp_path / "log.txt", "w") as logf, \
+            open(tmp_path / "real.txt", "w") as realf:
         tee = visualizer._TeeStream(realf, logf)
         assert tee.fileno() == realf.fileno()
-    finally:
-        realf.close()
-        logf.close()
 
 
 def test_faulthandler_enable_does_not_raise_with_none_stream(tmp_path):
-    logf = open(tmp_path / "log.txt", "w")
     was_enabled = faulthandler.is_enabled()
     old_err = sys.stderr
+    # Single open immediately before the try can't leak (nothing between the
+    # open and the try can raise), and this lets the finally repoint
+    # faulthandler off the temp file BEFORE the file is closed.
+    logf = open(tmp_path / "log.txt", "w")
     try:
         sys.stderr = visualizer._TeeStream(None, logf)
         # Previously raised AttributeError via fileno(); must succeed now.
@@ -52,7 +50,8 @@ def test_faulthandler_enable_does_not_raise_with_none_stream(tmp_path):
         assert faulthandler.is_enabled()
     finally:
         sys.stderr = old_err
-        # Restore faulthandler's state so pytest's own faulthandler keeps working.
+        # Restore faulthandler's state so pytest's own faulthandler keeps
+        # working, before closing the temp log it was pointed at.
         if was_enabled:
             faulthandler.enable()
         else:
