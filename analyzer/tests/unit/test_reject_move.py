@@ -313,3 +313,58 @@ class TestCompanionCaseInsensitivity:
         reject_dir = workdir / "_KESTREL_Rejects"
         for i in range(10):
             assert (reject_dir / f"IMG_8{i:03d}.JPG").exists()
+
+
+class TestRejectNoOverwrite:
+    """A reject must never overwrite a file already in the reject folder.
+
+    Camera filename counters recur (e.g. after an SD-card reformat), so a stale
+    IMG_0001.CR3 from an earlier session can already sit in _KESTREL_Rejects.
+    shutil.move() falls through to os.rename(), which on POSIX silently replaces
+    the destination -- permanently destroying the older RAW while the API
+    reported success. The move must refuse and surface an error instead.
+    """
+
+    @pytest.fixture
+    def api(self):
+        return api_bridge.Api()
+
+    def test_existing_reject_is_not_overwritten(self, api, tmp_path):
+        workdir = tmp_path / "workdir"
+        workdir.mkdir()
+        reject_dir = workdir / "_KESTREL_Rejects"
+        reject_dir.mkdir()
+        # An older, irreplaceable RAW already rejected in a previous session.
+        (reject_dir / "IMG_0001.CR3").write_bytes(b"OLD-IRREPLACEABLE-RAW")
+        # Today's brand-new photo happens to reuse the same camera filename.
+        (workdir / "IMG_0001.CR3").write_bytes(b"NEW-PHOTO-TODAY")
+
+        result = api.move_rejects_to_folder(str(workdir), ["IMG_0001.CR3"])
+
+        # The old reject content must survive untouched.
+        assert (reject_dir / "IMG_0001.CR3").read_bytes() == b"OLD-IRREPLACEABLE-RAW"
+        # The new file must NOT have been silently destroyed; it stays put.
+        assert (workdir / "IMG_0001.CR3").read_bytes() == b"NEW-PHOTO-TODAY"
+        # And the conflict must be reported, not swallowed as success.
+        assert result["moved"] == 0
+        assert result["errors"], "expected a conflict error, got none"
+
+    def test_existing_companion_reject_is_not_overwritten(self, api, tmp_path):
+        """The same no-overwrite rule applies to companion files (e.g. the JPG)."""
+        workdir = tmp_path / "workdir"
+        workdir.mkdir()
+        reject_dir = workdir / "_KESTREL_Rejects"
+        reject_dir.mkdir()
+        # Stale companion JPG already in the reject folder; no stale RAW.
+        (reject_dir / "IMG_0002.JPG").write_bytes(b"OLD-JPG")
+        (workdir / "IMG_0002.CR3").write_bytes(b"NEW-RAW")
+        (workdir / "IMG_0002.JPG").write_bytes(b"NEW-JPG")
+
+        result = api.move_rejects_to_folder(str(workdir), ["IMG_0002.CR3"])
+
+        # The RAW moves (its destination was free)...
+        assert (reject_dir / "IMG_0002.CR3").exists()
+        assert result["success"] is True
+        # ...but the pre-existing companion JPG is preserved, not clobbered.
+        assert (reject_dir / "IMG_0002.JPG").read_bytes() == b"OLD-JPG"
+        assert (workdir / "IMG_0002.JPG").read_bytes() == b"NEW-JPG"

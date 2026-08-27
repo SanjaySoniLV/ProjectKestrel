@@ -6425,7 +6425,7 @@ class Api:
         every move below is already guarded by ``os.path.exists``, so a stale
         entry degrades to a logged warning rather than an error.
 
-        Returns (success: bool, moved_files: list[str])
+        Returns (success: bool, moved_files: list[str], error: str | None)
         """
         moved_files = []
 
@@ -6433,13 +6433,21 @@ class Api:
         src = os.path.join(root_path, filename)
         dst = os.path.join(reject_dir, filename)
         try:
-            if os.path.exists(src):
-                shutil.move(src, dst)
-                moved_files.append(filename)
-            else:
-                return False, moved_files
-        except Exception:
-            return False, moved_files
+            if not os.path.exists(src):
+                return False, moved_files, 'source not found'
+            if os.path.exists(dst):
+                # Never overwrite a file already in the reject folder.
+                # shutil.move() falls through to os.rename(), which on POSIX
+                # (Linux/macOS) silently replaces the destination -- so a stale
+                # reject with a recurring camera filename (common after an
+                # SD-card reformat, e.g. a second IMG_0001.CR3) would be
+                # destroyed with no warning. Refuse rather than lose data.
+                warn(f'[reject] destination already exists, not overwriting: {dst}')
+                return False, moved_files, 'a file with this name already exists in the reject folder'
+            shutil.move(src, dst)
+            moved_files.append(filename)
+        except Exception as e:
+            return False, moved_files, str(e)
 
         companion_files = self._find_companion_files(root_path, filename, dir_index=dir_index)
         if companion_files:
@@ -6447,18 +6455,22 @@ class Api:
                 companion_src = os.path.join(root_path, companion)
                 companion_dst = os.path.join(reject_dir, companion)
                 try:
-                    if os.path.exists(companion_src):
-                        shutil.move(companion_src, companion_dst)
-                        moved_files.append(companion)
-                    else:
+                    if not os.path.exists(companion_src):
                         warn(f'[reject] companion detected but not found at: {companion_src}')
+                        continue
+                    if os.path.exists(companion_dst):
+                        # Same no-overwrite rule for companions (e.g. IMG_0001.JPG).
+                        warn(f'[reject] companion destination already exists, not overwriting: {companion_dst}')
+                        continue
+                    shutil.move(companion_src, companion_dst)
+                    moved_files.append(companion)
                 except Exception as e:
                     # Log warning but don't fail the main move if a companion fails
                     warn(f'[reject] Failed to move {companion}: {e}')
         else:
             debug(f'[reject] No companion sidecars found for: {filename}')
 
-        return True, moved_files
+        return True, moved_files, None
 
     def move_rejects_to_folder(self, root_path: str, filenames):
         """Move original photo files and sidecars into _KESTREL_Rejects subfolder."""
@@ -6498,13 +6510,13 @@ class Api:
             # would be O(files x dirsize) on a folder that can hold thousands.
             dir_index = self._build_dir_index(root_real)
             for fn in sanitized_filenames:
-                success, moved_files = self._move_file_with_sidecars(
+                success, moved_files, move_err = self._move_file_with_sidecars(
                     root_real, fn, reject_dir, dir_index=dir_index
                 )
                 if success:
                     moved.extend(moved_files)
                 else:
-                    errors.append(f'{fn}: move failed')
+                    errors.append(f'{fn}: {move_err or "move failed"}')
             info(f'[reject] moved {len(moved)} file(s) (including sidecars), errors {len(errors)}')
             return {'success': True, 'moved': len(moved), 'errors': errors, 'reject_folder': reject_real}
         except Exception as e:
