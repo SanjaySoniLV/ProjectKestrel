@@ -6425,16 +6425,20 @@ class Api:
         every move below is already guarded by ``os.path.exists``, so a stale
         entry degrades to a logged warning rather than an error.
 
-        Returns (success: bool, moved_files: list[str], error: str | None)
+        Returns (success: bool, moved_files: list[str], problems: list[str]).
+        ``problems`` holds pre-formatted per-file messages (main file and/or
+        companions) so the caller can surface every conflict in the API result,
+        not just the main-file one.
         """
         moved_files = []
+        problems: list[str] = []
 
         # Move main file
         src = os.path.join(root_path, filename)
         dst = os.path.join(reject_dir, filename)
         try:
             if not os.path.exists(src):
-                return False, moved_files, 'source not found'
+                return False, moved_files, [f'{filename}: source not found']
             if os.path.exists(dst):
                 # Never overwrite a file already in the reject folder.
                 # shutil.move() falls through to os.rename(), which on POSIX
@@ -6443,11 +6447,11 @@ class Api:
                 # SD-card reformat, e.g. a second IMG_0001.CR3) would be
                 # destroyed with no warning. Refuse rather than lose data.
                 warn(f'[reject] destination already exists, not overwriting: {dst}')
-                return False, moved_files, 'a file with this name already exists in the reject folder'
+                return False, moved_files, [f'{filename}: a file with this name already exists in the reject folder']
             shutil.move(src, dst)
             moved_files.append(filename)
         except Exception as e:
-            return False, moved_files, str(e)
+            return False, moved_files, [f'{filename}: {e}']
 
         companion_files = self._find_companion_files(root_path, filename, dir_index=dir_index)
         if companion_files:
@@ -6459,18 +6463,21 @@ class Api:
                         warn(f'[reject] companion detected but not found at: {companion_src}')
                         continue
                     if os.path.exists(companion_dst):
-                        # Same no-overwrite rule for companions (e.g. IMG_0001.JPG).
+                        # Same no-overwrite rule for companions (e.g. IMG_0001.JPG):
+                        # surface the conflict instead of silently leaving it behind.
                         warn(f'[reject] companion destination already exists, not overwriting: {companion_dst}')
+                        problems.append(f'{companion}: a file with this name already exists in the reject folder')
                         continue
                     shutil.move(companion_src, companion_dst)
                     moved_files.append(companion)
                 except Exception as e:
-                    # Log warning but don't fail the main move if a companion fails
+                    # Don't fail the (already moved) main file, but surface it.
                     warn(f'[reject] Failed to move {companion}: {e}')
+                    problems.append(f'{companion}: {e}')
         else:
             debug(f'[reject] No companion sidecars found for: {filename}')
 
-        return True, moved_files, None
+        return True, moved_files, problems
 
     def move_rejects_to_folder(self, root_path: str, filenames):
         """Move original photo files and sidecars into _KESTREL_Rejects subfolder."""
@@ -6510,13 +6517,14 @@ class Api:
             # would be O(files x dirsize) on a folder that can hold thousands.
             dir_index = self._build_dir_index(root_real)
             for fn in sanitized_filenames:
-                success, moved_files, move_err = self._move_file_with_sidecars(
+                success, moved_files, problems = self._move_file_with_sidecars(
                     root_real, fn, reject_dir, dir_index=dir_index
                 )
-                if success:
+                if moved_files:
                     moved.extend(moved_files)
-                else:
-                    errors.append(f'{fn}: {move_err or "move failed"}')
+                # Surface every conflict (main file and/or companions), not just
+                # the main-file failure, so the UI can tell the user what stayed.
+                errors.extend(problems)
             info(f'[reject] moved {len(moved)} file(s) (including sidecars), errors {len(errors)}')
             return {'success': True, 'moved': len(moved), 'errors': errors, 'reject_folder': reject_real}
         except Exception as e:
@@ -6565,21 +6573,28 @@ class Api:
         ``dir_index`` is an optional pre-built listing of ``reject_dir`` shared
         across a batch; see ``_move_file_with_sidecars`` on staleness.
 
-        Returns (success: bool, restored_files: list[str])
+        Returns (success: bool, restored_files: list[str], problems: list[str]).
+        ``problems`` holds pre-formatted per-file messages so companion conflicts
+        are surfaced to the caller, not just logged.
         """
         restored_files = []
+        problems: list[str] = []
 
         # Restore main file
         src = os.path.join(reject_dir, filename)
         dst = os.path.join(root_path, filename)
         try:
-            if os.path.exists(src):
-                shutil.move(src, dst)
-                restored_files.append(filename)
-            else:
-                return False, restored_files
-        except Exception:
-            return False, restored_files
+            if not os.path.exists(src):
+                return False, restored_files, [f'{filename}: not found in rejects']
+            if os.path.exists(dst):
+                # Don't overwrite a file the user re-added to the shoot folder;
+                # shutil.move would silently replace it on POSIX. Refuse instead.
+                warn(f'[reject-undo] destination already exists, not overwriting: {dst}')
+                return False, restored_files, [f'{filename}: a file with this name already exists in the folder']
+            shutil.move(src, dst)
+            restored_files.append(filename)
+        except Exception as e:
+            return False, restored_files, [f'{filename}: {e}']
 
         companion_files = self._find_companion_files(reject_dir, filename, dir_index=dir_index)
         if companion_files:
@@ -6587,15 +6602,22 @@ class Api:
                 companion_src = os.path.join(reject_dir, companion)
                 companion_dst = os.path.join(root_path, companion)
                 try:
+                    if not os.path.exists(companion_src):
+                        warn(f'[reject-undo] companion detected but not found at: {companion_src}')
+                        continue
+                    if os.path.exists(companion_dst):
+                        warn(f'[reject-undo] companion destination already exists, not overwriting: {companion_dst}')
+                        problems.append(f'{companion}: a file with this name already exists in the folder')
+                        continue
                     shutil.move(companion_src, companion_dst)
                     restored_files.append(companion)
                 except Exception as e:
-                    # Log warning but don't fail if companion restore fails
                     warn(f'[reject-undo] Failed to restore {companion}: {e}')
+                    problems.append(f'{companion}: {e}')
         else:
             debug(f'[reject-undo] No companion sidecars found for: {filename}')
 
-        return True, restored_files
+        return True, restored_files, problems
 
     def undo_reject_move(self, root_path: str, filenames):
         """Move files and their sidecars back from _KESTREL_Rejects to the root folder."""
@@ -6636,13 +6658,12 @@ class Api:
             # path, over the rejects folder instead of the shoot folder.
             restore_index = self._build_dir_index(reject_dir)
             for fn in sanitized_filenames:
-                success, restored_files = self._restore_file_with_sidecars(
+                success, restored_files, problems = self._restore_file_with_sidecars(
                     reject_dir, root_real, fn, dir_index=restore_index
                 )
-                if success:
+                if restored_files:
                     restored.extend(restored_files)
-                else:
-                    errors.append(f"{fn}: not found in rejects")
+                errors.extend(problems)
             info(f"[reject-undo] restored {len(restored)} file(s) (including sidecars), errors {len(errors)}")
             return {"success": True, "restored": len(restored), "errors": errors}
         except Exception as e:

@@ -368,3 +368,6 @@ class TestRejectNoOverwrite:
         # ...but the pre-existing companion JPG is preserved, not clobbered.
         assert (reject_dir / "IMG_0002.JPG").read_bytes() == b"OLD-JPG"
         assert (workdir / "IMG_0002.JPG").read_bytes() == b"NEW-JPG"
+        # ...and the companion conflict is surfaced in the API result, not just
+        # logged, so the UI can tell the user the JPG stayed behind.
+        assert any("IMG_0002.JPG" in e for e in result["errors"]), result["errors"]
