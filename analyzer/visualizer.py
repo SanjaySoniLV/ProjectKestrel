@@ -157,10 +157,11 @@ class _TeeStream:
                 # Expected when the wrapped object has no real descriptor:
                 # AttributeError: stream is None / has no fileno attribute;
                 # io.UnsupportedOperation: stream has no fd (also a
-                # ValueError + OSError subclass, the genuine "no fileno" case);
+                # ValueError + OSError subclass — catching this subclass is
+                # intentional; a bare OSError is *not* in the tuple);
                 # ValueError: I/O operation on a closed file.
-                # Do not catch OSError: unexpected failures (EIO, EBADF, ...)
-                # must propagate rather than silently redirect to the log.
+                # Bare OSError (EIO, EBADF, ...) must still propagate rather
+                # than silently redirect to the log.
                 pass
         return self._log_handle.fileno()
 
