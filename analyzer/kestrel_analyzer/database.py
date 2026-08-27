@@ -322,10 +322,14 @@ def load_scenedata(kestrel_dir: str) -> dict:
 
 
 def save_scenedata(scenedata: dict, kestrel_dir: str) -> None:
-    """Save scenedata dict to kestrel_scenedata.json."""
+    """Save scenedata dict to kestrel_scenedata.json.
+
+    Written atomically: scenedata holds the user's ratings, tags and Accept/
+    Reject decisions, so a partial write from a crash/power loss must never
+    truncate the existing file.
+    """
     scenedata_path = os.path.join(kestrel_dir, SCENEDATA_FILENAME)
-    with open(scenedata_path, "w", encoding="utf-8") as f:
-        json.dump(scenedata, f, indent=2)
+    write_text_atomic(scenedata_path, json.dumps(scenedata, indent=2))
 
 
 def ensure_columns(database: pd.DataFrame) -> pd.DataFrame:
@@ -466,6 +470,42 @@ def _to_csv_atomic(database: pd.DataFrame, db_path: str) -> None:
     except BaseException:
         # Do NOT fall back to a direct write — that is the partial-read path
         # this function exists to close. Leave the previous file intact.
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def write_text_atomic(path: str, text: str, encoding: str = "utf-8") -> None:
+    """Write ``text`` to ``path`` atomically (temp file + ``os.replace``).
+
+    Plain ``open(path, "w")`` truncates the destination and streams into it, so
+    a crash/power loss mid-write leaves a partial file behind. For JSON
+    (kestrel_scenedata.json) that means losing the user's ratings/tags/cull
+    decisions; for the UI's raw-text CSV save it means a truncated database.
+    Writing to a unique temp file in the same directory and ``os.replace``-ing
+    it into place gives readers/crashes an all-or-nothing view. Mirrors
+    ``_to_csv_atomic`` and ``settings_utils.save_settings``.
+    """
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+
+    tmp_fd, tmp = tempfile.mkstemp(prefix=".kestrel_atomic_", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(tmp_fd, "w", encoding=encoding, newline="") as f:
+            f.write(text)
+            try:
+                f.flush()
+                os.fsync(f.fileno())
+            except OSError:
+                # fsync can legitimately fail on some network filesystems; the
+                # replace below still gives readers an all-or-nothing view.
+                pass
+        retry_on_file_lock(lambda: os.replace(tmp, path))
+    except BaseException:
+        # Do NOT fall back to a direct write -- that is the partial-write path
+        # this helper exists to close. Leave the previous file intact.
         try:
             os.remove(tmp)
         except OSError:

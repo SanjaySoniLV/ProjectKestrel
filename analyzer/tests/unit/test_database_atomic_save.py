@@ -17,11 +17,16 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+import json
+
 from kestrel_analyzer.database import (
     _to_csv_atomic,
     read_database_csv,
     save_database,
+    save_scenedata,
+    write_text_atomic,
 )
+import kestrel_analyzer.database as _dbmod
 
 pytestmark = pytest.mark.unit
 
@@ -149,3 +154,48 @@ class TestAtomicCsvWrite:
 
         assert sorted(os.listdir(tmp_path)) == ["kestrel_database.csv"]
         assert len(pd.read_csv(db_path)) == len(df)
+
+
+class TestAtomicTextWrite:
+    """write_text_atomic backs the scenedata (ratings/tags/cull) + UI CSV writes."""
+
+    def test_writes_content_and_leaves_no_temp(self, tmp_path):
+        p = tmp_path / "kestrel_scenedata.json"
+        write_text_atomic(str(p), '{"a": 1}')
+        assert p.read_text() == '{"a": 1}'
+        assert [x.name for x in tmp_path.iterdir()] == ["kestrel_scenedata.json"]
+
+    def test_existing_file_survives_a_failed_write(self, tmp_path, monkeypatch):
+        """A crash/replace failure mid-write must leave the previous file intact."""
+        p = tmp_path / "kestrel_scenedata.json"
+        write_text_atomic(str(p), json.dumps({"good": True}))
+        good = p.read_bytes()
+
+        def boom(*_a, **_k):
+            raise OSError("simulated crash during replace")
+
+        monkeypatch.setattr(_dbmod.os, "replace", boom)
+        with pytest.raises(OSError):
+            write_text_atomic(str(p), '{"partial": ')  # deliberately truncated
+
+        assert p.read_bytes() == good
+        assert [x.name for x in tmp_path.iterdir()] == ["kestrel_scenedata.json"]
+
+    def test_save_scenedata_is_atomic_and_roundtrips(self, tmp_path, monkeypatch):
+        scenedata = {"version": "2.0", "image_ratings": {"IMG_1.CR3": 5}, "scenes": {}}
+        save_scenedata(scenedata, str(tmp_path))
+        out = tmp_path / "kestrel_scenedata.json"
+        assert json.loads(out.read_text()) == scenedata
+
+        # A failed re-save must not destroy the previously saved decisions.
+        good = out.read_bytes()
+
+        def boom(*_a, **_k):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(_dbmod.os, "replace", boom)
+        with pytest.raises(OSError):
+            save_scenedata({"version": "2.0", "image_ratings": {}, "scenes": {}}, str(tmp_path))
+        assert out.read_bytes() == good
+        # no stray temp files
+        assert sorted(x.name for x in tmp_path.iterdir()) == ["kestrel_scenedata.json"]
