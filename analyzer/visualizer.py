@@ -144,7 +144,17 @@ class _TeeStream:
             return False
 
     def fileno(self):
-        return self._original_stream.fileno()
+        # In PyInstaller --windowed builds sys.stdout/stderr are None, so the
+        # wrapped stream is None and self._original_stream.fileno() would raise
+        # AttributeError. That silently disabled faulthandler (whose default
+        # target is sys.stderr), losing native crash diagnostics in exactly the
+        # shipped configuration. Fall back to the runtime log file's descriptor.
+        if self._original_stream is not None:
+            try:
+                return self._original_stream.fileno()
+            except Exception:
+                pass
+        return self._log_handle.fileno()
 
     @property
     def buffer(self):
