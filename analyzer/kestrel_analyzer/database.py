@@ -186,10 +186,14 @@ def _build_scenedata_from_legacy_db(database: pd.DataFrame) -> dict:
                 r = int(float(rating_val))
             except (TypeError, ValueError):
                 continue
-            # Save if explicitly manual, or if non-zero with no origin (implies user intent)
-            if origin == "manual" or (not has_origin and 1 <= r <= 5):
-                if 1 <= r <= 5:
-                    scenedata["image_ratings"][filename] = r
+            # Preserve a real 1-5 rating unless it is explicitly an auto rating.
+            # A blank origin is treated like "no origin column": a rating with no
+            # explicit 'auto' marker is assumed to be user intent, so it is not
+            # dropped during migration. (Previously, when a rating_origin column
+            # existed but was blank for a manually-rated row, the rating was
+            # silently lost.) Explicit 'auto' ratings are left for recomputation.
+            if 1 <= r <= 5 and origin in ("", "manual"):
+                scenedata["image_ratings"][filename] = r
 
     # Build scenes from scene_count grouping
     if "scene_count" in database.columns:
