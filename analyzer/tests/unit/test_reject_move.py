@@ -21,20 +21,22 @@ def _require_case_sensitive_fs(directory: Path) -> None:
     """Skip if this filesystem cannot host two names that differ only by case."""
     upper = directory / "CaseProbe.tmp"
     lower = directory / "caseprobe.tmp"
-    upper.write_bytes(b"U")
     try:
-        lower.write_bytes(b"L")
-    except OSError:
-        pytest.skip("filesystem cannot create a second case variant")
-    listed = {
-        p.name
-        for p in directory.iterdir()
-        if p.suffix == ".tmp" and p.name.lower() == "caseprobe.tmp"
-    }
-    if listed != {"CaseProbe.tmp", "caseprobe.tmp"}:
-        pytest.skip("filesystem folds case; cannot host two case variants")
-    upper.unlink()
-    lower.unlink()
+        upper.write_bytes(b"U")
+        try:
+            lower.write_bytes(b"L")
+        except OSError:
+            pytest.skip("filesystem cannot create a second case variant")
+        listed = {
+            p.name
+            for p in directory.iterdir()
+            if p.suffix == ".tmp" and p.name.lower() == "caseprobe.tmp"
+        }
+        if listed != {"CaseProbe.tmp", "caseprobe.tmp"}:
+            pytest.skip("filesystem folds case; cannot host two case variants")
+    finally:
+        upper.unlink(missing_ok=True)
+        lower.unlink(missing_ok=True)
 
 
 @pytest.fixture

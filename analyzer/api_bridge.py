@@ -6335,20 +6335,35 @@ class Api:
             return {"success": False, "error": str(e)}
 
     class _DirIndex(dict):
-        """Case-folded name -> last on-disk spelling, plus the raw listing.
+        """Case-folded name -> last on-disk spelling, plus lookup tables.
 
         Companion lookup still uses last-wins ``self[lower]`` (a string).
-        Main-file resolve uses ``.names`` so two files that differ only by
-        case on a case-sensitive filesystem are not collapsed onto whichever
-        listing came last. ``names`` is None when listdir failed.
+        Main-file resolve uses ``names_set`` / ``folded_counts`` so two files
+        that differ only by case are not collapsed onto whichever listing
+        came last, in O(1) per request. ``names`` is None when listdir failed.
         """
 
         def __init__(self, names: list[str] | None):
             super().__init__()
             self.names = names
-            if names:
-                for entry in names:
-                    self[entry.lower()] = entry
+            self.names_set: set[str] = set()
+            self.folded_counts: dict[str, int] = {}
+            if not names:
+                return
+            for entry in names:
+                key = entry.lower()
+                self[key] = entry
+                self.names_set.add(entry)
+                self.folded_counts[key] = self.folded_counts.get(key, 0) + 1
+
+        def resolve(self, name: str) -> str | None:
+            """Exact spelling, else the unique case-insensitive hit, else None."""
+            if name in self.names_set:
+                return name
+            folded = name.lower()
+            if self.folded_counts.get(folded, 0) == 1:
+                return self[folded]
+            return None
 
     def _build_dir_index(self, root_path: str) -> dict:
         """Map lowercased entry name -> real on-disk name for one directory.
@@ -6394,22 +6409,15 @@ class Api:
         if not name:
             return None
         index = dir_index if dir_index is not None else self._build_dir_index(directory)
-        names = getattr(index, 'names', None)
-        if names is None:
-            try:
-                names = os.listdir(directory)
-            except OSError:
-                if os.path.exists(os.path.join(directory, name)):
-                    return name
-                return index.get(name.lower()) if index else None
-
-        if name in names:
-            return name
-        folded = name.lower()
-        ci_hits = [entry for entry in names if entry.lower() == folded]
-        if len(ci_hits) == 1:
-            return ci_hits[0]
-        return None
+        if isinstance(index, self._DirIndex) and index.names is not None:
+            return index.resolve(name)
+        try:
+            listing = os.listdir(directory)
+        except OSError:
+            if os.path.exists(os.path.join(directory, name)):
+                return name
+            return index.get(name.lower()) if index else None
+        return self._DirIndex(listing).resolve(name)
 
     def _find_sidecar_file(self, root_path: str, filename: str, ext: str = '.xmp',
                            dir_index: dict | None = None):
