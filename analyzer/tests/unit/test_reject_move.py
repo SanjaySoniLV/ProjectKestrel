@@ -427,4 +427,33 @@ class TestRejectNoOverwrite:
         assert (reject_dir / "IMG_0004.JPG").read_bytes() == b"REJECTED-JPG"
         assert any("IMG_0004.JPG" in e for e in result["errors"]), result["errors"]
         assert "IMG_0004.CR3" in result["restored_filenames"]
+        assert result["success"] is True
+        assert result["all_restored"] is True
         assert any(s["filename"] == "IMG_0004.JPG" for s in result["skipped"]), result["skipped"]
+
+    def test_partial_batch_keeps_success_but_clears_all_moved(self, api, tmp_path):
+        """A mixed batch: one main moves, one conflicts.
+
+        Callers that gate only on success must still look at all_moved /
+        moved_filenames so they do not drop the conflicted file from UI state.
+        """
+        workdir = tmp_path / "workdir"
+        workdir.mkdir()
+        reject_dir = workdir / "_KESTREL_Rejects"
+        reject_dir.mkdir()
+        (reject_dir / "IMG_0005.CR3").write_bytes(b"OLD-RAW")
+        (workdir / "IMG_0005.CR3").write_bytes(b"NEW-CONFLICT")
+        (workdir / "IMG_0006.CR3").write_bytes(b"NEW-FREE")
+
+        result = api.move_rejects_to_folder(
+            str(workdir), ["IMG_0005.CR3", "IMG_0006.CR3"]
+        )
+
+        assert result["success"] is True
+        assert result["all_moved"] is False
+        assert "IMG_0006.CR3" in result["moved_filenames"]
+        assert "IMG_0005.CR3" not in result["moved_filenames"]
+        assert any(s["filename"] == "IMG_0005.CR3" for s in result["skipped"])
+        assert (workdir / "IMG_0005.CR3").read_bytes() == b"NEW-CONFLICT"
+        assert (reject_dir / "IMG_0006.CR3").exists()
+        assert not (workdir / "IMG_0006.CR3").exists()
