@@ -94,17 +94,26 @@ def test_log_warning_does_not_recurse_under_error_filter(tmp_path):
 
 
 def test_logged_showwarning_is_reentrant_when_logging_emits(tmp_path, monkeypatch):
-    """If log_warning itself warns, the hook must not RecursionError."""
+    """If log_warning itself warns, the hook must not RecursionError.
+
+    Nested warnings skip JSON logging (that is the recursion path) but must
+    still reach the previous showwarning hook so they are not dropped.
+    """
     import kestrel_analyzer.logging_utils as logging_utils
 
     log_path = str(tmp_path / "kestrel.log.json")
     stage_ctx = {"stage": "startup", "file": None}
-    original = warnings.showwarning
+    previous = warnings.showwarning
+    forwarded: list[str] = []
+
+    def original_showwarning(message, category, filename, lineno, file=None, line=None):
+        forwarded.append(str(message))
+
     hook = make_logged_showwarning(
         log_path,
         stage_ctx,
         folder=str(tmp_path),
-        original_showwarning=None,
+        original_showwarning=original_showwarning,
     )
 
     real_log_warning = logging_utils.log_warning
@@ -118,11 +127,14 @@ def test_logged_showwarning_is_reentrant_when_logging_emits(tmp_path, monkeypatc
     try:
         warnings.warn("outer warning", UserWarning)
     finally:
-        warnings.showwarning = original
+        warnings.showwarning = previous
 
     entries = json.loads(Path(log_path).read_text(encoding="utf-8"))
     messages = [e["message"] for e in entries]
     assert any("outer warning" in m for m in messages)
+    assert not any("nested warning from logger" in m for m in messages)
+    assert any("nested warning from logger" in m for m in forwarded)
+    assert any("outer warning" in m for m in forwarded)
 
 
 def test_logged_showwarning_does_not_drop_concurrent_threads(tmp_path, monkeypatch):

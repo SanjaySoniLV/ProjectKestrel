@@ -128,7 +128,9 @@ def make_logged_showwarning(
 
     The hook is re-entrancy-safe: if logging itself emits a warning (the
     historical ``datetime.utcnow`` DeprecationWarning, or any other), the
-    nested call returns immediately instead of stacking until RecursionError.
+    nested call skips JSON logging instead of stacking until RecursionError.
+    Nested warnings are still forwarded to ``original_showwarning`` so they
+    are not silently dropped.
 
     The guard is thread-local: ``warnings.showwarning`` is process-global, and
     decoder/worker threads can warn concurrently. A plain closure boolean
@@ -138,6 +140,10 @@ def make_logged_showwarning(
 
     def _showwarning(message, category, filename, lineno, file=None, line=None):
         if getattr(state, "in_handler", False):
+            if original_showwarning is not None:
+                original_showwarning(
+                    message, category, filename, lineno, file=file, line=line
+                )
             return
         state.in_handler = True
         try:
