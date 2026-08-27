@@ -292,11 +292,10 @@ class QueueManager:
                     new_item.skip_if_already_done = bool(opts.get('skip_if_already_done'))
                     self._items.append(new_item)
                     added += 1
-            # Decide whether to start the worker while STILL holding the lock,
-            # so two concurrent enqueue() calls (e.g. a double-clicked "Start")
-            # can't both observe "not running" and start two worker threads on
-            # the same _items list. Only the actual thread.start() happens
-            # outside the lock.
+            # Decide whether to start the worker AND start it while STILL
+            # holding the lock, so two concurrent enqueue() calls (e.g. a
+            # double-clicked "Start") can't both observe "not running" and start
+            # two worker threads on the same _items list.
             should_start = self._thread is None or not self._thread.is_alive()
             if should_start:
                 self._cancel_event.clear()

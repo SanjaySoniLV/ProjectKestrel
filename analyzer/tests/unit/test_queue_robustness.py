@@ -10,7 +10,6 @@
    ``use_gpu``, so toggling GPU/CPU between runs was silently ignored.
 """
 
-import os
 import sys
 import threading
 from pathlib import Path
@@ -61,7 +60,7 @@ def test_concurrent_enqueue_starts_a_single_worker(tmp_path):
     n = len(workers)
 
     release.set()
-    mgr.join_worker(timeout=10)
+    assert mgr.join_worker(timeout=10) is True
 
     assert n == 1, f"expected exactly one worker thread, got {n}"
 
