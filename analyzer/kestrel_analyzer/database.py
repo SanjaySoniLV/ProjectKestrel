@@ -493,7 +493,15 @@ def write_text_atomic(path: str, text: str, encoding: str = "utf-8") -> None:
 
     tmp_fd, tmp = tempfile.mkstemp(prefix=".kestrel_atomic_", suffix=".tmp", dir=directory)
     try:
-        with os.fdopen(tmp_fd, "w", encoding=encoding, newline="") as f:
+        # If os.fdopen raises, it has NOT taken ownership of tmp_fd, so the
+        # descriptor would leak (and on Windows keep the temp file locked). Close
+        # it explicitly in that case; on success the with-block owns and closes it.
+        try:
+            f = os.fdopen(tmp_fd, "w", encoding=encoding, newline="")
+        except BaseException:
+            os.close(tmp_fd)
+            raise
+        with f:
             f.write(text)
             try:
                 f.flush()
