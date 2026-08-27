@@ -292,28 +292,35 @@ class QueueManager:
                     new_item.skip_if_already_done = bool(opts.get('skip_if_already_done'))
                     self._items.append(new_item)
                     added += 1
-        if not self.is_running:
-            self._cancel_event.clear()
-            self._pause_event.set()
-            self._use_gpu = use_gpu
-            self._wildlife_enabled = wildlife_enabled
-            self._species_detection_enabled = bool(species_detection_enabled)
-            self._detection_threshold = float(detection_threshold)
-            self._scene_time_threshold = float(scene_time_threshold)
-            self._mask_threshold = float(mask_threshold)
-            self._detector_name = _coerce_detector_name(detector_name)
-            try:
-                max_bird_crops_num = int(float(max_bird_crops))
-            except (TypeError, ValueError):
-                max_bird_crops_num = 10
-            self._max_bird_crops = max(1, min(20, max_bird_crops_num))
-            try:
-                parallel_prefetch_num = int(float(parallel_prefetch))
-            except (TypeError, ValueError):
-                parallel_prefetch_num = 3
-            self._parallel_prefetch = max(1, min(5, parallel_prefetch_num))
-            self._retry_errored = bool(retry_errored)
-            self._thread = threading.Thread(target=self._run, daemon=True, name='kestrel-queue')
+            # Decide whether to start the worker while STILL holding the lock,
+            # so two concurrent enqueue() calls (e.g. a double-clicked "Start")
+            # can't both observe "not running" and start two worker threads on
+            # the same _items list. Only the actual thread.start() happens
+            # outside the lock.
+            should_start = self._thread is None or not self._thread.is_alive()
+            if should_start:
+                self._cancel_event.clear()
+                self._pause_event.set()
+                self._use_gpu = use_gpu
+                self._wildlife_enabled = wildlife_enabled
+                self._species_detection_enabled = bool(species_detection_enabled)
+                self._detection_threshold = float(detection_threshold)
+                self._scene_time_threshold = float(scene_time_threshold)
+                self._mask_threshold = float(mask_threshold)
+                self._detector_name = _coerce_detector_name(detector_name)
+                try:
+                    max_bird_crops_num = int(float(max_bird_crops))
+                except (TypeError, ValueError):
+                    max_bird_crops_num = 10
+                self._max_bird_crops = max(1, min(20, max_bird_crops_num))
+                try:
+                    parallel_prefetch_num = int(float(parallel_prefetch))
+                except (TypeError, ValueError):
+                    parallel_prefetch_num = 3
+                self._parallel_prefetch = max(1, min(5, parallel_prefetch_num))
+                self._retry_errored = bool(retry_errored)
+                self._thread = threading.Thread(target=self._run, daemon=True, name='kestrel-queue')
+        if should_start:
             self._thread.start()
         self._persist_recovery_state()
         return {'success': True, 'added': added}
@@ -416,6 +423,13 @@ class QueueManager:
         else:
             try:
                 self._pipeline.detector_name = self._detector_name
+                # Propagate the GPU/CPU choice too. The pipeline object is a
+                # manager-lifetime singleton reused across runs, and
+                # load_models() only rebuilds the model wrapper when
+                # pipeline.use_gpu actually changes. Without this, toggling
+                # "Use GPU" between runs was silently ignored (the first run's
+                # setting stuck for the whole session).
+                self._pipeline.use_gpu = self._use_gpu
             except Exception:
                 pass
 
