@@ -6425,20 +6425,20 @@ class Api:
         every move below is already guarded by ``os.path.exists``, so a stale
         entry degrades to a logged warning rather than an error.
 
-        Returns (success: bool, moved_files: list[str], problems: list[str]).
-        ``problems`` holds pre-formatted per-file messages (main file and/or
-        companions) so the caller can surface every conflict in the API result,
-        not just the main-file one.
+        Returns (success: bool, moved_files: list[str], skipped: list[dict]).
+        ``skipped`` holds ``{'filename': str, 'reason': str}`` entries for the
+        main file and/or companions that were NOT moved (conflict, missing, or
+        error), so the caller can report exactly which files stayed behind.
         """
         moved_files = []
-        problems: list[str] = []
+        skipped: list[dict] = []
 
         # Move main file
         src = os.path.join(root_path, filename)
         dst = os.path.join(reject_dir, filename)
         try:
             if not os.path.exists(src):
-                return False, moved_files, [f'{filename}: source not found']
+                return False, moved_files, [{'filename': filename, 'reason': 'source not found'}]
             if os.path.exists(dst):
                 # Never overwrite a file already in the reject folder.
                 # shutil.move() falls through to os.rename(), which on POSIX
@@ -6447,11 +6447,11 @@ class Api:
                 # SD-card reformat, e.g. a second IMG_0001.CR3) would be
                 # destroyed with no warning. Refuse rather than lose data.
                 warn(f'[reject] destination already exists, not overwriting: {dst}')
-                return False, moved_files, [f'{filename}: a file with this name already exists in the reject folder']
+                return False, moved_files, [{'filename': filename, 'reason': 'a file with this name already exists in the reject folder'}]
             shutil.move(src, dst)
             moved_files.append(filename)
         except Exception as e:
-            return False, moved_files, [f'{filename}: {e}']
+            return False, moved_files, [{'filename': filename, 'reason': str(e)}]
 
         companion_files = self._find_companion_files(root_path, filename, dir_index=dir_index)
         if companion_files:
@@ -6466,18 +6466,18 @@ class Api:
                         # Same no-overwrite rule for companions (e.g. IMG_0001.JPG):
                         # surface the conflict instead of silently leaving it behind.
                         warn(f'[reject] companion destination already exists, not overwriting: {companion_dst}')
-                        problems.append(f'{companion}: a file with this name already exists in the reject folder')
+                        skipped.append({'filename': companion, 'reason': 'a file with this name already exists in the reject folder'})
                         continue
                     shutil.move(companion_src, companion_dst)
                     moved_files.append(companion)
                 except Exception as e:
                     # Don't fail the (already moved) main file, but surface it.
                     warn(f'[reject] Failed to move {companion}: {e}')
-                    problems.append(f'{companion}: {e}')
+                    skipped.append({'filename': companion, 'reason': str(e)})
         else:
             debug(f'[reject] No companion sidecars found for: {filename}')
 
-        return True, moved_files, problems
+        return True, moved_files, skipped
 
     def move_rejects_to_folder(self, root_path: str, filenames):
         """Move original photo files and sidecars into _KESTREL_Rejects subfolder."""
@@ -6493,8 +6493,9 @@ class Api:
                 return {'success': False, 'error': 'Invalid reject folder path'}
 
             os.makedirs(reject_dir, exist_ok=True)
-            moved = []
-            errors = []
+            moved = []             # every file actually moved (main + companions)
+            skipped = []           # [{'filename', 'reason'}] for anything not moved
+            errors = []            # same info as formatted strings (back-compat)
 
             if isinstance(filenames, list):
                 raw_filenames = filenames
@@ -6510,6 +6511,7 @@ class Api:
                 if clean:
                     sanitized_filenames.append(clean)
                 else:
+                    skipped.append({'filename': str(raw), 'reason': 'invalid filename'})
                     errors.append(f'{raw}: invalid filename')
 
             # One listing for the whole batch: every file here lives in
@@ -6517,16 +6519,26 @@ class Api:
             # would be O(files x dirsize) on a folder that can hold thousands.
             dir_index = self._build_dir_index(root_real)
             for fn in sanitized_filenames:
-                _success, moved_files, problems = self._move_file_with_sidecars(
+                _success, moved_files, file_skipped = self._move_file_with_sidecars(
                     root_real, fn, reject_dir, dir_index=dir_index
                 )
                 if moved_files:
                     moved.extend(moved_files)
-                # Surface every conflict (main file and/or companions), not just
-                # the main-file failure, so the UI can tell the user what stayed.
-                errors.extend(problems)
-            info(f'[reject] moved {len(moved)} file(s) (including sidecars), errors {len(errors)}')
-            return {'success': True, 'moved': len(moved), 'errors': errors, 'reject_folder': reject_real}
+                # Surface every conflict (main file and/or companions) both as a
+                # structured entry (so callers can reconcile moved vs skipped by
+                # filename) and as a formatted string (backward compatible).
+                for s in file_skipped:
+                    skipped.append(s)
+                    errors.append(f"{s['filename']}: {s['reason']}")
+            info(f'[reject] moved {len(moved)} file(s) (including sidecars), skipped {len(skipped)}')
+            return {
+                'success': True,
+                'moved': len(moved),
+                'moved_filenames': moved,
+                'skipped': skipped,
+                'errors': errors,
+                'reject_folder': reject_real,
+            }
         except Exception as e:
             error(f'[API] move_rejects_to_folder error: {e}')
             return {'success': False, 'error': str(e)}
@@ -6573,28 +6585,29 @@ class Api:
         ``dir_index`` is an optional pre-built listing of ``reject_dir`` shared
         across a batch; see ``_move_file_with_sidecars`` on staleness.
 
-        Returns (success: bool, restored_files: list[str], problems: list[str]).
-        ``problems`` holds pre-formatted per-file messages so companion conflicts
-        are surfaced to the caller, not just logged.
+        Returns (success: bool, restored_files: list[str], skipped: list[dict]).
+        ``skipped`` holds ``{'filename': str, 'reason': str}`` entries so the
+        main file and companion conflicts are surfaced to the caller structured,
+        not just logged.
         """
         restored_files = []
-        problems: list[str] = []
+        skipped: list[dict] = []
 
         # Restore main file
         src = os.path.join(reject_dir, filename)
         dst = os.path.join(root_path, filename)
         try:
             if not os.path.exists(src):
-                return False, restored_files, [f'{filename}: not found in rejects']
+                return False, restored_files, [{'filename': filename, 'reason': 'not found in rejects'}]
             if os.path.exists(dst):
                 # Don't overwrite a file the user re-added to the shoot folder;
                 # shutil.move would silently replace it on POSIX. Refuse instead.
                 warn(f'[reject-undo] destination already exists, not overwriting: {dst}')
-                return False, restored_files, [f'{filename}: a file with this name already exists in the folder']
+                return False, restored_files, [{'filename': filename, 'reason': 'a file with this name already exists in the folder'}]
             shutil.move(src, dst)
             restored_files.append(filename)
         except Exception as e:
-            return False, restored_files, [f'{filename}: {e}']
+            return False, restored_files, [{'filename': filename, 'reason': str(e)}]
 
         companion_files = self._find_companion_files(reject_dir, filename, dir_index=dir_index)
         if companion_files:
@@ -6607,17 +6620,17 @@ class Api:
                         continue
                     if os.path.exists(companion_dst):
                         warn(f'[reject-undo] companion destination already exists, not overwriting: {companion_dst}')
-                        problems.append(f'{companion}: a file with this name already exists in the folder')
+                        skipped.append({'filename': companion, 'reason': 'a file with this name already exists in the folder'})
                         continue
                     shutil.move(companion_src, companion_dst)
                     restored_files.append(companion)
                 except Exception as e:
                     warn(f'[reject-undo] Failed to restore {companion}: {e}')
-                    problems.append(f'{companion}: {e}')
+                    skipped.append({'filename': companion, 'reason': str(e)})
         else:
             debug(f'[reject-undo] No companion sidecars found for: {filename}')
 
-        return True, restored_files, problems
+        return True, restored_files, skipped
 
     def undo_reject_move(self, root_path: str, filenames):
         """Move files and their sidecars back from _KESTREL_Rejects to the root folder."""
@@ -6635,8 +6648,9 @@ class Api:
                 self._log_security_reject('undo_reject_move', 'Reject folder escapes root', root=root_real, reject=reject_real)
                 return {'success': False, 'error': 'Invalid reject folder path'}
 
-            restored = []
-            errors = []
+            restored = []          # every file actually restored (main + companions)
+            skipped = []           # [{'filename', 'reason'}] for anything not restored
+            errors = []            # same info as formatted strings (back-compat)
 
             if isinstance(filenames, list):
                 raw_filenames = filenames
@@ -6652,20 +6666,29 @@ class Api:
                 if clean:
                     sanitized_filenames.append(clean)
                 else:
+                    skipped.append({'filename': str(raw), 'reason': 'invalid filename'})
                     errors.append(f'{raw}: invalid filename')
 
             # One listing for the whole batch — same reasoning as the reject
             # path, over the rejects folder instead of the shoot folder.
             restore_index = self._build_dir_index(reject_dir)
             for fn in sanitized_filenames:
-                _success, restored_files, problems = self._restore_file_with_sidecars(
+                _success, restored_files, file_skipped = self._restore_file_with_sidecars(
                     reject_dir, root_real, fn, dir_index=restore_index
                 )
                 if restored_files:
                     restored.extend(restored_files)
-                errors.extend(problems)
-            info(f"[reject-undo] restored {len(restored)} file(s) (including sidecars), errors {len(errors)}")
-            return {"success": True, "restored": len(restored), "errors": errors}
+                for s in file_skipped:
+                    skipped.append(s)
+                    errors.append(f"{s['filename']}: {s['reason']}")
+            info(f"[reject-undo] restored {len(restored)} file(s) (including sidecars), skipped {len(skipped)}")
+            return {
+                "success": True,
+                "restored": len(restored),
+                "restored_filenames": restored,
+                "skipped": skipped,
+                "errors": errors,
+            }
         except Exception as e:
             error(f"[API] undo_reject_move error: {e}")
             return {"success": False, "error": str(e)}

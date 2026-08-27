@@ -348,6 +348,9 @@ class TestRejectNoOverwrite:
         # And the conflict must be reported, not swallowed as success.
         assert result["moved"] == 0
         assert result["errors"], "expected a conflict error, got none"
+        # Structured result lets the UI reconcile which files were skipped.
+        assert result["moved_filenames"] == []
+        assert any(s["filename"] == "IMG_0001.CR3" for s in result["skipped"]), result["skipped"]
 
     def test_existing_companion_reject_is_not_overwritten(self, api, tmp_path):
         """The same no-overwrite rule applies to companion files (e.g. the JPG)."""
@@ -371,6 +374,9 @@ class TestRejectNoOverwrite:
         # ...and the companion conflict is surfaced in the API result, not just
         # logged, so the UI can tell the user the JPG stayed behind.
         assert any("IMG_0002.JPG" in e for e in result["errors"]), result["errors"]
+        # Structured result: RAW is in moved_filenames, JPG is in skipped.
+        assert "IMG_0002.CR3" in result["moved_filenames"]
+        assert any(s["filename"] == "IMG_0002.JPG" for s in result["skipped"]), result["skipped"]
 
     def test_undo_does_not_overwrite_existing_file(self, api, tmp_path):
         """Undo/restore must not clobber a file the user re-added to the shoot."""
@@ -390,6 +396,8 @@ class TestRejectNoOverwrite:
         assert (reject_dir / "IMG_0003.CR3").read_bytes() == b"REJECTED-COPY"
         assert result["restored"] == 0
         assert any("IMG_0003.CR3" in e for e in result["errors"]), result["errors"]
+        assert result["restored_filenames"] == []
+        assert any(s["filename"] == "IMG_0003.CR3" for s in result["skipped"]), result["skipped"]
 
     def test_undo_companion_conflict_is_surfaced(self, api, tmp_path):
         """A companion conflict on undo is surfaced, not silently skipped."""
@@ -411,3 +419,5 @@ class TestRejectNoOverwrite:
         assert (workdir / "IMG_0004.JPG").read_bytes() == b"CURRENT-JPG"
         assert (reject_dir / "IMG_0004.JPG").read_bytes() == b"REJECTED-JPG"
         assert any("IMG_0004.JPG" in e for e in result["errors"]), result["errors"]
+        assert "IMG_0004.CR3" in result["restored_filenames"]
+        assert any(s["filename"] == "IMG_0004.JPG" for s in result["skipped"]), result["skipped"]
