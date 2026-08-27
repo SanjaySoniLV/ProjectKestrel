@@ -320,8 +320,13 @@ class QueueManager:
                 self._parallel_prefetch = max(1, min(5, parallel_prefetch_num))
                 self._retry_errored = bool(retry_errored)
                 self._thread = threading.Thread(target=self._run, daemon=True, name='kestrel-queue')
-        if should_start:
-            self._thread.start()
+                # Start under the lock too. If start() ran outside it, a second
+                # concurrent enqueue() could acquire the lock in the window
+                # between creating the thread and starting it, see the
+                # not-yet-started thread as is_alive()==False, and launch a
+                # duplicate worker. start() returns quickly and _run() doesn't
+                # take self._lock until later, so holding it here can't deadlock.
+                self._thread.start()
         self._persist_recovery_state()
         return {'success': True, 'added': added}
 
