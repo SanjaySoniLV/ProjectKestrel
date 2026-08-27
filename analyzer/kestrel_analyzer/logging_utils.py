@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,7 +29,7 @@ except (ImportError, ValueError):
         def error(*_a, **_kw): pass  # type: ignore[no-redef]
 
 
-def _utc_now_naive() -> datetime:
+def utc_now_naive() -> datetime:
     """UTC now as a naive datetime.
 
     The deprecated naive-UTC constructor emits DeprecationWarning on
@@ -41,11 +42,11 @@ def _utc_now_naive() -> datetime:
 
 
 def _utc_timestamp() -> str:
-    return _utc_now_naive().isoformat() + "Z"
+    return utc_now_naive().isoformat() + "Z"
 
 
 def _file_timestamp() -> str:
-    return _utc_now_naive().strftime("%Y%m%dT%H%M%SZ")
+    return utc_now_naive().strftime("%Y%m%dT%H%M%SZ")
 
 
 def resolve_log_dir(folder: Optional[str]) -> str:
@@ -121,14 +122,17 @@ def make_logged_showwarning(
     The hook is re-entrancy-safe: if logging itself emits a warning (the
     historical ``datetime.utcnow`` DeprecationWarning, or any other), the
     nested call returns immediately instead of stacking until RecursionError.
+
+    The guard is thread-local: ``warnings.showwarning`` is process-global, and
+    decoder/worker threads can warn concurrently. A plain closure boolean
+    would drop or interleave those unrelated warnings.
     """
-    in_handler = False
+    state = threading.local()
 
     def _showwarning(message, category, filename, lineno, file=None, line=None):
-        nonlocal in_handler
-        if in_handler:
+        if getattr(state, "in_handler", False):
             return
-        in_handler = True
+        state.in_handler = True
         try:
             log_warning(
                 log_path,
@@ -144,7 +148,7 @@ def make_logged_showwarning(
                     message, category, filename, lineno, file=file, line=line
                 )
         finally:
-            in_handler = False
+            state.in_handler = False
 
     return _showwarning
 

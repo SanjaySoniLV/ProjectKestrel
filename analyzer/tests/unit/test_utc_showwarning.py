@@ -9,8 +9,10 @@ the warning re-entered the hook until RecursionError (seen on the CLI
 
 from __future__ import annotations
 
+import ast
 import json
 import sys
+import threading
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,10 +23,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from kestrel_analyzer.logging_utils import (  # noqa: E402
     _file_timestamp,
-    _utc_now_naive,
     _utc_timestamp,
     log_warning,
     make_logged_showwarning,
+    utc_now_naive,
 )
 from queue_manager import _utc_timestamp as queue_utc_timestamp  # noqa: E402
 
@@ -34,8 +36,23 @@ pytestmark = pytest.mark.unit
 _ANALYZER_ROOT = Path(__file__).resolve().parents[2]
 
 
+def _utcnow_call_linenos(source: str) -> list[int]:
+    """Line numbers of real ``utcnow()`` / ``datetime.utcnow()`` calls."""
+    tree = ast.parse(source)
+    lines: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == "utcnow":
+            lines.append(getattr(node, "lineno", 0))
+        elif isinstance(func, ast.Name) and func.id == "utcnow":
+            lines.append(getattr(node, "lineno", 0))
+    return lines
+
+
 def test_utc_now_naive_is_naive_and_close_to_utc():
-    dt = _utc_now_naive()
+    dt = utc_now_naive()
     assert dt.tzinfo is None
     aware = datetime.now(timezone.utc).replace(tzinfo=None)
     assert abs((aware - dt).total_seconds()) < 2.0
@@ -57,7 +74,7 @@ def test_file_timestamp_format():
 def test_utc_helpers_do_not_emit_utcnow_deprecation():
     with warnings.catch_warnings(record=True) as recorded:
         warnings.simplefilter("always")
-        _utc_now_naive()
+        utc_now_naive()
         _utc_timestamp()
         _file_timestamp()
         queue_utc_timestamp()
@@ -108,6 +125,49 @@ def test_logged_showwarning_is_reentrant_when_logging_emits(tmp_path, monkeypatc
     assert any("outer warning" in m for m in messages)
 
 
+def test_logged_showwarning_does_not_drop_concurrent_threads(tmp_path, monkeypatch):
+    """A shared boolean guard would skip the second thread's warning."""
+    import kestrel_analyzer.logging_utils as logging_utils
+
+    log_path = str(tmp_path / "kestrel.log.json")
+    hook = make_logged_showwarning(
+        log_path,
+        {"stage": "decode", "file": None},
+        original_showwarning=None,
+    )
+    real_log_warning = logging_utils.log_warning
+    entered = threading.Event()
+    release = threading.Event()
+    seen: list[str] = []
+    seen_lock = threading.Lock()
+
+    def blocking_log_warning(*args, **kwargs):
+        message = str(args[1] if len(args) > 1 else kwargs.get("message"))
+        with seen_lock:
+            seen.append(message)
+        if "from-thread-1" in message:
+            entered.set()
+            assert release.wait(timeout=2.0)
+        return real_log_warning(*args, **kwargs)
+
+    monkeypatch.setattr(logging_utils, "log_warning", blocking_log_warning)
+    original = warnings.showwarning
+    warnings.showwarning = hook
+    try:
+        t1 = threading.Thread(target=lambda: warnings.warn("from-thread-1", UserWarning))
+        t1.start()
+        assert entered.wait(timeout=2.0)
+        warnings.warn("from-thread-2", UserWarning)
+        release.set()
+        t1.join(timeout=2.0)
+    finally:
+        release.set()
+        warnings.showwarning = original
+
+    assert any("from-thread-1" in m for m in seen)
+    assert any("from-thread-2" in m for m in seen)
+
+
 def test_logged_showwarning_records_category_and_stage(tmp_path):
     log_path = str(tmp_path / "kestrel.log.json")
     stage_ctx = {"stage": "list_files", "file": "IMG_001.CR3"}
@@ -130,8 +190,19 @@ def test_logged_showwarning_records_category_and_stage(tmp_path):
     assert entry["context"]["folder"] == "/photos"
 
 
+def test_utcnow_call_detector_ignores_comments_and_finds_calls():
+    source = """
+# datetime.utcnow() in a comment must not count
+x = datetime.utcnow()
+y = utcnow()
+z = datetime.utcnow ()
+"""
+    lines = _utcnow_call_linenos(source)
+    assert lines == [3, 4, 5]
+
+
 def test_analyzer_sources_do_not_call_datetime_utcnow():
-    """Keep the RecursionError from coming back via a leftover utcnow()."""
+    """Keep the RecursionError from coming back via a leftover utcnow() call."""
     offenders = []
     skip_parts = {".venv", "venv", "node_modules", "__pycache__", ".git"}
     for path in _ANALYZER_ROOT.rglob("*.py"):
@@ -139,7 +210,12 @@ def test_analyzer_sources_do_not_call_datetime_utcnow():
             continue
         if "tests" in path.parts:
             continue
-        text = path.read_text(encoding="utf-8")
-        if ".utcnow(" in text:
-            offenders.append(str(path.relative_to(_ANALYZER_ROOT)))
+        source = path.read_text(encoding="utf-8")
+        try:
+            lines = _utcnow_call_linenos(source)
+        except SyntaxError:
+            continue
+        if lines:
+            rel = path.relative_to(_ANALYZER_ROOT)
+            offenders.append(f"{rel}:{lines}")
     assert offenders == []
