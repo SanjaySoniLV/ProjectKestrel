@@ -218,10 +218,6 @@ class TestCompanionCaseInsensitivity:
     Linux job in CI, so nothing caught it.
     """
 
-    @pytest.fixture
-    def api(self):
-        return api_bridge.Api()
-
     def _shoot(self, tmp_path, raw_name, companion_name):
         workdir = tmp_path / "workdir"
         workdir.mkdir()
@@ -323,10 +319,6 @@ class TestRejectNoOverwrite:
     the destination -- permanently destroying the older RAW while the API
     reported success. The move must refuse and surface an error instead.
     """
-
-    @pytest.fixture
-    def api(self):
-        return api_bridge.Api()
 
     def test_existing_reject_is_not_overwritten(self, api, tmp_path):
         workdir = tmp_path / "workdir"
