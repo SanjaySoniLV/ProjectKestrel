@@ -499,8 +499,10 @@ def _write_file_atomic(path: str, write_fn, encoding: str = "utf-8") -> None:
             raise
         with f:
             write_fn(f)
+            # flush() errors (ENOSPC, EIO) must propagate: a partial temp
+            # file must not be os.replace'd over a good destination.
+            f.flush()
             try:
-                f.flush()
                 os.fsync(f.fileno())
             except OSError:
                 # fsync can legitimately fail on some network filesystems; the

@@ -7,6 +7,8 @@ destination and streams rows into it, so a concurrent reader can observe a
 partial file and raise ``EmptyDataError`` or ``ParserError``.
 """
 
+import errno
+import json
 import os
 import sys
 import threading
@@ -16,8 +18,6 @@ import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
-import json
 
 from kestrel_analyzer.database import (
     _to_csv_atomic,
@@ -181,6 +181,38 @@ class TestAtomicTextWrite:
 
         assert p.read_bytes() == good
         assert sorted(x.name for x in tmp_path.iterdir()) == ["kestrel_database.csv"]
+
+    def test_flush_error_does_not_replace_existing(self, tmp_path, monkeypatch):
+        """ENOSPC on flush must not promote a partial temp over the last good file."""
+        p = tmp_path / "kestrel_database.csv"
+        write_text_atomic(str(p), "filename,quality\n")
+        good = p.read_bytes()
+        real_fdopen = _dbmod.os.fdopen
+
+        def wrapping_fdopen(*a, **k):
+            f = real_fdopen(*a, **k)
+
+            def boom_flush():
+                raise OSError(errno.ENOSPC, "No space left on device")
+
+            f.flush = boom_flush
+            return f
+
+        monkeypatch.setattr(_dbmod.os, "fdopen", wrapping_fdopen)
+        with pytest.raises(OSError):
+            write_text_atomic(str(p), "partial,\n")
+        assert p.read_bytes() == good
+        assert sorted(x.name for x in tmp_path.iterdir()) == ["kestrel_database.csv"]
+
+    def test_fsync_error_still_replaces(self, tmp_path, monkeypatch):
+        """Network-FS fsync failures are ignored; the flushed temp still replaces."""
+        def boom_fsync(_fd):
+            raise OSError(errno.EINVAL, "Operation not supported")
+
+        monkeypatch.setattr(_dbmod.os, "fsync", boom_fsync)
+        p = tmp_path / "kestrel_database.csv"
+        write_text_atomic(str(p), "ok\n")
+        assert p.read_text() == "ok\n"
 
 
 class TestAtomicJsonWrite:
