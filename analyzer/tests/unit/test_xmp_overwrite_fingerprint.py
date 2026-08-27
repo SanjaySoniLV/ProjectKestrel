@@ -95,3 +95,51 @@ def test_non_kestrel_external_xmp_is_skipped(tmp_path):
     r = mw.write_xmp_metadata(str(tmp_path), [_entry()])
     assert r['written'] == 0
     assert 'A.xmp' in r['skipped_conflicts']
+
+
+def test_load_fingerprints_drops_non_string_values(tmp_path):
+    """A store with null/non-string values (older or corrupt) must not feed
+    ambiguous entries downstream; only hex-string fingerprints are kept."""
+    import json
+
+    kdir = tmp_path / ".kestrel"
+    kdir.mkdir()
+    (kdir / "xmp_fingerprints.json").write_text(
+        json.dumps({
+            "good.xmp": "abc123",
+            "null.xmp": None,
+            "num.xmp": 42,
+            "list.xmp": ["x"],
+        }),
+        encoding='utf-8',
+    )
+
+    fps = mw._load_xmp_fingerprints(str(tmp_path))
+    assert fps == {"good.xmp": "abc123"}
+
+
+def test_failed_post_write_hash_is_not_persisted_as_null(tmp_path, monkeypatch):
+    """If hashing the just-written sidecar fails, we must not persist a null
+    fingerprint (which reads back as "no fingerprint" and silently re-enables
+    overwrites). The stale entry is dropped instead, and the store never
+    contains a null value."""
+    import json
+
+    # First write records a real fingerprint for A.xmp.
+    _write(tmp_path)
+    store = tmp_path / ".kestrel" / "xmp_fingerprints.json"
+    fp_key = next(iter(json.loads(store.read_text(encoding='utf-8'))))
+
+    # Second write, but hashing fails (e.g. transient I/O). With _file_sha256
+    # returning None the pre-write conflict check can't confirm the file is
+    # unchanged, so force the write through with overwrite_external=True; the
+    # point under test is what the *post-write* None does to the store.
+    monkeypatch.setattr(mw, "_file_sha256", lambda _p: None)
+    r = mw.write_xmp_metadata(str(tmp_path), [_entry()], overwrite_external=True)
+    assert r['written'] == 1
+
+    persisted = json.loads(store.read_text(encoding='utf-8'))
+    # No null values anywhere, and the stale entry was dropped rather than
+    # overwritten with null.
+    assert None not in persisted.values()
+    assert fp_key not in persisted

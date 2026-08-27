@@ -288,7 +288,15 @@ def _load_xmp_fingerprints(root: str) -> dict:
     try:
         with open(_xmp_fingerprint_path(root), 'r', encoding='utf-8') as f:
             data = json.load(f)
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {}
+        # Keep only usable entries. A fingerprint must be a string sha256; a
+        # null or other non-string value (e.g. from an older/corrupt store)
+        # would otherwise behave like "no fingerprint" and silently allow an
+        # overwrite of a file whose fingerprint is actually unknown. Dropping
+        # them makes such a sidecar fall back to legacy handling explicitly.
+        return {k: v for k, v in data.items()
+                if isinstance(k, str) and isinstance(v, str)}
     except Exception:
         return {}
 
@@ -490,15 +498,17 @@ def write_xmp_metadata(
     original in ``root_path``.
 
     Safety rules:
-      - If a ``.xmp`` file already exists and was written by Kestrel
-        (detected by the presence of the Kestrel namespace URI), it is
-        safe to overwrite and will always be updated.
+      - If a ``.xmp`` file already exists and is a Kestrel sidecar that is
+        unchanged since Kestrel last wrote it (its recorded content
+        fingerprint still matches, or it predates fingerprinting), it is
+        safe to overwrite and will be updated.
       - If a ``.xmp`` file already exists but was written by external
-        software (Lightroom, darktable, Capture One, etc.) AND
-        ``overwrite_external`` is False, the file is skipped and its
-        filename is added to ``skipped_conflicts`` in the response so the
-        caller can ask the user for confirmation.
-      - If ``overwrite_external`` is True, external XMP files are also
+        software (Lightroom, darktable, Capture One, etc.), OR is a Kestrel
+        sidecar that was edited externally after Kestrel wrote it (its
+        fingerprint no longer matches), AND ``overwrite_external`` is False,
+        the file is skipped and its filename is added to ``skipped_conflicts``
+        in the response so the caller can ask the user for confirmation.
+      - If ``overwrite_external`` is True, such conflicting files are also
         overwritten.
 
     Args:
@@ -645,8 +655,19 @@ def write_xmp_metadata(
                     f.write(xmp_content)
 
                 # Record the hash of exactly what we just wrote, so a later
-                # external edit is detected on the next write.
-                fingerprints[fp_key] = _file_sha256(xmp_path)
+                # external edit is detected on the next write. Only persist a
+                # real digest: if hashing the just-written file fails,
+                # _file_sha256 returns None, and a stored None reads back as
+                # "no fingerprint" — which _safe_to_overwrite_xmp treats as a
+                # legacy file and silently overwrites, erasing the protection
+                # this feature adds. In that case drop any stale entry instead,
+                # so the sidecar cleanly falls back to legacy no-fingerprint
+                # handling rather than an ambiguous null.
+                _digest = _file_sha256(xmp_path)
+                if _digest is not None:
+                    fingerprints[fp_key] = _digest
+                else:
+                    fingerprints.pop(fp_key, None)
 
                 written += 1
                 info(f'[metadata] write_xmp: wrote {xmp_path}')
