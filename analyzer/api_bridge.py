@@ -6334,6 +6334,22 @@ class Api:
             print(f"[API] sign_out() -> Error: {e}", flush=True)
             return {"success": False, "error": str(e)}
 
+    class _DirIndex(dict):
+        """Case-folded name -> last on-disk spelling, plus the raw listing.
+
+        Companion lookup still uses last-wins ``self[lower]`` (a string).
+        Main-file resolve uses ``.names`` so two files that differ only by
+        case on a case-sensitive filesystem are not collapsed onto whichever
+        listing came last. ``names`` is None when listdir failed.
+        """
+
+        def __init__(self, names: list[str] | None):
+            super().__init__()
+            self.names = names
+            if names:
+                for entry in names:
+                    self[entry.lower()] = entry
+
     def _build_dir_index(self, root_path: str) -> dict:
         """Map lowercased entry name -> real on-disk name for one directory.
 
@@ -6349,13 +6365,13 @@ class Api:
         (kestrel_analyzer/config.py) already applies when it decides a
         same-stem JPG belongs to a RAW.
 
-        Returns {} if the directory is unreadable, so callers degrade to
-        "no companions found" rather than raising.
+        Returns an empty index if the directory is unreadable, so callers
+        degrade to "no companions found" rather than raising.
         """
         try:
-            return {entry.lower(): entry for entry in os.listdir(root_path)}
+            return self._DirIndex(os.listdir(root_path))
         except OSError:
-            return {}
+            return self._DirIndex(None)
 
     def _resolve_dir_filename(self, filename: str, dir_index: dict | None,
                               directory: str) -> str | None:
@@ -6366,6 +6382,11 @@ class Api:
         reject/undo path used a case-sensitive join, which fails on
         case-sensitive filesystems and can rewrite casing on macOS/Windows.
 
+        Exact listing match wins. A unique case-insensitive match is used
+        when the requested spelling is absent. If two files differ only by
+        case and the request is not an exact listing hit, return None rather
+        than moving the last-folded index entry.
+
         Falls back to ``filename`` when the listing is unavailable but the
         exact path exists (listdir failed).
         """
@@ -6373,11 +6394,21 @@ class Api:
         if not name:
             return None
         index = dir_index if dir_index is not None else self._build_dir_index(directory)
-        hit = index.get(name.lower())
-        if hit:
-            return hit
-        if os.path.exists(os.path.join(directory, name)):
+        names = getattr(index, 'names', None)
+        if names is None:
+            try:
+                names = os.listdir(directory)
+            except OSError:
+                if os.path.exists(os.path.join(directory, name)):
+                    return name
+                return index.get(name.lower()) if index else None
+
+        if name in names:
             return name
+        folded = name.lower()
+        ci_hits = [entry for entry in names if entry.lower() == folded]
+        if len(ci_hits) == 1:
+            return ci_hits[0]
         return None
 
     def _find_sidecar_file(self, root_path: str, filename: str, ext: str = '.xmp',
