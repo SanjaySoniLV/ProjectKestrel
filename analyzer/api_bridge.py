@@ -6461,6 +6461,7 @@ class Api:
                 try:
                     if not os.path.exists(companion_src):
                         warn(f'[reject] companion detected but not found at: {companion_src}')
+                        skipped.append({'filename': companion, 'reason': 'companion not found on disk'})
                         continue
                     if os.path.exists(companion_dst):
                         # Same no-overwrite rule for companions (e.g. IMG_0001.JPG):
@@ -6509,13 +6510,16 @@ class Api:
 
         - ``success``: False on hard failures (bad root, exception) and when
           at least one main file was requested but **none** of those mains
-          moved (all conflicts / missing). True for a successful no-op
-          (empty list) and for partial batches.
+          moved (all conflicts, missing, or invalid names). True for a
+          successful no-op (empty list) and for partial batches.
         - ``all_moved``: True iff every requested *main* file is in
-          ``moved_filenames``. Companion skips do not clear this flag.
-        - ``moved_filenames`` / ``skipped``: the source of truth for which
-          requested names actually moved. The culling UI filters state from
-          ``moved_filenames``, not from the request list.
+          ``moved_filenames``. Invalid names and unmoved mains clear this.
+          Companion skips do not.
+        - ``moved_filenames``: every file that actually moved (requested mains
+          **and** companions). The culling UI intersects this with the request
+          list to recover which mains moved.
+        - ``skipped``: mains and companions that did not move (conflict,
+          missing, invalid name, or error).
         """
         try:
             root_real, err = self._validate_root_dir(root_path, context='move_rejects_to_folder', require_exists=True)
@@ -6542,11 +6546,14 @@ class Api:
             else:
                 raw_filenames = []
             sanitized_filenames = []
+            requested_mains = []
             for raw in raw_filenames:
                 clean = self._sanitize_plain_filename(raw, context='move_rejects_to_folder')
                 if clean:
                     sanitized_filenames.append(clean)
+                    requested_mains.append(clean)
                 else:
+                    requested_mains.append(str(raw))
                     skipped.append({'filename': str(raw), 'reason': 'invalid filename'})
                     errors.append(f'{raw}: invalid filename')
 
@@ -6567,7 +6574,7 @@ class Api:
                     skipped.append(s)
                     errors.append(f"{s['filename']}: {s['reason']}")
             info(f'[reject] moved {len(moved)} file(s) (including sidecars), skipped {len(skipped)}')
-            all_moved, success = self._requested_mains_outcome(sanitized_filenames, moved)
+            all_moved, success = self._requested_mains_outcome(requested_mains, moved)
             result = {
                 'success': success,
                 'all_moved': all_moved,
@@ -6580,7 +6587,7 @@ class Api:
             if not success:
                 result['error'] = (
                     'none of the requested files could be moved '
-                    '(name conflicts or missing files; see skipped)'
+                    '(name conflicts, missing files, or invalid filenames; see skipped)'
                 )
             return result
         except Exception as e:
@@ -6661,6 +6668,7 @@ class Api:
                 try:
                     if not os.path.exists(companion_src):
                         warn(f'[reject-undo] companion detected but not found at: {companion_src}')
+                        skipped.append({'filename': companion, 'reason': 'companion not found on disk'})
                         continue
                     if os.path.exists(companion_dst):
                         warn(f'[reject-undo] companion destination already exists, not overwriting: {companion_dst}')
@@ -6680,9 +6688,11 @@ class Api:
         """Move files and their sidecars back from _KESTREL_Rejects to the root folder.
 
         Return contract mirrors ``move_rejects_to_folder``: ``success`` is
-        False when requested mains all failed to restore; ``all_restored``
-        is True iff every requested main is in ``restored_filenames``.
-        Callers must reconcile UI state from ``restored_filenames`` / ``skipped``.
+        False when requested mains all failed to restore (including an
+        all-invalid-name request); ``all_restored`` is True iff every requested
+        main is in ``restored_filenames``. ``restored_filenames`` includes
+        companions. Callers must reconcile UI state from
+        ``restored_filenames`` / ``skipped``.
         """
         try:
             root_real, err = self._validate_root_dir(root_path, context='undo_reject_move', require_exists=True)
@@ -6711,11 +6721,14 @@ class Api:
             else:
                 raw_filenames = []
             sanitized_filenames = []
+            requested_mains = []
             for raw in raw_filenames:
                 clean = self._sanitize_plain_filename(raw, context='undo_reject_move')
                 if clean:
                     sanitized_filenames.append(clean)
+                    requested_mains.append(clean)
                 else:
+                    requested_mains.append(str(raw))
                     skipped.append({'filename': str(raw), 'reason': 'invalid filename'})
                     errors.append(f'{raw}: invalid filename')
 
@@ -6732,7 +6745,7 @@ class Api:
                     skipped.append(s)
                     errors.append(f"{s['filename']}: {s['reason']}")
             info(f"[reject-undo] restored {len(restored)} file(s) (including sidecars), skipped {len(skipped)}")
-            all_restored, success = self._requested_mains_outcome(sanitized_filenames, restored)
+            all_restored, success = self._requested_mains_outcome(requested_mains, restored)
             result = {
                 "success": success,
                 "all_restored": all_restored,
@@ -6744,7 +6757,7 @@ class Api:
             if not success:
                 result["error"] = (
                     "none of the requested files could be restored "
-                    "(name conflicts or missing files; see skipped)"
+                    "(name conflicts, missing files, or invalid filenames; see skipped)"
                 )
             return result
         except Exception as e:

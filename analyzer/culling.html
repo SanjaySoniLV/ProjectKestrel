@@ -2808,7 +2808,7 @@
           const skipNote = skippedMains.length
             ? `, ${skippedMains.length} skipped`
             : '';
-          setStep('move', 'done', `${moveRes.moved} file${moveRes.moved === 1 ? '' : 's'} moved${skipNote}`);
+          setStep('move', 'done', `${movedMains.length} reject${movedMains.length === 1 ? '' : 's'} moved${skipNote}`);
 
           const movedMainSet = new Set(movedMains);
           rows = rows.filter(r => !movedMainSet.has(r.filename));
@@ -2830,7 +2830,7 @@
           renderAllScenes();
           updateStats();
           el('#statusLabel').textContent =
-            `Done! ${moveRes.moved} reject${moveRes.moved === 1 ? '' : 's'} moved${skipNote}.`
+            `Done! ${movedMains.length} reject${movedMains.length === 1 ? '' : 's'} moved${skipNote}.`
             + (movedMains.length ? ' Click \u201cUndo Move\u201d to revert.' : '');
         } else {
           try { await window.pywebview.api.notify_main_window_refresh(); } catch (_) {}
@@ -2843,7 +2843,7 @@
         const parts = [];
         if (doXmp && !anyFailed)  parts.push('XMP files written');
         if (doXmp &&  anyFailed)  parts.push('XMP had errors \u2014 check above');
-        if (doMove) parts.push('Undo available via the bottom bar');
+        if (doMove && moveCompleted) parts.push('Undo available via the bottom bar');
         el('#dlgProgressSubtitle').textContent = parts.join(' \u00b7 ');
         el('#dlgProgressActions').style.display = 'flex';
 

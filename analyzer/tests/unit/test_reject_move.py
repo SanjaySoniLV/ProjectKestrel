@@ -105,13 +105,10 @@ class TestMoveRejects:
     def test_traversal_filename_rejected(self, api, workdir_with_files):
         """Filename with traversal → rejected, not moved."""
         result = api.move_rejects_to_folder(str(workdir_with_files), ['../../../etc/passwd'])
-        # Either the request succeeds with errors for the bad filename, or it fails entirely
-        # In either case, no file should be written outside the root
-        # And the existing files should not be affected
+        assert result['success'] is False
+        assert result['all_moved'] is False
+        assert result.get('errors')
         assert (workdir_with_files / 'IMG_001.CR3').exists()
-        # Look for error in result
-        if result.get('success'):
-            assert len(result.get('errors', [])) > 0
 
     def test_empty_filename_list_no_op(self, api, workdir_with_files):
         """Empty filename list → no-op, no errors."""
@@ -457,3 +454,35 @@ class TestRejectNoOverwrite:
         assert (workdir / "IMG_0005.CR3").read_bytes() == b"NEW-CONFLICT"
         assert (reject_dir / "IMG_0006.CR3").exists()
         assert not (workdir / "IMG_0006.CR3").exists()
+
+    def test_all_invalid_filenames_are_not_success(self, api, workdir_with_files):
+        """A non-empty request of only unsanitary names is not a successful no-op."""
+        result = api.move_rejects_to_folder(
+            str(workdir_with_files), ["../escape.CR3", ""]
+        )
+        assert result["success"] is False
+        assert result["all_moved"] is False
+        assert result["moved_filenames"] == []
+        assert any("invalid filename" in (s.get("reason") or "") for s in result["skipped"])
+        assert (workdir_with_files / "IMG_001.CR3").exists()
+
+        undo = api.undo_reject_move(str(workdir_with_files), ["../escape.CR3"])
+        assert undo["success"] is False
+        assert undo["all_restored"] is False
+
+    def test_missing_companion_is_in_skipped(self, api, tmp_path, monkeypatch):
+        """A companion the index named but that is gone from disk is skipped."""
+        workdir = tmp_path / "workdir"
+        workdir.mkdir()
+        (workdir / "IMG_0007.CR3").write_bytes(b"RAW")
+
+        monkeypatch.setattr(
+            api, "_find_companion_files", lambda *_a, **_k: ["IMG_0007.JPG"]
+        )
+        result = api.move_rejects_to_folder(str(workdir), ["IMG_0007.CR3"])
+        assert result["success"] is True
+        assert "IMG_0007.CR3" in result["moved_filenames"]
+        assert any(
+            s["filename"] == "IMG_0007.JPG" and "not found" in s["reason"]
+            for s in result["skipped"]
+        ), result["skipped"]
