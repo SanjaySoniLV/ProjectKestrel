@@ -42,7 +42,11 @@ def test_decode_generator_releases_threads_on_early_close(tmp_path):
 
     pipeline = AnalysisPipeline(use_gpu=False)
 
-    assert _decode_threads() == []
+    # Record a baseline rather than asserting a globally-empty set: another test
+    # or library in the same pytest process may legitimately keep a
+    # ThreadPoolExecutor thread alive. We only care that THIS generator adds no
+    # surviving threads.
+    baseline = set(_decode_threads())
 
     gen = pipeline._iter_decoded(names, str(tmp_path), max_workers=3)
     next(gen)          # start the producer thread + pool, consume one item
@@ -51,8 +55,8 @@ def test_decode_generator_releases_threads_on_early_close(tmp_path):
     # The producer must unblock, drain its pool and exit; poll briefly because
     # the executor waits for in-flight decodes before shutting down.
     deadline = time.time() + 10
-    while time.time() < deadline and _decode_threads():
+    while time.time() < deadline and (set(_decode_threads()) - baseline):
         time.sleep(0.05)
 
-    leftover = _decode_threads()
+    leftover = sorted(set(_decode_threads()) - baseline)
     assert leftover == [], f"decode threads leaked after early close: {leftover}"

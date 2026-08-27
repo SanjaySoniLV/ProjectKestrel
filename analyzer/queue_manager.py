@@ -619,7 +619,11 @@ class QueueManager:
                         # without raising; surface it as an errored folder rather
                         # than a false 'done'.
                         item.status = 'error'
-                        item.error = str(fatal_error['exc'])
+                        # Some exceptions stringify to '' (e.g. RuntimeError());
+                        # fall back to the type name so the UI never shows a
+                        # blank error for a failed folder.
+                        _exc = fatal_error['exc']
+                        item.error = str(_exc) or type(_exc).__name__
                         item.end_time = _time_mod.time()
                     else:
                         item.status = 'done'
