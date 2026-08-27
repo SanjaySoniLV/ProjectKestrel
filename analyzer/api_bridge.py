@@ -6517,7 +6517,7 @@ class Api:
             # would be O(files x dirsize) on a folder that can hold thousands.
             dir_index = self._build_dir_index(root_real)
             for fn in sanitized_filenames:
-                success, moved_files, problems = self._move_file_with_sidecars(
+                _success, moved_files, problems = self._move_file_with_sidecars(
                     root_real, fn, reject_dir, dir_index=dir_index
                 )
                 if moved_files:
@@ -6658,7 +6658,7 @@ class Api:
             # path, over the rejects folder instead of the shoot folder.
             restore_index = self._build_dir_index(reject_dir)
             for fn in sanitized_filenames:
-                success, restored_files, problems = self._restore_file_with_sidecars(
+                _success, restored_files, problems = self._restore_file_with_sidecars(
                     reject_dir, root_real, fn, dir_index=restore_index
                 )
                 if restored_files:

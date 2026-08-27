@@ -371,3 +371,43 @@ class TestRejectNoOverwrite:
         # ...and the companion conflict is surfaced in the API result, not just
         # logged, so the UI can tell the user the JPG stayed behind.
         assert any("IMG_0002.JPG" in e for e in result["errors"]), result["errors"]
+
+    def test_undo_does_not_overwrite_existing_file(self, api, tmp_path):
+        """Undo/restore must not clobber a file the user re-added to the shoot."""
+        workdir = tmp_path / "workdir"
+        workdir.mkdir()
+        reject_dir = workdir / "_KESTREL_Rejects"
+        reject_dir.mkdir()
+        # A rejected copy sits in the reject folder...
+        (reject_dir / "IMG_0003.CR3").write_bytes(b"REJECTED-COPY")
+        # ...but the user re-added a different file with the same name.
+        (workdir / "IMG_0003.CR3").write_bytes(b"CURRENT-IN-FOLDER")
+
+        result = api.undo_reject_move(str(workdir), ["IMG_0003.CR3"])
+
+        # The current file is preserved; the rejected copy stays put.
+        assert (workdir / "IMG_0003.CR3").read_bytes() == b"CURRENT-IN-FOLDER"
+        assert (reject_dir / "IMG_0003.CR3").read_bytes() == b"REJECTED-COPY"
+        assert result["restored"] == 0
+        assert any("IMG_0003.CR3" in e for e in result["errors"]), result["errors"]
+
+    def test_undo_companion_conflict_is_surfaced(self, api, tmp_path):
+        """A companion conflict on undo is surfaced, not silently skipped."""
+        workdir = tmp_path / "workdir"
+        workdir.mkdir()
+        reject_dir = workdir / "_KESTREL_Rejects"
+        reject_dir.mkdir()
+        # RAW + JPG both previously rejected.
+        (reject_dir / "IMG_0004.CR3").write_bytes(b"REJECTED-RAW")
+        (reject_dir / "IMG_0004.JPG").write_bytes(b"REJECTED-JPG")
+        # The JPG already exists back in the shoot folder; the RAW does not.
+        (workdir / "IMG_0004.JPG").write_bytes(b"CURRENT-JPG")
+
+        result = api.undo_reject_move(str(workdir), ["IMG_0004.CR3"])
+
+        # The RAW restores (its destination was free)...
+        assert (workdir / "IMG_0004.CR3").exists()
+        # ...but the existing JPG is preserved and the conflict surfaced.
+        assert (workdir / "IMG_0004.JPG").read_bytes() == b"CURRENT-JPG"
+        assert (reject_dir / "IMG_0004.JPG").read_bytes() == b"REJECTED-JPG"
+        assert any("IMG_0004.JPG" in e for e in result["errors"]), result["errors"]
