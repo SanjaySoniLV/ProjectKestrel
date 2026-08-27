@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import tempfile
 import time
 from datetime import datetime
@@ -466,6 +467,32 @@ def _to_csv_atomic(database: pd.DataFrame, db_path: str) -> None:
     except BaseException:
         # Do NOT fall back to a direct write — that is the partial-read path
         # this function exists to close. Leave the previous file intact.
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def copy_file_atomic(src_path: str, dst_path: str) -> None:
+    """Copy ``src_path`` onto ``dst_path`` atomically (temp file + os.replace).
+
+    Used by the backup-restore path: ``shutil.copy2`` writes the destination in
+    place, so an interrupted restore (this runs right after a risky operation
+    like reject-and-move, exactly when a crash is plausible) could leave the
+    live database/scenedata half-overwritten and corrupt. Copying raw bytes to a
+    temp file in the same directory and ``os.replace``-ing it in gives readers /
+    a crash an all-or-nothing view, and preserves the file's exact encoding/BOM.
+    """
+    directory = os.path.dirname(dst_path) or "."
+    os.makedirs(directory, exist_ok=True)
+
+    tmp_fd, tmp = tempfile.mkstemp(prefix=".kestrel_atomic_", suffix=".tmp", dir=directory)
+    try:
+        os.close(tmp_fd)
+        shutil.copyfile(src_path, tmp)
+        retry_on_file_lock(lambda: os.replace(tmp, dst_path))
+    except BaseException:
         try:
             os.remove(tmp)
         except OSError:

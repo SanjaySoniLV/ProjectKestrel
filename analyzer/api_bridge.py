@@ -6784,13 +6784,21 @@ class Api:
             if not os.path.exists(csv_backup):
                 return {"success": False, "error": "kestrel_database_old.csv not found"}
 
+            # Atomic restore: overwrite the live files via temp-file + os.replace
+            # so an interrupted restore can't leave the live database/scenedata
+            # half-written. (This path runs right after a risky reject-and-move.)
+            try:
+                from kestrel_analyzer.database import copy_file_atomic
+            except ImportError:
+                from analyzer.kestrel_analyzer.database import copy_file_atomic  # type: ignore[no-redef]
+
             # Restore CSV
-            shutil.copy2(csv_backup, csv_path)
+            copy_file_atomic(csv_backup, csv_path)
             info(f"[backup] CSV restored from {csv_backup}")
 
             # Restore scenedata if backup exists
             if os.path.exists(scenedata_backup):
-                shutil.copy2(scenedata_backup, scenedata_path)
+                copy_file_atomic(scenedata_backup, scenedata_path)
                 info(f"[backup] Scenedata restored from {scenedata_backup}")
 
             return {"success": True, "error": ""}
