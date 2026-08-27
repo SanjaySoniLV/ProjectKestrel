@@ -6357,6 +6357,29 @@ class Api:
         except OSError:
             return {}
 
+    def _resolve_dir_filename(self, filename: str, dir_index: dict | None,
+                              directory: str) -> str | None:
+        """Return the on-disk spelling of ``filename`` in ``directory``.
+
+        The UI / CSV may hold ``img.cr3`` while the camera wrote ``IMG.CR3``.
+        Companion lookup already goes through ``_build_dir_index``; the main
+        reject/undo path used a case-sensitive join, which fails on
+        case-sensitive filesystems and can rewrite casing on macOS/Windows.
+
+        Falls back to ``filename`` when the listing is unavailable but the
+        exact path exists (listdir failed).
+        """
+        name = str(filename or '').strip()
+        if not name:
+            return None
+        index = dir_index if dir_index is not None else self._build_dir_index(directory)
+        hit = index.get(name.lower())
+        if hit:
+            return hit
+        if os.path.exists(os.path.join(directory, name)):
+            return name
+        return None
+
     def _find_sidecar_file(self, root_path: str, filename: str, ext: str = '.xmp',
                            dir_index: dict | None = None):
         """Find sidecar file with given extension for an image file.
@@ -6429,19 +6452,23 @@ class Api:
         """
         moved_files = []
 
-        # Move main file
-        src = os.path.join(root_path, filename)
-        dst = os.path.join(reject_dir, filename)
+        real_name = self._resolve_dir_filename(filename, dir_index, root_path)
+        if not real_name:
+            return False, moved_files
+
+        # Move main file under its real on-disk spelling.
+        src = os.path.join(root_path, real_name)
+        dst = os.path.join(reject_dir, real_name)
         try:
             if os.path.exists(src):
                 shutil.move(src, dst)
-                moved_files.append(filename)
+                moved_files.append(real_name)
             else:
                 return False, moved_files
         except Exception:
             return False, moved_files
 
-        companion_files = self._find_companion_files(root_path, filename, dir_index=dir_index)
+        companion_files = self._find_companion_files(root_path, real_name, dir_index=dir_index)
         if companion_files:
             for companion in companion_files:
                 companion_src = os.path.join(root_path, companion)
@@ -6557,19 +6584,23 @@ class Api:
         """
         restored_files = []
 
-        # Restore main file
-        src = os.path.join(reject_dir, filename)
-        dst = os.path.join(root_path, filename)
+        real_name = self._resolve_dir_filename(filename, dir_index, reject_dir)
+        if not real_name:
+            return False, restored_files
+
+        # Restore main file under its real on-disk spelling.
+        src = os.path.join(reject_dir, real_name)
+        dst = os.path.join(root_path, real_name)
         try:
             if os.path.exists(src):
                 shutil.move(src, dst)
-                restored_files.append(filename)
+                restored_files.append(real_name)
             else:
                 return False, restored_files
         except Exception:
             return False, restored_files
 
-        companion_files = self._find_companion_files(reject_dir, filename, dir_index=dir_index)
+        companion_files = self._find_companion_files(reject_dir, real_name, dir_index=dir_index)
         if companion_files:
             for companion in companion_files:
                 companion_src = os.path.join(reject_dir, companion)
