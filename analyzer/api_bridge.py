@@ -66,8 +66,15 @@ except ImportError:
     try:
         from analyzer.kestrel_analyzer.database import write_json_atomic, write_text_atomic
     except ImportError:
-        write_json_atomic = None  # type: ignore[assignment]
-        write_text_atomic = None  # type: ignore[assignment]
+        def write_json_atomic(*_a, **_k):
+            raise RuntimeError(
+                "kestrel_analyzer.database.write_json_atomic is not importable"
+            )
+
+        def write_text_atomic(*_a, **_k):
+            raise RuntimeError(
+                "kestrel_analyzer.database.write_text_atomic is not importable"
+            )
 
 # Distribution channel ('direct' website build vs 'appstore' sandboxed build),
 # baked at build time. Import-safe everywhere; used by the frontend to branch

@@ -161,15 +161,15 @@ class TestAtomicTextWrite:
     """write_text_atomic backs the UI CSV write path."""
 
     def test_writes_content_and_leaves_no_temp(self, tmp_path):
-        p = tmp_path / "kestrel_scenedata.json"
-        write_text_atomic(str(p), '{"a": 1}')
-        assert p.read_text() == '{"a": 1}'
-        assert [x.name for x in tmp_path.iterdir()] == ["kestrel_scenedata.json"]
+        p = tmp_path / "kestrel_database.csv"
+        write_text_atomic(str(p), "filename,quality\n")
+        assert p.read_text() == "filename,quality\n"
+        assert sorted(x.name for x in tmp_path.iterdir()) == ["kestrel_database.csv"]
 
     def test_existing_file_survives_a_failed_write(self, tmp_path, monkeypatch):
         """A crash/replace failure mid-write must leave the previous file intact."""
-        p = tmp_path / "kestrel_scenedata.json"
-        write_text_atomic(str(p), json.dumps({"good": True}))
+        p = tmp_path / "kestrel_database.csv"
+        write_text_atomic(str(p), "filename,quality\nIMG_1.CR3,0.9\n")
         good = p.read_bytes()
 
         def boom(*_a, **_k):
@@ -177,10 +177,10 @@ class TestAtomicTextWrite:
 
         monkeypatch.setattr(_dbmod.os, "replace", boom)
         with pytest.raises(OSError):
-            write_text_atomic(str(p), '{"partial": ')  # deliberately truncated
+            write_text_atomic(str(p), "partial,")  # deliberately truncated
 
         assert p.read_bytes() == good
-        assert [x.name for x in tmp_path.iterdir()] == ["kestrel_scenedata.json"]
+        assert sorted(x.name for x in tmp_path.iterdir()) == ["kestrel_database.csv"]
 
 
 class TestAtomicJsonWrite:
@@ -191,7 +191,7 @@ class TestAtomicJsonWrite:
         obj = {"version": "2.0", "image_ratings": {"IMG_1.CR3": 5}, "scenes": {}}
         write_json_atomic(str(p), obj, indent=2)
         assert json.loads(p.read_text()) == obj
-        assert [x.name for x in tmp_path.iterdir()] == ["kestrel_scenedata.json"]
+        assert sorted(x.name for x in tmp_path.iterdir()) == ["kestrel_scenedata.json"]
 
     def test_streams_via_dump_not_dumps(self, tmp_path, monkeypatch):
         """Peak-memory path: serialize directly into the temp file."""
@@ -227,7 +227,7 @@ class TestAtomicJsonWrite:
             write_json_atomic(str(p), {"partial": True}, indent=2)
 
         assert p.read_bytes() == good
-        assert [x.name for x in tmp_path.iterdir()] == ["kestrel_scenedata.json"]
+        assert sorted(x.name for x in tmp_path.iterdir()) == ["kestrel_scenedata.json"]
 
     def test_save_scenedata_is_atomic_and_roundtrips(self, tmp_path, monkeypatch):
         scenedata = {"version": "2.0", "image_ratings": {"IMG_1.CR3": 5}, "scenes": {}}
@@ -255,3 +255,12 @@ class TestAtomicJsonWrite:
         monkeypatch.setattr(_dbmod.json, "dumps", fail_dumps)
         save_scenedata({"version": "2.0", "image_ratings": {}, "scenes": {}}, str(tmp_path))
         assert (tmp_path / "kestrel_scenedata.json").exists()
+
+
+def test_api_bridge_atomic_writers_are_callable():
+    """Import fallback must not leave write_*_atomic as None (TypeError on save)."""
+    import api_bridge
+
+    assert callable(api_bridge.write_json_atomic)
+    assert callable(api_bridge.write_text_atomic)
+
