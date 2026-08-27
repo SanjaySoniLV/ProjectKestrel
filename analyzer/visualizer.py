@@ -26,6 +26,7 @@ except Exception:
     pass
 
 import argparse
+import io
 import os
 import sys
 import threading
@@ -152,13 +153,14 @@ class _TeeStream:
         if self._original_stream is not None:
             try:
                 return self._original_stream.fileno()
-            except (AttributeError, ValueError, OSError):
+            except (AttributeError, io.UnsupportedOperation, ValueError):
                 # Expected when the wrapped object has no real descriptor:
-                # a stream that doesn't implement fileno (AttributeError), a
-                # closed stream (ValueError), or one that raises
-                # io.UnsupportedOperation (a subclass of OSError/ValueError).
-                # Anything else is unexpected and should propagate rather than
-                # be silently redirected to the log handle.
+                # AttributeError: stream is None / has no fileno attribute;
+                # io.UnsupportedOperation: stream has no fd (also a
+                # ValueError + OSError subclass, the genuine "no fileno" case);
+                # ValueError: I/O operation on a closed file.
+                # Do not catch OSError: unexpected failures (EIO, EBADF, ...)
+                # must propagate rather than silently redirect to the log.
                 pass
         return self._log_handle.fileno()
 
