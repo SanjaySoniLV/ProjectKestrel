@@ -483,14 +483,36 @@ def copy_file_atomic(src_path: str, dst_path: str) -> None:
     live database/scenedata half-overwritten and corrupt. Copying raw bytes to a
     temp file in the same directory and ``os.replace``-ing it in gives readers /
     a crash an all-or-nothing view, and preserves the file's exact encoding/BOM.
+    Content is flushed+fsync'd before the replace (matching ``_to_csv_atomic``'s
+    durability), and file metadata (mode/mtime) is preserved like the previous
+    ``shutil.copy2``.
     """
     directory = os.path.dirname(dst_path) or "."
     os.makedirs(directory, exist_ok=True)
 
     tmp_fd, tmp = tempfile.mkstemp(prefix=".kestrel_atomic_", suffix=".tmp", dir=directory)
     try:
-        os.close(tmp_fd)
-        shutil.copyfile(src_path, tmp)
+        # If fdopen raises it hasn't taken ownership of the descriptor; close it
+        # explicitly so it can't leak.
+        try:
+            dst_f = os.fdopen(tmp_fd, "wb")
+        except BaseException:
+            os.close(tmp_fd)
+            raise
+        with dst_f, open(src_path, "rb") as src_f:
+            shutil.copyfileobj(src_f, dst_f)
+            dst_f.flush()
+            try:
+                os.fsync(dst_f.fileno())
+            except OSError:
+                # fsync can legitimately fail on some network filesystems; the
+                # replace below still gives readers an all-or-nothing view.
+                pass
+        # Preserve mode/mtime as the previous shutil.copy2 did (best-effort).
+        try:
+            shutil.copystat(src_path, tmp)
+        except OSError:
+            pass
         retry_on_file_lock(lambda: os.replace(tmp, dst_path))
     except BaseException:
         try:
