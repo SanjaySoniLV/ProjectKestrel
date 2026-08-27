@@ -50,6 +50,7 @@ class TestMoveRejects:
         result = api.move_rejects_to_folder(str(workdir_with_files), ['IMG_001.CR3'])
 
         assert result['success'] == True
+        assert result['all_moved'] is True
         # Reject folder should exist
         reject_dir = workdir_with_files / '_KESTREL_Rejects'
         assert reject_dir.is_dir()
@@ -117,6 +118,7 @@ class TestMoveRejects:
         result = api.move_rejects_to_folder(str(workdir_with_files), [])
         # Should succeed but move nothing
         assert result['success'] == True
+        assert result['all_moved'] is True
         # Original files still in place
         assert (workdir_with_files / 'IMG_001.CR3').exists()
 
@@ -347,6 +349,8 @@ class TestRejectNoOverwrite:
         assert (workdir / "IMG_0001.CR3").read_bytes() == b"NEW-PHOTO-TODAY"
         # And the conflict must be reported, not swallowed as success.
         assert result["moved"] == 0
+        assert result["success"] is False
+        assert result["all_moved"] is False
         assert result["errors"], "expected a conflict error, got none"
         # Structured result lets the UI reconcile which files were skipped.
         assert result["moved_filenames"] == []
@@ -368,6 +372,7 @@ class TestRejectNoOverwrite:
         # The RAW moves (its destination was free)...
         assert (reject_dir / "IMG_0002.CR3").exists()
         assert result["success"] is True
+        assert result["all_moved"] is True
         # ...but the pre-existing companion JPG is preserved, not clobbered.
         assert (reject_dir / "IMG_0002.JPG").read_bytes() == b"OLD-JPG"
         assert (workdir / "IMG_0002.JPG").read_bytes() == b"NEW-JPG"
@@ -395,6 +400,8 @@ class TestRejectNoOverwrite:
         assert (workdir / "IMG_0003.CR3").read_bytes() == b"CURRENT-IN-FOLDER"
         assert (reject_dir / "IMG_0003.CR3").read_bytes() == b"REJECTED-COPY"
         assert result["restored"] == 0
+        assert result["success"] is False
+        assert result["all_restored"] is False
         assert any("IMG_0003.CR3" in e for e in result["errors"]), result["errors"]
         assert result["restored_filenames"] == []
         assert any(s["filename"] == "IMG_0003.CR3" for s in result["skipped"]), result["skipped"]

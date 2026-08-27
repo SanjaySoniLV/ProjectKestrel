@@ -6479,8 +6479,44 @@ class Api:
 
         return True, moved_files, skipped
 
+    @staticmethod
+    def _requested_mains_outcome(requested_mains, completed_filenames):
+        """Flags for a reject/undo batch keyed on the *requested main* files.
+
+        Companions are not requested; they may appear in ``completed_filenames``
+        and ``skipped`` but they do not affect these flags.
+
+        ``all_done`` is True iff every requested main file is in
+        ``completed_filenames``. ``success`` is False only when the caller
+        asked to process at least one main file and none of those mains
+        actually completed -- so callers that gate only on ``success`` cannot
+        drop UI state for files that never left disk. An empty request is a
+        successful no-op. Partial batches keep ``success`` True and set
+        ``all_done`` False; callers must reconcile via moved_filenames /
+        restored_filenames and skipped.
+        """
+        completed = set(completed_filenames)
+        all_done = all(fn in completed for fn in requested_mains)
+        any_done = any(fn in completed for fn in requested_mains)
+        success = (not requested_mains) or any_done
+        return all_done, success
+
     def move_rejects_to_folder(self, root_path: str, filenames):
-        """Move original photo files and sidecars into _KESTREL_Rejects subfolder."""
+        """Move original photo files and sidecars into _KESTREL_Rejects subfolder.
+
+        Return contract (callers must reconcile, not assume every requested
+        file moved just because ``success`` is True):
+
+        - ``success``: False on hard failures (bad root, exception) and when
+          at least one main file was requested but **none** of those mains
+          moved (all conflicts / missing). True for a successful no-op
+          (empty list) and for partial batches.
+        - ``all_moved``: True iff every requested *main* file is in
+          ``moved_filenames``. Companion skips do not clear this flag.
+        - ``moved_filenames`` / ``skipped``: the source of truth for which
+          requested names actually moved. The culling UI filters state from
+          ``moved_filenames``, not from the request list.
+        """
         try:
             root_real, err = self._validate_root_dir(root_path, context='move_rejects_to_folder', require_exists=True)
             if err:
@@ -6531,14 +6567,22 @@ class Api:
                     skipped.append(s)
                     errors.append(f"{s['filename']}: {s['reason']}")
             info(f'[reject] moved {len(moved)} file(s) (including sidecars), skipped {len(skipped)}')
-            return {
-                'success': True,
+            all_moved, success = self._requested_mains_outcome(sanitized_filenames, moved)
+            result = {
+                'success': success,
+                'all_moved': all_moved,
                 'moved': len(moved),
                 'moved_filenames': moved,
                 'skipped': skipped,
                 'errors': errors,
                 'reject_folder': reject_real,
             }
+            if not success:
+                result['error'] = (
+                    'none of the requested files could be moved '
+                    '(name conflicts or missing files; see skipped)'
+                )
+            return result
         except Exception as e:
             error(f'[API] move_rejects_to_folder error: {e}')
             return {'success': False, 'error': str(e)}
@@ -6633,7 +6677,13 @@ class Api:
         return True, restored_files, skipped
 
     def undo_reject_move(self, root_path: str, filenames):
-        """Move files and their sidecars back from _KESTREL_Rejects to the root folder."""
+        """Move files and their sidecars back from _KESTREL_Rejects to the root folder.
+
+        Return contract mirrors ``move_rejects_to_folder``: ``success`` is
+        False when requested mains all failed to restore; ``all_restored``
+        is True iff every requested main is in ``restored_filenames``.
+        Callers must reconcile UI state from ``restored_filenames`` / ``skipped``.
+        """
         try:
             root_real, err = self._validate_root_dir(root_path, context='undo_reject_move', require_exists=True)
             if err:
@@ -6682,13 +6732,21 @@ class Api:
                     skipped.append(s)
                     errors.append(f"{s['filename']}: {s['reason']}")
             info(f"[reject-undo] restored {len(restored)} file(s) (including sidecars), skipped {len(skipped)}")
-            return {
-                "success": True,
+            all_restored, success = self._requested_mains_outcome(sanitized_filenames, restored)
+            result = {
+                "success": success,
+                "all_restored": all_restored,
                 "restored": len(restored),
                 "restored_filenames": restored,
                 "skipped": skipped,
                 "errors": errors,
             }
+            if not success:
+                result["error"] = (
+                    "none of the requested files could be restored "
+                    "(name conflicts or missing files; see skipped)"
+                )
+            return result
         except Exception as e:
             error(f"[API] undo_reject_move error: {e}")
             return {"success": False, "error": str(e)}
