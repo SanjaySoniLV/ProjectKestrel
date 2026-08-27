@@ -14,7 +14,10 @@ original file in place (pixel data is left untouched; only the metadata
 segment is rewritten), so it is strictly opt-in.
 """
 
+import hashlib
+import json
 import os
+import tempfile
 
 # XMP namespace URIs
 _KESTREL_NS = 'http://ns.projectkestrel.app/xmp/1.0/'
@@ -250,6 +253,84 @@ def _is_kestrel_xmp(path: str) -> bool:
         return False
 
 
+# ---- Sidecar fingerprinting -------------------------------------------------
+#
+# "Contains the Kestrel namespace" is not enough to decide a sidecar is safe to
+# overwrite: a file Kestrel wrote and the user then edited in Lightroom/darktable
+# still contains the namespace, and was being silently clobbered. We record a
+# content hash of each sidecar as Kestrel last wrote it; on the next write, a
+# sidecar is only overwritten without confirmation if its hash still matches.
+_XMP_FINGERPRINT_FILE = 'xmp_fingerprints.json'
+
+
+def _file_sha256(path: str) -> str | None:
+    """Return the hex sha256 of a file's bytes, or None if unreadable."""
+    try:
+        h = hashlib.sha256()
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(65536), b''):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return None
+
+
+def _xmp_fingerprint_path(root: str) -> str:
+    return os.path.join(root, '.kestrel', _XMP_FINGERPRINT_FILE)
+
+
+def _load_xmp_fingerprints(root: str) -> dict:
+    """Load {relative-xmp-path -> sha256 as Kestrel last wrote it}.
+
+    Returns {} on any error, so a missing/corrupt store never blocks writes —
+    callers then fall back to the legacy "namespace substring" behavior.
+    """
+    try:
+        with open(_xmp_fingerprint_path(root), 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_xmp_fingerprints(root: str, fingerprints: dict) -> None:
+    """Persist the fingerprint map atomically (best-effort; never raises)."""
+    try:
+        kdir = os.path.join(root, '.kestrel')
+        os.makedirs(kdir, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix='.xmp_fp_', suffix='.tmp', dir=kdir)
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(fingerprints, f, indent=2)
+            os.replace(tmp, _xmp_fingerprint_path(root))
+        except BaseException:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
+    except Exception as e:
+        warn(f'[metadata] could not save XMP fingerprints: {e}')
+
+
+def _safe_to_overwrite_xmp(xmp_path: str, key: str, fingerprints: dict) -> bool:
+    """Whether Kestrel may overwrite an existing sidecar without confirmation.
+
+    Safe only if the file is a Kestrel sidecar AND unchanged since Kestrel last
+    wrote it (content hash matches the recorded fingerprint). A Kestrel sidecar
+    with no recorded fingerprint is treated as safe (legacy files written before
+    fingerprinting) to avoid flagging every pre-existing sidecar; the next write
+    records a fingerprint, closing the gap going forward. A hash mismatch means
+    the file was edited externally and must go through the conflict path.
+    """
+    if not _is_kestrel_xmp(xmp_path):
+        return False
+    recorded = fingerprints.get(key)
+    if recorded is None:
+        return True
+    return _file_sha256(xmp_path) == recorded
+
+
 def _is_jpeg(filename: str) -> bool:
     """Return True if ``filename`` has a JPEG extension (case-insensitive)."""
     return os.path.splitext(filename)[1].lower() in _JPEG_EXTS
@@ -458,6 +539,10 @@ def write_xmp_metadata(
         embedded = 0
         embed_errors = []
 
+        # Hashes of sidecars as Kestrel last wrote them; used to tell "ours and
+        # unchanged" (safe to overwrite) from "ours but edited externally".
+        fingerprints = _load_xmp_fingerprints(root_path)
+
         for entry in (image_data or []):
             try:
                 filename = str(entry.get('filename', '')).strip()
@@ -499,16 +584,21 @@ def write_xmp_metadata(
                 base, _ext = os.path.splitext(resolved_image)
                 xmp_path = base + '.xmp'
                 xmp_filename = os.path.basename(xmp_path)
+                fp_key = os.path.relpath(xmp_path, root_path)
 
-                # Safety check: if XMP already exists, verify origin
+                # Safety check: if XMP already exists, only overwrite it silently
+                # when it is a Kestrel sidecar that is unchanged since we wrote it
+                # (fingerprint match). External files, or Kestrel sidecars edited
+                # externally afterward, go through the conflict path so the user's
+                # edits are never silently destroyed.
                 if os.path.exists(xmp_path):
-                    if not _is_kestrel_xmp(xmp_path):
+                    if not _safe_to_overwrite_xmp(xmp_path, fp_key, fingerprints):
                         if not overwrite_external:
                             skipped_conflicts.append(xmp_filename)
-                            warn(f'[metadata] write_xmp: skipping external XMP {xmp_path}')
+                            warn(f'[metadata] write_xmp: skipping external/modified XMP {xmp_path}')
                             continue
                         else:
-                            info(f'[metadata] write_xmp: overwriting external XMP {xmp_path} (user confirmed)')
+                            info(f'[metadata] write_xmp: overwriting external/modified XMP {xmp_path} (user confirmed)')
 
                 # Embed XMP directly into JPEG originals when requested. This
                 # merges into the file's own XMP segment (Lightroom ignores
@@ -554,11 +644,18 @@ def write_xmp_metadata(
                 with open(xmp_path, 'w', encoding='utf-8') as f:
                     f.write(xmp_content)
 
+                # Record the hash of exactly what we just wrote, so a later
+                # external edit is detected on the next write.
+                fingerprints[fp_key] = _file_sha256(xmp_path)
+
                 written += 1
                 info(f'[metadata] write_xmp: wrote {xmp_path}')
 
             except Exception as entry_err:
                 errors.append(f'{entry.get("filename", "?")}: {entry_err}')
+
+        if written:
+            _save_xmp_fingerprints(root_path, fingerprints)
 
         info(
             f'[metadata] write_xmp_metadata: written={written}, '
