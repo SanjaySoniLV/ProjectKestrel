@@ -255,6 +255,67 @@ def _is_jpeg(filename: str) -> bool:
     return os.path.splitext(filename)[1].lower() in _JPEG_EXTS
 
 
+_JPEG_SOI = b'\xff\xd8'
+_XMP_APP1_IDENT = b'http://ns.adobe.com/xap/1.0/\x00'
+_XMPMETA_MARK = b'<x:xmpmeta'
+_KESTREL_NS_BYTES = _KESTREL_NS.encode('ascii')
+
+
+def _jpeg_app1_payloads(header: bytes):
+    """Yield APP1 payloads from ``header`` (bytes up to SOS)."""
+    if len(header) < 4 or header[:2] != _JPEG_SOI:
+        return
+    i = 2
+    n = len(header)
+    while i + 3 < n and header[i] == 0xFF:
+        marker = header[i + 1]
+        if marker == 0xFF:
+            i += 1
+            continue
+        if marker == 0xD8:
+            i += 2
+            continue
+        if marker in (0xD9, 0xDA):
+            return
+        if 0xD0 <= marker <= 0xD7:
+            i += 2
+            continue
+        seglen = int.from_bytes(header[i + 2:i + 4], 'big')
+        if seglen < 2:
+            return
+        payload_end = i + 2 + seglen
+        if payload_end > n:
+            return
+        if marker == 0xE1:
+            yield header[i + 4:payload_end]
+        i = payload_end
+
+
+def _jpeg_in_file_xmp_kind(path: str) -> str:
+    """Return ``'none'``, ``'kestrel'``, or ``'external'`` for in-file JPEG XMP.
+
+    Sidecar origin is ``_is_kestrel_xmp``. An unreadable file is ``'external'``
+    so embed fails closed instead of rewriting a file we could not inspect.
+    """
+    try:
+        with open(path, 'rb') as f:
+            header = f.read(1024 * 1024)
+    except OSError:
+        return 'external'
+    found_xmp = False
+    for payload in _jpeg_app1_payloads(header):
+        is_xmp = payload.startswith(_XMP_APP1_IDENT) or _XMPMETA_MARK in payload
+        if not is_xmp:
+            continue
+        found_xmp = True
+        if _KESTREL_NS_BYTES in payload:
+            return 'kestrel'
+    if found_xmp:
+        return 'external'
+    return 'none'
+
+
+
 # pyexiv2 is a heavyweight native dependency (it bundles the exiv2 C++
 # library). Import it lazily so the sidecar path — and the whole module —
 # keeps working in environments where it is not installed. The import result
@@ -419,6 +480,11 @@ def write_xmp_metadata(
         caller can ask the user for confirmation.
       - If ``overwrite_external`` is True, external XMP files are also
         overwritten.
+      - If ``embed_jpeg`` is True and the JPEG already contains in-file XMP
+        that was not written by Kestrel, embedding is skipped unless
+        ``overwrite_external`` is True (same confirmation flag as sidecars).
+        The sidecar basename is recorded in ``skipped_conflicts`` and neither
+        the JPEG nor a new sidecar is written until the caller confirms.
 
     Args:
         root_path: Path to images.
@@ -522,6 +588,14 @@ def write_xmp_metadata(
                 # file whose sidecar was withheld pending confirmation had
                 # already been modified.
                 if embed_jpeg and _is_jpeg(filename) and os.path.isfile(resolved_image):
+                    in_file_kind = _jpeg_in_file_xmp_kind(resolved_image)
+                    if in_file_kind == 'external' and not overwrite_external:
+                        skipped_conflicts.append(xmp_filename)
+                        warn(
+                            f'[metadata] embed_jpeg: skipping JPEG with '
+                            f'external in-file XMP {resolved_image}'
+                        )
+                        continue
                     try:
                         _embed_xmp_in_jpeg(
                             resolved_image,

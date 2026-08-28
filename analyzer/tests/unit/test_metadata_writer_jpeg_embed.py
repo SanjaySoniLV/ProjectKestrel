@@ -26,13 +26,63 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from metadata_writer import write_xmp_metadata
 
-# pyexiv2 is the whole point of this feature; skip the module cleanly if the
-# native dependency isn't installed in this environment.
-pyexiv2 = pytest.importorskip("pyexiv2")
+# pyexiv2 is required to actually rewrite a JPEG's APP1 segment. Conflict-skip
+# tests below monkeypatch ``_embed_xmp_in_jpeg`` so they still run when the
+# native module is missing. Tests that call pyexiv2 skip via ``_read_xmp``.
+try:
+    import pyexiv2
+except ImportError:
+    pyexiv2 = None
 
 pytestmark = pytest.mark.unit
 
 _KESTREL_NS = "http://ns.projectkestrel.app/xmp/1.0/"
+
+_FOREIGN_XMP = """<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description rdf:about=""
+      xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+      xmp:Rating="3">
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>
+"""
+
+_KESTREL_IN_FILE_XMP = f"""<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description rdf:about=""
+      xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+      xmlns:kestrel="{_KESTREL_NS}"
+      xmp:Rating="4"
+      kestrel:CullStatus="accept">
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>
+"""
+
+
+def _jpeg_with_app1_xmp(xmp_xml: str) -> bytes:
+    """Minimal JPEG: SOI + APP1 XMP + EOI. Enough for the in-file origin probe."""
+    ident = b"http://ns.adobe.com/xap/1.0/\x00"
+    payload = ident + xmp_xml.encode("utf-8")
+    app1 = b"\xff\xe1" + (len(payload) + 2).to_bytes(2, "big") + payload
+    return b"\xff\xd8" + app1 + b"\xff\xd9"
+
+
+def _stub_embed_mutates(monkeypatch):
+    """If embed runs, the JPEG is overwritten so a skip is observable without pyexiv2."""
+    called: list[str] = []
+
+    def fake(path, **_kwargs):
+        called.append(os.path.abspath(path))
+        Path(path).write_bytes(b"MUTATED")
+
+    monkeypatch.setattr("metadata_writer._embed_xmp_in_jpeg", fake)
+    return called
 
 
 def _jpeg_scan_bytes(path):
@@ -62,6 +112,8 @@ def _scan_hash(path):
 
 
 def _read_xmp(path):
+    if pyexiv2 is None:
+        pytest.skip("pyexiv2 not installed")
     img = pyexiv2.Image(str(path))
     try:
         return img.read_xmp()
@@ -101,10 +153,16 @@ def _entry(filename, **over):
 
 
 class TestEmbedIntoJpeg:
+    @pytest.fixture(autouse=True)
+    def _require_pyexiv2(self):
+        pytest.importorskip("pyexiv2")
+
     def test_embed_writes_xmp_and_reports_count(self, jpeg_dir):
         root, names = jpeg_dir
         payload = [_entry(n) for n in names]
-        res = write_xmp_metadata(str(root), payload, embed_jpeg=True)
+        res = write_xmp_metadata(
+            str(root), payload, embed_jpeg=True, overwrite_external=True
+        )
 
         assert res["success"] is True
         assert res["embedded"] == len(names)
@@ -122,7 +180,9 @@ class TestEmbedIntoJpeg:
         root, names = jpeg_dir
         target = root / names[0]
         before = _scan_hash(target)
-        write_xmp_metadata(str(root), [_entry(names[0])], embed_jpeg=True)
+        write_xmp_metadata(
+            str(root), [_entry(names[0])], embed_jpeg=True, overwrite_external=True
+        )
         after = _scan_hash(target)
         assert before == after, "compressed pixel scan changed — file was recompressed"
 
@@ -130,24 +190,24 @@ class TestEmbedIntoJpeg:
         root, names = jpeg_dir
         target = root / names[0]
         before_keys = set(_read_xmp(target).keys())
-        write_xmp_metadata(str(root), [_entry(names[0])], embed_jpeg=True)
+        write_xmp_metadata(
+            str(root), [_entry(names[0])], embed_jpeg=True, overwrite_external=True
+        )
         after_keys = set(_read_xmp(target).keys())
         # every pre-existing property survives (merge, not clobber)
         assert before_keys.issubset(after_keys)
-
-    def test_embed_off_by_default_leaves_file_untouched(self, jpeg_dir):
-        root, names = jpeg_dir
-        target = root / names[0]
-        before = Path(target).read_bytes()
-        res = write_xmp_metadata(str(root), [_entry(names[0])])  # embed_jpeg defaults False
-        assert res.get("embedded", 0) == 0
-        assert Path(target).read_bytes() == before, "JPEG modified despite embed_jpeg=False"
 
     def test_embed_respects_field_selection(self, jpeg_dir):
         root, names = jpeg_dir
         fields = {"rating": True, "label": False, "species": False,
                   "family": False, "quality": False}
-        write_xmp_metadata(str(root), [_entry(names[0])], fields=fields, embed_jpeg=True)
+        write_xmp_metadata(
+            str(root),
+            [_entry(names[0])],
+            fields=fields,
+            embed_jpeg=True,
+            overwrite_external=True,
+        )
         xmp = _read_xmp(root / names[0])
         assert xmp.get("Xmp.xmp.Rating") == "4"
         assert "Xmp.xmp.Label" not in xmp
@@ -157,7 +217,13 @@ class TestEmbedIntoJpeg:
     def test_embed_is_idempotent(self, jpeg_dir):
         root, names = jpeg_dir
         target = root / names[0]
-        write_xmp_metadata(str(root), [_entry(names[0], rating=4)], embed_jpeg=True)
+        write_xmp_metadata(
+            str(root),
+            [_entry(names[0], rating=4)],
+            embed_jpeg=True,
+            overwrite_external=True,
+        )
+        # Second write: in-file XMP is now Kestrel-authored; no flag required.
         write_xmp_metadata(str(root), [_entry(names[0], rating=5)], embed_jpeg=True)
         xmp = _read_xmp(target)
         assert xmp.get("Xmp.xmp.Rating") == "5"
@@ -168,6 +234,14 @@ class TestEmbedIntoJpeg:
 
 
 class TestEmbedNonJpegAndSafety:
+    def test_embed_off_by_default_leaves_file_untouched(self, jpeg_dir):
+        root, names = jpeg_dir
+        target = root / names[0]
+        before = Path(target).read_bytes()
+        res = write_xmp_metadata(str(root), [_entry(names[0])])  # embed_jpeg defaults False
+        assert res.get("embedded", 0) == 0
+        assert Path(target).read_bytes() == before, "JPEG modified despite embed_jpeg=False"
+
     def test_non_jpeg_not_embedded(self, tmp_path):
         # A RAW file: sidecar is written, but nothing is embedded.
         (tmp_path / "IMG_9001.CR3").touch()
@@ -207,5 +281,99 @@ class TestEmbedNonJpegAndSafety:
         assert any("victim.jpg" in e for e in res["errors"])
         # the file outside root is byte-identical — never opened for write
         assert _scan_hash(outside) == outside_scan_before
-        xmp = _read_xmp(outside)
-        assert xmp.get("Xmp.xmp.Rating") != "5"
+        if pyexiv2 is not None:
+            xmp = _read_xmp(outside)
+            assert xmp.get("Xmp.xmp.Rating") != "5"
+
+
+class TestEmbedConflictGuard:
+    """S0-07: embed only when the batch is allowed to write this JPEG."""
+
+    def test_foreign_sidecar_skips_embed(self, tmp_path, monkeypatch):
+        """Arrange A: foreign .xmp + embed_jpeg, overwrite_external=False."""
+        jpeg = tmp_path / "IMG_001.jpg"
+        original = _jpeg_with_app1_xmp(_FOREIGN_XMP)
+        jpeg.write_bytes(original)
+        (tmp_path / "IMG_001.xmp").write_text(_FOREIGN_XMP, encoding="utf-8")
+        called = _stub_embed_mutates(monkeypatch)
+
+        res = write_xmp_metadata(
+            str(tmp_path),
+            [_entry("IMG_001.jpg", rating=5)],
+            embed_jpeg=True,
+            overwrite_external=False,
+        )
+
+        assert res["success"] is True
+        assert res["embedded"] == 0
+        assert called == []
+        assert jpeg.read_bytes() == original
+        assert "IMG_001.xmp" in (res.get("skipped_conflicts") or [])
+
+    def test_foreign_in_file_xmp_skips_embed_without_flag(self, tmp_path, monkeypatch):
+        """Arrange B: foreign in-file rating, no sidecar conflict."""
+        jpeg = tmp_path / "IMG_001.jpg"
+        original = _jpeg_with_app1_xmp(_FOREIGN_XMP)
+        jpeg.write_bytes(original)
+        called = _stub_embed_mutates(monkeypatch)
+
+        res = write_xmp_metadata(
+            str(tmp_path),
+            [_entry("IMG_001.jpg", rating=5)],
+            embed_jpeg=True,
+            overwrite_external=False,
+        )
+
+        assert res["success"] is True
+        assert res["embedded"] == 0
+        assert res["written"] == 0
+        assert called == []
+        assert jpeg.read_bytes() == original
+        assert "IMG_001.xmp" in (res.get("skipped_conflicts") or [])
+        assert not (tmp_path / "IMG_001.xmp").exists()
+
+    def test_overwrite_external_embeds_foreign_in_file(self, tmp_path, monkeypatch):
+        jpeg = tmp_path / "IMG_001.jpg"
+        jpeg.write_bytes(_jpeg_with_app1_xmp(_FOREIGN_XMP))
+        called = _stub_embed_mutates(monkeypatch)
+
+        res = write_xmp_metadata(
+            str(tmp_path),
+            [_entry("IMG_001.jpg", rating=5)],
+            embed_jpeg=True,
+            overwrite_external=True,
+        )
+
+        assert res["embedded"] == 1
+        assert called == [os.path.abspath(str(jpeg))]
+        assert jpeg.read_bytes() == b"MUTATED"
+
+    def test_kestrel_in_file_embeds_without_flag(self, tmp_path, monkeypatch):
+        jpeg = tmp_path / "IMG_001.jpg"
+        jpeg.write_bytes(_jpeg_with_app1_xmp(_KESTREL_IN_FILE_XMP))
+        called = _stub_embed_mutates(monkeypatch)
+
+        res = write_xmp_metadata(
+            str(tmp_path),
+            [_entry("IMG_001.jpg", rating=5)],
+            embed_jpeg=True,
+            overwrite_external=False,
+        )
+
+        assert res["embedded"] == 1
+        assert called == [os.path.abspath(str(jpeg))]
+
+    def test_jpeg_without_xmp_still_embeds(self, tmp_path, monkeypatch):
+        jpeg = tmp_path / "IMG_001.jpg"
+        jpeg.write_bytes(b"\xff\xd8\xff\xd9")
+        called = _stub_embed_mutates(monkeypatch)
+
+        res = write_xmp_metadata(
+            str(tmp_path),
+            [_entry("IMG_001.jpg", rating=5)],
+            embed_jpeg=True,
+            overwrite_external=False,
+        )
+
+        assert res["embedded"] == 1
+        assert called == [os.path.abspath(str(jpeg))]
