@@ -40,6 +40,11 @@ try:
 except ImportError:  # pragma: no cover - package-style import path
     from analyzer.net_tls import ssl_context as _ssl_context
 
+try:
+    from kestrel_analyzer.database import retry_on_file_lock
+except ImportError:  # pragma: no cover - package-style import path
+    from analyzer.kestrel_analyzer.database import retry_on_file_lock
+
 
 _DEFAULT_API_BASE = "https://cloudcompute.projectkestrel.org"
 _MAX_UPLOAD_WORKERS = 6
@@ -1264,7 +1269,9 @@ def _write_file_atomic(
     ``settings_utils.save_settings``: the destination is never opened with
     ``"w"``, so a crash or ENOSPC cannot truncate a live ``.kestrel`` file.
     ``write`` receives the open temp file. Failures propagate; the previous
-    destination is left intact.
+    destination is left intact. ``os.replace`` goes through
+    ``retry_on_file_lock`` so a Windows UI reader holding the CSV does not
+    abort the pack merge.
     """
     directory = str(path.parent)
     os.makedirs(directory, exist_ok=True)
@@ -1284,7 +1291,7 @@ def _write_file_atomic(
                 os.fsync(f.fileno())
             except OSError:
                 pass
-        os.replace(tmp, path)
+        retry_on_file_lock(lambda: os.replace(tmp, path))
     except BaseException:
         try:
             os.remove(tmp)

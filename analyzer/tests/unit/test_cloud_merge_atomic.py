@@ -7,6 +7,7 @@ zero-length ``kestrel_database.csv`` / ``kestrel_scenedata.json``.
 
 import csv
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -116,6 +117,88 @@ class TestMergeCsvAtomic:
         assert rows["IMG_001.CR3"]["culled_origin"] == "manual"
         assert rows["IMG_001.CR3"]["species"] == "American Goldfinch"
         assert rows["IMG_002.CR3"]["species"] == "Northern Cardinal"
+
+    def test_replace_retries_permission_error(self, tmp_path, monkeypatch):
+        dst = tmp_path / "kestrel_database.csv"
+        _write_csv(
+            dst,
+            [
+                {
+                    "filename": "IMG_001.CR3",
+                    "species": "American Goldfinch",
+                    "culled": "1",
+                    "culled_origin": "manual",
+                }
+            ],
+        )
+        src = tmp_path / "pack.csv"
+        _write_csv(
+            src,
+            [
+                {
+                    "filename": "IMG_002.CR3",
+                    "species": "Northern Cardinal",
+                    "culled": "0",
+                    "culled_origin": "",
+                }
+            ],
+        )
+
+        calls = {"n": 0}
+        real_replace = os.replace
+
+        def _flaky(src_path, dst_path):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise PermissionError("sharing violation")
+            return real_replace(src_path, dst_path)
+
+        monkeypatch.setattr("cloud_compute_client.os.replace", _flaky)
+        monkeypatch.setattr("kestrel_analyzer.database.time.sleep", lambda *_a, **_k: None)
+
+        _merge_database_csv(src, dst)
+
+        assert calls["n"] >= 2
+        rows = {r["filename"]: r for r in csv.DictReader(dst.open(encoding="utf-8"))}
+        assert rows["IMG_001.CR3"]["culled"] == "1"
+        assert rows["IMG_002.CR3"]["species"] == "Northern Cardinal"
+
+    def test_exhausted_permission_error_leaves_csv_intact(self, tmp_path, monkeypatch):
+        dst = tmp_path / "kestrel_database.csv"
+        original = _write_csv(
+            dst,
+            [
+                {
+                    "filename": "IMG_001.CR3",
+                    "species": "American Goldfinch",
+                    "culled": "1",
+                    "culled_origin": "manual",
+                }
+            ],
+        )
+        src = tmp_path / "pack.csv"
+        _write_csv(
+            src,
+            [
+                {
+                    "filename": "IMG_002.CR3",
+                    "species": "Northern Cardinal",
+                    "culled": "0",
+                    "culled_origin": "",
+                }
+            ],
+        )
+
+        def _locked(_src, _dst):
+            raise PermissionError("sharing violation")
+
+        monkeypatch.setattr("cloud_compute_client.os.replace", _locked)
+        monkeypatch.setattr("kestrel_analyzer.database.time.sleep", lambda *_a, **_k: None)
+
+        with pytest.raises(PermissionError, match="sharing violation"):
+            _merge_database_csv(src, dst)
+
+        assert dst.read_bytes() == original
 
 
 class TestMergeScenedataAtomic:
