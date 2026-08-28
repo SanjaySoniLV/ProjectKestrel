@@ -304,21 +304,48 @@ def update_scenedata_with_database(scenedata: dict, database: pd.DataFrame) -> d
     return scenedata
 
 
+class ScenedataCorruptError(ValueError):
+    """Raised when kestrel_scenedata.json exists but cannot be loaded as a JSON object.
+
+    A missing file is a fresh folder. A corrupt file is not: callers that treat
+    empty ``scenes`` as "rebuild from CSV" would overwrite user ratings.
+    """
+
+
 def load_scenedata(kestrel_dir: str) -> dict:
-    """Load kestrel_scenedata.json. Returns an empty initialized dict if the file is missing."""
+    """Load kestrel_scenedata.json.
+
+    Returns an empty initialized dict if the file is missing. If the file
+    exists but cannot be read or parsed as a JSON object, raises
+    :class:`ScenedataCorruptError` instead of returning empty.
+    """
     scenedata_path = os.path.join(kestrel_dir, SCENEDATA_FILENAME)
-    if os.path.exists(scenedata_path):
-        try:
-            with open(scenedata_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            # Ensure required keys (forward compatibility)
-            data.setdefault("version", SCENEDATA_VERSION)
-            data.setdefault("image_ratings", {})
-            data.setdefault("scenes", {})
-            return data
-        except Exception as e:
-            _warn(f"[database] failed to load {SCENEDATA_FILENAME}: {e}")
-    return {"version": SCENEDATA_VERSION, "image_ratings": {}, "scenes": {}}
+    if not os.path.exists(scenedata_path):
+        return {"version": SCENEDATA_VERSION, "image_ratings": {}, "scenes": {}}
+
+    try:
+        with open(scenedata_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
+        _warn(f"[database] failed to load {SCENEDATA_FILENAME}: {e}")
+        raise ScenedataCorruptError(
+            f"{SCENEDATA_FILENAME} exists but is unreadable: {e}"
+        ) from e
+
+    if not isinstance(data, dict):
+        _warn(
+            f"[database] failed to load {SCENEDATA_FILENAME}: "
+            f"expected a JSON object, got {type(data).__name__}"
+        )
+        raise ScenedataCorruptError(
+            f"{SCENEDATA_FILENAME} exists but is not a JSON object "
+            f"(got {type(data).__name__})"
+        )
+
+    data.setdefault("version", SCENEDATA_VERSION)
+    data.setdefault("image_ratings", {})
+    data.setdefault("scenes", {})
+    return data
 
 
 def save_scenedata(scenedata: dict, kestrel_dir: str) -> None:
