@@ -115,7 +115,12 @@ def _needs_upgrade(database: pd.DataFrame, kestrel_dir: str) -> bool:
 def _perform_db_upgrade(
     database: pd.DataFrame, kestrel_dir: str, db_path: str, log_path: str = None
 ) -> pd.DataFrame:
-    """Migrate legacy database: extract user data to scenedata.json and strip legacy columns."""
+    """Migrate legacy database: extract user data to scenedata.json and strip legacy columns.
+
+    The live CSV is renamed and stripped only after scenedata is saved.
+    If that save fails, the original CSV (including ratings) is left intact
+    and the error is re-raised so callers do not treat the upgrade as done.
+    """
     # Build and save scenedata from legacy database
     try:
         scenedata = _build_scenedata_from_legacy_db(database)
@@ -132,6 +137,7 @@ def _perform_db_upgrade(
             )
         else:
             _warn(f"[database] failed to migrate legacy database: {e}")
+        raise
 
     # Rename old CSV as backup, then save new one without legacy columns
     try:
