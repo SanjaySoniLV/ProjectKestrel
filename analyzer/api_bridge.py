@@ -1226,15 +1226,31 @@ class Api:
             return {'success': False, 'error': str(e)}
 
     def clear_kestrel_data(self, folder_path: str):
-        """Delete the contents of the .kestrel folder within the given folder."""
+        """Delete the .kestrel folder in ``folder_path``.
+
+        Refuses while a queue item for that root is ``running`` so analysis
+        cannot write into a directory that is being deleted.
+        """
         try:
-            _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+            root_real, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
                 folder_path,
                 context='clear_kestrel_data',
                 require_root_exists=True,
             )
             if err:
                 return {'success': False, 'error': err}
+
+            if _queue_manager.has_running_writer(root_real):
+                warn(
+                    f'[API] clear_kestrel_data refused: analysis running for {root_real}'
+                )
+                return {
+                    'success': False,
+                    'error': (
+                        'Cannot clear .kestrel while analysis is running '
+                        'for this folder'
+                    ),
+                }
 
             if not os.path.isdir(kestrel_dir):
                 return {'success': True, 'message': 'No .kestrel folder found'}
