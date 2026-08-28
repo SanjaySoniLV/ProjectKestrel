@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import tempfile
 import time
 from datetime import datetime
@@ -466,6 +467,48 @@ def _to_csv_atomic(database: pd.DataFrame, db_path: str) -> None:
     except BaseException:
         # Do NOT fall back to a direct write — that is the partial-read path
         # this function exists to close. Leave the previous file intact.
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def copy_file_atomic(src_path: str, dst_path: str) -> None:
+    """Copy ``src_path`` onto ``dst_path`` atomically (temp file + os.replace).
+
+    ``shutil.copy2`` writes the destination in place, so an interrupted copy
+    can leave the dest half-written. Copy raw bytes to a temp file in the
+    same directory and ``os.replace`` it. Content is flushed+fsync'd before
+    the replace (matching ``_to_csv_atomic``), and mode/mtime is preserved
+    like ``shutil.copy2``.
+    """
+    directory = os.path.dirname(dst_path) or "."
+    os.makedirs(directory, exist_ok=True)
+
+    tmp_fd, tmp = tempfile.mkstemp(prefix=".kestrel_atomic_", suffix=".tmp", dir=directory)
+    try:
+        try:
+            dst_f = os.fdopen(tmp_fd, "wb")
+        except BaseException:
+            os.close(tmp_fd)
+            raise
+        try:
+            with open(src_path, "rb") as src_f:
+                shutil.copyfileobj(src_f, dst_f)
+                dst_f.flush()
+                try:
+                    os.fsync(dst_f.fileno())
+                except OSError:
+                    pass
+        finally:
+            dst_f.close()
+        try:
+            shutil.copystat(src_path, tmp)
+        except OSError:
+            pass
+        retry_on_file_lock(lambda: os.replace(tmp, dst_path))
+    except BaseException:
         try:
             os.remove(tmp)
         except OSError:

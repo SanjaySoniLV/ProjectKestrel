@@ -101,6 +101,7 @@ from kestrel_analyzer.config import (
     JPEG_EXTENSIONS as _JPEG_EXTENSIONS,
     RAW_EXTENSIONS as _RAW_EXTENSIONS,
 )
+from kestrel_analyzer.database import copy_file_atomic
 
 # Telemetry — failsafe import (never blocks startup)
 try:
@@ -6735,13 +6736,13 @@ class Api:
                 return {"success": False, "error": "kestrel_database.csv not found", "backup_csv": "", "backup_scenedata": ""}
 
             # Backup CSV
-            shutil.copy2(csv_path, csv_backup)
+            copy_file_atomic(csv_path, csv_backup)
             info(f"[backup] CSV backed up to {csv_backup}")
 
             # Backup scenedata if it exists
             scenedata_backed = False
             if os.path.exists(scenedata_path):
-                shutil.copy2(scenedata_path, scenedata_backup)
+                copy_file_atomic(scenedata_path, scenedata_backup)
                 scenedata_backed = True
                 info(f"[backup] Scenedata backed up to {scenedata_backup}")
 
