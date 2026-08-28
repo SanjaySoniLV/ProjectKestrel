@@ -5436,13 +5436,19 @@ class Api:
         return {"success": True}
 
     def open_perch_url(self, url: str) -> dict:
-        """Open an arbitrary URL in the user's default browser."""
+        """Open a Perch gallery URL in the user's default browser.
+
+        Gated by ``_is_safe_external_url`` (same allowlist as ``open_url`` /
+        FINDING-01). A prefix check of ``http://`` / ``https://`` still lets
+        ``http://\\\\attacker\\share`` and CRLF-injected URLs through (S1-05).
+        """
         try:
-            if not isinstance(url, str) or not url.strip():
-                return {"success": False, "error": "missing url"}
-            u = url.strip()
-            if not (u.startswith("http://") or u.startswith("https://")):
+            if not _is_safe_external_url(url):
+                warn(f'[security] open_perch_url refused unsafe URL: {url!r}')
+                if not isinstance(url, str) or not url.strip():
+                    return {"success": False, "error": "missing url"}
                 return {"success": False, "error": "invalid url scheme"}
+            u = url.strip()
             webbrowser.open(u, new=2, autoraise=True)
             return {"success": True}
         except Exception as e:
