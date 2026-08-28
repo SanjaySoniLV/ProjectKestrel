@@ -14,6 +14,7 @@ original file in place (pixel data is left untouched; only the metadata
 segment is rewritten), so it is strictly opt-in.
 """
 
+import ntpath
 import os
 
 # XMP namespace URIs
@@ -44,6 +45,12 @@ def _safe_sidecar_path(root: str, filename: str) -> str | None:
     callers that pass non-bare names are either buggy or attacking, and in
     either case the user's data is better served by an error than by a
     surprise write.
+
+    The returned path is ``realpath(root)/filename`` without resolving the
+    filename itself. ``os.path.realpath`` on the image would follow a
+    symlink whose target is outside ``root`` and make the caller derive
+    ``base + '.xmp'`` next to that target (S1-07). The sidecar must stay
+    beside the link in ``root``.
     """
     if not isinstance(filename, str):
         return None
@@ -58,8 +65,7 @@ def _safe_sidecar_path(root: str, filename: str) -> str | None:
         return None
     # ``ntpath.splitdrive`` catches Windows drive prefixes like ``C:foo``
     # even on POSIX builds, because the attacker gets to choose the input.
-    import ntpath as _nt
-    drive, _rest = _nt.splitdrive(name)
+    drive, _rest = ntpath.splitdrive(name)
     if drive:
         return None
     # Reject any path separator (POSIX ``/``, Windows ``\\``) and the
@@ -76,20 +82,43 @@ def _safe_sidecar_path(root: str, filename: str) -> str | None:
         return None
     try:
         root_real = os.path.realpath(root)
-        candidate = os.path.realpath(os.path.join(root_real, name))
     except (OSError, ValueError):
         return None
+    # Do not realpath ``name``: a symlink in root must keep its in-root
+    # path so the sidecar is not written next to the target (S1-07).
+    candidate = os.path.normpath(os.path.join(root_real, name))
     try:
-        if os.path.commonpath([candidate, root_real]) != root_real:
-            return None
+        common = os.path.commonpath(
+            [os.path.normcase(candidate), os.path.normcase(root_real)]
+        )
     except ValueError:
         # Different drives (Windows) — not under root.
         return None
-    # Defence against ``realpath`` resolving a symlink back up out of root:
-    # require the final component to match the name we validated.
+    if common != os.path.normcase(root_real):
+        return None
     if os.path.basename(candidate) != name:
         return None
     return candidate
+
+
+def _xmp_path_under_root(root: str, image_path: str) -> str | None:
+    """Return ``<stem>.xmp`` beside ``image_path`` if that file stays in ``root``.
+
+    Uses the image path as given (no extra realpath) so a symlink image in
+    ``root`` gets a sidecar beside the link, not beside the target (S1-07).
+    """
+    base, _ext = os.path.splitext(image_path)
+    xmp_path = base + '.xmp'
+    try:
+        root_real = os.path.realpath(root)
+        common = os.path.commonpath(
+            [os.path.normcase(os.path.normpath(xmp_path)), os.path.normcase(root_real)]
+        )
+    except (OSError, ValueError):
+        return None
+    if common != os.path.normcase(root_real):
+        return None
+    return xmp_path
 
 # Default field selection for XMP writes — every field on. The frontend can
 # override individual flags via the `fields` parameter to write_xmp_metadata().
@@ -496,8 +525,11 @@ def write_xmp_metadata(
                     errors.append(f'{filename}: rejected (unsafe filename)')
                     warn(f'[metadata][security] write_xmp_metadata rejected unsafe filename: {filename!r}')
                     continue
-                base, _ext = os.path.splitext(resolved_image)
-                xmp_path = base + '.xmp'
+                xmp_path = _xmp_path_under_root(root_path, resolved_image)
+                if xmp_path is None:
+                    errors.append(f'{filename}: rejected (unsafe sidecar path)')
+                    warn(f'[metadata][security] write_xmp_metadata rejected unsafe sidecar path: {filename!r}')
+                    continue
                 xmp_filename = os.path.basename(xmp_path)
 
                 # Safety check: if XMP already exists, verify origin
