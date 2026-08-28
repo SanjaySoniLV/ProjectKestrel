@@ -482,6 +482,9 @@ def save_database(database: pd.DataFrame, db_path: str) -> None:
     and merges them back into the pipeline's DataFrame before writing, so
     user decisions made during analysis are not lost.
 
+    If that read fails, the existing CSV is left unchanged and the error
+    propagates so callers do not treat the save as successful.
+
     Legacy user columns (rating, scene_name, etc.) are stripped — those now
     live in kestrel_scenedata.json.
     """
@@ -505,7 +508,11 @@ def save_database(database: pd.DataFrame, db_path: str) -> None:
                             zip(disk_df["filename"].astype(str), disk_df[col])
                         )
                         database[col] = database["filename"].astype(str).map(col_map)
-        except Exception:
-            pass  # If we can't read the existing CSV, just write what we have
+        except Exception as e:
+            _warn(
+                f"[database] failed to read UI columns from {db_path} "
+                f"before save; leaving existing CSV unchanged: {e}"
+            )
+            raise
 
     _to_csv_atomic(database, db_path)
