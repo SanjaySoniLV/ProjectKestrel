@@ -27,10 +27,7 @@ from .config import (
 from .database import (
     load_database,
     save_database,
-    load_scenedata,
-    save_scenedata,
-    build_scenedata_from_database,
-    update_scenedata_with_database,
+    finalize_scenedata_after_analysis,
 )
 from .exposure_compensation import (
     apply_exposure_crop_numpy,
@@ -1513,15 +1510,11 @@ class AnalysisPipeline:
                             stage="post_analysis_normalization",
                         )
 
-                    # Create or update kestrel_scenedata.json
+                    # Create or update kestrel_scenedata.json. Reload+merge
+                    # UI fields immediately before save so ratings/names/tags
+                    # written during the run are not overwritten (S1-08).
                     try:
-                        existing_scenedata = load_scenedata(kestrel_dir)
-                        if not existing_scenedata.get("scenes"):
-                            new_scenedata = build_scenedata_from_database(database)
-                            save_scenedata(new_scenedata, kestrel_dir)
-                        else:
-                            update_scenedata_with_database(existing_scenedata, database)
-                            save_scenedata(existing_scenedata, kestrel_dir)
+                        finalize_scenedata_after_analysis(kestrel_dir, database)
                     except Exception as _sd_e:
                         log_warning(
                             self._log_path,
