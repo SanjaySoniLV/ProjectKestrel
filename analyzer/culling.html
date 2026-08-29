@@ -2801,10 +2801,12 @@
           }
           // Reconcile against what actually left the shoot folder. success can
           // be True for a partial batch; stripping the request list would drop
-          // files that never moved (name conflicts).
-          const movedSet = new Set(moveRes.moved_filenames || []);
-          const movedMains = rejectFilenames.filter(fn => movedSet.has(fn));
-          const skippedMains = rejectFilenames.filter(fn => !movedSet.has(fn));
+          // files that never moved (name conflicts). Prefer moved_requested
+          // (requested mains only); fall back to intersecting moved_filenames.
+          const movedMains = Array.isArray(moveRes.moved_requested)
+            ? moveRes.moved_requested.slice()
+            : rejectFilenames.filter(fn => new Set(moveRes.moved_filenames || []).has(fn));
+          const skippedMains = rejectFilenames.filter(fn => !new Set(movedMains).has(fn));
           const skipNote = skippedMains.length
             ? `, ${skippedMains.length} skipped`
             : '';

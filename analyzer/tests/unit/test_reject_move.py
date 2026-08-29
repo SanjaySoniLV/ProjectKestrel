@@ -95,6 +95,8 @@ class TestMoveRejects:
         result = api.move_rejects_to_folder(str(workdir_with_files), ['IMG_001.CR3'])
         # Should be at least 2 (CR3 + JPG companion)
         assert result['moved'] >= 2
+        assert result['moved_requested'] == ['IMG_001.CR3']
+        assert result['skipped_requested'] == []
 
     def test_invalid_path_returns_error(self, api):
         """Invalid root path → error response."""
@@ -343,7 +345,9 @@ class TestRejectNoOverwrite:
         assert result["errors"], "expected a conflict error, got none"
         # Structured result lets the UI reconcile which files were skipped.
         assert result["moved_filenames"] == []
+        assert result["moved_requested"] == []
         assert any(s["filename"] == "IMG_0001.CR3" for s in result["skipped"]), result["skipped"]
+        assert any(s["filename"] == "IMG_0001.CR3" for s in result["skipped_requested"]), result["skipped_requested"]
 
     def test_existing_companion_reject_is_not_overwritten(self, api, tmp_path):
         """The same no-overwrite rule applies to companion files (e.g. the JPG)."""
@@ -370,7 +374,9 @@ class TestRejectNoOverwrite:
         assert any("IMG_0002.JPG" in e for e in result["errors"]), result["errors"]
         # Structured result: RAW is in moved_filenames, JPG is in skipped.
         assert "IMG_0002.CR3" in result["moved_filenames"]
+        assert result["moved_requested"] == ["IMG_0002.CR3"]
         assert any(s["filename"] == "IMG_0002.JPG" for s in result["skipped"]), result["skipped"]
+        assert result["skipped_requested"] == []
 
     def test_undo_does_not_overwrite_existing_file(self, api, tmp_path):
         """Undo/restore must not clobber a file the user re-added to the shoot."""
@@ -393,7 +399,12 @@ class TestRejectNoOverwrite:
         assert result["all_restored"] is False
         assert any("IMG_0003.CR3" in e for e in result["errors"]), result["errors"]
         assert result["restored_filenames"] == []
+        assert result["restored_requested"] == []
         assert any(s["filename"] == "IMG_0003.CR3" for s in result["skipped"]), result["skipped"]
+        assert any(
+            s["filename"] == "IMG_0003.CR3" and "shoot folder" in s["reason"]
+            for s in result["skipped_requested"]
+        ), result["skipped_requested"]
 
     def test_undo_companion_conflict_is_surfaced(self, api, tmp_path):
         """A companion conflict on undo is surfaced, not silently skipped."""
@@ -416,9 +427,12 @@ class TestRejectNoOverwrite:
         assert (reject_dir / "IMG_0004.JPG").read_bytes() == b"REJECTED-JPG"
         assert any("IMG_0004.JPG" in e for e in result["errors"]), result["errors"]
         assert "IMG_0004.CR3" in result["restored_filenames"]
+        assert result["restored_requested"] == ["IMG_0004.CR3"]
         assert result["success"] is True
         assert result["all_restored"] is True
         assert any(s["filename"] == "IMG_0004.JPG" for s in result["skipped"]), result["skipped"]
+        assert result["skipped_requested"] == []
+        assert any("shoot folder" in (s.get("reason") or "") for s in result["skipped"])
 
     def test_partial_batch_keeps_success_but_clears_all_moved(self, api, tmp_path):
         """A mixed batch: one main moves, one conflicts.
@@ -442,7 +456,9 @@ class TestRejectNoOverwrite:
         assert result["all_moved"] is False
         assert "IMG_0006.CR3" in result["moved_filenames"]
         assert "IMG_0005.CR3" not in result["moved_filenames"]
+        assert result["moved_requested"] == ["IMG_0006.CR3"]
         assert any(s["filename"] == "IMG_0005.CR3" for s in result["skipped"])
+        assert [s["filename"] for s in result["skipped_requested"]] == ["IMG_0005.CR3"]
         assert (workdir / "IMG_0005.CR3").read_bytes() == b"NEW-CONFLICT"
         assert (reject_dir / "IMG_0006.CR3").exists()
         assert not (workdir / "IMG_0006.CR3").exists()
@@ -455,12 +471,16 @@ class TestRejectNoOverwrite:
         assert result["success"] is False
         assert result["all_moved"] is False
         assert result["moved_filenames"] == []
+        assert result["moved_requested"] == []
         assert any("invalid filename" in (s.get("reason") or "") for s in result["skipped"])
+        assert len(result["skipped_requested"]) == 2
         assert (workdir_with_files / "IMG_001.CR3").exists()
 
         undo = api.undo_reject_move(str(workdir_with_files), ["../escape.CR3"])
         assert undo["success"] is False
         assert undo["all_restored"] is False
+        assert undo["restored_requested"] == []
+        assert len(undo["skipped_requested"]) == 1
 
     def test_missing_companion_is_in_skipped(self, api, tmp_path, monkeypatch):
         """A companion the index named but that is gone from disk is skipped."""
@@ -478,3 +498,73 @@ class TestRejectNoOverwrite:
             s["filename"] == "IMG_0007.JPG" and "not found" in s["reason"]
             for s in result["skipped"]
         ), result["skipped"]
+        assert result["moved_requested"] == ["IMG_0007.CR3"]
+        assert result["skipped_requested"] == []
+
+    def test_move_failure_reason_is_exception_type(self, api, tmp_path, monkeypatch):
+        """Generic move errors return the exception type, not str(e) paths."""
+        workdir = tmp_path / "workdir"
+        workdir.mkdir()
+        (workdir / "IMG_0008.CR3").write_bytes(b"RAW")
+
+        def boom(_src, _dst):
+            raise PermissionError("/secret/path leaked")
+
+        monkeypatch.setattr(api_bridge, "_move_no_overwrite", boom)
+        result = api.move_rejects_to_folder(str(workdir), ["IMG_0008.CR3"])
+        assert any(
+            s["filename"] == "IMG_0008.CR3" and s["reason"] == "PermissionError"
+            for s in result["skipped"]
+        ), result["skipped"]
+        assert not any("/secret/path" in (s.get("reason") or "") for s in result["skipped"])
+        assert not any("/secret/path" in e for e in result["errors"])
+
+
+class TestMoveNoOverwrite:
+    """Direct tests for the exclusive dest-create move helper."""
+
+    def test_refuses_existing_dest(self, tmp_path):
+        src = tmp_path / "src.bin"
+        dst = tmp_path / "dst.bin"
+        src.write_bytes(b"NEW")
+        dst.write_bytes(b"OLD")
+        with pytest.raises(FileExistsError):
+            api_bridge._move_no_overwrite(str(src), str(dst))
+        assert dst.read_bytes() == b"OLD"
+        assert src.read_bytes() == b"NEW"
+
+    def test_moves_when_dest_is_free(self, tmp_path):
+        src = tmp_path / "src.bin"
+        dst = tmp_path / "dst.bin"
+        src.write_bytes(b"PAYLOAD")
+        api_bridge._move_no_overwrite(str(src), str(dst))
+        assert not src.exists()
+        assert dst.read_bytes() == b"PAYLOAD"
+
+    def test_copy_fallback_refuses_existing_dest(self, tmp_path, monkeypatch):
+        src = tmp_path / "src.bin"
+        dst = tmp_path / "dst.bin"
+        src.write_bytes(b"NEW")
+        dst.write_bytes(b"OLD")
+
+        def boom(_src, _dst):
+            raise OSError("link unsupported")
+
+        monkeypatch.setattr(api_bridge.os, "link", boom)
+        with pytest.raises(FileExistsError):
+            api_bridge._move_no_overwrite(str(src), str(dst))
+        assert dst.read_bytes() == b"OLD"
+        assert src.read_bytes() == b"NEW"
+
+    def test_copy_fallback_moves_when_dest_is_free(self, tmp_path, monkeypatch):
+        src = tmp_path / "src.bin"
+        dst = tmp_path / "dst.bin"
+        src.write_bytes(b"PAYLOAD")
+
+        def boom(_src, _dst):
+            raise OSError("link unsupported")
+
+        monkeypatch.setattr(api_bridge.os, "link", boom)
+        api_bridge._move_no_overwrite(str(src), str(dst))
+        assert not src.exists()
+        assert dst.read_bytes() == b"PAYLOAD"
