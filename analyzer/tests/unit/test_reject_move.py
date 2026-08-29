@@ -568,3 +568,56 @@ class TestMoveNoOverwrite:
         api_bridge._move_no_overwrite(str(src), str(dst))
         assert not src.exists()
         assert dst.read_bytes() == b"PAYLOAD"
+
+    def test_unlink_src_failure_rolls_back_dest(self, tmp_path, monkeypatch):
+        """If unlink(src) fails after dest is created, dest must not remain.
+
+        Otherwise the no-overwrite guard treats dest as a permanent conflict
+        and a retry of the same name can never succeed.
+        """
+        src = tmp_path / "src.bin"
+        dst = tmp_path / "dst.bin"
+        src.write_bytes(b"PAYLOAD")
+        real_unlink = api_bridge.os.unlink
+        src_path = os.fspath(src)
+
+        def boom_src_once(path):
+            if os.fspath(path) == src_path:
+                raise OSError("unlink busy")
+            return real_unlink(path)
+
+        monkeypatch.setattr(api_bridge.os, "unlink", boom_src_once)
+        with pytest.raises(OSError, match="unlink busy"):
+            api_bridge._move_no_overwrite(str(src), str(dst))
+        monkeypatch.undo()
+        assert src.read_bytes() == b"PAYLOAD"
+        assert not dst.exists()
+        api_bridge._move_no_overwrite(str(src), str(dst))
+        assert not src.exists()
+        assert dst.read_bytes() == b"PAYLOAD"
+
+    def test_copy_fallback_unlink_src_failure_rolls_back_dest(self, tmp_path, monkeypatch):
+        src = tmp_path / "src.bin"
+        dst = tmp_path / "dst.bin"
+        src.write_bytes(b"PAYLOAD")
+        real_unlink = api_bridge.os.unlink
+        src_path = os.fspath(src)
+
+        def boom_link(_src, _dst):
+            raise OSError("link unsupported")
+
+        def boom_src_once(path):
+            if os.fspath(path) == src_path:
+                raise OSError("unlink busy")
+            return real_unlink(path)
+
+        monkeypatch.setattr(api_bridge.os, "link", boom_link)
+        monkeypatch.setattr(api_bridge.os, "unlink", boom_src_once)
+        with pytest.raises(OSError, match="unlink busy"):
+            api_bridge._move_no_overwrite(str(src), str(dst))
+        monkeypatch.undo()
+        assert src.read_bytes() == b"PAYLOAD"
+        assert not dst.exists()
+        api_bridge._move_no_overwrite(str(src), str(dst))
+        assert not src.exists()
+        assert dst.read_bytes() == b"PAYLOAD"

@@ -398,6 +398,25 @@ _REJECT_DEST_EXISTS_REASON = 'a file with this name already exists in the reject
 _SHOOT_DEST_EXISTS_REASON = 'a file with this name already exists in the shoot folder'
 
 
+def _unlink_src_or_rollback(src: str, dst: str) -> None:
+    """Unlink ``src`` after ``dst`` was created; drop ``dst`` if that unlink fails.
+
+    The no-overwrite guard treats an existing ``dst`` as a permanent conflict.
+    If we created ``dst`` (hard link or exclusive copy) and then fail to remove
+    ``src``, the caller reports failure while ``dst`` still exists — a retry
+    for the same name is then refused forever. Rolling back ``dst`` restores
+    the pre-move state so a later attempt can succeed.
+    """
+    try:
+        os.unlink(src)
+    except OSError:
+        try:
+            os.unlink(dst)
+        except OSError:
+            pass
+        raise
+
+
 def _move_no_overwrite(src: str, dst: str) -> None:
     """Move ``src`` to ``dst`` without replacing an existing destination.
 
@@ -405,7 +424,8 @@ def _move_no_overwrite(src: str, dst: str) -> None:
     hard link (``os.link`` raises ``FileExistsError`` if ``dst`` already exists)
     then unlink the source. When linking is unsupported (cross-device, some
     Windows setups), copy via ``O_CREAT|O_EXCL`` then unlink the source.
-    Never falls through to ``shutil.move``.
+    Never falls through to ``shutil.move``. If unlinking ``src`` fails after
+    ``dst`` exists, ``dst`` is removed so a retry is not blocked.
     """
     src = os.fspath(src)
     dst = os.fspath(dst)
@@ -439,9 +459,9 @@ def _move_no_overwrite(src: str, dst: str) -> None:
             except OSError:
                 pass
             raise
-        os.unlink(src)
+        _unlink_src_or_rollback(src, dst)
         return
-    os.unlink(src)
+    _unlink_src_or_rollback(src, dst)
 
 
 class Api:
