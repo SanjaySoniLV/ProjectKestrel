@@ -233,6 +233,85 @@ class TestEmbedIntoJpeg:
         assert _jpeg_scan_bytes(target), "scan segment missing after re-embed"
 
 
+class TestEmbedRespectsSidecarConflictGate:
+    """Embedding rewrites the user's ORIGINAL file, so it must only happen for
+    files the batch is actually cleared to write.
+
+    The sidecar-conflict check refuses to touch a .xmp Kestrel did not author
+    until the user confirms an overwrite. The embed step originally ran *above*
+    that check, so a file whose sidecar was withheld pending confirmation had
+    already had its original modified — and was then rewritten a second time
+    when the user confirmed.
+    """
+
+    def _external_sidecar(self, root, name):
+        """Write a non-Kestrel .xmp beside ``name`` to trigger the conflict."""
+        sidecar = root / (os.path.splitext(name)[0] + ".xmp")
+        sidecar.write_text(
+            '<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>'
+            '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF '
+            'xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+            "</rdf:RDF></x:xmpmeta>",
+            encoding="utf-8",
+        )
+        return sidecar
+
+    def test_conflicted_file_is_not_embedded(self, jpeg_dir):
+        root, names = jpeg_dir
+        target_name = names[0]
+        target = root / target_name
+        self._external_sidecar(root, target_name)
+        before = target.read_bytes()
+
+        res = write_xmp_metadata(
+            str(root), [_entry(target_name)], embed_jpeg=True
+        )
+
+        # The sidecar was refused...
+        assert os.path.splitext(target_name)[0] + ".xmp" in res["skipped_conflicts"]
+        assert res["written"] == 0
+        # ...so the original must be byte-for-byte untouched, not just
+        # unrecompressed. Nothing may be written without consent.
+        assert target.read_bytes() == before
+        assert res["embedded"] == 0
+
+    def test_non_conflicted_files_still_embed(self, jpeg_dir):
+        """The gate must not become a blanket veto: only the conflicted file is
+        skipped, its neighbours are still written."""
+        root, names = jpeg_dir
+        if len(names) < 2:
+            pytest.skip("need at least 2 JPEG fixtures")
+        conflicted, clean = names[0], names[1]
+        self._external_sidecar(root, conflicted)
+
+        res = write_xmp_metadata(
+            str(root), [_entry(conflicted), _entry(clean)], embed_jpeg=True
+        )
+
+        assert res["embedded"] == 1
+        assert res["written"] == 1
+        assert _read_xmp(root / clean).get("Xmp.xmp.Rating") == "4"
+
+    def test_confirmed_overwrite_embeds_once(self, jpeg_dir):
+        """With overwrite_external=True the file is written — and the embed
+        happens on that pass, not twice."""
+        root, names = jpeg_dir
+        target_name = names[0]
+        self._external_sidecar(root, target_name)
+
+        res = write_xmp_metadata(
+            str(root),
+            [_entry(target_name)],
+            embed_jpeg=True,
+            overwrite_external=True,
+        )
+
+        assert res["skipped_conflicts"] == []
+        assert res["embedded"] == 1
+        assert res["written"] == 1
+        assert _read_xmp(root / target_name).get("Xmp.xmp.Rating") == "4"
+
+
 class TestEmbedNonJpegAndSafety:
     def test_embed_off_by_default_leaves_file_untouched(self, jpeg_dir):
         root, names = jpeg_dir
