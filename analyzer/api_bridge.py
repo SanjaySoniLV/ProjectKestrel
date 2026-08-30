@@ -6445,6 +6445,37 @@ class Api:
             print(f"[API] sign_out() -> Error: {e}", flush=True)
             return {"success": False, "error": str(e)}
 
+    class _DirIndex(dict):
+        """Case-folded name -> last on-disk spelling, plus lookup tables.
+
+        Companion lookup still uses last-wins ``self[lower]`` (a string).
+        Main-file resolve uses ``names_set`` / ``folded_counts`` so two files
+        that differ only by case are not collapsed onto whichever listing
+        came last, in O(1) per request. ``names`` is None when listdir failed.
+        """
+
+        def __init__(self, names: list[str] | None):
+            super().__init__()
+            self.names = names
+            self.names_set: set[str] = set()
+            self.folded_counts: dict[str, int] = {}
+            if not names:
+                return
+            for entry in names:
+                key = entry.lower()
+                self[key] = entry
+                self.names_set.add(entry)
+                self.folded_counts[key] = self.folded_counts.get(key, 0) + 1
+
+        def resolve(self, name: str) -> str | None:
+            """Exact spelling, else the unique case-insensitive hit, else None."""
+            if name in self.names_set:
+                return name
+            folded = name.lower()
+            if self.folded_counts.get(folded, 0) == 1:
+                return self[folded]
+            return None
+
     def _build_dir_index(self, root_path: str) -> dict:
         """Map lowercased entry name -> real on-disk name for one directory.
 
@@ -6460,13 +6491,44 @@ class Api:
         (kestrel_analyzer/config.py) already applies when it decides a
         same-stem JPG belongs to a RAW.
 
-        Returns {} if the directory is unreadable, so callers degrade to
-        "no companions found" rather than raising.
+        Returns an empty index if the directory is unreadable, so callers
+        degrade to "no companions found" rather than raising.
         """
         try:
-            return {entry.lower(): entry for entry in os.listdir(root_path)}
+            return self._DirIndex(os.listdir(root_path))
         except OSError:
-            return {}
+            return self._DirIndex(None)
+
+    def _resolve_dir_filename(self, filename: str, dir_index: dict | None,
+                              directory: str) -> str | None:
+        """Return the on-disk spelling of ``filename`` in ``directory``.
+
+        The UI / CSV may hold ``img.cr3`` while the camera wrote ``IMG.CR3``.
+        Companion lookup already goes through ``_build_dir_index``; the main
+        reject/undo path used a case-sensitive join, which fails on
+        case-sensitive filesystems and can rewrite casing on macOS/Windows.
+
+        Exact listing match wins. A unique case-insensitive match is used
+        when the requested spelling is absent. If two files differ only by
+        case and the request is not an exact listing hit, return None rather
+        than moving the last-folded index entry.
+
+        Falls back to ``filename`` when the listing is unavailable but the
+        exact path exists (listdir failed).
+        """
+        name = str(filename or '').strip()
+        if not name:
+            return None
+        index = dir_index if dir_index is not None else self._build_dir_index(directory)
+        if isinstance(index, self._DirIndex) and index.names is not None:
+            return index.resolve(name)
+        try:
+            listing = os.listdir(directory)
+        except OSError:
+            if os.path.exists(os.path.join(directory, name)):
+                return name
+            return index.get(name.lower()) if index else None
+        return self._DirIndex(listing).resolve(name)
 
     def _find_sidecar_file(self, root_path: str, filename: str, ext: str = '.xmp',
                            dir_index: dict | None = None):
@@ -6544,9 +6606,13 @@ class Api:
         moved_files = []
         skipped: list[dict] = []
 
-        # Move main file
-        src = os.path.join(root_path, filename)
-        dst = os.path.join(reject_dir, filename)
+        real_name = self._resolve_dir_filename(filename, dir_index, root_path)
+        if not real_name:
+            return False, moved_files, [{'filename': filename, 'reason': 'source not found'}]
+
+        # Move main file under its real on-disk spelling.
+        src = os.path.join(root_path, real_name)
+        dst = os.path.join(reject_dir, real_name)
         try:
             if not os.path.exists(src):
                 return False, moved_files, [{'filename': filename, 'reason': 'source not found'}]
@@ -6560,7 +6626,7 @@ class Api:
                 warn(f'[reject] destination already exists, not overwriting: {dst}')
                 return False, moved_files, [{'filename': filename, 'reason': _REJECT_DEST_EXISTS_REASON}]
             _move_no_overwrite(src, dst)
-            moved_files.append(filename)
+            moved_files.append(real_name)
         except FileExistsError:
             # Dest appeared between the exists() check and the exclusive create.
             warn(f'[reject] destination already exists, not overwriting: {dst}')
@@ -6569,7 +6635,7 @@ class Api:
             warn(f'[reject] Failed to move {filename}: {e}')
             return False, moved_files, [{'filename': filename, 'reason': type(e).__name__}]
 
-        companion_files = self._find_companion_files(root_path, filename, dir_index=dir_index)
+        companion_files = self._find_companion_files(root_path, real_name, dir_index=dir_index)
         if companion_files:
             for companion in companion_files:
                 companion_src = os.path.join(root_path, companion)
@@ -6616,9 +6682,14 @@ class Api:
         restored_requested (and the back-compat moved_filenames /
         restored_filenames plus skipped).
         """
-        completed = set(completed_filenames)
-        all_done = all(fn in completed for fn in requested_mains)
-        any_done = any(fn in completed for fn in requested_mains)
+        # Reconcile case-insensitively. #130 made reject/undo resolve the main
+        # file to its real on-disk spelling, so a request for ``img_0101.cr3``
+        # completes as ``IMG_0101.CR3``. Comparing raw strings would report a
+        # successful batch as a total failure on any case-insensitive volume.
+        completed = {str(fn).casefold() for fn in completed_filenames}
+        wanted = [str(fn).casefold() for fn in requested_mains]
+        all_done = all(fn in completed for fn in wanted)
+        any_done = any(fn in completed for fn in wanted)
         success = (not requested_mains) or any_done
         return all_done, success
 
@@ -6630,11 +6701,14 @@ class Api:
         are omitted from these lists so callers can reconcile UI state without
         intersecting against the original request.
         """
-        completed = set(completed_filenames)
-        requested_set = set(requested_mains)
-        completed_requested = [fn for fn in requested_mains if fn in completed]
+        # Case-insensitive for the same reason as _requested_mains_outcome:
+        # completed_filenames carries the on-disk spelling, the request may not.
+        completed = {str(fn).casefold() for fn in completed_filenames}
+        requested_set = {str(fn).casefold() for fn in requested_mains}
+        completed_requested = [fn for fn in requested_mains if str(fn).casefold() in completed]
         skipped_requested = [
-            item for item in skipped if item.get('filename') in requested_set
+            item for item in skipped
+            if str(item.get('filename', '')).casefold() in requested_set
         ]
         return completed_requested, skipped_requested
 
@@ -6789,9 +6863,13 @@ class Api:
         restored_files = []
         skipped: list[dict] = []
 
-        # Restore main file
-        src = os.path.join(reject_dir, filename)
-        dst = os.path.join(root_path, filename)
+        real_name = self._resolve_dir_filename(filename, dir_index, reject_dir)
+        if not real_name:
+            return False, restored_files, [{'filename': filename, 'reason': 'not found in rejects'}]
+
+        # Restore main file under its real on-disk spelling.
+        src = os.path.join(reject_dir, real_name)
+        dst = os.path.join(root_path, real_name)
         try:
             if not os.path.exists(src):
                 return False, restored_files, [{'filename': filename, 'reason': 'not found in rejects'}]
@@ -6801,7 +6879,7 @@ class Api:
                 warn(f'[reject-undo] destination already exists, not overwriting: {dst}')
                 return False, restored_files, [{'filename': filename, 'reason': _SHOOT_DEST_EXISTS_REASON}]
             _move_no_overwrite(src, dst)
-            restored_files.append(filename)
+            restored_files.append(real_name)
         except FileExistsError:
             warn(f'[reject-undo] destination already exists, not overwriting: {dst}')
             return False, restored_files, [{'filename': filename, 'reason': _SHOOT_DEST_EXISTS_REASON}]
@@ -6809,7 +6887,7 @@ class Api:
             warn(f'[reject-undo] Failed to restore {filename}: {e}')
             return False, restored_files, [{'filename': filename, 'reason': type(e).__name__}]
 
-        companion_files = self._find_companion_files(reject_dir, filename, dir_index=dir_index)
+        companion_files = self._find_companion_files(reject_dir, real_name, dir_index=dir_index)
         if companion_files:
             for companion in companion_files:
                 companion_src = os.path.join(reject_dir, companion)

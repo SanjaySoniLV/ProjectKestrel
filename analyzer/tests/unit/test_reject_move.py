@@ -17,6 +17,28 @@ import api_bridge
 pytestmark = pytest.mark.unit
 
 
+def _require_case_sensitive_fs(directory: Path) -> None:
+    """Skip if this filesystem cannot host two names that differ only by case."""
+    upper = directory / "CaseProbe.tmp"
+    lower = directory / "caseprobe.tmp"
+    try:
+        upper.write_bytes(b"U")
+        try:
+            lower.write_bytes(b"L")
+        except OSError:
+            pytest.skip("filesystem cannot create a second case variant")
+        listed = {
+            p.name
+            for p in directory.iterdir()
+            if p.suffix == ".tmp" and p.name.lower() == "caseprobe.tmp"
+        }
+        if listed != {"CaseProbe.tmp", "caseprobe.tmp"}:
+            pytest.skip("filesystem folds case; cannot host two case variants")
+    finally:
+        upper.unlink(missing_ok=True)
+        lower.unlink(missing_ok=True)
+
+
 @pytest.fixture
 def api():
     """Create an Api instance for testing."""
@@ -310,6 +332,125 @@ class TestCompanionCaseInsensitivity:
         reject_dir = workdir / "_KESTREL_Rejects"
         for i in range(10):
             assert (reject_dir / f"IMG_8{i:03d}.JPG").exists()
+
+
+class TestMainFilenameCaseInsensitivity:
+    """Main-file reject/undo must use on-disk spelling, not a case-sensitive join.
+
+    Companion lookup already goes through ``_build_dir_index``. The RAW/JPEG
+    itself was joined as ``os.path.join(root, requested_name)``, so
+    ``img.cr3`` missed ``IMG.CR3`` on Linux and could rewrite casing on
+    macOS/Windows.
+    """
+
+    @pytest.fixture
+    def api(self):
+        return api_bridge.Api()
+
+    def test_resolve_dir_filename_returns_on_disk_spelling(self, api, tmp_path):
+        (tmp_path / "IMG_0100.CR3").write_bytes(b"\x00" * 16)
+        index = api._build_dir_index(str(tmp_path))
+        assert api._resolve_dir_filename("img_0100.cr3", index, str(tmp_path)) == "IMG_0100.CR3"
+        assert api._resolve_dir_filename("IMG_0100.CR3", index, str(tmp_path)) == "IMG_0100.CR3"
+        assert api._resolve_dir_filename("missing.CR3", index, str(tmp_path)) is None
+
+    def test_reject_moves_when_requested_case_differs(self, api, tmp_path):
+        workdir = tmp_path / "workdir"
+        workdir.mkdir()
+        (workdir / "IMG_0101.CR3").write_bytes(b"\x00" * 64)
+        (workdir / "IMG_0101.JPG").write_bytes(b"\xff" * 64)
+
+        result = api.move_rejects_to_folder(str(workdir), ["img_0101.cr3"])
+        assert result["success"] is True
+        assert result["errors"] == []
+
+        reject_dir = workdir / "_KESTREL_Rejects"
+        assert (reject_dir / "IMG_0101.CR3").exists()
+        assert (reject_dir / "IMG_0101.JPG").exists()
+        assert not (workdir / "IMG_0101.CR3").exists()
+        # Must not create a second, case-folded name in the reject folder.
+        reject_names = [p.name for p in reject_dir.iterdir() if p.is_file()]
+        assert "img_0101.cr3" not in reject_names
+
+    def test_undo_restores_when_requested_case_differs(self, api, tmp_path):
+        workdir = tmp_path / "workdir"
+        workdir.mkdir()
+        (workdir / "IMG_0102.CR3").write_bytes(b"\x00" * 64)
+        (workdir / "IMG_0102.JPG").write_bytes(b"\xff" * 64)
+
+        api.move_rejects_to_folder(str(workdir), ["IMG_0102.CR3"])
+        reject_dir = workdir / "_KESTREL_Rejects"
+        assert (reject_dir / "IMG_0102.CR3").exists()
+
+        result = api.undo_reject_move(str(workdir), ["img_0102.cr3"])
+        assert result["success"] is True
+        assert result["errors"] == []
+
+        assert (workdir / "IMG_0102.CR3").exists()
+        assert (workdir / "IMG_0102.JPG").exists()
+        assert not (reject_dir / "IMG_0102.CR3").exists()
+
+    def test_reject_unknown_name_still_fails(self, api, tmp_path):
+        workdir = tmp_path / "workdir"
+        workdir.mkdir()
+        (workdir / "IMG_0103.CR3").write_bytes(b"\x00" * 16)
+
+        result = api.move_rejects_to_folder(str(workdir), ["IMG_9999.CR3"])
+        # This assertion was written against the pre-#120 contract, where a
+        # batch that moved nothing still reported success. #120 deliberately
+        # changed that: success is False when the caller asked for at least one
+        # main file and none of them completed, so a UI gating on success alone
+        # cannot drop state for files that never left disk. One requested main,
+        # zero moved -> False.
+        assert result["success"] is False
+        assert result["errors"]
+        assert (workdir / "IMG_0103.CR3").exists()
+        assert not (workdir / "_KESTREL_Rejects" / "IMG_0103.CR3").exists()
+
+    def test_resolve_prefers_exact_spelling_when_both_case_variants_exist(
+        self, api, tmp_path
+    ):
+        """A folded index last-wins; mains must still pick the requested file."""
+        _require_case_sensitive_fs(tmp_path)
+        (tmp_path / "IMG_X.CR3").write_bytes(b"UPPER")
+        (tmp_path / "img_x.cr3").write_bytes(b"lower")
+        index = api._build_dir_index(str(tmp_path))
+        assert api._resolve_dir_filename("IMG_X.CR3", index, str(tmp_path)) == "IMG_X.CR3"
+        assert api._resolve_dir_filename("img_x.cr3", index, str(tmp_path)) == "img_x.cr3"
+        assert api._resolve_dir_filename("Img_x.CR3", index, str(tmp_path)) is None
+
+    def test_reject_moves_only_the_requested_case_variant(self, api, tmp_path):
+        workdir = tmp_path / "workdir"
+        workdir.mkdir()
+        _require_case_sensitive_fs(workdir)
+        (workdir / "IMG_X.CR3").write_bytes(b"UPPER")
+        (workdir / "img_x.cr3").write_bytes(b"lower")
+
+        result = api.move_rejects_to_folder(str(workdir), ["IMG_X.CR3"])
+        assert result["success"] is True
+        assert result["errors"] == []
+
+        reject_dir = workdir / "_KESTREL_Rejects"
+        assert (reject_dir / "IMG_X.CR3").read_bytes() == b"UPPER"
+        assert (workdir / "img_x.cr3").read_bytes() == b"lower"
+        assert not (workdir / "IMG_X.CR3").exists()
+        assert not (reject_dir / "img_x.cr3").exists()
+
+    def test_reject_refuses_ambiguous_folded_name(self, api, tmp_path):
+        workdir = tmp_path / "workdir"
+        workdir.mkdir()
+        _require_case_sensitive_fs(workdir)
+        (workdir / "IMG_X.CR3").write_bytes(b"UPPER")
+        (workdir / "img_x.cr3").write_bytes(b"lower")
+
+        result = api.move_rejects_to_folder(str(workdir), ["Img_x.CR3"])
+        assert result["errors"]
+        assert (workdir / "IMG_X.CR3").read_bytes() == b"UPPER"
+        assert (workdir / "img_x.cr3").read_bytes() == b"lower"
+        reject_dir = workdir / "_KESTREL_Rejects"
+        if reject_dir.exists():
+            moved = [p.name for p in reject_dir.iterdir() if p.is_file()]
+            assert moved == []
 
 
 class TestRejectNoOverwrite:
