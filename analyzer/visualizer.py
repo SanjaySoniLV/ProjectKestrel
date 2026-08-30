@@ -270,6 +270,56 @@ def _pid_is_alive(pid: int) -> Optional[bool]:
         return None
 
 
+# How recently the previous session must have started for a live pid to be
+# read as "that instance is still running" rather than "that pid was
+# recycled onto an unrelated process". See _prior_session_still_running.
+_CONCURRENT_INSTANCE_MAX_AGE_S = 24 * 60 * 60
+
+
+def _parse_session_timestamp(value: str) -> Optional[datetime]:
+    """Parse an ``_utc_now_iso()`` stamp back to a naive UTC datetime.
+
+    Returns None for anything unparseable, including the empty string
+    written before a session has ever been recorded.
+    """
+    text = str(value or '').strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.rstrip('Z'))
+    except Exception:
+        return None
+
+
+def _prior_session_still_running(prev_pid: int, prev_started: str) -> bool:
+    """True when the previous session's process is still running right now.
+
+    Launching a second copy of Kestrel while the first is open is the one
+    case where the exit-reason state machine cannot mean what it says: the
+    new instance reads the first one's *open* session ('unknown', because
+    it has not exited) and, taken at face value, that reads as an unclean
+    shutdown. Nothing crashed — the first window is still on screen.
+
+    Liveness alone is not enough to conclude that, because pids are
+    recycled: a session from three weeks ago whose pid is live again is far
+    more likely to be an unrelated process than the same app still running.
+    Requiring the prior session to have started within the last day keeps
+    the check to the case it is meant for (a second launch minutes or hours
+    later) and leaves a genuinely stale record classified as before.
+
+    Both halves fail closed: an undeterminable pid or an unparseable
+    timestamp returns False, i.e. the pre-existing behaviour.
+    """
+    if _pid_is_alive(prev_pid) is not True:
+        return False
+    started = _parse_session_timestamp(prev_started)
+    if started is None:
+        return False
+    age_s = (datetime.utcnow() - started).total_seconds()
+    # A small negative tolerance absorbs clock skew around the write.
+    return -60 <= age_s <= _CONCURRENT_INSTANCE_MAX_AGE_S
+
+
 def _settings_file_hint() -> Optional[str]:
     """Basename + parent of the settings file, for the session-start line.
 
@@ -367,7 +417,21 @@ def _mark_session_start() -> None:
         # Only 'crash' and 'unknown' get surfaced as recoverable unclean
         # shutdowns. 'os_shutdown' is intentionally suppressed so PC reboots
         # don't generate false crash dialogs.
-        if prev_reason in ('crash', 'unknown') and prev_started:
+        should_flag = prev_reason in ('crash', 'unknown') and bool(prev_started)
+        if should_flag and _prior_session_still_running(prev_pid, prev_started):
+            # A second instance started while the first is still open. The
+            # first session reads 'unknown' only because it has not exited
+            # yet, so flagging it would prompt the user to report a crash
+            # for a window still in front of them. Leave any genuinely
+            # pending flag from an earlier session alone rather than
+            # clearing it here.
+            _log_shutdown_state(
+                'session_start: prior session still running, not flagging unclean',
+                reason=prev_reason,
+                prev_pid=prev_pid or None,
+                prev_started=prev_started,
+            )
+        elif should_flag:
             settings['last_unclean_shutdown_utc'] = prev_started
             _log_shutdown_state(
                 'session_start: FLAGGING prior session unclean',
