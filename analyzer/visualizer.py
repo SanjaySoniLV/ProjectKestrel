@@ -315,7 +315,7 @@ def _prior_session_still_running(prev_pid: int, prev_started: str) -> bool:
     started = _parse_session_timestamp(prev_started)
     if started is None:
         return False
-    age_s = (datetime.utcnow() - started).total_seconds()
+    age_s = (datetime.now(timezone.utc).replace(tzinfo=None) - started).total_seconds()
     # A small negative tolerance absorbs clock skew around the write.
     return -60 <= age_s <= _CONCURRENT_INSTANCE_MAX_AGE_S
 
