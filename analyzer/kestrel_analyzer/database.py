@@ -328,6 +328,55 @@ class ScenedataCorruptError(ValueError):
     """
 
 
+def merge_scenedata_ui_fields(target: dict, source: dict) -> dict:
+    """Overlay UI-owned fields from ``source`` onto ``target``.
+
+    ``image_ratings``: source wins per filename. Per-scene ``name``,
+    ``status``, and ``user_tags``: source wins when the scene id exists in
+    both. Scene membership (``image_filenames``) is left to the analysis
+    database. Mutates and returns ``target``.
+    """
+    src_ratings = source.get("image_ratings")
+    if isinstance(src_ratings, dict) and src_ratings:
+        dst_ratings = target.setdefault("image_ratings", {})
+        if isinstance(dst_ratings, dict):
+            dst_ratings.update(src_ratings)
+
+    src_scenes = source.get("scenes")
+    dst_scenes = target.setdefault("scenes", {})
+    if not isinstance(src_scenes, dict) or not isinstance(dst_scenes, dict):
+        return target
+    for sid, src_scene in src_scenes.items():
+        if not isinstance(src_scene, dict):
+            continue
+        dst = dst_scenes.get(str(sid))
+        if dst is None and sid != str(sid):
+            dst = dst_scenes.get(sid)
+        if not isinstance(dst, dict):
+            continue
+        for field in ("name", "status", "user_tags"):
+            if field in src_scene:
+                dst[field] = src_scene[field]
+    return target
+
+
+def finalize_scenedata_after_analysis(kestrel_dir: str, database: pd.DataFrame) -> None:
+    """Write scenedata after analysis without clobbering concurrent UI edits.
+
+    Reloads from disk immediately before save and overlays ratings, scene
+    names, approve status, and ``user_tags`` so a stale in-memory copy
+    cannot wipe what the UI already persisted.
+    """
+    existing = load_scenedata(kestrel_dir)
+    if not existing.get("scenes"):
+        out = build_scenedata_from_database(database)
+    else:
+        out = update_scenedata_with_database(existing, database)
+    latest = load_scenedata(kestrel_dir)
+    merge_scenedata_ui_fields(out, latest)
+    save_scenedata(out, kestrel_dir)
+
+
 def load_scenedata(kestrel_dir: str) -> dict:
     """Load kestrel_scenedata.json.
 
