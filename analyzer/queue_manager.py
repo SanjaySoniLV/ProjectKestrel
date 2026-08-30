@@ -637,7 +637,7 @@ class QueueManager:
                 with self._lock:
                     item.status = 'error'
                     item.end_time = _time_mod.time()
-                    item.error = str(exc)
+                    item.error = str(exc) or type(exc).__name__
                 self._persist_recovery_state()
                 self._send_folder_analytics(item)
 

@@ -46,3 +46,47 @@ def test_fatal_pipeline_error_marks_folder_error(tmp_path):
     item = mgr._items[0]
     assert item.status == 'error', f"expected 'error', got {item.status!r}"
     assert item.error, "fatal error message should be surfaced, not empty"
+
+
+class _FatalEmptyPipeline:
+    """Fatal callback with an exception whose str() is empty."""
+
+    detector_name = None
+    use_gpu = False
+
+    def process_folder(self, path, pause_event=None, cancel_event=None,
+                        callbacks=None, **kwargs):
+        cb = (callbacks or {}).get('on_error')
+        if cb:
+            cb('fatal', RuntimeError())
+
+
+class _RaisingEmptyPipeline:
+    """process_folder raises an empty-message exception (outer queue except)."""
+
+    detector_name = None
+    use_gpu = False
+
+    def process_folder(self, path, pause_event=None, cancel_event=None,
+                        callbacks=None, **kwargs):
+        raise RuntimeError()
+
+
+def test_empty_fatal_exception_uses_type_name(tmp_path):
+    mgr = queue_manager.QueueManager()
+    mgr._pipeline = _FatalEmptyPipeline()
+    mgr.enqueue([str(tmp_path)], use_gpu=False)
+    assert mgr.join_worker(timeout=30) is True
+    item = mgr._items[0]
+    assert item.status == 'error'
+    assert item.error == 'RuntimeError'
+
+
+def test_empty_raised_exception_uses_type_name(tmp_path):
+    mgr = queue_manager.QueueManager()
+    mgr._pipeline = _RaisingEmptyPipeline()
+    mgr.enqueue([str(tmp_path)], use_gpu=False)
+    assert mgr.join_worker(timeout=30) is True
+    item = mgr._items[0]
+    assert item.status == 'error'
+    assert item.error == 'RuntimeError'
