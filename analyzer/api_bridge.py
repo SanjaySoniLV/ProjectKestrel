@@ -60,6 +60,22 @@ except ImportError:
     except ImportError:
         _mac_sandbox = None
 
+try:
+    from kestrel_analyzer.database import write_json_atomic, write_text_atomic
+except ImportError:
+    try:
+        from analyzer.kestrel_analyzer.database import write_json_atomic, write_text_atomic
+    except ImportError:
+        def write_json_atomic(*_a, **_k):
+            raise RuntimeError(
+                "kestrel_analyzer.database.write_json_atomic is not importable"
+            )
+
+        def write_text_atomic(*_a, **_k):
+            raise RuntimeError(
+                "kestrel_analyzer.database.write_text_atomic is not importable"
+            )
+
 # Distribution channel ('direct' website build vs 'appstore' sandboxed build),
 # baked at build time. Import-safe everywhere; used by the frontend to branch
 # What's New / cloud-compute CTAs on channel without cutting a new release.
@@ -1835,8 +1851,9 @@ class Api:
             csv_path = os.path.join(kestrel_dir, 'kestrel_database.csv')
             if not os.path.exists(csv_path):
                 return {'success': False, 'error': f'CSV not found: {csv_path}'}
-            with open(csv_path, 'w', encoding='utf-8-sig', newline='') as f:
-                f.write(csv_content)
+            # Atomic write: the analysis pipeline / auto-refresh may read this
+            # same file, and a crash mid-write must not truncate the database.
+            write_text_atomic(csv_path, csv_content, encoding='utf-8-sig')
             return {'success': True, 'path': csv_path}
         except Exception as e:
             error(f'[API] write_kestrel_csv({folder_path!r}) error: {e}')
@@ -1984,8 +2001,10 @@ class Api:
             if not isinstance(scenedata, dict):
                 return {'success': False, 'error': 'scenedata must be a dict', 'path': ''}
 
-            with open(scenedata_path, 'w', encoding='utf-8') as f:
-                json.dump(scenedata, f, indent=2)
+            # Atomic write: scenedata holds the user's ratings/tags/cull
+            # decisions; a crash mid-write must not truncate the existing file.
+            # Stream via json.dump so large payloads don't peak on json.dumps.
+            write_json_atomic(scenedata_path, scenedata, indent=2)
             return {'success': True, 'path': scenedata_path, 'error': ''}
         except Exception as e:
             error(f'[API] write_kestrel_scenedata({folder_path!r}) error: {e}')
