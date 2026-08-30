@@ -40,6 +40,11 @@ try:
 except ImportError:  # pragma: no cover - package-style import path
     from analyzer.net_tls import ssl_context as _ssl_context
 
+try:
+    from kestrel_analyzer.database import retry_on_file_lock
+except ImportError:  # pragma: no cover - package-style import path
+    from analyzer.kestrel_analyzer.database import retry_on_file_lock
+
 
 _DEFAULT_API_BASE = "https://cloudcompute.projectkestrel.org"
 _MAX_UPLOAD_WORKERS = 6
@@ -1252,6 +1257,49 @@ def merge_pack_into_kestrel(
             shutil.copy2(src_metadata, target_kestrel / "kestrel_metadata.json")
 
 
+def _write_file_atomic(
+    path: Path,
+    write: Callable[[Any], None],
+    *,
+    newline: Optional[str] = None,
+) -> None:
+    """Write ``path`` via tempfile + fsync + ``os.replace``.
+
+    Mirrors ``kestrel_analyzer.database._to_csv_atomic`` and
+    ``settings_utils.save_settings``: the destination is never opened with
+    ``"w"``, so a crash or ENOSPC cannot truncate a live ``.kestrel`` file.
+    ``write`` receives the open temp file. Failures propagate; the previous
+    destination is left intact. ``os.replace`` goes through
+    ``retry_on_file_lock`` so a Windows UI reader holding the CSV does not
+    abort the pack merge.
+    """
+    directory = str(path.parent)
+    os.makedirs(directory, exist_ok=True)
+    tmp_fd, tmp = tempfile.mkstemp(
+        prefix=".kestrel_merge_",
+        suffix=".tmp",
+        dir=directory,
+    )
+    try:
+        open_kw: dict[str, Any] = {"encoding": "utf-8"}
+        if newline is not None:
+            open_kw["newline"] = newline
+        with os.fdopen(tmp_fd, "w", **open_kw) as f:
+            write(f)
+            try:
+                f.flush()
+                os.fsync(f.fileno())
+            except OSError:
+                pass
+        retry_on_file_lock(lambda: os.replace(tmp, path))
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def _merge_database_csv(
     src: Path,
     dst: Path,
@@ -1353,11 +1401,13 @@ def _merge_database_csv(
             except (TypeError, ValueError):
                 pass
 
-    with dst.open("w", encoding="utf-8", newline="") as f:
+    def _write_csv(f) -> None:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         for key in sorted_keys:
             writer.writerow(rows[key])
+
+    _write_file_atomic(dst, _write_csv, newline="")
 
 
 def _rebuild_scenedata_from_csv(
@@ -1521,8 +1571,7 @@ def _merge_scenedata_additive(src: Path, dst: Path) -> None:
         return
 
     if not dst.is_file():
-        with dst.open("w", encoding="utf-8") as f:
-            json.dump(incoming, f, indent=2)
+        _write_file_atomic(dst, lambda f: json.dump(incoming, f, indent=2))
         return
 
     try:
@@ -1576,5 +1625,4 @@ def _merge_scenedata_additive(src: Path, dst: Path) -> None:
                 if f not in local_scene and f in inc_scene:
                     local_scene[f] = inc_scene[f]
 
-    with dst.open("w", encoding="utf-8") as f:
-        json.dump(existing, f, indent=2)
+    _write_file_atomic(dst, lambda f: json.dump(existing, f, indent=2))

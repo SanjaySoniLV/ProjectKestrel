@@ -26,13 +26,14 @@ except Exception:
     pass
 
 import argparse
+import io
 import os
 import sys
 import threading
 import time
 
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, TextIO
 
 # --- Extracted modules ---
@@ -144,7 +145,25 @@ class _TeeStream:
             return False
 
     def fileno(self):
-        return self._original_stream.fileno()
+        # In PyInstaller --windowed builds sys.stdout/stderr are None, so the
+        # wrapped stream is None and self._original_stream.fileno() would raise
+        # AttributeError. That silently disabled faulthandler (whose default
+        # target is sys.stderr), losing native crash diagnostics in exactly the
+        # shipped configuration. Fall back to the runtime log file's descriptor.
+        if self._original_stream is not None:
+            try:
+                return self._original_stream.fileno()
+            except (AttributeError, io.UnsupportedOperation, ValueError):
+                # Expected when the wrapped object has no real descriptor:
+                # AttributeError: stream is None / has no fileno attribute;
+                # io.UnsupportedOperation: stream has no fd (also a
+                # ValueError + OSError subclass — catching this subclass is
+                # intentional; a bare OSError is *not* in the tuple);
+                # ValueError: I/O operation on a closed file.
+                # Bare OSError (EIO, EBADF, ...) must still propagate rather
+                # than silently redirect to the log.
+                pass
+        return self._log_handle.fileno()
 
     @property
     def buffer(self):
@@ -170,7 +189,7 @@ def _enable_runtime_log_capture() -> str:
     try:
         runtime_dir = os.path.join(base_log_dir, 'logs')
         os.makedirs(runtime_dir, exist_ok=True)
-        ts = datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
+        ts = datetime.now(timezone.utc).replace(tzinfo=None).strftime('%Y%m%dT%H%M%SZ')
         runtime_log_path = os.path.join(runtime_dir, f'kestrel_runtime_{ts}.log')
 
         _RUNTIME_LOG_HANDLE = open(runtime_log_path, 'a', encoding='utf-8', buffering=1)
@@ -182,7 +201,7 @@ def _enable_runtime_log_capture() -> str:
 
 
 def _utc_now_iso() -> str:
-    return datetime.utcnow().isoformat() + 'Z'
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + 'Z'
 
 
 # Settings key holding the previous session's outcome. One of:
@@ -249,6 +268,56 @@ def _pid_is_alive(pid: int) -> Optional[bool]:
         return True
     except Exception:
         return None
+
+
+# How recently the previous session must have started for a live pid to be
+# read as "that instance is still running" rather than "that pid was
+# recycled onto an unrelated process". See _prior_session_still_running.
+_CONCURRENT_INSTANCE_MAX_AGE_S = 24 * 60 * 60
+
+
+def _parse_session_timestamp(value: str) -> Optional[datetime]:
+    """Parse an ``_utc_now_iso()`` stamp back to a naive UTC datetime.
+
+    Returns None for anything unparseable, including the empty string
+    written before a session has ever been recorded.
+    """
+    text = str(value or '').strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.rstrip('Z'))
+    except Exception:
+        return None
+
+
+def _prior_session_still_running(prev_pid: int, prev_started: str) -> bool:
+    """True when the previous session's process is still running right now.
+
+    Launching a second copy of Kestrel while the first is open is the one
+    case where the exit-reason state machine cannot mean what it says: the
+    new instance reads the first one's *open* session ('unknown', because
+    it has not exited) and, taken at face value, that reads as an unclean
+    shutdown. Nothing crashed — the first window is still on screen.
+
+    Liveness alone is not enough to conclude that, because pids are
+    recycled: a session from three weeks ago whose pid is live again is far
+    more likely to be an unrelated process than the same app still running.
+    Requiring the prior session to have started within the last day keeps
+    the check to the case it is meant for (a second launch minutes or hours
+    later) and leaves a genuinely stale record classified as before.
+
+    Both halves fail closed: an undeterminable pid or an unparseable
+    timestamp returns False, i.e. the pre-existing behaviour.
+    """
+    if _pid_is_alive(prev_pid) is not True:
+        return False
+    started = _parse_session_timestamp(prev_started)
+    if started is None:
+        return False
+    age_s = (datetime.now(timezone.utc).replace(tzinfo=None) - started).total_seconds()
+    # A small negative tolerance absorbs clock skew around the write.
+    return -60 <= age_s <= _CONCURRENT_INSTANCE_MAX_AGE_S
 
 
 def _settings_file_hint() -> Optional[str]:
@@ -348,7 +417,21 @@ def _mark_session_start() -> None:
         # Only 'crash' and 'unknown' get surfaced as recoverable unclean
         # shutdowns. 'os_shutdown' is intentionally suppressed so PC reboots
         # don't generate false crash dialogs.
-        if prev_reason in ('crash', 'unknown') and prev_started:
+        should_flag = prev_reason in ('crash', 'unknown') and bool(prev_started)
+        if should_flag and _prior_session_still_running(prev_pid, prev_started):
+            # A second instance started while the first is still open. The
+            # first session reads 'unknown' only because it has not exited
+            # yet, so flagging it would prompt the user to report a crash
+            # for a window still in front of them. Leave any genuinely
+            # pending flag from an earlier session alone rather than
+            # clearing it here.
+            _log_shutdown_state(
+                'session_start: prior session still running, not flagging unclean',
+                reason=prev_reason,
+                prev_pid=prev_pid or None,
+                prev_started=prev_started,
+            )
+        elif should_flag:
             settings['last_unclean_shutdown_utc'] = prev_started
             _log_shutdown_state(
                 'session_start: FLAGGING prior session unclean',
@@ -378,7 +461,7 @@ def _mark_session_start() -> None:
         )
 
         try:
-            today_utc = datetime.utcnow().strftime('%Y-%m-%d')
+            today_utc = datetime.now(timezone.utc).strftime('%Y-%m-%d')
             last_ping = str(settings.get('last_open_ping_utc', '') or '').strip()
             legal_agreed = str(settings.get('legal_agreed_version', '') or '').strip()
             if (
@@ -404,11 +487,15 @@ def _mark_session_start() -> None:
 def _mark_session_clean_exit(source: str = 'unspecified') -> None:
     """Mark this session closed cleanly and clear stale unclean-shutdown recovery.
 
-    Preserves a previously-recorded 'os_shutdown' or 'crash' reason — the
-    main() finally block fires after webview.start() returns, which happens
-    both on user-initiated quit (truly clean) AND when the OS closes our
-    window during reboot/logoff. In the latter case shutdown_watch has
-    already recorded 'os_shutdown' and we must not overwrite it.
+    Preserves a previously-recorded 'os_shutdown' or 'crash' reason — main()
+    calls this once webview.start() has returned, which happens both on
+    user-initiated quit (truly clean) AND when the OS closes our window during
+    reboot/logoff. In the latter case shutdown_watch has already recorded
+    'os_shutdown' and we must not overwrite it.
+
+    Callers are responsible for not calling this on a crash path: main()'s
+    finally block also runs when startup raises, and gates the call on
+    webview.start() having returned.
     """
     _log_shutdown_state('clean_exit: entered', source=source, pid=os.getpid())
     try:
@@ -1159,6 +1246,12 @@ def main():
     t = threading.Thread(target=_serve, daemon=True)
     t.start()
     api = None
+    # Set only once webview.start() has returned, i.e. the UI window closed and
+    # the user really did quit. The try below opens well before that call, so
+    # the finally also runs when Api(), create_window() or webview.start()
+    # itself raises — those are crashes, not clean exits, and must not be
+    # marked 'clean'. See the finally block for why that distinction matters.
+    _webview_returned = False
     try:
         log('Starting windowed UI via pywebview...')
         api = Api() # start maximized
@@ -1335,8 +1428,49 @@ def main():
         except Exception:
             pass
         webview.start(debug=_kestrel_debug)
+        _webview_returned = True
     finally:
-        # Signal in-flight cloud-compute uploads to stop FIRST. Their
+        # Record the clean exit FIRST, before any teardown work — but only if
+        # webview.start() actually returned.
+        #
+        # The gate matters: this try opens ~175 lines above webview.start(), so
+        # the finally also runs when Api(), create_window() or webview.start()
+        # raises. Marking those 'clean' would suppress the recovery prompt for
+        # a genuine startup crash — and writing it early makes that worse than
+        # it was, because the window between this line and the top-level
+        # handler's 'crash' now spans the whole teardown below. A hang there
+        # (or the user force-quitting through it) would leave 'clean' standing
+        # for a session that crashed, which is the exact inverse of the bug
+        # this change fixes.
+        #
+        # Past the gate, the user has quit and the exit really is clean;
+        # everything below is best-effort housekeeping that cannot
+        # retroactively make it unclean.
+        #
+        # This used to run at the very end of the block, after the cloud-upload
+        # signal, two cache cleanups and server.shutdown(). Any of those can
+        # block indefinitely (server.shutdown() waits for the serve_forever
+        # loop, which a wedged request handler can hold open) or be cut short
+        # by the OS reaping the process during quit. When that happened the
+        # 'clean' marker was never written, app_session_exit_reason stayed
+        # 'unknown', and the *next* launch reported a false unclean shutdown.
+        #
+        # Crash reports show exactly this: prior-session logs that stop partway
+        # through the teardown — e.g. on the cleanup_culling_cache line — with
+        # no 'Server stopped.' and no clean_exit lines, followed by a recovery
+        # prompt on the following launch.
+        #
+        # Ordering is still correct for the non-clean cases:
+        #   - shutdown_watch's 'os_shutdown' and the crash handler's 'crash'
+        #     are preserved rather than overwritten (see _mark_session_clean_exit).
+        #   - shutdown_watch firing later still overwrites 'clean' with
+        #     'os_shutdown'; neither value raises a recovery prompt.
+        #   - an exception raised by the teardown below propagates to the
+        #     top-level handler, which records 'crash' over this 'clean'.
+        if _webview_returned:
+            _mark_session_clean_exit(source='main:finally')
+        # Signal in-flight cloud-compute uploads to stop before the cache
+        # cleanups and server shutdown below. Their
         # ThreadPoolExecutor registers an atexit join of (non-daemon) worker
         # threads, so a still-running upload would otherwise keep uploading
         # every queued image and hang the process after the window has closed.
@@ -1367,13 +1501,11 @@ def main():
         except Exception as e:
             warn('Server shutdown error:', e)
         log('Server stopped.')
-        # Mark clean exit here (inside finally) so it runs even if server
-        # shutdown raises, preventing a false "unclean shutdown" on next launch.
-        # NOTE: in the recovery-dialog false-positive reports, 'Server stopped.'
-        # is very often the final line of the captured log. The [shutdown]
-        # lines emitted below are what distinguish "this call never returned"
-        # from "it ran and the write was lost".
-        _mark_session_clean_exit(source='main:finally')
+        # The exit reason is already persisted (top of this block). This line
+        # only records that the teardown itself ran to completion: a log tail
+        # that reaches clean_exit but never reaches here identifies a hang or
+        # kill during shutdown, which is still worth diagnosing even though it
+        # no longer misreports as a crash.
         _log_shutdown_state('main: exit path complete', pid=os.getpid())
 
 

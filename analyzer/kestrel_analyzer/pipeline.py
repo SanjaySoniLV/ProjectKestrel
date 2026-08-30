@@ -27,10 +27,7 @@ from .config import (
 from .database import (
     load_database,
     save_database,
-    load_scenedata,
-    save_scenedata,
-    build_scenedata_from_database,
-    update_scenedata_with_database,
+    finalize_scenedata_after_analysis,
 )
 from .exposure_compensation import (
     apply_exposure_crop_numpy,
@@ -43,7 +40,13 @@ from .image_utils import decode_embedded_preview, read_image, read_image_for_pip
 from .ratings import quality_to_rating, resolve_thresholds
 from .similarity import compute_image_similarity_akaze, compute_similarity_timestamp
 from .raw_exif import get_capture_time
-from .logging_utils import get_log_path, log_event, log_exception, log_warning
+from .logging_utils import (
+    get_log_path,
+    log_event,
+    log_exception,
+    log_warning,
+    make_logged_showwarning,
+)
 
 try:
     from ..settings_utils import load_persisted_settings, debug as _debug, info as _info, error as _error
@@ -59,6 +62,7 @@ except (ImportError, ValueError):
         def _debug(*_a, **_kw): pass
         def _info(*_a, **_kw): pass
         def _error(*_a, **_kw): pass
+from .ml import GPU_EP
 from .ml.speciesnet_sam_hq import SpeciesNetSAMHQWrapper
 from .ml.provider_coordinator import ResilienceConfig
 from .ml.bird_species import BirdSpeciesClassifier
@@ -268,6 +272,7 @@ class AnalysisPipeline:
         max_buffered = max_workers + 1
         semaphore = threading.Semaphore(max_buffered)
         futures_q: queue.Queue = queue.Queue()
+        stop_event = threading.Event()
 
         # Fixed cadence (every 10 images) rather than a percentage of total so
         # long runs remain observable in real time. First 3 images always
@@ -289,7 +294,14 @@ class AnalysisPipeline:
             nonlocal submitted, peak_inflight
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 for raw_file in file_list:
+                    if stop_event.is_set():
+                        break
                     semaphore.acquire()
+                    if stop_event.is_set():
+                        # Consumer abandoned the generator (cancel / fatal error)
+                        # while we waited for a free buffer slot; stop submitting
+                        # so the pool can drain and shut down.
+                        break
                     future = executor.submit(
                         _decode_and_time,
                         os.path.join(folder, raw_file),
@@ -312,33 +324,44 @@ class AnalysisPipeline:
             f"buffer={max_buffered}"
         )
 
-        while True:
-            future = futures_q.get()
-            if future is None:
-                break
-            t_wait = time.monotonic()
-            decoded = future.result()
-            wait_ms = (time.monotonic() - t_wait) * 1000.0
-            with metrics_lock:
-                total_wait_ms += wait_ms
-                snap_submitted = submitted
-                snap_completed = completed
-            idx += 1
+        try:
+            while True:
+                future = futures_q.get()
+                if future is None:
+                    break
+                t_wait = time.monotonic()
+                decoded = future.result()
+                wait_ms = (time.monotonic() - t_wait) * 1000.0
+                with metrics_lock:
+                    total_wait_ms += wait_ms
+                    snap_submitted = submitted
+                    snap_completed = completed
+                idx += 1
 
-            # Print for the first 3 images (warm-up visibility), then every
-            # ~10% of the run, and always on the last image.
-            if idx <= 3 or idx % log_every_n == 0 or idx == total:
-                decode_ms = decoded.get("_decode_ms")
-                decode_ms_str = f"{decode_ms:.0f}" if decode_ms is not None else "?"
-                inflight_now = max(0, snap_submitted - snap_completed)
-                ahead = max(0, snap_submitted - idx)
-                _debug(
-                    f"[decode-queue] idx={idx}/{total} "
-                    f"inflight={inflight_now} ahead={ahead} "
-                    f"decode_ms={decode_ms_str} wait_ms={wait_ms:.0f}"
-                )
+                # Print for the first 3 images (warm-up visibility), then every
+                # ~10% of the run, and always on the last image.
+                if idx <= 3 or idx % log_every_n == 0 or idx == total:
+                    decode_ms = decoded.get("_decode_ms")
+                    decode_ms_str = f"{decode_ms:.0f}" if decode_ms is not None else "?"
+                    inflight_now = max(0, snap_submitted - snap_completed)
+                    ahead = max(0, snap_submitted - idx)
+                    _debug(
+                        f"[decode-queue] idx={idx}/{total} "
+                        f"inflight={inflight_now} ahead={ahead} "
+                        f"decode_ms={decode_ms_str} wait_ms={wait_ms:.0f}"
+                    )
 
-            yield decoded
+                yield decoded
+                semaphore.release()
+        finally:
+            # If the consumer abandons this generator early -- an outer cancel or
+            # a fatal error makes process_folder return, which raises
+            # GeneratorExit at the yield above -- the loop stops releasing the
+            # semaphore. Signal the producer to stop and free one slot so it
+            # unblocks from semaphore.acquire(), lets its ThreadPoolExecutor
+            # drain, and exits. Without this the decode-worker threads (and their
+            # buffered full-res images) leak for the rest of the process.
+            stop_event.set()
             semaphore.release()
 
         submit_thread.join()
@@ -368,6 +391,41 @@ class AnalysisPipeline:
             f"[decode-queue] done: files={total} peak_inflight={peak_inflight} "
             f"avg_decode_ms={avg_decode:.0f} avg_wait_ms={avg_wait:.0f}"
         )
+
+    def _log_resolved_providers(self) -> None:
+        """Log the execution providers ONNX Runtime actually chose.
+
+        ``use_gpu`` on ``analysis_start`` records what was *requested*; this
+        records what was *granted*. They differ whenever a GPU provider fails
+        to initialise and the coordinator falls back to CPU, and that gap is
+        the thing crash reports currently cannot show. Purely diagnostic —
+        every lookup is defensive so a missing attribute can never fail a run.
+        """
+        providers = {}
+        for name, holder, attr in (
+            ("quality", self.quality_clf, "providers_used"),
+            ("species", self.species_clf, "providers_used"),
+            ("detector", getattr(self.sn_sam, "classifier", None), "providers_used"),
+        ):
+            try:
+                value = getattr(holder, attr, None)
+                if value:
+                    providers[name] = list(value)
+            except Exception:
+                continue
+        try:
+            log_event(
+                self._log_path,
+                {
+                    "level": "info",
+                    "event": "models_loaded",
+                    "use_gpu": bool(self.use_gpu),
+                    "gpu_ep": GPU_EP,
+                    "providers": providers,
+                },
+            )
+        except Exception:
+            pass
 
     def load_models(
         self,
@@ -546,25 +604,41 @@ class AnalysisPipeline:
         self._log_path = get_log_path(folder)
         stage_ctx = {"stage": "startup", "file": None}
 
+        def _mark_stage(stage: str) -> None:
+            """Record a one-time setup stage, and persist it to the analysis log.
+
+            A native-level process death (segfault/abort inside onnxruntime,
+            LibRaw, OpenCV) never unwinds to an ``except`` block, so the
+            ``stage_ctx`` that ``log_exception`` reports is lost in exactly the
+            crashes hardest to diagnose. Writing each transition means the last
+            record in the log names the stage the process died in.
+
+            Only the ONCE-PER-RUN setup stages call this. ``log_event`` reads,
+            re-serialises and rewrites the whole JSON log on every call, so
+            marking the per-file stages (``read_image``, ``compute_similarity``)
+            would make analysis O(n^2) in file count. Those stages still update
+            ``stage_ctx`` for exception reporting, they just are not persisted.
+            """
+            stage_ctx["stage"] = stage
+            try:
+                log_event(
+                    self._log_path,
+                    {"level": "debug", "event": "stage", "stage": stage},
+                )
+            except Exception:
+                # Instrumentation must never break an analysis run.
+                pass
+
         original_showwarning = warnings.showwarning
-
-        def _showwarning(message, category, filename, lineno, file=None, line=None):
-            log_warning(
-                self._log_path,
-                message,
-                category=category,
-                filename=filename,
-                lineno=lineno,
-                stage=stage_ctx["stage"],
-                context={"file": stage_ctx["file"], "folder": folder},
-            )
-            if original_showwarning:
-                original_showwarning(message, category, filename, lineno, file=file, line=line)
-
-        warnings.showwarning = _showwarning
+        warnings.showwarning = make_logged_showwarning(
+            self._log_path,
+            stage_ctx,
+            folder=folder,
+            original_showwarning=original_showwarning,
+        )
 
         try:
-            stage_ctx["stage"] = "list_files"
+            _mark_stage("list_files")
             entries = [
                 name
                 for name in os.listdir(folder)
@@ -597,17 +671,19 @@ class AnalysisPipeline:
                     "detector_name": self.detector_name,
                     "detection_threshold": float(detection_threshold),
                     "parallel_prefetch": int(decode_workers),
+                    "use_gpu": bool(self.use_gpu),
+                    "gpu_ep": GPU_EP,
                 },
             )
 
-            stage_ctx["stage"] = "create_kestrel_dirs"
+            _mark_stage("create_kestrel_dirs")
             kestrel_dir = os.path.join(folder, KESTREL_DIR_NAME)
             export_dir = os.path.join(kestrel_dir, "export")
             crop_dir = os.path.join(kestrel_dir, "crop")
             os.makedirs(export_dir, exist_ok=True)
             os.makedirs(crop_dir, exist_ok=True)
 
-            stage_ctx["stage"] = "load_database"
+            _mark_stage("load_database")
             database, db_path = load_database(kestrel_dir, analyzer_name, log_path=self._log_path)
 
             # When retrying errored images, capture each errored row's previously-
@@ -653,8 +729,9 @@ class AnalysisPipeline:
                     progress_cb(total, total)
                 return
 
-            stage_ctx["stage"] = "load_models"
+            _mark_stage("load_models")
             self.load_models(status_cb=status_cb, max_bird_crops=max_bird_crops)
+            self._log_resolved_providers()
 
             previous_image = None
             previous_image_path = None
@@ -1513,15 +1590,11 @@ class AnalysisPipeline:
                             stage="post_analysis_normalization",
                         )
 
-                    # Create or update kestrel_scenedata.json
+                    # Create or update kestrel_scenedata.json. Reload+merge
+                    # UI fields immediately before save so ratings/names/tags
+                    # written during the run are not overwritten (S1-08).
                     try:
-                        existing_scenedata = load_scenedata(kestrel_dir)
-                        if not existing_scenedata.get("scenes"):
-                            new_scenedata = build_scenedata_from_database(database)
-                            save_scenedata(new_scenedata, kestrel_dir)
-                        else:
-                            update_scenedata_with_database(existing_scenedata, database)
-                            save_scenedata(existing_scenedata, kestrel_dir)
+                        finalize_scenedata_after_analysis(kestrel_dir, database)
                     except Exception as _sd_e:
                         log_warning(
                             self._log_path,
