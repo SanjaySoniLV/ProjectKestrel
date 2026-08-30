@@ -94,9 +94,10 @@ class QualityClassifier:
             input_data = self._preprocess(cropped_image, cropped_mask)
             input_tensor = np.expand_dims(input_data, axis=0).astype(np.float32)
         except Exception:
-            # Malformed crop/mask (e.g. an all-zero mask) is a per-image data
-            # problem, not a model failure: return the "unrated" sentinel and
-            # let the pipeline continue.
+            # Malformed crop/mask (None, unexpected shape/dtype) is a per-image
+            # data problem, not a model failure: return the "unrated" sentinel
+            # and let the pipeline continue. An all-zero mask is valid input
+            # to _preprocess (bitwise_and zeros the image) and does not raise.
             return -1.0
 
         # Do NOT wrap session.run() in a blanket except. A dead GPU/ONNX session

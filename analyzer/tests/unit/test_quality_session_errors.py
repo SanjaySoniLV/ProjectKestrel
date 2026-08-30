@@ -61,6 +61,19 @@ def test_malformed_input_still_returns_sentinel():
     assert qc.classify(None, None) == -1.0
 
 
+def test_all_zero_mask_is_valid_and_reaches_session():
+    """An all-zero mask is not malformed: _preprocess bitwise_and's it and
+    session.run still runs. classify must not treat it as the sentinel path."""
+    class MarkerSession:
+        def run(self, *_a, **_k):
+            return [np.array([[0.25]], dtype=np.float32)]
+
+    qc = _classifier_with_session(MarkerSession())
+    img = np.full((32, 32, 3), 128, dtype=np.uint8)
+    mask = np.zeros((32, 32), dtype=np.uint8)
+    assert qc.classify(img, mask) == pytest.approx(0.25)
+
+
 def test_normal_run_returns_value():
     class OkSession:
         def run(self, *_a, **_k):
