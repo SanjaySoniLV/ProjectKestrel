@@ -15,6 +15,7 @@ segment is rewritten), so it is strictly opt-in.
 """
 
 import os
+import tempfile
 
 # XMP namespace URIs
 _KESTREL_NS = 'http://ns.projectkestrel.app/xmp/1.0/'
@@ -385,6 +386,48 @@ def _embed_xmp_in_jpeg(
         img.close()
 
 
+_XMP_TMP_PREFIX = '.kestrel_xmp_'
+_XMP_TMP_SUFFIX = '.xmp.tmp'
+
+
+def _write_text_atomic(dest_path: str, content: str) -> None:
+    """Write ``content`` to ``dest_path`` so readers never observe a partial file.
+
+    ``open(dest, 'w')`` truncates the destination before the new bytes land.
+    A crash after that truncate leaves an existing sidecar empty or half-written
+    (S0-06). Write to a unique temp file in the same directory and ``os.replace``
+    it into place instead. ``os.replace`` is atomic on POSIX and on Windows, so a
+    concurrent reader observes either the complete previous file or the complete
+    new one. This mirrors ``settings_utils.save_settings`` / ``_to_csv_atomic``.
+    """
+    directory = os.path.dirname(dest_path) or '.'
+    os.makedirs(directory, exist_ok=True)
+    tmp_fd, tmp = tempfile.mkstemp(
+        prefix=_XMP_TMP_PREFIX,
+        suffix=_XMP_TMP_SUFFIX,
+        dir=directory,
+    )
+    try:
+        with os.fdopen(tmp_fd, 'w', encoding='utf-8') as f:
+            f.write(content)
+            try:
+                f.flush()
+                os.fsync(f.fileno())
+            except OSError:
+                # fsync can legitimately fail on some network filesystems;
+                # the replace below still gives readers an all-or-nothing view.
+                pass
+        os.replace(tmp, dest_path)
+    except BaseException:
+        # Do NOT fall back to a direct write — that is the truncate path this
+        # helper exists to close. Leave the previous sidecar intact.
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def write_xmp_metadata(
     root_path: str,
     image_data,
@@ -409,6 +452,10 @@ def write_xmp_metadata(
     original in ``root_path``.
 
     Safety rules:
+      - Sidecar bytes are written to a temp file in the same directory and
+        ``os.replace``d into place. ``open(path, 'w')`` is never used on an
+        existing ``.xmp``, so a crash cannot leave the previous sidecar
+        truncated.
       - If a ``.xmp`` file already exists and was written by Kestrel
         (detected by the presence of the Kestrel namespace URI), it is
         safe to overwrite and will always be updated.
@@ -551,8 +598,7 @@ def write_xmp_metadata(
                     fields=field_flags,
                 )
 
-                with open(xmp_path, 'w', encoding='utf-8') as f:
-                    f.write(xmp_content)
+                _write_text_atomic(xmp_path, xmp_content)
 
                 written += 1
                 info(f'[metadata] write_xmp: wrote {xmp_path}')
