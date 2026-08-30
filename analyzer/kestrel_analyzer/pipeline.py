@@ -59,6 +59,7 @@ except (ImportError, ValueError):
         def _debug(*_a, **_kw): pass
         def _info(*_a, **_kw): pass
         def _error(*_a, **_kw): pass
+from .ml import GPU_EP
 from .ml.speciesnet_sam_hq import SpeciesNetSAMHQWrapper
 from .ml.provider_coordinator import ResilienceConfig
 from .ml.bird_species import BirdSpeciesClassifier
@@ -388,6 +389,41 @@ class AnalysisPipeline:
             f"avg_decode_ms={avg_decode:.0f} avg_wait_ms={avg_wait:.0f}"
         )
 
+    def _log_resolved_providers(self) -> None:
+        """Log the execution providers ONNX Runtime actually chose.
+
+        ``use_gpu`` on ``analysis_start`` records what was *requested*; this
+        records what was *granted*. They differ whenever a GPU provider fails
+        to initialise and the coordinator falls back to CPU, and that gap is
+        the thing crash reports currently cannot show. Purely diagnostic —
+        every lookup is defensive so a missing attribute can never fail a run.
+        """
+        providers = {}
+        for name, holder, attr in (
+            ("quality", self.quality_clf, "providers_used"),
+            ("species", self.species_clf, "providers_used"),
+            ("detector", getattr(self.sn_sam, "classifier", None), "providers_used"),
+        ):
+            try:
+                value = getattr(holder, attr, None)
+                if value:
+                    providers[name] = list(value)
+            except Exception:
+                continue
+        try:
+            log_event(
+                self._log_path,
+                {
+                    "level": "info",
+                    "event": "models_loaded",
+                    "use_gpu": bool(self.use_gpu),
+                    "gpu_ep": GPU_EP,
+                    "providers": providers,
+                },
+            )
+        except Exception:
+            pass
+
     def load_models(
         self,
         status_cb: Optional[Callable[[str], None]] = None,
@@ -565,6 +601,31 @@ class AnalysisPipeline:
         self._log_path = get_log_path(folder)
         stage_ctx = {"stage": "startup", "file": None}
 
+        def _mark_stage(stage: str) -> None:
+            """Record a one-time setup stage, and persist it to the analysis log.
+
+            A native-level process death (segfault/abort inside onnxruntime,
+            LibRaw, OpenCV) never unwinds to an ``except`` block, so the
+            ``stage_ctx`` that ``log_exception`` reports is lost in exactly the
+            crashes hardest to diagnose. Writing each transition means the last
+            record in the log names the stage the process died in.
+
+            Only the ONCE-PER-RUN setup stages call this. ``log_event`` reads,
+            re-serialises and rewrites the whole JSON log on every call, so
+            marking the per-file stages (``read_image``, ``compute_similarity``)
+            would make analysis O(n^2) in file count. Those stages still update
+            ``stage_ctx`` for exception reporting, they just are not persisted.
+            """
+            stage_ctx["stage"] = stage
+            try:
+                log_event(
+                    self._log_path,
+                    {"level": "debug", "event": "stage", "stage": stage},
+                )
+            except Exception:
+                # Instrumentation must never break an analysis run.
+                pass
+
         original_showwarning = warnings.showwarning
 
         def _showwarning(message, category, filename, lineno, file=None, line=None):
@@ -583,7 +644,7 @@ class AnalysisPipeline:
         warnings.showwarning = _showwarning
 
         try:
-            stage_ctx["stage"] = "list_files"
+            _mark_stage("list_files")
             entries = [
                 name
                 for name in os.listdir(folder)
@@ -616,17 +677,19 @@ class AnalysisPipeline:
                     "detector_name": self.detector_name,
                     "detection_threshold": float(detection_threshold),
                     "parallel_prefetch": int(decode_workers),
+                    "use_gpu": bool(self.use_gpu),
+                    "gpu_ep": GPU_EP,
                 },
             )
 
-            stage_ctx["stage"] = "create_kestrel_dirs"
+            _mark_stage("create_kestrel_dirs")
             kestrel_dir = os.path.join(folder, KESTREL_DIR_NAME)
             export_dir = os.path.join(kestrel_dir, "export")
             crop_dir = os.path.join(kestrel_dir, "crop")
             os.makedirs(export_dir, exist_ok=True)
             os.makedirs(crop_dir, exist_ok=True)
 
-            stage_ctx["stage"] = "load_database"
+            _mark_stage("load_database")
             database, db_path = load_database(kestrel_dir, analyzer_name, log_path=self._log_path)
 
             # When retrying errored images, capture each errored row's previously-
@@ -672,8 +735,9 @@ class AnalysisPipeline:
                     progress_cb(total, total)
                 return
 
-            stage_ctx["stage"] = "load_models"
+            _mark_stage("load_models")
             self.load_models(status_cb=status_cb, max_bird_crops=max_bird_crops)
+            self._log_resolved_providers()
 
             previous_image = None
             previous_image_path = None
