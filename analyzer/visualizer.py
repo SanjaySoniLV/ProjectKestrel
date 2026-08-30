@@ -26,6 +26,7 @@ except Exception:
     pass
 
 import argparse
+import io
 import os
 import sys
 import threading
@@ -144,7 +145,25 @@ class _TeeStream:
             return False
 
     def fileno(self):
-        return self._original_stream.fileno()
+        # In PyInstaller --windowed builds sys.stdout/stderr are None, so the
+        # wrapped stream is None and self._original_stream.fileno() would raise
+        # AttributeError. That silently disabled faulthandler (whose default
+        # target is sys.stderr), losing native crash diagnostics in exactly the
+        # shipped configuration. Fall back to the runtime log file's descriptor.
+        if self._original_stream is not None:
+            try:
+                return self._original_stream.fileno()
+            except (AttributeError, io.UnsupportedOperation, ValueError):
+                # Expected when the wrapped object has no real descriptor:
+                # AttributeError: stream is None / has no fileno attribute;
+                # io.UnsupportedOperation: stream has no fd (also a
+                # ValueError + OSError subclass — catching this subclass is
+                # intentional; a bare OSError is *not* in the tuple);
+                # ValueError: I/O operation on a closed file.
+                # Bare OSError (EIO, EBADF, ...) must still propagate rather
+                # than silently redirect to the log.
+                pass
+        return self._log_handle.fileno()
 
     @property
     def buffer(self):
