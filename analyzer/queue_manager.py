@@ -193,6 +193,10 @@ class QueueManager:
         self._pause_event.set()         # set = NOT paused
         self._cancel_event = threading.Event()
         self._thread: threading.Thread | None = None
+        # Claim owned by the running (or just-started) worker. enqueue() starts
+        # a successor iff this is False — not by Thread.is_alive(), which stays
+        # True while a worker that has already seen an empty queue is exiting.
+        self._worker_claimed = False
         self._pipeline = None
         self._use_gpu = True
         self._wildlife_enabled = True
@@ -319,29 +323,51 @@ class QueueManager:
                     new_item.skip_if_already_done = bool(opts.get('skip_if_already_done'))
                     self._items.append(new_item)
                     added += 1
-        if not self.is_running:
-            self._cancel_event.clear()
-            self._pause_event.set()
-            self._use_gpu = use_gpu
-            self._wildlife_enabled = wildlife_enabled
-            self._species_detection_enabled = bool(species_detection_enabled)
-            self._detection_threshold = float(detection_threshold)
-            self._scene_time_threshold = float(scene_time_threshold)
-            self._mask_threshold = float(mask_threshold)
-            self._detector_name = _coerce_detector_name(detector_name)
-            try:
-                max_bird_crops_num = int(float(max_bird_crops))
-            except (TypeError, ValueError):
-                max_bird_crops_num = 10
-            self._max_bird_crops = max(1, min(20, max_bird_crops_num))
-            try:
-                parallel_prefetch_num = int(float(parallel_prefetch))
-            except (TypeError, ValueError):
-                parallel_prefetch_num = 3
-            self._parallel_prefetch = max(1, min(5, parallel_prefetch_num))
-            self._retry_errored = bool(retry_errored)
-            self._thread = threading.Thread(target=self._run, daemon=True, name='kestrel-queue')
-            self._thread.start()
+            # Decide whether to start the worker AND start it while STILL
+            # holding the lock, so two concurrent enqueue() calls (e.g. a
+            # double-clicked "Start") can't both observe "not running" and start
+            # two worker threads on the same _items list.
+            #
+            # Use _worker_claimed, not Thread.is_alive(). A worker that has
+            # already taken the last pending item may still be alive while it
+            # exits; is_alive() would then skip starting a successor and leave
+            # newly enqueued items stranded.
+            should_start = not self._worker_claimed
+            if should_start:
+                self._cancel_event.clear()
+                self._pause_event.set()
+                self._use_gpu = use_gpu
+                self._wildlife_enabled = wildlife_enabled
+                self._species_detection_enabled = bool(species_detection_enabled)
+                self._detection_threshold = float(detection_threshold)
+                self._scene_time_threshold = float(scene_time_threshold)
+                self._mask_threshold = float(mask_threshold)
+                self._detector_name = _coerce_detector_name(detector_name)
+                try:
+                    max_bird_crops_num = int(float(max_bird_crops))
+                except (TypeError, ValueError):
+                    max_bird_crops_num = 10
+                self._max_bird_crops = max(1, min(20, max_bird_crops_num))
+                try:
+                    parallel_prefetch_num = int(float(parallel_prefetch))
+                except (TypeError, ValueError):
+                    parallel_prefetch_num = 3
+                self._parallel_prefetch = max(1, min(5, parallel_prefetch_num))
+                self._retry_errored = bool(retry_errored)
+                self._worker_claimed = True
+                self._thread = threading.Thread(target=self._run, daemon=True, name='kestrel-queue')
+                # Start under the lock too. If start() ran outside it, a second
+                # concurrent enqueue() could acquire the lock in the window
+                # between creating the thread and starting it, see an
+                # unclaimed worker, and launch a duplicate. start() returns
+                # quickly and _run() doesn't take self._lock until later, so
+                # holding it here can't deadlock.
+                try:
+                    self._thread.start()
+                except BaseException:
+                    self._worker_claimed = False
+                    self._thread = None
+                    raise
         self._persist_recovery_state()
         return {'success': True, 'added': added}
 
@@ -427,7 +453,34 @@ class QueueManager:
 
     # ---- internal ----
 
+    def _take_next_pending(self):
+        """Claim the next pending item, or release the worker claim and return None.
+
+        Idle-exit and enqueue() share ``_worker_claimed`` under this lock so a
+        worker that has seen an empty queue cannot leave newly enqueued items
+        stranded: either this worker still owns the claim and will see the
+        item, or it has released the claim and enqueue() starts a successor.
+        """
+        with self._lock:
+            item = next((it for it in self._items if it.status == 'pending'), None)
+            if item is None:
+                self._worker_claimed = False
+                return None
+            # Deliberately does NOT mark the item running. #135 keeps the
+            # status 'pending' through the per-item gates so clear_kestrel_data
+            # cannot race a wipe against a writer that has not started yet; the
+            # call site flips it to 'running' once the gates have passed.
+            return item
+
     def _run(self):
+        try:
+            self._run_loop()
+        finally:
+            with self._lock:
+                if self._thread is threading.current_thread():
+                    self._worker_claimed = False
+
+    def _run_loop(self):
         if self._pipeline is None:
             cls = _get_pipeline_class()
             if cls is None:
@@ -443,12 +496,18 @@ class QueueManager:
         else:
             try:
                 self._pipeline.detector_name = self._detector_name
+                # Propagate the GPU/CPU choice too. The pipeline object is a
+                # manager-lifetime singleton reused across runs, and
+                # load_models() only rebuilds the model wrapper when
+                # pipeline.use_gpu actually changes. Without this, toggling
+                # "Use GPU" between runs was silently ignored (the first run's
+                # setting stuck for the whole session).
+                self._pipeline.use_gpu = self._use_gpu
             except Exception:
                 pass
 
         while not self._cancel_event.is_set():
-            with self._lock:
-                item = next((it for it in self._items if it.status == 'pending'), None)
+            item = self._take_next_pending()
             if item is None:
                 break
 
