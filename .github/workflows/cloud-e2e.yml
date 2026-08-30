@@ -1,0 +1,192 @@
+name: Cloud E2E (manual)
+
+# On-demand pre-release gate: build the app, then run the FULL cloud pipeline
+# against the frozen binary -- submit a 2-image cloud-compute job, wait for it
+# to finish + download results, then upload that folder to Perch. Exercises the
+# real cloud_compute_client + perch_uploader paths on the actual .app/.exe.
+#
+# Not part of the per-build dev workflows on purpose: it spends real Modal GPU,
+# takes minutes, and the test account is free-tier (maxConcurrentJobs = 1).
+on:
+  workflow_dispatch:
+
+# Only one cloud E2E run at a time (single-job account limit).
+concurrency:
+  group: cloud-e2e
+  cancel-in-progress: false
+
+jobs:
+  e2e-macos:
+    name: Cloud E2E (macOS frozen .app)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Create venv and install dependencies
+        shell: bash
+        run: |
+          python -m venv .venv2
+          source .venv2/bin/activate
+          python -m pip install --upgrade pip
+          pip install -r requirements-macos.txt
+          pip install pyinstaller
+
+      - name: Run macOS headless build
+        shell: bash
+        run: |
+          chmod +x packaging/build_app_headless.sh
+          ./packaging/build_app_headless.sh
+
+      - name: Place CI auth bundle (test account)
+        shell: bash
+        env:
+          KESTREL_CI_AUTH_JSON: ${{ secrets.KESTREL_CI_AUTH_JSON }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KESTREL_CI_AUTH_JSON:-}" ]; then
+            echo "::error::KESTREL_CI_AUTH_JSON not set; cloud E2E needs the test-account auth bundle."
+            exit 1
+          fi
+          AUTH_DIR="$HOME/Library/Application Support/ProjectKestrel"
+          mkdir -p "$AUTH_DIR"
+          printf '%s' "$KESTREL_CI_AUTH_JSON" | base64 --decode > "$AUTH_DIR/auth.json"
+          chmod 600 "$AUTH_DIR/auth.json"
+
+      - name: Cloud E2E (--e2e) against frozen binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          SMOKE_DIR="${RUNNER_TEMP}/kestrel-e2e-input"
+          rm -rf "$SMOKE_DIR"
+          mkdir -p "$SMOKE_DIR"
+          n=0
+          while IFS= read -r img; do
+            cp "$img" "$SMOKE_DIR/"
+            n=$((n + 1))
+          done < <(find test_imgs -maxdepth 1 -type f | sort | head -n 2)
+          if [ "$n" -lt 2 ]; then
+            echo "Expected at least 2 images in test_imgs/ (is LFS pulled?)"
+            exit 1
+          fi
+
+          OUT="${RUNNER_TEMP}/e2e-result.json"
+          rm -f "$OUT"
+          analyzer/dist/ProjectKestrel/ProjectKestrel \
+            --cli --e2e "$SMOKE_DIR" --clear --cloud-timeout 1500 --json-out "$OUT"
+          echo "=== e2e-result.json ==="
+          cat "$OUT"
+          cp "$OUT" e2e-result.json
+          ok=$(python3 -c "import json; print(str(json.load(open('$OUT')).get('ok')).lower())")
+          if [ "$ok" != "true" ]; then
+            echo "::error::macOS cloud E2E failed (ok=$ok)"
+            exit 1
+          fi
+
+      - name: Upload e2e-result.json
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-e2e-result
+          path: e2e-result.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  e2e-windows:
+    name: Cloud E2E (Windows frozen .exe)
+    runs-on: windows-latest
+    # Serialize AFTER macOS (regardless of its result) so the two never submit
+    # a job at the same time and trip the single-job account limit.
+    needs: e2e-macos
+    if: ${{ always() }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Create venv and install dependencies
+        shell: powershell
+        run: |
+          python -m venv .venv2
+          .\.venv2\Scripts\Activate.ps1
+          python -m pip install --upgrade pip
+          pip install -r requirements-windows.txt
+          pip install pyinstaller
+
+      - name: Build ProjectKestrel with PyInstaller
+        shell: powershell
+        run: |
+          .\.venv2\Scripts\Activate.ps1
+          cd analyzer
+          python -m PyInstaller ProjectKestrel.spec
+
+      - name: Place CI auth bundle (test account)
+        shell: powershell
+        env:
+          KESTREL_CI_AUTH_JSON: ${{ secrets.KESTREL_CI_AUTH_JSON }}
+        run: |
+          if ([string]::IsNullOrEmpty($env:KESTREL_CI_AUTH_JSON)) {
+            Write-Host "::error::KESTREL_CI_AUTH_JSON not set; cloud E2E needs the test-account auth bundle."
+            exit 1
+          }
+          $authDir = Join-Path $env:LOCALAPPDATA "ProjectKestrel"
+          New-Item -ItemType Directory -Force -Path $authDir | Out-Null
+          $bytes = [System.Convert]::FromBase64String($env:KESTREL_CI_AUTH_JSON)
+          [System.IO.File]::WriteAllBytes((Join-Path $authDir "auth.json"), $bytes)
+
+      - name: Cloud E2E (--e2e) against frozen binary
+        shell: powershell
+        run: |
+          $smoke = Join-Path $env:RUNNER_TEMP "kestrel-e2e-input"
+          if (Test-Path $smoke) { Remove-Item -Recurse -Force $smoke }
+          New-Item -ItemType Directory -Force -Path $smoke | Out-Null
+          $imgs = Get-ChildItem test_imgs -File | Sort-Object Name | Select-Object -First 2
+          if ($imgs.Count -lt 2) { throw "Expected at least 2 images in test_imgs/ (is LFS pulled?)" }
+          $imgs | ForEach-Object { Copy-Item $_.FullName $smoke }
+
+          $out = Join-Path $env:RUNNER_TEMP "e2e-result.json"
+          if (Test-Path $out) { Remove-Item $out }
+          # GUI-subsystem exe (console=False): PowerShell's call operator does not
+          # wait for windowed processes, so reading $out used to race the still-
+          # running exe. Start-Process + WaitForExit blocks until it exits and
+          # flushes the result JSON.
+          $proc = Start-Process -FilePath "analyzer\dist\ProjectKestrel\ProjectKestrel.exe" `
+            -NoNewWindow -PassThru -ArgumentList @(
+              '--cli', '--e2e', $smoke, '--clear', '--cloud-timeout', '1500', '--json-out', $out
+            )
+          $proc.Handle | Out-Null  # cache native handle so .ExitCode populates
+          $proc.WaitForExit()
+          Write-Host "ProjectKestrel.exe exited with code $($proc.ExitCode)"
+          if (!(Test-Path $out)) {
+            throw "Windows cloud E2E did not produce $out (exit code $($proc.ExitCode))"
+          }
+          Write-Host "=== e2e-result.json ==="
+          Get-Content $out
+          Copy-Item $out "e2e-result.json"
+          $report = Get-Content $out -Raw | ConvertFrom-Json
+          if (-not $report.ok) {
+            throw "Windows cloud E2E failed (ok=false)"
+          }
+
+      - name: Upload e2e-result.json
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-e2e-result
+          path: e2e-result.json
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Iterable
 
@@ -92,6 +93,36 @@ def is_supported_image_file(name: str, allowed_exts: Iterable[str]) -> bool:
     if dot < 0:
         return False
     return name[dot:].lower() in allowed_exts
+
+
+def select_camera_images(names: Iterable[str]) -> list[str]:
+    """Pick the canonical set of camera images from a directory listing.
+
+    Prefers RAW originals over JPEG companions: if both ``IMG_0001.CR3`` and
+    ``IMG_0001.JPG`` are present, the JPEG is dropped as a redundant in-camera
+    sidecar. JPEGs (and other JPEG-family formats such as PNG / TIFF) that
+    have no same-stem RAW partner are kept so mixed RAW+JPG/JPG-only shoots
+    are not silently truncated.
+
+    Stem matching is case-insensitive to handle Windows / macOS case-
+    folding filesystems where ``IMG_0001.CR3`` and ``img_0001.jpg`` refer
+    to the same capture. Hidden / AppleDouble files are filtered via
+    :func:`is_supported_image_file`.
+    """
+    raw_names: list[str] = []
+    jpeg_names: list[str] = []
+    for name in names:
+        if is_supported_image_file(name, RAW_EXTENSIONS):
+            raw_names.append(name)
+        elif is_supported_image_file(name, JPEG_EXTENSIONS):
+            jpeg_names.append(name)
+    raw_stems = {os.path.splitext(n)[0].lower() for n in raw_names}
+    orphan_jpegs = [
+        n for n in jpeg_names
+        if os.path.splitext(n)[0].lower() not in raw_stems
+    ]
+    return raw_names + orphan_jpegs
+
 
 DATABASE_NAME = "kestrel_database.csv"
 METADATA_FILENAME = "kestrel_metadata.json"

@@ -1,4 +1,39 @@
     // ─── Feedback dialog ──────────────────────────────────────────────────────
+
+    /** Resolve the current account display label (e.g. "Jane Doe" / "@jane"),
+     *  falling back to "my account" when no specific handle is available. The
+     *  startup auth hydration already paints this into #accountBtnLabel. */
+    function _feedbackAccountLabel() {
+      const labelEl = document.getElementById('accountBtnLabel');
+      const txt = (labelEl?.textContent || '').trim();
+      // #accountBtnLabel doubles as the signed-out "Sign In" affordance, so
+      // ignore those sentinel values.
+      if (txt && !/^sign\s*in$/i.test(txt) && txt.toLowerCase() !== 'signed in') {
+        return txt;
+      }
+      return 'my account';
+    }
+
+    /** Sync the "Send as …" checkbox + send-button label to the current
+     *  sign-in state. The checkbox is disabled (and forced off) when signed
+     *  out — you can't report as an account you aren't. */
+    function _syncFeedbackSendAs() {
+      const cb = document.getElementById('feedbackSendAsUser');
+      const cbLabel = document.getElementById('feedbackSendAsUserLabel');
+      const sendBtn = document.getElementById('feedbackSend');
+      const accountBtn = document.getElementById('accountBtn');
+      const signedIn = !!_perchToken || !!accountBtn?.classList.contains('signed-in');
+      const who = _feedbackAccountLabel();
+      if (cbLabel) cbLabel.textContent = signedIn ? `Send as ${who}` : 'Send as my account (sign in to enable)';
+      if (cb) {
+        cb.disabled = !signedIn;
+        if (!signedIn) cb.checked = false;
+      }
+      if (sendBtn) {
+        sendBtn.textContent = (signedIn && cb?.checked) ? `Send as ${who}` : 'Send anonymously';
+      }
+    }
+
     function openFeedbackDialog() {
       document.getElementById('feedbackDesc').value = '';
       document.getElementById('feedbackContact').value = '';
@@ -6,10 +41,14 @@
       document.getElementById('feedbackIncludeLogs').checked = false;
       document.getElementById('feedbackIncludeScreenshot').checked = false;
       document.getElementById('feedbackScreenshotFile').value = '';
+      document.getElementById('feedbackSendAsUser').checked = false;
       const preview = document.getElementById('feedbackSsPreview');
       preview.src = ''; preview.style.display = 'none'; preview.dataset.b64 = '';
+      _syncFeedbackSendAs();
       document.getElementById('feedbackDlg').showModal();
     }
+
+    document.getElementById('feedbackSendAsUser').addEventListener('change', _syncFeedbackSendAs);
 
     // Auto-check logs when Bug Report type is selected
     document.getElementById('feedbackType').addEventListener('change', function () {
@@ -57,6 +96,8 @@
         contact: document.getElementById('feedbackContact').value.trim(),
         include_logs: document.getElementById('feedbackIncludeLogs').checked,
         screenshot_b64: document.getElementById('feedbackSsPreview').dataset.b64 || '',
+        send_as_user: document.getElementById('feedbackSendAsUser').checked
+          && !document.getElementById('feedbackSendAsUser').disabled,
       };
       try {
         if (!window.pywebview?.api?.send_feedback) {
@@ -98,15 +139,55 @@
     document.getElementById('analyticsAccept').addEventListener('click', () => handleAnalyticsConsent(true));
     document.getElementById('analyticsDecline').addEventListener('click', () => handleAnalyticsConsent(false));
 
-    // ─── Donation / Support ──────────────────────────────────────────────────────
-    const DONATE_URL = 'https://www.paypal.com/donate/?hosted_button_id=CXH4FE5AKZD3A';
+    // ─── Support ─────────────────────────────────────────────────────────────
+    // The destination is resolved by the backend (api_bridge.get_support_url),
+    // never hardcoded here: /support-me carries the donate option, /support has
+    // no payment path at all. Apple's anti-steering rule exempts the US
+    // storefront and no other, so the App Store build has to ask StoreKit before
+    // it's allowed to link out. Don't reintroduce a literal donate URL.
+    const SUPPORT_URL_FALLBACK = 'https://projectkestrel.org/support';
     const DONATE_THRESHOLD_KEY = 'kestrel-donate-thresholds-shown-v1';
 
-    function openDonateLink() {
+    // Cache ONLY a confident (donate) result. The no-payment page is also the
+    // fail-closed answer the backend returns while the App Store storefront is
+    // still resolving right after launch — so caching it permanently (as an
+    // earlier version did) would strand a US user on /support for the whole
+    // session even though the storefront later resolves to USA. By locking in
+    // only the positive answer and re-asking otherwise, the click path recovers
+    // as soon as the storefront is ready. A genuinely non-US user simply
+    // re-queries (cheap) and keeps getting /support.
+    let _supportUrlSticky = null;   // set once we get a donate:true result
+    let _supportUrlInflight = null; // dedupe concurrent lookups
+
+    /** Resolve this build's support URL. Fails closed to the no-payment page —
+     *  a missing donate link costs a click, while a stray one on a non-US App
+     *  Store build costs the listing. */
+    function _ensureSupportUrl() {
+      if (_supportUrlSticky) return Promise.resolve(_supportUrlSticky);
+      if (_supportUrlInflight) return _supportUrlInflight;
+      _supportUrlInflight = (async () => {
+        try {
+          if (hasPywebviewApi && window.pywebview?.api?.get_support_url) {
+            const r = await window.pywebview.api.get_support_url();
+            if (r?.success && r.url) {
+              if (r.donate === true) _supportUrlSticky = r.url;  // lock in only the positive answer
+              return r.url;
+            }
+          }
+        } catch (_) { }
+        return SUPPORT_URL_FALLBACK;
+      })();
+      const p = _supportUrlInflight;
+      p.finally(() => { if (_supportUrlInflight === p) _supportUrlInflight = null; });
+      return p;
+    }
+
+    async function openSupportLink() {
+      const url = await _ensureSupportUrl();
       if (hasPywebviewApi && window.pywebview?.api?.open_url) {
-        window.pywebview.api.open_url(DONATE_URL);
+        window.pywebview.api.open_url(url);
       } else {
-        try { window.open(DONATE_URL, '_blank', 'noopener,noreferrer'); } catch (_) { }
+        try { window.open(url, '_blank', 'noopener,noreferrer'); } catch (_) { }
       }
     }
 
@@ -207,10 +288,12 @@
       }
     }
 
-    document.getElementById('donateBtnMain')?.addEventListener('click', openDonateLink);
+    document.getElementById('donateBtnMain')?.addEventListener('click', openSupportLink);
     // Note: donateDlg button listeners are wired in the inline script after the dialog HTML,
     // because that dialog is defined after this script block and wouldn't be in the DOM yet.
-    // ─── End Donation ─────────────────────────────────────────────────────
+    // Resolve the support URL up front so the click path doesn't wait on the bridge.
+    _ensureSupportUrl();
+    // ─── End Support ──────────────────────────────────────────────────────
 
     async function readMetadata() {
       if (!rootPath || !window.pywebview?.api?.read_kestrel_metadata) {
@@ -325,4 +408,3 @@
         setStatus('Failed to open in editor. Check Settings and Local Root.');
       }
     }
-

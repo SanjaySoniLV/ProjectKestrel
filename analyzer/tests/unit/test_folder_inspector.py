@@ -41,17 +41,40 @@ class TestInspectFolder:
         result = inspect_folder(str(tmp_path))
         assert result['total'] == 2
 
-    def test_raw_preferred_over_jpeg(self, tmp_path):
-        """Folder with both RAW and JPEG - RAW takes precedence."""
+    def test_raw_preferred_over_paired_jpeg(self, tmp_path):
+        """Folder with paired RAW+JPEG - RAW kept, paired JPEG dropped."""
         (tmp_path / "IMG_001.CR3").touch()
         (tmp_path / "IMG_002.CR3").touch()
         (tmp_path / "IMG_001.JPG").touch()
         (tmp_path / "IMG_002.JPG").touch()
-        (tmp_path / "IMG_003.JPG").touch()
 
         result = inspect_folder(str(tmp_path))
-        # Should count CR3 files, not JPEGs
         assert result['total'] == 2
+
+    def test_orphan_jpeg_kept_alongside_raw(self, tmp_path):
+        """Folder with RAW+JPEG pairs AND a JPEG-only photo - orphan kept.
+
+        Repros the RAW+JPG → JPG-only mid-shoot scenario from feedback #4:
+        photos with paired RAW+JPG resolve to the RAW; photos shot in
+        JPG-only mode are kept as standalone files instead of being
+        silently dropped.
+        """
+        (tmp_path / "IMG_001.CR3").touch()
+        (tmp_path / "IMG_002.CR3").touch()
+        (tmp_path / "IMG_001.JPG").touch()
+        (tmp_path / "IMG_002.JPG").touch()
+        (tmp_path / "IMG_003.JPG").touch()  # orphan — no matching RAW
+
+        result = inspect_folder(str(tmp_path))
+        assert result['total'] == 3
+
+    def test_case_insensitive_stem_match(self, tmp_path):
+        """Mixed-case stems on case-folding filesystems still pair up."""
+        (tmp_path / "IMG_001.CR3").touch()
+        (tmp_path / "img_001.jpg").touch()  # same capture, different case
+
+        result = inspect_folder(str(tmp_path))
+        assert result['total'] == 1
 
     def test_kestrel_dir_normalization(self, tmp_path):
         """Passing .kestrel/ dir as input - normalized to parent."""

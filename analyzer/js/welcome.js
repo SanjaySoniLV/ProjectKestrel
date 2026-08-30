@@ -2,18 +2,61 @@
     // Welcome panel: "What's New" banner + rotating tip carousel
     // ====================================================================
 
-    // Bump this whenever you author a new changelog. Clients with a matching
-    // `last_seen_whats_new_version` will not see the banner again.
+    // The in-app "What's New" note shown on the welcome screen. It ships baked
+    // into the build: bump `version` to re-surface it to everyone, and it is
+    // dismissed per-version via the `last_seen_whats_new_version` setting.
+    // (A previous version also fetched an editable copy from
+    // projectkestrel.org/whats-new.json; that remote-override path was removed —
+    // the note now lives entirely in the app.)
     const WHATS_NEW = {
-      version: 'great-horned-owl',
-      headline: "New in v(Great-Horned Owl) — Auto-Complete Bird Tags, cleaner UI, crash fixes!",
-      items: [
-        'New <b>regional bird catalog</b> covers ~11,250 species (up from 500). Type a name, partial, or <b>4-letter alpha code</b> (AMGO, NOCA) into the species or family box — region-filterable and fuzzy-matched. Toggle <b>Show scientific names</b> in Settings to see the Latin binomial under each pill.',
-        'Completely <b>redesigned Analyze Folders dialog</b> with a 3-column layout — queue builder, settings, and live queue summary + analysis time estimates.',
-        'Redesigned homepage with a focus on simplicity and intuitiveness.',
-        'Bug Fixes for MacOS and Windows, particularly for users analyzing on external drives, and for MacOS users using GPU support.',
-        '📣 <b>A NOTE FROM THE DEVELOPER:</b> Hello! Project Kestrel is moving towards the launch of <b>Perch</b>, a new sharing platform that lets others view your entire birding outing on the web, and <b>Cloud Compute</b>, a Kestrel add-on for faster analysis powered by cloud GPUs. (I’m especially excited about Perch! Take a sneak peek by visiting <a href="https://perch.projectkestrel.org/" target="_blank" rel="noopener noreferrer">this link</a>.) <b>I need beta testers!</b> If you love Project Kestrel and would be willing to test and provide feedback on these new platforms, please contact me via the in-app "Feedback" form!',
+      version: 'dusky-grouse',
+      eyebrow: 'v(Dusky Grouse)',
+      title: 'What’s New in Project Kestrel',
+      subtitle: 'Updates across Project Kestrel, Perch & Cloud Compute',
+      cards: [
+        {
+          // Desktop app logo — bundled at the static-server root (see .spec datas).
+          iconImg: 'logo.png',
+          name: 'Project Kestrel',
+          tag: 'New in v(Dusky Grouse)',
+          bullets: [
+            // Worded to read correctly on both channels: welcome.js has no
+            // access to dist_channel, so this must not assume the reader is on
+            // the free build (nor read as a purchase pitch on the App Store one).
+            'Project Kestrel is now on the <b>Mac App Store</b> — a way to support development, with automatic updates handled for you. It adds <b>no extra features</b>: the free download stays free, open source, and identical.',
+            'The Analyze dialog now asks <b>plain questions about your shoot</b> instead of model settings — what you photographed, whether the birds are North American, and how many subjects per image to analyze.',
+            'New <b>Custom rating profile</b>: drag each star to the quality score it should require. The Culling Assistant now cuts on the <b>quality score</b> too, with your star thresholds drawn right on the slider. Find this in <b>Settings</b>.',
+            'Optional <b>XMP embedded into JPEG originals</b>, so Lightroom finally reads your Kestrel ratings if you shoot JPEGs.',
+            'Nearly a dozen <b>bug fixes and stability improvements</b> across Windows and macOS.',
+          ],
+        },
+        {
+          // Perch logo (rufous hummingbird) — bundled at the static-server root.
+          iconImg: 'perch-logo.png',
+          name: 'Perch',
+          tag: 'What’s new',
+          bullets: [
+            'You can now <b>follow other birders</b> on Perch. Follow someone from their profile page and any perch they publish publicly appears in your <b>Following</b> feed, newest first.',
+          ],
+          links: [
+            { label: 'See your Following feed →', href: 'https://perch.projectkestrel.org/following.html' },
+            { label: 'Learn about Perch →', href: 'https://perch.projectkestrel.org/' },
+          ],
+        },
+        {
+          icon: '⚡',
+          name: 'Cloud Compute',
+          tag: 'What’s new',
+          bullets: [
+            '<b>Much more accurate time estimates.</b> The estimate now simulates the real worker pipeline.',
+            'A new indicator tells you whether <b>your upload speed or the cloud</b> is the constraint — before you start, and live while a job runs.',
+          ],
+          hint: 'Find it in the Analyze Folders dialog.',
+        },
       ],
+      note: 'Thank you for supporting the solo dev of Project Kestrel.',
+      sign: '— Sanjay',
+      blogLink: { label: 'Read the full v(Dusky Grouse) release notes →', href: 'https://projectkestrel.org/notes/dusky-grouse/' },
     };
 
     const WELCOME_TIPS = [
@@ -63,28 +106,143 @@
       },
     ];
 
+    // Sanitize a developer-authored rich-text string so it is safe to drop into
+    // innerHTML. Only a tiny formatting allowlist survives; everything else is
+    // downgraded to text, and <a> is forced to https + safe rel/target. The note
+    // content is build-local, so this is defense-in-depth rather than a hard
+    // boundary — but it keeps the one innerHTML path honest.
+    function sanitizeRichText(html) {
+      var allowed = { B: [], STRONG: [], I: [], EM: [], BR: [], A: ['href'] };
+      var tpl = document.createElement('template');
+      tpl.innerHTML = String(html == null ? '' : html);
+      (function walk(node) {
+        var child = node.firstChild;
+        while (child) {
+          var next = child.nextSibling;
+          if (child.nodeType === 1) { // element
+            var tag = child.tagName;
+            if (!Object.prototype.hasOwnProperty.call(allowed, tag)) {
+              child.replaceWith(document.createTextNode(child.textContent));
+            } else {
+              Array.prototype.slice.call(child.attributes).forEach(function(a) {
+                if (allowed[tag].indexOf(a.name.toLowerCase()) === -1) child.removeAttribute(a.name);
+              });
+              if (tag === 'A') {
+                var href = child.getAttribute('href') || '';
+                if (!/^https:\/\//i.test(href)) child.removeAttribute('href');
+                child.setAttribute('target', '_blank');
+                child.setAttribute('rel', 'noopener noreferrer');
+              }
+              walk(child);
+            }
+          } else if (child.nodeType === 8) { // comment
+            child.remove();
+          }
+          child = next;
+        }
+      })(tpl.content);
+      return tpl.innerHTML;
+    }
+    var sr = sanitizeRichText;
+
+    // Escape a string for use inside a DOUBLE-QUOTED HTML attribute. sr()/
+    // sanitizeRichText is a *content* sanitizer (it does NOT escape quotes), so
+    // it must never be used for attribute values — that would allow a remote
+    // href like `https://x" onmouseover="..."` to inject an event handler.
+    function escapeAttr(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    // Return a normalized https:// URL, or null if it is not valid https.
+    // Parsing with URL() (not a prefix regex) rejects embedded quotes,
+    // whitespace, and non-https schemes.
+    function safeHttpsUrl(u) {
+      try {
+        var parsed = new URL(String(u == null ? '' : u));
+        if (parsed.protocol === 'https:') return parsed.href;
+      } catch (_) {}
+      return null;
+    }
+
+    // A card icon image must be a bundled asset served from the static-server
+    // root: a bare filename with an image extension, no path separators, scheme,
+    // or traversal. Intentionally strict — only same-origin bundled logos load.
+    function safeAssetFile(f) {
+      var s = String(f == null ? '' : f);
+      return /^[a-z0-9][a-z0-9._-]*\.(png|svg|webp|jpe?g)$/i.test(s) ? s : null;
+    }
+
+    // Build the note's inner HTML from the baked-in WHATS_NEW shape.
+    function buildNoteHTML(note) {
+      var cards = (note.cards || []).map(function(c) {
+        var cta = '';
+        // A card may carry a single `link` or a `links[]` array (one or more CTAs).
+        var linkList = Array.isArray(c.links) ? c.links : (c.link ? [c.link] : []);
+        var linkHtml = linkList.map(function(lk) {
+          var href = lk && lk.href ? safeHttpsUrl(lk.href) : null;
+          if (!href) return '';
+          return '<a class="wln-card-link" href="' + escapeAttr(href) +
+            '" target="_blank" rel="noopener noreferrer">' + sr(lk.label || 'Learn more →') + '</a>';
+        }).filter(Boolean).join('');
+        cta = (c.hint ? '<div class="wln-card-hint">' + sr(c.hint) + '</div>' : '') +
+              (linkHtml ? '<div class="wln-card-links">' + linkHtml + '</div>' : '');
+        var bodyHtml = '';
+        if (Array.isArray(c.bullets) && c.bullets.length) {
+          bodyHtml = '<ul class="wln-card-list">' +
+            c.bullets.map(function(b) { return '<li>' + sr(b) + '</li>'; }).join('') +
+            '</ul>';
+        } else if (c.body) {
+          bodyHtml = '<p class="wln-card-body">' + sr(c.body) + '</p>';
+        }
+        var iconFile = safeAssetFile(c.iconImg);
+        var iconHtml = iconFile
+          ? '<span class="wln-card-icon wln-card-icon-img"><img src="' + escapeAttr(iconFile) + '" alt="" /></span>'
+          : '<span class="wln-card-icon">' + sr(c.icon || '•') + '</span>';
+        return '' +
+          '<div class="wln-card">' +
+            '<div class="wln-card-top">' +
+              iconHtml +
+              '<div class="wln-card-heading">' +
+                '<div class="wln-card-name">' + sr(c.name || '') + '</div>' +
+                '<div class="wln-card-tag">' + sr(c.tag || '') + '</div>' +
+              '</div>' +
+            '</div>' +
+            bodyHtml +
+            cta +
+          '</div>';
+      }).join('');
+
+      var blogBtn = '';
+      var blogHref = note.blogLink && note.blogLink.href ? safeHttpsUrl(note.blogLink.href) : null;
+      if (blogHref) {
+        blogBtn = '<a class="wln-blog-link" href="' + escapeAttr(blogHref) +
+          '" target="_blank" rel="noopener noreferrer">' + sr(note.blogLink.label || 'Read more →') + '</a>';
+      }
+
+      return '' +
+        '<div class="wln">' +
+          '<button type="button" class="wln-dismiss" id="wwnDismiss" aria-label="Dismiss">✕</button>' +
+          '<span class="wln-eyebrow">🎉&nbsp; ' + sr(note.eyebrow || '') + '</span>' +
+          '<h2 class="wln-title">' + sr(note.title || '') + '</h2>' +
+          (note.subtitle ? '<div class="wln-subtitle">' + sr(note.subtitle) + '</div>' : '') +
+          '<div class="wln-cards">' + cards + '</div>' +
+          ((note.note || note.sign)
+            ? '<div class="wln-note">' + sr(note.note || '') +
+                (note.sign ? ' <span class="wln-sign">' + sr(note.sign) + '</span>' : '') +
+              '</div>'
+            : '') +
+          blogBtn +
+        '</div>';
+    }
+
     (function setupWelcomeWhatsNew() {
       var banner = document.getElementById('welcomeWhatsNew');
       if (!banner) return;
-      (async function() {
-        var lastSeen = null;
-        if (hasPywebviewApi) {
-          try {
-            var res = await window.pywebview.api.get_settings();
-            lastSeen = res && res.settings && res.settings.last_seen_whats_new_version;
-          } catch (_) {}
-        }
-        if (lastSeen === WHATS_NEW.version) return;
-        var items = WHATS_NEW.items.map(function(it) {
-          return '<li>' + it + '</li>';
-        }).join('');
-        banner.innerHTML =
-          '<div class="wwn-head">' +
-            '<span class="wwn-badge">New</span>' +
-            '<span class="wwn-title">' + WHATS_NEW.headline + '</span>' +
-            '<button type="button" class="wwn-dismiss" id="wwnDismiss" aria-label="Dismiss">✕</button>' +
-          '</div>' +
-          '<ul class="wwn-list">' + items + '</ul>';
+
+      function showNote(note) {
+        banner.innerHTML = buildNoteHTML(note);
         banner.classList.remove('hidden');
         var dismiss = banner.querySelector('#wwnDismiss');
         if (dismiss) dismiss.addEventListener('click', async function() {
@@ -93,11 +251,24 @@
             try {
               var r2 = await window.pywebview.api.get_settings();
               var s = (r2 && r2.success ? r2.settings : {}) || {};
-              s.last_seen_whats_new_version = WHATS_NEW.version;
+              s.last_seen_whats_new_version = note.version;
               await window.pywebview.api.save_settings_data(s);
             } catch (_) {}
           }
         });
+      }
+
+      (async function() {
+        // Gate on the per-version "last seen" setting (a fast LOCAL bridge call).
+        // The note is baked into the build — bump WHATS_NEW.version to re-show it.
+        var lastSeen = null;
+        if (hasPywebviewApi) {
+          try {
+            var res = await window.pywebview.api.get_settings();
+            lastSeen = res && res.settings && res.settings.last_seen_whats_new_version;
+          } catch (_) {}
+        }
+        if (WHATS_NEW.version !== lastSeen) showNote(WHATS_NEW);
       })();
     })();
 
@@ -189,7 +360,7 @@
       var dlg = document.getElementById('donateDlg');
       document.getElementById('donateDlgGoBtn').addEventListener('click', function() {
         dlg.close();
-        openDonateLink();
+        openSupportLink();
       });
       document.getElementById('donateDlgFeedbackBtn').addEventListener('click', function() {
         dlg.close();

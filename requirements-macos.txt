@@ -17,9 +17,35 @@ rawpy==0.27.0
 pandas==2.2.2
 
 # Utilities
-PyExifTool==0.5.6
+# XMP metadata: pyexiv2 wraps the exiv2 C++ library (bundled in its wheels for
+# Windows/macOS/Linux — no external binary to install). Used to embed XMP
+# ratings/labels directly into JPEG originals in place, without recompressing
+# pixel data, so Adobe Lightroom (which ignores .xmp sidecars for JPEGs) can
+# read them. GPLv3, compatible with Kestrel's AGPLv3.
+pyexiv2==2.15.5
 requests==2.34.2
 pywebview==6.2.1
+keyring
+
+# macOS App Sandbox helpers (security-scoped bookmarks, NSWorkspace) in
+# mac_sandbox.py talk to Cocoa via PyObjC. pywebview's Cocoa backend already
+# pulls these transitively; pinned explicitly so the App Store build can rely
+# on Foundation/AppKit being present and PyInstaller collects them.
+pyobjc-core==12.2.1
+pyobjc-framework-Cocoa==12.2.1
+# ASWebAuthenticationSession (the in-app sign-in sheet) for the Mac App Store
+# build — Apple's Guideline 4 forbids bouncing sign-in to the default browser.
+# Wraps the AuthenticationServices framework; carries the completion-handler
+# block metadata PyObjC needs to call it from Python (see mac_oauth.py). Only
+# the App Store spec bundles it; the direct-download DMG spec excludes it and
+# keeps the loopback flow.
+pyobjc-framework-AuthenticationServices==12.2.1
+# SKStorefront (which App Store storefront the account is on) for the Mac App
+# Store build. Apple's anti-steering rule is storefront-scoped — the US
+# storefront is exempt, everywhere else is not — so the build must ask StoreKit
+# before showing any external purchase link (see mac_storefront.py). Only the
+# App Store spec bundles it; the DMG spec excludes it and never asks.
+pyobjc-framework-StoreKit==12.2.1
 
 # installer
 pyinstaller==6.20.0

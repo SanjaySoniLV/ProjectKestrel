@@ -310,10 +310,84 @@
 .scene-zoom-bar {
   display: flex;
   align-items: center;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 6px 14px;
   padding: 3px 10px;
   flex-shrink: 0;
   background: rgba(16,19,26,0.7);
+}
+.scene-zoom-ctrl {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.scene-zoom-ctrl-label {
+  font-size: 11px;
+}
+.scene-zoom-ctrl input[type="range"] {
+  width: 90px;
+}
+.scene-zoom-ctrl-val {
+  font-size: 11px;
+  color: #cbd2dc;
+  min-width: 32px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.scene-zoom-spacer {
+  flex: 1 1 auto;
+}
+/* "% overexposed" readout — also the highlight clip-mask toggle button. */
+.scene-zoom-stat {
+  -webkit-appearance: none;
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 9px;
+  border: 1px solid #2a3040;
+  border-radius: 7px;
+  background: rgba(14,17,23,0.88);
+  color: #8a93a3;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background .12s ease, border-color .12s ease, color .12s ease;
+}
+.scene-zoom-stat:hover {
+  background: #1b2230;
+  border-color: #3a4250;
+  color: #cbd2dc;
+}
+.scene-zoom-stat.hot {
+  color: #ff9e3d;          /* orange once ≥1% of the frame is clipping */
+}
+.scene-zoom-stat.mask-on {
+  border-color: #ff7a18;
+  background: rgba(255,122,24,0.16);
+  color: #ffb066;
+}
+.scene-zoom-stat.mask-on.hot {
+  color: #ffb066;
+}
+/* Highlight clip / blow-out mask overlays */
+.scene-preview-img canvas.scene-clip-overlay {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  image-rendering: pixelated;
+  mix-blend-mode: normal;
+}
+.scene-preview-img canvas.scene-zoom-clip-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 5;
+  pointer-events: none;
+  image-rendering: pixelated;
 }
 
 /* Scene dialog RAW zoom mode (export preview only) */

@@ -14,8 +14,6 @@ import pandas as pd
 
 from .config import (
     DEFAULT_DETECTOR_NAME,
-    JPEG_EXTENSIONS,
-    RAW_EXTENSIONS,
     SPECIESCLASSIFIER_LABELS,
     SPECIESCLASSIFIER_PATH,
     QUALITYCLASSIFIER_PATH,
@@ -24,7 +22,7 @@ from .config import (
     KESTREL_DIR_NAME,
     METADATA_FILENAME,
     VERSION,
-    is_supported_image_file,
+    select_camera_images,
 )
 from .database import (
     load_database,
@@ -42,7 +40,7 @@ from .exposure_compensation import (
     linear_to_srgb_u8,
 )
 from .image_utils import decode_embedded_preview, read_image, read_image_for_pipeline
-from .ratings import quality_to_rating, get_profile_thresholds
+from .ratings import quality_to_rating, resolve_thresholds
 from .similarity import compute_image_similarity_akaze, compute_similarity_timestamp
 from .raw_exif import get_capture_time
 from .logging_utils import get_log_path, log_event, log_exception, log_warning
@@ -501,7 +499,9 @@ class AnalysisPipeline:
             try:
                 sett = load_persisted_settings() or {}
                 rating_profile = str(sett.get('rating_profile', 'balanced') or 'balanced').strip().lower() or 'balanced'
-                rating_thresholds = get_profile_thresholds(rating_profile)
+                rating_thresholds = resolve_thresholds(
+                    rating_profile, sett.get('rating_thresholds_custom')
+                )
                 raw_eq = str(sett.get('exposure_quality', 'balanced') or 'balanced').strip().lower()
                 if raw_eq in {'lenient', 'balanced', 'aggressive'}:
                     exposure_quality = raw_eq
@@ -565,19 +565,12 @@ class AnalysisPipeline:
 
         try:
             stage_ctx["stage"] = "list_files"
-            files = [
-                f
-                for f in os.listdir(folder)
-                if is_supported_image_file(f, RAW_EXTENSIONS)
-                and os.path.isfile(os.path.join(folder, f))
+            entries = [
+                name
+                for name in os.listdir(folder)
+                if os.path.isfile(os.path.join(folder, name))
             ]
-            if not files:
-                files = [
-                    f
-                    for f in os.listdir(folder)
-                    if is_supported_image_file(f, JPEG_EXTENSIONS)
-                    and os.path.isfile(os.path.join(folder, f))
-                ]
+            files = select_camera_images(entries)
             files.sort()
             if not files:
                 if status_cb:

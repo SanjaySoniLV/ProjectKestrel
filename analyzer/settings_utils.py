@@ -37,12 +37,29 @@ SETTINGS_FILENAME = 'settings.json'
 _MAX_PATH_CHARS = 4096
 _MAX_TEXT_CHARS = 4096
 
+# macOS security-scoped folder bookmarks: {granted_realpath: base64_bookmark}.
+# These are load-bearing for the sandboxed App Store build (they're how a
+# previously-chosen photo folder stays readable across launches), so they get an
+# explicit sanitizer below rather than the generic passthrough — whose
+# _PASSTHROUGH_MAX_STR cap would silently truncate, and thus CORRUPT, a large
+# bookmark blob. A security-scoped bookmark base64s to a few KB; the cap here has
+# generous headroom for deep / network paths.
+_MAX_BOOKMARK_ENTRIES = 1024
+_MAX_BOOKMARK_B64_CHARS = 65536
+_B64_ALPHABET = frozenset(
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\r\n'
+)
+
 _ALLOWED_EDITORS = {
     'system', 'darktable', 'lightroom', 'photoshop', 'capture_one',
     'affinity', 'gimp', 'rawtherapee', 'luminar', 'dxo', 'on1',
     'acdsee', 'paintshop', 'faststone', 'xnview', 'irfanview', 'custom',
 }
-_ALLOWED_RATING_PROFILES = {'very_strict', 'strict', 'balanced', 'lenient', 'very_lenient'}
+# 'custom' carries no built-in thresholds — its cutoffs live in
+# `rating_thresholds_custom` and are resolved by ratings.resolve_thresholds.
+_ALLOWED_RATING_PROFILES = {
+    'very_strict', 'strict', 'balanced', 'lenient', 'very_lenient', 'custom',
+}
 _ALLOWED_EXPOSURE_QUALITY = {'lenient', 'balanced', 'aggressive'}
 _ALLOWED_WILDLIFE_MODEL_MODES = {'fast', 'accurate'}
 _ALLOWED_QUEUE_DETECTOR_NAMES = {'mdv5a', 'mdv1000-cedar'}
@@ -192,7 +209,7 @@ def _sanitize_path_list(value: Any, max_items: int = 256) -> list[str]:
     return out
 
 
-def _sanitize_analyze_recents(value: Any, max_items: int = 16) -> list[dict]:
+def _sanitize_analyze_recents(value: Any, max_items: int = 8) -> list[dict]:
     """Validate the analyze_recents settings field — list of recently-queued
     folders that haven't been fully analyzed yet. Each entry is a dict
     ``{'path': str, 'timestamp': str}``. Deduped by normalized path
@@ -365,6 +382,41 @@ def _passthrough_setting_value(value: Any, depth: int = 0) -> Any | None:
     return None
 
 
+def _is_base64ish(s: str) -> bool:
+    """True if *s* is a non-empty string over the base64 alphabet (+ whitespace).
+
+    ``set(s)`` collapses to at most ~66 distinct characters, so this is cheap
+    even for a 64 KB blob.
+    """
+    return bool(s) and set(s) <= _B64_ALPHABET
+
+
+def _sanitize_mac_folder_bookmarks(value: Any) -> dict[str, str]:
+    """Validate the ``mac_folder_bookmarks`` map: {realpath: base64_bookmark}.
+
+    Drops non-string keys/values, over-long paths or blobs, and non-base64
+    values. Caps the number of entries. Returns a (possibly empty) dict; the
+    caller always stores the result so this key never reaches the passthrough
+    handler (which would truncate an over-cap blob).
+    """
+    out: dict[str, str] = {}
+    if not isinstance(value, dict):
+        return out
+    for i, (k, v) in enumerate(value.items()):
+        if i >= _MAX_BOOKMARK_ENTRIES:
+            break
+        if not isinstance(k, str) or not isinstance(v, str):
+            continue
+        if not k or len(k) > _MAX_PATH_CHARS:
+            continue
+        if len(v) > _MAX_BOOKMARK_B64_CHARS:
+            continue
+        if not _is_base64ish(v):
+            continue
+        out[k] = v
+    return out
+
+
 def _merge_forward_compatible_keys(out: dict[str, Any], data: dict, emit_log: bool) -> None:
     """Attach unknown keys from *data* onto *out* (keys not already set by core sanitization)."""
     skipped: list[str] = []
@@ -420,15 +472,45 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
 
     _set_opt_bool('analytics_opted_in', default=None)
     _set_bool('analytics_consent_shown', default=False)
+    # Crash reports default ON; users can opt out via Settings. Gated only for
+    # the two automatic sends in visualizer.py — the user-confirmed recovery
+    # report ignores this flag (the dialog is its own consent).
+    _set_bool('crash_reports_enabled', default=True)
 
     if 'rating_profile' in data:
         out['rating_profile'] = _coerce_enum(data.get('rating_profile'), _ALLOWED_RATING_PROFILES, default='balanced')
+    if 'rating_thresholds_custom' in data:
+        # Normalized here rather than trusted from the frontend: these cutoffs
+        # decide every auto star rating, and an out-of-order or out-of-range set
+        # would make a star band unreachable. Always yields a valid dict.
+        try:
+            from kestrel_analyzer.ratings import normalize_custom_thresholds
+        except ImportError:
+            from analyzer.kestrel_analyzer.ratings import normalize_custom_thresholds  # type: ignore
+        out['rating_thresholds_custom'] = normalize_custom_thresholds(
+            data.get('rating_thresholds_custom')
+        )
     _set_float('detection_threshold', default=0.25, min_value=0.1, max_value=0.99, digits=4)
     _set_float('scene_time_threshold', default=1.0, min_value=0.0, max_value=60.0, digits=4)
     _set_float('mask_threshold', default=0.5, min_value=0.5, max_value=0.95, digits=4)
     _set_int('max_bird_crops', default=10, min_value=1, max_value=20)
     _set_int('parallel_prefetch', default=3, min_value=1, max_value=5)
     _set_bool('exposure_corrected_thumbs', default=True)
+    # Strength of the solver's exposure compensation as applied to *preview*
+    # imagery (export thumbnails' browser-CSS brightness and the RAW zoom
+    # preview's EV). 1.0 = full auto correction, 0.0 = off; default 0.7.
+    # Preview-only: the pipeline-baked crop thumbnails are unaffected.
+    _set_float('exposure_preview_strength', default=0.7, min_value=0.0, max_value=1.0, digits=3)
+    # One-time marker: set the first time the unified preview-exposure slider is
+    # written, so the 70% migration default is applied once and a later user
+    # choice is never reset. Supersedes the retired raw_exposure_correction_disabled
+    # / exposure_corrected_thumbs checkboxes.
+    _set_bool('exposure_preview_strength_migrated', default=False)
+    # Analysis-mode feature toggles persisted so cloud-compute settings snapshot
+    # (_cc_analysis_settings_snapshot) can read them without needing the UI to
+    # pass them as runtime parameters.
+    _set_bool('wildlife_enabled', default=False)
+    _set_bool('species_detection_enabled', default=True)
     # ONNX provider resilience (auto GPU↔CPU fallback). Advanced/triage knobs;
     # not exposed in the UI. ``gpu_resilience_enabled=False`` reverts to the
     # pre-resilience behavior (single GPU session, no recovery).
@@ -512,7 +594,7 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
         # Phase 3: Analyze Folders dialog's own recents (list of {path, timestamp}).
         # Separate from folder_recents — the dialog's mental model is "recently
         # queued but not yet fully analyzed", independent of the main tree.
-        out['analyze_recents'] = _sanitize_analyze_recents(data.get('analyze_recents'), max_items=16)
+        out['analyze_recents'] = _sanitize_analyze_recents(data.get('analyze_recents'), max_items=8)
 
     # Local performance samples for the Analyze Folders dialog's time estimate.
     # The queue worker appends one entry per completed folder run; the dialog
@@ -545,6 +627,18 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     _set_bool('legal_upgrade_self_heal_2026_03', default=False)
 
     _set_path('active_analysis_path')
+    # Override the cloud-compute Worker URL (handy for staging / wrangler dev).
+    # Empty string falls back to the env var KESTREL_CC_API_BASE then the
+    # hardcoded default in cloud_compute_client.default_api_base().
+    _set_str('cloud_compute_api_base', default='', max_len=256)
+    _set_str('auth_api_base', default='', max_len=256)
+    # Cloud-compute analysis settings are NOT a separate override block —
+    # they're projected from the same advanced-analysis settings the local
+    # queue uses (detection_threshold, detector_name, etc.) at submit time.
+    # See api_bridge._cc_build_analysis_settings_from_local. One source of
+    # truth across local + cloud; the wire allowlist lives on both the
+    # client (cloud_compute_client.ANALYSIS_SETTINGS_ALLOWLIST) and the
+    # Worker / Modal sides (defence in depth).
     _set_str('app_session_started_utc', max_len=64)
     _set_bool('app_session_closed_cleanly', default=True)
     _set_int('app_session_pid', default=0, min_value=0, max_value=2_147_483_647)
@@ -559,6 +653,12 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
         pending = _sanitize_pending_analytics(data.get('pending_analytics'))
         if pending is not None:
             out['pending_analytics'] = pending
+
+    # macOS security-scoped folder bookmarks (App Store / sandboxed build). Set
+    # explicitly whenever present so the key is handled here and never falls
+    # through to passthrough, whose per-string cap would corrupt a large blob.
+    if 'mac_folder_bookmarks' in data:
+        out['mac_folder_bookmarks'] = _sanitize_mac_folder_bookmarks(data.get('mac_folder_bookmarks'))
 
     # Forward compatibility: preserve unknown keys (e.g. settings added by a
     # newer build) so an older Kestrel doesn't drop them on the round-trip.

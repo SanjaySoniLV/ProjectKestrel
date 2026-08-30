@@ -538,10 +538,11 @@
   text-overflow: ellipsis;
 }
 
-/* Sticky folder group headers */
+/* Sticky folder group headers — pinned below the sticky search/filter bar
+   so the two don't overlap when scrolling. */
 .folder-group-header {
   position: sticky;
-  top: 0;
+  top: var(--filter-bar-h);
   z-index: 10;
   background: var(--bg);
 }
@@ -949,6 +950,16 @@
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
   color: #cbd2dc;
   font-size: 13px;
+}
+
+/* Each .folder-group-header is position:sticky with z-index:10, which
+   creates a per-header stacking context. Sibling headers therefore paint
+   in DOM order, so a later folder row can obscure an earlier row's open
+   Folder Actions menu even though the menu is z-index:1000 within its own
+   header. Raise the owning header above other headers only while its menu
+   is present. */
+.folder-group-header:has(.folder-group-actions-menu) {
+  z-index: 1001;
 }
 
 .folder-group-actions-item {

@@ -1,5 +1,7 @@
 import json
 import os
+import tempfile
+import time
 from datetime import datetime
 
 import pandas as pd
@@ -71,7 +73,7 @@ def load_database(kestrel_dir: str, analyzer_name: str, log_path: str = None):
     metadata_path = os.path.join(kestrel_dir, METADATA_FILENAME)
 
     if os.path.exists(db_path):
-        database = pd.read_csv(db_path)
+        database = read_database_csv(db_path)
         # Upgrade legacy database: migrate user columns to scenedata.json
         if _needs_upgrade(database, kestrel_dir):
             database = _perform_db_upgrade(database, kestrel_dir, db_path, log_path)
@@ -140,7 +142,7 @@ def _perform_db_upgrade(
             columns=[c for c in LEGACY_USER_COLUMNS if c in database.columns],
             errors="ignore",
         )
-        cleaned.to_csv(db_path, index=False)
+        _to_csv_atomic(cleaned, db_path)
         _info(
             f"[database] Upgrade complete: backup at {os.path.basename(old_path)}, "
             f"new clean {DATABASE_NAME} saved."
@@ -359,6 +361,117 @@ def ensure_columns(database: pd.DataFrame) -> pd.DataFrame:
 # These are NOT in BASE_COLUMNS but may be added by the UI's saveCsv().
 _UI_PRESERVE_COLUMNS = ["culled", "culled_origin"]
 
+# Prefix/suffix for the temp file used by ``_to_csv_atomic``. Distinctive so a
+# temp left behind by a crashed/killed save is identifiable, and so it never
+# collides with the ``OLD_kestrel_database_*.csv`` upgrade backups.
+_TMP_FILE_PREFIX = ".kestrel_database_"
+_TMP_FILE_SUFFIX = ".csv.tmp"
+
+
+def retry_on_file_lock(op, attempts: int = 12, delay: float = 0.02):
+    """Run ``op()``, retrying briefly on Windows' transient file-sharing errors.
+
+    ``os.replace`` is atomic on both POSIX and Windows, but Windows adds a
+    constraint POSIX does not have: CPython opens files without
+    ``FILE_SHARE_DELETE``, so while *any* handle is open on the destination the
+    underlying ``MoveFileEx`` fails with ``ERROR_ACCESS_DENIED`` (5) or
+    ``ERROR_SHARING_VIOLATION`` (32). Symmetrically, a reader that calls
+    ``open()`` during the rename can catch the destination in a delete-pending
+    state and get ``ERROR_ACCESS_DENIED``. Both surface as ``PermissionError``.
+
+    So on Windows the atomic write guarantees all-or-nothing *content* but not a
+    collision-free ``open()``: the pipeline saving after every image and the UI's
+    auto-refresh reader will occasionally step on each other in both directions.
+    Both sides retry through here rather than failing — the writer to avoid
+    silently dropping a save, the reader to avoid a spurious load error.
+
+    Escalating backoff caps the total wait at roughly 1.3s; if the file is still
+    locked after that the error propagates to the caller. POSIX never raises
+    here and always succeeds on the first attempt.
+
+    This is a mitigation, not a guarantee. A reader that reopens the file in a
+    zero-gap loop can starve the writer past the retry window — genuinely fixing
+    that would mean opening the destination with ``FILE_SHARE_DELETE``, which
+    CPython's ``open()`` cannot do. The app's readers poll on a UI timer, so the
+    window is wide open in practice.
+    """
+    for attempt in range(attempts):
+        try:
+            return op()
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay * (attempt + 1))
+
+
+def read_database_csv(db_path: str, **read_csv_kwargs) -> pd.DataFrame:
+    """``pd.read_csv(db_path)`` that tolerates a concurrent atomic save.
+
+    Use this anywhere the analysis pipeline might be writing the same CSV. See
+    ``retry_on_file_lock`` for why the bare call is not enough on Windows.
+    """
+    return retry_on_file_lock(lambda: pd.read_csv(db_path, **read_csv_kwargs))
+
+
+def read_database_text(db_path: str) -> str:
+    """Read the CSV as raw text, tolerating a concurrent atomic save.
+
+    The bridge hands the file to the frontend verbatim rather than parsing it,
+    so it needs the text form of ``read_database_csv``.
+    """
+    def _read() -> str:
+        with open(db_path, 'r', encoding='utf-8') as f:
+            return f.read()
+
+    return retry_on_file_lock(_read)
+
+
+def _to_csv_atomic(database: pd.DataFrame, db_path: str) -> None:
+    """Write ``database`` to ``db_path`` so readers never observe a partial file.
+
+    ``DataFrame.to_csv(path)`` truncates the destination and streams rows into
+    it. The analysis pipeline saves after every processed image while the UI's
+    auto-refresh timer reads the same path (``read_kestrel_csv`` /
+    ``apply_normalization``), so a reader landing mid-write sees either an empty
+    file (pandas ``EmptyDataError: No columns to parse from file``) or a row cut
+    inside a quoted field such as ``crops_json`` (pandas ``ParserError: EOF
+    inside string starting at row N``).
+
+    Write to a unique temp file in the same directory and ``os.replace`` it into
+    place instead. ``os.replace`` is atomic on POSIX and on Windows, so a
+    concurrent reader observes either the complete previous file or the complete
+    new one. This mirrors the atomic-save pattern in ``settings_utils.save_settings``.
+    """
+    directory = os.path.dirname(db_path) or "."
+    os.makedirs(directory, exist_ok=True)
+
+    # mkstemp creates with O_EXCL, so concurrent saves can never share a path.
+    tmp_fd, tmp = tempfile.mkstemp(
+        prefix=_TMP_FILE_PREFIX,
+        suffix=_TMP_FILE_SUFFIX,
+        dir=directory,
+    )
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="") as f:
+            database.to_csv(f, index=False)
+            try:
+                f.flush()
+                os.fsync(f.fileno())
+            except OSError:
+                # fsync can legitimately fail on some network filesystems
+                # (SMB/NFS shares are a common target); the replace below
+                # still gives readers an all-or-nothing view.
+                pass
+        retry_on_file_lock(lambda: os.replace(tmp, db_path))
+    except BaseException:
+        # Do NOT fall back to a direct write — that is the partial-read path
+        # this function exists to close. Leave the previous file intact.
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
 
 def save_database(database: pd.DataFrame, db_path: str) -> None:
     """Save database to CSV, preserving UI-written columns from disk.
@@ -383,7 +496,7 @@ def save_database(database: pd.DataFrame, db_path: str) -> None:
             cols_to_read = ["filename"] + [
                 c for c in _UI_PRESERVE_COLUMNS
             ]
-            disk_df = pd.read_csv(db_path, usecols=lambda c: c in cols_to_read)
+            disk_df = read_database_csv(db_path, usecols=lambda c: c in cols_to_read)
             if not disk_df.empty and "filename" in disk_df.columns:
                 for col in _UI_PRESERVE_COLUMNS:
                     if col in disk_df.columns and col not in database.columns:
@@ -395,4 +508,4 @@ def save_database(database: pd.DataFrame, db_path: str) -> None:
         except Exception:
             pass  # If we can't read the existing CSV, just write what we have
 
-    database.to_csv(db_path, index=False)
+    _to_csv_atomic(database, db_path)

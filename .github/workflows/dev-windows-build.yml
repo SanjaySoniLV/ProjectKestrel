@@ -51,19 +51,84 @@ jobs:
           cd analyzer
           python -m PyInstaller ProjectKestrel.spec
 
+      - name: Place CI auth bundle (test account)
+        shell: powershell
+        env:
+          KESTREL_CI_AUTH_JSON: ${{ secrets.KESTREL_CI_AUTH_JSON }}
+        run: |
+          if ([string]::IsNullOrEmpty($env:KESTREL_CI_AUTH_JSON)) {
+            Write-Host "::notice::KESTREL_CI_AUTH_JSON not set; cloud reach smoke will be skipped."
+            exit 0
+          }
+          # _get_user_data_dir() on win uses LOCALAPPDATA (settings_utils.py).
+          $authDir = Join-Path $env:LOCALAPPDATA "ProjectKestrel"
+          New-Item -ItemType Directory -Force -Path $authDir | Out-Null
+          $bytes = [System.Convert]::FromBase64String($env:KESTREL_CI_AUTH_JSON)
+          [System.IO.File]::WriteAllBytes((Join-Path $authDir "auth.json"), $bytes)
+          Write-Host "Wrote auth bundle to $authDir\auth.json"
+
+      - name: Cloud reach smoke (--selftest-reach) against frozen binary
+        id: reach
+        continue-on-error: true
+        shell: powershell
+        env:
+          KESTREL_CI_AUTH_JSON: ${{ secrets.KESTREL_CI_AUTH_JSON }}
+        run: |
+          if ([string]::IsNullOrEmpty($env:KESTREL_CI_AUTH_JSON)) {
+            Write-Host "::warning::KESTREL_CI_AUTH_JSON not set; skipping --selftest-reach cloud smoke."
+            exit 0
+          }
+          $out = Join-Path $env:RUNNER_TEMP "reach-result.json"
+          if (Test-Path $out) { Remove-Item $out }
+          # The frozen .exe is a GUI-subsystem (console=False) app. PowerShell's
+          # call operator does NOT wait for windowed processes, so the old
+          # `& exe; Get-Content` raced the still-running exe and read a not-yet-
+          # written file. Start-Process + WaitForExit blocks until the exe fully
+          # exits and flushes $out before we read it.
+          $proc = Start-Process -FilePath "analyzer\dist\ProjectKestrel\ProjectKestrel.exe" `
+            -NoNewWindow -PassThru -ArgumentList @(
+              '--cli', '--selftest-reach', 'test_imgs', '--sample-count', '2', '--json-out', $out
+            )
+          $proc.Handle | Out-Null  # cache native handle so .ExitCode populates
+          $proc.WaitForExit()
+          Write-Host "ProjectKestrel.exe exited with code $($proc.ExitCode)"
+          if (!(Test-Path $out)) {
+            throw "--selftest-reach did not produce $out (exit code $($proc.ExitCode))"
+          }
+          Write-Host "=== reach-result.json ==="
+          Get-Content $out
+          Copy-Item $out "reach-result.json"
+          $report = Get-Content $out -Raw | ConvertFrom-Json
+          if (-not $report.ok) {
+            throw "--selftest-reach failed (ok=false) - possible frozen-app TLS/auth regression"
+          }
+
+      - name: Warn if cloud reach smoke failed
+        if: ${{ always() && steps.reach.outcome == 'failure' }}
+        shell: powershell
+        run: Write-Host "::warning::Frozen-binary --selftest-reach failed on Windows dev build (auth/network/TLS)."
+
       - name: Run --validate against frozen binary
         id: validate
         continue-on-error: true
         shell: powershell
         run: |
           $validateOutput = Join-Path $env:RUNNER_TEMP "validate-result.json"
-          & "analyzer\dist\ProjectKestrel\ProjectKestrel.exe" `
-            --cli --validate --no-gpu `
-            --validate-images test_imgs `
-            --validate-output $validateOutput
+          if (Test-Path $validateOutput) { Remove-Item $validateOutput }
+          # GUI-subsystem exe: wait for exit (see reach step) so $validateOutput
+          # is fully written before we Test-Path / read it.
+          $proc = Start-Process -FilePath "analyzer\dist\ProjectKestrel\ProjectKestrel.exe" `
+            -NoNewWindow -PassThru -ArgumentList @(
+              '--cli', '--validate', '--no-gpu',
+              '--validate-images', 'test_imgs',
+              '--validate-output', $validateOutput
+            )
+          $proc.Handle | Out-Null  # cache native handle so .ExitCode populates
+          $proc.WaitForExit()
+          Write-Host "ProjectKestrel.exe exited with code $($proc.ExitCode)"
 
           if (!(Test-Path $validateOutput)) {
-            throw "Frozen --validate did not produce a result JSON at $validateOutput"
+            throw "Frozen --validate did not produce a result JSON at $validateOutput (exit code $($proc.ExitCode))"
           }
           Write-Host "=== validate-result.json ==="
           Get-Content $validateOutput
@@ -71,7 +136,7 @@ jobs:
           # Copy to repo root so the upload-artifact step finds it.
           Copy-Item $validateOutput "validate-result.json"
 
-          $report = Get-Content $validateOutput | ConvertFrom-Json
+          $report = Get-Content $validateOutput -Raw | ConvertFrom-Json
           if (-not $report.ok) {
             throw "Validation reported failure (ok=false)"
           }
@@ -84,27 +149,49 @@ jobs:
       - name: UI probe (real visualizer.html) against frozen binary
         id: ui_probe
         continue-on-error: true
+        timeout-minutes: 8
         shell: powershell
         run: |
           $probeOut = Join-Path $env:RUNNER_TEMP "ui-probe-result.json"
-          if (Test-Path $probeOut) { Remove-Item $probeOut }
-          & "analyzer\dist\ProjectKestrel\ProjectKestrel.exe" `
-            --api-probe `
-            --probe-target visualizer `
-            --probe-output $probeOut `
-            --probe-timeout 60 `
-            --port 8798
+          # GUI-subsystem exe: wait for exit (see reach step) so the JSON is fully
+          # written before we read it. The WebView2 bridge cold-start is flaky on
+          # the Windows runner -- it sometimes misses the 75s ready window even
+          # though all assets serve (seen as "bridge did not report ready"). A
+          # fresh process clears a wedged WebView2 init better than a longer wait,
+          # so retry a few times and pass on the first ok=true.
+          $maxAttempts = 3
+          $ok = $false
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            if (Test-Path $probeOut) { Remove-Item $probeOut }
+            Write-Host "--- UI probe attempt $attempt/$maxAttempts ---"
+            $proc = Start-Process -FilePath "analyzer\dist\ProjectKestrel\ProjectKestrel.exe" `
+              -NoNewWindow -PassThru -ArgumentList @(
+                '--api-probe',
+                '--probe-target', 'visualizer',
+                '--probe-output', $probeOut,
+                '--probe-timeout', '75',
+                '--port', '8798'
+              )
+            $proc.Handle | Out-Null  # cache native handle so .ExitCode populates
+            $proc.WaitForExit()
+            Write-Host "ProjectKestrel.exe exited with code $($proc.ExitCode)"
 
-          if (!(Test-Path $probeOut)) {
-            throw "UI probe did not produce a result JSON at $probeOut"
+            if (Test-Path $probeOut) {
+              Write-Host "=== ui-probe-result.json (attempt $attempt) ==="
+              Get-Content $probeOut
+              $report = Get-Content $probeOut -Raw | ConvertFrom-Json
+              if ($report.ok) { $ok = $true; break }
+            } else {
+              Write-Host "::notice::UI probe attempt $attempt produced no result JSON (exit code $($proc.ExitCode))."
+            }
+            if ($attempt -lt $maxAttempts) {
+              Write-Host "::notice::UI probe attempt $attempt did not succeed; retrying with a fresh process."
+            }
           }
-          Write-Host "=== ui-probe-result.json ==="
-          Get-Content $probeOut
 
-          Copy-Item $probeOut "ui-probe-result.json"
-          $report = Get-Content $probeOut | ConvertFrom-Json
-          if (-not $report.ok) {
-            throw "UI probe reported failure (ok=false); visualizer.html did not wire up window.pywebview.api"
+          if (Test-Path $probeOut) { Copy-Item $probeOut "ui-probe-result.json" -Force }
+          if (-not $ok) {
+            throw "UI probe reported failure (ok=false) after $maxAttempts attempts; visualizer.html did not wire up window.pywebview.api"
           }
 
       - name: Warn if UI probe failed
@@ -135,5 +222,14 @@ jobs:
         with:
           name: windows-dev-ui-probe-result
           path: ui-probe-result.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload reach-result.json
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-dev-reach-result
+          path: reach-result.json
           if-no-files-found: warn
           retention-days: 14

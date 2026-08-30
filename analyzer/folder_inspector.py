@@ -14,32 +14,44 @@ except Exception:
     pd = None
 
 from kestrel_analyzer.config import (
-    RAW_EXTENSIONS,
-    JPEG_EXTENSIONS,
     KESTREL_DIR_NAME,
     DATABASE_NAME,
-    is_supported_image_file,
+    select_camera_images,
 )
 from kestrel_analyzer.database import load_database
 
 
-def _list_images_in_folder(folder: str) -> list:
+def list_images_in_folder(folder: str) -> list:
+    """Return analyzable image filenames in ``folder`` (sorted), honouring the
+    RAW-priority rule via :func:`select_camera_images`: a JPEG is dropped only
+    when a same-stem RAW exists (an in-camera sidecar of that RAW). ORPHAN
+    JPEGs — a lone JPG-only frame with no RAW partner — are KEPT, so a mixed
+    RAW+JPG (or JPG-only) shoot is never silently truncated. When there are no
+    RAWs at all, every JPEG is returned. Hidden files and macOS AppleDouble
+    (``._*``) companions are filtered out via :func:`is_supported_image_file`.
+
+    Names only (not paths), non-recursive. This is the single source of truth
+    for "which files count" so folder inspection, local analysis, the cloud
+    upload-speed test, and BOTH cloud discovery paths
+    (``cloud_compute_client._discover_upload_images`` and
+    ``api_bridge._cc_select_upload_files``) all agree. Do not re-implement this
+    filter elsewhere — call this helper, or cloud/local drift by an image.
+    """
     try:
-        files = [
-            f for f in os.listdir(folder)
-            if is_supported_image_file(f, RAW_EXTENSIONS)
-            and os.path.isfile(os.path.join(folder, f))
+        entries = [
+            name for name in os.listdir(folder)
+            if os.path.isfile(os.path.join(folder, name))
         ]
-        if not files:
-            files = [
-                f for f in os.listdir(folder)
-                if is_supported_image_file(f, JPEG_EXTENSIONS)
-                and os.path.isfile(os.path.join(folder, f))
-            ]
+        files = select_camera_images(entries)
         files.sort()
         return files
     except Exception:
         return []
+
+
+# Back-compat alias: this function was private until the cloud upload-speed test
+# began reusing it. Keep the old name working for any in-tree callers.
+_list_images_in_folder = list_images_in_folder
 
 
 def inspect_folder(path: str) -> Dict[str, int | str | bool]:
@@ -74,7 +86,7 @@ def inspect_folder(path: str) -> Dict[str, int | str | bool]:
         root = p
 
     result['root'] = root
-    files = _list_images_in_folder(root)
+    files = list_images_in_folder(root)
     total = len(files)
     result['total'] = total
     files_set = set(files)

@@ -35,7 +35,12 @@ _DATETIME_FORMATS = (
 
 CANON_METADATA_UUID = bytes.fromhex('85c0b687820f11e08111f4ce462b6a48')
 
-PILLOW_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.tif', '.tiff'}
+# Extensions whose EXIF is read via Pillow (the JPEG/raster family); everything
+# else is treated as RAW and routed to the in-house container parsers below.
+# Derived from the canonical config list so the supported-format set has a single
+# source of truth — adding a raster format to JPEG_EXTENSIONS auto-routes it here.
+from .config import JPEG_EXTENSIONS as _JPEG_EXTENSIONS
+PILLOW_EXTENSIONS = {e.lower() for e in _JPEG_EXTENSIONS}
 # All formats listed in config.RAW_EXTENSIONS now have in-house EXIF support.
 # Kept as an empty set for backward compatibility with callers that import it.
 UNSUPPORTED_EXTENSIONS: set[str] = set()

@@ -174,6 +174,62 @@ packaging/build_app_headless.sh
 
 Targets `analyzer/ProjectKestrel-macos.spec`.
 
+#### Building on Intel (x86_64) Macs
+
+The spec builds for the host architecture (`target_arch=None`), so a native
+Intel build needs no code changes — just an x86_64 environment. Verified on
+macOS 26 / Intel with Python 3.12:
+
+1. Make sure Git LFS is installed and the model weights are pulled **before**
+   building:
+
+   ```bash
+   brew install git-lfs
+   git lfs install
+   git lfs pull
+   ```
+
+   Without this, the ONNX files under `analyzer/models/` are tiny pointer
+   stubs (e.g. `quality.onnx` at ~130 bytes instead of ~1.1 MB) and the
+   build "succeeds" but the app fails at model load.
+
+2. Create the venv the build script expects, using an **x86_64** Python 3.12:
+
+   ```bash
+   python3.12 -m venv .venv2
+   .venv2/bin/pip install -r requirements-macos.txt
+   ```
+
+   All pinned packages ship x86_64 macOS wheels except `rawpy`, which pip
+   builds from source automatically (takes a few minutes).
+
+3. Run `packaging/build_app_headless.sh`. Output lands in
+   `analyzer/dist/Project Kestrel.app`. Confirm the architecture with:
+
+   ```bash
+   lipo -archs "analyzer/dist/Project Kestrel.app/Contents/MacOS/ProjectKestrel"
+   ```
+
+To produce a DMG locally, mirror the CI packaging step
+(`.github/workflows/build-macos.yml`):
+
+```bash
+brew install create-dmg
+create-dmg \
+  --volname "Project Kestrel" \
+  --window-size 540 380 \
+  --icon-size 128 \
+  --icon "Project Kestrel.app" 140 190 \
+  --app-drop-link 400 190 \
+  --hide-extension "Project Kestrel.app" \
+  "artifact/ProjectKestrel.dmg" \
+  "analyzer/dist/Project Kestrel.app"
+```
+
+Note that local builds are neither Developer ID-signed nor notarized
+(`codesign_identity=None` in the spec), so Gatekeeper will warn on other
+machines. Signing and notarization happen in CI.
+
 Both spec files use `analyzer/visualizer.py` as the entry point.
 
 ## Code Organization
