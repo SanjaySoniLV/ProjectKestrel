@@ -33,12 +33,13 @@ import os
 import sys
 import unittest
 
+import pytest
+
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _ANALYZER_DIR = os.path.dirname(_THIS_DIR)
 if _ANALYZER_DIR not in sys.path:
     sys.path.insert(0, _ANALYZER_DIR)
-
 
 try:
     import api_bridge  # noqa: E402
@@ -53,6 +54,8 @@ _SKIP_MSG = (
     "api_bridge._is_safe_external_url is not defined — apply the FINDING-01 "
     "URL-allowlist patch to analyzer/api_bridge.py, then re-run."
 )
+
+pytestmark = pytest.mark.unit
 
 
 @unittest.skipUnless(api_bridge is not None, f"api_bridge import failed: {_IMPORT_ERROR}")
@@ -202,6 +205,72 @@ class TestOpenUrlEndToEnd(unittest.TestCase):
     def test_refuses_data_html(self) -> None:
         res = self.api.open_url("data:text/html,<script>alert(1)</script>")
         self.assertFalse(res.get("success"))
+        self.assertEqual(self.calls, [])
+
+
+@unittest.skipUnless(api_bridge is not None, f"api_bridge import failed: {_IMPORT_ERROR}")
+class TestOpenPerchUrlAllowlist(unittest.TestCase):
+    """S1-05: ``open_perch_url`` must use the same FINDING-01 allowlist.
+
+    A prefix check of ``http://`` / ``https://`` still forwards
+    ``http://\\\\attacker\\share`` and CRLF-injected https URLs to
+    ``webbrowser.open``.
+    """
+
+    def setUp(self) -> None:
+        self.calls: list[str] = []
+        self._orig_open = api_bridge.webbrowser.open
+        api_bridge.webbrowser.open = (
+            lambda url, *a, **kw: (self.calls.append(url) or True)
+        )
+        self.api = api_bridge.Api()
+
+    def tearDown(self) -> None:
+        api_bridge.webbrowser.open = self._orig_open
+
+    def test_forwards_https(self) -> None:
+        res = self.api.open_perch_url("https://perch.projectkestrel.app/p/abc")
+        self.assertTrue(res.get("success"), f"Expected success, got {res!r}")
+        self.assertEqual(self.calls, ["https://perch.projectkestrel.app/p/abc"])
+
+    def test_forwards_http(self) -> None:
+        res = self.api.open_perch_url("http://127.0.0.1:8765/perch")
+        self.assertTrue(res.get("success"), f"Expected success, got {res!r}")
+        self.assertEqual(self.calls, ["http://127.0.0.1:8765/perch"])
+
+    def test_refuses_http_unc_share(self) -> None:
+        res = self.api.open_perch_url(r"http://\\attacker\share")
+        self.assertFalse(res.get("success"))
+        self.assertEqual(
+            self.calls,
+            [],
+            "open_perch_url must not forward http://\\\\host to webbrowser.open",
+        )
+
+    def test_refuses_crlf_in_https(self) -> None:
+        res = self.api.open_perch_url("https://perch.example/\r\nX-Injected: 1")
+        self.assertFalse(res.get("success"))
+        self.assertEqual(self.calls, [])
+
+    def test_refuses_file_scheme(self) -> None:
+        res = self.api.open_perch_url("file:///C:/Windows/System32/calc.exe")
+        self.assertFalse(res.get("success"))
+        self.assertEqual(self.calls, [])
+
+    def test_refuses_javascript(self) -> None:
+        res = self.api.open_perch_url("javascript:alert(1)")
+        self.assertFalse(res.get("success"))
+        self.assertEqual(self.calls, [])
+
+    def test_refuses_unc_path(self) -> None:
+        res = self.api.open_perch_url(r"\\attacker\share\payload.exe")
+        self.assertFalse(res.get("success"))
+        self.assertEqual(self.calls, [])
+
+    def test_missing_url(self) -> None:
+        res = self.api.open_perch_url("   ")
+        self.assertFalse(res.get("success"))
+        self.assertEqual(res.get("error"), "missing url")
         self.assertEqual(self.calls, [])
 
 

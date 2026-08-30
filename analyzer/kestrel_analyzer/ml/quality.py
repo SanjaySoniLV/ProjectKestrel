@@ -93,8 +93,25 @@ class QualityClassifier:
         try:
             input_data = self._preprocess(cropped_image, cropped_mask)
             input_tensor = np.expand_dims(input_data, axis=0).astype(np.float32)
-            outputs = self.session.run(None, {self._input_name: input_tensor})
+        except Exception:
+            # Malformed crop/mask (None, unexpected shape/dtype) is a per-image
+            # data problem, not a model failure: return the "unrated" sentinel
+            # and let the pipeline continue. An all-zero mask is valid input
+            # to _preprocess (bitwise_and zeros the image) and does not raise.
+            return -1.0
+
+        # Do NOT wrap session.run() in a blanket except. A dead GPU/ONNX session
+        # (e.g. DirectML/CoreML device lost) must propagate so the pipeline's
+        # per-image handler records the failure and the provider coordinator can
+        # demote to CPU on the next image. Swallowing it here returned -1.0 for
+        # every remaining image and silently corrupted quality scores while the
+        # run still reported "complete".
+        outputs = self.session.run(None, {self._input_name: input_tensor})
+
+        try:
             raw_quality = float(outputs[0][0][0])
             return self._normalize_quality_to_percentile(raw_quality)
         except Exception:
+            # Unexpected output shape / normalization issue -> unrated, but not a
+            # reason to abort the whole image.
             return -1.0
