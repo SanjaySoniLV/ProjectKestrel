@@ -41,7 +41,7 @@ def _coerce_detector_name(value) -> str:
 
 
 def _utc_timestamp() -> str:
-    return datetime.utcnow().isoformat() + 'Z'
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + 'Z'
 
 
 def _ensure_pipeline_path() -> bool:
