@@ -25,8 +25,11 @@ try:
         _log_shutdown_state,
         _mark_session_clean_exit,
         _mark_session_exit_reason,
+        _parse_session_timestamp,
         _pid_is_alive,
+        _prior_session_still_running,
         _settings_file_hint,
+        _utc_now_iso,
         _verify_exit_reason_persisted,
     )
 except Exception as e:  # pragma: no cover - environment-dependent
@@ -81,6 +84,49 @@ class TestPidLiveness:
 
     def test_garbage_input_does_not_raise(self):
         assert _pid_is_alive(None) is None
+
+
+class TestPriorSessionStillRunning:
+    """A second instance launched while the first is open must not report
+    the first one — still on screen — as an unclean shutdown."""
+
+    def test_live_pid_from_a_recent_session_is_still_running(self):
+        assert _prior_session_still_running(os.getpid(), _utc_now_iso()) is True
+
+    def test_dead_pid_is_not_still_running(self, monkeypatch):
+        monkeypatch.setattr(visualizer, '_pid_is_alive', lambda _pid: False)
+        assert _prior_session_still_running(4242, _utc_now_iso()) is False
+
+    def test_undeterminable_pid_is_not_still_running(self, monkeypatch):
+        monkeypatch.setattr(visualizer, '_pid_is_alive', lambda _pid: None)
+        assert _prior_session_still_running(4242, _utc_now_iso()) is False
+
+    def test_live_pid_from_a_stale_session_reads_as_pid_reuse(self, monkeypatch):
+        """Pids are recycled; a weeks-old session matching a live pid is far
+        more likely an unrelated process than the same app still running."""
+        monkeypatch.setattr(visualizer, '_pid_is_alive', lambda _pid: True)
+        assert _prior_session_still_running(4242, '2026-07-01T00:00:00Z') is False
+
+    def test_missing_or_unparseable_timestamp_fails_closed(self, monkeypatch):
+        monkeypatch.setattr(visualizer, '_pid_is_alive', lambda _pid: True)
+        assert _prior_session_still_running(4242, '') is False
+        assert _prior_session_still_running(4242, 'not-a-timestamp') is False
+
+    def test_small_clock_skew_is_tolerated(self, monkeypatch):
+        from datetime import timedelta
+        monkeypatch.setattr(visualizer, '_pid_is_alive', lambda _pid: True)
+        just_ahead = (visualizer.datetime.utcnow() + timedelta(seconds=5)).isoformat() + 'Z'
+        assert _prior_session_still_running(4242, just_ahead) is True
+
+
+class TestParseSessionTimestamp:
+    def test_round_trips_utc_now_iso(self):
+        assert _parse_session_timestamp(_utc_now_iso()) is not None
+
+    def test_empty_and_garbage_return_none(self):
+        assert _parse_session_timestamp('') is None
+        assert _parse_session_timestamp(None) is None
+        assert _parse_session_timestamp('yesterday') is None
 
 
 class TestLogHelpers:
@@ -239,6 +285,45 @@ class TestSessionStartLogging:
         lines = shutdown_log()
         assert any('prior session OK' in ln for ln in lines)
         assert 'last_unclean_shutdown_utc' not in fake_settings['data']
+
+    def test_still_running_prior_session_is_not_flagged(self, fake_settings, shutdown_log):
+        """The concurrent-instance case: the first window is still open, so
+        its 'unknown' means "has not exited yet", not "crashed"."""
+        fake_settings['data'] = {
+            EXIT_REASON_KEY: 'unknown',
+            'app_session_started_utc': _utc_now_iso(),
+            'app_session_pid': os.getpid(),
+        }
+        visualizer._mark_session_start()
+        lines = shutdown_log()
+        assert any('prior session still running' in ln for ln in lines)
+        assert not any('FLAGGING prior session unclean' in ln for ln in lines)
+        assert 'last_unclean_shutdown_utc' not in fake_settings['data']
+
+    def test_still_running_does_not_clear_an_earlier_pending_flag(self, fake_settings):
+        """Suppressing this prompt must not swallow a real one already queued."""
+        fake_settings['data'] = {
+            EXIT_REASON_KEY: 'unknown',
+            'app_session_started_utc': _utc_now_iso(),
+            'app_session_pid': os.getpid(),
+            'last_unclean_shutdown_utc': '2026-07-01T00:00:00Z',
+        }
+        visualizer._mark_session_start()
+        assert fake_settings['data']['last_unclean_shutdown_utc'] == '2026-07-01T00:00:00Z'
+
+    def test_dead_prior_session_is_still_flagged(self, monkeypatch, fake_settings, shutdown_log):
+        """The guard is narrow: a prior session that really did die still
+        raises the recovery prompt, however recent it was."""
+        monkeypatch.setattr(visualizer, '_pid_is_alive', lambda _pid: False)
+        started = _utc_now_iso()
+        fake_settings['data'] = {
+            EXIT_REASON_KEY: 'unknown',
+            'app_session_started_utc': started,
+            'app_session_pid': 4242,
+        }
+        visualizer._mark_session_start()
+        assert any('FLAGGING prior session unclean' in ln for ln in shutdown_log())
+        assert fake_settings['data']['last_unclean_shutdown_utc'] == started
 
     def test_opens_new_session_as_unknown(self, fake_settings, shutdown_log):
         fake_settings['data'] = {EXIT_REASON_KEY: 'clean'}
