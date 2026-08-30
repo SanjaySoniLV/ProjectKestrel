@@ -2799,27 +2799,41 @@
             setStep('move', 'failed', moveRes.error || '');
             throw new Error('Move failed: ' + (moveRes.error || ''));
           }
-          setStep('move', 'done', `${moveRes.moved} file${moveRes.moved === 1 ? '' : 's'} moved`);
+          // Reconcile against what actually left the shoot folder. success can
+          // be True for a partial batch; stripping the request list would drop
+          // files that never moved (name conflicts). Prefer moved_requested
+          // (requested mains only); fall back to intersecting moved_filenames.
+          const movedMains = Array.isArray(moveRes.moved_requested)
+            ? moveRes.moved_requested.slice()
+            : rejectFilenames.filter(fn => new Set(moveRes.moved_filenames || []).has(fn));
+          const skippedMains = rejectFilenames.filter(fn => !new Set(movedMains).has(fn));
+          const skipNote = skippedMains.length
+            ? `, ${skippedMains.length} skipped`
+            : '';
+          setStep('move', 'done', `${movedMains.length} reject${movedMains.length === 1 ? '' : 's'} moved${skipNote}`);
 
-          // Post-move: strip rejects from working data
-          const rejectSet = new Set(rejectFilenames);
-          rows = rows.filter(r => !rejectSet.has(r.filename));
-          for (const fn of rejectSet) cullingState.delete(fn);
-          cleanupScenedataForRejects(rejectSet);
+          const movedMainSet = new Set(movedMains);
+          rows = rows.filter(r => !movedMainSet.has(r.filename));
+          for (const fn of movedMains) cullingState.delete(fn);
+          cleanupScenedataForRejects(movedMainSet);
           await saveCullingState();
 
           try { await window.pywebview.api.open_reject_folder(rootPath); } catch (_) {}
           try { await window.pywebview.api.notify_main_window_refresh(); } catch (_) {}
 
-          moveCompleted = true;
-          const undoBtn = el('#undoBtn');
-          undoBtn.style.display = '';
-          undoBtn.disabled = false;
+          if (movedMains.length) {
+            moveCompleted = true;
+            rejectFilenames = movedMains;
+            const undoBtn = el('#undoBtn');
+            undoBtn.style.display = '';
+            undoBtn.disabled = false;
+          }
           scenes = aggregateScenes();
           renderAllScenes();
           updateStats();
           el('#statusLabel').textContent =
-            `Done! ${moveRes.moved} reject${moveRes.moved === 1 ? '' : 's'} moved. Click \u201cUndo Move\u201d to revert.`;
+            `Done! ${movedMains.length} reject${movedMains.length === 1 ? '' : 's'} moved${skipNote}.`
+            + (movedMains.length ? ' Click \u201cUndo Move\u201d to revert.' : '');
         } else {
           try { await window.pywebview.api.notify_main_window_refresh(); } catch (_) {}
           el('#statusLabel').textContent = 'Done!';
@@ -2831,7 +2845,7 @@
         const parts = [];
         if (doXmp && !anyFailed)  parts.push('XMP files written');
         if (doXmp &&  anyFailed)  parts.push('XMP had errors \u2014 check above');
-        if (doMove) parts.push('Undo available via the bottom bar');
+        if (doMove && moveCompleted) parts.push('Undo available via the bottom bar');
         el('#dlgProgressSubtitle').textContent = parts.join(' \u00b7 ');
         el('#dlgProgressActions').style.display = 'flex';
 

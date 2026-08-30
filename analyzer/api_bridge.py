@@ -60,6 +60,22 @@ except ImportError:
     except ImportError:
         _mac_sandbox = None
 
+try:
+    from kestrel_analyzer.database import write_json_atomic, write_text_atomic
+except ImportError:
+    try:
+        from analyzer.kestrel_analyzer.database import write_json_atomic, write_text_atomic
+    except ImportError:
+        def write_json_atomic(*_a, **_k):
+            raise RuntimeError(
+                "kestrel_analyzer.database.write_json_atomic is not importable"
+            )
+
+        def write_text_atomic(*_a, **_k):
+            raise RuntimeError(
+                "kestrel_analyzer.database.write_text_atomic is not importable"
+            )
+
 # Distribution channel ('direct' website build vs 'appstore' sandboxed build),
 # baked at build time. Import-safe everywhere; used by the frontend to branch
 # What's New / cloud-compute CTAs on channel without cutting a new release.
@@ -393,6 +409,75 @@ _RAW_EXTENSION_SET = set(_normalize_extensions(_RAW_EXTENSIONS or []))
 _CULLING_PRIMARY_IMAGE_EXTENSIONS = set(
     _normalize_extensions([*(_RAW_EXTENSIONS or []), *(_JPEG_EXTENSIONS or [])])
 )
+
+_REJECT_DEST_EXISTS_REASON = 'a file with this name already exists in the reject folder'
+_SHOOT_DEST_EXISTS_REASON = 'a file with this name already exists in the shoot folder'
+
+
+def _unlink_src_or_rollback(src: str, dst: str) -> None:
+    """Unlink ``src`` after ``dst`` was created; drop ``dst`` if that unlink fails.
+
+    The no-overwrite guard treats an existing ``dst`` as a permanent conflict.
+    If we created ``dst`` (hard link or exclusive copy) and then fail to remove
+    ``src``, the caller reports failure while ``dst`` still exists — a retry
+    for the same name is then refused forever. Rolling back ``dst`` restores
+    the pre-move state so a later attempt can succeed.
+    """
+    try:
+        os.unlink(src)
+    except OSError:
+        try:
+            os.unlink(dst)
+        except OSError:
+            pass
+        raise
+
+
+def _move_no_overwrite(src: str, dst: str) -> None:
+    """Move ``src`` to ``dst`` without replacing an existing destination.
+
+    ``os.rename`` / ``shutil.move`` overwrite on POSIX. Prefer a same-filesystem
+    hard link (``os.link`` raises ``FileExistsError`` if ``dst`` already exists)
+    then unlink the source. When linking is unsupported (cross-device, some
+    Windows setups), copy via ``O_CREAT|O_EXCL`` then unlink the source.
+    Never falls through to ``shutil.move``. If unlinking ``src`` fails after
+    ``dst`` exists, ``dst`` is removed so a retry is not blocked.
+    """
+    src = os.fspath(src)
+    dst = os.fspath(dst)
+    parent = os.path.dirname(dst)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    try:
+        os.link(src, dst)
+    except FileExistsError:
+        raise
+    except OSError:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, 'O_BINARY'):
+            flags |= os.O_BINARY
+        fd = os.open(dst, flags)
+        try:
+            with os.fdopen(fd, 'wb') as dest_fh:
+                fd = -1
+                with open(src, 'rb') as src_fh:
+                    shutil.copyfileobj(src_fh, dest_fh)
+                dest_fh.flush()
+                os.fsync(dest_fh.fileno())
+        except Exception:
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            try:
+                os.unlink(dst)
+            except OSError:
+                pass
+            raise
+        _unlink_src_or_rollback(src, dst)
+        return
+    _unlink_src_or_rollback(src, dst)
 
 
 class Api:
@@ -1226,15 +1311,31 @@ class Api:
             return {'success': False, 'error': str(e)}
 
     def clear_kestrel_data(self, folder_path: str):
-        """Delete the contents of the .kestrel folder within the given folder."""
+        """Delete the .kestrel folder in ``folder_path``.
+
+        Refuses while a queue item for that root is ``running`` so analysis
+        cannot write into a directory that is being deleted.
+        """
         try:
-            _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+            root_real, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
                 folder_path,
                 context='clear_kestrel_data',
                 require_root_exists=True,
             )
             if err:
                 return {'success': False, 'error': err}
+
+            if _queue_manager.has_running_writer(root_real):
+                warn(
+                    f'[API] clear_kestrel_data refused: analysis running for {root_real}'
+                )
+                return {
+                    'success': False,
+                    'error': (
+                        'Cannot clear .kestrel while analysis is running '
+                        'for this folder'
+                    ),
+                }
 
             if not os.path.isdir(kestrel_dir):
                 return {'success': True, 'message': 'No .kestrel folder found'}
@@ -1835,8 +1936,9 @@ class Api:
             csv_path = os.path.join(kestrel_dir, 'kestrel_database.csv')
             if not os.path.exists(csv_path):
                 return {'success': False, 'error': f'CSV not found: {csv_path}'}
-            with open(csv_path, 'w', encoding='utf-8-sig', newline='') as f:
-                f.write(csv_content)
+            # Atomic write: the analysis pipeline / auto-refresh may read this
+            # same file, and a crash mid-write must not truncate the database.
+            write_text_atomic(csv_path, csv_content, encoding='utf-8-sig')
             return {'success': True, 'path': csv_path}
         except Exception as e:
             error(f'[API] write_kestrel_csv({folder_path!r}) error: {e}')
@@ -1984,8 +2086,10 @@ class Api:
             if not isinstance(scenedata, dict):
                 return {'success': False, 'error': 'scenedata must be a dict', 'path': ''}
 
-            with open(scenedata_path, 'w', encoding='utf-8') as f:
-                json.dump(scenedata, f, indent=2)
+            # Atomic write: scenedata holds the user's ratings/tags/cull
+            # decisions; a crash mid-write must not truncate the existing file.
+            # Stream via json.dump so large payloads don't peak on json.dumps.
+            write_json_atomic(scenedata_path, scenedata, indent=2)
             return {'success': True, 'path': scenedata_path, 'error': ''}
         except Exception as e:
             error(f'[API] write_kestrel_scenedata({folder_path!r}) error: {e}')
@@ -5436,13 +5540,19 @@ class Api:
         return {"success": True}
 
     def open_perch_url(self, url: str) -> dict:
-        """Open an arbitrary URL in the user's default browser."""
+        """Open a Perch gallery URL in the user's default browser.
+
+        Gated by ``_is_safe_external_url`` (same allowlist as ``open_url`` /
+        FINDING-01). A prefix check of ``http://`` / ``https://`` still lets
+        ``http://\\\\attacker\\share`` and CRLF-injected URLs through (S1-05).
+        """
         try:
-            if not isinstance(url, str) or not url.strip():
-                return {"success": False, "error": "missing url"}
-            u = url.strip()
-            if not (u.startswith("http://") or u.startswith("https://")):
+            if not _is_safe_external_url(url):
+                warn(f'[security] open_perch_url refused unsafe URL: {url!r}')
+                if not isinstance(url, str) or not url.strip():
+                    return {"success": False, "error": "missing url"}
                 return {"success": False, "error": "invalid url scheme"}
+            u = url.strip()
             webbrowser.open(u, new=2, autoraise=True)
             return {"success": True}
         except Exception as e:
@@ -6425,21 +6535,38 @@ class Api:
         every move below is already guarded by ``os.path.exists``, so a stale
         entry degrades to a logged warning rather than an error.
 
-        Returns (success: bool, moved_files: list[str])
+        Returns (success: bool, moved_files: list[str], skipped: list[dict]).
+        ``skipped`` holds ``{'filename': str, 'reason': str}`` entries for the
+        main file and/or companions that were NOT moved (conflict, missing, or
+        error), so the caller can report exactly which files stayed behind.
         """
         moved_files = []
+        skipped: list[dict] = []
 
         # Move main file
         src = os.path.join(root_path, filename)
         dst = os.path.join(reject_dir, filename)
         try:
-            if os.path.exists(src):
-                shutil.move(src, dst)
-                moved_files.append(filename)
-            else:
-                return False, moved_files
-        except Exception:
-            return False, moved_files
+            if not os.path.exists(src):
+                return False, moved_files, [{'filename': filename, 'reason': 'source not found'}]
+            if os.path.exists(dst):
+                # Never overwrite a file already in the reject folder.
+                # shutil.move() falls through to os.rename(), which on POSIX
+                # (Linux/macOS) silently replaces the destination -- so a stale
+                # reject with a recurring camera filename (common after an
+                # SD-card reformat, e.g. a second IMG_0001.CR3) would be
+                # destroyed with no warning. Refuse rather than lose data.
+                warn(f'[reject] destination already exists, not overwriting: {dst}')
+                return False, moved_files, [{'filename': filename, 'reason': _REJECT_DEST_EXISTS_REASON}]
+            _move_no_overwrite(src, dst)
+            moved_files.append(filename)
+        except FileExistsError:
+            # Dest appeared between the exists() check and the exclusive create.
+            warn(f'[reject] destination already exists, not overwriting: {dst}')
+            return False, moved_files, [{'filename': filename, 'reason': _REJECT_DEST_EXISTS_REASON}]
+        except Exception as e:
+            warn(f'[reject] Failed to move {filename}: {e}')
+            return False, moved_files, [{'filename': filename, 'reason': type(e).__name__}]
 
         companion_files = self._find_companion_files(root_path, filename, dir_index=dir_index)
         if companion_files:
@@ -6447,21 +6574,92 @@ class Api:
                 companion_src = os.path.join(root_path, companion)
                 companion_dst = os.path.join(reject_dir, companion)
                 try:
-                    if os.path.exists(companion_src):
-                        shutil.move(companion_src, companion_dst)
-                        moved_files.append(companion)
-                    else:
+                    if not os.path.exists(companion_src):
                         warn(f'[reject] companion detected but not found at: {companion_src}')
+                        skipped.append({'filename': companion, 'reason': 'companion not found on disk'})
+                        continue
+                    if os.path.exists(companion_dst):
+                        # Same no-overwrite rule for companions (e.g. IMG_0001.JPG):
+                        # surface the conflict instead of silently leaving it behind.
+                        warn(f'[reject] companion destination already exists, not overwriting: {companion_dst}')
+                        skipped.append({'filename': companion, 'reason': _REJECT_DEST_EXISTS_REASON})
+                        continue
+                    _move_no_overwrite(companion_src, companion_dst)
+                    moved_files.append(companion)
+                except FileExistsError:
+                    warn(f'[reject] companion destination already exists, not overwriting: {companion_dst}')
+                    skipped.append({'filename': companion, 'reason': _REJECT_DEST_EXISTS_REASON})
                 except Exception as e:
-                    # Log warning but don't fail the main move if a companion fails
+                    # Don't fail the (already moved) main file, but surface it.
                     warn(f'[reject] Failed to move {companion}: {e}')
+                    skipped.append({'filename': companion, 'reason': type(e).__name__})
         else:
             debug(f'[reject] No companion sidecars found for: {filename}')
 
-        return True, moved_files
+        return True, moved_files, skipped
+
+    @staticmethod
+    def _requested_mains_outcome(requested_mains, completed_filenames):
+        """Flags for a reject/undo batch keyed on the *requested main* files.
+
+        Companions are not requested; they may appear in ``completed_filenames``
+        and ``skipped`` but they do not affect these flags.
+
+        ``all_done`` is True iff every requested main file is in
+        ``completed_filenames``. ``success`` is False only when the caller
+        asked to process at least one main file and none of those mains
+        actually completed -- so callers that gate only on ``success`` cannot
+        drop UI state for files that never left disk. An empty request is a
+        successful no-op. Partial batches keep ``success`` True and set
+        ``all_done`` False; callers must reconcile via moved_requested /
+        restored_requested (and the back-compat moved_filenames /
+        restored_filenames plus skipped).
+        """
+        completed = set(completed_filenames)
+        all_done = all(fn in completed for fn in requested_mains)
+        any_done = any(fn in completed for fn in requested_mains)
+        success = (not requested_mains) or any_done
+        return all_done, success
+
+    @staticmethod
+    def _requested_filename_lists(requested_mains, completed_filenames, skipped):
+        """Split a batch result into requested-main moved/skipped lists.
+
+        Companions may appear in ``completed_filenames`` and ``skipped``; they
+        are omitted from these lists so callers can reconcile UI state without
+        intersecting against the original request.
+        """
+        completed = set(completed_filenames)
+        requested_set = set(requested_mains)
+        completed_requested = [fn for fn in requested_mains if fn in completed]
+        skipped_requested = [
+            item for item in skipped if item.get('filename') in requested_set
+        ]
+        return completed_requested, skipped_requested
 
     def move_rejects_to_folder(self, root_path: str, filenames):
-        """Move original photo files and sidecars into _KESTREL_Rejects subfolder."""
+        """Move original photo files and sidecars into _KESTREL_Rejects subfolder.
+
+        Return contract (callers must reconcile, not assume every requested
+        file moved just because ``success`` is True):
+
+        - ``success``: False on hard failures (bad root, exception) and when
+          at least one main file was requested but **none** of those mains
+          moved (all conflicts, missing, or invalid names). True for a
+          successful no-op (empty list) and for partial batches.
+        - ``all_moved``: True iff every requested *main* file is in
+          ``moved_filenames``. Invalid names and unmoved mains clear this.
+          Companion skips do not.
+        - ``moved_filenames``: every file that actually moved (requested mains
+          **and** companions). The culling UI intersects this with the request
+          list to recover which mains moved when ``moved_requested`` is absent.
+        - ``moved_requested``: requested main filenames that actually moved
+          (no companions). Prefer this over intersecting ``moved_filenames``.
+        - ``skipped``: mains and companions that did not move (conflict,
+          missing, invalid name, or error).
+        - ``skipped_requested``: ``skipped`` entries whose filename is a
+          requested main (no companions).
+        """
         try:
             root_real, err = self._validate_root_dir(root_path, context='move_rejects_to_folder', require_exists=True)
             if err:
@@ -6474,8 +6672,9 @@ class Api:
                 return {'success': False, 'error': 'Invalid reject folder path'}
 
             os.makedirs(reject_dir, exist_ok=True)
-            moved = []
-            errors = []
+            moved = []             # every file actually moved (main + companions)
+            skipped = []           # [{'filename', 'reason'}] for anything not moved
+            errors = []            # same info as formatted strings (back-compat)
 
             if isinstance(filenames, list):
                 raw_filenames = filenames
@@ -6486,11 +6685,15 @@ class Api:
             else:
                 raw_filenames = []
             sanitized_filenames = []
+            requested_mains = []
             for raw in raw_filenames:
                 clean = self._sanitize_plain_filename(raw, context='move_rejects_to_folder')
                 if clean:
                     sanitized_filenames.append(clean)
+                    requested_mains.append(clean)
                 else:
+                    requested_mains.append(str(raw))
+                    skipped.append({'filename': str(raw), 'reason': 'invalid filename'})
                     errors.append(f'{raw}: invalid filename')
 
             # One listing for the whole batch: every file here lives in
@@ -6498,15 +6701,39 @@ class Api:
             # would be O(files x dirsize) on a folder that can hold thousands.
             dir_index = self._build_dir_index(root_real)
             for fn in sanitized_filenames:
-                success, moved_files = self._move_file_with_sidecars(
+                _success, moved_files, file_skipped = self._move_file_with_sidecars(
                     root_real, fn, reject_dir, dir_index=dir_index
                 )
-                if success:
+                if moved_files:
                     moved.extend(moved_files)
-                else:
-                    errors.append(f'{fn}: move failed')
-            info(f'[reject] moved {len(moved)} file(s) (including sidecars), errors {len(errors)}')
-            return {'success': True, 'moved': len(moved), 'errors': errors, 'reject_folder': reject_real}
+                # Surface every conflict (main file and/or companions) both as a
+                # structured entry (so callers can reconcile moved vs skipped by
+                # filename) and as a formatted string (backward compatible).
+                for s in file_skipped:
+                    skipped.append(s)
+                    errors.append(f"{s['filename']}: {s['reason']}")
+            info(f'[reject] moved {len(moved)} file(s) (including sidecars), skipped {len(skipped)}')
+            all_moved, success = self._requested_mains_outcome(requested_mains, moved)
+            moved_requested, skipped_requested = self._requested_filename_lists(
+                requested_mains, moved, skipped
+            )
+            result = {
+                'success': success,
+                'all_moved': all_moved,
+                'moved': len(moved),
+                'moved_filenames': moved,
+                'moved_requested': moved_requested,
+                'skipped': skipped,
+                'skipped_requested': skipped_requested,
+                'errors': errors,
+                'reject_folder': reject_real,
+            }
+            if not success:
+                result['error'] = (
+                    'none of the requested files could be moved '
+                    '(name conflicts, missing files, or invalid filenames; see skipped)'
+                )
+            return result
         except Exception as e:
             error(f'[API] move_rejects_to_folder error: {e}')
             return {'success': False, 'error': str(e)}
@@ -6553,21 +6780,33 @@ class Api:
         ``dir_index`` is an optional pre-built listing of ``reject_dir`` shared
         across a batch; see ``_move_file_with_sidecars`` on staleness.
 
-        Returns (success: bool, restored_files: list[str])
+        Returns (success: bool, restored_files: list[str], skipped: list[dict]).
+        ``skipped`` holds ``{'filename': str, 'reason': str}`` entries so the
+        main file and companion conflicts are surfaced to the caller structured,
+        not just logged.
         """
         restored_files = []
+        skipped: list[dict] = []
 
         # Restore main file
         src = os.path.join(reject_dir, filename)
         dst = os.path.join(root_path, filename)
         try:
-            if os.path.exists(src):
-                shutil.move(src, dst)
-                restored_files.append(filename)
-            else:
-                return False, restored_files
-        except Exception:
-            return False, restored_files
+            if not os.path.exists(src):
+                return False, restored_files, [{'filename': filename, 'reason': 'not found in rejects'}]
+            if os.path.exists(dst):
+                # Don't overwrite a file the user re-added to the shoot folder;
+                # shutil.move would silently replace it on POSIX. Refuse instead.
+                warn(f'[reject-undo] destination already exists, not overwriting: {dst}')
+                return False, restored_files, [{'filename': filename, 'reason': _SHOOT_DEST_EXISTS_REASON}]
+            _move_no_overwrite(src, dst)
+            restored_files.append(filename)
+        except FileExistsError:
+            warn(f'[reject-undo] destination already exists, not overwriting: {dst}')
+            return False, restored_files, [{'filename': filename, 'reason': _SHOOT_DEST_EXISTS_REASON}]
+        except Exception as e:
+            warn(f'[reject-undo] Failed to restore {filename}: {e}')
+            return False, restored_files, [{'filename': filename, 'reason': type(e).__name__}]
 
         companion_files = self._find_companion_files(reject_dir, filename, dir_index=dir_index)
         if companion_files:
@@ -6575,18 +6814,38 @@ class Api:
                 companion_src = os.path.join(reject_dir, companion)
                 companion_dst = os.path.join(root_path, companion)
                 try:
-                    shutil.move(companion_src, companion_dst)
+                    if not os.path.exists(companion_src):
+                        warn(f'[reject-undo] companion detected but not found at: {companion_src}')
+                        skipped.append({'filename': companion, 'reason': 'companion not found on disk'})
+                        continue
+                    if os.path.exists(companion_dst):
+                        warn(f'[reject-undo] companion destination already exists, not overwriting: {companion_dst}')
+                        skipped.append({'filename': companion, 'reason': _SHOOT_DEST_EXISTS_REASON})
+                        continue
+                    _move_no_overwrite(companion_src, companion_dst)
                     restored_files.append(companion)
+                except FileExistsError:
+                    warn(f'[reject-undo] companion destination already exists, not overwriting: {companion_dst}')
+                    skipped.append({'filename': companion, 'reason': _SHOOT_DEST_EXISTS_REASON})
                 except Exception as e:
-                    # Log warning but don't fail if companion restore fails
                     warn(f'[reject-undo] Failed to restore {companion}: {e}')
+                    skipped.append({'filename': companion, 'reason': type(e).__name__})
         else:
             debug(f'[reject-undo] No companion sidecars found for: {filename}')
 
-        return True, restored_files
+        return True, restored_files, skipped
 
     def undo_reject_move(self, root_path: str, filenames):
-        """Move files and their sidecars back from _KESTREL_Rejects to the root folder."""
+        """Move files and their sidecars back from _KESTREL_Rejects to the root folder.
+
+        Return contract mirrors ``move_rejects_to_folder``: ``success`` is
+        False when requested mains all failed to restore (including an
+        all-invalid-name request); ``all_restored`` is True iff every requested
+        main is in ``restored_filenames``. ``restored_filenames`` includes
+        companions. ``restored_requested`` / ``skipped_requested`` are the
+        requested-main subsets. Callers must reconcile UI state from those
+        lists (or ``restored_filenames`` / ``skipped``).
+        """
         try:
             root_real, err = self._validate_root_dir(root_path, context='undo_reject_move', require_exists=True)
             if err:
@@ -6601,8 +6860,9 @@ class Api:
                 self._log_security_reject('undo_reject_move', 'Reject folder escapes root', root=root_real, reject=reject_real)
                 return {'success': False, 'error': 'Invalid reject folder path'}
 
-            restored = []
-            errors = []
+            restored = []          # every file actually restored (main + companions)
+            skipped = []           # [{'filename', 'reason'}] for anything not restored
+            errors = []            # same info as formatted strings (back-compat)
 
             if isinstance(filenames, list):
                 raw_filenames = filenames
@@ -6613,26 +6873,50 @@ class Api:
             else:
                 raw_filenames = []
             sanitized_filenames = []
+            requested_mains = []
             for raw in raw_filenames:
                 clean = self._sanitize_plain_filename(raw, context='undo_reject_move')
                 if clean:
                     sanitized_filenames.append(clean)
+                    requested_mains.append(clean)
                 else:
+                    requested_mains.append(str(raw))
+                    skipped.append({'filename': str(raw), 'reason': 'invalid filename'})
                     errors.append(f'{raw}: invalid filename')
 
             # One listing for the whole batch — same reasoning as the reject
             # path, over the rejects folder instead of the shoot folder.
             restore_index = self._build_dir_index(reject_dir)
             for fn in sanitized_filenames:
-                success, restored_files = self._restore_file_with_sidecars(
+                _success, restored_files, file_skipped = self._restore_file_with_sidecars(
                     reject_dir, root_real, fn, dir_index=restore_index
                 )
-                if success:
+                if restored_files:
                     restored.extend(restored_files)
-                else:
-                    errors.append(f"{fn}: not found in rejects")
-            info(f"[reject-undo] restored {len(restored)} file(s) (including sidecars), errors {len(errors)}")
-            return {"success": True, "restored": len(restored), "errors": errors}
+                for s in file_skipped:
+                    skipped.append(s)
+                    errors.append(f"{s['filename']}: {s['reason']}")
+            info(f"[reject-undo] restored {len(restored)} file(s) (including sidecars), skipped {len(skipped)}")
+            all_restored, success = self._requested_mains_outcome(requested_mains, restored)
+            restored_requested, skipped_requested = self._requested_filename_lists(
+                requested_mains, restored, skipped
+            )
+            result = {
+                "success": success,
+                "all_restored": all_restored,
+                "restored": len(restored),
+                "restored_filenames": restored,
+                "restored_requested": restored_requested,
+                "skipped": skipped,
+                "skipped_requested": skipped_requested,
+                "errors": errors,
+            }
+            if not success:
+                result["error"] = (
+                    "none of the requested files could be restored "
+                    "(name conflicts, missing files, or invalid filenames; see skipped)"
+                )
+            return result
         except Exception as e:
             error(f"[API] undo_reject_move error: {e}")
             return {"success": False, "error": str(e)}
