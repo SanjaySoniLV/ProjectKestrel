@@ -458,8 +458,10 @@ def _to_csv_atomic(database: pd.DataFrame, db_path: str) -> None:
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="") as f:
             database.to_csv(f, index=False)
+            # flush() errors (ENOSPC, EIO) must propagate: a partial temp
+            # file must not be os.replace'd over a good destination.
+            f.flush()
             try:
-                f.flush()
                 os.fsync(f.fileno())
             except OSError:
                 # fsync can legitimately fail on some network filesystems

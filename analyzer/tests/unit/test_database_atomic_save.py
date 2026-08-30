@@ -156,6 +156,45 @@ class TestAtomicCsvWrite:
         assert sorted(os.listdir(tmp_path)) == ["kestrel_database.csv"]
         assert len(pd.read_csv(db_path)) == len(df)
 
+    def test_flush_error_does_not_replace_existing(self, tmp_path, monkeypatch):
+        """ENOSPC on flush must not promote a partial CSV temp over the last good file."""
+        db_path = tmp_path / "kestrel_database.csv"
+        _to_csv_atomic(_frame(5), str(db_path))
+        good = db_path.read_bytes()
+        real_fdopen = _dbmod.os.fdopen
+
+        class FlushBoom:
+            def __init__(self, real):
+                self._real = real
+
+            def write(self, *a, **k):
+                return self._real.write(*a, **k)
+
+            def flush(self):
+                raise OSError(errno.ENOSPC, "No space left on device")
+
+            def fileno(self):
+                return self._real.fileno()
+
+            def close(self):
+                return self._real.close()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.close()
+                return False
+
+        def wrapping_fdopen(*a, **k):
+            return FlushBoom(real_fdopen(*a, **k))
+
+        monkeypatch.setattr(_dbmod.os, "fdopen", wrapping_fdopen)
+        with pytest.raises(OSError):
+            _to_csv_atomic(_frame(5), str(db_path))
+        assert db_path.read_bytes() == good
+        assert sorted(x.name for x in tmp_path.iterdir()) == ["kestrel_database.csv"]
+
 
 class TestAtomicTextWrite:
     """write_text_atomic backs the UI CSV write path."""
