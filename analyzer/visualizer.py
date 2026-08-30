@@ -423,11 +423,15 @@ def _mark_session_start() -> None:
 def _mark_session_clean_exit(source: str = 'unspecified') -> None:
     """Mark this session closed cleanly and clear stale unclean-shutdown recovery.
 
-    Preserves a previously-recorded 'os_shutdown' or 'crash' reason — the
-    main() finally block fires after webview.start() returns, which happens
-    both on user-initiated quit (truly clean) AND when the OS closes our
-    window during reboot/logoff. In the latter case shutdown_watch has
-    already recorded 'os_shutdown' and we must not overwrite it.
+    Preserves a previously-recorded 'os_shutdown' or 'crash' reason — main()
+    calls this once webview.start() has returned, which happens both on
+    user-initiated quit (truly clean) AND when the OS closes our window during
+    reboot/logoff. In the latter case shutdown_watch has already recorded
+    'os_shutdown' and we must not overwrite it.
+
+    Callers are responsible for not calling this on a crash path: main()'s
+    finally block also runs when startup raises, and gates the call on
+    webview.start() having returned.
     """
     _log_shutdown_state('clean_exit: entered', source=source, pid=os.getpid())
     try:
@@ -1178,6 +1182,12 @@ def main():
     t = threading.Thread(target=_serve, daemon=True)
     t.start()
     api = None
+    # Set only once webview.start() has returned, i.e. the UI window closed and
+    # the user really did quit. The try below opens well before that call, so
+    # the finally also runs when Api(), create_window() or webview.start()
+    # itself raises — those are crashes, not clean exits, and must not be
+    # marked 'clean'. See the finally block for why that distinction matters.
+    _webview_returned = False
     try:
         log('Starting windowed UI via pywebview...')
         api = Api() # start maximized
@@ -1354,8 +1364,49 @@ def main():
         except Exception:
             pass
         webview.start(debug=_kestrel_debug)
+        _webview_returned = True
     finally:
-        # Signal in-flight cloud-compute uploads to stop FIRST. Their
+        # Record the clean exit FIRST, before any teardown work — but only if
+        # webview.start() actually returned.
+        #
+        # The gate matters: this try opens ~175 lines above webview.start(), so
+        # the finally also runs when Api(), create_window() or webview.start()
+        # raises. Marking those 'clean' would suppress the recovery prompt for
+        # a genuine startup crash — and writing it early makes that worse than
+        # it was, because the window between this line and the top-level
+        # handler's 'crash' now spans the whole teardown below. A hang there
+        # (or the user force-quitting through it) would leave 'clean' standing
+        # for a session that crashed, which is the exact inverse of the bug
+        # this change fixes.
+        #
+        # Past the gate, the user has quit and the exit really is clean;
+        # everything below is best-effort housekeeping that cannot
+        # retroactively make it unclean.
+        #
+        # This used to run at the very end of the block, after the cloud-upload
+        # signal, two cache cleanups and server.shutdown(). Any of those can
+        # block indefinitely (server.shutdown() waits for the serve_forever
+        # loop, which a wedged request handler can hold open) or be cut short
+        # by the OS reaping the process during quit. When that happened the
+        # 'clean' marker was never written, app_session_exit_reason stayed
+        # 'unknown', and the *next* launch reported a false unclean shutdown.
+        #
+        # Crash reports show exactly this: prior-session logs that stop partway
+        # through the teardown — e.g. on the cleanup_culling_cache line — with
+        # no 'Server stopped.' and no clean_exit lines, followed by a recovery
+        # prompt on the following launch.
+        #
+        # Ordering is still correct for the non-clean cases:
+        #   - shutdown_watch's 'os_shutdown' and the crash handler's 'crash'
+        #     are preserved rather than overwritten (see _mark_session_clean_exit).
+        #   - shutdown_watch firing later still overwrites 'clean' with
+        #     'os_shutdown'; neither value raises a recovery prompt.
+        #   - an exception raised by the teardown below propagates to the
+        #     top-level handler, which records 'crash' over this 'clean'.
+        if _webview_returned:
+            _mark_session_clean_exit(source='main:finally')
+        # Signal in-flight cloud-compute uploads to stop before the cache
+        # cleanups and server shutdown below. Their
         # ThreadPoolExecutor registers an atexit join of (non-daemon) worker
         # threads, so a still-running upload would otherwise keep uploading
         # every queued image and hang the process after the window has closed.
@@ -1386,13 +1437,11 @@ def main():
         except Exception as e:
             warn('Server shutdown error:', e)
         log('Server stopped.')
-        # Mark clean exit here (inside finally) so it runs even if server
-        # shutdown raises, preventing a false "unclean shutdown" on next launch.
-        # NOTE: in the recovery-dialog false-positive reports, 'Server stopped.'
-        # is very often the final line of the captured log. The [shutdown]
-        # lines emitted below are what distinguish "this call never returned"
-        # from "it ran and the write was lost".
-        _mark_session_clean_exit(source='main:finally')
+        # The exit reason is already persisted (top of this block). This line
+        # only records that the teardown itself ran to completion: a log tail
+        # that reaches clean_exit but never reaches here identifies a hang or
+        # kill during shutdown, which is still worth diagnosing even though it
+        # no longer misreports as a crash.
         _log_shutdown_state('main: exit path complete', pid=os.getpid())
 
 
