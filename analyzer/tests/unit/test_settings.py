@@ -191,10 +191,56 @@ class TestSanitizePayload:
         # (depending on implementation details)
         assert isinstance(result, dict)
 
+    def test_exposure_preview_strength_clamped(self):
+        """Preview exposure-comp strength is a 0..1 float, like other _set_float
+        keys: absent when not provided, coerced + clamped when present."""
+        # Absent on empty input (read-time default of 1.0 applied by the UI).
+        assert "exposure_preview_strength" not in _sanitize_settings_payload({})
+        # In-range value preserved.
+        assert _sanitize_settings_payload(
+            {"exposure_preview_strength": 0.5}
+        )["exposure_preview_strength"] == 0.5
+        # Out-of-range clamps to [0.0, 1.0].
+        assert _sanitize_settings_payload(
+            {"exposure_preview_strength": 5}
+        )["exposure_preview_strength"] == 1.0
+        assert _sanitize_settings_payload(
+            {"exposure_preview_strength": -1}
+        )["exposure_preview_strength"] == 0.0
+        # Garbage falls back to the 0.7 default.
+        assert _sanitize_settings_payload(
+            {"exposure_preview_strength": "abc"}
+        )["exposure_preview_strength"] == 0.7
+
+
+class TestCrashReportsSetting:
+    """Tests for ``crash_reports_enabled`` — opt-out flag, default ON.
+
+    Like other ``_set_bool`` keys, an absent key is left absent (the default
+    is applied at read time via ``.get(..., True)``); a present value is
+    coerced to a real bool.
+    """
+
+    def test_true_round_trips(self):
+        result = _sanitize_settings_payload({"crash_reports_enabled": True})
+        assert result["crash_reports_enabled"] is True
+
+    def test_false_round_trips(self):
+        result = _sanitize_settings_payload({"crash_reports_enabled": False})
+        assert result["crash_reports_enabled"] is False
+
+    def test_coerced_to_bool(self):
+        result = _sanitize_settings_payload({"crash_reports_enabled": "no"})
+        assert result["crash_reports_enabled"] is False
+
+    def test_absent_key_omitted(self):
+        result = _sanitize_settings_payload({})
+        assert "crash_reports_enabled" not in result
+
 
 class TestAnalyzeRecentsSetting:
     """Tests for ``analyze_recents`` — the Phase 3 Analyze Folders dialog
-    recents chip row. List of dicts ``{path, timestamp}``, cap 16."""
+    recents chip row. List of dicts ``{path, timestamp}``, cap 8."""
 
     def test_round_trip(self):
         payload = {"analyze_recents": [
@@ -207,13 +253,13 @@ class TestAnalyzeRecentsSetting:
         assert result["analyze_recents"][0]["path"].endswith("2024")
         assert result["analyze_recents"][0]["timestamp"] == "2026-05-20T10:30:00Z"
 
-    def test_caps_at_sixteen(self):
+    def test_caps_at_eight(self):
         big_list = [
             {"path": f"/photos/{i}", "timestamp": f"2026-05-{i:02d}T00:00:00Z"}
             for i in range(1, 25)
         ]
         result = _sanitize_settings_payload({"analyze_recents": big_list})
-        assert len(result["analyze_recents"]) == 16
+        assert len(result["analyze_recents"]) == 8
 
     def test_dedupes_by_path_most_recent_wins(self):
         # When the same path appears twice, the FIRST occurrence (most recent

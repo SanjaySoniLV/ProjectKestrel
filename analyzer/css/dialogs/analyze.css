@@ -1,12 +1,13 @@
 /* ── Analyze Folders dialog (Phase 3: 3-column layout) ─────────────────────── */
 .analyze-dlg {
+  /* Sizing comes from .kdlg--lg on the parent <dialog>; this is the inner
+     layout container so it just fills the available flex slot. */
   display: flex;
   flex-direction: column;
   gap: 12px;
   padding: 16px;
-  width: min(96vw, calc(100vw - 80px));
-  height: min(88vh, calc(100vh - 80px));
-  max-height: none;
+  flex: 1 1 auto;
+  min-height: 0;
   box-sizing: border-box;
 }
 
@@ -191,6 +192,43 @@
   cursor: pointer;
 }
 .adlg-radio-inline input[type="radio"] { accent-color: #2b6ec8; }
+
+/* Question-and-answer settings blocks. Each block is one question about the
+   shoot with its answers directly beneath, so the column reads as a short
+   interview rather than a list of model parameters. */
+.adlg-question {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 0 0;
+  border-top: 1px solid #2a3445;
+}
+.adlg-question:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+.adlg-question-text {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #e1e5ec;
+  line-height: 1.35;
+}
+/* Answers sit side by side, and wrap to one per row when the dialog is too
+   narrow to keep both labels on a single line. */
+.adlg-answer-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+@media (max-width: 1100px) {
+  .adlg-answer-pair { grid-template-columns: 1fr; }
+}
+.adlg-answer-pair .adlg-radio-row-horiz { align-items: center; }
+.adlg-question-help {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
 
 /* "More options" collapsible — flat list of less-critical settings. */
 .analyze-dlg-more-options {
@@ -678,13 +716,12 @@
   opacity: 1 !important;
 }
 
-/* ── Pre-queue confirmation modal (Phase 3H) ────────────────────────────── */
+/* ── Pre-queue confirmation modal (Phase 3H) ──────────────────────────────
+   Sizing comes from .kdlg--sm on the parent <dialog>. */
 .analyze-confirm-dlg {
-  padding: 0;
   border: 2px solid var(--warn);
   border-radius: 12px;
   background: #161922;
-  width: min(540px, 92vw);
   color: var(--text);
   box-shadow: 0 20px 64px rgba(0, 0, 0, 0.7);
 }
@@ -794,6 +831,32 @@
   transform: rotate(180deg);
 }
 
+/* Header close (X) — replaces "Clear done". Shown only when every queue item
+   is terminal (see renderQueuePanel / _ccRenderPanel). Sits next to the
+   collapse toggle; its click is stopPropagation'd so it doesn't also collapse
+   the panel. */
+.queue-panel-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  margin: -2px 0;
+  font-size: 15px;
+  line-height: 1;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.queue-panel-close:hover {
+  background: #3a1d1d;
+  color: #ff6b6b;
+}
+
 .queue-panel-body {
   padding: 8px;
   max-height: 340px;
@@ -853,6 +916,21 @@
   flex-shrink: 0;
   white-space: nowrap;
 }
+
+/* Blue to match the cloud panel's "+ 📂 Load" (.cloud-account-load-btn) and the
+   pill's pause/cancel controls — the green here was an inconsistent outlier. */
+.queue-item-load-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid #3d5a7e;
+  background: #243650;
+  color: #cfe0ff;
+  cursor: pointer;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.queue-item-load-btn:hover { background: #2d456a; border-color: #4d6a9a; }
 
 .queue-item-status.pending {
   background: #0f2310;
@@ -991,3 +1069,111 @@
   color: #c8d0db;
   border-color: #8a93a3;
 }
+
+/* ── Cloud destination affordances under the summary headline ─────────── */
+/* Hidden by default (destination=local); shown only when the user picks the
+   Cloud destination card. The speed-test button is the gateway from "?" to a
+   computed estimate; the beta notice + Learn more link stay visible after the
+   test so the user remembers the estimate is approximate. */
+.analyze-dlg-cloud-est-panel {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: rgba(43, 110, 200, 0.06);
+  border: 1px solid #1f3656;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.analyze-dlg-cloud-est-panel.hidden { display: none; }
+
+.adlg-cloud-speed-btn {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: #1f3656;
+  color: #cfe2ff;
+  border: 1px solid #2b6ec8;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.adlg-cloud-speed-btn:hover:not(:disabled) {
+  background: #2b6ec8;
+  color: #fff;
+  border-color: #4a8edc;
+}
+.adlg-cloud-speed-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.adlg-cloud-speed-btn-icon { font-size: 12px; }
+
+.adlg-cloud-speed-status {
+  font-size: 11px;
+  color: var(--muted);
+}
+.adlg-cloud-speed-status.success { color: var(--ok); }
+.adlg-cloud-speed-status.error { color: #e07c7c; }
+.adlg-cloud-speed-status.hidden { display: none; }
+
+.adlg-cloud-beta-note {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.adlg-beta-badge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #ffd57a;
+  background: rgba(255, 213, 122, 0.12);
+  border: 1px solid rgba(255, 213, 122, 0.4);
+  padding: 1px 5px;
+  border-radius: 3px;
+  margin-right: 6px;
+  vertical-align: 1px;
+}
+.adlg-cloud-learn-more {
+  color: #7eb8e0;
+  text-decoration: none;
+  margin-left: 4px;
+}
+.adlg-cloud-learn-more:hover {
+  text-decoration: underline;
+  color: #cfe2ff;
+}
+
+/* Cloud "?" badge variant — same visual as the local-baseline badge but
+   with a slight blue tint so the two contexts read distinctly when both
+   appear in proximity (e.g. switching destinations rapidly). */
+.est-time-uncertain--cloud {
+  border-color: #4a8edc;
+  color: #7eb8e0;
+}
+.est-time-uncertain--cloud:hover {
+  color: #cfe2ff;
+  border-color: #7eb8e0;
+}
+
+/* Pre-flight bottleneck chip under the cloud est. time stat. Tells the user
+   whether the quoted number is bounded by their connection or by Cloud
+   Compute, so a slow estimate points at something actionable. */
+.adlg-cloud-regime {
+  display: block;
+  margin-top: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--muted, #8a93a5);
+  cursor: help;
+}
+.adlg-cloud-regime--upload   { color: #7eb8e0; }
+.adlg-cloud-regime--compute  { color: #e0b070; }
+.adlg-cloud-regime--balanced { color: #7fc98a; }

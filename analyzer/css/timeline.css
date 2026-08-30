@@ -39,7 +39,7 @@
 
 .timeline-day-banner {
   position: sticky;
-  top: 44px; /* below folder-group-header */
+  top: calc(var(--filter-bar-h) + var(--folder-header-h)); /* below the filter bar + folder-group-header */
   z-index: 8;
   font-size: 11px;
   font-weight: 700;

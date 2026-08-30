@@ -27,7 +27,19 @@ jobs:
           source .venv2/bin/activate
           python -m pip install --upgrade pip
           pip install -r requirements-macos.txt
-          pip install pyinstaller
+          pip install pyinstaller pytest
+
+      - name: Vendor pyexiv2 native deps (fixes JPEG XMP embedding off-Homebrew)
+        shell: bash
+        run: bash packaging/vendor_macos_native_deps.sh .venv2/bin/python
+
+      # Hard gate, not continue-on-error: this is a release artifact. The dev
+      # builds only warn, which is how a broken pyexiv2 reached a green DMG.
+      - name: Test gate — pytest (skip ui marker)
+        shell: bash
+        run: |
+          source .venv2/bin/activate
+          python -m pytest analyzer/tests/ -m "not ui" -q --tb=short
 
       - name: Smoke test CLI from source (repo root, first 2 test images)
         shell: bash

@@ -125,6 +125,9 @@
       const tcRaw = parseFloat(document.getElementById('adlgThumbnailJpegCompression')?.value);
       const tcVal = Math.max(0.5, Math.min(1.0, Number.isFinite(tcRaw) ? tcRaw : 0.75));
       const tqVal = Math.max(50, Math.min(100, Math.round(tcVal * 100)));
+      const useGpu = document.getElementById('analyzeUseGpu')?.checked ?? true;
+      const wildlifeEnabled = document.getElementById('analyzeWildlife')?.checked ?? false;
+      const speciesDetectionEnabled = document.getElementById('analyzeSpeciesDetection')?.checked ?? true;
       const adlgSettings = loadSettings();
       adlgSettings.detection_threshold = dtVal;
       adlgSettings.max_bird_crops = mbcVal;
@@ -136,19 +139,38 @@
       adlgSettings.thumbnail_max_width = twVal;
       adlgSettings.thumbnail_jpeg_compression = tcVal;
       adlgSettings.thumbnail_jpeg_quality = tqVal;
+      // Persist toggles so _cc_analysis_settings_snapshot can read them at
+      // cloud-compute submit time.
+      adlgSettings.wildlife_enabled = wildlifeEnabled;
+      adlgSettings.species_detection_enabled = speciesDetectionEnabled;
       saveSettings(adlgSettings);
       if (hasPywebviewApi && window.pywebview?.api?.save_settings_data) {
         try { await window.pywebview.api.save_settings_data(adlgSettings); } catch (_) { }
       }
 
-      const useGpu = document.getElementById('analyzeUseGpu')?.checked ?? true;
-      const wildlifeEnabled = document.getElementById('analyzeWildlife')?.checked ?? false;
-      const speciesDetectionEnabled = document.getElementById('analyzeSpeciesDetection')?.checked ?? true;
-
       const startBtn = document.getElementById('analyzeDlgAdd');
       if (startBtn) startBtn.disabled = true;
       document.getElementById('analyzeQueueDlg').close();
       try {
+        // Cloud destination: clear .kestrel synchronously for any destructive
+        // items (the cloud worker doesn't see local .kestrel state), then
+        // submit each folder via the cloud-compute bridge. Local destination
+        // falls through to start_analysis_queue with per-item options so the
+        // queue worker handles .kestrel deletion just-in-time.
+        if (typeof _analyzeDestination !== 'undefined' && _analyzeDestination === 'cloud') {
+          for (const p of paths) {
+            const opts = (perItemOptions || {})[p] || {};
+            if (opts.delete_kestrel_on_start) {
+              try { await window.pywebview.api.clear_kestrel_data(p); } catch (e) {
+                console.warn('[cloud] clear_kestrel_data failed', p, e);
+              }
+            }
+          }
+          await _ccSubmitSelectedFolders(paths);
+          if (typeof _ccUpdateAddButtonLabel === 'function') _ccUpdateAddButtonLabel();
+          return;
+        }
+
         showLoadingAnalyzer();
         const result = await window.pywebview.api.start_analysis_queue(
           paths,
@@ -283,6 +305,9 @@
             // UI-driven settings writes include the persisted legal flags.
             await hydrateSettingsFromServer();
             document.getElementById('legalNotice').classList.add('hidden');
+            // The RAW warning stacks beneath the legal banner; with that gone
+            // it should move back up to the top strip.
+            try { refreshRawWarnBanner(); } catch (_) { }
             showToast('Terms accepted. Welcome to Project Kestrel!', 4000);
           }
         } catch (e) {
@@ -307,6 +332,22 @@
         if (toggle) toggle.classList.toggle('open', _queuePanelExpanded);
         if (body) body.classList.toggle('hidden', !_queuePanelExpanded);
         if (controls) controls.classList.toggle('hidden', !_queuePanelExpanded);
+      });
+    }
+
+    // Cloud queue panel header: toggle expand / collapse
+    const cloudQueuePanelHeader = document.getElementById('cloudQueuePanelHeader');
+    if (cloudQueuePanelHeader) {
+      cloudQueuePanelHeader.addEventListener('click', () => {
+        _cloudQueuePanelExpanded = !_cloudQueuePanelExpanded;
+        const toggle = document.getElementById('cloudQueuePanelToggle');
+        const body = document.getElementById('cloudQueuePanelBody');
+        const controls = document.getElementById('cloudQueuePanelControls');
+        if (toggle) toggle.classList.toggle('open', _cloudQueuePanelExpanded);
+        if (body) body.classList.toggle('hidden', !_cloudQueuePanelExpanded);
+        if (controls) controls.classList.toggle('hidden', !_cloudQueuePanelExpanded);
+        if (typeof _ccRepositionPanel === 'function') _ccRepositionPanel();
+        if (typeof _perchRepositionUploadsPanel === 'function') _perchRepositionUploadsPanel();
       });
     }
 
@@ -355,10 +396,14 @@
       });
     }
 
-    // Clear done button
-    const queueClearBtn = document.getElementById('queueClearBtn');
-    if (queueClearBtn) {
-      queueClearBtn.addEventListener('click', async () => {
+    // Header close (X) — replaces "Clear done". Only visible (toggled in
+    // renderQueuePanel) when every item is terminal, so clearing removes them
+    // all and dismisses the panel. stopPropagation keeps the header's
+    // collapse-toggle from also firing.
+    const queuePanelCloseBtn = document.getElementById('queuePanelCloseBtn');
+    if (queuePanelCloseBtn) {
+      queuePanelCloseBtn.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
         try {
           await apiQueueControl('clear');
           const status = await apiGetQueueStatus();

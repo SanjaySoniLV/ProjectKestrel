@@ -55,6 +55,41 @@ except ImportError:
 
 HOST = '127.0.0.1'
 
+# How many sequential ports past the requested one to try before giving up and
+# letting the OS pick a free port (bind to 0). Keeps the URL predictable in the
+# common case while surviving a busy port (e.g. a stale instance still exiting).
+PORT_FALLBACK_TRIES = 8
+
+
+def _bind_server_with_fallback(preferred_port, handler):
+    """Bind a ThreadingHTTPServer on 127.0.0.1, trying a few ports.
+
+    Tries ``preferred_port`` first, then the next ``PORT_FALLBACK_TRIES`` ports,
+    and finally falls back to an OS-assigned free port (bind to 0). Returns
+    ``(server, port)`` where ``port`` is the port actually bound. Raises
+    ``OSError`` only if every candidate — including the OS-assigned one — fails.
+    """
+    candidates = [preferred_port + offset for offset in range(PORT_FALLBACK_TRIES + 1)]
+    candidates.append(0)  # last resort: let the OS hand us any free port
+    last_exc = None
+    for candidate in candidates:
+        try:
+            server = ThreadingHTTPServer((HOST, candidate), handler)
+        except OSError as exc:
+            last_exc = exc
+            continue
+        bound_port = server.server_address[1]
+        if candidate not in (preferred_port, 0):
+            log(f'Port {preferred_port} unavailable; using {bound_port} instead.')
+        elif candidate == 0:
+            log(f'Ports {preferred_port}-{preferred_port + PORT_FALLBACK_TRIES} '
+                f'unavailable; OS assigned port {bound_port}.')
+        return server, bound_port
+    raise OSError(
+        f'Could not bind an HTTP server on {HOST}: no free port found near '
+        f'{preferred_port}'
+    ) from last_exc
+
 # One-time settings-migration key that flags whether the 2026-03 legal-consent
 # self-heal has already run for this install. See ``_apply_legal_upgrade_self_heal``.
 LEGAL_SELF_HEAL_MIGRATION_KEY = 'legal_upgrade_self_heal_2026_03'
@@ -159,6 +194,111 @@ def _utc_now_iso() -> str:
 EXIT_REASON_KEY = 'app_session_exit_reason'
 EXIT_REASON_MIGRATION_KEY = 'exit_reason_migrated_v1'
 
+# ── Shutdown-tracker instrumentation ──────────────────────────────────────
+# A large share of incoming crash reports are recovery-dialog false
+# positives: the log tail shows a session that ended normally, yet the next
+# launch classified it 'unknown' and prompted for a crash report. The state
+# machine has three writers (_mark_session_start, _mark_session_clean_exit,
+# _mark_session_exit_reason), every one of which swallows its exceptions,
+# so today a failed write is indistinguishable from a write that never
+# happened.
+#
+# Everything below is observability only — no control flow depends on it.
+# Each transition logs old → new plus the writer that caused it, and each
+# write is read back to confirm it actually landed on disk. Together with
+# the prior session's pid liveness (see _pid_is_alive) these lines should
+# identify which path is failing to run, or whether a second concurrently
+# running instance is clobbering the first one's state.
+_SHUTDOWN_TAG = '[shutdown]'
+
+
+def _pid_is_alive(pid: int) -> Optional[bool]:
+    """Best-effort liveness check for a pid. None when undeterminable.
+
+    Used to log whether the *previous* session's process is somehow still
+    running when a new one starts — the signature of a second instance
+    overwriting the first's exit-reason bookkeeping, which would present
+    exactly as a false unclean-shutdown on the next launch.
+    """
+    if not pid or pid <= 0:
+        return None
+    try:
+        if sys.platform.startswith('win'):
+            import ctypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+            handle = kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid)
+            )
+            if not handle:
+                return False
+            try:
+                code = ctypes.c_ulong()
+                if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                    return None
+                return code.value == STILL_ACTIVE
+            finally:
+                kernel32.CloseHandle(handle)
+        os.kill(int(pid), 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Process exists but is owned by someone else.
+        return True
+    except Exception:
+        return None
+
+
+def _settings_file_hint() -> Optional[str]:
+    """Basename + parent of the settings file, for the session-start line.
+
+    Full paths are not logged — a home directory leaks the username into
+    crash reports. Two instances disagreeing on this value (e.g. a sandboxed
+    App Store build vs a direct build) would explain state that never
+    appears to persist.
+    """
+    try:
+        from settings_utils import _get_settings_path
+        path = _get_settings_path()
+        return os.path.join(os.path.basename(os.path.dirname(path)), os.path.basename(path))
+    except Exception:
+        return None
+
+
+def _log_shutdown_state(event: str, **fields) -> None:
+    """Emit one structured ``[shutdown]`` line. Never raises."""
+    try:
+        parts = ' '.join(f'{k}={v}' for k, v in fields.items() if v is not None)
+        info(f'{_SHUTDOWN_TAG} {event}{(" " + parts) if parts else ""}')
+    except Exception:
+        pass
+
+
+def _verify_exit_reason_persisted(event: str, expected: str) -> None:
+    """Re-read settings and warn if ``EXIT_REASON_KEY`` didn't stick.
+
+    This is the single most useful datum for the false-positive
+    investigation: it separates "the writer never ran" from "the writer ran
+    and the value did not survive the write" (corrupt settings.json, a
+    refused save, or a racing writer overwriting it).
+    """
+    try:
+        on_disk = str(
+            load_persisted_settings().get(EXIT_REASON_KEY, '') or ''
+        ).strip().lower()
+        if on_disk == expected:
+            _log_shutdown_state(f'{event}: persisted', exit_reason=on_disk)
+        else:
+            warn(
+                f'{_SHUTDOWN_TAG} {event}: WRITE DID NOT STICK — '
+                f'expected={expected!r} on_disk={on_disk!r}. Next launch will '
+                f'likely report a false unclean shutdown.'
+            )
+    except Exception as exc:
+        warn(f'{_SHUTDOWN_TAG} {event}: verification read failed: {exc}')
+
 
 def _classify_prior_session(settings: dict) -> str:
     """Return the previous session's exit reason, applying legacy migration.
@@ -186,19 +326,56 @@ def _mark_session_start() -> None:
         settings = load_persisted_settings()
         prev_reason = _classify_prior_session(settings)
         prev_started = str(settings.get('app_session_started_utc', '') or '').strip()
+        prev_pid = int(settings.get('app_session_pid', 0) or 0)
+
+        # Full classification inputs, so a crash-report log tail shows exactly
+        # what the detector saw rather than just its verdict.
+        _log_shutdown_state(
+            'session_start: classifying prior session',
+            raw_exit_reason=repr(str(settings.get(EXIT_REASON_KEY, '') or '')),
+            classified=prev_reason,
+            prev_started=prev_started or "''",
+            prev_pid=prev_pid or None,
+            # True here means the previous session's process is somehow still
+            # running — i.e. a second instance is about to overwrite its
+            # bookkeeping. Prime suspect for the false positives.
+            prev_pid_alive=_pid_is_alive(prev_pid),
+            legacy_closed_cleanly=settings.get('app_session_closed_cleanly'),
+            already_migrated=bool(settings.get(EXIT_REASON_MIGRATION_KEY)),
+            last_closed=str(settings.get('last_session_closed_utc', '') or '') or None,
+        )
+
         # Only 'crash' and 'unknown' get surfaced as recoverable unclean
         # shutdowns. 'os_shutdown' is intentionally suppressed so PC reboots
         # don't generate false crash dialogs.
         if prev_reason in ('crash', 'unknown') and prev_started:
             settings['last_unclean_shutdown_utc'] = prev_started
+            _log_shutdown_state(
+                'session_start: FLAGGING prior session unclean',
+                reason=prev_reason,
+                unclean_utc=prev_started,
+            )
         else:
+            had_flag = bool(str(settings.get('last_unclean_shutdown_utc', '') or '').strip())
             settings.pop('last_unclean_shutdown_utc', None)
+            _log_shutdown_state(
+                'session_start: prior session OK',
+                reason=prev_reason,
+                cleared_stale_flag=had_flag or None,
+            )
         settings['last_exit_reason'] = prev_reason
         settings[EXIT_REASON_MIGRATION_KEY] = True
         settings['app_session_started_utc'] = _utc_now_iso()
         settings['app_session_closed_cleanly'] = False  # legacy, kept one release
         settings[EXIT_REASON_KEY] = 'unknown'
         settings['app_session_pid'] = int(os.getpid())
+        _log_shutdown_state(
+            'session_start: opening new session',
+            exit_reason="'unknown' (until exit)",
+            pid=os.getpid(),
+            started=settings['app_session_started_utc'],
+            settings_file=_settings_file_hint(),
+        )
 
         try:
             today_utc = datetime.utcnow().strftime('%Y-%m-%d')
@@ -217,11 +394,14 @@ def _mark_session_start() -> None:
             pass
 
         save_persisted_settings(settings)
-    except Exception:
-        pass
+        _verify_exit_reason_persisted('session_start', 'unknown')
+    except Exception as exc:
+        # Previously silent. A failure here means the new session was never
+        # registered, so the *next* launch reads stale state.
+        warn(f'{_SHUTDOWN_TAG} session_start: FAILED to record session start: {exc}')
 
 
-def _mark_session_clean_exit() -> None:
+def _mark_session_clean_exit(source: str = 'unspecified') -> None:
     """Mark this session closed cleanly and clear stale unclean-shutdown recovery.
 
     Preserves a previously-recorded 'os_shutdown' or 'crash' reason — the
@@ -230,38 +410,96 @@ def _mark_session_clean_exit() -> None:
     window during reboot/logoff. In the latter case shutdown_watch has
     already recorded 'os_shutdown' and we must not overwrite it.
     """
+    _log_shutdown_state('clean_exit: entered', source=source, pid=os.getpid())
     try:
         settings = load_persisted_settings()
         settings['app_session_closed_cleanly'] = True
         existing_reason = str(settings.get(EXIT_REASON_KEY, '') or '').strip().lower()
         if existing_reason not in ('os_shutdown', 'crash'):
             settings[EXIT_REASON_KEY] = 'clean'
+            _log_shutdown_state(
+                'clean_exit: marking clean',
+                previous=repr(existing_reason),
+                pid=os.getpid(),
+            )
+        else:
+            # Not an error: shutdown_watch or the crash handler already
+            # classified this exit and that verdict outranks 'clean'.
+            _log_shutdown_state(
+                'clean_exit: preserving earlier reason',
+                preserved=existing_reason,
+                pid=os.getpid(),
+            )
         settings['last_session_closed_utc'] = _utc_now_iso()
         settings.pop('last_unclean_shutdown_utc', None)
         save_persisted_settings(settings)
-    except Exception:
-        pass
+        _verify_exit_reason_persisted(
+            'clean_exit',
+            'clean' if existing_reason not in ('os_shutdown', 'crash') else existing_reason,
+        )
+    except Exception as exc:
+        # Previously silent. This is the highest-value failure to know about:
+        # if this write is lost, the next launch sees 'unknown' and shows the
+        # recovery dialog for a session that in fact exited normally.
+        warn(f'{_SHUTDOWN_TAG} clean_exit: FAILED to mark clean exit: {exc}')
 
 
-def _mark_session_exit_reason(reason: str) -> None:
+def _is_pywebview_orphan_callback(exc_type, exc_value) -> bool:
+    """Return True for the benign pywebview "orphan callback" JS exception.
+
+    pywebview resolves a Python API call by evaluating
+    ``window.pywebview._returnValuesCallbacks.<fn>.<id>(...)`` on its
+    background thread. If the JS-side context (window/page) navigated or
+    reloaded between the API call and Python's return, that callback no
+    longer exists and pywebview raises ``JavascriptException`` with a
+    ``"... is not a function"`` message. This is not a Kestrel defect — the
+    caller is gone — so the crash handler treats it as a no-op.
+    """
+    if exc_type is None or exc_value is None:
+        return False
+    if exc_type.__name__ != 'JavascriptException':
+        return False
+    msg = str(exc_value)
+    return '_returnValuesCallbacks' in msg and 'is not a function' in msg
+
+
+def _mark_session_exit_reason(reason: str, source: str = 'unspecified') -> None:
     """Atomically record the cause of an in-progress shutdown.
 
     Called from the OS-shutdown watcher (``shutdown_watch``) and from the
     top-level crash handler so the next launch can distinguish a true
     application crash from a system reboot or logoff. Failsafe: any I/O
     error is swallowed because this runs at the worst possible moment.
+
+    ``source`` names the caller and appears in the ``[shutdown]`` log line;
+    it exists purely so a crash-report log tail shows which writer fired.
     """
     if reason not in ('clean', 'os_shutdown', 'crash', 'unknown'):
+        warn(f'{_SHUTDOWN_TAG} exit_reason: REJECTED invalid reason={reason!r} source={source}')
         return
     try:
         settings = load_persisted_settings()
+        previous = str(settings.get(EXIT_REASON_KEY, '') or '').strip().lower()
         settings[EXIT_REASON_KEY] = reason
         if reason == 'clean':
             settings['app_session_closed_cleanly'] = True
             settings.pop('last_unclean_shutdown_utc', None)
+        _log_shutdown_state(
+            'exit_reason: transition',
+            previous=repr(previous),
+            new=reason,
+            source=source,
+            pid=os.getpid(),
+        )
         save_persisted_settings(settings)
-    except Exception:
-        pass
+        _verify_exit_reason_persisted('exit_reason', reason)
+    except Exception as exc:
+        # Runs during OS shutdown or from the crash handler, so it must not
+        # raise — but it should no longer vanish without a trace either.
+        warn(
+            f'{_SHUTDOWN_TAG} exit_reason: FAILED to record reason={reason!r} '
+            f'source={source}: {exc}'
+        )
 
 
 def _apply_legal_upgrade_self_heal(settings: dict, prev_version: str, current_version: str) -> bool:
@@ -335,6 +573,50 @@ def _safe_under(base: str, candidate: str) -> bool:
 
 
 class Handler(SimpleHTTPRequestHandler):
+    # Static extension -> Content-Type table. We resolve MIME types from this map
+    # instead of the stdlib ``mimetypes`` module. SimpleHTTPRequestHandler's default
+    # ``guess_type()`` calls ``mimetypes.init()``, which reads system MIME files
+    # (e.g. ``/etc/apache2/mime.types``). Under the macOS App Sandbox (the Mac App
+    # Store build) that read is DENIED — ``PermissionError: [Errno 1] Operation not
+    # permitted`` — which raised on *every* GET and left the WebView blank white.
+    # This table covers everything the app serves; unknown extensions fall back to
+    # octet-stream and never touch ``/etc``. (No effect on the Windows/DMG builds,
+    # which could read the system files fine — this is a sandbox-only fix.)
+    _MIME_TYPES = {
+        '.html': 'text/html; charset=utf-8',
+        '.htm':  'text/html; charset=utf-8',
+        '.css':  'text/css; charset=utf-8',
+        '.js':   'text/javascript; charset=utf-8',
+        '.mjs':  'text/javascript; charset=utf-8',
+        '.json': 'application/json; charset=utf-8',
+        '.map':  'application/json; charset=utf-8',
+        '.svg':  'image/svg+xml',
+        '.png':  'image/png',
+        '.jpg':  'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.gif':  'image/gif',
+        '.webp': 'image/webp',
+        '.avif': 'image/avif',
+        '.ico':  'image/x-icon',
+        '.bmp':  'image/bmp',
+        '.woff': 'font/woff',
+        '.woff2': 'font/woff2',
+        '.ttf':  'font/ttf',
+        '.otf':  'font/otf',
+        '.wasm': 'application/wasm',
+        '.txt':  'text/plain; charset=utf-8',
+        '.csv':  'text/csv; charset=utf-8',
+        '.xml':  'application/xml; charset=utf-8',
+        '.webmanifest': 'application/manifest+json',
+    }
+
+    def guess_type(self, path):  # type: ignore[override]
+        """Resolve Content-Type from a static table, never from the system
+        ``mimetypes`` files (blocked by the macOS App Sandbox — see _MIME_TYPES)."""
+        import posixpath
+        ext = posixpath.splitext(str(path))[1].lower()
+        return self._MIME_TYPES.get(ext, 'application/octet-stream')
+
     # Serve from directory of this script (project root) by default.
     def translate_path(self, path: str) -> str:  # type: ignore[override]
         """Resolve file paths robustly across dev, frozen, and installed builds.
@@ -766,9 +1048,19 @@ def main():
     # suppress the false unclean-shutdown dialog. Best-effort and failsafe.
     try:
         import shutdown_watch
-        shutdown_watch.install(lambda: _mark_session_exit_reason('os_shutdown'))
+        _watch_installed = shutdown_watch.install(
+            lambda: _mark_session_exit_reason('os_shutdown', source='shutdown_watch')
+        )
+        # If no listener installed, an OS reboot/logoff cannot be
+        # distinguished from a crash and *will* raise a false unclean
+        # shutdown on the next launch. Worth knowing per-platform.
+        _log_shutdown_state(
+            'watch_install',
+            installed=bool(_watch_installed),
+            platform=sys.platform,
+        )
     except Exception as _e:
-        warn('shutdown_watch install failed:', _e)
+        warn(f'{_SHUTDOWN_TAG} watch_install: shutdown_watch install failed: {_e}')
 
     # ── Crash hardening ───────────────────────────────────────────────────────
     # faulthandler dumps a Python traceback to stderr (which is tee-streamed to
@@ -786,18 +1078,33 @@ def main():
         try:
             import traceback as _tb
             thread_name = getattr(args.thread, 'name', 'unknown')
+            # pywebview raises JavascriptException from its background dispatch
+            # thread when a Python API call returns but the JS-side promise
+            # callback is gone (page reloaded / navigated to another HTML file
+            # while the call was in flight). The "_returnValuesCallbacks.<fn>.
+            # <id> is not a function" message is the canonical signature. It is
+            # not a Kestrel defect — the caller went away — so log it once and
+            # don't mark the session as crashed or ship a crash report.
+            if _is_pywebview_orphan_callback(args.exc_type, args.exc_value):
+                warn(
+                    f'[Thread {thread_name!r}] pywebview orphan callback '
+                    f'(JS context navigated before Python returned); ignored.'
+                )
+                return
             tb_str = ''.join(_tb.format_exception(args.exc_type, args.exc_value, args.exc_traceback))
             error(f'[Thread {thread_name!r}] Uncaught exception: {args.exc_type.__name__}: {args.exc_value}')
             error(f'[Thread {thread_name!r}] Traceback:\n{tb_str}')
-            _mark_session_exit_reason('crash')
+            _mark_session_exit_reason('crash', source=f'thread_excepthook:{thread_name}')
             if _telemetry is not None:
                 try:
+                    _crash_settings = load_persisted_settings()
                     _telemetry.send_crash_report(
                         exc=args.exc_value,
                         tb_str=tb_str,
-                        machine_id=_telemetry.get_machine_id(load_persisted_settings()),
+                        machine_id=_telemetry.get_machine_id(_crash_settings),
                         version=_telemetry._read_version(),
                         exit_reason='crash',
+                        crash_reports_enabled=bool(_crash_settings.get('crash_reports_enabled', True)),
                     )
                 except Exception:
                     pass
@@ -813,7 +1120,7 @@ def main():
     # files (assets/, visualizer files) are served correctly. The frozen
     # PyInstaller branch prefers the bundled _internal/ folder.
     _chdir_to_static_root()
-    server = ThreadingHTTPServer((HOST, args.port), Handler)
+    server, args.port = _bind_server_with_fallback(args.port, Handler)
     log(f'Serving visualizer at http://{HOST}:{args.port}/  (Press Ctrl+C to stop)')
     log('HTTP surface: static-file GET only. Control routes permanently removed.')
 
@@ -920,23 +1227,36 @@ def main():
                             return False
                         return False
                     else:
-                        # Tkinter fallback
-                        import tkinter as _tk
-                        from tkinter import messagebox as _mb
-                        root = _tk.Tk()
-                        root.withdraw()
                         if _queue_manager.is_paused:
                             msg = 'Analysis is paused. Exit Project Kestrel? You can re-open later to resume.'
                         else:
                             msg = 'Analysis is in progress. Cancel analysis and exit?'
-                        res = _mb.askyesnocancel('Analysis in progress', msg)
-                        root.destroy()
-                        # askyesnocancel returns True=Yes, False=No, None=Cancel
-                        if res is True:
+                        # macOS: native NSAlert (Tk is excluded from the App
+                        # Store build — its libtk8.6.dylib references a private
+                        # API). Linux/source builds keep the Tk messagebox.
+                        choice = None
+                        if sys.platform == 'darwin':
+                            try:
+                                import mac_sandbox as _ms
+                                labels = ['Minimize', 'Quit Anyway', 'Cancel']
+                                idx = _ms.run_confirm('Analysis in progress', msg, labels)
+                                choice = labels[idx] if idx is not None else 'Minimize'
+                            except Exception:
+                                choice = 'Minimize'  # safe default: don't lose work
+                        else:
+                            import tkinter as _tk
+                            from tkinter import messagebox as _mb
+                            root = _tk.Tk()
+                            root.withdraw()
+                            res = _mb.askyesnocancel('Analysis in progress', msg)
+                            root.destroy()
+                            # askyesnocancel: True=Yes(quit), False=No(minimize), None=Cancel
+                            choice = {True: 'Quit Anyway', False: 'Minimize'}.get(res, 'Cancel')
+                        if choice == 'Quit Anyway':
                             _cancel_analysis_wait_for_worker_and_telemetry()
                             _cleanup_preview_cache_before_exit()
                             return True
-                        if res is False:
+                        if choice == 'Minimize':
                             try:
                                 win.minimize()
                             except Exception:
@@ -966,16 +1286,26 @@ def main():
                             return True
                         return False  # No - don't close
                     else:
-                        import tkinter as _tk
-                        from tkinter import messagebox as _mb
-                        root = _tk.Tk()
-                        root.withdraw()
-                        res = _mb.askyesno(
-                            'Unsaved Changes',
-                            'You have unsaved changes that will be lost. Close anyway?'
-                        )
-                        root.destroy()
-                        if res:
+                        _msg = 'You have unsaved changes that will be lost. Close anyway?'
+                        # macOS: native NSAlert (Tk excluded from the App Store
+                        # build). Linux/source builds keep the Tk messagebox.
+                        discard = False
+                        if sys.platform == 'darwin':
+                            try:
+                                import mac_sandbox as _ms
+                                labels = ['Cancel', 'Discard Changes']
+                                idx = _ms.run_confirm('Unsaved Changes', _msg, labels)
+                                discard = (idx == 1)
+                            except Exception:
+                                discard = False  # safe default: don't discard
+                        else:
+                            import tkinter as _tk
+                            from tkinter import messagebox as _mb
+                            root = _tk.Tk()
+                            root.withdraw()
+                            discard = bool(_mb.askyesno('Unsaved Changes', _msg))
+                            root.destroy()
+                        if discard:
                             _cleanup_preview_cache_before_exit()
                             return True
                         return False
@@ -995,13 +1325,42 @@ def main():
         # context menu with "Inspect" (DevTools) so the JS console is reachable.
         # Off by default for shipped builds; toggle for diagnostic sessions.
         _kestrel_debug = os.environ.get('KESTREL_DEBUG', '').strip().lower() in ('1', 'true', 'yes', 'on')
+        # Hard-disable in the macOS App Sandbox build: pywebview's Cocoa backend
+        # flips WKWebView's inspector via a private KVC key when debug=True,
+        # which is grounds for App Store rejection. Never honour the env there.
+        try:
+            import mac_sandbox as _ms
+            if _ms.is_sandboxed():
+                _kestrel_debug = False
+        except Exception:
+            pass
         webview.start(debug=_kestrel_debug)
     finally:
+        # Signal in-flight cloud-compute uploads to stop FIRST. Their
+        # ThreadPoolExecutor registers an atexit join of (non-daemon) worker
+        # threads, so a still-running upload would otherwise keep uploading
+        # every queued image and hang the process after the window has closed.
+        # Local-only — the job resumes server-side on next launch.
+        try:
+            if api is not None and hasattr(api, 'stop_cloud_uploads_for_shutdown'):
+                n = api.stop_cloud_uploads_for_shutdown()
+                if n:
+                    log(f'Signalled {n} in-flight cloud upload(s) to stop.')
+        except Exception as e:
+            warn('Cloud-upload shutdown signal failed:', e)
         try:
             if api is not None and hasattr(api, 'cleanup_tracked_culling_caches'):
                 api.cleanup_tracked_culling_caches()
         except Exception as e:
             warn('Cache cleanup during shutdown failed:', e)
+        # Best-effort removal of this session's temp sample-set mirrors. Skipping
+        # it (e.g. on crash) is harmless — the next launch wipes and rebuilds the
+        # mirror before use.
+        try:
+            if api is not None and hasattr(api, 'cleanup_sample_set_mirrors'):
+                api.cleanup_sample_set_mirrors()
+        except Exception as e:
+            warn('Sample-set mirror cleanup during shutdown failed:', e)
         try:
             server.shutdown()
             server.server_close()
@@ -1010,17 +1369,22 @@ def main():
         log('Server stopped.')
         # Mark clean exit here (inside finally) so it runs even if server
         # shutdown raises, preventing a false "unclean shutdown" on next launch.
-        _mark_session_clean_exit()
+        # NOTE: in the recovery-dialog false-positive reports, 'Server stopped.'
+        # is very often the final line of the captured log. The [shutdown]
+        # lines emitted below are what distinguish "this call never returned"
+        # from "it ran and the write was lost".
+        _mark_session_clean_exit(source='main:finally')
+        _log_shutdown_state('main: exit path complete', pid=os.getpid())
 
 
 if __name__ == '__main__':
     try:
         main()
     except KeyboardInterrupt:
-        _mark_session_clean_exit()
+        _mark_session_clean_exit(source='KeyboardInterrupt')
     except Exception as _main_exc:
         # Top-level crash handler — send crash report before re-raising
-        _mark_session_exit_reason('crash')
+        _mark_session_exit_reason('crash', source='main:toplevel')
         try:
             import traceback as _tb
             if _telemetry is not None:
@@ -1041,6 +1405,7 @@ if __name__ == '__main__':
                     machine_id=_crash_mid,
                     version=_telemetry._read_version(),
                     exit_reason='crash',
+                    crash_reports_enabled=bool(_crash_settings.get('crash_reports_enabled', True)),
                 )
                 # Give daemon thread a moment to fire off the HTTP request
                 import time as _t

@@ -7,6 +7,223 @@
     }
     function saveSettings(obj) { localStorage.setItem(SETTINGS_KEY, JSON.stringify(obj || {})); }
     function getSetting(k, def) { const s = loadSettings(); return (k in s) ? s[k] : def; }
+
+    // ── Custom rating profile ─────────────────────────────────────────────────
+    // The 'custom' profile's cutoffs live in the rating_thresholds_custom
+    // setting instead of RATING_PROFILES. This editor is the only place they
+    // can be edited; kestrel_analyzer/ratings.py normalizes whatever it is
+    // handed, so the UI is free to be the convenient layer rather than the
+    // authoritative one.
+    const RATING_THRESHOLD_KEYS = ['five', 'four', 'three', 'two'];  // high → low
+    const RATING_MIN_GAP = 0.01;   // must match ratings.MIN_THRESHOLD_GAP
+    const RATING_BALANCED = { five: 0.85, four: 0.60, three: 0.40, two: 0.15 };
+    let _customThresholds = { ...RATING_BALANCED };
+
+    function _round2(v) { return Math.round(v * 100) / 100; }
+
+    // Mirror of ratings.normalize_custom_thresholds: clamp to [0,1], then force
+    // strictly descending so no star band collapses to nothing.
+    function normalizeCustomThresholds(raw) {
+      const src = (raw && typeof raw === 'object') ? raw : {};
+      const out = {};
+      for (const k of RATING_THRESHOLD_KEYS) {
+        // Only numbers and numeric strings count as supplied. Number(null) and
+        // Number('') are 0 and Number(true) is 1, which would silently become
+        // real cutoffs here while Python's float() rejects them — the two
+        // normalizers have to agree or the UI shows bands the backend won't use.
+        const rawV = src[k];
+        const usable =
+          typeof rawV === 'number' ||
+          (typeof rawV === 'string' && rawV.trim() !== '');
+        const v = usable ? Number(rawV) : NaN;
+        out[k] = Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : RATING_BALANCED[k];
+      }
+      let ceiling = 1;
+      for (const k of RATING_THRESHOLD_KEYS) {
+        out[k] = _round2(Math.min(out[k], ceiling));
+        ceiling = _round2(out[k] - RATING_MIN_GAP);
+      }
+      let floor = 0;
+      for (const k of [...RATING_THRESHOLD_KEYS].reverse()) {
+        if (out[k] < floor) out[k] = _round2(floor);
+        floor = _round2(out[k] + RATING_MIN_GAP);
+      }
+      return out;
+    }
+
+    function _isCustomProfileSelected() {
+      return document.getElementById('ratingProfile')?.value === 'custom';
+    }
+
+    // Show the editor only for the Custom profile. Selecting a named profile
+    // seeds the custom values from it, so switching to Custom starts from
+    // whatever the user was already using rather than from balanced.
+    function refreshRatingProfileEditor(seedFromProfile = null) {
+      const editor = document.getElementById('ratingCustomEditor');
+      if (!editor) return;
+      const custom = _isCustomProfileSelected();
+      editor.classList.toggle('hidden', !custom);
+      if (!custom && seedFromProfile) {
+        const t = _ratingProfileTable[seedFromProfile];
+        if (t) _customThresholds = normalizeCustomThresholds(t);
+      }
+      if (custom) renderCustomThresholds();
+    }
+
+    // Built-in profiles, filled in from the bridge so the numbers are not
+    // duplicated here. Falls back to balanced-only if the call fails.
+    let _ratingProfileTable = { balanced: { ...RATING_BALANCED } };
+
+    async function loadRatingProfileTable() {
+      try {
+        const res = await window.pywebview?.api?.get_rating_thresholds?.();
+        if (res?.success && res.profiles && Object.keys(res.profiles).length) {
+          _ratingProfileTable = res.profiles;
+        }
+      } catch (e) { console.warn('loadRatingProfileTable:', e); }
+    }
+
+    function renderCustomThresholds() {
+      const bands = document.getElementById('ratingCustomBands');
+      const handles = document.getElementById('ratingCustomHandles');
+      const readout = document.getElementById('ratingCustomReadout');
+      if (!bands || !handles) return;
+      const t = _customThresholds;
+
+      // Bands run ★1 from 0 up to the two-star cutoff, then each cutoff to the
+      // next, with ★5 running to 1.00.
+      const edges = [0, t.two, t.three, t.four, t.five, 1];
+      bands.innerHTML = '';
+      for (let star = 1; star <= 5; star++) {
+        const from = edges[star - 1];
+        const to = edges[star];
+        const width = Math.max(0, to - from);
+        const band = document.createElement('div');
+        band.className = 'rating-custom-band' + (width < 0.07 ? ' narrow' : '');
+        band.dataset.star = String(star);
+        band.style.left = (from * 100) + '%';
+        band.style.width = (width * 100) + '%';
+        band.textContent = '★' + star;
+        bands.appendChild(band);
+      }
+
+      handles.innerHTML = '';
+      for (const key of RATING_THRESHOLD_KEYS) {
+        const star = { five: 5, four: 4, three: 3, two: 2 }[key];
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'rating-custom-handle';
+        btn.dataset.thresholdKey = key;
+        btn.style.left = (t[key] * 100) + '%';
+        btn.setAttribute('role', 'slider');
+        btn.setAttribute('aria-label', `Minimum quality score for ${star} stars`);
+        btn.setAttribute('aria-valuemin', '0');
+        btn.setAttribute('aria-valuemax', '1');
+        btn.setAttribute('aria-valuenow', t[key].toFixed(2));
+        btn.title = `★${star} starts at ${t[key].toFixed(2)}`;
+        const label = document.createElement('span');
+        label.textContent = '★' + star;
+        btn.appendChild(label);
+        handles.appendChild(btn);
+      }
+
+      if (readout) {
+        readout.textContent = RATING_THRESHOLD_KEYS
+          .map(k => `★${{ five: 5, four: 4, three: 3, two: 2 }[k]} ≥ ${t[k].toFixed(2)}`)
+          .join('   ·   ');
+      }
+    }
+
+    // Move one cutoff, pushing its neighbours out of the way rather than
+    // letting bands collapse. Returns the normalized set.
+    function setCustomThreshold(key, value) {
+      const next = { ..._customThresholds, [key]: Math.max(0, Math.min(1, Number(value) || 0)) };
+      const idx = RATING_THRESHOLD_KEYS.indexOf(key);
+      // Push higher stars up if this one crossed them.
+      for (let i = idx - 1; i >= 0; i--) {
+        const above = RATING_THRESHOLD_KEYS[i];
+        const minAbove = _round2(next[RATING_THRESHOLD_KEYS[i + 1]] + RATING_MIN_GAP);
+        if (next[above] < minAbove) next[above] = minAbove;
+      }
+      // Push lower stars down likewise.
+      for (let i = idx + 1; i < RATING_THRESHOLD_KEYS.length; i++) {
+        const below = RATING_THRESHOLD_KEYS[i];
+        const maxBelow = _round2(next[RATING_THRESHOLD_KEYS[i - 1]] - RATING_MIN_GAP);
+        if (next[below] > maxBelow) next[below] = maxBelow;
+      }
+      _customThresholds = normalizeCustomThresholds(next);
+      renderCustomThresholds();
+      return _customThresholds;
+    }
+
+    function wireCustomThresholdEditor() {
+      const track = document.getElementById('ratingCustomTrack');
+      const handles = document.getElementById('ratingCustomHandles');
+      if (!track || !handles || handles.dataset.wired) return;
+      handles.dataset.wired = '1';
+
+      let dragKey = null;
+
+      const positionFromEvent = (ev) => {
+        const rect = track.getBoundingClientRect();
+        if (!rect.width) return 0;
+        return Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
+      };
+
+      handles.addEventListener('pointerdown', (ev) => {
+        const btn = ev.target.closest('.rating-custom-handle');
+        if (!btn) return;
+        dragKey = btn.dataset.thresholdKey;
+        btn.classList.add('dragging');
+        // Capture on the container: re-rendering replaces the button mid-drag,
+        // so the original element would stop receiving moves.
+        handles.setPointerCapture(ev.pointerId);
+        ev.preventDefault();
+      });
+
+      handles.addEventListener('pointermove', (ev) => {
+        if (!dragKey) return;
+        setCustomThreshold(dragKey, _round2(positionFromEvent(ev)));
+      });
+
+      const endDrag = (ev) => {
+        if (!dragKey) return;
+        dragKey = null;
+        handles.querySelectorAll('.dragging').forEach(e => e.classList.remove('dragging'));
+        try { handles.releasePointerCapture(ev.pointerId); } catch (_) {}
+        if (typeof attemptAutoSave === 'function') attemptAutoSave();
+      };
+      handles.addEventListener('pointerup', endDrag);
+      handles.addEventListener('pointercancel', endDrag);
+
+      handles.addEventListener('keydown', (ev) => {
+        const btn = ev.target.closest('.rating-custom-handle');
+        if (!btn) return;
+        const step = ev.shiftKey ? 0.05 : 0.01;
+        const key = btn.dataset.thresholdKey;
+        let delta = 0;
+        if (ev.key === 'ArrowLeft' || ev.key === 'ArrowDown') delta = -step;
+        else if (ev.key === 'ArrowRight' || ev.key === 'ArrowUp') delta = step;
+        else if (ev.key === 'Home') delta = -1;
+        else if (ev.key === 'End') delta = 1;
+        else return;
+        ev.preventDefault();
+        setCustomThreshold(key, _round2(_customThresholds[key] + delta));
+        // Keep focus on the same star after the re-render.
+        document.querySelector(`.rating-custom-handle[data-threshold-key="${key}"]`)?.focus();
+      });
+
+      document.getElementById('ratingCustomReset')?.addEventListener('click', () => {
+        _customThresholds = normalizeCustomThresholds(
+          _ratingProfileTable.balanced || RATING_BALANCED
+        );
+        renderCustomThresholds();
+      });
+
+      document.getElementById('ratingProfile')?.addEventListener('change', (ev) => {
+        refreshRatingProfileEditor(ev.target.value);
+      });
+    }
     
     // Auto-save logic: debounced save when auto-save is enabled
     async function attemptAutoSave() {
@@ -86,6 +303,15 @@
       // Rating profile
       const profileSelect = document.getElementById('ratingProfile');
       if (profileSelect) profileSelect.value = getSetting('rating_profile', 'balanced');
+      // Custom thresholds: seed from the saved set, falling back to the active
+      // named profile so switching to Custom starts where the user already was.
+      await loadRatingProfileTable();
+      const savedCustom = getSetting('rating_thresholds_custom', null);
+      _customThresholds = normalizeCustomThresholds(
+        savedCustom || _ratingProfileTable[getSetting('rating_profile', 'balanced')] || RATING_BALANCED
+      );
+      wireCustomThresholdEditor();
+      refreshRatingProfileEditor();
       // RAW preview cache
       const rawCacheCb = document.getElementById('rawPreviewCacheEnabled');
       if (rawCacheCb) rawCacheCb.checked = getSetting('raw_preview_cache_enabled', true);
@@ -97,6 +323,10 @@
       lbl.textContent = consentShown
         ? (optedIn === true ? 'Opted in' : 'Not sharing')
         : 'Not yet decided';
+
+      // Crash reports default ON (opt-out).
+      const crashCb = document.getElementById('settingsCrashReports');
+      if (crashCb) crashCb.checked = getSetting('crash_reports_enabled', true);
       
       // Display total impact (photos analyzed) from hydrated local settings.
       const totalPhotos = getSetting('kestrel_impact_total_files', 0);
@@ -109,10 +339,23 @@
       const autoSaveCb = document.getElementById('settingsAutoSave');
       if (autoSaveCb) autoSaveCb.checked = getSetting('auto_save_enabled', true);
 
-      const rawExpDisableCb = document.getElementById('rawExposureCorrectionDisabled');
-      if (rawExpDisableCb) rawExpDisableCb.checked = getSetting('raw_exposure_correction_disabled', false);
-      const ectSettings = document.getElementById('settingsExposureCorrectedThumbs');
-      if (ectSettings) ectSettings.checked = !!getSetting('exposure_corrected_thumbs', true);
+      // Preview exposure-compensation strength — one slider shared with the
+      // scene viewer (see scene-zoom.js). Mirror the current value and drive the
+      // same apply path live so both stay in sync.
+      const expStrengthSlider = document.getElementById('settingsExpStrengthSlider');
+      if (expStrengthSlider) {
+        if (typeof syncSettingsExposureStrengthSlider === 'function') {
+          syncSettingsExposureStrengthSlider();
+        }
+        if (!expStrengthSlider.dataset.wired) {
+          expStrengthSlider.dataset.wired = '1';
+          expStrengthSlider.addEventListener('input', () => {
+            if (typeof applyExposurePreviewStrengthPct === 'function') {
+              applyExposurePreviewStrengthPct(parseFloat(expStrengthSlider.value));
+            }
+          });
+        }
+      }
 
       // ── Species & Region section ─────────────────────────────────────────
       const showSciCb = document.getElementById('showScientificNames');
@@ -149,6 +392,8 @@
       const customEditorPath = document.getElementById('customEditorPath').value.trim();
       const treeScanDepth = Math.max(1, Math.min(6, parseInt(document.getElementById('treeScanDepth').value, 10) || 3));
       const analyticsOptIn = document.getElementById('settingsAnalyticsOptIn').checked;
+      const crashReportsCb = document.getElementById('settingsCrashReports');
+      const crashReportsEnabled = crashReportsCb ? crashReportsCb.checked : true;
       const profileEl = document.getElementById('ratingProfile');
       const ratingProfile = profileEl ? profileEl.value : 'balanced';
       const rawCacheCb2 = document.getElementById('rawPreviewCacheEnabled');
@@ -158,12 +403,10 @@
       // Merge into existing settings so keys like machine_id / analytics_consent_shown are preserved
       const existing = loadSettings();
       const prevProfile = existing.rating_profile || 'balanced';
-      const ectCb = document.getElementById('settingsExposureCorrectedThumbs');
-      const exposureCorrectedThumbs = ectCb ? !!ectCb.checked : getSetting('exposure_corrected_thumbs', true);
-      const prevExposureThumbs = getSetting('exposure_corrected_thumbs', true);
-      const rawExpEl = document.getElementById('rawExposureCorrectionDisabled');
-      const rawExposureCorrectionDisabled = rawExpEl ? !!rawExpEl.checked : !!existing.raw_exposure_correction_disabled;
-      const prevRawExposureDisabled = !!existing.raw_exposure_correction_disabled;
+      // Editing custom thresholds changes every auto rating without changing
+      // the profile name, so compare the cutoffs too.
+      const prevCustom = JSON.stringify(normalizeCustomThresholds(existing.rating_thresholds_custom));
+      const nextCustom = JSON.stringify(normalizeCustomThresholds(_customThresholds));
 
       // ── Species & Region: collect region picker state + show-sci toggle ──
       // An empty selection falls back to ``['NA']`` rather than producing an
@@ -187,11 +430,11 @@
       const settings = {
         ...existing, editor, customEditorPath, treeScanDepth,
         analytics_opted_in: analyticsOptIn, analytics_consent_shown: true,
+        crash_reports_enabled: crashReportsEnabled,
         rating_profile: ratingProfile,
+        rating_thresholds_custom: normalizeCustomThresholds(_customThresholds),
         raw_preview_cache_enabled: rawPreviewCacheEnabled,
         auto_save_enabled: autoSaveEnabled,
-        raw_exposure_correction_disabled: rawExposureCorrectionDisabled,
-        exposure_corrected_thumbs: exposureCorrectedThumbs,
         bird_regions: finalRegions,
         show_scientific_names: showScientificNames,
       };
@@ -208,18 +451,15 @@
       }
       document.getElementById('settingsDlg').close();
       // If rating profile changed and folders are loaded, reapply immediately
-      if (ratingProfile !== prevProfile && rows.length > 0) {
+      const thresholdsChanged =
+        ratingProfile !== prevProfile ||
+        (ratingProfile === 'custom' && nextCustom !== prevCustom);
+      if (thresholdsChanged && rows.length > 0) {
         await reapplyNormalizationForLoadedFolders();
       }
-      const thumbPreviewChanged =
-        exposureCorrectedThumbs !== prevExposureThumbs || rawExposureCorrectionDisabled !== prevRawExposureDisabled;
-      if (thumbPreviewChanged && rows.length > 0) {
-        await renderScenes();
-        if (sceneDlg?.open && _currentScene) {
-          renderFilmstrip(_currentScene);
-          await selectFilmstripImage(currentImageIndex, _currentScene, false, false);
-        }
-      }
+      // Preview exposure-compensation strength is applied live by the shared
+      // slider (applyExposurePreviewStrengthPct → refreshManagedExposurePreviews),
+      // so no thumbnail re-render is needed here on save.
       // Show-scientific-names + region changes don't affect the model output,
       // just the way pills render and which species the combobox surfaces.
       // Repaint anything that's currently on screen so the change is visible

@@ -4,6 +4,7 @@
     let _queuePanelExpanded = true;
     let _queueLastDoneSet = new Set(); // track newly-done folders to auto-refresh tree
     let _queueLastRunningSet = new Set(); // track newly-running folders to update tree
+    let _queueLastInProgressSet = new Set(); // pending + running (auto-load when tree empty)
     let _tempKestrelPaths = new Set(); // transiently-marked paths to prevent flicker
     let _analyticsConsentPending = false; // guard against showing consent dialog multiple times
     let _queueCountsTimer = null; // interval for updating folder counts from queue
@@ -12,7 +13,6 @@
     let _inProgressFolderPaths = new Set(); // folders with pending/running status
     let _autoRefreshTimers = new Map(); // path -> intervalId for auto-refresh listeners
     let _inProgressFoldersCheckedCount = 0; // count of in-progress folders that are checked
-    let _isFirstQueueStart = true; // used to detect Case 1 vs Case 2 for auto-load
     
     // Session state for ETA calculations: track baseline state from folder inspection
     let _queueSessionStartState = new Map(); // path -> { initialProcessed: int, totalImages: int, toAnalyze: int }
@@ -191,6 +191,17 @@
       // Pause/resume button label
       if (pauseBtn) pauseBtn.textContent = paused ? '▶ Resume' : '⏸ Pause';
 
+      // Header close (X): only when every item is terminal (nothing running or
+      // pending and the queue isn't running). Lets the user dismiss a finished
+      // panel; otherwise it stays open. Toggled here (before the collapse
+      // early-return) so it works whether the panel is expanded or collapsed.
+      const closeBtn = document.getElementById('queuePanelCloseBtn');
+      if (closeBtn) {
+        const allTerminal = hasItems && !running
+          && runningItems.length === 0 && pendingItems.length === 0;
+        closeBtn.classList.toggle('hidden', !allTerminal);
+      }
+
       if (!_queuePanelExpanded) { body.classList.add('hidden'); if (controls) controls.classList.add('hidden'); return; }
       body.classList.remove('hidden'); if (controls) controls.classList.remove('hidden');
 
@@ -289,6 +300,21 @@
         statusEl.textContent = labels[item.status] || item.status;
         if (item.status === 'error' && item.error) statusEl.title = item.error;
         hdr.appendChild(nameEl); hdr.appendChild(statusEl);
+        // "Load" affordance: jump to this folder's results in the gallery.
+        // Shown once a folder has analyzable output (done) or is producing it
+        // (running) — loading mid-run is safe; new scenes stream in additively.
+        if (item.path && (item.status === 'done' || item.status === 'running')) {
+          const loadBtn = document.createElement('button');
+          loadBtn.className = 'queue-item-load-btn';
+          loadBtn.type = 'button';
+          loadBtn.textContent = '📂 Load';
+          loadBtn.title = 'Open this folder to browse results';
+          loadBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            if (typeof loadFolderIntoBrowser === 'function') loadFolderIntoBrowser(item.path);
+          });
+          hdr.appendChild(loadBtn);
+        }
         div.appendChild(hdr);
 
         // Progress bar
@@ -388,6 +414,12 @@
           }
           for (const rp of rootsToRescan) rescanFolderRoot(rp);
         }, 1200);
+        // Newly-finished folders become home-page recents (fully analyzed).
+        for (const p of nowDone) {
+          if (!_queueLastDoneSet.has(p) && typeof persistFolderRecentsBump === 'function') {
+            persistFolderRecentsBump(p);
+          }
+        }
       }
       _queueLastDoneSet = nowDone;
 
@@ -401,15 +433,17 @@
           }
         }
         
-        // Detect newly-running items (first time moving from pending to running)
         const runningNow = new Set(items.filter(i => i.status === 'running').map(i => norm(i.path)));
-        const runningRawPaths = {};
-        items.filter(i => i.status === 'running').forEach(i => { runningRawPaths[norm(i.path)] = i.path; });
-        for (const p of runningNow) {
-          if (!_queueLastRunningSet.has(p)) {
-            _handleFirstFolderAnalysisStart(runningRawPaths[p] || p);
+        const inProgressRawPaths = {};
+        items.filter(i => i.status === 'pending' || i.status === 'running').forEach(i => {
+          inProgressRawPaths[norm(i.path)] = i.path;
+        });
+        for (const p of inProgressNow) {
+          if (!_queueLastInProgressSet.has(p) && typeof autoLoadFolderWhenTreeEmpty === 'function') {
+            autoLoadFolderWhenTreeEmpty(inProgressRawPaths[p] || p);
           }
         }
+        _queueLastInProgressSet = new Set(inProgressNow);
         const prevRunningSet = _queueLastRunningSet;
         _queueLastRunningSet = runningNow;
         
@@ -983,6 +1017,9 @@
           ensureSceneNameColumn();
           ensureRatingColumns();
           await renderScenes();
+          // Freshly-analysed rows may be the first to carry the
+          // embedded-preview fallback marker for this folder.
+          try { refreshRawWarnBanner(); } catch (_) { }
           // If a scene dialog is open, its filmstrip is stale after renderScenes
           // rebuilt the scenes array with fresh row objects — re-render it now.
           if (_currentScene) {
@@ -1044,10 +1081,13 @@
         const rows = Array.from(document.querySelectorAll('#folderTree .tree-node-row'));
         for (const row of rows) {
           const rp = norm(row.dataset.path || '');
-          const isNowInProgress = _inProgressFolderPaths.has(rp);
+          const isNowInProgress = _inProgressFolderPaths.has(rp)
+            || (window._ccInProgressFolderPaths && window._ccInProgressFolderPaths.has(rp));
 
           if (isNowInProgress) {
             row.classList.add('in-progress');
+            row.classList.remove('no-kestrel');
+            row.classList.add('has-kestrel');
             _tempKestrelPaths.add(rp);
 
             if (!row.querySelector('.tree-in-progress-hourglass')) {
@@ -1055,9 +1095,10 @@
               hg.className = 'tree-in-progress-hourglass';
               hg.textContent = '⏳';
               hg.title = 'Analysis in progress';
-              const iconEl = row.querySelector('.tree-icon');
-              if (iconEl && iconEl.nextSibling) iconEl.parentNode.insertBefore(hg, iconEl.nextSibling);
-              else if (iconEl) iconEl.parentNode.appendChild(hg);
+              const featherEl = row.querySelector('.tree-perch-feather');
+              const anchorEl = featherEl || row.querySelector('.tree-icon');
+              if (anchorEl && anchorEl.nextSibling) anchorEl.parentNode.insertBefore(hg, anchorEl.nextSibling);
+              else if (anchorEl) anchorEl.parentNode.appendChild(hg);
             }
 
             if (!row.querySelector('.tree-cb')) {
@@ -1081,6 +1122,26 @@
             row.classList.remove('in-progress');
             const hg = row.querySelector('.tree-in-progress-hourglass');
             if (hg) hg.remove();
+          }
+        }
+
+        // Keep "Share with Perch" buttons in sync with analysis state: a folder
+        // that is mid-analysis must not be uploaded to Perch (incomplete
+        // timeline), so disable the button while analyzing and restore it when
+        // analysis finishes.
+        const perchBtns = Array.from(document.querySelectorAll('.folder-perch-btn'));
+        for (const btn of perchBtns) {
+          const bp = norm(btn.dataset.folderPath || '');
+          const analyzing = _inProgressFolderPaths.has(bp)
+            || (window._ccInProgressFolderPaths && window._ccInProgressFolderPaths.has(bp));
+          if (analyzing) {
+            btn.disabled = true;
+            btn.title = 'Wait for analysis to finish before uploading to Perch.';
+          } else if (btn.disabled) {
+            btn.disabled = false;
+            btn.title = btn.classList.contains('is-linked')
+              ? 'This folder is published to Perch (click to manage)'
+              : 'Share this folder to Perch (or manage existing perch)';
           }
         }
       } catch (e) { console.warn('[tree] updateInProgressFoldersInTree error:', e); }
@@ -1176,16 +1237,18 @@
           return;
         }
         
+        const ccPaths = window._ccInProgressFolderPaths || new Set();
         for (const [path, timerId] of _autoRefreshTimers.entries()) {
-          const isStillInProgress = _inProgressFolderPaths.has(path);
+          const isStillInProgress = _inProgressFolderPaths.has(path) || ccPaths.has(path);
           const isStillChecked = _isPathChecked(path);
           if (!isStillInProgress || !isStillChecked) {
             clearInterval(timerId);
             _autoRefreshTimers.delete(path);
           }
         }
-        
-        for (const inProgPath of _inProgressFolderPaths) {
+
+        const allInProgress = new Set([..._inProgressFolderPaths, ...ccPaths]);
+        for (const inProgPath of allInProgress) {
           if (_isPathChecked(inProgPath) && !_autoRefreshTimers.has(inProgPath)) {
             const capturedPath = inProgPath;
             const timerId = setInterval(async () => {
@@ -1208,29 +1271,13 @@
         function traverse(n) {
           if (!n) return;
           const np = (n.path || '').replace(/\\/g, '/');
-          if (n.has_kestrel && !_inProgressFolderPaths.has(np)) count++;
+          const ccPaths = window._ccInProgressFolderPaths || new Set();
+          if (n.has_kestrel && !_inProgressFolderPaths.has(np) && !ccPaths.has(np)) count++;
           (n.children || []).forEach(c => traverse(c));
         }
         for (const root of _getAllRoots()) traverse(root);
         return count;
       } catch (e) { return 0; }
-    }
-
-    /** Implement Case 1 logic: if first folder starts analysis and no other analyzed folders exist, auto-load it. */
-    async function _handleFirstFolderAnalysisStart(folderPath) {
-      try {
-        if (!_isFirstQueueStart) return; // only on first start
-        _isFirstQueueStart = false;
-        
-        const analyzedCount = countAnalyzedFolders();
-        if (analyzedCount === 0) {
-          // Case 1: Auto-check and auto-load the in-progress folder
-          checkedFolderPaths.add(folderPath);
-          renderFolderTree();
-          await debouncedAutoLoad();
-          setStatus('Auto-loaded in-progress folder (Case 1: no other analyzed folders)');
-        }
-      } catch (e) { console.warn('[case1] error:', e); }
     }
 
     // ── End Analysis Queue ────────────────────────────────────────────────────────

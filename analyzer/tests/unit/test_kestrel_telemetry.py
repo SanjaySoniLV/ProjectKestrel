@@ -1,0 +1,216 @@
+"""Unit tests for kestrel_telemetry.py — log payload redaction integration."""
+
+import json
+import pytest
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+import kestrel_telemetry
+import log_redactor
+
+
+pytestmark = pytest.mark.unit
+
+
+@pytest.fixture
+def pinned_user(monkeypatch):
+    """Pin the resolved username to 'Sanja' with a Windows-style home dir."""
+    state = {'home': r'C:\Users\Sanja'}
+
+    def _expanduser(path):
+        if path == '~' or path.startswith('~'):
+            return state['home'] + path[1:]
+        return path
+
+    monkeypatch.setattr(log_redactor.os.path, 'expanduser', _expanduser)
+    monkeypatch.setattr(
+        kestrel_telemetry.os.path, 'expanduser', _expanduser
+    )
+    monkeypatch.setenv('USERNAME', 'Sanja')
+    monkeypatch.setenv('USER', 'Sanja')
+    log_redactor._cache_key = ('', '')
+    log_redactor._cache_username_pattern = None
+    log_redactor._cache_home_pattern = None
+    yield state
+    log_redactor._cache_key = ('', '')
+
+
+class TestCrashReportOptOut:
+    """send_crash_report() must respect the crash_reports_enabled flag.
+
+    Gating happens for the two automatic call sites; the flag defaults to
+    True so a failed settings read still sends.
+    """
+
+    @pytest.fixture
+    def captured_posts(self, monkeypatch):
+        """Force frozen mode and capture outbound POSTs instead of sending."""
+        posts = []
+        monkeypatch.setattr(kestrel_telemetry, 'is_frozen', lambda: True)
+        monkeypatch.setattr(
+            kestrel_telemetry,
+            '_post_json_async',
+            lambda endpoint, payload: posts.append((endpoint, payload)),
+        )
+        return posts
+
+    def test_sends_when_enabled(self, captured_posts):
+        kestrel_telemetry.send_crash_report(
+            exc=ValueError('boom'), crash_reports_enabled=True
+        )
+        assert len(captured_posts) == 1
+        assert captured_posts[0][0] == '/api/crash'
+
+    def test_sends_by_default(self, captured_posts):
+        # No explicit flag -> defaults to True (failsafe-on).
+        kestrel_telemetry.send_crash_report(exc=ValueError('boom'))
+        assert len(captured_posts) == 1
+
+    def test_suppressed_when_disabled(self, captured_posts):
+        kestrel_telemetry.send_crash_report(
+            exc=ValueError('boom'), crash_reports_enabled=False
+        )
+        assert captured_posts == []
+
+    def test_not_sent_when_not_frozen(self, monkeypatch):
+        posts = []
+        monkeypatch.setattr(kestrel_telemetry, 'is_frozen', lambda: False)
+        monkeypatch.setattr(
+            kestrel_telemetry,
+            '_post_json_async',
+            lambda endpoint, payload: posts.append((endpoint, payload)),
+        )
+        # Even with the flag on, source/dev builds never send.
+        kestrel_telemetry.send_crash_report(
+            exc=ValueError('boom'), crash_reports_enabled=True
+        )
+        assert posts == []
+
+
+class TestGetRecentLogTailRedaction:
+    """Integration: planted log files should come back through
+    get_recent_log_tail() with username PII stripped."""
+
+    def test_redacts_username_in_payload(self, pinned_user, tmp_path):
+        kestrel_dir = tmp_path / '.kestrel'
+        kestrel_dir.mkdir()
+
+        # Planted structured analysis log.
+        analysis_log = kestrel_dir / 'kestrel_error_20260516T000000Z.json'
+        entries = [
+            {
+                'timestamp_utc': '2026-05-16T00:00:00Z',
+                'level': 'error',
+                'stage': 'pipeline',
+                'context': {'folder': r'C:\Users\Sanja\Pictures\Wildlife'},
+                'exception_type': 'FileNotFoundError',
+                'exception_message': (
+                    r"[Errno 2] No such file or directory: "
+                    r"'C:\Users\Sanja\Pictures\IMG_3333.CR2'"
+                ),
+                'traceback': (
+                    'Traceback (most recent call last):\n'
+                    '  File "C:\\Users\\Sanja\\AppData\\Local\\Programs\\'
+                    'Python\\Python311\\Lib\\site-packages\\tensorflow\\'
+                    '__init__.py", line 42, in <module>\n'
+                ),
+            }
+        ]
+        analysis_log.write_text(json.dumps(entries, indent=2), encoding='utf-8')
+
+        # Planted runtime stdout/stderr tail.
+        logs_dir = kestrel_dir / 'logs'
+        logs_dir.mkdir()
+        runtime_log = logs_dir / 'kestrel_runtime_20260516T000000Z.log'
+        runtime_log.write_text(
+            'starting analysis on C:\\Users\\Sanja\\Pictures\\Wildlife\n'
+            'wrote output to C:\\Users\\Sanja\\Pictures\\Wildlife\\.kestrel\n'
+            'all done\n',
+            encoding='utf-8',
+        )
+
+        result = kestrel_telemetry.get_recent_log_tail(
+            folder=str(tmp_path), runtime_log_files=1
+        )
+        assert result, 'expected a non-empty JSON payload'
+
+        # The serialised payload must not leak the username anywhere.
+        assert 'Sanja' not in result
+        assert '[REDACTED]' in result
+
+        payload = json.loads(result)
+
+        # Structured entry: ML traceback context preserved, username gone.
+        entry = payload['analysis_entries'][0]
+        assert 'site-packages\\tensorflow\\__init__.py' in entry['traceback']
+        assert 'FileNotFoundError' == entry['exception_type']
+        assert 'Sanja' not in entry['exception_message']
+        assert '[REDACTED]' in entry['exception_message']
+        assert 'Sanja' not in entry['context']['folder']
+        # Non-string fields untouched.
+        assert entry['level'] == 'error'
+        assert entry['stage'] == 'pipeline'
+
+        # Runtime tail: username gone, structural content kept.
+        runtime_tails = payload['runtime_output_tails']
+        assert len(runtime_tails) == 1
+        tail_text = runtime_tails[0]['tail']
+        assert 'Sanja' not in tail_text
+        assert 'starting analysis on' in tail_text
+        assert 'all done' in tail_text
+        # Filename preserved in the runtime entry.
+        assert runtime_tails[0]['file'] == 'kestrel_runtime_20260516T000000Z.log'
+
+
+class TestDistChannelTag:
+    """Every outbound payload must carry the distribution channel (see _post_json)."""
+
+    @pytest.fixture
+    def capture_post(self, monkeypatch):
+        """Intercept the JSON body that _post_json would serialise and POST."""
+        captured = {}
+
+        class _FakeReq:
+            def __init__(self, url, data=None, headers=None, method=None):
+                captured['data'] = data
+
+        class _FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr(kestrel_telemetry.urllib.request, 'Request', _FakeReq)
+        monkeypatch.setattr(
+            kestrel_telemetry.urllib.request, 'urlopen', lambda *a, **k: _FakeResp()
+        )
+
+        def _body():
+            return json.loads(captured['data'].decode('utf-8'))
+
+        return _body
+
+    def test_channel_injected(self, capture_post, monkeypatch):
+        monkeypatch.setattr(kestrel_telemetry, '_get_dist_channel', lambda: 'appstore')
+        kestrel_telemetry._post_json('/api/test', {'foo': 'bar'})
+        body = capture_post()
+        assert body['channel'] == 'appstore'
+        assert body['foo'] == 'bar'
+
+    def test_explicit_channel_preserved(self, capture_post, monkeypatch):
+        monkeypatch.setattr(kestrel_telemetry, '_get_dist_channel', lambda: 'appstore')
+        kestrel_telemetry._post_json('/api/test', {'channel': 'special'})
+        assert capture_post()['channel'] == 'special'
+
+    def test_caller_dict_not_mutated(self, capture_post, monkeypatch):
+        monkeypatch.setattr(kestrel_telemetry, '_get_dist_channel', lambda: 'appstore')
+        payload = {'foo': 'bar'}
+        kestrel_telemetry._post_json('/api/test', payload)
+        assert 'channel' not in payload  # shallow-copied, original untouched
+
+    def test_get_dist_channel_defaults_direct(self, monkeypatch):
+        monkeypatch.setattr(kestrel_telemetry, '_dist_channel_mod', None)
+        assert kestrel_telemetry._get_dist_channel() == 'direct'

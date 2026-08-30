@@ -18,24 +18,15 @@
   border-color: #c49050;
   color: #f5d98b;
 }
-/* ── Donation prompt dialog ──────────────────────────────────── */
-#donateDlg {
-  width: fit-content !important;
-  height: fit-content !important;
-  max-width: min(520px, 92vw);
-  max-height: 92vh;
-  min-width: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-  padding: 0;
-}
+/* ── Donation prompt dialog ────────────────────────────────────
+   Outer sizing comes from .kdlg--sm on the parent <dialog>. */
 .donate-dlg {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 14px;
   padding: 28px 28px 20px;
-  width: min(480px, 90vw);
+  flex: 1 1 auto;
   box-sizing: border-box;
   text-align: center;
 }

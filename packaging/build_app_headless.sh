@@ -50,8 +50,13 @@ printf "%s\n" "Running PyInstaller (onedir) ..."
 printf "%s\n" "========================================"
 echo
 
+# Which PyInstaller spec to build. Defaults to the direct-download Developer ID
+# spec; the App Store workflow sets KESTREL_SPEC=ProjectKestrel-macos-appstore.spec.
+KESTREL_SPEC="${KESTREL_SPEC:-ProjectKestrel-macos.spec}"
+echo "[OK] Building spec: ${KESTREL_SPEC}"
+
 pushd analyzer || exit 1
-python -m PyInstaller ProjectKestrel-macos.spec
+python -m PyInstaller "${KESTREL_SPEC}"
 popd
 
 DIST_DIR="analyzer/dist/ProjectKestrel"

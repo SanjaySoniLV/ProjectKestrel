@@ -25,15 +25,20 @@
   <link rel="stylesheet" href="css/welcome.css" />
   <link rel="stylesheet" href="css/timeline.css" />
   <link rel="stylesheet" href="css/legal-banner.css" />
+  <link rel="stylesheet" href="css/raw-warn-banner.css" />
   <link rel="stylesheet" href="css/dialogs/base.css" />
+  <link rel="stylesheet" href="css/dialogs/kdlg.css" />
   <link rel="stylesheet" href="css/dialogs/scene.css" />
   <link rel="stylesheet" href="css/dialogs/settings.css" />
   <link rel="stylesheet" href="css/dialogs/analyze.css" />
   <link rel="stylesheet" href="css/dialogs/live-analysis.css" />
+  <link rel="stylesheet" href="css/dialogs/cloud-compute.css" />
   <link rel="stylesheet" href="css/dialogs/feedback-consent.css" />
   <link rel="stylesheet" href="css/dialogs/donate.css" />
   <link rel="stylesheet" href="css/dialogs/tutorial-chooser.css" />
   <link rel="stylesheet" href="css/tutorial.css" />
+  <link rel="stylesheet" href="css/perch.css" />
+  <link rel="stylesheet" href="css/notifications.css" />
   <script src="csv_parser.js"></script>
 </head>
 
@@ -48,12 +53,49 @@
       <button id="legalAgreeBtn" class="legal-notice-btn">Agree &amp; Dismiss</button>
     </div>
   </div>
+  <div id="rawWarnNotice" class="raw-warn-banner hidden" role="alert">
+    <span id="rawWarnMsg" class="raw-warn-msg"></span>
+    <div class="raw-warn-actions">
+      <a id="rawWarnLearnMore" href="https://www.projectkestrel.org/notes/nikon-unsupported-raws"
+        target="_blank" rel="noopener" class="raw-warn-link">Learn More</a>
+      <button id="rawWarnDontShowBtn" class="raw-warn-btn">Don&rsquo;t Show Again</button>
+    </div>
+    <button id="rawWarnCloseBtn" class="raw-warn-close" type="button"
+      aria-label="Dismiss this warning">&times;</button>
+  </div>
   <div class="app-body">
   <header>
     <div class="wrap">
-      <h1>
-        <img src="logo.png" alt="Project Kestrel" style="height:32px; vertical-align:middle; margin-right:8px;" />
-        <span style="vertical-align:middle;">Project Kestrel</span>
+      <h1 style="display:flex;align-items:center;justify-content:space-between;margin:0 0 8px;">
+        <span style="display:flex;align-items:center;gap:8px;">
+          <img src="logo.png" alt="Project Kestrel" style="height:32px;" />
+          <span>Project Kestrel</span>
+        </span>
+        <span style="display:flex;align-items:center;gap:8px;">
+          <div id="notifWrap" class="notif-wrap hidden">
+            <button id="notifBell" class="notif-bell" type="button" aria-haspopup="true" aria-expanded="false" title="Notifications" aria-label="Notifications">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+                <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+              </svg>
+              <span id="notifBadge" class="notif-badge hidden">0</span>
+            </button>
+            <div id="notifPanel" class="notif-panel hidden" role="dialog" aria-label="Notifications">
+              <div class="notif-head">
+                <span class="notif-title">Notifications</span>
+                <button id="notifReadAll" class="notif-readall" type="button">Mark all read</button>
+              </div>
+              <div id="notifList" class="notif-list"></div>
+            </div>
+          </div>
+          <button id="accountBtn" title="Perch Account" aria-label="Perch Account">
+            <svg class="account-btn-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+              <circle cx="12" cy="7" r="4"></circle>
+            </svg>
+            <span id="accountBtnLabel" class="account-btn-label hidden"></span>
+          </button>
+        </span>
       </h1>
       <div class="toolbar">
         <div class="toolbar-row actions">
@@ -111,10 +153,10 @@
       <!-- Segmented footer strip: Settings | Feedback | Tutorial | Donate.
            Zoom moved to the bottom status bar. -->
       <div class="sidebar-footer segmented-strip" aria-label="Controls">
-        <button id="openSettings" class="segmented-strip-item" title="Open Kestrel settings" aria-label="Settings">⚙</button>
+        <button id="openSettings" class="segmented-strip-item" title="Open Kestrel settings" aria-label="Settings">⚙ Settings</button>
         <button id="openFeedback" class="segmented-strip-item" title="Send feedback, report a bug, or share a suggestion">Feedback</button>
         <button id="helpBtnMain" class="segmented-strip-item" title="Start guided tutorial">Tutorial</button>
-        <button id="donateBtnMain" class="segmented-strip-item donate-item" title="Support Project Kestrel — Donate via PayPal">💛 Donate</button>
+        <button id="donateBtnMain" class="segmented-strip-item donate-item" title="Support Project Kestrel">💛 Support</button>
       </div>
     </div>
   </header>
@@ -179,10 +221,13 @@
 
       <!-- Welcome / Quick-Start panel — visible only when no folder is loaded -->
       <div id="welcomePanel">
-        <img src="logo.png" alt="Kestrel Logo" style="height:150px; margin-bottom:8px; opacity:0.9;">
-        <h2>Welcome to Kestrel</h2>
-        <p class="welcome-subtitle">What would you like to do?</p>
-        <button class="welcome-action-btn" style="display:block; margin:12px auto 20px; width:100%; max-width:300px; font-size:14px; padding:10px 16px;" onclick="openTutorialChooser()">📖 Start Tutorial</button>
+        <div class="welcome-hero">
+          <img src="logo.png" alt="Kestrel Logo" class="welcome-hero-logo" style="height:150px; opacity:0.9;">
+          <div class="welcome-hero-text">
+            <h2>Welcome to Project Kestrel</h2>
+            <button class="welcome-action-btn" style="margin:0; font-size:14px; padding:10px 16px;" onclick="openTutorialChooser()">📖 Start Tutorial</button>
+          </div>
+        </div>
 
         <!-- "What's New" banner (populated + gated by JS via last_seen_whats_new_version setting) -->
         <div id="welcomeWhatsNew" class="welcome-whats-new hidden" role="region" aria-label="What's new in this update"></div>
@@ -206,9 +251,7 @@
         </div>
 
         <div class="welcome-footer">
-          Need help? Visit <a id="welcomeTutorialLink" href="https://projectkestrel.org/tutorial" target="_blank"
-            rel="noopener noreferrer">projectkestrel.org/tutorial</a> for a video walk-through or look for the in-app <b>Tutorial</b> buttons.
-          <div style="margin-top:12px; font-size:11px; opacity:0.8;">
+          <div style="font-size:11px; opacity:0.8;">
             By using Project Kestrel, you agree to the <a href="https://projectkestrel.org/terms-of-use"
               target="_blank">Terms of Use</a> and <a href="https://projectkestrel.org/privacy-policy"
               target="_blank">Privacy Policy</a>.
@@ -228,6 +271,10 @@
       <div class="queue-panel-header" id="queuePanelHeader" title="Click to expand / collapse">
         <span class="queue-panel-title">🔬 Analysis Queue</span>
         <span class="queue-panel-badge" id="queuePanelBadge">Idle</span>
+        <!-- Close (X): only appears once every item is in a terminal state
+             (done/error/cancelled) — i.e. nothing is analyzing. Replaces the
+             old "Clear done" button. -->
+        <button class="queue-panel-close hidden" id="queuePanelCloseBtn" type="button" title="Close — all items finished">×</button>
         <span class="queue-panel-toggle open" id="queuePanelToggle">▲</span>
       </div>
       <div class="queue-panel-body" id="queuePanelBody"></div>
@@ -235,9 +282,40 @@
       <div class="queue-panel-controls" id="queuePanelControls">
         <button id="queuePauseBtn" title="Pause / resume analysis">⏸ Pause</button>
         <button id="queueCancelBtn" title="Cancel all pending items">⏹ Cancel</button>
-        <button id="queueClearBtn" title="Remove finished items from list">🗑 Clear done</button>
         <button id="queueLiveBtn" title="See live analysis details">👁 Live</button>
       </div>
+    </div>
+
+    <!-- Cloud Analysis Queue panel — sibling of the local analysis queue.
+         Mirrors #queuePanel structure (queue-panel base class from
+         live-analysis.css) with cloud-specific accents from cloud-compute.css.
+         No 'Live' button: live preview thumbnails are not in v1 — progress
+         bars + phase chips only. Pause = upload-side pause (Worker keeps
+         analyzing already-uploaded backlog). Cancel = terminal job stop. -->
+    <div id="cloudQueuePanel" class="queue-panel cloud-queue-panel hidden" role="region" aria-label="Cloud Analysis Queue">
+      <div class="queue-panel-header" id="cloudQueuePanelHeader" title="Click to expand / collapse">
+        <span class="queue-panel-title">☁ Cloud Analysis</span>
+        <span class="queue-panel-badge" id="cloudQueuePanelBadge">Idle</span>
+        <!-- Close (X): only appears once every job is in a terminal state
+             (done/failed/cancelled/incomplete) — i.e. nothing is uploading or
+             analyzing. Replaces the old "Clear done" button. -->
+        <button class="queue-panel-close hidden" id="cloudQueuePanelCloseBtn" type="button" title="Close — all jobs finished">×</button>
+        <span class="queue-panel-toggle open" id="cloudQueuePanelToggle">▲</span>
+      </div>
+      <div class="queue-panel-body" id="cloudQueuePanelBody"></div>
+      <div class="queue-panel-controls" id="cloudQueuePanelControls">
+        <button id="cloudQueueCancelBtn" title="Cancel cloud analysis (stops Modal and deletes staged files).">⏹ Cancel</button>
+      </div>
+    </div>
+
+    <!-- Perch Uploads floating panel — sibling of the analysis queue -->
+    <div id="perchUploadsPanel" class="perch-uploads-panel hidden" role="region" aria-label="Perch Uploads">
+      <div class="perch-uploads-header" id="perchUploadsHeader" title="Click to expand / collapse">
+        <span class="perch-uploads-title">🪶 Perch Uploads</span>
+        <span class="perch-uploads-badge" id="perchUploadsBadge">Uploading</span>
+        <span class="perch-uploads-toggle open" id="perchUploadsToggle">▲</span>
+      </div>
+      <div class="perch-uploads-body" id="perchUploadsBody"></div>
     </div>
   </main>
   </div><!-- /.app-body -->
@@ -262,7 +340,7 @@
     </div>
   </footer>
 
-  <dialog id="sceneDlg">
+  <dialog id="sceneDlg" class="kdlg kdlg--fullscreen">
     <div class="scene-filmstrip-layout">
       <!-- ═══ TOP BAR: Scene info + tags + actions ═══ -->
       <div class="scene-topbar">
@@ -321,10 +399,19 @@
                 <span>Copy</span>
               </button>
             </div>
-            <label class="scene-zoom-bar" id="sceneZoomWrap" title="RAW Zoom — click and hold on the full image to zoom">
-              <span class="muted" style="font-size:11px">RAW Zoom</span>
-              <input type="range" id="sceneZoomSlider" min="2" max="12" value="5" step="0.5" style="width:90px">
-            </label>
+            <div class="scene-zoom-bar" id="sceneZoomWrap">
+              <label class="scene-zoom-ctrl" title="RAW Zoom — click and hold on the full image to zoom">
+                <span class="muted scene-zoom-ctrl-label">RAW Zoom</span>
+                <input type="range" id="sceneZoomSlider" min="2" max="12" value="5" step="0.5">
+              </label>
+              <div class="scene-zoom-spacer"></div>
+              <label class="scene-zoom-ctrl" title="Exposure-compensation strength applied to the preview (export thumbnail + RAW zoom). 0% turns preview correction off (original export); 100% applies the full auto correction so the bird roughly matches the bird-crop thumbnail. Does not change the baked bird-crop thumbnail.">
+                <span class="muted scene-zoom-ctrl-label">Exp Comp (<span id="sceneExpStrengthEv">+0.00</span>EV)</span>
+                <input type="range" id="sceneExpStrengthSlider" min="0" max="100" value="70" step="5">
+                <span class="scene-zoom-ctrl-val" id="sceneExpStrengthVal">70%</span>
+              </label>
+              <button type="button" class="scene-zoom-stat" id="sceneOverexposedToggle" aria-pressed="false" title="Percentage of the uncorrected full image with clipped (blown-out) highlights — measured before exposure compensation. Click to toggle the highlight clipping mask on the preview.">— clipped</button>
+            </div>
           </div>
           <div
             class="scene-preview-divider"
@@ -405,7 +492,7 @@
   </div>
 
   <!-- Tutorial chooser dialog (opened by the Tutorial button & welcome Start Tutorial) -->
-  <dialog id="tutorialChooserDlg" class="dlg-compact tut-chooser-dlg">
+  <dialog id="tutorialChooserDlg" class="kdlg kdlg--md kdlg--flex tut-chooser-dlg">
     <div class="tut-chooser-body">
       <h3 class="tut-chooser-title">Which version of the tutorial would you like?</h3>
       <p class="tut-chooser-sub">You can replay either one anytime from the <b>&#x1F4D6; Tutorial</b> button.</p>
@@ -431,10 +518,266 @@
     </div>
   </dialog>
 
+  <!-- Share with Perch — pre-upload dialog -->
+  <dialog id="perchUploadDlg" class="kdlg kdlg--lg kdlg--flex perch-upload-dlg" aria-labelledby="perchUploadDlgTitle">
+    <div class="perch-upload-dlg-body">
+      <div class="perch-upload-dlg-header">
+        <h3 id="perchUploadDlgTitle" style="margin:0;font-size:16px">🪶 Share with Perch</h3>
+        <button type="button" class="perch-upload-dlg-close" id="perchUploadDlgClose" title="Close">✕</button>
+      </div>
+
+      <!-- Linked-state takeover: shown when this folder has a perch_link.json.
+           Replaces the upload form entirely; user must Unlink to re-upload. -->
+      <div id="perchDlgLinkedView" class="hidden perch-linked">
+        <div class="perch-linked-hero">
+          <div class="perch-linked-hero-icon">🪶</div>
+          <div class="perch-linked-hero-body">
+            <h3 class="perch-linked-title" id="perchLinkedTitle">—</h3>
+            <div class="perch-linked-sub" id="perchLinkedSub">Loading status…</div>
+          </div>
+        </div>
+
+        <div class="perch-status-grid" id="perchStatusGrid">
+          <div class="perch-status-cell">
+            <div class="perch-status-label">Visibility</div>
+            <div class="perch-status-value" id="perchStatusVisibility">—</div>
+          </div>
+          <div class="perch-status-cell">
+            <div class="perch-status-label">Storage used</div>
+            <div class="perch-status-value" id="perchStatusBytes">—</div>
+          </div>
+          <div class="perch-status-cell">
+            <div class="perch-status-label">Photos</div>
+            <div class="perch-status-value" id="perchStatusPhotos">—</div>
+          </div>
+          <div class="perch-status-cell">
+            <div class="perch-status-label">Comments</div>
+            <div class="perch-status-value" id="perchStatusComments">—</div>
+          </div>
+        </div>
+
+        <div class="perch-linked-share hidden" id="perchLinkedShareRow">
+          <div class="perch-linked-share-label">Share URL</div>
+          <input type="text" readonly class="perch-linked-share-url" id="perchLinkedShareUrl">
+          <button type="button" class="perch-linked-share-copy" id="perchLinkedShareCopy">Copy</button>
+        </div>
+
+        <div class="perch-linked-warn hidden" id="perchLinkedWarn"></div>
+
+        <!-- H7 tag-sync: appears only when local species/family tags differ from
+             the live perch. Clicking Sync opens a per-scene preview dialog. -->
+        <div class="perch-tag-sync hidden" id="perchTagSyncBanner">
+          <div class="perch-tag-sync-icon">✏️</div>
+          <div class="perch-tag-sync-body">
+            <div class="perch-tag-sync-title" id="perchTagSyncTitle">Tag changes since you published</div>
+            <div class="perch-tag-sync-sub" id="perchTagSyncSub">Push your corrected species &amp; family names to the live perch.</div>
+          </div>
+          <button type="button" id="perchTagSyncBtn" class="perch-cta">Sync to Perch</button>
+        </div>
+
+        <div class="perch-linked-actions">
+          <button type="button" id="perchLinkedOpenBtn" class="perch-cta">Open in browser →</button>
+          <button type="button" id="perchLinkedUnlinkBtn" class="perch-cta-secondary">Unlink</button>
+        </div>
+        <div class="perch-linked-note">
+          Unlink removes the local link between this folder and the perch. The perch
+          on projectkestrel.org is <strong>not deleted</strong> — manage or delete it there.
+        </div>
+      </div>
+
+      <!-- Resumable-upload banner — shown when a partial upload is detected on disk. -->
+      <div id="perchResumableBanner" class="perch-resumable hidden">
+        <div class="perch-resumable-icon">⏸</div>
+        <div class="perch-resumable-body">
+          <div class="perch-resumable-title">Resumable upload found</div>
+          <div class="perch-resumable-text" id="perchResumableSubtitle">A previous upload didn't finish.</div>
+        </div>
+        <div class="perch-resumable-actions">
+          <button type="button" class="perch-cta-secondary" id="perchResumableResumeBtn">Resume upload</button>
+          <button type="button" class="perch-cta-secondary perch-cta-warn" id="perchResumableStartOverBtn">Start over</button>
+        </div>
+      </div>
+
+      <!-- ── Loading state: shown immediately, replaced after preflight ── -->
+      <div id="perchDlgLoading" class="perch-dlg-loading">
+        <div class="perch-dlg-loading-spinner"></div>
+        <div class="perch-dlg-loading-text">Inspecting folder…</div>
+      </div>
+
+      <!-- ── Signed-out body: explainer ─────────────────────────────── -->
+      <div id="perchDlgSignedOut" class="hidden">
+        <p class="perch-explainer-lead">Perch is the hosted home for your Kestrel-curated bird outings.</p>
+        <p class="perch-explainer-sub">Publish a perch from this folder and share a link with friends, family, or co-photographers — no Kestrel install required on their end.</p>
+        <ul class="perch-explainer-list">
+          <li><b>Merged timelines</b> — combine your outing with co-photographers' perches into one shared view.</li>
+          <li><b>Quality-sorted scenes</b> — Kestrel's ranking carries through; the best photo of each scene leads.</li>
+          <li><b>Likes, comments, favorites</b> — viewers can react and you can curate picks.</li>
+        </ul>
+        <p class="perch-explainer-ready" id="perchDlgReadyLine"></p>
+      </div>
+
+      <!-- ── Signed-in body: 2/3 timeline + 1/3 sidebar ───────────────── -->
+      <div id="perchDlgSignedIn" class="hidden perch-dlg-grid">
+        <!-- Left column: timeline of scene cards (2fr) -->
+        <div class="perch-dlg-timeline-col">
+          <div class="perch-dlg-timeline-header">
+            <div class="perch-dlg-timeline-title">Scenes to upload</div>
+            <div class="perch-dlg-timeline-actions">
+              <button type="button" class="perch-link-btn" id="perchSelectAllBtn">Include all</button>
+              <span class="perch-sep">·</span>
+              <button type="button" class="perch-link-btn" id="perchDeselectAllBtn">Exclude all</button>
+            </div>
+          </div>
+          <div class="perch-dlg-timeline" id="perchDlgTimeline"></div>
+        </div>
+
+        <!-- Right column: sidebar (1fr) -->
+        <div class="perch-dlg-sidebar-col">
+          <div class="perch-usage-card" id="perchUsageCard">
+            <div class="perch-usage-left">
+              <div class="perch-usage-label">Perch Usage</div>
+              <div class="perch-usage-bar" id="perchUsageBar" title="">
+                <div class="perch-usage-bar-used" id="perchUsageBarUsed"></div>
+                <div class="perch-usage-bar-pending" id="perchUsageBarPending"></div>
+              </div>
+              <div class="perch-usage-text" id="perchUsageText">Loading usage…</div>
+            </div>
+            <div class="perch-usage-right" id="perchAccountRow">
+              <div class="perch-account-avatar" id="perchAccountAvatar">·</div>
+              <div class="perch-account-info">
+                <div class="perch-account-name" id="perchAccountName">Loading…</div>
+                <div class="perch-account-meta" id="perchAccountMeta">—</div>
+              </div>
+            </div>
+          </div>
+
+          <h4 class="perch-checklist-heading">Before you upload</h4>
+
+          <div class="perch-check-panel" id="perchCheckFirstPhoto">
+            <div class="perch-check-body">
+              <div class="perch-check-title">Check photo capture time</div>
+              <div class="perch-check-text">The first photo was captured at <strong id="perchFirstPhotoTime">—</strong>. If this is not correct, adjust the capture time for this folder.</div>
+              <button type="button" class="perch-check-btn perch-check-btn--inline" id="perchAdjustTimeBtn">Adjust Capture Time</button>
+            </div>
+            <img class="perch-check-thumb perch-check-thumb--big" id="perchFirstPhotoThumb" alt="">
+          </div>
+
+          <div class="perch-check-panel" id="perchCheckReview">
+            <div class="perch-check-body">
+              <div class="perch-check-title">Review Species Tags</div>
+              <div class="perch-check-text">Review each scene's species and family so viewers can search your perch by what you saw. Reviewed scenes appear with a gold border in the timeline. <strong id="perchReviewCount">— of — scenes reviewed.</strong></div>
+            </div>
+          </div>
+
+          <div class="perch-check-panel" id="perchCheckTotals">
+            <div class="perch-check-body">
+              <div class="perch-check-titlebar">
+                <div class="perch-check-title">Review your usage</div>
+                <button type="button" class="perch-check-btn perch-check-btn--corner" id="perchOpenCullingBtn">Open Culling Assistant</button>
+              </div>
+              <div class="perch-check-text">Use your perch storage more efficiently by running the culling assistant first.</div>
+              <label class="perch-reject-toggle" id="perchRejectToggleRow">
+                <input type="checkbox" id="perchRejectToggleCb" checked>
+                <span class="perch-reject-toggle-label" id="perchRejectToggleLabel">Don't upload rejected images</span>
+                <span class="perch-reject-toggle-hint" id="perchRejectToggleHint"></span>
+              </label>
+              <div class="perch-totals-grid">
+                <div class="perch-totals-cell">
+                  <div class="perch-totals-num" id="perchTotalsScenes">—</div>
+                  <div class="perch-totals-label">Scenes</div>
+                </div>
+                <div class="perch-totals-cell">
+                  <div class="perch-totals-num" id="perchTotalsPhotos">—</div>
+                  <div class="perch-totals-label">Images</div>
+                </div>
+                <div class="perch-totals-cell">
+                  <div class="perch-totals-num" id="perchTotalsBytes">—</div>
+                  <div class="perch-totals-label" id="perchTotalsBytesPct">Size</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="perch-beta-card">
+            <div class="perch-beta-icon">⚠</div>
+            <div class="perch-beta-body">
+              <div class="perch-beta-title">Perch is in beta</div>
+              <div class="perch-beta-text">Once you share to Perch, you can show or hide individual scenes and sync species/family tag corrections straight from here — no re-upload. To add or remove photos or delete scenes, make those edits here in Kestrel, delete the old perch, and upload a fresh one.</div>
+            </div>
+          </div>
+
+          <div class="perch-relink-prompt">
+            Already shared this folder to Perch?
+            <button type="button" class="perch-link-btn" id="perchRelinkOpenBtn">Re-link this Perch</button>
+          </div>
+
+          <!-- Hidden compat shells: existing _perchUpdateDialogTotals targets these
+               by ID. Kept invisible so the timeline summary stays the visible totals. -->
+          <span id="perchStatScenes" hidden></span>
+          <span id="perchStatPhotos" hidden></span>
+          <span id="perchStatBytes" hidden></span>
+          <span id="perchStatSub" hidden></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="perch-upload-footer">
+      <button type="button" id="perchUploadCancelBtn">Cancel</button>
+      <button type="button" id="perchUploadSignInBtn" class="perch-cta hidden">Sign in to Perch</button>
+      <button type="button" id="perchUploadSubmitBtn" class="perch-cta hidden" disabled>📤 Upload</button>
+    </div>
+  </dialog>
+
+  <!-- Re-link picker: pick an existing perch to associate with this folder
+       (writes perch_link.json locally, no re-upload). Opened from the share
+       dialog's "Re-link this Perch" prompt. -->
+  <dialog id="perchRelinkDlg" class="perch-relink-dlg">
+    <div class="perch-relink-head">
+      <h3 class="perch-relink-title">Re-link an existing Perch</h3>
+      <button type="button" id="perchRelinkClose" class="perch-relink-close" aria-label="Close">✕</button>
+    </div>
+    <p class="perch-relink-subtitle">
+      Pick the perch this folder was already shared as. This restores the local
+      link without re-uploading any photos.
+    </p>
+    <div class="perch-relink-list" id="perchRelinkList">
+      <div class="perch-relink-empty">Loading your perches…</div>
+    </div>
+  </dialog>
+
+  <!-- H7 tag-sync preview: per-scene old→new species/family confirmation before
+       pushing corrections to the linked perch. Opened from the linked view's
+       "Sync to Perch" banner. -->
+  <dialog id="perchTagSyncDlg" class="perch-tag-sync-dlg">
+    <div class="perch-tag-sync-dlg-head">
+      <h3 style="margin:0;font-size:16px">Sync tag changes to Perch</h3>
+      <button type="button" class="perch-upload-dlg-close" id="perchTagSyncDlgClose" title="Close">✕</button>
+    </div>
+    <p class="perch-tag-sync-dlg-intro">
+      These scenes have local species/family changes that aren't on Perch yet.
+      Photos aren't re-uploaded — only the tags update, and the perch keeps its
+      link, social, and groups.
+    </p>
+    <div class="perch-tag-sync-list" id="perchTagSyncList"></div>
+    <div class="perch-tag-sync-dlg-actions">
+      <button type="button" id="perchTagSyncCancelBtn" class="perch-cta-secondary">Cancel</button>
+      <button type="button" id="perchTagSyncConfirmBtn" class="perch-cta">Sync</button>
+    </div>
+  </dialog>
+
   <!-- Settings dialog -->
-  <dialog id="settingsDlg" class="dlg-settings">
+  <dialog id="settingsDlg" class="kdlg kdlg--md kdlg--tall kdlg--flex">
     <div class="settings-body">
       <h3 style="margin:0">Settings</h3>
+      <!-- Analysis options (species identification, non-bird wildlife detection,
+           detection confidence, GPU) live in the Analyze dialog's "Review
+           settings" column, not here — they are chosen per analysis run. Users
+           reasonably look for them in Settings first, so point the way. -->
+      <div class="muted" style="font-size:12px;margin:6px 0 0">
+        Looking for analysis options — species identification, non-bird wildlife
+        detection, detection confidence, or GPU use? Those are chosen per run in
+        the <b>Analyze</b> dialog, under &ldquo;Review settings&rdquo;.
+      </div>
 
       <h4 style="margin:12px 0 8px;padding-top:8px;border-top:1px solid #1d2230;color:#a0a8b8;font-size:13px;text-transform:uppercase;letter-spacing:0.5px">UI &amp; Editor</h4>
 
@@ -517,11 +860,31 @@
           <option value="balanced" selected>Balanced &mdash; recommended for most photographers</option>
           <option value="lenient">Lenient</option>
           <option value="very_lenient">Very Lenient &mdash; most rewarding; lowest bar for 4&ndash;5 stars</option>
+          <option value="custom">Custom &mdash; set your own thresholds</option>
         </select>
       </div>
       <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Controls how quality scores are
         converted to star ratings. Each profile uses fixed quality-score thresholds — stricter profiles require
         a higher score to earn 4 or 5 stars. Changes take effect immediately for loaded folders.</div>
+
+      <!-- Custom thresholds editor. Only shown when the Custom profile is
+           selected; the same 0.00–1.00 number line the Culling Assistant
+           draws, except here the star markers are the draggable part. -->
+      <div class="rating-custom-editor hidden" id="ratingCustomEditor">
+        <div class="rating-custom-track" id="ratingCustomTrack" role="group"
+             aria-label="Custom star rating thresholds">
+          <div class="rating-custom-bands" id="ratingCustomBands" aria-hidden="true"></div>
+          <div class="rating-custom-handles" id="ratingCustomHandles"></div>
+        </div>
+        <div class="rating-custom-axis" aria-hidden="true">
+          <span>0.00</span><span>0.25</span><span>0.50</span><span>0.75</span><span>1.00</span>
+        </div>
+        <div class="rating-custom-readout" id="ratingCustomReadout"></div>
+        <div class="rating-custom-actions">
+          <button type="button" class="btn" id="ratingCustomReset">Reset to Balanced</button>
+          <span class="muted" style="font-size:11.5px">Drag a star to move the score it needs. Arrow keys nudge by 0.01.</span>
+        </div>
+      </div>
 
 
       <h4 style="margin:12px 0 8px;padding-top:8px;border-top:1px solid #1d2230;color:#a0a8b8;font-size:13px;text-transform:uppercase;letter-spacing:0.5px">Data &amp; Preview</h4>
@@ -537,22 +900,13 @@
         in .kestrel/culling_TMP for faster subsequent loads. Disable to save disk space (previews will be generated fresh each time).</div>
 
       <div class="row">
-        <label for="rawExposureCorrectionDisabled" style="flex:1">Disable RAW Exposure Correction</label>
-        <label class="inline" style="gap:6px">
-          <input type="checkbox" id="rawExposureCorrectionDisabled" />
-          <span class="muted">Disable</span>
+        <label for="settingsExpStrengthSlider" style="flex:1">Preview exposure compensation</label>
+        <label class="inline" style="gap:8px">
+          <input type="range" id="settingsExpStrengthSlider" min="0" max="100" value="70" step="5" style="width:130px">
+          <span class="muted" id="settingsExpStrengthVal" style="min-width:34px;text-align:right;font-variant-numeric:tabular-nums">70%</span>
         </label>
       </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">By default, Kestrel applies a calculated exposure boost to RAW previews to match the processed JPEG. Enable this to view the RAW data without correction.</div>
-
-      <div class="row">
-        <label for="settingsExposureCorrectedThumbs" style="flex:1">Exposure-corrected thumbnails</label>
-        <label class="inline" style="gap:6px">
-          <input type="checkbox" id="settingsExposureCorrectedThumbs" checked />
-          <span class="muted">Enable</span>
-        </label>
-      </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Display only: approximate subject EV on full-frame thumbnails (grid &amp; scene dialog) with CSS. On by default; turn off for a neutral export preview. Does not affect analysis.</div>
+      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Display only: how strongly Kestrel's calculated exposure boost is applied to preview imagery (grid &amp; scene-dialog export thumbnails and the RAW zoom). 0% shows the uncorrected export; 100% matches the processed bird crop. The same slider is in the scene viewer. Does not affect analysis or the baked crop.</div>
 
       <div class="row">
         <label for="settingsAutoSave" style="flex:1">Auto-Save Changes</label>
@@ -582,6 +936,15 @@
       </div>
       <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Helps improve Kestrel. No filenames,
         paths, or images are ever shared. You can change this at any time.</div>
+
+      <div class="row">
+        <label for="settingsCrashReports" style="flex:1">Send crash reports</label>
+        <label class="inline" style="gap:6px">
+          <input type="checkbox" id="settingsCrashReports" />
+        </label>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Automatically send a report if Kestrel
+        crashes, so we can find and fix the problem. No filenames, paths, or images are ever shared.</div>
     </div>
     <div class="settings-footer">
       <button id="settingsCancel">Cancel</button>
@@ -590,8 +953,8 @@
   </dialog>
 
   <!-- Merge scenes dialog -->
-  <dialog id="mergeDlg">
-    <div class="settings" style="width:min(720px,96vw)">
+  <dialog id="mergeDlg" class="kdlg kdlg--md kdlg--flex">
+    <div class="settings">
       <h3 style="margin:0">Merge Scenes</h3>
       <div class="row" style="align-items:flex-start">
         <label style="margin-top:6px">Select scenes</label>
@@ -622,8 +985,8 @@
   </dialog>
 
   <!-- Info dialog -->
-  <dialog id="infoDlg">
-    <div class="settings" style="width:min(560px,96vw)">
+  <dialog id="infoDlg" class="kdlg kdlg--md kdlg--flex">
+    <div class="settings">
       <h3 style="margin:0">Kestrel Database Info</h3>
       <div id="infoNotice" class="notice hidden" style="margin:0 0 8px"></div>
       <div id="infoContent" class="detail"
@@ -639,7 +1002,7 @@
        Col 2: Settings — critical tier always visible + collapsed "More options".
        Col 3: Queue Summary + Start — live counts, warnings, per-folder list, Start.
        Dialog state is FULLY INDEPENDENT from the main sidebar tree. -->
-  <dialog id="analyzeQueueDlg" class="dlg-compact">
+  <dialog id="analyzeQueueDlg" class="kdlg kdlg--lg kdlg--flex">
     <div class="analyze-dlg">
       <div class="analyze-dlg-header">
         <h3 style="margin:0;flex:1;">🔬 Analyze Folders</h3>
@@ -685,53 +1048,62 @@
         <!-- ═══ Column 2: Review Settings ═══ -->
         <div class="analyze-dlg-col analyze-dlg-col-settings">
           <div class="analyze-dlg-col-title">⚙ Review settings</div>
+          <!-- Phrased as questions about the shoot rather than as model
+               settings: the user knows what they photographed, not which
+               classifier that implies. Each answer pair mirrors to the hidden
+               input below it, which is what the Start handler in
+               event-wiring.js reads — the read path is unchanged. -->
           <div class="analyze-dlg-settings-critical">
-            <!-- Wildlife detection model — horizontal radio pair for compactness. -->
-            <div class="adlg-radio-group">
-              <div class="adlg-radio-label">Wildlife detection model</div>
-              <div class="adlg-radio-horiz">
+
+            <div class="adlg-question">
+              <div class="adlg-question-text">What subjects does this shoot contain?</div>
+              <div class="adlg-answer-pair" role="radiogroup" aria-label="Subjects in this shoot">
                 <label class="adlg-radio-row adlg-radio-row-horiz">
-                  <input type="radio" name="adlgWildlifeModelMode" id="adlgWildlifeModelModeAccurate" value="accurate" checked />
+                  <input type="radio" name="adlgSubjectScope" id="adlgSubjectScopeBirds" value="birds" checked />
                   <div class="adlg-radio-text">
-                    <span class="adlg-radio-name">Accurate</span>
-                    <span class="adlg-radio-hint muted">Larger model with stronger recall. Slower but catches more subjects, especially distant or partially-obscured birds.</span>
+                    <span class="adlg-radio-name">Birds only</span>
                   </div>
                 </label>
                 <label class="adlg-radio-row adlg-radio-row-horiz">
-                  <input type="radio" name="adlgWildlifeModelMode" id="adlgWildlifeModelModeFast" value="fast" />
+                  <input type="radio" name="adlgSubjectScope" id="adlgSubjectScopeWildlife" value="wildlife" />
                   <div class="adlg-radio-text">
-                    <span class="adlg-radio-name">Fast</span>
-                    <span class="adlg-radio-hint muted">Smaller model — significantly faster but may miss some detections. Good for quick first passes.</span>
+                    <span class="adlg-radio-name">Birds and other wildlife</span>
                   </div>
                 </label>
               </div>
-              <!-- Legacy <select> kept hidden so settings hydrate logic that reads/writes
-                   #adlgWildlifeModelMode keeps working; the radios mirror to it. -->
-              <select id="adlgWildlifeModelMode" class="hidden" aria-hidden="true">
-                <option value="fast">Fast</option>
-                <option value="accurate" selected>Accurate</option>
-              </select>
+              <div class="adlg-question-help muted">Including other wildlife names 1,200+ non-bird species — squirrels, deer, bears and more. This has a small impact on total processing time.</div>
             </div>
-            <label class="adlg-toggle-row">
-              <input id="analyzeSpeciesDetection" type="checkbox" checked />
-              <div class="adlg-toggle-text">
-                <span class="adlg-toggle-label">Identify bird species &amp; family</span>
-                <span class="adlg-toggle-hint muted">Runs the bird species classifier on each cropped bird. Optimized for North American species — disable if shooting elsewhere. Detection &amp; quality scoring are unaffected.</span>
+            <input id="analyzeWildlife" type="checkbox" class="hidden" aria-hidden="true" tabindex="-1" />
+
+            <div class="adlg-question">
+              <div class="adlg-question-text">Does this shoot contain North American birds?</div>
+              <div class="adlg-answer-pair" role="radiogroup" aria-label="Bird species identification">
+                <label class="adlg-radio-row adlg-radio-row-horiz">
+                  <input type="radio" name="adlgSpeciesScope" id="adlgSpeciesScopeYes" value="yes" checked />
+                  <div class="adlg-radio-text">
+                    <span class="adlg-radio-name">Yes, identify species</span>
+                  </div>
+                </label>
+                <label class="adlg-radio-row adlg-radio-row-horiz">
+                  <input type="radio" name="adlgSpeciesScope" id="adlgSpeciesScopeNo" value="no" />
+                  <div class="adlg-radio-text">
+                    <span class="adlg-radio-name">No, skip species identification</span>
+                  </div>
+                </label>
               </div>
-            </label>
-            <div class="adlg-setting-row">
-              <label for="adlgMaxBirdCrops">Maximum subjects per image</label>
-              <input id="adlgMaxBirdCrops" type="number" min="1" max="20" step="1" value="10"
-                style="width:80px" />
+              <div class="adlg-question-help muted">Kestrel's bird species classifier only recognizes North American birds. Skipping it makes analysis faster; finding your subjects and scoring their quality work exactly the same either way.</div>
             </div>
-            <div class="adlg-hint muted">Each additional subject increases processing time. Lower this to cap the number of subjects processed per image.</div>
-            <label class="adlg-toggle-row">
-              <input id="analyzeWildlife" type="checkbox" />
-              <div class="adlg-toggle-text">
-                <span class="adlg-toggle-label">Detect non-bird wildlife <span class="adlg-tag">experimental</span></span>
-                <span class="adlg-toggle-hint muted">Detects 1,200+ non-bird species (squirrels, deer, bears, etc.) using SpeciesNet. Adds noticeable processing time per image.</span>
+            <input id="analyzeSpeciesDetection" type="checkbox" class="hidden" aria-hidden="true" tabindex="-1" checked />
+
+            <div class="adlg-question">
+              <div class="adlg-question-text">How many subjects should Kestrel analyze in each image?</div>
+              <div class="adlg-setting-row">
+                <label for="adlgMaxBirdCrops">At most</label>
+                <input id="adlgMaxBirdCrops" type="number" min="1" max="20" step="1" value="10"
+                  style="width:80px" />
               </div>
-            </label>
+              <div class="adlg-question-help muted">Every extra subject adds processing time. Lower this for flock shots where you only care about the closest few birds.</div>
+            </div>
           </div>
 
           <!-- "More options" expanded by default. Subheadings group settings
@@ -769,13 +1141,25 @@
               </div>
 
               <div class="adlg-subgroup">
-                <div class="adlg-subgroup-title">Wildlife detection</div>
+                <div class="adlg-subgroup-title">Finding subjects</div>
+                <!-- Was a prominent Fast/Accurate radio pair in the critical
+                     block. Accurate is right for essentially every shoot, so it
+                     is now the default and lives down here instead of asking
+                     every user to make the call up front. -->
+                <div class="adlg-setting-row">
+                  <label for="adlgWildlifeModelMode">Detection model</label>
+                  <select id="adlgWildlifeModelMode" style="flex:1;max-width:200px">
+                    <option value="accurate" selected>Accurate (recommended)</option>
+                    <option value="fast">Fast</option>
+                  </select>
+                </div>
+                <div class="adlg-hint muted">Accurate is the right choice for almost every shoot. Fast uses a smaller model that finishes sooner but misses distant and partly-hidden birds.</div>
                 <div class="adlg-setting-row">
                   <label for="adlgDetectionThreshold">Detection confidence</label>
                   <input id="adlgDetectionThreshold" type="number" min="0.1" max="0.99" step="0.05" value="0.15"
                     style="width:80px" />
                 </div>
-                <div class="adlg-hint muted">Minimum MegaDetector animal confidence (0.10–0.99). Lower values find more subjects.</div>
+                <div class="adlg-hint muted">How sure Kestrel must be that it found an animal before analyzing it (0.10–0.99). Lower values find more subjects.</div>
                 <!-- Live warning when the user picks a value much above the
                      recommended baseline. Wildlife detection models are quite
                      accurate, so high thresholds tend to miss real subjects. -->
@@ -842,6 +1226,23 @@
             <div id="analyzeDlgSummaryHeadline" class="analyze-dlg-summary-headline">
               <span class="analyze-dlg-summary-empty">Check folders in the queue builder to add them.</span>
             </div>
+            <!-- Cloud-only affordances under the summary headline. Hidden when
+                 destination=local. The speed-test button is the gateway to
+                 turning the "?" est. time into a real number; the beta notice
+                 keeps the "?" qualifier visible even after the test completes. -->
+            <div id="analyzeDlgCloudEstPanel" class="analyze-dlg-cloud-est-panel hidden">
+              <button id="analyzeDlgRunSpeedTest" type="button" class="adlg-cloud-speed-btn"
+                      title="Upload 10 sample images to measure your upload throughput">
+                <span class="adlg-cloud-speed-btn-icon">⚡</span> Run Upload Speed Test
+              </button>
+              <div id="analyzeDlgCloudSpeedStatus" class="adlg-cloud-speed-status hidden"></div>
+              <div class="adlg-cloud-beta-note">
+                <span class="adlg-beta-badge">BETA</span>
+                Cloud Compute is in beta. Time estimates are approximate.
+                <a href="https://projectkestrel.org/cloud-compute" target="_blank" rel="noopener"
+                   class="adlg-cloud-learn-more">Learn more</a>
+              </div>
+            </div>
             <div id="analyzeDlgWarnings" class="analyze-dlg-warnings hidden"></div>
             <label id="analyzeDlgReanalyzeUnlockRow" class="adlg-toggle-row analyze-dlg-unlock-row hidden">
               <input id="analyzeDlgReanalyzeUnlock" type="checkbox" />
@@ -850,10 +1251,25 @@
                 <span class="adlg-toggle-hint muted">Will <b>erase user data</b> (ratings, decisions, scene names) for those folders.</span>
               </div>
             </label>
-            <div class="analyze-dlg-compute-row" title="Cloud compute coming soon — disabled for now">
-              <span class="analyze-dlg-compute-label">Destination:</span>
-              <label class="adlg-radio-inline"><input type="radio" name="analyzeDlgCompute" value="local" checked /> Local</label>
-              <label class="adlg-radio-inline disabled"><input type="radio" name="analyzeDlgCompute" value="cloud" disabled /> Cloud <span class="analyze-dlg-soon">(soon)</span></label>
+            <!-- Destination cards. Default = Local. Selecting Cloud activates
+                 the speed-test / usage chrome and changes the Add button label.
+                 The full cloud-compute behaviour lives in cloud-compute.js;
+                 element IDs are referenced by id from there. -->
+            <div class="analyze-dlg-destination-row" id="analyzeDlgDestinationRow" role="radiogroup" aria-label="Destination">
+              <div class="analyze-dlg-destination-card selected" id="analyzeDestLocal"
+                   data-destination="local" role="radio" aria-checked="true" tabindex="0">
+                <div class="dest-card-title">💻 Local Analysis</div>
+                <div class="dest-card-desc">Run on this machine. Uses your GPU when available.</div>
+              </div>
+              <div class="analyze-dlg-destination-card" id="analyzeDestCloud"
+                   data-destination="cloud" role="radio" aria-checked="false" tabindex="0">
+                <div class="dest-card-title">☁ Cloud Analysis</div>
+                <div class="dest-card-desc">Upload to Project Kestrel's cloud. Slower per-image, but frees up your machine.</div>
+                <div class="dest-card-usage" id="cloudDestUsage">Loading usage…</div>
+                <div class="dest-card-signin-overlay hidden" id="cloudDestSignInOverlay">
+                  Sign in to Perch to use Cloud Compute.
+                </div>
+              </div>
             </div>
           </div>
 
@@ -873,11 +1289,141 @@
     </div>
   </dialog>
 
+  <!-- Sign-in chooser. Presented by auth.js ONLY on the macOS App Store build
+       ('appstore' channel), where native Sign in with Apple is available. Per
+       Guideline 4.8, Sign in with Apple is offered alongside the third-party
+       (Google) / email option. Every other build skips this and goes straight to
+       the web/loopback sign-in. -->
+  <dialog id="signInChooserDlg" class="kdlg signin-chooser-dlg" aria-labelledby="signInChooserTitle">
+    <div class="signin-chooser-body">
+      <button id="signInChooserClose" class="cloud-account-close signin-chooser-close" title="Close" aria-label="Close">✕</button>
+      <h3 id="signInChooserTitle" class="signin-chooser-title">Sign in to Project Kestrel</h3>
+      <p class="signin-chooser-sub">Use Cloud Compute, Perch, and sync your account across devices.</p>
+      <button id="signInAppleBtn" class="signin-apple-btn" type="button">
+        <span class="signin-apple-logo" aria-hidden="true"></span>
+        <span class="signin-apple-text">Sign in with Apple</span>
+      </button>
+      <button id="signInWebBtn" class="signin-web-btn" type="button">Continue with Google or email</button>
+      <p class="signin-chooser-fineprint">Apple sign-in opens the system panel. Google &amp; email open a secure in-app sign-in sheet.</p>
+    </div>
+  </dialog>
+
+  <!-- Account panel (signed-in). Two columns: Cloud Compute (left) and Perch
+       (right), each with usage then history — mirrors myaccount.projectkestrel.org.
+       Rendered by cloud-compute.js. -->
+  <dialog id="cloudAccountDlg" class="kdlg kdlg--lg kdlg--flex cloud-account-dlg" aria-labelledby="cloudAccountDlgTitle">
+    <div class="cloud-account-dlg-body">
+      <div class="cloud-account-header">
+        <h3 id="cloudAccountDlgTitle">Account</h3>
+        <button id="cloudAccountClose" class="cloud-account-close" title="Close" aria-label="Close">✕</button>
+      </div>
+
+      <div class="cloud-account-identity-bar">
+        <div class="cloud-account-avatar" id="cloudAccountAvatar">·</div>
+        <div class="cloud-account-identity-text">
+          <div class="cloud-account-name" id="cloudAccountName">Loading…</div>
+          <div class="cloud-account-meta" id="cloudAccountMeta">—</div>
+        </div>
+        <button id="cloudAccountManageBtn" class="primary" type="button">Manage my account ↗</button>
+        <button id="cloudAccountSignOutBtn" class="cloud-account-signout" type="button">Sign out</button>
+        <button id="cloudAccountDeleteBtn" class="cloud-account-delete" type="button" title="Permanently delete your Project Kestrel account and data">Delete account</button>
+      </div>
+
+      <div class="account-columns">
+        <section class="account-col account-col--cc" aria-labelledby="accountCcHeading">
+          <h4 class="account-col-title" id="accountCcHeading">Cloud Compute</h4>
+          <div class="account-usage-card">
+            <div class="account-usage-card-title">Plan &amp; usage</div>
+            <div class="account-usage-tier" id="cloudAccountTier"></div>
+            <div class="account-usage-line muted" id="cloudAccountPeriod"></div>
+            <div class="account-usage-hold" id="cloudAccountHold" hidden>
+              Account on hold — new analysis is paused.
+            </div>
+            <div class="account-stat-grid">
+              <div class="account-stat">
+                <div class="account-stat-value" id="ccStatAnalyzed">&mdash;</div>
+                <div class="account-stat-label">Analyzed this period</div>
+              </div>
+              <div class="account-stat">
+                <div class="account-stat-value" id="ccStatRemaining">&mdash;</div>
+                <div class="account-stat-label">Remaining</div>
+              </div>
+              <div class="account-stat">
+                <div class="account-stat-value" id="ccStatCredits">&mdash;</div>
+                <div class="account-stat-label">Credits</div>
+              </div>
+            </div>
+            <div class="account-storage-bar" id="ccQuotaBar" hidden>
+              <div class="account-storage-bar-heading">Monthly Plan</div>
+              <div class="account-storage-bar-meta account-quota-meta">
+                <span id="ccQuotaUsed">0 used</span>
+                <span id="ccQuotaCap"></span>
+              </div>
+              <div class="account-storage-bar-track">
+                <div class="account-storage-bar-fill" id="ccQuotaFill"></div>
+                <div class="account-storage-bar-fill-reserved" id="ccQuotaFillReserved"></div>
+              </div>
+            </div>
+            <div class="account-storage-bar" id="ccCreditsBar" hidden>
+              <div class="account-storage-bar-heading">Credits</div>
+              <div class="account-storage-bar-meta account-quota-meta">
+                <span id="ccCreditsUsed">0 used</span>
+                <span id="ccCreditsCap"></span>
+              </div>
+              <div class="account-storage-bar-track">
+                <div class="account-storage-bar-fill" id="ccCreditsFill"></div>
+                <div class="account-storage-bar-fill-reserved" id="ccCreditsFillReserved"></div>
+              </div>
+            </div>
+            <div class="account-usage-line muted" id="cloudAccountUsageConcurrent"></div>
+            <div class="account-usage-line muted account-usage-foot">
+              Subscription quota resets each period; credits are a one-time stock
+              that doesn’t reset.
+            </div>
+          </div>
+          <div class="account-history-header">
+            <span class="account-history-title">Job history</span>
+            <span class="cloud-account-history-hint" id="cloudAccountHistoryHint"></span>
+          </div>
+          <div class="cloud-account-history" id="cloudAccountHistory">
+            <div class="cloud-account-history-empty">Loading…</div>
+          </div>
+        </section>
+
+        <section class="account-col account-col--perch" aria-labelledby="accountPerchHeading">
+          <h4 class="account-col-title" id="accountPerchHeading">Perch</h4>
+          <div class="account-usage-card">
+            <div class="account-usage-card-title">Usage</div>
+            <div class="account-usage-line" id="perchAccountUsagePerches">—</div>
+            <div class="account-usage-line" id="perchAccountUsageImages">—</div>
+            <div class="account-usage-line" id="perchAccountUsageAssets">—</div>
+            <div class="account-usage-line" id="perchAccountUsageBytes">—</div>
+            <div class="account-storage-bar" id="perchAccountStorageBar" hidden>
+              <div class="account-storage-bar-meta">
+                <span id="perchAccountStoragePct">—</span>
+              </div>
+              <div class="account-storage-bar-track">
+                <div class="account-storage-bar-fill" id="perchAccountStorageFill"></div>
+                <div class="account-storage-bar-fill-reserved" id="perchAccountStorageFillReserved"></div>
+              </div>
+            </div>
+          </div>
+          <div class="account-history-header">
+            <span class="account-history-title">Your perches</span>
+          </div>
+          <div class="perch-account-list" id="perchAccountList">
+            <div class="cloud-account-history-empty">Loading…</div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </dialog>
+
   <!-- Pre-queue confirmation modal (Phase 3H). Lives at top level — opened
        AFTER the user clicks Start Analysis when at least one folder is
        flagged for destructive re-analysis. Lists affected folders and
        requires explicit confirmation before .kestrel deletion happens. -->
-  <dialog id="analyzeConfirmDlg" class="dlg-compact analyze-confirm-dlg">
+  <dialog id="analyzeConfirmDlg" class="kdlg kdlg--sm kdlg--flex analyze-confirm-dlg">
     <div class="analyze-confirm-body">
       <h3 style="margin:0 0 8px;color:var(--warn);">⚠ Confirm destructive re-analysis</h3>
       <p style="margin:0 0 10px;font-size:13px;line-height:1.45;">
@@ -902,7 +1448,7 @@
        visual language of #analyzeConfirmDlg above so the destructive flow
        feels consistent — explicit Cancel-default + red Delete button, no
        auto-confirm-on-Enter. -->
-  <dialog id="clearKestrelConfirmDlg" class="dlg-compact analyze-confirm-dlg">
+  <dialog id="clearKestrelConfirmDlg" class="kdlg kdlg--sm kdlg--flex analyze-confirm-dlg">
     <div class="analyze-confirm-body">
       <h3 style="margin:0 0 8px;color:var(--warn);">⚠ Delete Kestrel analysis data?</h3>
       <p style="margin:0 0 10px;font-size:13px;line-height:1.45;">
@@ -928,7 +1474,7 @@
   </dialog>
 
   <!-- Feedback / Bug Report dialog -->
-  <dialog id="feedbackDlg" style="width:min(640px,96vw);height:fit-content;max-height:92vh;overflow-x:hidden;overflow-y:auto;">
+  <dialog id="feedbackDlg" class="kdlg kdlg--md kdlg--flex">
     <div class="feedback-dlg">
       <h3>💬 Send Feedback</h3>
       <div>
@@ -960,18 +1506,23 @@
         </label>
         <input type="file" id="feedbackScreenshotFile" accept="image/*" style="display:none" />
       </div>
+      <div>
+        <label class="inline" style="font-size:13px">
+          <input type="checkbox" id="feedbackSendAsUser" />
+          <span class="muted" id="feedbackSendAsUserLabel">Send as my account</span>
+        </label>
+      </div>
       <img id="feedbackSsPreview" class="feedback-ss-preview" alt="screenshot preview" style="display:none" />
       <div id="feedbackStatus" style="font-size:13px; color:var(--muted); min-height:18px"></div>
       <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:4px">
         <button id="feedbackCancel">Cancel</button>
-        <button id="feedbackSend" class="primary">Send</button>
+        <button id="feedbackSend" class="primary">Send anonymously</button>
       </div>
     </div>
   </dialog>
 
   <!-- Analytics Consent dialog (shown once after first successful analysis) -->
-  <dialog id="analyticsConsentDlg"
-    style="width:min(560px,96vw);height:fit-content;max-height:88vh;overflow-x:hidden;overflow-y:auto;">
+  <dialog id="analyticsConsentDlg" class="kdlg kdlg--md kdlg--flex">
     <div class="analytics-dlg">
       <h3>📊 Help Improve Project Kestrel</h3>
       <p>Would you like to share anonymous usage data to help improve the app? This is completely optional and you can
@@ -998,7 +1549,7 @@
   </dialog>
 
   <!-- Live Analysis Details dialog -->
-  <dialog id="liveAnalysisDlg" class="dlg-compact">
+  <dialog id="liveAnalysisDlg" class="kdlg kdlg--lg kdlg--flex">
     <div class="live-dlg">
       <div class="live-dlg-hdr">
         <span class="live-dlg-title">👁 Live Analysis: <span id="liveDlgFolderName">–</span></span>
@@ -1025,14 +1576,14 @@
 
 
   <!-- Donation / Support dialog -->
-  <dialog id="donateDlg">
+  <dialog id="donateDlg" class="kdlg kdlg--sm kdlg--flex">
     <div class="donate-dlg">
       <div class="donate-dlg-icon"><img src="logo.png" alt="Kestrel Logo" /></div>
       <h3>Kestrel has analyzed over <span id="donateCountDisplay">many</span> photos!</h3>
       <p>Thank you for using Project Kestrel! I’m a solo student developer and birder who built Kestrel because I love taking wildlife photos — but not sorting through them. If Kestrel has been useful to you, please consider supporting its development, or share your thoughts and feedback!</p>
       <p style="font-size:12px;color:#607080;">Project Kestrel is free &amp; open-source. Every <a href="https://github.com/SanjaySoniLV/ProjectKestrel" target="_blank">contribution</a> helps keep it growing.</p>
       <div class="donate-dlg-btns">
-        <button class="donate-main-btn" id="donateDlgGoBtn">💛 Donate via PayPal</button>
+        <button class="donate-main-btn" id="donateDlgGoBtn">💛 Support Project Kestrel</button>
         <button class="primary" id="donateDlgFeedbackBtn" style="font-size:13px;padding:13px 20px;height:auto;">💬 Send Feedback</button>
       </div>
       <button id="donateDlgClose" class="donate-dlg-close-btn">Close</button>
@@ -1060,6 +1611,8 @@
   <script src="js/state.js"></script>
   <script src="js/image-loader.js"></script>
   <script src="js/auth.js"></script>
+  <script src="js/notify-markdown.js"></script>
+  <script src="js/notifications.js"></script>
   <script src="js/blob-zoom.js"></script>
   <script src="js/species.js"></script>
   <script src="js/crop-data.js"></script>
@@ -1074,6 +1627,7 @@
   <script src="js/folder-tree.js"></script>
   <script src="js/analyze-dialog.js"></script>
   <script src="js/queue.js"></script>
+  <script src="js/raw-warn.js"></script>
   <script src="js/multi-folder.js"></script>
   <script src="js/csv-init.js"></script>
   <script src="js/event-wiring.js"></script>

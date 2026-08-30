@@ -235,17 +235,36 @@
 
     // Init
     loadVersionBadge();
+    initPerchAuth();
     setStatus('Open your photo folder (the one that contains .kestrel) or select kestrel_database.csv');
     // Hydrate from backend, then re-render recents chips. Must waitForPywebview
     // first — at script-parse time the bridge isn't ready yet, so calling
     // hydrateSettingsFromServer() directly bails (its first guard checks
     // window.pywebview?.api?.get_settings) and the recents render sees an
     // empty localStorage. Wait for the bridge, THEN hydrate + render.
+    //
+    // Cold-start retry: hydrateSettingsFromServer silently no-ops on any
+    // failure (bridge not fully wired yet, slow first get_settings call).
+    // When that happens localStorage stays empty, renderFolderRecentsChips
+    // sees no recents, and the row hides until the next app launch. One
+    // retry catches the transient case without spamming on the steady-state
+    // empty-recents path.
     (async () => {
       try {
         await waitForPywebview();
         await hydrateSettingsFromServer();
         if (typeof renderFolderRecentsChips === 'function') renderFolderRecentsChips();
+        const hasRecents = (() => {
+          try {
+            const s = (typeof loadSettings === 'function') ? loadSettings() : {};
+            return Array.isArray(s.folder_recents) && s.folder_recents.length > 0;
+          } catch { return false; }
+        })();
+        if (!hasRecents) {
+          await new Promise(r => setTimeout(r, 1500));
+          await hydrateSettingsFromServer();
+          if (typeof renderFolderRecentsChips === 'function') renderFolderRecentsChips();
+        }
       } catch (e) { console.warn('[recents] init chain failed:', e); }
     })();
 
@@ -289,6 +308,7 @@
           rows = [];
           header = [];
           if (typeof renderScenes === 'function') renderScenes();
+          hideRawWarnBanner();
         } catch (e) { console.warn('[clear] renderScenes error', e); }
         setStatus('Idle');
       });
@@ -371,46 +391,37 @@
         return;
       }
       row.innerHTML = '';
+      // "Recents" header + a divider (CSS) separating the chips from the tree.
+      const header = document.createElement('div');
+      header.className = 'folder-recents-header';
+      header.textContent = 'Recents';
+      row.appendChild(header);
+      const chips = document.createElement('div');
+      chips.className = 'folder-recents-chips';
       for (const path of available) {
-        const chip = document.createElement('button');
-        chip.type = 'button';
-        chip.className = 'folder-recents-chip';
-        chip.title = path;
-        const plus = document.createElement('span');
-        plus.className = 'folder-recents-chip-plus';
-        plus.textContent = '+ 📂';
-        const label = document.createElement('span');
-        label.textContent = ' ' + _ellipsizePathMiddle(path);
-        chip.appendChild(plus);
-        chip.appendChild(label);
-        chip.addEventListener('click', async () => {
-          chip.disabled = true;
-          try {
-            const r = await addFolderRoot(path);
-            if (r && r.added) {
-              debouncedAutoLoad();
-              // Bump-to-top in recents on successful click. Push to backend
-              // too so the change survives the next hydrateSettingsFromServer.
-              try {
-                const ss = loadSettings();
-                const existing = Array.isArray(ss.folder_recents) ? ss.folder_recents : [];
-                const normRoot = q => (q || '').replace(/\\/g, '/').replace(/\/+$/, '');
-                const np = normRoot(path);
-                const filtered = existing.filter(p => normRoot(p) !== np);
-                ss.folder_recents = [np, ...filtered].slice(0, 8);
-                saveSettings(ss);
-                if (hasPywebviewApi && window.pywebview?.api?.save_settings_data) {
-                  try { await window.pywebview.api.save_settings_data(ss); } catch (_) { }
+        const wrap = buildFolderRecentsChip(
+          path,
+          async () => {
+            const chipBtn = wrap.querySelector('.folder-recents-chip');
+            if (chipBtn) chipBtn.disabled = true;
+            try {
+              const r = await addFolderRoot(path);
+              if (r && r.added) {
+                debouncedAutoLoad();
+                if (typeof persistFolderRecentsBump === 'function') {
+                  await persistFolderRecentsBump(path);
                 }
-                renderFolderRecentsChips();
-              } catch (e) { /* best-effort */ }
+              }
+            } finally {
+              const chipBtn = wrap.querySelector('.folder-recents-chip');
+              if (chipBtn) chipBtn.disabled = false;
             }
-          } finally {
-            chip.disabled = false;
-          }
-        });
-        row.appendChild(chip);
+          },
+          (p) => { if (typeof persistFolderRecentsRemove === 'function') persistFolderRecentsRemove(p); },
+        );
+        chips.appendChild(wrap);
       }
+      row.appendChild(chips);
       row.classList.remove('hidden');
       updateEmptyHintCopy();
     }

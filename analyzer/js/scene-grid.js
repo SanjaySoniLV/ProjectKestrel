@@ -643,6 +643,49 @@
           cullingBtn.addEventListener('click', (ev) => { ev.stopPropagation(); openCullingAssistant(fd.folderPath); });
           rightActions.appendChild(cullingBtn);
 
+          const perchBtn = document.createElement('button');
+          perchBtn.type = 'button';
+          perchBtn.className = 'action-btn folder-perch-btn';
+          perchBtn.dataset.folderPath = fd.folderPath;
+          perchBtn.innerHTML = '<i>\u{1FAB6}</i> <span class="folder-perch-btn-label">Share with Perch</span>';
+          perchBtn.title = 'Share this folder to Perch (or manage existing perch)';
+          perchBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            openPerchDialog(fd.folderPath);
+          });
+          rightActions.appendChild(perchBtn);
+
+          // Async-populate linked-state from disk; flip class + label if linked.
+          // Cloud Compute lives in the Analyze Folders dialog now, not here.
+          (async () => {
+            try {
+              const res = await window.pywebview?.api?.read_perch_link?.(fd.folderPath);
+              if (res && res.present && res.link) {
+                perchBtn.classList.add('is-linked');
+                const lbl = perchBtn.querySelector('.folder-perch-btn-label');
+                if (lbl) lbl.textContent = 'On Perch';
+                perchBtn.dataset.perchUrl = String(res.link.perch_url || '');
+                perchBtn.title = 'This folder is published to Perch (click to manage)';
+              }
+            } catch {}
+          })();
+
+          // Block sharing while this folder is still being analyzed — uploading
+          // partial results to Perch would publish an incomplete timeline. The
+          // disabled state is kept in sync as analysis starts/finishes by
+          // updateInProgressFoldersInTree() (queue.js).
+          try {
+            const _np = String(fd.folderPath || '').replace(/\\/g, '/');
+            const _analyzing =
+              (typeof _inProgressFolderPaths !== 'undefined' && _inProgressFolderPaths.has(_np))
+              || (window._ccInProgressFolderPaths && window._ccInProgressFolderPaths.has(_np));
+            if (_analyzing) {
+              perchBtn.disabled = true;
+              perchBtn.title = 'Wait for analysis to finish before uploading to Perch.';
+            }
+          } catch {}
+
+
           hdr.appendChild(rightActions);
 
           bodyEl = document.createElement('div');

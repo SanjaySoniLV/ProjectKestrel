@@ -1,0 +1,919 @@
+/* Cloud Compute UI: destination cards in #analyzeQueueDlg, #cloudQueuePanel
+   (mirrors #queuePanel). Reuses the existing queue-panel
+   shell from live-analysis.css and adds cloud-specific badge / card chrome. */
+
+/* ── Destination cards (in #analyzeQueueDlg footer area) ─────────────────── */
+
+.analyze-dlg-destination-row {
+  display: flex;
+  gap: 10px;
+  padding: 8px 0 4px 0;
+  border-top: 1px solid var(--border, #2a2a3a);
+  margin-top: 4px;
+}
+
+.analyze-dlg-destination-card {
+  flex: 1;
+  min-height: 88px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #2a2a3a);
+  border-radius: var(--radius-md);
+  background: #1c1c28;
+  cursor: pointer;
+  transition: border-color 120ms, background-color 120ms;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.analyze-dlg-destination-card:hover:not(.disabled) {
+  background: #232333;
+}
+
+.analyze-dlg-destination-card.selected {
+  border-color: var(--brand, #6b9eff);
+  background: #1f2440;
+  box-shadow: inset 0 0 0 1px var(--brand, #6b9eff);
+}
+
+.analyze-dlg-destination-card.disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.dest-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg, #eee);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dest-card-help {
+  font-size: 11px;
+  color: var(--muted, #888);
+  text-decoration: none;
+  font-weight: normal;
+}
+
+.dest-card-help:hover {
+  color: var(--brand, #6b9eff);
+  text-decoration: underline;
+}
+
+.dest-card-desc {
+  font-size: 11px;
+  color: var(--muted, #888);
+}
+
+.dest-card-status {
+  font-size: 11px;
+  color: var(--muted, #aaa);
+  font-style: italic;
+  min-height: 16px;
+}
+
+.dest-card-status.success {
+  color: var(--ok, #6bcf6b);
+  font-style: normal;
+}
+
+.dest-card-status.error {
+  color: var(--bad, #ff7070);
+  font-style: normal;
+}
+
+.dest-card-speed-btn {
+  align-self: flex-start;
+  font-size: 11px;
+  padding: 3px 9px;
+  background: #2a3550;
+  color: var(--brand, #6b9eff);
+  border: 1px solid #3a4a6a;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.dest-card-speed-btn:hover:not(:disabled) {
+  background: #324060;
+}
+
+.dest-card-speed-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.dest-card-usage {
+  font-size: 11px;
+  color: var(--muted, #888);
+}
+
+.dest-card-signin-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(28, 28, 40, 0.92);
+  border-radius: var(--radius-md);
+  color: var(--fg, #eee);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: center;
+  padding: 8px;
+  pointer-events: auto;
+}
+
+/* ── #cloudQueuePanel — sibling of #queuePanel, stacked above ─────────────── */
+
+.queue-panel.cloud-queue-panel {
+  /* Reuses .queue-panel base styles from live-analysis.css; cloud variant gets
+     a distinct title-area accent so the two panels are visually separable. */
+}
+
+.queue-panel.cloud-queue-panel .queue-panel-title {
+  color: #9bb8ff;
+}
+
+.queue-panel.cloud-queue-panel .queue-panel-badge {
+  background: #2a3550;
+  color: #9bb8ff;
+}
+
+.cloud-queue-item {
+  /* Inherits .queue-item box / spacing from analyze.css; this class exists
+     for cloud-only adjustments (phase chip, future fields). */
+}
+
+/* Header row: folder name + inline action buttons (uses horizontal space). */
+.cloud-queue-item-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.cloud-queue-item-header-row .queue-item-header {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.cloud-queue-item-controls {
+  display: flex;
+  gap: 4px;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  margin: 0;
+}
+
+/* Accent the two new affordances so they read as distinct from pause/cancel. */
+.cloud-queue-item-controls button[data-cc-action="retrieve"] {
+  border-color: #3d5a7e; background: #243650; color: #cfe0ff;
+}
+.cloud-queue-item-controls button[data-cc-action="retrieve"]:hover:not(:disabled) { background: #2d456a; }
+.cloud-queue-item-controls button[data-cc-action="load"] {
+  border-color: #3d5a7e; background: #243650; color: #cfe0ff;
+}
+.cloud-queue-item-controls button[data-cc-action="load"]:hover:not(:disabled) { background: #2d456a; }
+
+.cloud-queue-item-controls button {
+  font-size: 11px;
+  padding: 2px 7px;
+  background: #2a2a3a;
+  color: var(--fg, #eee);
+  border: 1px solid #3a3a4a;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.cloud-queue-item-controls button:hover:not(:disabled) {
+  background: #34344a;
+}
+
+.cloud-queue-item-controls button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Dual-pill row: separate upload-phase + analysis-phase pills so the user
+   can read both halves of the cloud round-trip at a glance. */
+
+.cloud-phase-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 4px 0 2px 0;
+}
+
+.cloud-phase-pill {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 1px 7px;
+  border-radius: var(--radius-sm);
+  background: #2a2a3a;
+  color: var(--muted, #888);
+}
+
+/* Upload phase variants */
+.cloud-phase-pill.upload.uploading     { color: #9bb8ff; background: #1f2a45; }
+.cloud-phase-pill.upload.uploaded      { color: #6bcf6b; background: #1a3a1a; }
+.cloud-phase-pill.upload.upload_paused { color: #ffb060; background: #3a2a1a; font-style: italic; }
+.cloud-phase-pill.upload.cancelled     { color: #ff7070; background: #3a1a1a; }
+.cloud-phase-pill.upload.failed        { color: #ff7070; background: #3a1a1a; }
+/* Incomplete: client disconnected >10min with uploads unfinished. Neutral grey
+   (not a red failure) — uploads are halted but it's not an error. */
+.cloud-phase-pill.upload.incomplete    { color: var(--muted, #999); background: #2c2c2c; font-style: italic; }
+
+/* Analysis phase variants */
+.cloud-phase-pill.analysis.waiting_uploads { color: var(--muted, #888); background: #2a2a3a; font-style: italic; }
+.cloud-phase-pill.analysis.analyzing       { color: #ffc060; background: #3a2a1a; }
+.cloud-phase-pill.analysis.done            { color: #6bcf6b; background: #1a3a1a; }
+.cloud-phase-pill.analysis.cancelled       { color: #ff7070; background: #3a1a1a; }
+.cloud-phase-pill.analysis.failed          { color: #ff7070; background: #3a1a1a; }
+.cloud-phase-pill.analysis.incomplete      { color: var(--muted, #999); background: #2c2c2c; font-style: italic; }
+
+/* Stacked progress bars: one for uploaded, one for analyzed. */
+
+.cloud-bar-block {
+  margin-top: 4px;
+}
+
+.cloud-bar-label {
+  font-size: 11px;
+  color: var(--muted, #aaa);
+  margin-bottom: 2px;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.cloud-queue-item .queue-item-progress-fill.upload    { background: #6b9eff; }
+.cloud-queue-item .queue-item-progress-fill.analysis  { background: #ffc060; }
+/* §1: third bar — results retrieved (downloaded back from the server). Green
+   so the user can watch the download/merge gap close behind analysis. */
+.cloud-queue-item .queue-item-progress-fill.retrieved { background: #6bcf6b; }
+/* Halted: the half is done progressing (incomplete/cancelled/failed). Grey it
+   so a frozen bar reads as "stopped" rather than "still working". */
+.cloud-queue-item .queue-item-progress-fill.halted    { background: #555; opacity: 0.7; }
+
+/* Syncing badge: shown when the backend cache is older than the staleness
+   threshold. Inline in the row header so the user sees that the displayed
+   counters may not reflect "right now". Counters themselves stay rendered
+   from the last-known good snapshot — never zeroed by a transient blip. */
+
+.cloud-sync-badge {
+  font-size: 10px;
+  color: var(--muted, #aaa);
+  background: #2a2a3a;
+  padding: 1px 7px;
+  border-radius: var(--radius-sm);
+  margin-left: auto;
+  font-style: italic;
+}
+
+.cloud-queue-item-error {
+  color: var(--bad, #ff7070);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+/* §3: per-terminal-state explanation banner. Severity-keyed so a user-cancel
+   reads as calm info, an incomplete as a neutral warning, and a server
+   failure as an error — without any raw enum leaking through. */
+.cloud-queue-item-notice {
+  font-size: 11px;
+  line-height: 1.45;
+  margin-top: 4px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--muted, #888);
+  background: #20202c;
+  color: var(--muted, #aaa);
+}
+.cloud-queue-item-notice strong {
+  display: block;
+  margin-bottom: 1px;
+  color: var(--fg, #e8f0f8);
+}
+.cloud-queue-item-notice.cc-sev-error {
+  border-left-color: #ff7070;
+  background: #2a1a1a;
+  color: #f0c0c0;
+}
+.cloud-queue-item-notice.cc-sev-error strong { color: #ff9a9a; }
+.cloud-queue-item-notice.cc-sev-warn {
+  border-left-color: #ffb060;
+  background: #2a2418;
+  color: #d8c8a8;
+}
+.cloud-queue-item-notice.cc-sev-warn strong { color: #ffc88a; }
+.cloud-queue-item-notice.cc-sev-info {
+  border-left-color: #6b9eff;
+  background: #1c2233;
+  color: #b8c4dc;
+}
+.cloud-queue-item-notice.cc-sev-info strong { color: #9bb8ff; }
+
+/* ── §2: per-job "Additional information" disclosure ──────────────────────── */
+
+.cc-additional-info {
+  margin-top: 6px;
+  font-size: 11px;
+}
+.cc-additional-info > summary {
+  cursor: pointer;
+  color: var(--muted, #8aa);
+  list-style: none;
+  user-select: none;
+  padding: 2px 0;
+}
+.cc-additional-info > summary::-webkit-details-marker { display: none; }
+.cc-additional-info > summary::before {
+  content: "▸ ";
+  display: inline-block;
+  transition: transform 0.12s ease;
+}
+.cc-additional-info[open] > summary::before { content: "▾ "; }
+.cc-additional-info > summary:hover { color: var(--fg, #cde); }
+
+.cc-info-body {
+  margin-top: 4px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: #181822;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.cc-info-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.cc-info-key {
+  flex: 0 0 116px;
+  color: var(--muted, #889);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+}
+.cc-info-val {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--fg, #dde);
+  word-break: break-all;
+}
+.cc-info-val code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+}
+.cc-info-jobid {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cc-info-path {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cc-copy-btn {
+  flex: 0 0 auto;
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border, #344);
+  background: #20202c;
+  color: var(--muted, #9ab);
+  cursor: pointer;
+}
+.cc-copy-btn:hover { color: var(--fg, #cde); border-color: #4d6a9a; }
+
+/* ── Pending queue rows ─────────────────────────────────────────────────
+   Folders that have been queued client-side but haven't claimed a cloud
+   concurrency slot yet (the user picked N folders on free tier and the
+   first one is still in flight). Visual: muted-blue background with a
+   left rail in the same color, no progress bars, no per-item controls.
+   When the slot frees, this row disappears and a real cloud-queue-item
+   takes its place at the top of the active list. */
+.cc-queue-item--pending {
+  background: rgba(43, 110, 200, 0.05);
+  border-left: 3px solid #2b6ec8;
+  opacity: 0.85;
+  padding: 8px 12px;
+}
+.cc-queue-item--pending .queue-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.cc-queue-item--pending .queue-item-name {
+  font-weight: 500;
+  color: #cbd2dc;
+}
+.cc-pending-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: #7eb8e0;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+}
+
+/* ── §4: #cloudAccountDlg (Account panel — CC + Perch columns) ───────────── */
+
+dialog.kdlg.cloud-account-dlg {
+  width: min(1100px, 96vw);
+  max-width: min(1100px, 96vw);
+}
+
+.cloud-account-dlg-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.cloud-account-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.cloud-account-header h3 { margin: 0; font-size: 17px; }
+.cloud-account-close {
+  background: transparent;
+  border: none;
+  color: var(--muted, #99a);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  line-height: 1;
+}
+.cloud-account-close:hover { color: var(--fg, #fff); background: #2a2a3a; }
+
+.cloud-account-identity-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border, #2a2a3a);
+  border-radius: var(--radius-md);
+  background: #181822;
+}
+.cloud-account-avatar {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #2d3a52;
+  color: #cfe0ff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 17px;
+  font-weight: 700;
+}
+.cloud-account-identity-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.cloud-account-name { font-size: 14px; font-weight: 600; color: var(--fg, #e8f0f8); }
+.cloud-account-meta { font-size: 12px; color: var(--muted, #8aa); word-break: break-all; }
+.cloud-account-identity-bar .primary { font-size: 12px; padding: 6px 12px; flex: 0 0 auto; }
+.cloud-account-signout {
+  font-size: 12px;
+  padding: 6px 12px;
+  flex: 0 0 auto;
+  background: transparent;
+  border: 1px solid var(--border, #2a2a3a);
+  color: var(--muted, #99a);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.cloud-account-signout:hover:not(:disabled) {
+  color: var(--fg, #fff);
+  border-color: #e0533b;
+  background: rgba(224, 83, 59, 0.12);
+}
+.cloud-account-signout:disabled { opacity: 0.5; cursor: default; }
+/* Account deletion (App Store Guideline 5.1.1(v)): kept discoverable in the
+   account controls but visually muted so it doesn't compete with Sign out. */
+.cloud-account-delete {
+  font-size: 12px;
+  padding: 6px 12px;
+  flex: 0 0 auto;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted, #99a);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.cloud-account-delete:hover:not(:disabled) {
+  color: #e0533b;
+  border-color: #e0533b;
+  background: rgba(224, 83, 59, 0.12);
+  text-decoration: none;
+}
+.cloud-account-delete:disabled { opacity: 0.5; cursor: default; }
+
+.account-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+@media (max-width: 820px) {
+  .account-columns { grid-template-columns: 1fr; }
+}
+.account-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+}
+.account-col-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #9bb8ff;
+  letter-spacing: 0.02em;
+}
+.account-col--perch .account-col-title { color: #7ec89a; }
+
+.account-usage-card {
+  padding: 10px 12px;
+  border: 1px solid var(--border, #2a2a3a);
+  border-radius: var(--radius-md);
+  background: #1c1c28;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.account-usage-card-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted, #889);
+  margin-bottom: 2px;
+}
+.account-usage-tier { font-size: 11px; color: #9bb8ff; }
+.account-usage-line { font-size: 12px; color: var(--fg, #cdd6e4); }
+.account-usage-line.muted { color: var(--muted, #8aa); }
+.account-usage-foot { font-size: 10.5px; margin-top: 2px; line-height: 1.4; }
+.account-usage-hold {
+  font-size: 11px;
+  color: #ffc88a;
+  background: #2a2418;
+  border: 1px solid #4a3a1f;
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  margin: 2px 0;
+}
+
+/* Headline stat trio — Analyzed / Remaining / Credits. Mirrors MyAccount's
+   Cloud Compute "Plan & usage" stat grid. */
+.account-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin: 6px 0 2px;
+}
+.account-stat {
+  border: 1px solid var(--border, #2a2a3a);
+  border-radius: var(--radius-sm);
+  background: #16161f;
+  padding: 6px 4px;
+  text-align: center;
+  min-width: 0;
+}
+.account-stat-value {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--fg, #e8f0f8);
+  line-height: 1.2;
+}
+.account-stat-label {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted, #889);
+  margin-top: 1px;
+}
+
+.account-storage-bar { margin-top: 10px; }
+.account-storage-bar-heading { font-size: 12px; font-weight: 600; color: var(--text, #dfe7ef); margin-bottom: 3px; }
+.account-storage-bar-meta { font-size: 11px; color: var(--muted, #9ab); margin-bottom: 3px; }
+.account-quota-meta { display: flex; justify-content: space-between; gap: 8px; }
+.account-storage-bar-track {
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: #252530;
+  overflow: hidden;
+  display: flex;
+}
+.account-storage-bar-fill {
+  height: 100%;
+  background: #3d8a5a;
+  transition: width 0.2s ease;
+}
+.account-storage-bar-fill-reserved {
+  height: 100%;
+  background: #3a5a86;
+  /* In-flight reservations: hatched so they read as "pending", not spent. */
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0.18) 0,
+    rgba(255, 255, 255, 0.18) 2px,
+    transparent 2px,
+    transparent 5px
+  );
+  transition: width 0.2s ease;
+}
+
+/* Unsubscribed / no monthly allotment: greyed & non-interactive look. */
+.account-storage-bar--disabled { opacity: 0.5; }
+.account-storage-bar--disabled .account-storage-bar-fill,
+.account-storage-bar--disabled .account-storage-bar-fill-reserved {
+  background: #4a4a55;
+  background-image: none;
+}
+
+.account-history-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--border, #2a2a3a);
+  padding-bottom: 4px;
+}
+.account-history-title { font-size: 12px; font-weight: 600; color: var(--fg, #dde); }
+.cloud-account-history-hint { font-size: 11px; color: #d4a948; }
+
+.cloud-account-history {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 80px;
+  max-height: 52vh;
+  padding: 2px;
+}
+.cloud-account-history-empty {
+  font-size: 12px;
+  color: var(--muted, #888);
+  padding: 16px 4px;
+  text-align: center;
+}
+
+.cloud-account-row {
+  border: 1px solid var(--border, #2a2a3a);
+  border-radius: var(--radius-md);
+  background: #1c1c28;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+/* Actionable rows (pending packs and/or a missing folder) — sorted to the top
+   and visually lifted so the user's eye lands on what to download/fix. */
+.cloud-account-row--actionable {
+  border-color: #3a5a86;
+  background: #182135;
+}
+.cloud-account-row--missing { border-left: 3px solid #d4a948; }
+
+.cloud-account-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.cloud-account-row-title-block {
+  flex: 1 1 120px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.cloud-account-row-folder {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg, #e8f0f8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cloud-account-row-caption {
+  font-size: 11px;
+  color: var(--muted, #9ab);
+}
+.cloud-account-row-progress { font-size: 11px; color: #6bcf6b; }
+
+.cloud-account-dl-progress {
+  margin-top: 2px;
+}
+.cloud-account-dl-progress-label {
+  font-size: 11px;
+  color: #9bb8ff;
+  margin-bottom: 3px;
+}
+
+.cloud-account-row-actions {
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  align-items: center;
+}
+.cloud-account-dl-btn,
+.cloud-account-locate-btn,
+.cloud-account-load-btn {
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border, #344);
+  background: #20202c;
+  color: var(--fg, #cde);
+  cursor: pointer;
+}
+.cloud-account-dl-btn { border-color: #3d5a7e; background: #243650; color: #cfe0ff; }
+.cloud-account-dl-btn:hover:not(:disabled) { background: #2d456a; }
+.cloud-account-dl-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.cloud-account-locate-btn:hover { border-color: #d4a948; color: #ffd98a; }
+.cloud-account-load-btn { border-color: #3d5a7e; background: #243650; color: #cfe0ff; }
+.cloud-account-load-btn:hover { background: #2d456a; border-color: #4d6a9a; }
+
+.perch-account-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 60px;
+  max-height: 42vh;
+  padding: 2px;
+}
+.perch-account-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border, #2a2a3a);
+  border-radius: var(--radius-md);
+  background: #1c1c28;
+  font-size: 12px;
+}
+.perch-account-row-name {
+  font-weight: 600;
+  color: var(--fg, #e8f0f8);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.perch-account-row-meta {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--muted, #9ab);
+  white-space: nowrap;
+}
+.perch-account-row-state {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: #243650;
+  color: #9bb8ff;
+}
+.perch-account-row-state.complete { background: #1e3a2a; color: #7ec89a; }
+
+/* ── Sign-in chooser (macOS App Store build) ─────────────────────────────────
+   Shown only on the 'appstore' channel, where native Sign in with Apple is
+   available. Presents SIWA alongside the web (Google/email) option per
+   Guideline 4.8.
+
+   The selector must be `dialog.kdlg.signin-chooser-dlg` (specificity 0,0,2,1):
+   the base `dialog.kdlg` rule in kdlg.css strips all sizing to `width:auto;
+   max-width:none; height:auto; max-height:none`, expecting each dialog to
+   re-apply a size via a `.kdlg--*` modifier. This chooser carries no size
+   modifier, so a plain `.signin-chooser-dlg` (0,0,1,0) LOSES to `dialog.kdlg`
+   and the modal renders unconstrained (full-viewport). Winning the cascade
+   here — and pinning both axes — keeps it a compact centered card. */
+dialog.kdlg.signin-chooser-dlg {
+  width: min(92vw, 380px);
+  max-width: min(92vw, 380px);
+  height: fit-content;
+  max-height: 92vh;
+}
+.signin-chooser-body {
+  position: relative;
+  padding: 24px 24px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.signin-chooser-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+}
+.signin-chooser-title {
+  margin: 0;
+  font-size: 18px;
+  color: var(--fg, #eee);
+  text-align: center;
+}
+.signin-chooser-sub {
+  margin: 0 0 6px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--muted, #99a);
+  text-align: center;
+}
+/* Apple's Human Interface Guidelines: black button (white in light contexts),
+   Apple logo + "Sign in with Apple", modest corner radius, full width. The
+   logo glyph (U+F8FF) renders as the Apple mark in WebKit on Apple platforms —
+   and this button only ever appears on the macOS App Store build. */
+.signin-apple-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 16px;
+  background: #000;
+  color: #fff;
+  border: 1px solid #000;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 500;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  cursor: pointer;
+}
+.signin-apple-btn:hover { background: #1a1a1a; }
+.signin-apple-btn:active { background: #262626; }
+.signin-apple-logo::before {
+  content: "\f8ff";           /* Apple logo glyph (WebKit/Apple platforms) */
+  font-size: 17px;
+  line-height: 1;
+  position: relative;
+  top: -1px;
+}
+.signin-web-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 16px;
+  background: var(--panel, #1a1a24);
+  color: var(--fg, #eee);
+  border: 1px solid var(--border, #2a2a3a);
+  border-radius: 8px;
+  font-size: 15px;
+  cursor: pointer;
+}
+.signin-web-btn:hover { border-color: var(--brand, #6b9eff); }
+.signin-chooser-fineprint {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted, #778);
+  text-align: center;
+}
+
+/* Live bottleneck read-out — sits alongside the two phase pills and names
+   which half of the pipeline is currently the constraint. Deliberately
+   lower-contrast than the phase pills: it's context, not status. */
+.cloud-bottleneck-pill {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 1px 7px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted, #888);
+  cursor: help;
+}
+.cloud-bottleneck-pill.upload   { color: #9bb8ff; border-color: #35406040; }
+.cloud-bottleneck-pill.compute  { color: #ffc060; border-color: #4a3a2040; }
+.cloud-bottleneck-pill.balanced { color: #6bcf6b; border-color: #24401f40; }

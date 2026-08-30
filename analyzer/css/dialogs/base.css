@@ -45,27 +45,9 @@ dialog::backdrop {
   backdrop-filter: blur(2px);
 }
 
-/* Compact dialogs that should size to their content */
-dialog.dlg-compact {
-  width: fit-content;
-  height: fit-content;
-  max-height: 92vh;
-  overflow-x: hidden;
-  overflow-y: auto;
-}
-
-dialog#analyzeQueueDlg,
-dialog#liveAnalysisDlg {
-  width: 98vw;
-  max-width: 98vw;
-}
-
-dialog#sceneDlg {
-  width: calc(100% - 60px);
-  height: calc(100% - 60px);
-  max-width: none;
-  max-height: none;
-}
+/* NOTE: sizing for individual dialogs is now driven by the .kdlg system in
+   dialogs/kdlg.css. Bare `dialog { … }` above stays as a fallback for any
+   un-migrated <dialog> elements. Per-id overrides used to live here. */
 
 /* Legacy modal fallback (keep for dialogs that still use .modal) */
 .modal {

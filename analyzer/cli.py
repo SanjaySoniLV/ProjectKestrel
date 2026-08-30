@@ -12,9 +12,7 @@ from kestrel_analyzer.logging_utils import get_log_path, log_event, log_exceptio
 from kestrel_analyzer.config import (
     DEFAULT_DETECTOR_NAME,
     DETECTOR_ONNX_PATHS,
-    JPEG_EXTENSIONS,
-    RAW_EXTENSIONS,
-    is_supported_image_file,
+    select_camera_images,
 )
 
 
@@ -165,6 +163,46 @@ def parse_args(argv: Sequence[str] | None = None):
         default=None,
         help="Path for the --validate result JSON. Recommended on Windows where console=False hides stdout.",
     )
+    # ── Headless cloud / Perch commands (CI E2E + local smoke) ──────────────
+    # Each short-circuits to cli_cloud (like --validate/--smoke); they drive the
+    # real upload/cloud-compute/Perch paths against `folder` with no GUI.
+    parser.add_argument(
+        "--selftest-reach", action="store_true",
+        help="Headless: auth + a real upload-throughput probe to the staging bucket (no GPU).",
+    )
+    parser.add_argument(
+        "--cc-run", dest="cc_run", action="store_true",
+        help="Headless: submit a cloud-compute job for `folder`, wait for completion + results.",
+    )
+    parser.add_argument(
+        "--perch-upload", dest="perch_upload", action="store_true",
+        help="Headless: upload the analyzed `folder` to Perch, print the share link.",
+    )
+    parser.add_argument(
+        "--e2e", action="store_true",
+        help="Headless E2E: (optionally --clear) cloud-compute job -> retrieve -> upload to Perch.",
+    )
+    parser.add_argument(
+        "--clear", action="store_true",
+        help="With --cc-run/--e2e: delete the folder's .kestrel analysis state first (fresh run).",
+    )
+    parser.add_argument(
+        "--export-auth", dest="export_auth", action="store_true",
+        help="Print the current auth token bundle as JSON (for minting the CI "
+             "KESTREL_CI_AUTH_JSON secret). SENSITIVE: contains the refresh token. No `folder` needed.",
+    )
+    parser.add_argument(
+        "--sample-count", dest="sample_count", type=int, default=10,
+        help="Images to upload for --selftest-reach (default 10).",
+    )
+    parser.add_argument(
+        "--cloud-timeout", dest="cloud_timeout", type=int, default=1800,
+        help="Seconds to wait for a cloud job / Perch upload (default 1800).",
+    )
+    parser.add_argument(
+        "--json-out", dest="json_out", type=str, default=None,
+        help="Also write the headless cloud command's JSON result to this path.",
+    )
     parser.set_defaults(
         use_gpu=True,
         wildlife_enabled=False,
@@ -185,19 +223,12 @@ def _resolve_detector_name(args) -> str:
 
 
 def _find_first_image(folder: str) -> str | None:
-    files = [
-        f
-        for f in os.listdir(folder)
-        if is_supported_image_file(f, RAW_EXTENSIONS)
-        and os.path.isfile(os.path.join(folder, f))
+    entries = [
+        name
+        for name in os.listdir(folder)
+        if os.path.isfile(os.path.join(folder, name))
     ]
-    if not files:
-        files = [
-            f
-            for f in os.listdir(folder)
-            if is_supported_image_file(f, JPEG_EXTENSIONS)
-            and os.path.isfile(os.path.join(folder, f))
-        ]
+    files = select_camera_images(entries)
     files.sort()
     if not files:
         return None
@@ -224,6 +255,22 @@ def main(argv: Sequence[str] | None = None):
                 images_dir=args.validate_images,
                 output_path=args.validate_output,
             ))
+        # Headless cloud / Perch commands — short-circuit before any analysis.
+        _cloud_modes = (args.selftest_reach, args.cc_run, args.perch_upload, args.e2e, args.export_auth)
+        if any(_cloud_modes):
+            if sum(bool(m) for m in _cloud_modes) > 1:
+                print("error: choose exactly one headless cloud command",
+                      flush=True, file=sys.stderr)
+                sys.exit(2)
+            if not args.export_auth and not args.folder:
+                print("error: 'folder' is required for headless cloud commands",
+                      flush=True, file=sys.stderr)
+                sys.exit(2)
+            try:
+                from cli_cloud import run_cloud_command
+            except ImportError:  # pragma: no cover - package-style path
+                from analyzer.cli_cloud import run_cloud_command
+            sys.exit(run_cloud_command(args))
         if not args.folder:
             print("error: 'folder' is required unless --validate is set", flush=True, file=sys.stderr)
             sys.exit(2)
