@@ -653,7 +653,7 @@ def write_xmp_metadata(
                 # Sidecars are jailed to a bare basename in root, so the
                 # fingerprint key is that basename — not a relpath that could
                 # carry separators if a corrupt store or future caller drifted.
-                fp_key = os.path.basename(xmp_path)
+                fp_key = xmp_filename
 
                 # Safety check: if XMP already exists, only overwrite it silently
                 # when it is a Kestrel sidecar that is unchanged since we wrote it
