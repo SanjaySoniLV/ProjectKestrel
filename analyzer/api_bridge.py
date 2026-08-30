@@ -7097,6 +7097,19 @@ class Api:
             if not os.path.exists(csv_path):
                 return {"success": False, "error": "kestrel_database.csv not found", "backup_csv": "", "backup_scenedata": ""}
 
+            # Preserve any backup already sitting in the slot before we overwrite
+            # it. There is only one canonical `_old` name per file and Undo
+            # restores from it, so a second reject move would otherwise destroy
+            # the first move's undo point with no warning. Rotate a slot only
+            # when its replacement is actually about to be written: scenedata is
+            # optional, and archiving its `_old` without writing a new one would
+            # leave Undo able to restore the CSV but not the scene data it
+            # belongs to.
+            rotate_pairs = [(csv_backup, 'precull_kestrel_database', '.csv')]
+            if os.path.exists(scenedata_path):
+                rotate_pairs.append((scenedata_backup, 'precull_kestrel_scenedata', '.json'))
+            rotated = self._rotate_existing_backups(kestrel_dir, rotate_pairs)
+
             # Backup CSV
             copy_file_atomic(csv_path, csv_backup)
             info(f"[backup] CSV backed up to {csv_backup}")
@@ -7112,11 +7125,76 @@ class Api:
                 "success": True,
                 "backup_csv": csv_backup,
                 "backup_scenedata": scenedata_backup if scenedata_backed else "",
+                "rotated_previous": rotated,
                 "error": ""
             }
         except Exception as e:
             error(f"[API] backup_kestrel_db error: {e}")
             return {"success": False, "error": str(e), "backup_csv": "", "backup_scenedata": ""}
+
+    #: How many timestamped ``OLD_*`` copies to keep per file. Unlike the
+    #: schema-upgrade backups this shares a name with, rotation here happens on
+    #: every reject move, so an actively culled folder would otherwise
+    #: accumulate a full database copy per pass forever.
+    _BACKUP_ARCHIVE_RETENTION = 3
+
+    def _rotate_existing_backups(self, kestrel_dir: str, pairs) -> bool:
+        """Move existing ``*_old`` backups aside under a timestamped name.
+
+        ``pairs`` is a sequence of ``(existing_backup_path, stem, extension)``;
+        only slots whose replacement is about to be written should be passed.
+
+        Returns True if anything was rotated. Best-effort: a failure here must
+        not abort the caller's own backup, because failing to take the new
+        backup is strictly worse than failing to preserve the previous one.
+        """
+        rotated = False
+        try:
+            # Imported locally, as elsewhere in this module — api_bridge has no
+            # module-level datetime import.
+            from datetime import datetime, timezone
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            for existing, stem, ext in pairs:
+                if not os.path.exists(existing):
+                    continue
+                prefix = f"OLD_{stem}_"
+                archived = os.path.join(kestrel_dir, f"{prefix}{timestamp}{ext}")
+                # Two moves inside one second would collide. Suffix rather than
+                # skip: skipping leaves the previous undo point to be
+                # overwritten by the copy2 that follows.
+                if os.path.exists(archived):
+                    for n in range(1, 100):
+                        candidate = os.path.join(kestrel_dir, f"{prefix}{timestamp}_{n}{ext}")
+                        if not os.path.exists(candidate):
+                            archived = candidate
+                            break
+                    else:
+                        continue
+                os.replace(existing, archived)
+                rotated = True
+                info(f"[backup] Previous backup preserved as {os.path.basename(archived)}")
+                self._prune_backup_archives(kestrel_dir, prefix, ext)
+        except Exception as e:
+            warn(f"[backup] Could not rotate previous backup (continuing): {e}")
+        return rotated
+
+    def _prune_backup_archives(self, kestrel_dir: str, prefix: str, ext: str) -> None:
+        """Keep only the newest ``_BACKUP_ARCHIVE_RETENTION`` archived copies."""
+        try:
+            archives = sorted(
+                name for name in os.listdir(kestrel_dir)
+                if name.startswith(prefix) and name.endswith(ext)
+            )
+            # Names are prefix + %Y%m%d_%H%M%S [+ _n] + ext, so lexical order is
+            # chronological and the tail is the newest.
+            for stale in archives[:-self._BACKUP_ARCHIVE_RETENTION]:
+                try:
+                    os.remove(os.path.join(kestrel_dir, stale))
+                    debug(f"[backup] Pruned old archive {stale}")
+                except Exception as e:
+                    warn(f"[backup] Could not prune {stale}: {e}")
+        except Exception as e:
+            warn(f"[backup] Could not prune old archives (continuing): {e}")
 
     def restore_kestrel_db_backup(self, root_path: str):
         """Restore both kestrel_database.csv and kestrel_scenedata.json from backups.
