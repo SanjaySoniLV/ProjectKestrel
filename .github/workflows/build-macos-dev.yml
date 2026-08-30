@@ -9,29 +9,8 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-
-      - name: Download model files
-        shell: bash
-        run: |
-          echo "Downloading model files from GitHub release..."
-          mkdir -p analyzer/models
-
-          curl -L -o analyzer/models/mask_rcnn_resnet50_fpn_v2.pth \
-            "https://github.com/SanjaySoniLV/ProjectKestrel/releases/download/test/mask_rcnn_resnet50_fpn_v2.pth"
-
-          echo "Verifying download..."
-          if [ ! -f analyzer/models/mask_rcnn_resnet50_fpn_v2.pth ]; then
-            echo "ERROR: mask_rcnn_resnet50_fpn_v2.pth not found after download"
-            exit 1
-          fi
-          FILE_SIZE=$(stat -f%z analyzer/models/mask_rcnn_resnet50_fpn_v2.pth 2>/dev/null || stat -c%s analyzer/models/mask_rcnn_resnet50_fpn_v2.pth)
-          echo "Downloaded file size: ${FILE_SIZE} bytes"
-          if [ "${FILE_SIZE}" -lt 100000 ]; then
-            echo "ERROR: Downloaded file too small (${FILE_SIZE} bytes)"
-            exit 1
-          fi
-          echo "Contents of analyzer/models/:"
-          ls -lh analyzer/models/
+        with:
+          lfs: true
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -46,13 +25,195 @@ jobs:
           source .venv2/bin/activate
           python -m pip install --upgrade pip
           pip install -r requirements-macos.txt
-          pip install pyinstaller
+          pip install pyinstaller pytest
+
+      - name: Vendor pyexiv2 native deps (fixes JPEG XMP embedding off-Homebrew)
+        shell: bash
+        run: bash packaging/vendor_macos_native_deps.sh .venv2/bin/python
+
+      - name: Run pytest from source (skip ui marker)
+        id: pretest
+        continue-on-error: true
+        shell: bash
+        run: |
+          source .venv2/bin/activate
+          python -m pytest analyzer/tests/ -m "not ui" -q --tb=short
+
+      - name: Warn if pre-build pytest failed
+        if: ${{ always() && steps.pretest.outcome == 'failure' }}
+        shell: bash
+        run: echo "::warning::Pre-build pytest failed on macOS dev build; continuing to PyInstaller."
+
+      - name: Smoke test CLI from source (repo root, first 2 test images)
+        shell: bash
+        run: |
+          set -euo pipefail
+          SMOKE_DIR="${RUNNER_TEMP}/kestrel-smoke-source-input"
+          rm -rf "${SMOKE_DIR}"
+          mkdir -p "${SMOKE_DIR}"
+
+          smoke_imgs=()
+          while IFS= read -r img; do
+            smoke_imgs+=("${img}")
+          done < <(find test_imgs -maxdepth 1 -type f | sort | head -n 2)
+          if [ "${#smoke_imgs[@]}" -lt 2 ]; then
+            echo "Expected at least 2 images in test_imgs/ for source smoke test"
+            exit 1
+          fi
+
+          for img in "${smoke_imgs[@]}"; do
+            cp "${img}" "${SMOKE_DIR}/"
+          done
+
+          .venv2/bin/python analyzer/cli.py "${SMOKE_DIR}" --no-gpu --parallel-prefetch 1
+
+          META_PATH="${SMOKE_DIR}/.kestrel/kestrel_database.csv"
+          if [ ! -f "${META_PATH}" ]; then
+            echo "Source CLI smoke test did not produce kestrel_database.csv"
+            exit 1
+          fi
+          PROCESSED_ROWS=$(( $(wc -l < "${META_PATH}") - 1 ))
+          if [ "${PROCESSED_ROWS}" -lt 2 ]; then
+            echo "Source CLI smoke test processed fewer than 2 images (rows=${PROCESSED_ROWS})"
+            exit 1
+          fi
 
       - name: Run macOS headless build
         shell: bash
         run: |
           chmod +x packaging/build_app_headless.sh
           ./packaging/build_app_headless.sh
+
+      - name: Place CI auth bundle (test account)
+        shell: bash
+        env:
+          KESTREL_CI_AUTH_JSON: ${{ secrets.KESTREL_CI_AUTH_JSON }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KESTREL_CI_AUTH_JSON:-}" ]; then
+            echo "::notice::KESTREL_CI_AUTH_JSON not set; cloud reach smoke will be skipped."
+            exit 0
+          fi
+          # _get_user_data_dir() on darwin (settings_utils.py); the bundle is
+          # loaded via the keychain->file fallback (no keychain entry on a fresh
+          # runner -> the file is used).
+          AUTH_DIR="$HOME/Library/Application Support/ProjectKestrel"
+          mkdir -p "$AUTH_DIR"
+          printf '%s' "$KESTREL_CI_AUTH_JSON" | base64 --decode > "$AUTH_DIR/auth.json"
+          chmod 600 "$AUTH_DIR/auth.json"
+          echo "Wrote auth bundle to $AUTH_DIR/auth.json"
+
+      - name: Cloud reach smoke (--selftest-reach) against frozen binary
+        id: reach
+        continue-on-error: true
+        shell: bash
+        env:
+          KESTREL_CI_AUTH_JSON: ${{ secrets.KESTREL_CI_AUTH_JSON }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KESTREL_CI_AUTH_JSON:-}" ]; then
+            echo "::warning::KESTREL_CI_AUTH_JSON not set; skipping --selftest-reach cloud smoke."
+            exit 0
+          fi
+          # Exercises auth-refresh -> CC presign -> R2 PUT through net_tls on the
+          # FROZEN binary: the only way to catch the macOS .app CERTIFICATE_
+          # VERIFY_FAILED bundling regression without a Mac.
+          OUT="${RUNNER_TEMP}/reach-result.json"
+          rm -f "$OUT"
+          analyzer/dist/ProjectKestrel/ProjectKestrel \
+            --cli --selftest-reach test_imgs --sample-count 2 --json-out "$OUT"
+          echo "=== reach-result.json ==="
+          cat "$OUT"
+          cp "$OUT" reach-result.json
+          ok=$(python3 -c "import json; print(str(json.load(open('$OUT')).get('ok')).lower())")
+          if [ "$ok" != "true" ]; then
+            echo "::error::--selftest-reach failed (ok=$ok) - possible macOS frozen-app TLS regression"
+            exit 1
+          fi
+
+      - name: Warn if cloud reach smoke failed
+        if: ${{ always() && steps.reach.outcome == 'failure' }}
+        shell: bash
+        run: echo "::warning::Frozen-binary --selftest-reach failed on macOS dev build (auth/network/TLS)."
+
+      - name: Run --validate against frozen binary
+        id: validate
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          VALIDATE_OUTPUT="${RUNNER_TEMP}/validate-result.json"
+          rm -f "${VALIDATE_OUTPUT}"
+
+          analyzer/dist/ProjectKestrel/ProjectKestrel \
+            --cli --validate --no-gpu \
+            --validate-images test_imgs \
+            --validate-output "${VALIDATE_OUTPUT}"
+
+          if [ ! -f "${VALIDATE_OUTPUT}" ]; then
+            echo "Frozen --validate did not produce a result JSON"
+            exit 1
+          fi
+          echo "=== validate-result.json ==="
+          cat "${VALIDATE_OUTPUT}"
+
+          # Copy to repo root so upload-artifact finds it.
+          cp "${VALIDATE_OUTPUT}" validate-result.json
+
+          ok=$(python3 -c "import json,sys; print(str(json.load(open('${VALIDATE_OUTPUT}')).get('ok')).lower())")
+          if [ "${ok}" != "true" ]; then
+            echo "Validation reported failure (ok=${ok})"
+            exit 1
+          fi
+
+      - name: Warn if frozen --validate failed
+        if: ${{ always() && steps.validate.outcome == 'failure' }}
+        shell: bash
+        run: echo "::warning::Frozen-binary --validate failed on macOS dev build; continuing to publish available artifacts."
+
+      - name: UI probe (real visualizer.html) against frozen binary
+        id: ui_probe
+        continue-on-error: true
+        timeout-minutes: 4
+        shell: bash
+        run: |
+          set +e
+          # macOS: WKWebView injects window.pywebview.api a few seconds after the
+          # page loads; state.js' bridge-ready beacon reports it the instant it
+          # appears (the old report path was buried behind the heavy module init
+          # and missed it). The probe process does not reliably self-terminate
+          # (NSApp.run can block), so we poll for the result JSON then kill it.
+          BIN="analyzer/dist/ProjectKestrel/ProjectKestrel"
+          PAT="dist/ProjectKestrel/ProjectKestrel"
+          OUT="${RUNNER_TEMP}/ui-probe-result.json"; rm -f "$OUT"
+          ELOG="${RUNNER_TEMP}/ui-probe.err"
+
+          "$BIN" --api-probe --probe-target visualizer \
+            --probe-output "$OUT" --probe-timeout 90 --port 8798 >"$ELOG" 2>&1 &
+          start=$SECONDS
+          while [ $((SECONDS-start)) -lt 110 ]; do
+            [ -f "$OUT" ] && { echo "result JSON appeared at t=$((SECONDS-start))s"; break; }
+            pgrep -f "$PAT" >/dev/null || { echo "probe process exited at t=$((SECONDS-start))s before writing JSON"; break; }
+            sleep 1
+          done
+          pkill -9 -f "$PAT" 2>/dev/null
+
+          echo "=== probe stderr tail(15, non-GET) ==="; grep -vE 'GET /' "$ELOG" 2>/dev/null | tail -15
+          echo "=== ui-probe-result.json ==="
+          if [ ! -f "$OUT" ]; then echo "UI probe did not produce a result JSON"; exit 1; fi
+          cat "$OUT"; cp "$OUT" ui-probe-result.json
+          ok=$(python3 -c "import json,sys; print(str(json.load(open('$OUT')).get('ok')).lower())" 2>/dev/null)
+          echo "ok=$ok"
+          if [ "$ok" != "true" ]; then
+            echo "UI probe reported failure (ok=$ok); visualizer.html did not wire up window.pywebview.api"
+            exit 1
+          fi
+          echo "macOS UI probe PASSED"
+
+      - name: Warn if UI probe failed
+        if: ${{ always() && steps.ui_probe.outcome == 'failure' }}
+        shell: bash
+        run: echo "::warning::Frozen-binary UI probe failed on macOS dev build; visualizer.html did not see window.pywebview.api."
 
       - name: Collect macOS .app
         shell: bash
@@ -71,7 +232,35 @@ jobs:
           cp -a "$APP_PATH" artifact/
 
       - name: Upload macOS dev app
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: macos-dev-app
           path: artifact/
+
+      - name: Upload validate-result.json
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dev-validate-result
+          path: validate-result.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload ui-probe-result.json
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dev-ui-probe-result
+          path: ui-probe-result.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload reach-result.json
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dev-reach-result
+          path: reach-result.json
+          if-no-files-found: warn
+          retention-days: 14

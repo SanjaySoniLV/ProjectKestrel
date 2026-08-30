@@ -11,6 +11,8 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - name: Locate makeappx.exe
         id: find_makeappx
@@ -80,28 +82,6 @@ jobs:
             Write-Host ("Added $dir to PATH for later steps")
           }
 
-      - name: Download model files
-        shell: powershell
-        run: |
-          Write-Host "Downloading model files from GitHub release..."
-          New-Item -ItemType Directory -Force -Path "analyzer\models" | Out-Null
-
-          $models = @(
-            @{ name = "mask_rcnn_resnet50_fpn_v2.pth"; url = "https://github.com/SanjaySoniLV/ProjectKestrel/releases/download/test/mask_rcnn_resnet50_fpn_v2.pth" }
-          )
-
-          foreach ($m in $models) {
-            Write-Host "  -> $($m.name)"
-            Invoke-WebRequest -Uri $m.url -OutFile "analyzer\models\$($m.name)"
-            $size = (Get-Item "analyzer\models\$($m.name)").Length
-            if ($size -lt 100000) { throw "Downloaded $($m.name) is too small ($size bytes)" }
-            Write-Host "     OK ($size bytes)"
-          }
-
-          Write-Host ""
-          Write-Host "Contents of analyzer\models\:"
-          Get-ChildItem "analyzer\models\" | Format-Table Name, Length, LastWriteTime
-
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
@@ -113,12 +93,161 @@ jobs:
           python -m venv .venv2
           .\.venv2\Scripts\Activate.ps1
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
+          # Windows build uses onnxruntime-directml (DirectML GPU acceleration).
+          # See requirements-windows.txt.
+          pip install -r requirements-windows.txt
+          pip install pyinstaller pytest
+
+      # Hard gate, not continue-on-error: this produces the shipped Windows
+      # installer. The dev workflow only warns on failure, so nothing was
+      # actually blocking a regression from reaching a release artifact.
+      - name: Test gate — pytest (skip ui marker)
+        shell: powershell
+        run: |
+          .\.venv2\Scripts\Activate.ps1
+          python -m pytest analyzer/tests/ -m "not ui" -q --tb=short
+          if ($LASTEXITCODE -ne 0) { throw "pytest gate failed" }
+
+      - name: Smoke test CLI from source (repo root, first 2 test images)
+        shell: powershell
+        run: |
+          $smokeDir = Join-Path $env:RUNNER_TEMP "kestrel-smoke-source-input"
+          Remove-Item -Recurse -Force $smokeDir -ErrorAction Ignore
+          New-Item -ItemType Directory -Path $smokeDir | Out-Null
+
+          $images = Get-ChildItem -Path "test_imgs" -File | Sort-Object Name | Select-Object -First 2
+          if ($images.Count -lt 2) {
+            throw "Expected at least 2 images in test_imgs/ for source smoke test"
+          }
+
+          foreach ($img in $images) {
+            Copy-Item $img.FullName -Destination $smokeDir
+          }
+
+          & ".\.venv2\Scripts\python.exe" "analyzer\cli.py" $smokeDir --no-gpu --parallel-prefetch 1
+
+          $metadataPath = Join-Path $smokeDir ".kestrel\kestrel_database.csv"
+          if (!(Test-Path $metadataPath)) {
+            throw "Source CLI smoke test did not produce kestrel_database.csv"
+          }
+          $processedRows = (Get-Content $metadataPath | Measure-Object -Line).Lines - 1
+          if ($processedRows -lt 2) {
+            throw "Source CLI smoke test processed fewer than 2 images (rows=$processedRows)"
+          }
+
+      - name: Generate build attestation
+        id: attestation
+        shell: powershell
+        env:
+          SIGNING_SECRET: ${{ secrets.KESTREL_BUILD_SIGNING_SECRET }}
+        run: |
+          if (-not $env:SIGNING_SECRET) {
+            Write-Host "::warning::KESTREL_BUILD_SIGNING_SECRET is not set; skipping attestation. This build will be tagged 'legacy' by the API worker."
+            exit 0
+          }
+
+          # Read version from VERSION.txt (root or analyzer/) using the same logic as
+          # kestrel_telemetry._read_version: prefer a 'version:' line, else single-line fallback.
+          # @(...) forces array context so $lines[0] returns the first STRING, not the first
+          # CHARACTER, when VERSION.txt is a single line (PowerShell collapses one-element
+          # pipelines to a scalar by default).
+          $version = 'unknown'
+          foreach ($candidate in @('VERSION.txt', 'analyzer\VERSION.txt')) {
+            if (Test-Path $candidate) {
+              $lines = @(Get-Content $candidate | Where-Object { $_.Trim() -ne '' })
+              foreach ($line in $lines) {
+                if ($line.ToLower().StartsWith('version:')) {
+                  $version = ($line -split ':', 2)[1].Trim()
+                  break
+                }
+              }
+              if ($version -eq 'unknown' -and $lines.Count -eq 1) {
+                $version = $lines[0].Trim()
+              }
+              if ($version -ne 'unknown') { break }
+            }
+          }
+
+          $sha = $env:GITHUB_SHA
+          $ts  = [int][double]::Parse((Get-Date -UFormat %s))
+          $meta = "$version|$sha|$ts"
+
+          $hmac = New-Object System.Security.Cryptography.HMACSHA256
+          $hmac.Key = [Text.Encoding]::UTF8.GetBytes($env:SIGNING_SECRET)
+          $sigBytes = $hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($meta))
+          $sig = -join ($sigBytes | ForEach-Object { $_.ToString('x2') })
+
+          if (-not (Test-Path 'analyzer')) {
+            Write-Host "::error::analyzer/ directory is missing - cannot place build_attestation.json"
+            exit 1
+          }
+          $payload = @{ meta = $meta; sig = $sig } | ConvertTo-Json -Compress
+          # Windows PowerShell 5.1's `Set-Content -Encoding utf8` writes UTF-8 *with*
+          # a BOM, and Python's json.load rejects a leading BOM — so the attestation
+          # loader silently failed and every Windows build was tagged 'legacy'.
+          # Use .NET WriteAllText with a no-BOM UTF8Encoding to produce valid JSON.
+          $attestPath = (Resolve-Path 'analyzer').Path + '\build_attestation.json'
+          [System.IO.File]::WriteAllText($attestPath, $payload, (New-Object System.Text.UTF8Encoding($false)))
+
+          Write-Host "Build attestation generated:"
+          Write-Host "  version : $version"
+          Write-Host "  sha     : $sha"
+          Write-Host "  ts      : $ts"
+          Write-Host "  meta    : $meta"
+          Write-Host "  sig     : $($sig.Substring(0, 16))... (truncated)"
+
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$version"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "sha=$sha"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "ts=$ts"
 
       - name: Build ProjectKestrel with PyInstaller
         shell: cmd
         run: packaging\build_installer_headless.bat
+
+      - name: Smoke test built executable (first 2 test images)
+        id: smoke_test
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $smokeDir = Join-Path $env:RUNNER_TEMP "kestrel-smoke-input"
+          Remove-Item -Recurse -Force $smokeDir -ErrorAction Ignore
+          New-Item -ItemType Directory -Path $smokeDir | Out-Null
+
+          $images = Get-ChildItem -Path "test_imgs" -File | Sort-Object Name | Select-Object -First 2
+          if ($images.Count -lt 2) {
+            throw "Expected at least 2 images in test_imgs/ for smoke test"
+          }
+
+          foreach ($img in $images) {
+            Copy-Item $img.FullName -Destination $smokeDir
+          }
+
+          # The frozen .exe is a GUI-subsystem (console=False) app; PowerShell's
+          # call operator does NOT wait for windowed processes, so `& exe` fell
+          # straight through to Test-Path before analysis finished. Start-Process
+          # + WaitForExit blocks until the exe exits and the pipeline has written
+          # kestrel_database.csv.
+          $proc = Start-Process -FilePath "analyzer\dist\ProjectKestrel\ProjectKestrel.exe" `
+            -NoNewWindow -PassThru -ArgumentList @(
+              '--cli', $smokeDir, '--no-gpu', '--parallel-prefetch', '1'
+            )
+          $proc.Handle | Out-Null  # cache native handle so .ExitCode populates
+          $proc.WaitForExit()
+          Write-Host "ProjectKestrel.exe exited with code $($proc.ExitCode)"
+
+          $metadataPath = Join-Path $smokeDir ".kestrel\kestrel_database.csv"
+          if (!(Test-Path $metadataPath)) {
+            throw "Smoke test did not produce kestrel_database.csv (exit code $($proc.ExitCode))"
+          }
+          $processedRows = (Get-Content $metadataPath | Measure-Object -Line).Lines - 1
+          if ($processedRows -lt 2) {
+            throw "Smoke test processed fewer than 2 images (rows=$processedRows)"
+          }
+
+      - name: Warn if smoke test failed
+        if: ${{ always() && steps.smoke_test.outcome == 'failure' }}
+        shell: powershell
+        run: Write-Host "::warning::Smoke test failed on Windows installer build; continuing to publish available artifacts."
 
       - name: Create MSIX package
         shell: powershell
@@ -167,12 +296,14 @@ jobs:
           }
 
       - name: Upload MSIX package
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: windows-msix
           path: dist/installer/ProjectKestrel.msix
 
       - name: Upload MSIX bundle
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: windows-msixbundle
@@ -181,7 +312,35 @@ jobs:
       - name: Install Inno Setup 6
         shell: powershell
         run: |
-          Invoke-WebRequest -Uri https://jrsoftware.org/download.php/is.exe -OutFile is.exe
+          # Pinned to a versioned GitHub release asset, NOT jrsoftware.org/download.php/is.exe.
+          # That old redirector now lands on an HTML download page (302 -> /isdl.php,
+          # Content-Type: text/html), so the "installer" it saved was ~10 KB of markup and
+          # Start-Process failed with "The file or directory is corrupted and unreadable."
+          # Stay on 6.x: the ISCC path checked below is version-specific, and Inno Setup 7
+          # installs elsewhere.
+          $ErrorActionPreference = "Stop"
+          $url    = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe"
+          $sha256 = "9C73C3BAE7ED48D44112A0F48E66742C00090BDB5BEF71D9D3C056C66E97B732"
+
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            try {
+              Invoke-WebRequest -Uri $url -OutFile is.exe -MaximumRedirection 5
+              # Verify we got the real binary before trying to run it, so a bad download
+              # reports what actually went wrong instead of a confusing exec error.
+              $got = (Get-FileHash is.exe -Algorithm SHA256).Hash
+              if ($got -ne $sha256) { throw "checksum mismatch: got $got, expected $sha256" }
+              $head = [System.IO.File]::ReadAllBytes((Resolve-Path is.exe))[0..1]
+              if ($head[0] -ne 0x4D -or $head[1] -ne 0x5A) { throw "not a PE binary (no MZ header)" }
+              Write-Host "Downloaded and verified Inno Setup 6.7.3."
+              break
+            } catch {
+              Write-Host "Attempt $attempt failed: $($_.Exception.Message)"
+              if ($attempt -eq 3) { throw }
+              Remove-Item is.exe -ErrorAction SilentlyContinue
+              Start-Sleep -Seconds (5 * $attempt)
+            }
+          }
+
           Start-Process -FilePath .\is.exe -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-" -Wait
           if (-not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
             throw "Inno Setup not found after install"
@@ -193,13 +352,51 @@ jobs:
         run: packaging\build_installer_headless_part2.bat
 
       - name: Upload Windows installer
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: windows-installer
           path: dist/installer/*.exe
 
       - name: Upload ProjectKestrel onedir bundle
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: windows-bundle
           path: analyzer/dist/ProjectKestrel/
+
+      - name: Register build with worker
+        if: ${{ always() && steps.attestation.outputs.sha != '' }}
+        shell: powershell
+        continue-on-error: true
+        env:
+          SIGNING_SECRET: ${{ secrets.KESTREL_BUILD_SIGNING_SECRET }}
+          BUILD_VERSION:  ${{ steps.attestation.outputs.version }}
+          BUILD_SHA:      ${{ steps.attestation.outputs.sha }}
+          BUILD_TS:       ${{ steps.attestation.outputs.ts }}
+        run: |
+          if (-not $env:SIGNING_SECRET) {
+            Write-Host "::warning::No signing secret available; skipping build registration."
+            exit 0
+          }
+          $body = @{
+            version = $env:BUILD_VERSION
+            sha     = $env:BUILD_SHA
+            ts      = $env:BUILD_TS
+            run_id  = $env:GITHUB_RUN_ID
+            actor   = $env:GITHUB_ACTOR
+          } | ConvertTo-Json -Compress
+
+          try {
+            $resp = Invoke-RestMethod `
+              -Uri 'https://api.projectkestrel.org/api/builds/register' `
+              -Method POST -TimeoutSec 15 `
+              -Headers @{
+                'X-Kestrel-Signing-Token' = $env:SIGNING_SECRET
+                'Content-Type'            = 'application/json'
+              } `
+              -Body $body
+            Write-Host "Build registered with worker: $($resp | ConvertTo-Json -Compress)"
+          } catch {
+            Write-Host "::warning::Build registration failed (non-blocking): $($_.Exception.Message)"
+          }

@@ -3,10 +3,18 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Defense-in-depth CSP: matches the HTTP header set by visualizer.py's
+       Handler.end_headers(). See FINDING-01 for the full rationale.
+       'unsafe-eval' is required because pywebview 6.1's JS bridge generates
+       window.pywebview.api stubs with `new Function(...)`; without it the
+       API never materialises and every button that calls into Python
+       silently no-ops. Affects both macOS WKWebView and recent Windows
+       Edge WebView2 runtimes (issue #39). -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' blob:; font-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" />
   <title>Culling Assistant — Project Kestrel</title>
   <link rel="icon" href="data:," />
-  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
-  <script src="bridge_config.js"></script>
+  <script src="csv_parser.js"></script>
   <style>
     :root {
       --bg: #0b0c0f;
@@ -278,6 +286,7 @@
       display: flex;
       align-items: center;
       justify-content: center;
+      position: relative;
     }
     .preview-img-box img {
       max-width: 100%;
@@ -287,6 +296,45 @@
     .preview-img-box .muted {
       color: var(--muted);
       font-size: 12px;
+    }
+    .preview-crop-overlay-layer {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity .12s ease;
+      z-index: 4;
+    }
+    .preview-crop-overlay-layer.visible {
+      opacity: 1;
+    }
+    .preview-crop-overlay-box {
+      position: absolute;
+      border: 2px solid #94a4ba;
+      border-style: dashed;
+      background: rgba(148, 164, 186, 0.08);
+      box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+    }
+    .preview-crop-overlay-box.active {
+      border-color: #f2c14c;
+      border-style: solid;
+      background: rgba(242, 193, 76, 0.08);
+      box-shadow: 0 0 0 1px rgba(242, 193, 76, 0.35), inset 0 0 0 1px rgba(0, 0, 0, 0.45);
+    }
+    .preview-crop-overlay-label {
+      position: absolute;
+      top: -16px;
+      left: 0;
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1;
+      padding: 2px 5px;
+      border-radius: 4px;
+      color: #0d1117;
+      background: rgba(148, 164, 186, 0.95);
+    }
+    .preview-crop-overlay-box.active .preview-crop-overlay-label {
+      background: rgba(242, 193, 76, 0.98);
     }
     .preview-meta {
       font-size: 12px;
@@ -425,6 +473,37 @@
       padding: 1px 5px;
       border-radius: 3px;
       font-size: 11px;
+    }
+    .dlg-xmp-field-row {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      padding: 4px 6px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .dlg-xmp-field-row:hover { background: rgba(74,163,255,0.05); }
+    .dlg-xmp-field-row input[type="checkbox"] {
+      margin-top: 2px;
+      flex-shrink: 0;
+      cursor: pointer;
+    }
+    .dlg-xmp-field-row span {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      gap: 1px;
+    }
+    .dlg-xmp-field-row b {
+      font-size: 12px;
+      color: var(--text);
+      font-weight: 600;
+    }
+    .dlg-xmp-field-row em {
+      font-size: 11px;
+      color: var(--muted);
+      font-style: normal;
+      line-height: 1.35;
     }
     .dlg-xmp-note {
       margin: 0 14px 10px;
@@ -827,6 +906,70 @@
       min-width: 24px;
       text-align: left;
     }
+    /* Quality-score cutoff: a 0.00–1.00 slider with the active profile's star
+       thresholds drawn underneath, so the number always reads against the star
+       scale used everywhere else in the app. */
+    .auto-cat-panel .quality-cutoff-group {
+      min-width: 250px;
+    }
+    .auto-cat-panel .quality-scale-wrap {
+      position: relative;
+      width: 190px;
+      padding-bottom: 15px;
+    }
+    .auto-cat-panel .quality-scale-wrap input[type="range"] {
+      width: 100%;
+      display: block;
+      margin: 0;
+      position: relative;
+      z-index: 1;
+    }
+    .auto-cat-panel .quality-scale-ticks {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 15px;
+      pointer-events: none;
+    }
+    .auto-cat-panel .quality-tick {
+      position: absolute;
+      top: 0;
+      /* left is set inline from the threshold's position on the 0–1 scale */
+      transform: translateX(-50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      font-size: 9px;
+      line-height: 1;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .auto-cat-panel .quality-tick::before {
+      content: '';
+      width: 1px;
+      height: 4px;
+      background: #3a4557;
+      margin-bottom: 2px;
+    }
+    /* The star bands at or above the cutoff are the ones that will be
+       accepted — brighten those so the split is readable at a glance. */
+    .auto-cat-panel .quality-tick.above {
+      color: #f5c542;
+    }
+    .auto-cat-panel .quality-tick.above::before {
+      background: #f5c542;
+    }
+    .auto-cat-panel .quality-scale-note {
+      font-size: 10px;
+      color: var(--muted);
+      line-height: 1.3;
+      max-width: 250px;
+    }
+    .auto-cat-panel .slider-val#qualityCutoffVal {
+      min-width: 34px;
+      font-variant-numeric: tabular-nums;
+    }
     .auto-cat-panel .unrated-group {
       justify-content: flex-end;
     }
@@ -891,6 +1034,8 @@
     <div class="topbar-center">
       <kbd>Shift+Click</kbd> accept/reject &nbsp;·&nbsp;
       Click <b>★</b> to rate &nbsp;·&nbsp;
+      <kbd>↑</kbd><kbd>↓</kbd> switch crop &nbsp;·&nbsp;
+      <kbd>Enter</kbd> set primary crop &nbsp;·&nbsp;
       <kbd>Drag</kbd> thumbnail to zoom preview (loads RAW)
     </div>
     <div class="topbar-right" style="gap:8px">
@@ -910,12 +1055,20 @@
       </div>
       <!-- Auto-categorize settings panel (hidden by default) -->
       <div class="auto-cat-panel hidden" id="autoCatPanel">
-        <div class="slider-group">
-          <label for="qualityCutoffSlider">Accept if rated above</label>
+        <div class="slider-group quality-cutoff-group">
+          <label for="qualityCutoffSlider">Accept if quality is at least</label>
           <div class="slider-row">
-            <input type="range" id="qualityCutoffSlider" min="0" max="5" value="3" step="1" />
-            <span class="slider-val" id="qualityCutoffVal">★3</span>
+            <div class="quality-scale-wrap">
+              <input type="range" id="qualityCutoffSlider" min="0" max="1" value="0.60" step="0.01"
+                     aria-describedby="qualityScaleTicks" />
+              <!-- Star cutoffs for the active rating profile, drawn at their
+                   quality positions so the score always reads against the
+                   star scale the rest of the app uses. -->
+              <div class="quality-scale-ticks" id="qualityScaleTicks" aria-hidden="true"></div>
+            </div>
+            <span class="slider-val" id="qualityCutoffVal">0.60</span>
           </div>
+          <div class="quality-scale-note" id="qualityCutoffNote"></div>
         </div>
         <div class="slider-group">
           <label for="minPerSceneSlider">Min Accepted Per Scene</label>
@@ -1028,6 +1181,39 @@
           </div>
         </label>
       </div>
+
+      <!-- XMP field selection (which sections of the .xmp packet to populate) -->
+      <div class="dlg-option-card hidden" id="xmpFieldsCard">
+        <div style="display:flex;gap:10px;align-items:flex-start;width:100%;">
+          <span class="dlg-option-icon" style="font-size:18px;">&#x2699;&#xFE0F;</span>
+          <div class="dlg-option-body" style="flex:1;min-width:0;">
+            <b>Fields to write</b>
+            <span style="margin-bottom:6px;display:block;">Pick which entries the XMP packet should contain. Disabled fields are omitted from each sidecar.</span>
+            <div id="xmpFieldsGrid" style="display:grid;grid-template-columns:1fr 1fr;gap:2px 12px;">
+              <label class="dlg-xmp-field-row"><input type="checkbox" data-xmp-field="rating" checked /><span><b>Star Rating</b><em>xmp:Rating (0–5).</em></span></label>
+              <label class="dlg-xmp-field-row"><input type="checkbox" data-xmp-field="label" checked /><span><b>Color Label</b><em>xmp:Label (Green/Red).</em></span></label>
+              <label class="dlg-xmp-field-row"><input type="checkbox" data-xmp-field="species" checked /><span><b>Species Tag</b><em>kestrel:Species + keyword.</em></span></label>
+              <label class="dlg-xmp-field-row"><input type="checkbox" data-xmp-field="family" checked /><span><b>Family Tag</b><em>kestrel:Family + keyword.</em></span></label>
+              <label class="dlg-xmp-field-row"><input type="checkbox" data-xmp-field="quality" checked /><span><b>Quality Score</b><em>kestrel:QualityScore (0–1).</em></span></label>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- Embed into JPEG originals (opt-in; only shown when writing XMP AND
+           the folder contains JPEGs). Unchecked on every open — it modifies
+           the user's original files, so it must be a conscious choice. -->
+      <div class="dlg-option-card hidden" id="xmpEmbedJpegCard">
+        <label class="dlg-option-label">
+          <input type="checkbox" id="xmpEmbedJpegCheck" />
+          <span class="dlg-option-icon">&#x1F5BC;&#xFE0F;</span>
+          <div class="dlg-option-body">
+            <b>Also embed metadata into JPEG originals <span id="xmpEmbedJpegCount" style="font-weight:600;color:#9a8050;"></span></b>
+            <span>Adobe Lightroom ignores <code>.xmp</code> sidecars for JPEGs — embedding writes the ratings and tags <b>inside</b> each JPEG so Lightroom can read them.<br>
+            <b style="color:#e0a050;">&#x26A0; This modifies your original JPEG files in place.</b> Photo data is left untouched, but as with any file edit, use at your own risk — back up if unsure. RAW files are never modified.</span>
+          </div>
+        </label>
+      </div>
+
       <!-- XMP early-access note (shown when checked) -->
       <div class="dlg-xmp-note" id="xmpNote">
         &#x26A0; <b>Write XMP files <em>before</em> importing into your photo editor.</b> Once a program like Lightroom or Capture One has imported a photo, it typically ignores new sidecar files and manages metadata in its own catalogue instead. Write XMP first, then import, for best results.
@@ -1148,6 +1334,12 @@
     // Culling Assistant — Project Kestrel
     // ====================================================================
 
+    // ── Debug-gated console logging ─────────────────────────────────────────
+    // Diagnostic console.log lines route through kdebug() — silent by default.
+    // Enable for a session via DevTools: window.__KESTREL_DEBUG = true; reload.
+    const _KESTREL_DEBUG = !!window.__KESTREL_DEBUG;
+    function kdebug(...args) { if (_KESTREL_DEBUG) console.log(...args); }
+
     // ---- Helpers ----
     function el(sel) { return document.querySelector(sel); }
     function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -1184,26 +1376,53 @@
     }
 
     // ---- Wait for pywebview ----
-    function waitForPywebview(timeout = 5000) {
+    function waitForPywebview(requiredMethods = ['read_kestrel_csv'], timeout = 8000) {
+      const methods = Array.isArray(requiredMethods) && requiredMethods.length > 0
+        ? requiredMethods
+        : ['read_kestrel_csv'];
       return new Promise((resolve) => {
-        const checkApi = () => {
-          // Check for both the api object AND a known method
-          if (window.pywebview?.api && typeof window.pywebview.api.read_kestrel_csv === 'function') {
-            resolve(true);
-            return true;
-          }
-          return false;
+        let done = false;
+        let iv = null;
+
+        const finish = (ok) => {
+          if (done) return;
+          done = true;
+          if (iv) clearInterval(iv);
+          window.removeEventListener('pywebviewready', onReady);
+          resolve(ok);
         };
-        
-        if (checkApi()) return;
-        
+
+        const checkApi = () => {
+          const api = window.pywebview?.api;
+          if (!api) return false;
+          return methods.every((methodName) => typeof api[methodName] === 'function');
+        };
+
+        const onReady = () => {
+          if (checkApi()) finish(true);
+        };
+
+        window.addEventListener('pywebviewready', onReady);
+
+        if (checkApi()) {
+          finish(true);
+          return;
+        }
+
         const start = Date.now();
-        const iv = setInterval(() => {
-          if (checkApi()) { clearInterval(iv); resolve(true); }
-          else if (Date.now() - start > timeout) { 
-            clearInterval(iv); 
-            console.error('Timeout waiting for pywebview API. window.pywebview:', window.pywebview, 'api:', window.pywebview?.api);
-            resolve(false); 
+        iv = setInterval(() => {
+          if (checkApi()) {
+            finish(true);
+          } else if (Date.now() - start > timeout) {
+            console.error(
+              'Timeout waiting for pywebview API methods:',
+              methods,
+              'window.pywebview:',
+              window.pywebview,
+              'api:',
+              window.pywebview?.api
+            );
+            finish(false);
           }
         }, 100);
       });
@@ -1402,6 +1621,8 @@
       if (!header.includes('culled_origin')) header.push('culled_origin');
       if (!header.includes('exposure_correction')) header.push('exposure_correction');
       if (!header.includes('detection_scores')) header.push('detection_scores');
+      if (!header.includes('crops_json')) header.push('crops_json');
+      if (!header.includes('primary_crop_index')) header.push('primary_crop_index');
       for (const r of rows) {
         if (r.culled === undefined) r.culled = '';
         if (r.culled_origin === undefined) r.culled_origin = '';
@@ -1412,7 +1633,215 @@
         }
         if (r.exposure_correction === undefined) r.exposure_correction = '0';
         if (r.detection_scores === undefined) r.detection_scores = '';
+        if (r.crops_json === undefined) r.crops_json = '';
+        if (r.primary_crop_index === undefined || r.primary_crop_index === '') r.primary_crop_index = '0';
       }
+    }
+
+    const activeCropIndexByImage = new Map();
+
+    function _cropStateKey(row) {
+      return `${row?.filename || ''}`;
+    }
+
+    function _cropNum(value, fallback = 0) {
+      const n = parseFloat(value);
+      return Number.isFinite(n) ? n : fallback;
+    }
+
+    function _cropInt(value, fallback = 0) {
+      const n = parseInt(value, 10);
+      return Number.isFinite(n) ? n : fallback;
+    }
+
+    function _cropClamp01(value, fallback) {
+      const n = parseFloat(value);
+      if (!Number.isFinite(n)) return fallback;
+      return Math.max(0, Math.min(1, n));
+    }
+
+    function _fullCropBbox() {
+      return {
+        x_min_norm: 0,
+        x_max_norm: 1,
+        y_min_norm: 0,
+        y_max_norm: 1,
+        x_center_norm: 0.5,
+        y_center_norm: 0.5,
+      };
+    }
+
+    function _normalizeCropBbox(rawBbox) {
+      const b = rawBbox && typeof rawBbox === 'object' ? rawBbox : {};
+      const out = {
+        x_min_norm: _cropClamp01(b.x_min_norm, 0),
+        x_max_norm: _cropClamp01(b.x_max_norm, 1),
+        y_min_norm: _cropClamp01(b.y_min_norm, 0),
+        y_max_norm: _cropClamp01(b.y_max_norm, 1),
+        x_center_norm: _cropClamp01(b.x_center_norm, 0.5),
+        y_center_norm: _cropClamp01(b.y_center_norm, 0.5),
+      };
+      if (out.x_max_norm <= out.x_min_norm) out.x_max_norm = Math.min(1, out.x_min_norm + 0.01);
+      if (out.y_max_norm <= out.y_min_norm) out.y_max_norm = Math.min(1, out.y_min_norm + 0.01);
+      out.x_center_norm = Math.max(out.x_min_norm, Math.min(out.x_max_norm, out.x_center_norm));
+      out.y_center_norm = Math.max(out.y_min_norm, Math.min(out.y_max_norm, out.y_center_norm));
+      return out;
+    }
+
+    function _invalidateRowCropCache(row) {
+      if (!row) return;
+      delete row.__cropRecordsCache;
+    }
+
+    function _serializeCropRecords(crops) {
+      return (Array.isArray(crops) ? crops : []).map((crop, idx) => ({
+        crop_index: _cropInt(crop?.crop_index, idx),
+        crop_path: String(crop?.crop_path || ''),
+        detection_index: _cropInt(crop?.detection_index, -1),
+        detection_confidence: _cropNum(crop?.detection_confidence, 0),
+        species: String(crop?.species || 'Unknown'),
+        species_confidence: _cropNum(crop?.species_confidence, 0),
+        family: String(crop?.family || 'Unknown'),
+        family_confidence: _cropNum(crop?.family_confidence, 0),
+        quality: _cropNum(crop?.quality, -1),
+        rating: Math.max(0, Math.min(5, _cropInt(crop?.rating, 0))),
+        exposure_correction: _cropNum(crop?.exposure_correction, 0),
+        bbox: _normalizeCropBbox(crop?.bbox),
+      }));
+    }
+
+    function getRowCropRecords(row) {
+      if (!row) return [];
+      if (row.__cropRecordsCache) return row.__cropRecordsCache;
+
+      let parsed = [];
+      const raw = String(row.crops_json || '').trim();
+      if (raw) {
+        try {
+          const maybeArray = JSON.parse(raw);
+          if (Array.isArray(maybeArray)) parsed = maybeArray;
+        } catch (_) {
+          parsed = [];
+        }
+      }
+
+      const normalized = [];
+      for (let i = 0; i < parsed.length; i++) {
+        const src = parsed[i];
+        if (!src || typeof src !== 'object') continue;
+        const fallbackPath = i === 0 ? String(row.crop_path || '') : '';
+        const cropPath = String(src.crop_path || fallbackPath || '').trim();
+        if (!cropPath && i > 0) continue;
+        normalized.push({
+          crop_index: _cropInt(src.crop_index, i),
+          crop_path: cropPath,
+          detection_index: _cropInt(src.detection_index, -1),
+          detection_confidence: _cropNum(src.detection_confidence, 0),
+          species: String(src.species || row.species || 'Unknown'),
+          species_confidence: _cropNum(src.species_confidence, _cropNum(row.species_confidence, 0)),
+          family: String(src.family || row.family || 'Unknown'),
+          family_confidence: _cropNum(src.family_confidence, _cropNum(row.family_confidence, 0)),
+          quality: _cropNum(src.quality, _cropNum(row.quality, -1)),
+          rating: Math.max(0, Math.min(5, _cropInt(src.rating, 0))),
+          exposure_correction: _cropNum(src.exposure_correction, _cropNum(row.exposure_correction, 0)),
+          bbox: _normalizeCropBbox(src.bbox),
+        });
+      }
+
+      if (!normalized.length && row.crop_path) {
+        normalized.push({
+          crop_index: 0,
+          crop_path: String(row.crop_path || ''),
+          detection_index: -1,
+          detection_confidence: 0,
+          species: String(row.species || 'Unknown'),
+          species_confidence: _cropNum(row.species_confidence, 0),
+          family: String(row.family || 'Unknown'),
+          family_confidence: _cropNum(row.family_confidence, 0),
+          quality: _cropNum(row.quality, -1),
+          rating: Math.max(0, Math.min(5, _cropInt(row.normalized_rating, 0))),
+          exposure_correction: _cropNum(row.exposure_correction, 0),
+          bbox: _fullCropBbox(),
+        });
+      }
+
+      row.__cropRecordsCache = normalized;
+      return normalized;
+    }
+
+    function getRowPrimaryCropIndex(row, crops = null) {
+      const list = Array.isArray(crops) ? crops : getRowCropRecords(row);
+      if (!list.length) return 0;
+      const explicit = _cropInt(row?.primary_crop_index, -1);
+      if (explicit >= 0 && explicit < list.length) return explicit;
+      const path = String(row?.crop_path || '').trim();
+      if (path) {
+        const idx = list.findIndex(c => String(c.crop_path || '') === path);
+        if (idx >= 0) return idx;
+      }
+      return 0;
+    }
+
+    function getRowActiveCropIndex(row, crops = null) {
+      const list = Array.isArray(crops) ? crops : getRowCropRecords(row);
+      if (!list.length) return 0;
+      const key = _cropStateKey(row);
+      const stored = activeCropIndexByImage.get(key);
+      if (Number.isFinite(stored) && stored >= 0 && stored < list.length) return stored;
+      const primary = getRowPrimaryCropIndex(row, list);
+      activeCropIndexByImage.set(key, primary);
+      return primary;
+    }
+
+    function setRowActiveCropIndex(row, nextIndex, crops = null) {
+      const list = Array.isArray(crops) ? crops : getRowCropRecords(row);
+      if (!list.length) return 0;
+      const clamped = Math.max(0, Math.min(list.length - 1, _cropInt(nextIndex, 0)));
+      activeCropIndexByImage.set(_cropStateKey(row), clamped);
+      return clamped;
+    }
+
+    function getRowActiveCropState(row) {
+      const crops = getRowCropRecords(row);
+      const activeIndex = getRowActiveCropIndex(row, crops);
+      return {
+        crops,
+        activeIndex,
+        activeCrop: crops[activeIndex] || null,
+        primaryIndex: getRowPrimaryCropIndex(row, crops),
+      };
+    }
+
+    function promoteActiveCropToPrimary(row) {
+      const crops = getRowCropRecords(row);
+      if (!crops.length) return false;
+      const nextPrimary = getRowActiveCropIndex(row, crops);
+      const prevPrimary = getRowPrimaryCropIndex(row, crops);
+      const crop = crops[nextPrimary];
+      if (!crop) return false;
+
+      const changed = prevPrimary !== nextPrimary || String(row.crop_path || '') !== String(crop.crop_path || '');
+      row.primary_crop_index = String(nextPrimary);
+      row.crop_path = crop.crop_path || row.crop_path || '';
+      row.species = crop.species || row.species || 'Unknown';
+      row.species_confidence = _cropNum(crop.species_confidence, _cropNum(row.species_confidence, 0));
+      row.family = crop.family || row.family || 'Unknown';
+      row.family_confidence = _cropNum(crop.family_confidence, _cropNum(row.family_confidence, 0));
+      row.quality = _cropNum(crop.quality, _cropNum(row.quality, -1));
+      row.exposure_correction = _cropNum(crop.exposure_correction, _cropNum(row.exposure_correction, 0));
+
+      const origin = String(getOrigin(row) || '').toLowerCase();
+      if (origin !== 'manual') {
+        const autoRating = Math.max(0, Math.min(5, _cropInt(crop.rating, 0)));
+        row.normalized_rating = String(autoRating);
+        row.rating_origin = 'auto';
+        if (row?.filename) _normalizedRatings[row.filename] = autoRating;
+      }
+
+      row.crops_json = JSON.stringify(_serializeCropRecords(crops));
+      _invalidateRowCropCache(row);
+      setRowActiveCropIndex(row, nextPrimary, crops);
+      return changed;
     }
 
     // ---- Aggregate scenes ----
@@ -1453,29 +1882,129 @@
       return list;
     }
 
+    // ---- Rating profile thresholds ----
+    // Quality-score cutoff for each star band, from the active rating_profile
+    // setting. Seeded with the 'balanced' defaults from
+    // kestrel_analyzer/ratings.py so the panel is usable before the bridge
+    // answers (and if it never does, e.g. browser preview).
+    let _ratingThresholds = { five: 0.85, four: 0.60, three: 0.40, two: 0.15 };
+    const _STAR_KEYS = [
+      { star: 2, key: 'two' },
+      { star: 3, key: 'three' },
+      { star: 4, key: 'four' },
+      { star: 5, key: 'five' },
+    ];
+
+    async function loadRatingThresholds() {
+      try {
+        const res = await window.pywebview.api.get_rating_thresholds();
+        const t = res?.success ? res.thresholds : null;
+        if (t && ['five', 'four', 'three', 'two'].every(k => Number.isFinite(Number(t[k])))) {
+          _ratingThresholds = {
+            five: Number(t.five), four: Number(t.four),
+            three: Number(t.three), two: Number(t.two),
+          };
+        }
+      } catch (e) { console.warn('loadRatingThresholds:', e); }
+      renderQualityScaleTicks();
+      updateSliderLabels(true);
+    }
+
+    // Lowest quality score that still earns `star`. Star 1 is everything below
+    // the two-star cutoff, so its floor is 0.
+    function qualityFloorForStar(star) {
+      const hit = _STAR_KEYS.find(s => s.star === star);
+      return hit ? Number(_ratingThresholds[hit.key]) : 0;
+    }
+
+    // Mirror of quality_to_rating() in kestrel_analyzer/ratings.py.
+    function starForQuality(q) {
+      const v = Number(q);
+      if (!Number.isFinite(v) || v < 0) return 0;
+      if (v >= _ratingThresholds.five)  return 5;
+      if (v >= _ratingThresholds.four)  return 4;
+      if (v >= _ratingThresholds.three) return 3;
+      if (v >= _ratingThresholds.two)   return 2;
+      return 1;
+    }
+
+    // The quality score an image effectively sits at for cutoff purposes.
+    // A manual star rating is an explicit user statement, so it wins over the
+    // computed score: treat the image as sitting at the floor of that band.
+    function effectiveQuality(row) {
+      if (getOrigin(row) === 'manual') {
+        const star = getRating(row);
+        // A manual 0 means "unrated" and is handled by the unrated default,
+        // never by the cutoff comparison.
+        if (star > 0) return qualityFloorForStar(star);
+      }
+      return parseNumber(row?.quality);
+    }
+
+    function renderQualityScaleTicks() {
+      const host = el('#qualityScaleTicks');
+      if (!host) return;
+      const cutoff = getSliderValues().qualityCutoff;
+      host.innerHTML = '';
+      for (const { star, key } of _STAR_KEYS) {
+        const pos = Number(_ratingThresholds[key]);
+        if (!Number.isFinite(pos)) continue;
+        const tick = document.createElement('div');
+        tick.className = 'quality-tick' + (pos >= cutoff ? ' above' : '');
+        tick.style.left = (Math.max(0, Math.min(1, pos)) * 100) + '%';
+        tick.appendChild(document.createTextNode('★' + star));
+        host.appendChild(tick);
+      }
+    }
+
     // ---- Auto-categorize helpers ----
     function getSliderValues() {
-      const cutoff  = parseInt(el('#qualityCutoffSlider')?.value ?? '3', 10);
+      const rawCutoff = parseFloat(el('#qualityCutoffSlider')?.value ?? '0.60');
+      const qualityCutoff = Number.isFinite(rawCutoff) ? Math.max(0, Math.min(1, rawCutoff)) : 0.60;
       const minKeep = parseInt(el('#minPerSceneSlider')?.value  ?? '0', 10);
       const maxRaw  = parseInt(el('#maxPerSceneSlider')?.value  ?? '0', 10);
       const maxKeep = maxRaw === 0 ? Infinity : maxRaw;
       const unratedDefault = (el('#unratedDefaultSelect')?.value === 'accept') ? 'accept' : 'reject';
-      return { cutoff, minKeep, maxKeep, unratedDefault };
+      return { qualityCutoff, minKeep, maxKeep, unratedDefault };
     }
 
     let _autoRulesLoaded = false; // set true after first settings load so initial load doesn't flash
     function updateSliderLabels(fromLoad = false) {
-      const { cutoff, minKeep, maxKeep, unratedDefault } = getSliderValues();
+      const { qualityCutoff, minKeep, maxKeep, unratedDefault } = getSliderValues();
       const qEl   = el('#qualityCutoffVal');
       const minEl = el('#minPerSceneVal');
       const maxEl = el('#maxPerSceneVal');
-      if (qEl)   qEl.textContent   = '\u2605' + cutoff;
+      const cutoffText = qualityCutoff.toFixed(2);
+      if (qEl)   qEl.textContent   = cutoffText;
       if (minEl) minEl.textContent = String(minKeep);
       if (maxEl) maxEl.textContent = maxKeep === Infinity ? '\u221e' : String(maxKeep);
+
+      // Say which star band the cutoff currently lands in, so the score stays
+      // legible to anyone who thinks in stars.
+      const noteEl = el('#qualityCutoffNote');
+      if (noteEl) {
+        const star = starForQuality(qualityCutoff);
+        const floor = qualityFloorForStar(star);
+        if (qualityCutoff <= 0) {
+          noteEl.textContent = 'Accepts every rated image.';
+        } else if (Math.abs(qualityCutoff - floor) < 0.005) {
+          // Cutoff sits exactly on a star boundary \u2014 the whole band is in.
+          noteEl.textContent = `Accepts \u2605${star} and above (\u2605${star} starts at ${floor.toFixed(2)}).`;
+        } else if (star >= 5) {
+          noteEl.textContent = 'Inside the \u26055 band \u2014 accepts only the strongest \u26055 images.';
+        } else {
+          // Cutoff splits a band: only the upper part of it is accepted, so
+          // don't claim the whole star level is in.
+          noteEl.textContent =
+            `Inside the \u2605${star} band \u2014 accepts \u2605${star + 1} and above, plus stronger \u2605${star} images.`;
+        }
+      }
+      renderQualityScaleTicks();
+
       const unratedLabel = unratedDefault === 'accept' ? 'Auto-Accept' : 'Auto-Reject';
       const summary = el('#autoCatSummary');
       if (summary) summary.textContent =
-        `Rated > \u2605${cutoff} \u00b7 Min ${minKeep} \u00b7 Max ${maxKeep === Infinity ? '\u221e' : maxKeep} \u00b7 Unrated \u2192 ${unratedLabel}`;
+        `Quality \u2265 ${cutoffText} \u00b7 Min ${minKeep} \u00b7 Max ${maxKeep === Infinity ? '\u221e' : maxKeep} \u00b7 Unrated \u2192 ${unratedLabel}`;
       // Highlight Re-apply button when rules change (but not on initial page load)
       if (!fromLoad && _autoRulesLoaded) {
         el('#reapplyAutoBtn')?.classList.add('needs-reapply');
@@ -1483,7 +2012,7 @@
     }
 
     function applyAutoCategorize(preserveManual = true) {
-      const { cutoff, minKeep, maxKeep, unratedDefault } = getSliderValues();
+      const { qualityCutoff, minKeep, maxKeep, unratedDefault } = getSliderValues();
       for (const scene of scenes) {
         // Sort by rating desc, then quality score desc
         const sorted = scene.images.slice().sort((a, b) => {
@@ -1496,7 +2025,7 @@
           sorted.filter(r => {
             const rt = getRating(r);
             if (rt === 0) return unratedDefault === 'accept';
-            return rt > cutoff;
+            return effectiveQuality(r) >= qualityCutoff;
           })
                 .map(r => r.filename)
         );
@@ -1791,10 +2320,84 @@
       }
     }
 
+    function _showPreviewCropOverlay(row, activeIndex = 0, durationMs = 1000) {
+      const box = el('#previewExport');
+      if (!box || !row) return;
+      const img = box.querySelector('img');
+      if (!img) return;
+
+      const cropState = getRowActiveCropState(row);
+      if (!cropState.crops.length) return;
+
+      const boxRect = box.getBoundingClientRect();
+      const imgRect = img.getBoundingClientRect();
+      if (imgRect.width <= 0 || imgRect.height <= 0 || boxRect.width <= 0 || boxRect.height <= 0) return;
+
+      try {
+        if (box.__cropOverlayTimer) {
+          clearTimeout(box.__cropOverlayTimer);
+          box.__cropOverlayTimer = null;
+        }
+      } catch (_) {}
+
+      box.querySelectorAll('.preview-crop-overlay-layer').forEach(n => n.remove());
+
+      const layer = document.createElement('div');
+      layer.className = 'preview-crop-overlay-layer';
+
+      const originX = imgRect.left - boxRect.left;
+      const originY = imgRect.top - boxRect.top;
+      const drawW = imgRect.width;
+      const drawH = imgRect.height;
+
+      cropState.crops.forEach((crop, idx) => {
+        const bbox = crop?.bbox || _fullCropBbox();
+        const x0 = Math.max(0, Math.min(1, _cropNum(bbox.x_min_norm, 0)));
+        const x1 = Math.max(0, Math.min(1, _cropNum(bbox.x_max_norm, 1)));
+        const y0 = Math.max(0, Math.min(1, _cropNum(bbox.y_min_norm, 0)));
+        const y1 = Math.max(0, Math.min(1, _cropNum(bbox.y_max_norm, 1)));
+        const left = originX + drawW * Math.min(x0, x1);
+        const top = originY + drawH * Math.min(y0, y1);
+        const width = Math.max(2, drawW * Math.abs(x1 - x0));
+        const height = Math.max(2, drawH * Math.abs(y1 - y0));
+
+        const boxEl = document.createElement('div');
+        boxEl.className = `preview-crop-overlay-box ${idx === activeIndex ? 'active' : 'inactive'}`;
+        boxEl.style.left = `${left}px`;
+        boxEl.style.top = `${top}px`;
+        boxEl.style.width = `${width}px`;
+        boxEl.style.height = `${height}px`;
+
+        const label = document.createElement('div');
+        label.className = 'preview-crop-overlay-label';
+        label.textContent = `#${idx + 1}`;
+        boxEl.appendChild(label);
+        layer.appendChild(boxEl);
+      });
+
+      box.appendChild(layer);
+      requestAnimationFrame(() => layer.classList.add('visible'));
+      box.__cropOverlayTimer = setTimeout(() => {
+        layer.classList.remove('visible');
+        setTimeout(() => {
+          if (layer.parentNode) layer.parentNode.removeChild(layer);
+        }, 140);
+      }, Math.max(250, durationMs || 1000));
+    }
+
     // ---- Update preview pane ----
     async function updatePreview(row) {
       if (zoomActive) return; // don't interrupt an active zoom session
       previewRow = row;
+      const cropState = getRowActiveCropState(row);
+      const activeCrop = cropState.activeCrop;
+      const activeCropPath = activeCrop?.crop_path || row.crop_path;
+      const activeSpecies = activeCrop?.species || row.species || 'Unknown';
+      const activeSpeciesConf = activeCrop?.species_confidence ?? row.species_confidence;
+      const activeFamily = activeCrop?.family || row.family || 'Unknown';
+      const activeFamilyConf = activeCrop?.family_confidence ?? row.family_confidence;
+      const activeQuality = activeCrop?.quality ?? row.quality;
+
       // Export image
       const exportBox = el('#previewExport');
       exportBox.innerHTML = '<span class="muted">Loading…</span>';
@@ -1811,7 +2414,7 @@
       // Crop image
       const cropBox = el('#previewCrop');
       cropBox.innerHTML = '<span class="muted">Loading…</span>';
-      const cropUrl = await getBlobUrl(row.crop_path, rootPath);
+      const cropUrl = await getBlobUrl(activeCropPath, rootPath);
       if (cropUrl) {
         cropBox.innerHTML = '';
         const img = document.createElement('img');
@@ -1820,14 +2423,21 @@
       } else {
         cropBox.innerHTML = '<span class="muted">No crop image</span>';
       }
+      cropBox.onmouseenter = () => {
+        if (!previewRow) return;
+        const state = getRowActiveCropState(previewRow);
+        _showPreviewCropOverlay(previewRow, state.activeIndex, 1000);
+      };
 
       // Metadata
       const side = cullingState.get(row.filename) || '—';
       const meta = el('#previewMeta');
       meta.innerHTML = `
         <div class="row"><span class="label">Filename</span><span class="value" title="${escapeHtml(row.filename || '')}">${escapeHtml(row.filename || '')}</span></div>
-        <div class="row"><span class="label">Species</span><span class="value">${escapeHtml(row.species || 'Unknown')} (${fmt3(row.species_confidence)})</span></div>
-        <div class="row"><span class="label">Quality</span><span class="value">${fmt3(row.quality)}</span></div>
+        <div class="row"><span class="label">Species</span><span class="value">${escapeHtml(activeSpecies)} (${fmt3(activeSpeciesConf)})</span></div>
+        <div class="row"><span class="label">Family</span><span class="value">${escapeHtml(activeFamily)} (${fmt3(activeFamilyConf)})</span></div>
+        <div class="row"><span class="label">Quality</span><span class="value">${fmt3(activeQuality)}</span></div>
+        <div class="row"><span class="label">Crop</span><span class="value">${cropState.activeIndex + 1}/${cropState.crops.length || 1}</span></div>
         <div class="row meta-rating-row"><span class="label">Rating</span></div>
         <div class="row"><span class="label">Status</span><span class="value" style="color:${side==='accept' ? 'var(--ok)' : 'var(--bad)'}">${side === 'accept' ? '✓ Accept' : '✗ Reject'}</span></div>
         <div class="row"><span class="label">Scene</span><span class="value">#${escapeHtml(String(row.scene_count || ''))}</span></div>
@@ -1952,7 +2562,19 @@
       el('#dlgProgress').classList.add('hidden');
       el('#dlgProgressActions').style.display = 'none';
 
+      // Embed-into-JPEG is opt-out on every open (modifies originals). Reset it
+      // unchecked and refresh the JPEG count shown on the card.
+      const embedCheck = el('#xmpEmbedJpegCheck');
+      if (embedCheck) embedCheck.checked = false;
+      const embedCount = el('#xmpEmbedJpegCount');
+      if (embedCount) {
+        const n = _folderJpegCount();
+        embedCount.textContent = n ? `(${n} JPEG${n === 1 ? '' : 's'})` : '';
+      }
+
       _updateExecuteBtn();
+      // Hydrate XMP field selection from persisted settings (fire-and-forget)
+      _hydrateXmpFieldSelection();
       el('#confirmDlg').showModal();
     }
 
@@ -1963,9 +2585,61 @@
       if (btn) btn.disabled = !any;
       const autoLabel = el('#doAutoLabelCheck');
       const autoLabelCard = el('#xmpAutoLabelCard');
+      const fieldsCard = el('#xmpFieldsCard');
       // Auto-label sub-option only makes sense when writing XMP; Confirm is independent
       if (autoLabel) autoLabel.disabled = !xmpChecked;
       if (autoLabelCard) autoLabelCard.classList.toggle('hidden', !xmpChecked);
+      if (fieldsCard) fieldsCard.classList.toggle('hidden', !xmpChecked);
+      // Embed-into-JPEG sub-option: only when writing XMP AND the folder has JPEGs.
+      const embedCard = el('#xmpEmbedJpegCard');
+      if (embedCard) embedCard.classList.toggle('hidden', !(xmpChecked && _folderHasJpeg()));
+    }
+
+    // ---- JPEG detection (for the embed-into-original option) ----
+    // Lightroom ignores .xmp sidecars for JPEGs, so we offer to embed XMP
+    // directly into JPEG originals — but only when the folder has JPEGs.
+    function _folderJpegCount() {
+      return rows.filter(r => /\.jpe?g$/i.test(r.filename || '')).length;
+    }
+    function _folderHasJpeg() {
+      return _folderJpegCount() > 0;
+    }
+
+    // ---- XMP field selection (which sections of the .xmp packet to write) ----
+    const _XMP_FIELD_KEYS = ['rating', 'label', 'species', 'family', 'quality'];
+    function _xmpFieldDefaults() {
+      return { rating: true, label: true, species: true, family: true, quality: true };
+    }
+    function _readXmpFieldSelection() {
+      const sel = _xmpFieldDefaults();
+      document.querySelectorAll('#xmpFieldsGrid input[data-xmp-field]').forEach(cb => {
+        const key = cb.dataset.xmpField;
+        if (_XMP_FIELD_KEYS.includes(key)) sel[key] = !!cb.checked;
+      });
+      return sel;
+    }
+    function _applyXmpFieldSelection(sel) {
+      const merged = { ..._xmpFieldDefaults(), ...(sel || {}) };
+      document.querySelectorAll('#xmpFieldsGrid input[data-xmp-field]').forEach(cb => {
+        const key = cb.dataset.xmpField;
+        if (_XMP_FIELD_KEYS.includes(key)) cb.checked = !!merged[key];
+      });
+    }
+    async function _hydrateXmpFieldSelection() {
+      try {
+        if (!window.pywebview?.api?.get_settings) return;
+        const r = await window.pywebview.api.get_settings();
+        if (r && r.success && r.settings && typeof r.settings.xmp_fields === 'object') {
+          _applyXmpFieldSelection(r.settings.xmp_fields);
+        }
+      } catch (_) {}
+    }
+    function _persistXmpFieldSelection(sel) {
+      try {
+        if (window.pywebview?.api?.save_settings_data) {
+          window.pywebview.api.save_settings_data({ xmp_fields: sel }).catch(() => {});
+        }
+      } catch (_) {}
     }
 
     function promoteAutoToVerified() {
@@ -1985,8 +2659,22 @@
       const doXmp  = el('#doXmpCheck')?.checked  || false;
       const doMove = el('#doMoveCheck')?.checked || false;
       const doAutoLabels = doXmp && (el('#doAutoLabelCheck')?.checked ?? true);
+      const doEmbedJpeg = doXmp && _folderHasJpeg() && (el('#xmpEmbedJpegCheck')?.checked || false);
       const doPromoteVerified = !!el('#doPromoteVerifiedCheck')?.checked;
       if (!doXmp && !doMove && !doPromoteVerified) return;
+
+      // Human-readable suffix describing embedded JPEG results, appended to the
+      // sidecar-count step detail when embedding was requested.
+      const embedSuffix = (r) => {
+        if (!doEmbedJpeg) return '';
+        let s = r && r.embedded ? `, ${r.embedded} embedded in JPEG${r.embedded === 1 ? '' : 's'}` : '';
+        if (r && r.embed_errors && r.embed_errors.length) s += `, ${r.embed_errors.length} embed failed`;
+        return s;
+      };
+
+      // Snapshot + persist the user's XMP field selection for this write.
+      const xmpFieldSel = _readXmpFieldSelection();
+      if (doXmp) _persistXmpFieldSelection(xmpFieldSel);
 
       // Switch to progress view
       el('#dlgOptions').classList.add('hidden');
@@ -2000,7 +2688,7 @@
         { id: 'promote', label: 'Confirming auto-categorized decisions',  cond: doPromoteVerified },
         { id: 'save',   label: 'Saving database',                    always: true },
         { id: 'backup', label: 'Backing up kestrel_database.csv',    cond: doMove },
-        { id: 'xmp',    label: 'Writing XMP sidecar files',          cond: doXmp  },
+        { id: 'xmp',    label: doEmbedJpeg ? 'Writing XMP sidecars + embedding into JPEGs' : 'Writing XMP sidecar files', cond: doXmp  },
         { id: 'move',   label: 'Moving rejects to _KESTREL_Rejects', cond: doMove },
       ];
       const stepsEl = el('#dlgStepsList');
@@ -2067,7 +2755,7 @@
           }));
 
           // First pass: detect conflicts (existing non-Kestrel XMPs)
-          const firstXmpRes = await window.pywebview.api.write_xmp_metadata(rootPath, xmpPayload, false, doAutoLabels);
+          const firstXmpRes = await window.pywebview.api.write_xmp_metadata(rootPath, xmpPayload, false, doAutoLabels, xmpFieldSel, doEmbedJpeg);
           if (!firstXmpRes.success) {
             setStep('xmp', 'failed', firstXmpRes.error || '');
             anyFailed = true;
@@ -2081,21 +2769,21 @@
             setStep('xmp', 'running');
             if (overwriteExternal) {
               // Second pass: overwrite the conflicting files too
-              const secondXmpRes = await window.pywebview.api.write_xmp_metadata(rootPath, xmpPayload, true, doAutoLabels);
+              const secondXmpRes = await window.pywebview.api.write_xmp_metadata(rootPath, xmpPayload, true, doAutoLabels, xmpFieldSel, doEmbedJpeg);
               if (!secondXmpRes.success) {
                 setStep('xmp', 'failed', secondXmpRes.error || '');
                 anyFailed = true;
               } else {
-                setStep('xmp', 'done', `${secondXmpRes.written} file${secondXmpRes.written === 1 ? '' : 's'} written`);
+                setStep('xmp', 'done', `${secondXmpRes.written} file${secondXmpRes.written === 1 ? '' : 's'} written${embedSuffix(secondXmpRes)}`);
               }
             } else {
               // User chose to skip conflicts; count only what was written in the first pass
               const written = firstXmpRes.written || 0;
               const skipped = firstXmpRes.skipped_conflicts.length;
-              setStep('xmp', 'done', `${written} written, ${skipped} skipped`);
+              setStep('xmp', 'done', `${written} written, ${skipped} skipped${embedSuffix(firstXmpRes)}`);
             }
           } else {
-            setStep('xmp', 'done', `${firstXmpRes.written} file${firstXmpRes.written === 1 ? '' : 's'} written`);
+            setStep('xmp', 'done', `${firstXmpRes.written} file${firstXmpRes.written === 1 ? '' : 's'} written${embedSuffix(firstXmpRes)}`);
           }
         }
 
@@ -2111,27 +2799,41 @@
             setStep('move', 'failed', moveRes.error || '');
             throw new Error('Move failed: ' + (moveRes.error || ''));
           }
-          setStep('move', 'done', `${moveRes.moved} file${moveRes.moved === 1 ? '' : 's'} moved`);
+          // Reconcile against what actually left the shoot folder. success can
+          // be True for a partial batch; stripping the request list would drop
+          // files that never moved (name conflicts). Prefer moved_requested
+          // (requested mains only); fall back to intersecting moved_filenames.
+          const movedMains = Array.isArray(moveRes.moved_requested)
+            ? moveRes.moved_requested.slice()
+            : rejectFilenames.filter(fn => new Set(moveRes.moved_filenames || []).has(fn));
+          const skippedMains = rejectFilenames.filter(fn => !new Set(movedMains).has(fn));
+          const skipNote = skippedMains.length
+            ? `, ${skippedMains.length} skipped`
+            : '';
+          setStep('move', 'done', `${movedMains.length} reject${movedMains.length === 1 ? '' : 's'} moved${skipNote}`);
 
-          // Post-move: strip rejects from working data
-          const rejectSet = new Set(rejectFilenames);
-          rows = rows.filter(r => !rejectSet.has(r.filename));
-          for (const fn of rejectSet) cullingState.delete(fn);
-          cleanupScenedataForRejects(rejectSet);
+          const movedMainSet = new Set(movedMains);
+          rows = rows.filter(r => !movedMainSet.has(r.filename));
+          for (const fn of movedMains) cullingState.delete(fn);
+          cleanupScenedataForRejects(movedMainSet);
           await saveCullingState();
 
           try { await window.pywebview.api.open_reject_folder(rootPath); } catch (_) {}
           try { await window.pywebview.api.notify_main_window_refresh(); } catch (_) {}
 
-          moveCompleted = true;
-          const undoBtn = el('#undoBtn');
-          undoBtn.style.display = '';
-          undoBtn.disabled = false;
+          if (movedMains.length) {
+            moveCompleted = true;
+            rejectFilenames = movedMains;
+            const undoBtn = el('#undoBtn');
+            undoBtn.style.display = '';
+            undoBtn.disabled = false;
+          }
           scenes = aggregateScenes();
           renderAllScenes();
           updateStats();
           el('#statusLabel').textContent =
-            `Done! ${moveRes.moved} reject${moveRes.moved === 1 ? '' : 's'} moved. Click \u201cUndo Move\u201d to revert.`;
+            `Done! ${movedMains.length} reject${movedMains.length === 1 ? '' : 's'} moved${skipNote}.`
+            + (movedMains.length ? ' Click \u201cUndo Move\u201d to revert.' : '');
         } else {
           try { await window.pywebview.api.notify_main_window_refresh(); } catch (_) {}
           el('#statusLabel').textContent = 'Done!';
@@ -2143,7 +2845,7 @@
         const parts = [];
         if (doXmp && !anyFailed)  parts.push('XMP files written');
         if (doXmp &&  anyFailed)  parts.push('XMP had errors \u2014 check above');
-        if (doMove) parts.push('Undo available via the bottom bar');
+        if (doMove && moveCompleted) parts.push('Undo available via the bottom bar');
         el('#dlgProgressSubtitle').textContent = parts.join(' \u00b7 ');
         el('#dlgProgressActions').style.display = 'flex';
 
@@ -2175,6 +2877,11 @@
           return;
         }
 
+        if (undoRes.errors && undoRes.errors.length > 0) {
+          console.warn('undo_reject_move errors:', undoRes.errors);
+          showToast(`${undoRes.errors.length} file(s) could not be restored - check console`, 5000);
+        }
+
         // 2. Restore backup CSV
         const restoreRes = await window.pywebview.api.restore_kestrel_db_backup(rootPath);
         if (!restoreRes.success) {
@@ -2188,6 +2895,7 @@
         try { await window.pywebview.api.notify_main_window_refresh(); } catch(_) {}
 
         moveCompleted = false;
+        rejectFilenames = [];
         el('#undoBtn').style.display = 'none';
         el('#doneCullingBtn').disabled = false;
 
@@ -2202,14 +2910,17 @@
 
     // ---- Load data ----
     async function loadData() {
-      console.log('[culling] loadData() starting...');
-      console.log('[culling] window.pywebview:', window.pywebview);
-      console.log('[culling] window.pywebview.api:', window.pywebview?.api);
-      console.log('[culling] typeof read_kestrel_csv:', typeof window.pywebview?.api?.read_kestrel_csv);
+      kdebug('[culling] loadData() starting...');
+      kdebug('[culling] window.pywebview:', window.pywebview);
+      kdebug('[culling] window.pywebview.api:', window.pywebview?.api);
+      kdebug('[culling] typeof read_kestrel_csv:', typeof window.pywebview?.api?.read_kestrel_csv);
       
       if (typeof window.pywebview?.api?.read_kestrel_csv !== 'function') {
-        console.error('[culling] read_kestrel_csv is not available! Available properties:', Object.keys(window.pywebview?.api || {}));
-        throw new Error('read_kestrel_csv is not available on the API');
+        const ready = await waitForPywebview(['read_kestrel_csv'], 8000);
+        if (!ready || typeof window.pywebview?.api?.read_kestrel_csv !== 'function') {
+          console.error('[culling] read_kestrel_csv is not available! Available properties:', Object.keys(window.pywebview?.api || {}));
+          throw new Error('read_kestrel_csv is not available on the API');
+        }
       }
 
       // Compute runtime normalized ratings map (no CSV write)
@@ -2245,9 +2956,13 @@
       const res = await window.pywebview.api.read_kestrel_csv(rootPath);
       if (!res.success) throw new Error(res.error || 'Failed to read CSV');
 
-      const parsed = Papa.parse(res.data, { header: true, skipEmptyLines: true });
+      if (!window.KestrelCsv || typeof window.KestrelCsv.parse !== 'function') {
+        throw new Error('CSV parser unavailable (csv_parser.js not loaded)');
+      }
+      const parsed = window.KestrelCsv.parse(res.data, { header: true, skipEmptyLines: true });
       header = parsed.meta.fields || [];
       rows = parsed.data || [];
+      activeCropIndexByImage.clear();
       // Stamp rootPath (no __folderSlot needed — single folder)
       for (const r of rows) r.__rootPath = rootPath;
       ensureColumns();
@@ -2263,6 +2978,39 @@
         } catch (e) {
           console.warn('Legacy cull origin upgrade save failed', e);
         }
+      }
+    }
+
+    async function syncUndoStateFromDisk() {
+      if (typeof window.pywebview?.api?.get_reject_restore_state !== 'function') return;
+      const undoBtn = el('#undoBtn');
+      if (!undoBtn) return;
+
+      try {
+        const state = await window.pywebview.api.get_reject_restore_state(rootPath);
+        if (!state?.success || !state.can_restore || !Array.isArray(state.reject_filenames) || state.reject_filenames.length === 0) {
+          return;
+        }
+
+        rejectFilenames = state.reject_filenames;
+        moveCompleted = true;
+        undoBtn.style.display = '';
+        undoBtn.disabled = false;
+
+        const doneBtn = el('#doneCullingBtn');
+        if (doneBtn) doneBtn.disabled = true;
+
+        const parsedCount = parseInt(state.reject_count, 10);
+        const count = Number.isFinite(parsedCount) && parsedCount >= 0 ? parsedCount : rejectFilenames.length;
+        const suffix = count === 1 ? '' : 's';
+        if (state.has_csv_backup) {
+          el('#statusLabel').textContent = `Previous reject move detected (${count} file${suffix}). Click "Undo Move" to restore.`;
+        } else {
+          el('#statusLabel').textContent = `Previous reject move detected (${count} file${suffix}). Undo can restore files, but backup CSV is missing.`;
+          showToast('Previous reject move detected. Backup CSV is missing; Undo will restore files only.', 5500);
+        }
+      } catch (e) {
+        console.warn('syncUndoStateFromDisk error', e);
       }
     }
 
@@ -2288,11 +3036,26 @@
           if (sl) { sl.value = rawZoom; if (lb) lb.textContent = rawZoom + '\u00d7'; }
         }
         // Auto-categorize slider settings
-        const qCutoff = parseInt(s.culling_quality_cutoff, 10);
         const minPS   = parseInt(s.culling_min_per_scene,  10);
         const maxPS   = parseInt(s.culling_max_per_scene,  10);
         const unratedDefault = String(s.culling_unrated_default || 'reject').toLowerCase();
-        if (qCutoff >= 0 && qCutoff <= 5)  { const sl = el('#qualityCutoffSlider'); if (sl) sl.value = qCutoff; }
+
+        // The cutoff is a quality score now. Fall back to the legacy star
+        // cutoff (culling_quality_cutoff, an int 0–5 meaning "accept stars
+        // above this") by converting it to the floor of the lowest star it
+        // accepted, which preserves the user's existing split.
+        const qScore = parseFloat(s.culling_quality_score_cutoff);
+        const legacyStar = parseInt(s.culling_quality_cutoff, 10);
+        let cutoff = null;
+        if (Number.isFinite(qScore) && qScore >= 0 && qScore <= 1) {
+          cutoff = qScore;
+        } else if (Number.isFinite(legacyStar) && legacyStar >= 0 && legacyStar <= 5) {
+          cutoff = legacyStar >= 5 ? 1 : qualityFloorForStar(legacyStar + 1);
+        }
+        if (cutoff !== null) {
+          const sl = el('#qualityCutoffSlider');
+          if (sl) sl.value = String(Math.max(0, Math.min(1, cutoff)));
+        }
         if (minPS   >= 0 && minPS   <= 5)  { const sl = el('#minPerSceneSlider');   if (sl) sl.value = minPS; }
         if (maxPS   >= 0 && maxPS   <= 20) { const sl = el('#maxPerSceneSlider');   if (sl) sl.value = maxPS; }
         const unratedSel = el('#unratedDefaultSelect');
@@ -2300,6 +3063,8 @@
         updateSliderLabels(true);
         _autoRulesLoaded = true;
       } catch (e) { console.warn('loadCullingSettings:', e); }
+      // Settled marker for UI tests driving this page headlessly.
+      window.__cullingSettingsLoaded = true;
     }
 
     function saveCullingSettings() {
@@ -2310,7 +3075,11 @@
           const s = (res?.success ? res.settings : {}) || {};
           s.culling_card_zoom       = parseInt(document.getElementById('cardZoomSlider')?.value, 10) || 150;
           s.culling_raw_zoom        = parseInt(document.getElementById('previewZoomSlider')?.value, 10) || 5;
-          s.culling_quality_cutoff  = parseInt(el('#qualityCutoffSlider')?.value, 10) || 3;
+          const _cut = getSliderValues().qualityCutoff;
+          s.culling_quality_score_cutoff = Number(_cut.toFixed(2));
+          // Keep the legacy star key roughly in step so an older build reading
+          // these settings still lands on a comparable split.
+          s.culling_quality_cutoff  = Math.max(0, starForQuality(_cut) - 1);
           s.culling_min_per_scene   = parseInt(el('#minPerSceneSlider')?.value,   10) || 0;
           s.culling_max_per_scene   = parseInt(el('#maxPerSceneSlider')?.value,   10) || 0;
           s.culling_unrated_default = (el('#unratedDefaultSelect')?.value === 'accept') ? 'accept' : 'reject';
@@ -2377,8 +3146,38 @@
     let rawCache = new Map();    // filename -> base64 data URL
     let rawLoading = new Set();  // filename currently loading
 
+    function getRowExposurePipelineMode(row) {
+      const mode = String(row?.exposure_pipeline || '').trim().toLowerCase();
+      if (mode === 'no_auto_bright_metered_v1') return mode;
+      return 'legacy_auto_bright_v1';
+    }
+
+    function getRowRawPreviewRequestStops(row) {
+      const requested = parseFloat(row?.exposure_correction) || 0;
+      return Math.max(-2.0, Math.min(3.0, requested));
+    }
+
+    function getRowRawPreviewMeterScale(row) {
+      if (getRowExposurePipelineMode(row) !== 'no_auto_bright_metered_v1') return 1.0;
+      const meter = _cropNum(row?.exposure_meter_scale, 1);
+      if (!Number.isFinite(meter) || meter <= 0) return 1.0;
+      return Math.max(0.25, Math.min(8.0, meter));
+    }
+
+    function getRowRawPreviewEffectiveStops(row) {
+      const requested = getRowRawPreviewRequestStops(row);
+      if (getRowExposurePipelineMode(row) !== 'no_auto_bright_metered_v1') return requested;
+      if (Math.abs(requested) > 0.0001) return requested;
+      const meterStops = Math.log2(getRowRawPreviewMeterScale(row));
+      if (Math.abs(meterStops) <= 0.001) return requested;
+      return Math.max(-2.0, Math.min(3.0, meterStops));
+    }
+
     function getRawPreviewKey(row) {
-      return row.filename || '';
+      const mode = getRowExposurePipelineMode(row);
+      const expCorr = getRowRawPreviewEffectiveStops(row);
+      const expKey = Number.isFinite(expCorr) ? expCorr.toFixed(4) : '0.0000';
+      return [row.filename || '', `mode=${mode}`, `exp=${expKey}`].join('|');
     }
 
     // Wire click-drag zoom directly on the export preview image (right-side preview pane).
@@ -2484,11 +3283,19 @@
     }
 
     async function loadRawAsync(row) {
-      const expCorr = parseFloat(row.exposure_correction) || 0;
+      const expCorrRequested = getRowRawPreviewRequestStops(row);
+      const expMode = getRowExposurePipelineMode(row);
+      const meterScale = getRowRawPreviewMeterScale(row);
       const cacheKey = getRawPreviewKey(row);
       rawLoading.add(cacheKey);
       try {
-        const res = await window.pywebview.api.read_raw_full(row.filename, rootPath, expCorr);
+        const res = await window.pywebview.api.read_raw_full(
+          row.filename,
+          rootPath,
+          expCorrRequested,
+          expMode,
+          meterScale
+        );
         if (res && res.success && res.data) {
           const url = `data:image/jpeg;base64,${res.data}`;
           rawCache.set(cacheKey, url);
@@ -2787,12 +3594,16 @@
       const folderName = rootPath.replace(/.*[/\\]/, '') || rootPath;
       el('#folderName').textContent = folderName;
 
-      const ready = await waitForPywebview();
+      const ready = await waitForPywebview(['read_kestrel_csv', 'get_settings'], 10000);
       if (!ready) {
         el('#statusLabel').textContent = 'Error: pywebview API not available';
         return;
       }
 
+      // Thresholds first: loadCullingSettings converts a legacy star cutoff
+      // into a quality score using them, so stale defaults here would migrate
+      // the user onto the wrong split.
+      await loadRatingThresholds();
       updateSliderLabels(); // apply defaults before settings load
       await loadCullingSettings();
 
@@ -2800,6 +3611,8 @@
         await loadData();
         el('#doneCullingBtn').disabled = false;
         el('#statusLabel').textContent = 'Ready \u2014 Drag images to zoom (auto-loads RAW), Shift+Click to decide, Click \u2605 to rate';
+
+        await syncUndoStateFromDisk();
 
         // Auto-launch tutorial on first run
         const seen = await checkTutorialSeen();
@@ -2893,6 +3706,44 @@
     el('#tutorialNext').addEventListener('click', function() { var step = TUTORIAL_STEPS[_tutStep]; if (step && step.waitFor) return; _tutAdvance(); });
     el('#tutorialBack').addEventListener('click', function() { _tutGoBack(); });
     el('#tutorialSkip').addEventListener('click', _closeTutorial);
+
+    // Crop controls in preview pane: ArrowUp/ArrowDown switch crops, Enter promotes active crop.
+    document.addEventListener('keydown', function(ev) {
+      const tag = (ev.target?.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+      if (el('#tutorialOverlay').classList.contains('active')) return;
+      if (document.querySelector('dialog[open]')) return;
+      if (!previewRow) return;
+
+      if (ev.key === 'ArrowUp' || ev.key === 'ArrowDown') {
+        if (zoomActive) return;
+        const state = getRowActiveCropState(previewRow);
+        if (state.crops.length <= 1) return;
+        ev.preventDefault();
+        const step = ev.key === 'ArrowDown' ? 1 : -1;
+        const next = (state.activeIndex + step + state.crops.length) % state.crops.length;
+        setRowActiveCropIndex(previewRow, next, state.crops);
+        updatePreview(previewRow);
+        _showPreviewCropOverlay(previewRow, next, 1000);
+        return;
+      }
+
+      if (ev.key === 'Enter') {
+        const state = getRowActiveCropState(previewRow);
+        if (!state.crops.length) return;
+        ev.preventDefault();
+        const changed = promoteActiveCropToPrimary(previewRow);
+        if (changed) {
+          renderScene(previewRow.scene_count);
+          updateStats();
+          debouncedSave();
+        }
+        updatePreview(previewRow);
+        _showPreviewCropOverlay(previewRow, getRowActiveCropIndex(previewRow), 1000);
+        showToast(`Primary crop set to ${getRowActiveCropIndex(previewRow) + 1}/${state.crops.length}`, 1800);
+      }
+    });
+
     // Keyboard navigation inside tutorial; Escape also exits zoom mode
     document.addEventListener('keydown', function(ev) {
       if (ev.key === 'Escape' && zoomActive) { exitZoomMode(); return; }

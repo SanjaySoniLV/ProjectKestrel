@@ -1,0 +1,303 @@
+.toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.toolbar-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.toolbar-row.actions {
+  flex-direction: column;
+  align-items: stretch;
+  flex: 0 0 auto;
+}
+
+/* Analyze + Settings on a shared second line */
+.actions-secondary-row {
+  display: flex;
+  gap: 6px;
+}
+.actions-secondary-row button {
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.toolbar-row.status {
+  justify-content: flex-start;
+}
+
+/* Generic form-control styling (buttons, inputs, selects) */
+button,
+select,
+input[type="text"],
+input[type="search"],
+input[type="number"] {
+  background: #0e1117;
+  color: var(--text);
+  border: 1px solid #2a3040;
+  border-radius: 8px;
+  height: 36px;
+  padding: 0 12px;
+  outline: none;
+  transition: border-color .15s ease, background .15s ease;
+}
+
+button {
+  cursor: pointer;
+  background: #173253;
+  border-color: #214c7d;
+}
+
+button:hover {
+  background: #1c3a62;
+  border-color: #2b5f9e;
+}
+
+button.primary {
+  background: #1d5aa8;
+  border-color: #2b6ec8;
+}
+
+button.primary:hover {
+  background: #1f63b8;
+  border-color: #3a84e6;
+}
+
+button[disabled] {
+  opacity: .6;
+  cursor: not-allowed;
+}
+
+#saveCsv:not([disabled]) {
+  background: #f5c542;
+  border-color: #d1a735;
+  color: #1a1a1a;
+}
+
+#saveCsv:not([disabled]):hover {
+  background: #ffd45f;
+  border-color: #e6c049;
+}
+
+.help-tip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-left: 8px;
+  border-radius: 50%;
+  background: #0e1117;
+  border: 1px solid #2a3040;
+  color: #a9c9ee;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.tooltip-layer {
+  position: fixed;
+  min-width: 220px;
+  max-width: 320px;
+  background: #0e1117;
+  border: 1px solid #2a3040;
+  color: #cbd2dc;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  white-space: normal;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition: opacity .12s ease, transform .12s ease;
+  z-index: 1000;
+}
+
+.tooltip-layer.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Inline form rows used by edit panels and small dialog forms */
+.inline {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.inline>* {
+  min-width: 0;
+}
+
+.inline button {
+  height: 30px;
+  white-space: nowrap;
+}
+
+.inline input[type="text"] {
+  height: 30px;
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+/* ── Sidebar primary CTA: Analyze Folders button ─────────────────────────────
+   The main entry point on first launch. Normal-weight type for a clean look. */
+.sidebar-cta {
+  width: 100%;
+  height: 42px;
+  font-size: 14px;
+  font-weight: 400;
+  border-radius: 10px;
+  letter-spacing: 0.1px;
+}
+
+/* ── Segmented strip: a row of click targets separated by vertical dividers.
+   Used by the sidebar footer (Settings | Feedback | Tutorial | Donate) and
+   the folder-tree footer (Select All / None | Clear). One cohesive container
+   with each child a borderless button; hover lights up the segment. */
+.segmented-strip {
+  display: flex;
+  align-items: stretch;
+  background: #0e1117;
+  border: 1px solid #2a3040;
+  border-radius: 10px;
+  overflow: hidden;
+  flex-wrap: nowrap;
+  min-height: 30px;
+}
+
+.segmented-strip-item {
+  flex: 1 1 auto;
+  height: auto;
+  padding: 0 10px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  transition: background .12s ease, color .12s ease, box-shadow .12s ease;
+  /* Vertical divider between siblings — kept subtle. */
+  border-left: 1px solid #1d2230;
+  /* All four footer labels are text ("⚙ Settings", Feedback, Tutorial,
+     💛 Support), totalling ~279px of intrinsic width. That clears the default
+     400px sidebar easily, but the user can drag the sidebar down to 260px,
+     where it no longer fits. Without min-width:0 a flex item refuses to shrink
+     below its content, so a segment would be cut off mid-glyph inside the
+     overflow:hidden strip. Ellipsis instead, and never wrap onto a second line. */
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.segmented-strip-item:first-of-type {
+  border-left: none;
+}
+/* Hover: highlight the segment symmetrically. box-shadow inset draws blue
+   tracks on BOTH the left and right inner edges of the segment so the
+   highlight reads as "this segment is hot", not "this divider lit up".
+   Using box-shadow (not border-color) avoids layout shift and avoids the
+   base button:hover rule recolouring just the existing border-left. */
+.segmented-strip-item:hover:not([disabled]) {
+  background: #1a2030;
+  color: #fff;
+  border-left-color: #2b6ec8;
+  box-shadow: inset -1px 0 0 #2b6ec8;
+}
+/* First-of-type has no border-left to recolour — give it an inset blue
+   highlight on the left side for symmetry. */
+.segmented-strip-item:first-of-type:hover:not([disabled]) {
+  box-shadow: inset 1px 0 0 #2b6ec8, inset -1px 0 0 #2b6ec8;
+}
+.segmented-strip-item[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.segmented-strip-item.hidden {
+  display: none;
+}
+
+/* Donate variant: tinted to remain visually distinct without breaking the strip */
+.segmented-strip-item.donate-item {
+  color: #f5c542;
+}
+.segmented-strip-item.donate-item:hover:not([disabled]) {
+  background: rgba(245, 197, 66, 0.08);
+  color: #ffd45f;
+}
+
+/* Danger variant (e.g. Clear): warm tint to flag a destructive action. */
+.segmented-strip-item.danger-item {
+  color: #e89a5a;
+}
+.segmented-strip-item.danger-item:hover:not([disabled]) {
+  background: rgba(232, 154, 90, 0.08);
+  color: #ffb37a;
+}
+
+/* Folder-tree footer: lives flush with the container's bottom edge. Override
+   the generic .segmented-strip border/radius — we only want a top divider so
+   it reads as the container's "bottom bar". The divider is gray (NOT the
+   wrap's blue outer border) so it doesn't compete with the wrap's accent. */
+.folder-tree-footer {
+  flex: 0 0 auto;
+  border: none;
+  border-top: 1px solid #2a3040;
+  border-radius: 0 0 10px 10px;
+  background: transparent;
+  overflow: hidden;
+}
+.folder-tree-footer .segmented-strip-item {
+  font-size: 12px;
+  padding: 7px 10px;
+  min-height: 32px;
+  line-height: 1.2;
+}
+.folder-tree-footer .segmented-strip-item:first-of-type:not(.hidden) {
+  border-bottom-left-radius: 10px;
+}
+.folder-tree-footer .segmented-strip-item:last-of-type:not(.hidden) {
+  border-bottom-right-radius: 10px;
+}
+
+/* Clear is the wide left segment — flex-grows to consume most of the strip
+   so the action is prominent (matches the user's "Clear should be bigger"). */
+.folder-tree-footer .tree-clear-btn {
+  flex: 1 1 auto;
+}
+
+/* Select All / Select None: compact right segment. Label-then-checkbox
+   ordering puts the checkbox at the FAR right of the strip, aligning
+   vertically with the row checkboxes above (.tree-cb-col, 24px wide with
+   a centered 13px checkbox → ~5.5px from right edge). Padding-right tuned
+   to land the checkbox at that same x-position. */
+.folder-tree-footer .tree-select-toggle {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 7px 6px 7px 10px;
+}
+.tree-select-toggle-cb {
+  pointer-events: none;
+  margin: 0;
+}
+.tree-select-toggle-label {
+  /* Explicit font-size so the label matches Clear exactly (avoids any
+     inherited rendering quirks that made the toggle look heavier). */
+  font-size: 12px;
+  line-height: 1.2;
+  letter-spacing: 0.1px;
+}

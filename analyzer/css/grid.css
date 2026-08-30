@@ -1,0 +1,996 @@
+/* Grid */
+.grid {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+}
+
+/* When bird-crop thumbs are shown, widen the track so the main thumb
+   keeps the same (no-crop) height and the crop fits into the extra
+   width. 240px main + 6px gap + ~150px square crop ≈ 400px. */
+.grid.grid--bird-thumbs {
+  grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  /* overflow:clip clips border-radius without creating a stacking context */
+  overflow: clip;
+  display: flex;
+  flex-direction: column;
+  /* content-visibility:auto lets the browser skip ALL rendering work (style,
+     layout, paint) for cards that are off-screen.  This is the single biggest
+     scroll-perf win when hundreds/thousands of scene cards are in the DOM:
+     each image-load paint invalidation stays scoped to the visible card
+     instead of triggering an O(n) walk across every card in the grid.
+     contain-intrinsic-size gives the grid a stable placeholder height so
+     scroll position and scrollbar size stay correct. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 280px;
+}
+
+.card:hover {
+  /* Simple border tint — no transform (avoids GPU layer promotion/demotion
+     on every card the mouse crosses) and no background repaint */
+  border-color: #3a4a6a;
+}
+
+.thumb {
+  /* 3:2 matches the dominant DSLR/mirrorless capture aspect (Canon, Nikon,
+     Sony 35mm/APS-C; Fuji X-Trans). At the grid's auto-fill track width
+     this gives the photo more vertical room without per-card layout
+     recalculation (the aspect is fixed, so the browser computes the
+     height once from the track width). */
+  aspect-ratio: 3/2;
+  background: #0e1117;
+  /* overflow:hidden is fine here — .thumb is a leaf container with no stacking
+     context concerns, and it correctly clips the image to the card's top corners */
+  overflow: hidden;
+  position: relative;
+}
+
+/* Full scene + bird crop side by side (same row height as the main 16:10 thumb). */
+.thumb-row {
+  --thumb-row-gap: 6px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) calc((100% - var(--thumb-row-gap)) * 10 / 26);
+  gap: var(--thumb-row-gap);
+  width: 100%;
+  min-width: 0;
+}
+
+.thumb-row > .thumb {
+  min-width: 0;
+}
+
+.thumb-row > .thumb-bird-crop {
+  width: 100%;
+  min-width: 0;
+}
+
+.thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.card .body {
+  padding: 10px 12px 14px;
+  display: grid;
+  gap: 6px;
+}
+
+.meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: normal;
+  gap: 8px;
+}
+
+.meta> :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.chip {
+  background: var(--chip);
+  border: 1px solid #2a3040;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: #cbd2dc;
+}
+
+.chip.badge {
+  background: #10293d;
+  border-color: #1d3e5e;
+  color: #a9c9ee;
+}
+
+.chip.manual-approved,
+.edit-chip.manual-approved {
+  background: rgba(245, 197, 66, 0.10);
+  border-color: rgba(183, 145, 37, 0.65);
+  color: #e9d6a1;
+}
+
+.scene-approved {
+  box-shadow: inset 0 0 0 1px rgba(245, 197, 66, 0.14);
+}
+
+.scene-approved .thumb {
+  outline: 1px solid rgba(245, 197, 66, 0.10);
+  outline-offset: -1px;
+}
+
+.scene-approved .thumb-bird-crop {
+  outline: 1px solid rgba(245, 197, 66, 0.10);
+  outline-offset: -1px;
+}
+
+.thumb-bird-crop {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: 6px;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  overflow: hidden;
+  background: #0e1117;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+.thumb-bird-crop img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.scene-approved-badge {
+  margin-left: 6px;
+}
+
+.approval-note {
+  color: #f7dda0;
+  font-weight: 600;
+}
+
+.mark-reviewed-btn {
+  cursor: pointer;
+  background: rgba(245, 197, 66, 0.08);
+  border: 1px solid rgba(245, 197, 66, 0.3);
+  color: #f7dda0;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 12px;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+.mark-reviewed-btn:hover {
+  background: rgba(245, 197, 66, 0.18);
+  border-color: rgba(245, 197, 66, 0.5);
+}
+
+/* Improve chip rendering & truncation */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Slight breathing room on meta row */
+.meta {
+  padding-right: 2px;
+}
+
+/* Pill for score in meta rows to prevent clipping */
+.meta .score {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #10293d;
+  border: 1px solid #1d3e5e;
+  color: #a9c9ee;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+/* Further anti-clipping & wrapping safeguards */
+.meta {
+  flex-wrap: wrap;
+}
+
+.meta .score {
+  margin-left: auto;
+}
+
+.chips {
+  min-width: 0;
+}
+
+.chip {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filename {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Editable species chips in scene edit mode */
+.edit-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.edit-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--chip);
+  border: 1px solid #2a3040;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: #cbd2dc;
+}
+.edit-chip .chip-x {
+  cursor: pointer;
+  color: #e06060;
+  font-weight: bold;
+  font-size: 13px;
+  margin-left: 2px;
+  line-height: 1;
+}
+.edit-chip .chip-x:hover { color: #ff8080; }
+
+/* Inline chip input */
+.chip-input-wrap {
+  display: inline-flex;
+  align-items: center;
+  background: #1a2a44;
+  border: 1px solid var(--brand);
+  border-radius: 999px;
+  padding: 1px 4px 1px 8px;
+  margin-left: 4px;
+}
+.chip-input {
+  background: transparent;
+  border: none;
+  color: #fff;
+  font-size: 12px;
+  outline: none;
+  width: 100px;
+}
+.chip-commit-btn {
+  background: var(--brand);
+  border: none;
+  color: #fff;
+  border-radius: 50%;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 10px;
+  margin-left: 4px;
+}
+.chip-commit-btn:hover { background: #56afff; }
+
+/* Custom species combobox dropdown.
+   Uses position: fixed (instead of absolute relative to .chip-input-wrap)
+   to escape the overflow-x: auto clipping on .scene-topbar-tags. The
+   coordinates are set in JS via getBoundingClientRect on the input. */
+.chip-input-wrap--species,
+.chip-input-wrap--family { position: relative; }
+.chip-input-dropdown {
+  position: fixed;
+  background: #1a2a44;
+  border: 1px solid var(--brand);
+  border-radius: 8px;
+  z-index: 9999;
+  min-width: 240px;
+  max-width: 360px;
+  max-height: 280px;
+  overflow-y: auto;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+  font-size: 12px;
+  padding: 4px 0;
+}
+.chip-combo-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 5px 10px;
+  cursor: pointer;
+  color: #fff;
+  white-space: nowrap;
+}
+.chip-combo-item--active,
+.chip-combo-item:hover {
+  background: rgba(86, 175, 255, 0.28);
+}
+.chip-combo-left {
+  display: flex; flex-direction: column; align-items: flex-start;
+  min-width: 0; flex: 1 1 auto; overflow: hidden;
+}
+.chip-combo-right {
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+}
+.chip-combo-name { font-weight: 500; }
+.chip-combo-sci {
+  color: #9ab;
+  font-size: 11px;
+  font-style: italic;
+  margin-top: 1px;
+}
+.chip-combo-alpha {
+  background: rgba(86, 175, 255, 0.18);
+  border: 1px solid rgba(86, 175, 255, 0.4);
+  color: #cfe5ff;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.chip-combo-family {
+  color: #9ab;
+  font-size: 11px;
+  font-style: italic;
+  flex-shrink: 0;
+}
+
+/* Pill variant: stacks the italicised scientific name on a second row
+   under the primary chip label. Used in the scene topbar tags and the
+   timeline scene-card chips when the show-scientific-names setting is on.
+   Padding-right reserves space for the absolutely-positioned X button so
+   it doesn't overlap the trailing characters of longer names. */
+.chip--with-sci {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 3px 18px 3px 10px;
+  line-height: 1.15;
+  position: relative;
+}
+.chip--with-sci .chip-primary { display: inline; }
+.chip--with-sci .chip-sci {
+  font-size: 10px;
+  font-style: italic;
+  color: #97a3b5;
+  margin-top: 1px;
+}
+.chip--with-sci .chip-x {
+  position: absolute;
+  top: 2px;
+  right: 5px;
+  font-size: 11px;
+  line-height: 1;
+}
+
+/* Reviewed tags golden styling */
+.reviewed-tags .chip {
+  background: rgba(245, 197, 66, 0.15);
+  border-color: rgba(245, 197, 66, 0.4);
+  color: #f5c542;
+}
+.reviewed-tags .chip .chip-x { color: #f5c542; opacity: 0.7; }
+.reviewed-tags .chip .chip-x:hover { color: #e06060; opacity: 1; }
+.chip-add-btn {
+  cursor: pointer;
+  background: transparent;
+  border: 1px dashed #3a84e6;
+  color: #6aa0ff;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+}
+.chip-add-btn:hover { background: #1a2a44; }
+.edit-panel {
+  display: grid;
+  gap: 8px;
+  background: #10131a;
+  border: 1px solid #1f2533;
+  border-radius: 10px;
+  padding: 10px;
+  font-size: 13px;
+}
+.edit-panel label { color: var(--muted); font-size: 12px; }
+.edit-section { display: grid; gap: 4px; }
+/* Scene split mode: checkboxes on image cards */
+.card.split-mode { position: relative; }
+.card.split-mode .split-check {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 3;
+  width: 18px;
+  height: 18px;
+  accent-color: #3a84e6;
+}
+.card.split-selected { outline: 2px solid #3a84e6; outline-offset: -2px; border-radius: 10px; }
+/* Yellow save button when dirty */
+#saveCsv:not(:disabled) {
+  background: #b59b2e;
+  color: #fff;
+  border-color: #d4b72e;
+}
+#saveCsv:not(:disabled):hover {
+  background: #c9ae34;
+}
+
+/* Anti-clipping improvements */
+.meta {
+  gap: 8px;
+}
+
+/* Removed invalid comma between overflow properties (was causing lint error) */
+/* .meta > :first-child duplicate rule retained earlier above */
+.inline input[type="text"] {
+  min-width: 0;
+}
+
+.card .body {
+  padding-bottom: 14px;
+}
+
+.card .body .meta {
+  justify-content: center;
+  gap: 14px;
+}
+
+.title-score,
+.title-count {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.title-score {
+  color: #a9c9ee;
+}
+
+.title-count {
+  color: var(--muted);
+}
+
+/* Prevent text clipping with truncation */
+.title {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.title i.folder-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 9em;
+  display: inline-block;
+  vertical-align: middle;
+  font-style: italic;
+}
+
+.title .title-sep {
+  flex-shrink: 0;
+}
+
+.title b {
+  flex-shrink: 0;
+}
+
+.title .name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.title-score {
+  font-size: 12px;
+  flex-shrink: 0;
+  color: #a9c9ee;
+  background: #10293d;
+  border: 1px solid #1d3e5e;
+  padding: 1px 7px;
+  border-radius: 999px;
+}
+
+.title-count {
+  font-size: 12px;
+  flex-shrink: 0;
+  color: var(--muted);
+}
+
+.meta .truncate {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Sticky folder group headers — pinned below the sticky search/filter bar
+   so the two don't overlap when scrolling. */
+.folder-group-header {
+  position: sticky;
+  top: var(--filter-bar-h);
+  z-index: 10;
+  background: var(--bg);
+}
+
+/* Multi-select: selected scene card */
+.card.selected {
+  background: #1a2540 !important;
+  border-color: #3a84e6 !important;
+  outline: 2px solid rgba(58, 132, 230, .5);
+}
+
+.card.selected:hover {
+  background: #1f2d4e !important;
+}
+
+/* Keyboard-focused scene card (after closing scene dialog or arrow-key nav) */
+.card.focused {
+  outline: 2px solid rgba(58, 132, 230, .7);
+  outline-offset: 2px;
+  box-shadow: 0 0 12px rgba(58, 132, 230, .3);
+}
+
+/* Folder group headers in scene grid */
+.folder-group {
+  margin-bottom: 4px;
+}
+
+/* Flat header band: no rounded corners, just a strong bottom divider that
+   reads as the section line under the folder name + action strips. */
+.folder-group-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  background: #161922;
+  border: none;
+  border-bottom: 1px solid #2b6ec8;
+  border-radius: 0;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+  color: #cbd2dc;
+}
+
+.folder-group-header:hover {
+  background: #1d2230;
+}
+
+.folder-group-toggle {
+  font-size: 10px;
+  flex-shrink: 0;
+  transition: transform .15s;
+  color: var(--muted);
+}
+
+.folder-group-header.collapsed .folder-group-toggle {
+  transform: rotate(-90deg);
+}
+
+.folder-group-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 0 1 auto;
+  max-width: 320px;
+  margin-right: 4px;
+}
+
+.folder-group-count {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+/* Segmented action strips inside the folder header. No outer border — they
+   sit inline with the header band, with subtle vertical dividers between
+   buttons. Hover lights up the segment. */
+.folder-group-left-actions,
+.folder-group-right-actions {
+  display: flex;
+  gap: 0;
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+
+/* Per-button overrides for buttons inside the folder header strips:
+   neutralize the .action-btn base border + radius so adjacent buttons
+   share a clean divider rather than each being its own pill. */
+.folder-group-left-actions .action-btn,
+.folder-group-right-actions .action-btn {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  border-left: 1px solid #2a3040;
+  padding: 6px 14px;
+  color: #cbd2dc;
+}
+.folder-group-left-actions .action-btn:first-child,
+.folder-group-right-actions .action-btn:first-child {
+  border-left: none;
+}
+.folder-group-left-actions .action-btn:hover,
+.folder-group-right-actions .action-btn:hover {
+  background: #1f2533;
+  color: #fff;
+  border-color: #2a3040;
+}
+
+.culling-btn {
+  margin-left: auto;
+  padding: 3px 12px;
+  font-size: 12px;
+  background: #1a2540;
+  color: #7eb8e0;
+  border: 1px solid #2a3b5a;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .15s, border-color .15s;
+}
+.culling-btn:hover {
+  background: #243456;
+  border-color: #3a84e6;
+  color: #b8daf0;
+}
+.write-metadata-btn {
+  margin-left: 6px;
+  padding: 3px 12px;
+  font-size: 12px;
+  background: #1a2a1e;
+  color: #7ed4a0;
+  border: 1px solid #2a5a3b;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .15s, border-color .15s;
+}
+.write-metadata-btn:hover {
+  background: #243d2c;
+  border-color: #3ae67a;
+  color: #b0f0c8;
+}
+
+.folder-group-grid.hidden {
+  display: none;
+}
+
+/* Floating multi-select action bar */
+.select-action-bar {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1d2230;
+  border: 1px solid #3a84e6;
+  border-radius: 12px;
+  padding: 10px 18px;
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  box-shadow: 0 6px 32px rgba(0, 0, 0, .6);
+  z-index: 300;
+  white-space: nowrap;
+}
+
+.select-action-bar.hidden {
+  display: none;
+}
+
+/* Final override: allow wrapping in meta rows (was nowrap earlier) */
+.meta {
+  white-space: normal;
+}
+
+.meta>* {
+  min-width: 0;
+}
+
+/* Thumbnail badges (quality & image count) */
+.thumb .badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  background: #10293d;
+  border: 1px solid #1d3e5e;
+  color: #a9c9ee;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .4);
+}
+
+.thumb .badge.count {
+  left: auto;
+  right: 8px;
+}
+
+/* Scene-card single-line meta strip: species/family pill (+ optional '+'
+   overflow button) on the left, star/quality | camera/count text on the
+   right. Replaces the older two-row title-row + chips layout for timeline
+   cards; the legacy .title-row rules below are kept for any other call
+   sites that still rely on them. */
+.card-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.card-pills {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Cap species/family pill so a long name like "Cardinal/Grosbeak/Bunting
+   sp." doesn't push the meta off the card. The chip itself shrinks; its
+   primary line ellipsizes; the optional sci subtext also ellipsizes. */
+.card-pills > .chip {
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+}
+.card-pills > .chip .chip-primary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  max-width: 100%;
+}
+.card-pills > .chip.chip--with-sci {
+  /* Re-establish the stacked layout from .chip--with-sci -- inline-flex
+     direction column -- after the inline-flex override above. */
+  flex-direction: column;
+  align-items: flex-start;
+  /* No X button on read-only card pills, so we don't need the right
+     padding that .chip--with-sci reserves elsewhere. */
+  padding: 3px 10px;
+}
+.card-pills > .chip.chip--with-sci .chip-sci {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  display: block;
+}
+
+/* Overflow reveal -- a regular chip pill (NOT the dashed "add new tag"
+   affordance used by .chip-add-btn / .scene-chip-add elsewhere). A down
+   chevron inside the pill signals "click to see more"; the pill base
+   keeps it visually grouped with the species chip it sits next to. The
+   .chip base is applied via class="chip chip-more", so this rule only
+   needs to reset native <button> defaults and tighten the glyph. */
+.chip-more {
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  /* Tighter padding than a regular chip since the glyph is single-char. */
+  padding: 2px 7px;
+  line-height: 1;
+  flex-shrink: 0;
+  /* Muted glyph so the chevron reads as a control hint, not as label
+     content competing with the adjacent species name. */
+  color: #97a3b5;
+}
+.chip-more:hover {
+  border-color: #3a84e6;
+  color: #cce0ff;
+}
+.chip-more:focus-visible {
+  outline: 2px solid #3a84e6;
+  outline-offset: 1px;
+}
+
+/* Right-side meta -- star/quality | camera/count, no pill background. */
+.card-meta {
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
+  font-size: 11px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.card-meta .meta-score { color: #a9c9ee; }
+.card-meta .meta-sep { margin: 0 4px; color: #4a5365; }
+.card-meta .meta-count { /* slightly smaller emoji block per design */
+  font-size: 10px;
+  letter-spacing: -0.5px;
+}
+
+/* Popover for the rest of a scene's species when the user clicks '+' */
+.card-more-popover {
+  position: fixed;
+  z-index: 1000;
+  background: var(--card, #161922);
+  border: 1px solid #2a3040;
+  border-radius: 8px;
+  padding: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 320px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+.card-more-popover .chip { max-width: 100%; }
+
+/* Title-level badges (placed under title, right-aligned) */
+.title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.title-row .title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.title-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.title-badges .score {
+  background: #10293d;
+  border: 1px solid #1d3e5e;
+  color: #a9c9ee;
+  padding: 1px 7px;
+  border-radius: 999px;
+}
+
+/* Folder body collapse */
+.folder-group-body.hidden {
+  display: none;
+}
+
+/* Scroll position indicator (floating overlay on right edge of main view) */
+#scrollPositionIndicator {
+  position: fixed;
+  right: 22px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(10, 12, 15, 0.88);
+  border: 1px solid #2a3040;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 10px;
+  border-radius: 6px;
+  max-width: 220px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 9000;
+  transition: opacity 0.25s ease;
+  box-shadow: 0 3px 12px rgba(0,0,0,0.5);
+}
+
+/* Folder Actions dropdown — collapses 4 secondary actions + Clear Kestrel
+   into a single segmented trigger. Sits inside .folder-group-right-actions
+   alongside the Culling Assistant button. */
+
+/* The trigger button is the first segment in the right-actions strip when
+   .folder-group-actions-wrap is rendered (which it always is now). Strip its
+   border-left so the visual matches the previous first-child behavior. */
+.folder-group-right-actions .folder-group-actions-wrap:first-child .action-btn {
+  border-left: none;
+}
+
+.folder-group-actions-trigger .caret {
+  margin-left: 4px;
+  font-size: 9px;
+  color: #8a93a3;
+}
+
+/* The popup menu, anchored to the trigger via the wrap's position:relative. */
+.folder-group-actions-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 1000;
+  min-width: 220px;
+  padding: 4px 0;
+  background: #181c26;
+  border: 1px solid #2a3040;
+  border-radius: 4px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  color: #cbd2dc;
+  font-size: 13px;
+}
+
+/* Each .folder-group-header is position:sticky with z-index:10, which
+   creates a per-header stacking context. Sibling headers therefore paint
+   in DOM order, so a later folder row can obscure an earlier row's open
+   Folder Actions menu even though the menu is z-index:1000 within its own
+   header. Raise the owning header above other headers only while its menu
+   is present. */
+.folder-group-header:has(.folder-group-actions-menu) {
+  z-index: 1001;
+}
+
+.folder-group-actions-item {
+  padding: 8px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.folder-group-actions-item i {
+  font-style: normal;
+  width: 18px;
+  display: inline-block;
+  text-align: center;
+}
+.folder-group-actions-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: #fff;
+}
+
+.folder-group-actions-divider {
+  height: 1px;
+  background: #2a3040;
+  margin: 4px 0;
+}
+
+.folder-group-actions-item--danger {
+  color: #e07c7c;
+}
+.folder-group-actions-item--danger:hover {
+  background: rgba(231, 76, 60, 0.10);
+  color: #ff8e8e;
+}

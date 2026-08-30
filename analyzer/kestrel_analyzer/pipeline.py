@@ -1,66 +1,89 @@
+import concurrent.futures
 import json
 import os
+import queue
+import threading
 import time
+import traceback
 import warnings
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Generator, Optional
 
 import cv2
 import numpy as np
 import pandas as pd
 
 from .config import (
-    JPEG_EXTENSIONS,
-    RAW_EXTENSIONS,
+    DEFAULT_DETECTOR_NAME,
     SPECIESCLASSIFIER_LABELS,
     SPECIESCLASSIFIER_PATH,
     QUALITYCLASSIFIER_PATH,
     QUALITY_NORMALIZATION_DATA_PATH,
-    WILDLIFE_CATEGORIES,
     MODELS_DIR,
     KESTREL_DIR_NAME,
     METADATA_FILENAME,
     VERSION,
+    select_camera_images,
 )
 from .database import (
     load_database,
     save_database,
-    load_scenedata,
-    save_scenedata,
-    build_scenedata_from_database,
-    update_scenedata_with_database,
+    finalize_scenedata_after_analysis,
 )
-print("Importing read_image from image_utils...")
-from .image_utils import read_image, read_image_for_pipeline
-print("read_image imported successfully.")
-from .ratings import quality_to_rating, get_profile_thresholds
-print("Importing compute_image_similarity_akaze from similarity...")
+from .exposure_compensation import (
+    apply_exposure_crop_numpy,
+    build_metered_detection_image,
+    compose_total_stops as ec_compose_total_stops,
+    compute_stops_numpy_solver,
+    linear_to_srgb_u8,
+)
+from .image_utils import decode_embedded_preview, read_image, read_image_for_pipeline
+from .ratings import quality_to_rating, resolve_thresholds
 from .similarity import compute_image_similarity_akaze, compute_similarity_timestamp
 from .raw_exif import get_capture_time
-from .logging_utils import get_log_path, log_event, log_exception, log_warning
+from .logging_utils import (
+    get_log_path,
+    log_event,
+    log_exception,
+    log_warning,
+    make_logged_showwarning,
+)
 
 try:
-    from ..settings_utils import load_persisted_settings
-except ImportError:
+    from ..settings_utils import load_persisted_settings, debug as _debug, info as _info, error as _error
+except (ImportError, ValueError):
+    # Top-level package case: cli.py adds analyzer/ to sys.path and imports
+    # ``kestrel_analyzer`` as a root package, so the relative ``..`` walks
+    # beyond it. The bare-name fallback works because ``settings_utils`` is
+    # then directly importable from sys.path.
     try:
-        from analyzer.settings_utils import load_persisted_settings
+        from settings_utils import load_persisted_settings, debug as _debug, info as _info, error as _error  # type: ignore
     except ImportError:
         load_persisted_settings = None
-
-print("Utility functions imported successfully.")
-
-print("Importing ML models... Starting with MaskRCNNWrapper...")
-from .ml.mask_rcnn import MaskRCNNWrapper
-print("MaskRCNNWrapper imported successfully. Now importing BirdSpeciesClassifier...")
+        def _debug(*_a, **_kw): pass
+        def _info(*_a, **_kw): pass
+        def _error(*_a, **_kw): pass
+from .ml import GPU_EP
+from .ml.speciesnet_sam_hq import SpeciesNetSAMHQWrapper
+from .ml.provider_coordinator import ResilienceConfig
 from .ml.bird_species import BirdSpeciesClassifier
-print("BirdSpeciesClassifier imported successfully. Now importing QualityClassifier...")
 from .ml.quality import QualityClassifier
-print("QualityClassifier imported successfully. All ML models imported.")
+
+
+def _write_jpeg(path: str, bgr: np.ndarray, params) -> bool:
+    # Some cv2 builds (headless/full conflict) reject imwrite's params arg.
+    # imencode + tofile works on every wheel and handles unicode Windows paths.
+    ok, buf = cv2.imencode('.jpg', bgr, params)
+    if not ok:
+        return False
+    buf.tofile(path)
+    return True
 
 
 class AnalysisPipeline:
-    def __init__(self, use_gpu: bool):
+    def __init__(self, use_gpu: bool, detector_name: str = DEFAULT_DETECTOR_NAME):
         self.use_gpu = use_gpu
-        self.mask_rcnn: Optional[MaskRCNNWrapper] = None
+        self.detector_name = str(detector_name)
+        self.sn_sam: Optional[SpeciesNetSAMHQWrapper] = None
         self.species_clf: Optional[BirdSpeciesClassifier] = None
         self.quality_clf: Optional[QualityClassifier] = None
         self._log_path: Optional[str] = None
@@ -91,113 +114,21 @@ class AnalysisPipeline:
         return overlay
 
     @staticmethod
-    def _compute_exposure_stops(img: np.ndarray, mask: np.ndarray) -> float:
-        """Estimate exposure correction in stops for the masked subject region.
-
-        This is histogram-aware (percentile based), not mean-only. It balances
-        two goals:
-        1) center subject mid-tones toward a neutral target, and
-        2) protect highlight/shadow detail in mixed-contrast scenes.
-
-        Returns a value in [-1.75, +2.5] where positive lifts exposure and
-        negative pulls it down.
-        """
-        EPS = 1e-3        
-        #TARGET_MID = 0.42
-        #TARGET_HI_P90 = 0.90
-        #TARGET_HI_P98 = 0.975
-        TARGET_MID = 0.48
-        TARGET_HI_P90 = 0.92
-        TARGET_HI_P98 = 0.985
-        TARGET_HI_P95_HOT = 0.88
-        SHADOW_FLOOR_P10 = 0.06
-        CLIP_THRESH = 0.985
-        HOT_CLIP_RATIO = 0.02
-        MAX_DARKEN = -1.75
-        MAX_BRIGHTEN = 2.5
-        try:
-            img_f = img.astype(np.float32) / 255.0
-            mask_bool = mask.astype(bool) if mask is not None else None
-            if (
-                mask_bool is not None
-                and mask_bool.any()
-                and img_f.ndim == 3
-                and img_f.shape[:2] == mask_bool.shape
-            ):
-                pixels = img_f[mask_bool]
-            else:
-                pixels = img_f.reshape(-1, 3)
-            # Perceptual luminance weights (Rec. 709)
-            lum = 0.2126 * pixels[:, 0] + 0.7152 * pixels[:, 1] + 0.0722 * pixels[:, 2]
-            lum = lum[np.isfinite(lum)]
-            if lum.size == 0:
-                return 0.0
-            p10, p50, p90, p95, p98 = np.percentile(lum, [10, 50, 90, 95, 98])
-            clip_ratio = float(np.mean(lum >= CLIP_THRESH))
-
-            # Midtone intent (robust against small bright outliers).
-            mid_stop = float(np.log2(TARGET_MID / max(float(p50), EPS)))
-
-            # Highlight ceilings prevent over-bright outputs.
-            hi90_stop = float(np.log2(TARGET_HI_P90 / max(float(p90), EPS)))
-            hi98_stop = float(np.log2(TARGET_HI_P98 / max(float(p98), EPS)))
-            highlight_ceiling = min(hi90_stop, hi98_stop, MAX_BRIGHTEN)
-
-            # Shadow floor prevents excessive darkening in high dynamic-range masks.
-            shadow_floor = max(MAX_DARKEN, float(np.log2(SHADOW_FLOOR_P10 / max(float(p10), EPS))))
-
-            # Start from midtone intent, then clamp by highlight/shadow guardrails.
-            stops = float(np.clip(mid_stop, shadow_floor, highlight_ceiling))
-
-            # If a meaningful chunk is clipped/highlight-hot, bias a little darker
-            # to recover structure in bright regions.
-            if clip_ratio >= HOT_CLIP_RATIO:
-                hot_stop = float(np.log2(TARGET_HI_P95_HOT / max(float(p95), EPS)))
-                stops = min(stops, hot_stop)
-                stops = float(np.clip(stops, MAX_DARKEN, MAX_BRIGHTEN))
-
-            if not np.isfinite(stops):
-                return 0.0
-            return stops
-        except Exception:
-            return 0.0
+    def _compute_stops_numpy(
+        noauto_linear: np.ndarray,
+        mask: np.ndarray,
+        meter_scale: float,
+        quality: str = "balanced",
+    ) -> float:
+        return compute_stops_numpy_solver(noauto_linear, mask, meter_scale, quality)
 
     @staticmethod
-    def _apply_exposure_correction(
-        img: np.ndarray, stops: float, raw_obj=None
+    def _apply_crop_numpy(
+        noauto_linear: np.ndarray,
+        crop_bbox,
+        total_scale: float,
     ) -> np.ndarray:
-        """Return a copy of *img* with exposure shifted by *stops* stops.
-
-        When *raw_obj* is a live rawpy.RawPy instance (RAW files), the
-        correction is applied via rawpy.postprocess(exp_shift=…) in the linear
-        domain before demosaicing, which correctly recovers highlight detail
-        on overexposed subjects rather than clipping.
-
-        For non-RAW sources (JPEG/PNG, or if rawpy re-process fails) the
-        method falls back to pixel-level multiplication.
-
-        Positive stops lifts (brightens), negative stops pulls (darkens).
-        Returns the original array unchanged when stops == 0.0.
-        """
-        if stops == 0.0:
-            return img
-        if raw_obj is not None:
-            try:
-                # exp_shift is in linear scale: 2^stops.
-                # rawpy usable range: 0.25 (−2 stops) … 8.0 (+3 stops).
-                linear_scale = float(np.clip(2.0 ** stops, 0.25, 8.0))
-                # Preserve highlights when brightening to avoid blowing out
-                # any remaining highlight detail.
-                preserve = 0.8 if stops > 0 else 0.0
-                return raw_obj.postprocess(
-                    no_auto_bright=True,
-                    exp_shift=linear_scale,
-                    exp_preserve_highlights=preserve,
-                )
-            except Exception:
-                pass  # fall through to pixel-level fallback below
-        factor = 2.0 ** stops
-        return (img.astype(np.float32) * factor).clip(0.0, 255.0).astype(np.uint8)
+        return apply_exposure_crop_numpy(noauto_linear, crop_bbox, total_scale)
 
     @staticmethod
     def _get_image_orientation(img: np.ndarray) -> str:
@@ -210,22 +141,362 @@ class AnalysisPipeline:
             return "landscape"
         return "square"
 
-    def load_models(self, status_cb: Optional[Callable[[str], None]] = None) -> None:
-        if self.mask_rcnn and self.species_clf and self.quality_clf:
+    # Default parallel RAW decode workers when caller omits parallel_prefetch (matches settings default).
+    _DEFAULT_DECODE_WORKERS: int = 3
+
+    def _decode_image(self, image_path: str, raw_file: str) -> dict:
+        """Decode one image.  Safe to call from a worker thread.
+
+        Returns a dict with keys:
+            file_name, image_path, img, noauto_linear, raw_meter_scale,
+            exposure_pipeline, meter_warning, orientation, capture_time, error
+        """
+        result: dict = {
+            "file_name": raw_file,
+            "image_path": image_path,
+            "img": None,
+            "noauto_linear": None,
+            "raw_meter_scale": 1.0,
+            "exposure_pipeline": "legacy_auto_bright_v1",
+            "meter_warning": None,
+            "orientation": "unknown",
+            "capture_time": None,
+            "capture_time_warning": None,
+            "error": None,
+        }
+        try:
+            img, raw_obj = read_image_for_pipeline(image_path)
+            if img is None and raw_obj is None:
+                raise RuntimeError("Image read returned None for both img and raw_obj")
+
+            if raw_obj is not None:
+                result["exposure_pipeline"] = "numpy_linear_v2"
+                try:
+                    metered_img, raw_meter_scale, meter_debug, noauto_linear = (
+                        build_metered_detection_image(raw_obj)
+                    )
+                finally:
+                    raw_obj.close()
+                result["raw_meter_scale"] = float(raw_meter_scale)
+                result["noauto_linear"] = noauto_linear
+                if metered_img is not None:
+                    img = metered_img
+                elif meter_debug.get("error"):
+                    # Metered RAW decode failed. Try the embedded JPEG
+                    # preview before giving up — most modern bodies ship a
+                    # full-resolution preview that's still useful for ML
+                    # inference (Nikon HE/HE* NEFs are the typical trigger:
+                    # LibRaw reads metadata but can't decompress TicoRAW
+                    # sensor data). Reopens the file because the
+                    # already-closed raw_obj is in an out-of-order state
+                    # after a failed postprocess.
+                    preview = decode_embedded_preview(image_path)
+                    if preview is not None:
+                        img = preview
+                        result["exposure_pipeline"] = "embedded_preview_jpeg"
+                        result["meter_warning"] = (
+                            f"RAW decode unsupported ({meter_debug['error']}); "
+                            "analyzing embedded JPEG preview instead "
+                            "(highlight recovery disabled)"
+                        )
+                    else:
+                        result["meter_warning"] = (
+                            f"RAW metering fallback to default decode: "
+                            f"{meter_debug['error']}"
+                        )
+
+            if img is None:
+                raise RuntimeError("Image build returned None after decode")
+
+            result["img"] = img
+            result["orientation"] = self._get_image_orientation(img)
+
+            try:
+                ct = get_capture_time(image_path)
+                result["capture_time"] = ct
+            except Exception as ct_exc:
+                # Scene grouping falls back to AKAZE feature similarity when
+                # capture_time is missing; not fatal. We record the reason so
+                # the main loop can surface it once via log_warning.
+                result["capture_time_warning"] = (
+                    f"Capture-time extraction failed: {ct_exc}"
+                )
+
+        except Exception as exc:
+            result["error"] = exc
+
+        return result
+
+    def _iter_decoded(
+        self,
+        file_list: list,
+        folder: str,
+        max_workers: int = 3,
+    ) -> Generator[dict, None, None]:
+        """Yield decoded image dicts in file_list order.
+
+        Up to *max_workers* files are decoded concurrently by background threads.
+        A semaphore limits total submitted-but-not-yet-consumed results to
+        ``max_workers + 1`` so peak memory stays bounded regardless of how
+        slowly the consumer processes each image.
+
+        Observability
+        -------------
+        Emits periodic ``[decode-queue]`` stderr lines (roughly every 10% of
+        the run, plus the first few images) and a final structured
+        ``decode_queue_summary`` log event so the operator can tell whether
+        the queue is actually hiding decode latency behind pipeline work.
+
+        Interpreting the numbers:
+          * ``wait_ms=0`` consistently     → pipeline is the bottleneck, the
+            queue is fully hiding decode cost (good).
+          * ``wait_ms`` grows vs ``decode_ms``  → decoder is the bottleneck,
+            raising ``parallel_prefetch`` may help (if disk/CPU headroom).
+          * ``inflight`` never exceeds 1   → decodes are effectively serial;
+            check ``parallel_prefetch`` setting or whether the file list
+            fell into the degenerate inline path.
+        """
+        total = len(file_list)
+        if max_workers <= 1 or total == 0:
+            for raw_file in file_list:
+                yield self._decode_image(os.path.join(folder, raw_file), raw_file)
+            return
+
+        metrics_lock = threading.Lock()
+        submitted = 0        # decodes handed to the pool
+        completed = 0        # decodes that have finished (set by workers)
+        total_decode_ms = 0.0
+        total_wait_ms = 0.0
+        peak_inflight = 0
+
+        max_buffered = max_workers + 1
+        semaphore = threading.Semaphore(max_buffered)
+        futures_q: queue.Queue = queue.Queue()
+        stop_event = threading.Event()
+
+        # Fixed cadence (every 10 images) rather than a percentage of total so
+        # long runs remain observable in real time. First 3 images always
+        # print for warm-up visibility, and the last image always prints.
+        log_every_n = 10
+
+        def _decode_and_time(image_path: str, raw_file: str) -> dict:
+            t0 = time.monotonic()
+            decoded = self._decode_image(image_path, raw_file)
+            decode_ms = (time.monotonic() - t0) * 1000.0
+            decoded["_decode_ms"] = decode_ms
+            with metrics_lock:
+                nonlocal completed, total_decode_ms
+                completed += 1
+                total_decode_ms += decode_ms
+            return decoded
+
+        def _submit_all() -> None:
+            nonlocal submitted, peak_inflight
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                for raw_file in file_list:
+                    if stop_event.is_set():
+                        break
+                    semaphore.acquire()
+                    if stop_event.is_set():
+                        # Consumer abandoned the generator (cancel / fatal error)
+                        # while we waited for a free buffer slot; stop submitting
+                        # so the pool can drain and shut down.
+                        break
+                    future = executor.submit(
+                        _decode_and_time,
+                        os.path.join(folder, raw_file),
+                        raw_file,
+                    )
+                    with metrics_lock:
+                        submitted += 1
+                        inflight = submitted - completed
+                        if inflight > peak_inflight:
+                            peak_inflight = inflight
+                    futures_q.put(future)
+            futures_q.put(None)
+
+        submit_thread = threading.Thread(target=_submit_all, daemon=True)
+        submit_thread.start()
+
+        idx = 0
+        _debug(
+            f"[decode-queue] starting: files={total} workers={max_workers} "
+            f"buffer={max_buffered}"
+        )
+
+        try:
+            while True:
+                future = futures_q.get()
+                if future is None:
+                    break
+                t_wait = time.monotonic()
+                decoded = future.result()
+                wait_ms = (time.monotonic() - t_wait) * 1000.0
+                with metrics_lock:
+                    total_wait_ms += wait_ms
+                    snap_submitted = submitted
+                    snap_completed = completed
+                idx += 1
+
+                # Print for the first 3 images (warm-up visibility), then every
+                # ~10% of the run, and always on the last image.
+                if idx <= 3 or idx % log_every_n == 0 or idx == total:
+                    decode_ms = decoded.get("_decode_ms")
+                    decode_ms_str = f"{decode_ms:.0f}" if decode_ms is not None else "?"
+                    inflight_now = max(0, snap_submitted - snap_completed)
+                    ahead = max(0, snap_submitted - idx)
+                    _debug(
+                        f"[decode-queue] idx={idx}/{total} "
+                        f"inflight={inflight_now} ahead={ahead} "
+                        f"decode_ms={decode_ms_str} wait_ms={wait_ms:.0f}"
+                    )
+
+                yield decoded
+                semaphore.release()
+        finally:
+            # If the consumer abandons this generator early -- an outer cancel or
+            # a fatal error makes process_folder return, which raises
+            # GeneratorExit at the yield above -- the loop stops releasing the
+            # semaphore. Signal the producer to stop and free one slot so it
+            # unblocks from semaphore.acquire(), lets its ThreadPoolExecutor
+            # drain, and exits. Without this the decode-worker threads (and their
+            # buffered full-res images) leak for the rest of the process.
+            stop_event.set()
+            semaphore.release()
+
+        submit_thread.join()
+
+        # Final summary — this is the number you actually want to watch
+        # when deciding whether to raise parallel_prefetch.
+        avg_decode = total_decode_ms / max(1, total)
+        avg_wait = total_wait_ms / max(1, total)
+        try:
+            log_event(
+                self._log_path,
+                {
+                    "level": "info",
+                    "event": "decode_queue_summary",
+                    "max_workers": int(max_workers),
+                    "file_count": int(total),
+                    "peak_inflight": int(peak_inflight),
+                    "sum_decode_ms": round(total_decode_ms, 1),
+                    "sum_wait_ms": round(total_wait_ms, 1),
+                    "avg_decode_ms": round(avg_decode, 1),
+                    "avg_wait_ms": round(avg_wait, 1),
+                },
+            )
+        except Exception:
+            pass
+        _debug(
+            f"[decode-queue] done: files={total} peak_inflight={peak_inflight} "
+            f"avg_decode_ms={avg_decode:.0f} avg_wait_ms={avg_wait:.0f}"
+        )
+
+    def _log_resolved_providers(self) -> None:
+        """Log the execution providers ONNX Runtime actually chose.
+
+        ``use_gpu`` on ``analysis_start`` records what was *requested*; this
+        records what was *granted*. They differ whenever a GPU provider fails
+        to initialise and the coordinator falls back to CPU, and that gap is
+        the thing crash reports currently cannot show. Purely diagnostic —
+        every lookup is defensive so a missing attribute can never fail a run.
+        """
+        providers = {}
+        for name, holder, attr in (
+            ("quality", self.quality_clf, "providers_used"),
+            ("species", self.species_clf, "providers_used"),
+            ("detector", getattr(self.sn_sam, "classifier", None), "providers_used"),
+        ):
+            try:
+                value = getattr(holder, attr, None)
+                if value:
+                    providers[name] = list(value)
+            except Exception:
+                continue
+        try:
+            log_event(
+                self._log_path,
+                {
+                    "level": "info",
+                    "event": "models_loaded",
+                    "use_gpu": bool(self.use_gpu),
+                    "gpu_ep": GPU_EP,
+                    "providers": providers,
+                },
+            )
+        except Exception:
+            pass
+
+    def load_models(
+        self,
+        status_cb: Optional[Callable[[str], None]] = None,
+        max_bird_crops: int = 5,
+    ) -> None:
+        try:
+            max_bird_crops = int(max_bird_crops)
+        except (TypeError, ValueError):
+            max_bird_crops = 5
+        max_bird_crops = max(1, min(20, max_bird_crops))
+
+        mask_ready_for_cap = bool(
+            self.sn_sam
+            and int(getattr(self.sn_sam, "max_bird_crops", 5)) == max_bird_crops
+            and getattr(self.sn_sam, "use_gpu", None) == self.use_gpu
+            and str(getattr(self.sn_sam, "detector_name", DEFAULT_DETECTOR_NAME)) == self.detector_name
+        )
+        if mask_ready_for_cap and self.species_clf and self.quality_clf:
+            # Wrapper is being reused — repoint its status_cb at the active
+            # folder so coord notifications (e.g., "Switched to CPU after GPU
+            # error") land on this folder's queue item, not whichever folder
+            # first constructed the wrapper.
+            try:
+                self.sn_sam.update_status_cb(status_cb)
+            except Exception:
+                pass
             return
         if status_cb:
-            status_cb("Loading models... This may take a while on first run.")
-        self.mask_rcnn = MaskRCNNWrapper()
-        self.species_clf = BirdSpeciesClassifier(
-            str(SPECIESCLASSIFIER_PATH),
-            str(SPECIESCLASSIFIER_LABELS),
-            self.use_gpu,
-            models_dir=str(MODELS_DIR),
-        )
-        self.quality_clf = QualityClassifier(
-            str(QUALITYCLASSIFIER_PATH),
-            normalization_data_path=str(QUALITY_NORMALIZATION_DATA_PATH),
-        )
+            status_cb(
+                f"Loading models (detector={self.detector_name})... This may take a while on first run."
+            )
+        if not mask_ready_for_cap:
+            resilience_cfg = None
+            if callable(load_persisted_settings):
+                try:
+                    resilience_cfg = ResilienceConfig.from_settings(load_persisted_settings() or {})
+                except Exception:
+                    resilience_cfg = None
+            self.sn_sam = SpeciesNetSAMHQWrapper(
+                max_bird_crops=max_bird_crops,
+                use_gpu=self.use_gpu,
+                detector_name=self.detector_name,
+                status_cb=status_cb,
+                resilience_cfg=resilience_cfg,
+            )
+            # The new wrapper has a fresh coord. Any existing species/quality
+            # classifiers were registered with the OLD coord, so drop them and
+            # rebuild below — otherwise their sessions wouldn't migrate when
+            # the new coord recreates.
+            self.species_clf = None
+            self.quality_clf = None
+        # Share the wrapper's coordinator with the species/quality classifiers
+        # so demote/promote rebuilds every session in the run together. Without
+        # this, a DML/CoreML failure recovers the wrapper but leaves these two
+        # sessions on the dead provider — every later image errors at the
+        # species step and the run looks "stuck on error".
+        coord = self.sn_sam.coord
+        if not self.species_clf:
+            self.species_clf = BirdSpeciesClassifier(
+                str(SPECIESCLASSIFIER_PATH),
+                str(SPECIESCLASSIFIER_LABELS),
+                coord,
+                models_dir=str(MODELS_DIR),
+            )
+        if not self.quality_clf:
+            self.quality_clf = QualityClassifier(
+                str(QUALITYCLASSIFIER_PATH),
+                normalization_data_path=str(QUALITY_NORMALIZATION_DATA_PATH),
+                coord=coord,
+            )
         if status_cb:
             status_cb("Models loaded. Processing started.")
 
@@ -237,9 +508,16 @@ class AnalysisPipeline:
         callbacks: Optional[Dict[str, Callable]] = None,
         analyzer_name: str = "pipeline",
         wildlife_enabled: bool = True,
-        detection_threshold: float = 0.75,
+        species_detection_enabled: bool = True,
+        detection_threshold: float = 0.25,
         scene_time_threshold: float = 1.0,
         mask_threshold: float = 0.5,
+        max_bird_crops: int = 5,
+        parallel_prefetch: int = 3,
+        retry_errored: bool = False,
+        exposure_quality: Optional[str] = None,
+        thumbnail_max_width: Optional[int] = None,
+        thumbnail_jpeg_compression: Optional[float] = None,
     ) -> None:
         callbacks = callbacks or {}
         status_cb = callbacks.get("on_status")
@@ -252,52 +530,121 @@ class AnalysisPipeline:
         species_cb = callbacks.get("on_species")
         error_cb = callbacks.get("on_error")
 
+        try:
+            max_bird_crops = int(max_bird_crops)
+        except (TypeError, ValueError):
+            max_bird_crops = 5
+        max_bird_crops = max(1, min(20, max_bird_crops))
+
+        try:
+            decode_workers = int(parallel_prefetch)
+        except (TypeError, ValueError):
+            decode_workers = self._DEFAULT_DECODE_WORKERS
+        decode_workers = max(1, min(5, decode_workers))
+
         rating_thresholds = None
+        rating_profile = "balanced"
+        # Caller-provided overrides win over persisted settings. None means
+        # "fall back to settings.json (or default)".
+        eq_override = exposure_quality
+        tmw_override = thumbnail_max_width
+        tjc_override = thumbnail_jpeg_compression
+        exposure_quality = "balanced"
+        thumbnail_max_width = 1200
+        thumbnail_jpeg_compression = 0.75
+        thumbnail_jpeg_quality = 75
         if callable(load_persisted_settings):
             try:
                 sett = load_persisted_settings() or {}
-                profile = sett.get('rating_profile', 'balanced')
-                rating_thresholds = get_profile_thresholds(profile)
+                rating_profile = str(sett.get('rating_profile', 'balanced') or 'balanced').strip().lower() or 'balanced'
+                rating_thresholds = resolve_thresholds(
+                    rating_profile, sett.get('rating_thresholds_custom')
+                )
+                raw_eq = str(sett.get('exposure_quality', 'balanced') or 'balanced').strip().lower()
+                if raw_eq in {'lenient', 'balanced', 'aggressive'}:
+                    exposure_quality = raw_eq
+                try:
+                    thumbnail_max_width = int(sett.get('thumbnail_max_width', 1200))
+                except (TypeError, ValueError):
+                    thumbnail_max_width = 1200
+                raw_compression = sett.get('thumbnail_jpeg_compression', None)
+                if raw_compression is None:
+                    try:
+                        legacy_quality = int(sett.get('thumbnail_jpeg_quality', 75))
+                    except (TypeError, ValueError):
+                        legacy_quality = 75
+                    thumbnail_jpeg_compression = float(legacy_quality) / 100.0
+                else:
+                    try:
+                        thumbnail_jpeg_compression = float(raw_compression)
+                    except (TypeError, ValueError):
+                        thumbnail_jpeg_compression = 0.75
             except Exception:
                 rating_thresholds = None
-
-        active_wildlife_categories = WILDLIFE_CATEGORIES if wildlife_enabled else []
+        if eq_override is not None:
+            raw_eq = str(eq_override).strip().lower()
+            if raw_eq in {'lenient', 'balanced', 'aggressive'}:
+                exposure_quality = raw_eq
+        if tmw_override is not None:
+            try:
+                thumbnail_max_width = int(tmw_override)
+            except (TypeError, ValueError):
+                pass
+        if tjc_override is not None:
+            try:
+                thumbnail_jpeg_compression = float(tjc_override)
+            except (TypeError, ValueError):
+                pass
+        thumbnail_max_width = max(400, min(2400, thumbnail_max_width))
+        thumbnail_jpeg_compression = max(0.5, min(1.0, thumbnail_jpeg_compression))
+        thumbnail_jpeg_quality = int(round(thumbnail_jpeg_compression * 100.0))
+        thumbnail_jpeg_quality = max(50, min(100, thumbnail_jpeg_quality))
+        jpeg_params = [int(cv2.IMWRITE_JPEG_QUALITY), thumbnail_jpeg_quality]
 
         self._log_path = get_log_path(folder)
         stage_ctx = {"stage": "startup", "file": None}
 
+        def _mark_stage(stage: str) -> None:
+            """Record a one-time setup stage, and persist it to the analysis log.
+
+            A native-level process death (segfault/abort inside onnxruntime,
+            LibRaw, OpenCV) never unwinds to an ``except`` block, so the
+            ``stage_ctx`` that ``log_exception`` reports is lost in exactly the
+            crashes hardest to diagnose. Writing each transition means the last
+            record in the log names the stage the process died in.
+
+            Only the ONCE-PER-RUN setup stages call this. ``log_event`` reads,
+            re-serialises and rewrites the whole JSON log on every call, so
+            marking the per-file stages (``read_image``, ``compute_similarity``)
+            would make analysis O(n^2) in file count. Those stages still update
+            ``stage_ctx`` for exception reporting, they just are not persisted.
+            """
+            stage_ctx["stage"] = stage
+            try:
+                log_event(
+                    self._log_path,
+                    {"level": "debug", "event": "stage", "stage": stage},
+                )
+            except Exception:
+                # Instrumentation must never break an analysis run.
+                pass
+
         original_showwarning = warnings.showwarning
-
-        def _showwarning(message, category, filename, lineno, file=None, line=None):
-            log_warning(
-                self._log_path,
-                message,
-                category=category,
-                filename=filename,
-                lineno=lineno,
-                stage=stage_ctx["stage"],
-                context={"file": stage_ctx["file"], "folder": folder},
-            )
-            if original_showwarning:
-                original_showwarning(message, category, filename, lineno, file=file, line=line)
-
-        warnings.showwarning = _showwarning
+        warnings.showwarning = make_logged_showwarning(
+            self._log_path,
+            stage_ctx,
+            folder=folder,
+            original_showwarning=original_showwarning,
+        )
 
         try:
-            stage_ctx["stage"] = "list_files"
-            files = [
-                f
-                for f in os.listdir(folder)
-                if os.path.isfile(os.path.join(folder, f))
-                and os.path.splitext(f)[1].lower() in RAW_EXTENSIONS
+            _mark_stage("list_files")
+            entries = [
+                name
+                for name in os.listdir(folder)
+                if os.path.isfile(os.path.join(folder, name))
             ]
-            if not files:
-                files = [
-                    f
-                    for f in os.listdir(folder)
-                    if os.path.isfile(os.path.join(folder, f))
-                    and os.path.splitext(f)[1].lower() in JPEG_EXTENSIONS
-                ]
+            files = select_camera_images(entries)
             files.sort()
             if not files:
                 if status_cb:
@@ -321,21 +668,54 @@ class AnalysisPipeline:
                     "analyzer": analyzer_name,
                     "folder": folder,
                     "file_count": len(files),
+                    "detector_name": self.detector_name,
+                    "detection_threshold": float(detection_threshold),
+                    "parallel_prefetch": int(decode_workers),
+                    "use_gpu": bool(self.use_gpu),
+                    "gpu_ep": GPU_EP,
                 },
             )
 
-            stage_ctx["stage"] = "create_kestrel_dirs"
+            _mark_stage("create_kestrel_dirs")
             kestrel_dir = os.path.join(folder, KESTREL_DIR_NAME)
             export_dir = os.path.join(kestrel_dir, "export")
             crop_dir = os.path.join(kestrel_dir, "crop")
             os.makedirs(export_dir, exist_ok=True)
             os.makedirs(crop_dir, exist_ok=True)
 
-            stage_ctx["stage"] = "load_database"
+            _mark_stage("load_database")
             database, db_path = load_database(kestrel_dir, analyzer_name, log_path=self._log_path)
+
+            # When retrying errored images, capture each errored row's previously-
+            # computed values BEFORE dropping it. Many errors hit during detection
+            # or later, after similarity / capture_time / orientation are already
+            # filled in — the retry can reuse those instead of recomputing AKAZE
+            # against the wrong neighbor (the rolling ``previous_image`` would be
+            # the last surviving DB row, not the alphabetical predecessor).
+            errored_rows_by_filename: Dict[str, dict] = {}
+            if retry_errored and not database.empty and "species" in database.columns:
+                errored_mask = database["species"].astype(str) == "Error"
+                errored_count = int(errored_mask.sum())
+                if errored_count > 0:
+                    if status_cb:
+                        status_cb(f"Including {errored_count} previously errored image(s) for retry.")
+                    for _, row in database.loc[errored_mask].iterrows():
+                        try:
+                            errored_rows_by_filename[str(row["filename"])] = row.to_dict()
+                        except Exception:
+                            continue
+                    # Drop errored rows so the pipeline's later concat doesn't
+                    # produce duplicate (filename, species=Error) rows. The
+                    # retried images will append fresh rows below.
+                    database = database.loc[~errored_mask].copy()
+                    save_database(database, db_path)
 
             processed_set = set(database["filename"].values)
             new_files = [f for f in files if f not in processed_set]
+            # Index of every file in the sorted ``files`` list, so retry
+            # iterations can look up each errored image's alphabetical
+            # predecessor in O(1) for the previous_image reset path.
+            files_idx: Dict[str, int] = {f: i for i, f in enumerate(files)}
             processed_count = len(files) - len(new_files)
             total = len(files)
             if progress_cb:
@@ -349,8 +729,9 @@ class AnalysisPipeline:
                     progress_cb(total, total)
                 return
 
-            stage_ctx["stage"] = "load_models"
-            self.load_models(status_cb=status_cb)
+            _mark_stage("load_models")
+            self.load_models(status_cb=status_cb, max_bird_crops=max_bird_crops)
+            self._log_resolved_providers()
 
             previous_image = None
             previous_image_path = None
@@ -367,7 +748,12 @@ class AnalysisPipeline:
                         previous_orientation = self._get_image_orientation(img)
             scene_count = database["scene_count"].max() if not database.empty else 0
 
-            for idx, raw_file in enumerate(new_files, start=1):
+            for idx, decoded in enumerate(
+                self._iter_decoded(new_files, folder, max_workers=decode_workers),
+                start=1,
+            ):
+                raw_file = decoded["file_name"]
+
                 # Pause: wait until resume or until cancel_event is set.
                 if pause_event is not None:
                     while not pause_event.is_set():
@@ -391,6 +777,8 @@ class AnalysisPipeline:
                     "quality": -1.0,
                     "export_path": "N/A",
                     "crop_path": "N/A",
+                    "crops_json": "[]",
+                    "primary_crop_index": 0,
                     "scene_count": scene_count,
                     "feature_similarity": -1.0,
                     "feature_confidence": -1.0,
@@ -402,101 +790,235 @@ class AnalysisPipeline:
                     "secondary_family_list": [],
                     "secondary_family_scores": [],
                     "exposure_correction": 0.0,
+                    "exposure_pipeline": "legacy_auto_bright_v1",
+                    "exposure_subject_stops": 0.0,
+                    "exposure_meter_scale": 1.0,
                     "detection_scores": [],
                     "capture_time": "",
                     "orientation": "unknown",
                 }
 
-                image_path = None
-                raw_obj = None
+                image_path = decoded["image_path"]
+                raw_meter_scale = decoded["raw_meter_scale"]
                 try:
                     stage_ctx["stage"] = "read_image"
                     stage_ctx["file"] = raw_file
-                    image_path = os.path.join(folder, raw_file)
-                    img, raw_obj = read_image_for_pipeline(image_path)
+
+                    # Re-raise any decode error inside the per-image error handler.
+                    if decoded["error"] is not None:
+                        raise decoded["error"]
+
+                    img = decoded["img"]
+                    noauto_linear = decoded["noauto_linear"]
+
                     if img is None:
-                        raise RuntimeError("Image read returned None")
+                        raise RuntimeError("Image build returned None")
 
-                    current_orientation = self._get_image_orientation(img)
-                    entry["orientation"] = current_orientation
-
-                    try:
-                        ct = get_capture_time(image_path)
-                        entry["capture_time"] = ct.isoformat() if ct is not None else ""
-                    except Exception:
-                        pass
-
-                    stage_ctx["stage"] = "compute_similarity"
-                    timestamp_similar = None
-                    try:
-                        timestamp_similar = compute_similarity_timestamp(
-                            previous_image_path, image_path,
-                            threshold_seconds=scene_time_threshold
-                        ) if previous_image_path else None
-                    except Exception as e:
+                    entry["exposure_pipeline"] = decoded["exposure_pipeline"]
+                    entry["exposure_meter_scale"] = float(raw_meter_scale)
+                    # Live-status visibility for the embedded-preview fallback
+                    # (Nikon HE NEFs etc.). The "Processed" message below
+                    # overwrites this almost immediately for normal files;
+                    # showing it here surfaces the warning in the Live
+                    # dialog's status line during heavy ML work for the same
+                    # file, where the user is most likely to notice it.
+                    used_preview_fallback = (
+                        decoded.get("exposure_pipeline") == "embedded_preview_jpeg"
+                    )
+                    if decoded.get("meter_warning"):
                         log_warning(
                             self._log_path,
-                            f"Timestamp similarity check failed: {e}",
+                            decoded["meter_warning"],
+                            stage=stage_ctx["stage"],
+                            context={"file": raw_file, "folder": folder},
+                        )
+                        if used_preview_fallback and status_cb:
+                            status_cb(
+                                f"⚠ {raw_file}: LibRaw can't decompress "
+                                "sensor data; using embedded JPEG preview"
+                            )
+                    if decoded.get("capture_time_warning"):
+                        log_warning(
+                            self._log_path,
+                            decoded["capture_time_warning"],
                             stage=stage_ctx["stage"],
                             context={"file": raw_file, "folder": folder},
                         )
 
-                    orientation_changed = (
-                        previous_orientation is not None
-                        and current_orientation != "unknown"
-                        and previous_orientation != "unknown"
-                        and current_orientation != previous_orientation
+                    current_orientation = decoded["orientation"]
+                    entry["orientation"] = current_orientation
+
+                    ct = decoded["capture_time"]
+                    entry["capture_time"] = ct.isoformat() if ct is not None else ""
+
+                    stage_ctx["stage"] = "compute_similarity"
+
+                    preserved_row = errored_rows_by_filename.get(raw_file)
+
+                    def _coerce_float(v, default):
+                        try:
+                            f = float(v)
+                            return f if f == f else default  # NaN check
+                        except (TypeError, ValueError):
+                            return default
+
+                    preserved_feat_sim = _coerce_float(preserved_row.get("feature_similarity"), -1.0) if preserved_row else -1.0
+                    preserved_was_similar = bool(preserved_row.get("similar", False)) if preserved_row else False
+                    preserved_sim_valid = bool(
+                        preserved_row is not None
+                        and (preserved_feat_sim >= 0.0 or preserved_was_similar)
                     )
 
-                    if orientation_changed:
-                        scene_count += 1
+                    if preserved_sim_valid:
+                        # Reuse similarity from the prior (errored) attempt. The
+                        # previous_image AKAZE was originally computed against is
+                        # gone, but the saved values are still authoritative —
+                        # the source images haven't changed.
+                        preserved_scene = int(_coerce_float(preserved_row.get("scene_count"), scene_count))
                         entry.update(
                             {
-                                "feature_similarity": -1.0,
-                                "feature_confidence": -1.0,
-                                "color_similarity": -1.0,
-                                "color_confidence": -1.0,
-                                "scene_count": scene_count,
-                                "similar": False,
+                                "feature_similarity": preserved_feat_sim,
+                                "feature_confidence": _coerce_float(preserved_row.get("feature_confidence"), -1.0),
+                                "color_similarity": _coerce_float(preserved_row.get("color_similarity"), -1.0),
+                                "color_confidence": _coerce_float(preserved_row.get("color_confidence"), -1.0),
+                                "scene_count": preserved_scene,
+                                "similar": preserved_was_similar,
                             }
                         )
-                    elif timestamp_similar is True:
-                        # Images captured within the same second — treat as similar, skip AKAZE
-                        entry.update(
-                            {
-                                "feature_similarity": -1.0,
-                                "feature_confidence": -1.0,
-                                "color_similarity": -1.0,
-                                "color_confidence": -1.0,
-                                "scene_count": scene_count,
-                                "similar": True,
-                            }
-                        )
+                        # Keep the running scene counter monotonic so subsequent
+                        # genuinely-new scenes get unique IDs.
+                        scene_count = max(scene_count, preserved_scene)
                     else:
-                        similarity = compute_image_similarity_akaze(previous_image, img)
-                        if not similarity["similar"]:
-                            scene_count += 1
-                        entry.update(
-                            {
-                                "feature_similarity": similarity["feature_similarity"],
-                                "feature_confidence": similarity["feature_confidence"],
-                                "color_similarity": similarity["color_similarity"],
-                                "color_confidence": similarity["color_confidence"],
-                                "scene_count": scene_count,
-                                "similar": similarity["similar"],
-                            }
+                        # No usable preserved values. If this is a retry image,
+                        # reset previous_image to its alphabetical predecessor
+                        # so AKAZE compares against the right neighbor instead
+                        # of whatever rolled in from the last DB row.
+                        if preserved_row is not None:
+                            prev_idx = files_idx.get(raw_file, -1) - 1
+                            if prev_idx >= 0:
+                                pred_filename = files[prev_idx]
+                                pred_path = os.path.join(folder, pred_filename)
+                                if os.path.exists(pred_path):
+                                    try:
+                                        pred_img = read_image(pred_path)
+                                    except Exception:
+                                        pred_img = None
+                                    if pred_img is not None:
+                                        previous_image = pred_img
+                                        previous_image_path = pred_path
+                                        previous_orientation = self._get_image_orientation(pred_img)
+                            else:
+                                previous_image = None
+                                previous_image_path = None
+                                previous_orientation = None
+
+                        timestamp_similar = None
+                        try:
+                            timestamp_similar = compute_similarity_timestamp(
+                                previous_image_path, image_path,
+                                threshold_seconds=scene_time_threshold
+                            ) if previous_image_path else None
+                        except Exception as e:
+                            log_warning(
+                                self._log_path,
+                                f"Timestamp similarity check failed: {e}",
+                                stage=stage_ctx["stage"],
+                                context={"file": raw_file, "folder": folder},
+                            )
+
+                        orientation_changed = (
+                            previous_orientation is not None
+                            and current_orientation != "unknown"
+                            and previous_orientation != "unknown"
+                            and current_orientation != previous_orientation
                         )
-                    previous_image = img.copy()
+
+                        if orientation_changed:
+                            scene_count += 1
+                            entry.update(
+                                {
+                                    "feature_similarity": -1.0,
+                                    "feature_confidence": -1.0,
+                                    "color_similarity": -1.0,
+                                    "color_confidence": -1.0,
+                                    "scene_count": scene_count,
+                                    "similar": False,
+                                }
+                            )
+                        elif timestamp_similar is True:
+                            # Images captured within the same second — treat as similar, skip AKAZE
+                            entry.update(
+                                {
+                                    "feature_similarity": -1.0,
+                                    "feature_confidence": -1.0,
+                                    "color_similarity": -1.0,
+                                    "color_confidence": -1.0,
+                                    "scene_count": scene_count,
+                                    "similar": True,
+                                }
+                            )
+                        else:
+                            similarity = compute_image_similarity_akaze(previous_image, img)
+                            if not similarity["similar"]:
+                                scene_count += 1
+                            entry.update(
+                                {
+                                    "feature_similarity": similarity["feature_similarity"],
+                                    "feature_confidence": similarity["feature_confidence"],
+                                    "color_similarity": similarity["color_similarity"],
+                                    "color_confidence": similarity["color_confidence"],
+                                    "scene_count": scene_count,
+                                    "similar": similarity["similar"],
+                                }
+                            )
+                    # Hold the previous image by reference, not by copy. The next
+                    # iteration rebinds ``img`` to a fresh decoded array, so the
+                    # old array stays alive for AKAZE via this reference. The
+                    # per-detection patch-and-restore in ``process_subject_items``
+                    # keeps ``img`` pristine across the rest of this iteration.
+                    # Skipping a 45 MP uint8 copy (~135 MB memcpy) here closes
+                    # a significant slice of the gap between "bird crop shown"
+                    # and "next image thumbnail shown".
+                    previous_image = img
                     previous_image_path = image_path
                     previous_orientation = current_orientation
 
                     stage_ctx["stage"] = "export_image"
                     export_path = os.path.join(export_dir, f"{os.path.splitext(raw_file)[0]}_export.jpg")
-                    img_small = cv2.resize(img, (1200, int(1200 * img.shape[0] / img.shape[1])))
-                    cv2.imwrite(
+                    # Thumbnail must be free of baked-in exposure correction so the
+                    # browser's live correction (driven by entry.exposure_correction)
+                    # does not double-apply the meter_scale component. For RAW,
+                    # render directly from noauto_linear (no meter scale). For
+                    # non-RAW, img already has no correction applied.
+                    #
+                    # Downsize FIRST in linear float space, THEN apply the sRGB
+                    # curve. This was the biggest single cost in the gap between
+                    # "bird thumbnails shown for image N" and "thumbnail shown
+                    # for image N+1" — the old code ran the full gamma LUT on
+                    # the entire 45 MP linear frame before shrinking to ~1 MP,
+                    # which is ~40x more work than necessary. Downsizing in
+                    # linear space with INTER_AREA is also more physically
+                    # correct for photographs (standard practice in any serious
+                    # image pipeline — avoids edge/highlight artifacts that
+                    # come from box-filtering gamma-compressed values).
+                    if noauto_linear is not None:
+                        src_h, src_w = noauto_linear.shape[:2]
+                        _tgt_w = min(thumbnail_max_width, int(src_w))
+                        _tgt_h = max(1, int(_tgt_w * src_h / src_w))
+                        linear_small = cv2.resize(
+                            noauto_linear, (_tgt_w, _tgt_h),
+                            interpolation=cv2.INTER_AREA,
+                        )
+                        img_small = linear_to_srgb_u8(linear_small)
+                    else:
+                        src_h, src_w = img.shape[:2]
+                        _tgt_w = min(thumbnail_max_width, int(src_w))
+                        _tgt_h = max(1, int(_tgt_w * src_h / src_w))
+                        img_small = cv2.resize(img, (_tgt_w, _tgt_h), interpolation=cv2.INTER_AREA)
+                    _write_jpeg(
                         export_path,
                         cv2.cvtColor(img_small, cv2.COLOR_RGB2BGR),
-                        [cv2.IMWRITE_JPEG_QUALITY, 70],
+                        jpeg_params,
                     )
                     # Store relative path for cross-platform compatibility
                     export_path_rel = os.path.relpath(export_path, folder)
@@ -504,11 +1026,18 @@ class AnalysisPipeline:
                     if thumbnail_cb:
                         thumbnail_cb({"filename": raw_file, "thumbnail": img_small, "export_path": export_path_rel})
 
-                    stage_ctx["stage"] = "mask_rcnn_prediction"
-                    # MaskRCNN inference can take many seconds. Pause semantics are
+                    stage_ctx["stage"] = "detection_segmentation"
+                    # SpeciesNet + SAM-HQ inference can take many seconds. Pause semantics are
                     # handled at the start of each image loop so we do not check
                     # repeatedly inside the image processing path.
-                    masks, pred_boxes, pred_class, pred_score = self.mask_rcnn.get_prediction(img, threshold=detection_threshold, mask_threshold=mask_threshold)
+                    # mask_threshold is accepted for API compatibility; SAM-HQ ignores it (see settings tooltip).
+                    masks, pred_boxes, pred_class, pred_score = self.sn_sam.get_prediction(
+                        img,
+                        image_path,
+                        wildlife_enabled=wildlife_enabled,
+                        threshold=detection_threshold,
+                        mask_threshold=mask_threshold,
+                    )
                     if masks is None or len(masks) == 0:
                         if detection_cb:
                             detection_cb(
@@ -527,15 +1056,52 @@ class AnalysisPipeline:
                         if status_cb:
                             status_cb(f"No detections in {raw_file}")
                         stage_ctx["stage"] = "write_crop"
-                        crop_path = os.path.join(crop_dir, f"{os.path.splitext(raw_file)[0]}_crop.jpg")
-                        cv2.imwrite(
+                        crop_path = os.path.join(crop_dir, f"{os.path.splitext(raw_file)[0]}_crop_0.jpg")
+                        _write_jpeg(
                             crop_path,
                             cv2.cvtColor(img_small, cv2.COLOR_RGB2BGR),
-                            [cv2.IMWRITE_JPEG_QUALITY, 85],
+                            jpeg_params,
                         )
                         # Store relative path for cross-platform compatibility
                         crop_path_rel = os.path.relpath(crop_path, folder)
-                        entry.update({"crop_path": crop_path_rel})
+                        h, w = img.shape[:2]
+                        fallback_crop = {
+                            "crop_index": 0,
+                            "crop_path": crop_path_rel,
+                            "detection_index": -1,
+                            "detection_confidence": 0.0,
+                            "species": "Unknown",
+                            "species_confidence": 0.0,
+                            "family": "Unknown",
+                            "family_confidence": 0.0,
+                            "quality": -1.0,
+                            "rating": 0,
+                            "exposure_correction": 0.0,
+                            "exposure_pipeline": entry.get("exposure_pipeline", "legacy_auto_bright_v1"),
+                            "exposure_subject_stops": 0.0,
+                            "exposure_meter_scale": float(entry.get("exposure_meter_scale", 1.0)),
+                            "bbox": {
+                                "x_min": 0,
+                                "x_max": int(w),
+                                "y_min": 0,
+                                "y_max": int(h),
+                                "width": int(w),
+                                "height": int(h),
+                                "x_min_norm": 0.0,
+                                "x_max_norm": 1.0,
+                                "y_min_norm": 0.0,
+                                "y_max_norm": 1.0,
+                                "x_center_norm": 0.5,
+                                "y_center_norm": 0.5,
+                            },
+                        }
+                        entry.update(
+                            {
+                                "crop_path": crop_path_rel,
+                                "crops_json": json.dumps([fallback_crop]),
+                                "primary_crop_index": 0,
+                            }
+                        )
                         stage_ctx["stage"] = "save_database"
                         database = pd.concat([database, pd.DataFrame([entry])], ignore_index=True)
                         save_database(database, db_path)
@@ -545,14 +1111,13 @@ class AnalysisPipeline:
                             progress_cb(idx + processed_count, total)
                         continue
 
-                    # Store top-5 raw MaskRCNN detection confidence scores
+                    # Top-5 SpeciesNet ensemble scores (per retained detection)
                     entry["detection_scores"] = json.dumps([float(s) for s in sorted(pred_score, reverse=True)[:5]])
 
-                    wildlife_indices = [i for i, c in enumerate(pred_class) if c in active_wildlife_categories]
                     bird_indices = [i for i, c in enumerate(pred_class) if c == "bird"]
-                    bird_indices = sorted(bird_indices, key=lambda i: pred_score[i], reverse=True)[:5]
+                    subject_indices = list(range(len(pred_class)))
 
-                    overlay_indices = bird_indices if bird_indices else wildlife_indices[:1]
+                    overlay_indices = subject_indices
                     if detection_cb:
                         detection_cb(
                             {
@@ -562,35 +1127,51 @@ class AnalysisPipeline:
                             }
                         )
 
-                    def process_nonbird(primary_mask_i):
-                        stage_ctx["stage"] = "process_nonbird"
-                        stops = self._compute_exposure_stops(img, masks[primary_mask_i])
-                        img_src = self._apply_exposure_correction(img, stops, raw_obj)
-                        quality_crop, quality_mask = self.mask_rcnn.get_square_crop(
-                            masks[primary_mask_i], img_src, resize=True
-                        )
-                        quality_score = self.quality_clf.classify(quality_crop, quality_mask)
-                        return {
-                            "species": pred_class[primary_mask_i],
-                            "species_confidence": float(pred_score[primary_mask_i]),
-                            "family": "N/A",
-                            "family_confidence": 0.0,
-                            "quality": quality_score,
-                            "rating": quality_to_rating(quality_score, rating_thresholds),
-                            "quality_crop": quality_crop,
-                            "exposure_correction": round(stops, 4),
-                        }
-
-                    def process_bird_items(indices):
-                        stage_ctx["stage"] = "process_bird"
+                    def process_subject_items(indices):
+                        stage_ctx["stage"] = "process_subjects"
                         items = []
                         for i in indices:
-                            # Process per-crop results. Pause is checked at the
-                            # top of the image loop so we avoid pausing mid-image.
-                            stops = self._compute_exposure_stops(img, masks[i])
-                            img_src = self._apply_exposure_correction(img, stops, raw_obj)
-                            species_crop = self.mask_rcnn.get_species_crop(pred_boxes[i], img_src)
-                            quality_crop, quality_mask = self.mask_rcnn.get_square_crop(masks[i], img_src, resize=True)
+                            crop_bbox = self.sn_sam.get_square_crop_box(masks[i])
+                            if noauto_linear is not None:
+                                # RAW numpy path — no additional rawpy calls.
+                                stops = self._compute_stops_numpy(
+                                    noauto_linear, masks[i], raw_meter_scale, exposure_quality
+                                )
+                                total_scale = float(raw_meter_scale) * (2.0 ** float(stops))
+                                bbox_tuple = (
+                                    crop_bbox["y_min"], crop_bbox["x_min"],
+                                    crop_bbox["y_max"], crop_bbox["x_max"],
+                                )
+                                corrected_crop = self._apply_crop_numpy(noauto_linear, bbox_tuple, total_scale)
+                                # Patch the exposure-corrected crop in place on ``img``,
+                                # run the two downstream crop extractions that need
+                                # full-image coordinates, then restore the original
+                                # pixels before the next detection runs. This replaces
+                                # a full-frame ``img.copy()`` per detection (which was
+                                # ~140 MB on 45 MP RAW and was the visible lag between
+                                # per-bird thumbnails in the UI) with two tiny
+                                # crop-sized copies that are effectively free.
+                                y0, y1 = crop_bbox["y_min"], crop_bbox["y_max"]
+                                x0, x1 = crop_bbox["x_min"], crop_bbox["x_max"]
+                                original_patch = img[y0:y1, x0:x1].copy()
+                                img[y0:y1, x0:x1] = corrected_crop
+                                try:
+                                    species_crop = self.sn_sam.get_species_crop(pred_boxes[i], img)
+                                    quality_crop, quality_mask = self.sn_sam.get_square_crop(masks[i], img, resize=True)
+                                finally:
+                                    img[y0:y1, x0:x1] = original_patch
+                                total_stops = ec_compose_total_stops(stops, raw_meter_scale)
+                                meter_scale = float(raw_meter_scale)
+                                pipeline_mode = "numpy_linear_v2"
+                            else:
+                                # Non-RAW / JPEG path — no exposure correction, so no
+                                # patching needed. Use the metered image directly.
+                                stops = 0.0
+                                total_stops = 0.0
+                                meter_scale = 1.0
+                                pipeline_mode = "legacy_auto_bright_v1"
+                                species_crop = self.sn_sam.get_species_crop(pred_boxes[i], img)
+                                quality_crop, quality_mask = self.sn_sam.get_square_crop(masks[i], img, resize=True)
                             items.append(
                                 {
                                     "index": i,
@@ -599,6 +1180,11 @@ class AnalysisPipeline:
                                     "quality_crop": quality_crop,
                                     "quality_mask": quality_mask,
                                     "stops": stops,
+                                    "total_stops": total_stops,
+                                    "exposure_pipeline": pipeline_mode,
+                                    "exposure_subject_stops": round(float(stops), 4),
+                                    "exposure_meter_scale": round(meter_scale, 6),
+                                    "crop_bbox": crop_bbox,
                                 }
                             )
                         if crops_cb:
@@ -612,33 +1198,42 @@ class AnalysisPipeline:
                         for item in items:
                             i = item["index"]
                             if pred_class[i] == "bird":
-                                species_result = self.species_clf.classify(item["species_crop"])
-                                item["species"] = (
-                                    species_result["top_species_labels"][0]
-                                    if len(species_result["top_species_labels"])
-                                    else "Unknown"
-                                )
-                                item["species_confidence"] = (
-                                    float(species_result["top_species_scores"][0])
-                                    if len(species_result["top_species_scores"])
-                                    else 0.0
-                                )
-                                item["family"] = (
-                                    species_result["top_family_labels"][0]
-                                    if len(species_result["top_family_labels"])
-                                    else "Unknown"
-                                )
-                                item["family_confidence"] = (
-                                    float(species_result["top_family_scores"][0])
-                                    if len(species_result["top_family_scores"])
-                                    else 0.0
-                                )
+                                if species_detection_enabled:
+                                    species_result = self.species_clf.classify(item["species_crop"])
+                                    item["species"] = (
+                                        species_result["top_species_labels"][0]
+                                        if len(species_result["top_species_labels"])
+                                        else "Unknown"
+                                    )
+                                    item["species_confidence"] = (
+                                        float(species_result["top_species_scores"][0])
+                                        if len(species_result["top_species_scores"])
+                                        else 0.0
+                                    )
+                                    item["family"] = (
+                                        species_result["top_family_labels"][0]
+                                        if len(species_result["top_family_labels"])
+                                        else "Unknown"
+                                    )
+                                    item["family_confidence"] = (
+                                        float(species_result["top_family_scores"][0])
+                                        if len(species_result["top_family_scores"])
+                                        else 0.0
+                                    )
+                                else:
+                                    item["species"] = "Unknown"
+                                    item["species_confidence"] = 0.0
+                                    item["family"] = "Unknown"
+                                    item["family_confidence"] = 0.0
                             else:
                                 item["species"] = pred_class[i]
                                 item["species_confidence"] = float(pred_score[i])
                                 item["family"] = "N/A"
                                 item["family_confidence"] = 0.0
-                            item["exposure_correction"] = round(item["stops"], 4)
+                            item["exposure_correction"] = round(
+                                float(item.get("total_stops", item["stops"])),
+                                4,
+                            )
                             stage_ctx["stage"] = "quality_score"
                             quality_score = self.quality_clf.classify(item["quality_crop"], item["quality_mask"])
                             item["quality"] = quality_score
@@ -669,10 +1264,16 @@ class AnalysisPipeline:
                             )
                         return items
 
-                    if bird_indices:
-                        bird_items = process_bird_items(bird_indices)
-                        bird_data = [
+                    crop_items_for_write = []
+                    primary_crop_index = 0
+                    img_h, img_w = img.shape[:2]
+
+                    if subject_indices:
+                        subject_items = process_subject_items(subject_indices)
+                        crop_data = [
                             {
+                                "index": i["index"],
+                                "confidence": i["confidence"],
                                 "species": i["species"],
                                 "species_confidence": i["species_confidence"],
                                 "family": i["family"],
@@ -681,24 +1282,32 @@ class AnalysisPipeline:
                                 "rating": i["rating"],
                                 "quality_crop": i["quality_crop"],
                                 "exposure_correction": i.get("exposure_correction", 0.0),
+                                "exposure_pipeline": i.get("exposure_pipeline", "legacy_auto_bright_v1"),
+                                "exposure_subject_stops": i.get("exposure_subject_stops", 0.0),
+                                "exposure_meter_scale": i.get("exposure_meter_scale", 1.0),
+                                "crop_bbox": i.get("crop_bbox"),
                             }
-                            for i in bird_items
+                            for i in subject_items
                         ]
-                        primary_bird = max(bird_data, key=lambda x: x["quality"])
+                        primary_crop_index = int(np.argmax([b["quality"] for b in crop_data]))
+                        primary_row = crop_data[primary_crop_index]
                         entry.update(
                             {
-                                "species": primary_bird["species"],
-                                "species_confidence": primary_bird["species_confidence"],
-                                "family": primary_bird["family"],
-                                "family_confidence": primary_bird["family_confidence"],
-                                "quality": primary_bird["quality"],
-                                "exposure_correction": primary_bird["exposure_correction"],
+                                "species": primary_row["species"],
+                                "species_confidence": primary_row["species_confidence"],
+                                "family": primary_row["family"],
+                                "family_confidence": primary_row["family_confidence"],
+                                "quality": primary_row["quality"],
+                                "exposure_correction": primary_row["exposure_correction"],
+                                "exposure_pipeline": primary_row["exposure_pipeline"],
+                                "exposure_subject_stops": primary_row["exposure_subject_stops"],
+                                "exposure_meter_scale": primary_row["exposure_meter_scale"],
                             }
                         )
-                        all_species = [b["species"] for b in bird_data]
-                        all_species_conf = [float(b["species_confidence"]) for b in bird_data]
-                        all_families = [b["family"] for b in bird_data]
-                        all_family_conf = [float(b["family_confidence"]) for b in bird_data]
+                        all_species = [b["species"] for b in crop_data]
+                        all_species_conf = [float(b["species_confidence"]) for b in crop_data]
+                        all_families = [b["family"] for b in crop_data]
+                        all_family_conf = [float(b["family_confidence"]) for b in crop_data]
                         entry.update(
                             {
                                 "secondary_species_list": json.dumps(all_species),
@@ -707,70 +1316,134 @@ class AnalysisPipeline:
                                 "secondary_family_scores": json.dumps(all_family_conf),
                             }
                         )
-                        crop_img = primary_bird["quality_crop"]
+                        crop_items_for_write = crop_data
+                        # Release full-res buffers now that all crops are extracted as
+                        # self-contained uint8 arrays.  img_h/img_w are already scalars;
+                        # img_small is a separate 1200px array and is unaffected.
+                        noauto_linear = None
+                        img = np.zeros((1, 1, 3), dtype=np.uint8)
                     else:
-                        if wildlife_indices:
-                            primary_index = wildlife_indices[np.argmax([pred_score[i] for i in wildlife_indices])]
-                            result = process_nonbird(primary_index)
-                            if crops_cb:
-                                crops_cb(
-                                    {
-                                        "filename": raw_file,
-                                        "crops": [result["quality_crop"]],
-                                        "confidences": [float(pred_score[primary_index])],
-                                    }
-                                )
-                            if quality_cb:
-                                quality_cb(
-                                    {
-                                        "filename": raw_file,
-                                        "results": [{"quality": result["quality"], "rating": result["rating"]}],
-                                    }
-                                )
-                            if species_cb:
-                                species_cb(
-                                    {
-                                        "filename": raw_file,
-                                        "results": [
-                                            {
-                                                "species": result["species"],
-                                                "species_confidence": result["species_confidence"],
-                                                "family": result["family"],
-                                                "family_confidence": result["family_confidence"],
-                                            }
-                                        ],
-                                    }
-                                )
-                            entry.update(
-                                {
-                                    "species": result["species"],
-                                    "species_confidence": result["species_confidence"],
-                                    "family": result["family"],
-                                    "family_confidence": result["family_confidence"],
-                                    "quality": result["quality"],
-                                    "exposure_correction": result["exposure_correction"],
-                                }
-                            )
-                            crop_img = result["quality_crop"]
-                        else:
-                            if crops_cb:
-                                crops_cb({"filename": raw_file, "crops": [], "confidences": []})
-                            if quality_cb:
-                                quality_cb({"filename": raw_file, "results": []})
-                            if species_cb:
-                                species_cb({"filename": raw_file, "results": []})
-                            crop_img = img_small
+                        if crops_cb:
+                            crops_cb({"filename": raw_file, "crops": [], "confidences": []})
+                        if quality_cb:
+                            quality_cb({"filename": raw_file, "results": []})
+                        if species_cb:
+                            species_cb({"filename": raw_file, "results": []})
+                        crop_items_for_write = [
+                            {
+                                "index": -1,
+                                "confidence": 0.0,
+                                "species": entry.get("species", "Unknown"),
+                                "species_confidence": entry.get("species_confidence", 0.0),
+                                "family": entry.get("family", "Unknown"),
+                                "family_confidence": entry.get("family_confidence", 0.0),
+                                "quality": entry.get("quality", -1.0),
+                                "rating": 0,
+                                "quality_crop": img_small,
+                                "exposure_correction": entry.get("exposure_correction", 0.0),
+                                "exposure_pipeline": entry.get("exposure_pipeline", "legacy_auto_bright_v1"),
+                                "exposure_subject_stops": entry.get("exposure_subject_stops", 0.0),
+                                "exposure_meter_scale": entry.get("exposure_meter_scale", 1.0),
+                                "crop_bbox": {
+                                    "x_min": 0,
+                                    "x_max": int(img_w),
+                                    "y_min": 0,
+                                    "y_max": int(img_h),
+                                    "width": int(img_w),
+                                    "height": int(img_h),
+                                    "x_min_norm": 0.0,
+                                    "x_max_norm": 1.0,
+                                    "y_min_norm": 0.0,
+                                    "y_max_norm": 1.0,
+                                    "x_center_norm": 0.5,
+                                    "y_center_norm": 0.5,
+                                },
+                            }
+                        ]
+                        primary_crop_index = 0
 
                     stage_ctx["stage"] = "write_crop"
-                    crop_path = os.path.join(crop_dir, f"{os.path.splitext(raw_file)[0]}_crop.jpg")
-                    cv2.imwrite(
-                        crop_path,
-                        cv2.cvtColor(crop_img, cv2.COLOR_RGB2BGR),
-                        [cv2.IMWRITE_JPEG_QUALITY, 85],
+                    serialized_crops = []
+                    base_name = os.path.splitext(raw_file)[0]
+                    for crop_idx, crop_item in enumerate(crop_items_for_write):
+                        crop_img = crop_item.get("quality_crop")
+                        if crop_img is None:
+                            continue
+                        crop_path = os.path.join(crop_dir, f"{base_name}_crop_{crop_idx}.jpg")
+                        _write_jpeg(
+                            crop_path,
+                            cv2.cvtColor(crop_img, cv2.COLOR_RGB2BGR),
+                            jpeg_params,
+                        )
+                        crop_path_rel = os.path.relpath(crop_path, folder)
+                        bbox = crop_item.get("crop_bbox") or {
+                            "x_min": 0,
+                            "x_max": int(img_w),
+                            "y_min": 0,
+                            "y_max": int(img_h),
+                            "width": int(img_w),
+                            "height": int(img_h),
+                            "x_min_norm": 0.0,
+                            "x_max_norm": 1.0,
+                            "y_min_norm": 0.0,
+                            "y_max_norm": 1.0,
+                            "x_center_norm": 0.5,
+                            "y_center_norm": 0.5,
+                        }
+                        serialized_crops.append(
+                            {
+                                "crop_index": int(crop_idx),
+                                "crop_path": crop_path_rel,
+                                "detection_index": int(crop_item.get("index", -1)),
+                                "detection_confidence": float(crop_item.get("confidence", 0.0)),
+                                "species": str(crop_item.get("species", "Unknown") or "Unknown"),
+                                "species_confidence": float(crop_item.get("species_confidence", 0.0)),
+                                "family": str(crop_item.get("family", "Unknown") or "Unknown"),
+                                "family_confidence": float(crop_item.get("family_confidence", 0.0)),
+                                "quality": float(crop_item.get("quality", -1.0)),
+                                "rating": int(crop_item.get("rating", 0)),
+                                "exposure_correction": float(crop_item.get("exposure_correction", 0.0)),
+                                "exposure_pipeline": str(crop_item.get("exposure_pipeline", "legacy_auto_bright_v1") or "legacy_auto_bright_v1"),
+                                "exposure_subject_stops": float(crop_item.get("exposure_subject_stops", 0.0)),
+                                "exposure_meter_scale": float(crop_item.get("exposure_meter_scale", 1.0)),
+                                "bbox": {
+                                    "x_min": int(bbox.get("x_min", 0)),
+                                    "x_max": int(bbox.get("x_max", img_w)),
+                                    "y_min": int(bbox.get("y_min", 0)),
+                                    "y_max": int(bbox.get("y_max", img_h)),
+                                    "width": int(bbox.get("width", img_w)),
+                                    "height": int(bbox.get("height", img_h)),
+                                    "x_min_norm": float(bbox.get("x_min_norm", 0.0)),
+                                    "x_max_norm": float(bbox.get("x_max_norm", 1.0)),
+                                    "y_min_norm": float(bbox.get("y_min_norm", 0.0)),
+                                    "y_max_norm": float(bbox.get("y_max_norm", 1.0)),
+                                    "x_center_norm": float(bbox.get("x_center_norm", 0.5)),
+                                    "y_center_norm": float(bbox.get("y_center_norm", 0.5)),
+                                },
+                            }
+                        )
+
+                    if not serialized_crops:
+                        raise RuntimeError("No crop records generated for image")
+
+                    primary_crop_index = int(np.clip(primary_crop_index, 0, len(serialized_crops) - 1))
+                    primary_crop = serialized_crops[primary_crop_index]
+                    entry.update(
+                        {
+                            "species": primary_crop["species"],
+                            "species_confidence": primary_crop["species_confidence"],
+                            "family": primary_crop["family"],
+                            "family_confidence": primary_crop["family_confidence"],
+                            "quality": primary_crop["quality"],
+                            "exposure_correction": primary_crop["exposure_correction"],
+                            "exposure_pipeline": primary_crop.get("exposure_pipeline", "legacy_auto_bright_v1"),
+                            "exposure_subject_stops": primary_crop.get("exposure_subject_stops", 0.0),
+                            "exposure_meter_scale": primary_crop.get("exposure_meter_scale", 1.0),
+                            "crop_path": primary_crop["crop_path"],
+                            "crops_json": json.dumps(serialized_crops),
+                            "primary_crop_index": primary_crop_index,
+                        }
                     )
-                    # Store relative path for cross-platform compatibility
-                    crop_path_rel = os.path.relpath(crop_path, folder)
-                    entry.update({"crop_path": crop_path_rel})
 
                     stage_ctx["stage"] = "save_database"
                     database = pd.concat([database, pd.DataFrame([entry])], ignore_index=True)
@@ -782,9 +1455,10 @@ class AnalysisPipeline:
                     if status_cb:
                         _q = entry.get('quality', -1)
                         _display_q = f"{float(_q):.3f}" if _q not in (None, 'N/A', -1) else '—'
+                        _suffix = " [⚠ preview fallback]" if used_preview_fallback else ""
                         status_cb(
                             f"Processed {raw_file}: {entry['species']} Q={_display_q}"
-                            f" ({idx + processed_count}/{total})"
+                            f" ({idx + processed_count}/{total}){_suffix}"
                         )
                 except Exception as e:
                     log_exception(
@@ -797,6 +1471,17 @@ class AnalysisPipeline:
                             "image_path": image_path,
                             "analyzer": analyzer_name,
                         },
+                    )
+                    # Mirror the full traceback into the runtime stderr log.
+                    # ``log_exception`` already records it in the per-folder
+                    # JSON, but bug reports usually attach only the runtime
+                    # tail — without this line the user-visible payload is
+                    # just ``str(e)`` and the originating library/call is
+                    # invisible.
+                    _error(
+                        f"[queue:{os.path.basename(folder)}] {raw_file}"
+                        f" stage={stage_ctx['stage']}"
+                        f" {type(e).__name__}: {e}\n{traceback.format_exc()}"
                     )
                     if error_cb:
                         error_cb(raw_file, e)
@@ -814,13 +1499,8 @@ class AnalysisPipeline:
 
                 # Explicitly clear large temporary variables after each image
                 # so that pausing between images doesn't retain large buffers.
+                # raw_obj is owned by _decode_image (closed there); not present here.
                 try:
-                    # Close the rawpy object first to release the RAW file buffer.
-                    try:
-                        if raw_obj is not None:
-                            raw_obj.close()
-                        del raw_obj
-                    except Exception: pass
                     try: del masks
                     except Exception: pass
                     try: del pred_boxes
@@ -835,51 +1515,86 @@ class AnalysisPipeline:
                     except Exception: pass
                     try: del items
                     except Exception: pass
-                    try: del bird_items
+                    try: del subject_items
                     except Exception: pass
                 except Exception:
                     pass
 
-            # === Post-analysis: compute quality distribution and normalized ratings ===
+            # === Post-analysis: persist database + audit-trail metadata + scene grouping ===
             stage_ctx["stage"] = "post_analysis_normalization"
             try:
-                from .ratings import compute_quality_distribution
                 if not database.empty and "quality" in database.columns:
-                    quality_scores = database["quality"].tolist()
-                    distribution = compute_quality_distribution(quality_scores)
-
-                    # Save analysis results (no normalized_rating; computed at runtime)
                     save_database(database, db_path)
 
-                    # Cache quality distribution in kestrel_metadata.json for runtime normalization
+                    # Update kestrel_metadata.json with the analysis-run audit trail
+                    # (render mode, settings snapshot). The frontend reads
+                    # exposure_render_mode / exposure_pipeline_version to pick the
+                    # correct RAW preview path; the rest is a record of which
+                    # parameters produced the cached results, intended for users
+                    # who later want to see what settings produced this folder.
                     metadata_path = os.path.join(kestrel_dir, METADATA_FILENAME)
                     try:
                         import json as _json
+                        from datetime import datetime as _dt, timezone as _tz
                         if os.path.exists(metadata_path):
                             with open(metadata_path, "r", encoding="utf-8") as mf:
                                 _meta = _json.load(mf)
                         else:
                             _meta = {"version": VERSION, "analyzer": analyzer_name}
-                        _meta["quality_distribution"] = distribution
-                        _meta["quality_distribution_stored"] = True
+
+                        pipeline_modes = set()
+                        if "exposure_pipeline" in database.columns:
+                            for _mode in database["exposure_pipeline"].tolist():
+                                _mode_txt = str(_mode or "").strip().lower()
+                                if _mode_txt:
+                                    pipeline_modes.add(_mode_txt)
+                        if pipeline_modes == {"numpy_linear_v2"}:
+                            render_mode_meta = "numpy_linear_v2"
+                        elif pipeline_modes == {"legacy_auto_bright_v1"}:
+                            render_mode_meta = "legacy_auto_bright_v1"
+                        elif pipeline_modes:
+                            render_mode_meta = "mixed_per_row_v1"
+                        else:
+                            render_mode_meta = "legacy_auto_bright_v1"
+
+                        _meta["exposure_pipeline_version"] = 3
+                        _meta["exposure_render_mode"] = render_mode_meta
+                        _meta["exposure_quality"] = exposure_quality
+
+                        _meta["analyzed_utc"] = _dt.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+                        _meta["kestrel_version"] = VERSION
+                        _meta["analysis_settings"] = {
+                            "detector_name": str(getattr(self, "detector_name", "") or ""),
+                            "use_gpu": bool(getattr(self, "use_gpu", False)),
+                            "wildlife_enabled": bool(wildlife_enabled),
+                            "species_detection_enabled": bool(species_detection_enabled),
+                            "detection_threshold": float(detection_threshold),
+                            "scene_time_threshold": float(scene_time_threshold),
+                            "mask_threshold": float(mask_threshold),
+                            "max_bird_crops": int(max_bird_crops),
+                            "parallel_prefetch": int(decode_workers),
+                            "rating_profile": rating_profile,
+                            "exposure_quality": exposure_quality,
+                            "exposure_render_mode": render_mode_meta,
+                            "exposure_pipeline_version": 3,
+                            "thumbnail_max_width": int(thumbnail_max_width),
+                            "thumbnail_jpeg_compression": float(round(thumbnail_jpeg_compression, 4)),
+                            "thumbnail_jpeg_quality": int(thumbnail_jpeg_quality),
+                        }
                         with open(metadata_path, "w", encoding="utf-8") as mf:
                             _json.dump(_meta, mf, indent=2)
                     except Exception as _meta_e:
                         log_warning(
                             self._log_path,
-                            f"Failed to write quality distribution to metadata: {_meta_e}",
+                            f"Failed to write analysis metadata: {_meta_e}",
                             stage="post_analysis_normalization",
                         )
 
-                    # Create or update kestrel_scenedata.json
+                    # Create or update kestrel_scenedata.json. Reload+merge
+                    # UI fields immediately before save so ratings/names/tags
+                    # written during the run are not overwritten (S1-08).
                     try:
-                        existing_scenedata = load_scenedata(kestrel_dir)
-                        if not existing_scenedata.get("scenes"):
-                            new_scenedata = build_scenedata_from_database(database)
-                            save_scenedata(new_scenedata, kestrel_dir)
-                        else:
-                            update_scenedata_with_database(existing_scenedata, database)
-                            save_scenedata(existing_scenedata, kestrel_dir)
+                        finalize_scenedata_after_analysis(kestrel_dir, database)
                     except Exception as _sd_e:
                         log_warning(
                             self._log_path,

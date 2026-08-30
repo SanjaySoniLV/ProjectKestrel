@@ -6,9 +6,7 @@
       "scene_id": "1",
       "image_filenames": [
         "IMG_1813.CR3",
-        "IMG_1815.CR3",
-        "IMG_1817.CR3",
-        "IMG_1818.CR3"
+        "IMG_1815.CR3"
       ],
       "name": "",
       "status": "pending",
@@ -120,6 +118,20 @@
         "IMG_9659.CR3",
         "IMG_9660.CR3",
         "IMG_9661.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    },
+    "7": {
+      "scene_id": "7",
+      "image_filenames": [
+        "IMG_1817.CR3",
+        "IMG_1818.CR3"
       ],
       "name": "",
       "status": "pending",

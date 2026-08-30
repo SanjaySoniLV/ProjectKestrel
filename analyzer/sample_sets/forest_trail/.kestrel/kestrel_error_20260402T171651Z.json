@@ -1,0 +1,30 @@
+[
+  {
+    "timestamp_utc": "2026-04-02T17:16:51.902473Z",
+    "level": "info",
+    "event": "analysis_start",
+    "analyzer": "visualizer-queue",
+    "folder": "C:\\Data\\Code\\Project Kestrel\\Demo Sets\\forest_trail",
+    "file_count": 55
+  },
+  {
+    "timestamp_utc": "2026-04-02T17:17:15.307549Z",
+    "level": "warning",
+    "stage": "save_database",
+    "context": {
+      "file": "IMG_1813.CR3",
+      "folder": "C:\\Data\\Code\\Project Kestrel\\Demo Sets\\forest_trail"
+    },
+    "message": "The behavior of DataFrame concatenation with empty or all-NA entries is deprecated. In a future version, this will no longer exclude empty or all-NA columns when determining the result dtypes. To retain the old behavior, exclude the relevant entries before the concat operation.",
+    "category": "FutureWarning",
+    "filename": "C:\\Data\\Code\\Project Kestrel\\ProjectKestrel\\analyzer\\kestrel_analyzer\\pipeline.py",
+    "lineno": 995
+  },
+  {
+    "timestamp_utc": "2026-04-02T17:34:02.180997Z",
+    "level": "info",
+    "event": "analysis_complete",
+    "folder": "C:\\Data\\Code\\Project Kestrel\\Demo Sets\\forest_trail",
+    "total_files": 55
+  }
+]

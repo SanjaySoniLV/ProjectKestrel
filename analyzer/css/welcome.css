@@ -1,0 +1,455 @@
+/* ── Welcome / Quick-Start Panel ───────────────────────────── */
+#welcomePanel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - 48px);
+  padding: 48px 32px;
+  gap: 28px;
+  text-align: center;
+}
+
+#welcomePanel h2 {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -.3px;
+  margin: 0;
+}
+
+.welcome-subtitle {
+  font-size: 14px;
+  color: var(--muted);
+  margin: -12px 0 0;
+}
+
+/* Header hero: logo on the left, heading + Start Tutorial stacked to its
+   right, so the announcement / tips sit higher up the page. */
+.welcome-hero {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  flex-wrap: wrap;
+}
+.welcome-hero-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  text-align: left;
+}
+/* Center the Start Tutorial button under the heading (override the button's
+   default align-self: flex-start). */
+.welcome-hero-text .welcome-action-btn {
+  align-self: center;
+}
+
+.welcome-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #1d5aa8;
+  border: 1px solid #2b6ec8;
+  color: #e7e9ee;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+  align-self: flex-start;
+  user-select: none;
+}
+
+.welcome-action-btn:hover {
+  background: #1f63b8;
+  border-color: #3a84e6;
+}
+
+.welcome-tips {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  max-width: 720px;
+  width: 100%;
+}
+
+.welcome-tip {
+  background: #0e1117;
+  border: 1px solid #1d2230;
+  border-radius: 10px;
+  padding: 10px 16px;
+  font-size: 13px;
+  color: #cbd2dc;
+  text-align: left;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  line-height: 1.5;
+}
+
+.welcome-tip-icon {
+  font-size: 15px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.welcome-link {
+  color: var(--brand);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.welcome-link:hover {
+  color: #7bbfff;
+}
+
+.welcome-footer {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.welcome-footer a {
+  color: var(--brand);
+  text-decoration: none;
+}
+
+.welcome-footer a:hover {
+  text-decoration: underline;
+}
+
+/* ═══ Welcome panel: launch note (custom note + explainer) ═══ */
+/* Replaces the old bullet-list "What's New" box for the Perch / Cloud Compute
+   launch. The outer #welcomeWhatsNew is now just a left-aligned wrapper; the
+   .wln card carries the design. A warm rufous accent nods to the codename. */
+.welcome-whats-new {
+  width: 100%;
+  max-width: 860px;
+  text-align: left;
+}
+.welcome-whats-new.hidden { display: none; }
+
+.wln {
+  position: relative;
+  background:
+    radial-gradient(125% 150% at 0% 0%, rgba(193, 78, 22, 0.12), transparent 44%),
+    linear-gradient(135deg, rgba(74, 163, 255, 0.10), rgba(74, 163, 255, 0.025));
+  border: 1px solid rgba(74, 163, 255, 0.26);
+  border-radius: 16px;
+  padding: 22px 24px 20px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.30);
+  overflow: hidden;
+}
+
+.wln-dismiss {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 7px;
+  border-radius: 6px;
+}
+.wln-dismiss:hover { color: var(--text); background: rgba(255, 255, 255, 0.06); }
+
+.wln-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: #f0b289;
+  background: rgba(193, 78, 22, 0.16);
+  border: 1px solid rgba(193, 78, 22, 0.40);
+  padding: 3px 11px;
+  border-radius: 999px;
+}
+
+.wln-title {
+  margin: 12px 0 0;
+  font-size: 21px;
+  font-weight: 800;
+  letter-spacing: -0.3px;
+  color: var(--text);
+}
+
+.wln-subtitle {
+  margin: 5px 0 0;
+  font-size: 14.5px;
+  font-weight: 600;
+  color: #f0b289;
+  letter-spacing: 0.1px;
+}
+
+.wln-greeting {
+  margin: 16px 0 0;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.wln-intro {
+  margin: 9px 0 0;
+  font-size: 13px;
+  line-height: 1.62;
+  color: #c4ccd8;
+}
+
+.wln-announce {
+  margin: 14px 0 0;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.wln-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 18px 0 0;
+}
+
+.wln-card {
+  background: rgba(10, 13, 19, 0.55);
+  border: 1px solid #20283a;
+  border-radius: 12px;
+  padding: 14px 15px;
+  display: flex;
+  flex-direction: column;
+}
+.wln-card-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.wln-card-icon {
+  font-size: 19px;
+  line-height: 1;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: rgba(74, 163, 255, 0.12);
+  border: 1px solid rgba(74, 163, 255, 0.22);
+  flex-shrink: 0;
+}
+.wln-card-icon-img {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.10);
+  padding: 4px;
+  overflow: hidden;
+}
+.wln-card-icon-img img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.wln-card-heading { min-width: 0; }
+.wln-card-name {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--text);
+}
+.wln-card-tag {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-top: 1px;
+}
+.wln-card-body {
+  margin: 11px 0 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #bcc4d0;
+  flex: 1 1 auto;
+}
+.wln-card-body b { color: #dfe5ee; }
+.wln-card-list {
+  margin: 10px 0 0;
+  padding-left: 20px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #bcc4d0;
+  flex: 1 1 auto;
+}
+.wln-card-list li { margin-top: 5px; }
+.wln-card-list li:first-child { margin-top: 0; }
+.wln-card-list b { color: #dfe5ee; font-weight: 700; }
+.wln-card-link {
+  margin-top: 11px;
+  align-self: flex-start;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--brand);
+  text-decoration: none;
+}
+.wln-card-link:hover { color: #7bbfff; text-decoration: underline; }
+.wln-card-links {
+  margin-top: 11px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+}
+.wln-card-links .wln-card-link { margin-top: 0; }
+.wln-card-hint {
+  margin-top: 11px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.wln-note {
+  margin: 16px 0 0;
+  padding: 11px 14px;
+  border-left: 3px solid rgba(193, 78, 22, 0.55);
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 0 8px 8px 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #c4ccd8;
+}
+.wln-note b { color: var(--text); }
+.wln-note a { color: var(--brand); text-decoration: none; }
+.wln-note a:hover { text-decoration: underline; }
+.wln-sign {
+  font-style: italic;
+  color: var(--muted);
+}
+
+.wln-blog-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  margin: 18px auto 2px;
+  padding: 9px 16px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--brand);
+  background: rgba(74, 163, 255, 0.10);
+  border: 1px solid rgba(74, 163, 255, 0.32);
+  border-radius: 9px;
+  text-decoration: none;
+  transition: background .15s, border-color .15s;
+}
+.wln-blog-link:hover {
+  background: rgba(74, 163, 255, 0.16);
+  border-color: rgba(74, 163, 255, 0.5);
+}
+
+/* ═══ Welcome panel: rotating tip carousel ═══ */
+.welcome-tip-carousel {
+  position: relative;
+  width: 100%;
+  max-width: 720px;
+  display: grid;
+  grid-template-columns: 32px 1fr 32px;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0 26px;
+}
+.wtc-arrow {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid #2a3040;
+  color: var(--muted);
+  border-radius: 999px;
+  width: 32px;
+  height: 32px;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color .15s, border-color .15s, background .15s;
+  align-self: center;
+}
+.wtc-arrow:hover {
+  color: var(--brand);
+  border-color: var(--brand);
+  background: rgba(74, 163, 255, 0.08);
+}
+.wtc-viewport {
+  min-height: 80px;
+  overflow: hidden;
+}
+.wtc-card {
+  background: #0e1117;
+  border: 1px solid #1d2230;
+  border-radius: 10px;
+  padding: 12px 16px;
+  text-align: left;
+  transition: opacity .18s ease, transform .18s ease;
+}
+.wtc-card.wtc-out { opacity: 0; transform: translateY(4px); }
+.wtc-card.wtc-in  { opacity: 1; transform: translateY(0); }
+.wtc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.wtc-icon { font-size: 16px; line-height: 1; }
+.wtc-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  flex: 1 1 auto;
+}
+.wtc-badge {
+  background: var(--brand);
+  color: #0b0e14;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 7px;
+  border-radius: 999px;
+}
+.wtc-badge.hidden { display: none; }
+.wtc-body {
+  font-size: 12.5px;
+  color: #cbd2dc;
+  line-height: 1.55;
+}
+.wtc-action {
+  margin-top: 8px;
+}
+.wtc-action.hidden { display: none; }
+.wtc-link {
+  background: none;
+  border: none;
+  color: var(--brand);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0;
+  text-decoration: underline;
+}
+.wtc-link:hover { color: #7bbfff; }
+.wtc-dots {
+  position: absolute;
+  bottom: 4px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 6px;
+}
+.wtc-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #333;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  transition: background .15s;
+}
+.wtc-dot:hover { background: #555; }
+.wtc-dot.active { background: var(--brand); }

@@ -1,0 +1,367 @@
+/* ---- Tutorial overlay ---- */
+#tutorialOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30000;
+  pointer-events: none;
+  display: none;
+}
+#tutorialOverlay.active {
+  display: block;
+  /* pointer-events stays none so users can interact with UI underneath */
+}
+#tutorialOverlay.has-backdrop {
+  background: rgba(0,0,0,0.6);
+  pointer-events: all;
+}
+#tutorialHighlight {
+  position: fixed;
+  border-radius: 8px;
+  box-shadow: 0 0 0 9999px rgba(0,0,0,0.50);
+  border: 2px solid var(--brand);
+  transition: top .25s ease, left .25s ease, width .25s ease, height .25s ease;
+  pointer-events: none;
+  z-index: 30001;
+  display: none;
+}
+#tutorialCard {
+  position: fixed;
+  background: #141820;
+  border: 1px solid var(--brand);
+  border-radius: 14px;
+  padding: 20px 22px 16px;
+  width: 380px;
+  max-width: calc(100vw - 32px);
+  box-shadow: 0 12px 48px rgba(0,0,0,0.7);
+  z-index: 30002;
+  pointer-events: all;
+  transition: top .25s ease, left .25s ease;
+}
+#tutorialCard h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--brand);
+}
+.tutorial-counter {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.tutorial-progress {
+  display: flex;
+  gap: 5px;
+  margin-bottom: 12px;
+  align-items: center;
+}
+.tutorial-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #333;
+  transition: background .2s;
+  flex-shrink: 0;
+}
+.tutorial-dot.active { background: var(--brand); }
+.tutorial-body {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+  margin-bottom: 16px;
+}
+.tutorial-body kbd {
+  background: #222;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 12px;
+}
+.tutorial-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.tutorial-skip {
+  margin-right: auto;
+  color: var(--muted) !important;
+  font-size: 12px;
+  padding: 4px 10px;
+  background: none;
+  border: 1px solid #333;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.tutorial-skip:hover { border-color: #555; }
+.tut-btn {
+  padding: 5px 14px;
+  border-radius: 6px;
+  border: 1px solid #333;
+  background: #1a1e28;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition: background .15s, border-color .15s;
+}
+.tut-btn:hover { background: #1d2230; border-color: var(--brand); }
+.tut-btn.primary {
+  background: #1a3a5a;
+  border-color: var(--brand);
+  color: var(--brand);
+}
+.tut-btn.primary:hover { background: #1e4a6e; }
+.tut-btn:disabled { opacity: 0.4; cursor: default; }
+/* Highlight-target pulsing animation for interactive steps */
+@keyframes pulse-highlight {
+  0%   { box-shadow: 0 0 0 0 rgba(74,163,255,0.6); }
+  70%  { box-shadow: 0 0 0 12px rgba(74,163,255,0); }
+  100% { box-shadow: 0 0 0 0 rgba(74,163,255,0); }
+}
+.highlight-target {
+  z-index: 30001 !important;
+  position: relative !important;
+  animation: pulse-highlight 1.8s infinite;
+  border-color: var(--brand) !important;
+  pointer-events: auto !important;
+}
+/* Instruction nudge that appears below tutorial body for click-to-advance steps */
+.tutorial-nudge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(74,163,255,0.12);
+  border: 1px solid rgba(74,163,255,0.25);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--brand);
+  margin-bottom: 14px;
+  animation: pulse-nudge 2s ease-in-out infinite;
+}
+@keyframes pulse-nudge {
+  0%, 100% { opacity: 0.8; }
+  50%      { opacity: 1; }
+}
+.tutorial-nudge::before { content: '\203A\00A0'; font-size: 14px; }
+/* ═══ Tutorial: custom-body cards (workflow + editor picker) ═══ */
+#tutorialCard.tut-card-workflow {
+  width: 560px;
+}
+#tutorialCard.tut-card-editor {
+  width: 480px;
+}
+
+.tut-workflow-intro {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+.tut-workflow-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid #1d2230;
+}
+.tut-wf-tab {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 10px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color .15s, border-color .15s;
+}
+.tut-wf-tab:hover { color: var(--text); }
+.tut-wf-tab.active {
+  color: var(--brand);
+  border-bottom-color: var(--brand);
+}
+.tut-wf-panel {
+  display: none;
+  padding: 4px 0 2px;
+}
+.tut-wf-panel.active { display: block; }
+.tut-wf-flow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  justify-content: center;
+  gap: 6px;
+}
+.tut-wf-node {
+  flex: 1 1 90px;
+  min-width: 90px;
+  max-width: 150px;
+  background: #10141c;
+  border: 1px solid #2a3040;
+  border-radius: 8px;
+  padding: 10px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  color: var(--text);
+  line-height: 1.3;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+}
+.tut-wf-node span {
+  font-weight: 600;
+  font-size: 12px;
+}
+.tut-wf-node small {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 400;
+  margin-top: 2px;
+}
+.tut-wf-caption {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.5;
+  text-align: center;
+}
+.tut-wf-caption kbd {
+  background: #1a1f2b;
+  border: 1px solid #2a3040;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 11px;
+  font-family: inherit;
+}
+.tut-wf-node.accent {
+  border-color: rgba(74, 163, 255, 0.55);
+  background: rgba(74, 163, 255, 0.08);
+}
+.tut-wf-node.highlight {
+  border-color: rgba(245, 197, 66, 0.55);
+  background: rgba(245, 197, 66, 0.07);
+}
+.tut-wf-node.ok {
+  border-color: rgba(88, 196, 120, 0.5);
+  background: rgba(88, 196, 120, 0.08);
+}
+.tut-wf-node.bad {
+  border-color: rgba(232, 90, 90, 0.45);
+  background: rgba(232, 90, 90, 0.08);
+}
+.tut-wf-arrow {
+  align-self: center;
+  color: var(--muted);
+  font-size: 18px;
+  font-weight: 700;
+  padding: 0 2px;
+}
+.tut-wf-branch {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 120px;
+  min-width: 110px;
+}
+.tut-workflow-hint {
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.5;
+  border-top: 1px solid #1d2230;
+  padding-top: 8px;
+}
+
+/* Editor picker inside tutorial card */
+.tut-editor-intro {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 12px;
+  line-height: 1.5;
+}
+.tut-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.tut-editor-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 12px;
+  background: #10141c;
+  border: 1px solid #2a3040;
+  border-radius: 8px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+  transition: border-color .15s, background .15s;
+}
+.tut-editor-btn:hover {
+  border-color: var(--brand);
+  background: #141a24;
+}
+.tut-editor-btn.selected {
+  border-color: var(--brand);
+  background: rgba(74, 163, 255, 0.15);
+}
+.tut-editor-btn[disabled] { cursor: default; }
+.tut-editor-icon {
+  font-size: 20px;
+  line-height: 1;
+  width: 24px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.tut-editor-label { flex: 1 1 auto; }
+.tut-editor-foot {
+  margin-top: 12px;
+  font-size: 11px;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* Loading indicator inside a tutorial card (shown while samples load) */
+.tut-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: rgba(74, 163, 255, 0.08);
+  border: 1px solid rgba(74, 163, 255, 0.25);
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--brand);
+}
+.tut-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid rgba(74, 163, 255, 0.3);
+  border-top-color: var(--brand);
+  animation: tut-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes tut-spin { to { transform: rotate(360deg); } }
+
+/* Inline footer link inside a tutorial card (e.g. Basics → Advanced) */
+.tut-inline-foot {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #1d2230;
+  font-size: 12px;
+  color: var(--muted);
+}
+.tut-inline-foot a {
+  color: var(--brand);
+  text-decoration: none;
+  font-weight: 600;
+}
+.tut-inline-foot a:hover { text-decoration: underline; }

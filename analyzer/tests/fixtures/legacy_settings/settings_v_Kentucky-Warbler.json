@@ -1,0 +1,11 @@
+{
+  "detection_threshold": 0.27,
+  "editor": "darktable",
+  "kestrel_impact_total_files": 15000,
+  "kestrel_impact_total_seconds": 9500.5,
+  "mask_threshold": 0.55,
+  "max_bird_crops": 5,
+  "rating_profile": "balanced",
+  "raw_preview_cache_enabled": true,
+  "scene_time_threshold": 60.0
+}

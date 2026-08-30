@@ -1,0 +1,62 @@
+/* ── Donate button ────────────────────────────────────────────── */
+.donate-btn {
+  padding: 5px 10px;
+  height: auto;
+  border-radius: 6px;
+  background: rgba(111, 78, 39, 0.22);
+  border: 1px solid #7a5530;
+  color: #e8c87a;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background .15s, border-color .15s;
+}
+.donate-btn:hover {
+  background: rgba(111, 78, 39, 0.45);
+  border-color: #c49050;
+  color: #f5d98b;
+}
+/* ── Donation prompt dialog ────────────────────────────────────
+   Outer sizing comes from .kdlg--sm on the parent <dialog>. */
+.donate-dlg {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 28px 28px 20px;
+  flex: 1 1 auto;
+  box-sizing: border-box;
+  text-align: center;
+}
+.donate-dlg-icon { width: 52px; height: 52px; display: flex; align-items: center; justify-content: center; margin-bottom: 2px; }
+.donate-dlg-icon img { width: 100%; height: 100%; object-fit: contain; }
+.donate-dlg h3 { margin: 0; font-size: 17px; line-height: 1.4; }
+.donate-dlg p { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.65; }
+.donate-dlg a { color: #4aa3ff; text-decoration: none; }
+.donate-dlg a:hover { text-decoration: underline; }
+.donate-dlg-btns { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; width: 100%; }
+.donate-main-btn {
+  background: linear-gradient(135deg, #7a5428 0%, #955f2a 100%);
+  color: #f5d98b;
+  border: 1px solid #b07838;
+  border-radius: 8px;
+  padding: 12px 28px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: filter .15s;
+  height: auto;
+}
+.donate-main-btn:hover { filter: brightness(1.15); }
+.donate-dlg-close-btn {
+  font-size: 12px;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  transition: color .15s;
+}
+.donate-dlg-close-btn:hover { color: var(--text); background: transparent; border: none; }

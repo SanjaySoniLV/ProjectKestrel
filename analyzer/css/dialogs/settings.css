@@ -1,0 +1,227 @@
+/* NOTE: sizing + flex-column layout for #settingsDlg are now driven by
+   the .kdlg classes in kdlg.css (kdlg--md + kdlg--tall + kdlg--flex).
+   This file keeps the inner-content styles (.settings-body etc.). */
+
+.settings-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 16px;
+  display: grid;
+  gap: 10px;
+}
+
+.settings-footer {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid #1d2230;
+  background: var(--panel);
+}
+
+/* Yellow Save button when settings have unsaved changes */
+#settingsSave.dirty {
+  background: #c9ae34;
+  border-color: #d4b72e;
+  color: #1a1a1a;
+}
+#settingsSave.dirty:hover {
+  background: #d4ba38;
+}
+
+/* Reuse dialog styling for settings */
+/* Generic inner wrapper for merge/info dialogs. Outer sizing comes from
+   .kdlg classes on the parent <dialog>. */
+.settings {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  box-sizing: border-box;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.row label {
+  min-width: 160px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.row input[type="text"] {
+  flex: 1;
+}
+
+.row select {
+  width: 200px;
+}
+
+#ratingProfile {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  flex: 1;
+}
+
+/* Rating stars */
+.stars {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  user-select: none;
+}
+
+.star {
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  color: #2a3040;
+  /* No color transition — firing a transition on 5 stars × N cards during
+     mouse movement adds up quickly */
+}
+
+.star.filled.auto {
+  color: #6aa0ff;
+}
+
+.stars .star.manual.filled { color: #f5c542; }
+.stars .star.auto.filled { color: #6aa0ff; }
+
+/* ── Custom rating profile editor ──────────────────────────────────────────
+   A 0.00–1.00 number line where each star's cutoff is a draggable handle.
+   Shown only while the Custom profile is selected. */
+.rating-custom-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 14px 12px;
+  margin: -2px 0 12px;
+  background: #0a0d12;
+  border: 1px solid #2a3040;
+  border-radius: 8px;
+}
+.rating-custom-editor.hidden { display: none; }
+
+.rating-custom-track {
+  position: relative;
+  height: 40px;
+  border-radius: 5px;
+  background: #10141c;
+  border: 1px solid #2a3445;
+  /* Handles sit on the track edges at 0.00 and 1.00, so keep room for the
+     half that would otherwise overflow the rounded corners. */
+  margin: 0 11px;
+}
+
+/* Star bands, painted left-to-right as ★1…★5 regions. */
+.rating-custom-bands {
+  position: absolute;
+  inset: 0;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.rating-custom-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: #8492a8;
+  white-space: nowrap;
+  border-right: 1px solid #2a3445;
+}
+.rating-custom-band:last-child { border-right: none; }
+/* Warmer as the star level climbs, so the ramp is readable at a glance. */
+.rating-custom-band[data-star="1"] { background: rgba(120, 132, 150, 0.07); }
+.rating-custom-band[data-star="2"] { background: rgba(120, 150, 190, 0.09); }
+.rating-custom-band[data-star="3"] { background: rgba(106, 160, 255, 0.11); }
+.rating-custom-band[data-star="4"] { background: rgba(190, 170, 90, 0.13); }
+.rating-custom-band[data-star="5"] { background: rgba(245, 197, 66, 0.17); color: #f5c542; }
+/* A band squeezed to almost nothing can't show its label. */
+.rating-custom-band.narrow { font-size: 0; }
+
+.rating-custom-handles {
+  position: absolute;
+  inset: 0;
+}
+.rating-custom-handle {
+  position: absolute;
+  top: -5px;
+  bottom: -5px;
+  width: 22px;
+  /* left is set inline from the threshold's position on the 0–1 scale */
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: ew-resize;
+  color: #f5c542;
+  font-size: 13px;
+  line-height: 1;
+  touch-action: none;
+}
+.rating-custom-handle::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  margin-left: -1px;
+  background: #f5c542;
+  border-radius: 1px;
+}
+.rating-custom-handle span {
+  position: relative;
+  padding: 1px 2px;
+  background: #0a0d12;
+  border-radius: 3px;
+}
+.rating-custom-handle:hover,
+.rating-custom-handle.dragging { color: #ffd968; }
+.rating-custom-handle:hover::before,
+.rating-custom-handle.dragging::before { background: #ffd968; }
+.rating-custom-handle:focus-visible {
+  outline: 2px solid #2b6ec8;
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+.rating-custom-axis {
+  display: flex;
+  justify-content: space-between;
+  margin: 0 11px;
+  font-size: 10.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.rating-custom-readout {
+  font-size: 11.5px;
+  color: #cbd6e4;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+}
+.rating-custom-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.rating-custom-actions .btn {
+  height: 26px;
+  padding: 2px 10px;
+  font-size: 12px;
+}

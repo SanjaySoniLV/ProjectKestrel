@@ -9,10 +9,90 @@ import os
 import subprocess
 import sys
 
-from settings_utils import load_persisted_settings, log
+from settings_utils import load_persisted_settings, debug, info, warn, log
+
+# macOS App Sandbox helper (import-safe no-op everywhere else). Under the
+# sandbox we cannot Popen /usr/bin/open or third-party editor binaries; opening
+# files in other apps must go through NSWorkspace (LaunchServices-brokered).
+try:
+    import mac_sandbox as _mac_sandbox
+except ImportError:
+    try:
+        from analyzer import mac_sandbox as _mac_sandbox
+    except ImportError:
+        _mac_sandbox = None
+
+
+def _sandboxed() -> bool:
+    return _mac_sandbox is not None and _mac_sandbox.is_sandboxed()
+
 
 # Cache for discovered darktable executable on Windows
 _DARKTABLE_EXE = None
+
+
+def _validate_custom_editor_path(raw: str) -> str | None:
+    """Return a canonicalised ``customEditorPath`` or ``None`` if unsafe.
+
+    Minimum hardening for FINDING-05. The feature is intentionally retained,
+    with its inherent "execute whatever the user configured" risk documented,
+    but we close the most obvious foot-guns:
+
+      * Reject empty / non-string values.
+      * Reject any control character (incl. newline, NUL) — no shell is
+        spawned via ``Popen([...])``, but these still confuse logs and have
+        historically been used as argument-splitting delimiters on some
+        shells.
+      * Require an absolute path.
+      * Reject UNC paths (``\\\\server\\share\\evil.exe``) and forward-slash
+        UNC equivalents on Windows — those exfiltrate to arbitrary SMB
+        shares via authentication-on-attempt.
+      * Require the target to actually exist as a regular file on disk.
+        On macOS we additionally allow ``.app`` bundles (which are
+        directories). Directories anywhere else are rejected.
+
+    If the path is acceptable, returns ``os.path.realpath(expanded)`` so any
+    symlink games are resolved once, up front.
+    """
+    if not isinstance(raw, str):
+        return None
+    candidate = raw.strip()
+    if not candidate:
+        return None
+    for ch in candidate:
+        o = ord(ch)
+        if o < 0x20 or o == 0x7F:
+            warn('[security] customEditorPath contains control characters; rejecting.')
+            return None
+    # UNC paths — drive-by NTLM relay risk.
+    if sys.platform.startswith('win'):
+        if candidate.startswith('\\\\') or candidate.startswith('//'):
+            warn(f'[security] customEditorPath rejected (UNC not allowed): {candidate!r}')
+            return None
+    expanded = os.path.expanduser(candidate)
+    if not os.path.isabs(expanded):
+        warn(f'[security] customEditorPath rejected (must be absolute): {candidate!r}')
+        return None
+    try:
+        resolved = os.path.realpath(expanded)
+    except (OSError, ValueError):
+        warn(f'[security] customEditorPath could not be resolved: {candidate!r}')
+        return None
+    if not os.path.exists(resolved):
+        warn(f'[security] customEditorPath does not exist: {resolved!r}')
+        return None
+    if os.path.isdir(resolved):
+        # macOS ``.app`` bundles are directories and are valid targets for
+        # ``open -a``. Everywhere else, a directory target is almost always
+        # a misconfiguration or an attempt to hand a bogus value to Popen.
+        if sys.platform == 'darwin' and resolved.endswith('.app'):
+            return resolved
+        warn(f'[security] customEditorPath rejected (is a directory): {resolved!r}')
+        return None
+    if not os.path.isfile(resolved):
+        warn(f'[security] customEditorPath is neither file nor .app bundle: {resolved!r}')
+        return None
+    return resolved
 
 
 def _find_darktable_exe() -> str:
@@ -47,24 +127,41 @@ def _find_darktable_exe() -> str:
 
 def launch(path: str, editor: str):
     path = os.path.abspath(path)
-    print(f"[LAUNCH] requested path={path!r} editor={editor!r} platform={sys.platform}", flush=True)
+    debug(f"[LAUNCH] requested path={path!r} editor={editor!r} platform={sys.platform}")
     if not os.path.exists(path):
-        print(f"[LAUNCH] ERROR: path does not exist: {path}", flush=True)
+        warn(f"[LAUNCH] path does not exist: {path}")
         raise FileNotFoundError(path)
 
-    # Custom editor: load path from settings
+    # Custom editor: load path from settings and validate before exec.
+    # We can't prove the user-chosen binary is benign, but we can refuse the
+    # obviously-dangerous cases (UNC, non-existent, control chars, relative
+    # paths). See FINDING-05.
     if editor == 'custom':
         settings = load_persisted_settings()
-        custom_exe = (settings.get('customEditorPath') or '').strip()
+        raw_custom = settings.get('customEditorPath')
+        custom_exe = _validate_custom_editor_path(raw_custom) if raw_custom else None
         if custom_exe:
+            # Audit log every custom-editor launch so the trail is obvious if
+            # something goes sideways.
+            info(f'[editor] launching custom editor: exe={custom_exe!r} target={path!r}')
             try:
-                if sys.platform == 'darwin' and custom_exe.endswith('.app'):
+                if sys.platform == 'darwin' and _sandboxed() and custom_exe.endswith('.app'):
+                    # Sandbox: open the file with the user-chosen .app via
+                    # NSWorkspace; the .app was bookmarked when picked.
+                    if _mac_sandbox.open_in_app_at_path(path, custom_exe):
+                        return
+                    if _mac_sandbox.open_default(path):
+                        return
+                    warn(f'[editor] sandbox NSWorkspace open failed for {custom_exe!r}; falling back')
+                elif sys.platform == 'darwin' and custom_exe.endswith('.app'):
                     subprocess.Popen(['open', '-a', custom_exe, path]); return
                 else:
                     subprocess.Popen([custom_exe, path]); return
             except Exception as e:
-                log(f'Custom editor launch failed ({custom_exe}): {e}, falling back to system default')
-        # Fall through to system default
+                warn(f'Custom editor launch failed ({custom_exe}): {e}, falling back to system default')
+        else:
+            if raw_custom:
+                warn(f'[security] customEditorPath failed validation; falling back to system default.')
         editor = 'system'
 
     # Editor name -> (Windows exe candidates, macOS app name, Linux commands)
@@ -206,79 +303,103 @@ def launch(path: str, editor: str):
         },
     }
 
-    info = _EDITOR_REGISTRY.get(editor)
+    entry = _EDITOR_REGISTRY.get(editor)
 
     # Windows
     if sys.platform.startswith('win'):
-        if info:
+        if entry:
             # Special finder for darktable
-            if 'win_find' in info:
-                candidates = info['win_find']()
+            if 'win_find' in entry:
+                candidates = entry['win_find']()
             else:
-                candidates = info.get('win_candidates', [])
+                candidates = entry.get('win_candidates', [])
             for exe in candidates:
                 if exe and os.path.exists(exe):
                     try:
                         subprocess.Popen([exe, path]); return
                     except Exception:
                         continue
-            log(f'{editor} not found on Windows, falling back to system default')
+            warn(f'{editor} not found on Windows, falling back to system default')
         os.startfile(path)  # type: ignore[attr-defined]
         return
 
     # macOS
     if sys.platform == 'darwin':
-        if info:
+        if entry:
             apps_to_try = []
-            if info.get('mac_app'):
-                apps_to_try.append(info['mac_app'])
-            apps_to_try.extend(info.get('mac_app_fallbacks', []))
-            for app_name in apps_to_try:
-                try:
-                    cmd = ['open', '-a', app_name, path]
-                    print(f"[LAUNCH] macOS: running: {cmd}", flush=True)
-                    subprocess.Popen(cmd)
-                    return
-                except Exception as e:
-                    print(f"[LAUNCH] macOS {app_name} launch failed: {e}", flush=True)
+            if entry.get('mac_app'):
+                apps_to_try.append(entry['mac_app'])
+            apps_to_try.extend(entry.get('mac_app_fallbacks', []))
+            # Sandbox: locate the .app by display name and open via NSWorkspace
+            # (LaunchServices-brokered); subprocess 'open -a' is unavailable.
+            if _sandboxed():
+                for app_name in apps_to_try:
+                    try:
+                        if _mac_sandbox.open_in_app_named(path, app_name):
+                            debug(f"[LAUNCH] macOS sandbox: opened with {app_name!r}")
+                            return
+                    except Exception as e:
+                        debug(f"[LAUNCH] macOS sandbox {app_name} open failed: {e}")
+                # Fall through to system-default NSWorkspace open below.
+            else:
+                for app_name in apps_to_try:
+                    try:
+                        cmd = ['open', '-a', app_name, path]
+                        debug(f"[LAUNCH] macOS: running: {cmd}")
+                        subprocess.Popen(cmd)
+                        return
+                    except Exception as e:
+                        debug(f"[LAUNCH] macOS {app_name} launch failed: {e}")
             if not apps_to_try:
-                log(f'{editor} not available on macOS, falling back to system default')
+                warn(f'{editor} not available on macOS, falling back to system default')
+
+        # Sandbox system-default: NSWorkspace open / reveal (no subprocess).
+        if _sandboxed():
+            try:
+                if _mac_sandbox.open_default(path):
+                    return
+            except Exception as e:
+                debug(f"[LAUNCH] macOS sandbox open_default raised: {e}")
+            try:
+                if _mac_sandbox.reveal_in_finder(path):
+                    return
+            except Exception as e:
+                debug(f"[LAUNCH] macOS sandbox reveal raised: {e}")
+            return
 
         # System default: try a couple of strategies and log results
         try:
             cmd = ['open', path]
-            print(f"[LAUNCH] macOS: trying system open: {cmd}", flush=True)
+            debug(f"[LAUNCH] macOS: trying system open: {cmd}")
             p = subprocess.run(cmd, check=False)
-            print(f"[LAUNCH] macOS: open returned code {p.returncode}", flush=True)
+            debug(f"[LAUNCH] macOS: open returned code {p.returncode}")
             if p.returncode == 0:
                 return
         except Exception as e:
-            print(f"[LAUNCH] macOS: open() raised: {e}", flush=True)
+            debug(f"[LAUNCH] macOS: open() raised: {e}")
 
-        # Fallback: try AppleScript via osascript
-        try:
-            script = f'tell application "Finder" to open (POSIX file "{path}")'
-            print(f"[LAUNCH] macOS: trying osascript: {script}", flush=True)
-            p = subprocess.run(['osascript', '-e', script], capture_output=True, text=True)
-            print(f"[LAUNCH] macOS: osascript rc={p.returncode} stdout={p.stdout!r} stderr={p.stderr!r}", flush=True)
-            if p.returncode == 0:
-                return
-        except Exception as e:
-            print(f"[LAUNCH] macOS: osascript failed: {e}", flush=True)
+        # NOTE: the previous ``osascript -e 'tell ... open (POSIX file "<path>")'``
+        # fallback has been removed. Interpolating ``path`` into an AppleScript
+        # string allowed a filename containing a literal double-quote to break
+        # out of the POSIX-file literal and inject arbitrary AppleScript —
+        # which in turn can ``do shell script``. See FINDING-04. ``open path``
+        # above is the canonical macOS launcher; the only remaining fallback
+        # is Finder reveal (which is argv-safe because ``path`` is passed as a
+        # distinct argv element, not interpolated into any DSL).
 
         # Last resort: reveal in Finder
         try:
             cmd = ['open', '-R', path]
-            print(f"[LAUNCH] macOS: fallback reveal: {cmd}", flush=True)
+            debug(f"[LAUNCH] macOS: fallback reveal: {cmd}")
             subprocess.Popen(cmd)
             return
         except Exception as e:
-            print(f"[LAUNCH] macOS: reveal fallback failed: {e}", flush=True)
+            debug(f"[LAUNCH] macOS: reveal fallback failed: {e}")
         return
 
     # Linux / other
-    if info:
-        for cmd_args in info.get('linux', []):
+    if entry:
+        for cmd_args in entry.get('linux', []):
             try:
                 subprocess.Popen(cmd_args + [path]); return
             except FileNotFoundError:

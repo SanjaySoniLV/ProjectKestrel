@@ -1,0 +1,47 @@
+# Windows CI build requirements
+#
+# Identical to requirements.txt except we use onnxruntime-directml instead of
+# the CPU-only onnxruntime package. onnxruntime-directml ships the DirectML
+# execution provider, which gives GPU acceleration on any DX12-compatible GPU
+# (NVIDIA, AMD, Intel). The two packages are mutually exclusive — they share
+# the `onnxruntime` module name — so only one may be installed at a time.
+#
+# Local dev installs still use requirements.txt (CPU-only) to avoid dragging
+# GPU drivers into the dev loop. This file is referenced by the Windows build
+# in .github/workflows/main.yml.
+
+# Core ML/AI Dependencies
+# onnxruntime-directml has no 1.23.2 release; 1.23.0 is the nearest match to
+# the 1.23.2 pin used for macOS / local dev (same minor series).
+onnxruntime-directml==1.24.4
+
+numpy==2.4.4
+
+# Computer Vision
+opencv-python==4.11.0.86
+rawpy==0.27.0
+
+# Data Processing
+pandas==2.2.2
+
+# Utilities
+# XMP metadata: pyexiv2 wraps the exiv2 C++ library (bundled in its wheels for
+# Windows/macOS/Linux — no external binary to install). Used to embed XMP
+# ratings/labels directly into JPEG originals in place, without recompressing
+# pixel data, so Adobe Lightroom (which ignores .xmp sidecars for JPEGs) can
+# read them. GPLv3, compatible with Kestrel's AGPLv3.
+pyexiv2==2.15.5
+requests==2.34.2
+pywebview==6.2.1
+keyring
+
+# installer
+pyinstaller==6.20.0
+msvc-runtime==14.44.35112
+
+# EXIF reading
+exifread
+pillow==12.3.0
+
+# speciesnet removed: ensemble logic is inlined in kestrel_analyzer/ml/_speciesnet_ensemble.py
+# (Apache 2.0, adapted from google/cameratrapai). This eliminates the torch/optree dependency.

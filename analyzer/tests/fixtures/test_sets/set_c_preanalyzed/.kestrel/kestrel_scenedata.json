@@ -1,0 +1,59 @@
+{
+  "version": "2.0",
+  "image_ratings": {},
+  "scenes": {
+    "1": {
+      "scene_id": "1",
+      "image_filenames": [
+        "IMG_2013.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    },
+    "2": {
+      "scene_id": "2",
+      "image_filenames": [
+        "IMG_3069.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    },
+    "3": {
+      "scene_id": "3",
+      "image_filenames": [
+        "IMG_3360.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    },
+    "4": {
+      "scene_id": "4",
+      "image_filenames": [
+        "IMG_7368.CR3",
+        "IMG_7369.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    }
+  }
+}

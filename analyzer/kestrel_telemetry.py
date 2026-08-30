@@ -32,16 +32,69 @@ except ImportError:
 
 import ssl
 import certifi # ensure we have a CA bundle for HTTPS requests, even in frozen/packaged environments
+
+try:
+    from build_attestation import auth_headers as _build_auth_headers
+except Exception:
+    # Failsafe: if the module can't load for any reason, fall back to legacy headers only.
+    def _build_auth_headers():
+        return {}
+
+try:
+    from log_redactor import redact_user_paths, redact_user_paths_in_obj
+except Exception:
+    # Failsafe stubs — never let an import failure block telemetry.
+    def redact_user_paths(text):  # type: ignore[no-redef]
+        return text
+
+    def redact_user_paths_in_obj(obj):  # type: ignore[no-redef]
+        return obj
+
+# Distribution channel ('direct' website build vs 'appstore' sandboxed build),
+# baked at build time. Every telemetry payload is tagged with it (see _post_json)
+# so the worker can cohort events by how the build was distributed.
+try:
+    import dist_channel as _dist_channel_mod
+except Exception:
+    try:
+        from analyzer import dist_channel as _dist_channel_mod  # type: ignore
+    except Exception:
+        _dist_channel_mod = None  # type: ignore[assignment]
+
+
+def _get_dist_channel() -> str:
+    """Return the build's distribution channel, defaulting to 'direct'. Failsafe."""
+    try:
+        if _dist_channel_mod is not None:
+            return _dist_channel_mod.get_channel()
+    except Exception:
+        pass
+    return 'direct'
+
+
 # ---------------------------------------------------------------------------
 # Configuration — the shared secret and endpoint URL
 # ---------------------------------------------------------------------------
 KESTREL_API_URL = "https://api.projectkestrel.org"  # production endpoint
 #KESTREL_API_URL = "http://127.0.0.1:8787"  # local testing endpoint
+# Legacy shared secret. Official builds override authentication via HMAC headers
+# from build_attestation.auth_headers(); this constant remains as the fallback
+# tier for source/dev builds and for pre-attestation installed binaries.
 KESTREL_SHARED_SECRET = "kestrel_secret_dev_shared"  # basic abuse-prevention
 
 _TIMEOUT_SECONDS = 10
+
+
+def is_frozen() -> bool:
+    """Return True when running inside a PyInstaller-frozen build."""
+    return getattr(sys, 'frozen', False)
+
+
 _MAX_LOG_ENTRIES = 50
 _MAX_SCREENSHOT_BYTES = 2 * 1024 * 1024  # 2 MB cap for screenshot payloads
+_MAX_RUNTIME_LOG_LINES = 200
+_MAX_RUNTIME_LOG_CHARS = 40_000
+_MAX_RUNTIME_LOG_TOTAL_CHARS = 60_000
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +102,12 @@ _MAX_SCREENSHOT_BYTES = 2 * 1024 * 1024  # 2 MB cap for screenshot payloads
 # ---------------------------------------------------------------------------
 
 def _read_version() -> str:
-    """Read the version string from VERSION.txt (failsafe)."""
+    """Read the version string from VERSION.txt (failsafe).
+
+    Supports two formats:
+      - Labelled:   'version: Kentucky Warbler'  (preferred)
+      - Plain-text: 'Kentucky Warbler'            (single non-empty line)
+    """
     try:
         # Check relative to this file, then one level up (repo root)
         for candidate in [
@@ -58,9 +116,14 @@ def _read_version() -> str:
         ]:
             if os.path.isfile(candidate):
                 with open(candidate, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        if line.strip().lower().startswith('version:'):
-                            return line.strip().split(':', 1)[1].strip()
+                    lines = [l.strip() for l in f if l.strip()]
+                # Preferred: explicit 'version:' label on any line
+                for line in lines:
+                    if line.lower().startswith('version:'):
+                        return line.split(':', 1)[1].strip()
+                # Fallback: plain single-line file (e.g. 'Kentucky Warbler')
+                if len(lines) == 1:
+                    return lines[0]
         return 'unknown'
     except Exception:
         return 'unknown'
@@ -97,36 +160,64 @@ def _get_ssl_context():
     ctx = ssl.create_default_context(cafile=certifi.where())
     return ctx
 
+def _warn(msg: str) -> None:
+    """Lazy-import warn from settings_utils to avoid a circular import.
+
+    settings_utils imports kestrel_telemetry at module load; we can't import
+    back at the top level. Resolving the symbol at call time is fine because
+    telemetry posts only happen long after module init.
+    """
+    try:
+        from settings_utils import warn as _w
+        _w(msg)
+    except Exception:
+        # Failsafe: telemetry must never raise.
+        print(msg, file=sys.stderr, flush=True)
+
+
 def _post_json(endpoint: str, payload: dict) -> None:
     """POST JSON to the Cloudflare Worker (fire-and-forget, failsafe)."""
     if urllib is None:
-        print('[telemetry] urllib not available — skipping POST', flush=True)
         return
     url = f"{KESTREL_API_URL}{endpoint}"
     try:
+        # Tag every payload with the distribution channel (direct vs appstore) so
+        # the worker can record DMG/installer/Store vs App Store cohorts. Shallow-
+        # copied so the caller's dict is never mutated; an explicit 'channel'
+        # already on the payload is left untouched.
+        try:
+            if isinstance(payload, dict) and 'channel' not in payload:
+                payload = {**payload, 'channel': _get_dist_channel()}
+        except Exception:
+            pass
         data = json.dumps(payload).encode('utf-8')
+        headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (KestrelTelemetry/1.0)',
+        }
+        # Official builds carry HMAC attestation headers; everyone else falls back
+        # to the legacy shared-secret header. The worker accepts both.
+        attestation = _build_auth_headers()
+        if attestation:
+            headers.update(attestation)
+        else:
+            headers['X-Kestrel-Key'] = KESTREL_SHARED_SECRET
         req = urllib.request.Request(
             url,
             data=data,
-            headers={
-                'Content-Type': 'application/json',
-                'Accept': 'application/json',
-                'X-Kestrel-Key': KESTREL_SHARED_SECRET,
-                'User-Agent': 'Mozilla/5.0 (KestrelTelemetry/1.0)',
-            },
+            headers=headers,
             method='POST',
         )
-        print(f'[telemetry] POST {url}  key={KESTREL_SHARED_SECRET[:8]}…', flush=True)
-        with urllib.request.urlopen(req, timeout=_TIMEOUT_SECONDS, context=_get_ssl_context()) as resp:
-            body = resp.read().decode('utf-8', errors='replace')
-            print(f'[telemetry] → {resp.status} {body[:200]}', flush=True)
+        with urllib.request.urlopen(req, timeout=_TIMEOUT_SECONDS, context=_get_ssl_context()):
+            pass
     except urllib.error.HTTPError as e:
         body = e.read().decode('utf-8', errors='replace') if hasattr(e, 'read') else ''
-        print(f'[telemetry] HTTP {e.code} from {url}: {body[:300]}', flush=True)
+        _warn(f'[telemetry] HTTP {e.code} from {url}: {body[:300]}')
     except urllib.error.URLError as e:
-        print(f'[telemetry] URLError posting to {url}: {e.reason}', flush=True)
+        _warn(f'[telemetry] URLError posting to {url}: {e.reason}')
     except Exception as e:
-        print(f'[telemetry] Error posting to {url}: {e}', flush=True)
+        _warn(f'[telemetry] Error posting to {url}: {e}')
 
 
 def _post_json_async(endpoint: str, payload: dict) -> None:
@@ -182,6 +273,9 @@ def send_feedback(
         if len(screenshot_b64) > _MAX_SCREENSHOT_BYTES:
             screenshot_b64 = ''  # silently drop oversized screenshots
 
+        # Strip username-in-paths from log content before it leaves the device.
+        log_tail = redact_user_paths(log_tail)
+
         payload = {
             'type': report_type or 'general',
             'description': description or '',
@@ -208,6 +302,8 @@ def send_crash_report(
     session_analytics: Optional[dict] = None,
     machine_id: str = '',
     version: str = '',
+    exit_reason: str = 'crash',
+    crash_reports_enabled: bool = True,
 ) -> None:
     """Send a crash report to the Cloudflare Worker (async, failsafe).
 
@@ -223,7 +319,24 @@ def send_crash_report(
         Any analytics data collected so far in this session.
     machine_id, version : str
         Machine identifier and app version.
+    exit_reason : str
+        How the previous session ended. ``'crash'`` (default) for true
+        unhandled exceptions; ``'unknown'`` when the user opted in for an
+        ambiguous exit (SIGKILL, power loss); ``'os_shutdown'`` defensive
+        only — the recovery dialog filters these client-side, but the
+        server should record any that slip through so they can be excluded
+        from crash-rate dashboards.
+    crash_reports_enabled : bool
+        User preference (settings key ``crash_reports_enabled``). Defaults to
+        ``True`` so a failed settings read errs toward sending. Callers that
+        send automatically (no per-report user consent) must pass the current
+        value; the user-confirmed recovery report passes ``True`` because the
+        dialog is its own consent.
     """
+    if not is_frozen():
+        return
+    if not crash_reports_enabled:
+        return
     try:
         exc_type = type(exc).__name__ if exc else 'Unknown'
         exc_msg = str(exc) if exc else ''
@@ -232,6 +345,12 @@ def send_crash_report(
                 tb_str = traceback.format_exc()
             except Exception:
                 tb_str = ''
+        # Strip username-in-paths from anything that could carry a filesystem
+        # path. The exception type name is a class name and safe; everything
+        # else is free-form and gets sanitised.
+        exc_msg = redact_user_paths(exc_msg)
+        tb_str = redact_user_paths(tb_str)
+        log_tail = redact_user_paths(log_tail)
         payload = {
             'exception_type': exc_type,
             'exception_message': exc_msg,
@@ -241,6 +360,7 @@ def send_crash_report(
             'machine_id': machine_id,
             'version': version or _read_version(),
             'os': _get_os_info(),
+            'exit_reason': exit_reason,
         }
         _post_json_async('/api/crash', payload)
     except Exception:
@@ -261,6 +381,24 @@ def send_installation_telemetry(machine_id: str, version: str = '') -> None:
             'platform': platform.platform(),
         }
         _post_json_async('/api/install', payload)
+    except Exception:
+        pass
+
+
+def send_app_open_telemetry(machine_id: str, version: str = '') -> None:
+    """Send a lightweight ping when the app launches (failsafe).
+
+    Used for daily active user counts. The caller is responsible for rate
+    limiting (typically once per UTC day) by inspecting ``last_open_ping_utc``
+    in the persisted settings.
+    """
+    try:
+        payload = {
+            'machine_id': machine_id,
+            'version': version or _read_version(),
+            'os': _get_os_info(),
+        }
+        _post_json_async('/api/open', payload)
     except Exception:
         pass
 
@@ -349,8 +487,12 @@ def send_folder_analytics(
 # Public API: Log Tail
 # ---------------------------------------------------------------------------
 
-def get_recent_log_tail(folder: Optional[str] = None, max_entries: int = _MAX_LOG_ENTRIES) -> str:
-    """Read the most recent pipeline log file and return a truncated string.
+def get_recent_log_tail(
+    folder: Optional[str] = None,
+    max_entries: int = _MAX_LOG_ENTRIES,
+    runtime_log_files: int = 1,
+) -> str:
+    """Return recent structured analysis logs and runtime stdout/stderr tail.
 
     Completely failsafe — returns an empty string if anything goes wrong
     (missing file, parse error, permission denied, etc.).
@@ -362,11 +504,13 @@ def get_recent_log_tail(folder: Optional[str] = None, max_entries: int = _MAX_LO
         If None, tries the user home ``~/.kestrel/`` directory.
     max_entries : int
         Maximum number of log entries to include (most recent first).
+    runtime_log_files : int
+        Number of most-recent runtime stdout/stderr log files to include.
 
     Returns
     -------
     str
-        JSON-formatted string of the last N log entries, or ''.
+        JSON-formatted payload containing recent analysis/runtime tails, or ''.
     """
     try:
         from kestrel_analyzer.config import KESTREL_DIR_NAME, LOG_FILENAME_PREFIX, LOG_FILE_EXTENSION
@@ -377,7 +521,7 @@ def get_recent_log_tail(folder: Optional[str] = None, max_entries: int = _MAX_LO
         except ImportError:
             # Cannot import config — use defaults
             KESTREL_DIR_NAME = '.kestrel'
-            LOG_FILENAME_PREFIX = 'kestrel_log'
+            LOG_FILENAME_PREFIX = 'kestrel_error'
             LOG_FILE_EXTENSION = 'json'
 
     try:
@@ -387,9 +531,9 @@ def get_recent_log_tail(folder: Optional[str] = None, max_entries: int = _MAX_LO
             candidates.append(os.path.join(folder, KESTREL_DIR_NAME))
         candidates.append(os.path.join(os.path.expanduser('~'), KESTREL_DIR_NAME))
 
-        # Find the most recent log file across candidates
-        best_path = None
-        best_mtime = 0
+        # Find the most recent structured analysis log file across candidates.
+        analysis_path = None
+        analysis_mtime = 0
 
         for log_dir in candidates:
             if not os.path.isdir(log_dir):
@@ -400,26 +544,84 @@ def get_recent_log_tail(folder: Optional[str] = None, max_entries: int = _MAX_LO
                         fp = os.path.join(log_dir, fname)
                         try:
                             mt = os.path.getmtime(fp)
-                            if mt > best_mtime:
-                                best_mtime = mt
-                                best_path = fp
+                            if mt > analysis_mtime:
+                                analysis_mtime = mt
+                                analysis_path = fp
                         except OSError:
                             continue
             except OSError:
                 continue
 
-        if not best_path:
+        payload: Dict[str, Any] = {}
+
+        if analysis_path:
+            with open(analysis_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                payload['analysis_entries'] = data[-max_entries:]
+
+        # Runtime logs are plain text files in <...>/.kestrel/logs/
+        runtime_file_limit = max(1, min(int(runtime_log_files or 1), 5))
+        runtime_dirs = []
+        for base_dir in candidates:
+            runtime_dirs.append(os.path.join(base_dir, 'logs'))
+
+        runtime_files = []
+
+        for runtime_dir in runtime_dirs:
+            if not os.path.isdir(runtime_dir):
+                continue
+            try:
+                for fname in os.listdir(runtime_dir):
+                    if not fname.startswith('kestrel_runtime_'):
+                        continue
+                    if not fname.endswith('.log'):
+                        continue
+                    fp = os.path.join(runtime_dir, fname)
+                    try:
+                        mt = os.path.getmtime(fp)
+                        runtime_files.append((mt, fp))
+                    except OSError:
+                        continue
+            except OSError:
+                continue
+
+        runtime_files.sort(key=lambda x: x[0], reverse=True)
+        selected_runtime_files = runtime_files[:runtime_file_limit]
+        runtime_tails = []
+        per_file_char_budget = max(2_000, int(_MAX_RUNTIME_LOG_TOTAL_CHARS / max(1, runtime_file_limit)))
+        per_file_char_budget = min(per_file_char_budget, _MAX_RUNTIME_LOG_CHARS)
+
+        for _, runtime_path in selected_runtime_files:
+            try:
+                with open(runtime_path, 'r', encoding='utf-8', errors='replace') as f:
+                    lines = f.readlines()
+                runtime_tail = ''.join(lines[-_MAX_RUNTIME_LOG_LINES:])
+                if len(runtime_tail) > per_file_char_budget:
+                    runtime_tail = runtime_tail[-per_file_char_budget:]
+                if not runtime_tail:
+                    continue
+                runtime_tails.append(
+                    {
+                        'file': os.path.basename(runtime_path),
+                        'tail': runtime_tail,
+                    }
+                )
+            except Exception:
+                continue
+
+        if runtime_tails:
+            payload['runtime_output_tails'] = runtime_tails
+            # Backward-compatible single-tail key for older consumers.
+            payload['runtime_output_tail'] = runtime_tails[0].get('tail', '')
+
+        if not payload:
             return ''
-
-        with open(best_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-
-        if not isinstance(data, list):
-            return ''
-
-        # Take the last N entries
-        tail = data[-max_entries:]
-        return json.dumps(tail, indent=2, default=str)
+        # Best-effort redaction of the local OS username from any path
+        # strings inside the payload (covers structured analysis entries
+        # *and* the runtime log tail strings) before serialisation.
+        payload = redact_user_paths_in_obj(payload)
+        return json.dumps(payload, indent=2, default=str)
 
     except Exception:
         return ''  # failsafe — never raise
@@ -448,33 +650,13 @@ def collect_folder_stats(item_path: str, files_this_session: int, total_files: i
     -------
     dict with keys: file_sizes_kb, file_formats
     """
-    print("[telemetry] collect_folder_stats: item_path:", item_path, "files_this_session:", files_this_session, "total_files:", total_files)
     try:
-        # Import known extensions
-        try:
-            from kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS
-        except ImportError:
-            print("Failed to import kestrel_analyzer.config")
-            try:
-                from analyzer.kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS
-            except ImportError:
-                print("Failed to import analyzer.kestrel_analyzer.config — using hardcoded extensions")
-                RAW_EXTENSIONS = {'.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf', '.rw2', '.raf'}
-                JPEG_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.tiff', '.tif', '.bmp', '.webp'}
-        
+        from kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS, is_supported_image_file
+
         file_sizes_kb: List[float] = []
         file_formats: Dict[str, int] = {}
         # Ensure we can combine lists or sets without raising a TypeError
         all_exts = {str(e).lower() for e in set(RAW_EXTENSIONS) | set(JPEG_EXTENSIONS)}
-
-        # Debug: surface the path being scanned and loaded extension sets
-        try:
-            print(f"[telemetry debug] collect_folder_stats: item_path={item_path!r} files_this_session={files_this_session} total_files={total_files}", flush=True)
-            print(f"[telemetry debug] RAW_EXTENSIONS={sorted(list(RAW_EXTENSIONS))}", flush=True)
-            print(f"[telemetry debug] JPEG_EXTENSIONS={sorted(list(JPEG_EXTENSIONS))}", flush=True)
-            print(f"[telemetry debug] all_exts={sorted(list(all_exts))}", flush=True)
-        except Exception:
-            pass
 
         # Non-recursive: only inspect files at the top level of the
         # provided folder to avoid scanning internal folders (e.g. .kestrel).
@@ -484,20 +666,15 @@ def collect_folder_stats(item_path: str, files_this_session: int, total_files: i
         except Exception:
             entries = []
 
-        try:
-            print(f"[telemetry debug] listing top-level of {item_path!r} entries_count={len(entries)} sample={entries[:10]}", flush=True)
-        except Exception:
-            pass
-
         for fname in entries:
             if len(file_sizes_kb) >= MAX_ENTRIES:
                 break
+            if not is_supported_image_file(fname, all_exts):
+                continue
             fpath = os.path.join(item_path, fname)
             if not os.path.isfile(fpath):
                 continue
             ext = os.path.splitext(fname)[1].lower()
-            if ext not in all_exts:
-                continue
             try:
                 size_kb = os.path.getsize(fpath) / 1024.0
                 file_sizes_kb.append(round(size_kb, 1))
@@ -505,15 +682,9 @@ def collect_folder_stats(item_path: str, files_this_session: int, total_files: i
                 continue
             file_formats[ext] = file_formats.get(ext, 0) + 1
 
-        try:
-            print(f"[telemetry debug] matched_count={len(file_sizes_kb)} file_formats={file_formats}", flush=True)
-        except Exception:
-            pass
-
         return {
             'file_sizes_kb': file_sizes_kb,
             'file_formats': file_formats,
         }
-    except Exception as e:
-        print(f"[telemetry error] collect_folder_stats failed: {e}")
+    except Exception:
         return {'file_sizes_kb': [], 'file_formats': {}}

@@ -1,6 +1,7 @@
 __pycache__
 test_imgs/.kestrel/
 .venv/
+.venv-speciesnet/
 .venv2/
 large_files/
 .venv_from_base/
@@ -9,6 +10,8 @@ release/
 .venv-macos/
 analyzer/build/
 analyzer/dist/
+# Build artifact written by the PyInstaller specs (baked distribution channel).
+analyzer/dist_channel.txt
 cloudflare-workers/
 cloudflare-workers_secret/
 query_analytics/
@@ -26,3 +29,22 @@ analyzer/models/quality_set4_ep4.keras
 analyzer/models/quality_set4_ep6.keras
 analyzer/models/quality_set6_ep1.keras
 analyzer/models/current.md
+analyzer/models/sam_hq_vit_b.pth
+analyzer/models/sam_hq_vit_tiny.pth
+tmp_onefile_probe.py
+tmp_compare_legacy_vs_proposed_demosets_detailed_summary.json
+tmp_compare_legacy_vs_proposed_demosets_detailed.py
+tmp_compare_legacy_vs_proposed_demosets_summary.json
+tmp_compare_legacy_vs_proposed_demosets.py
+tmp_exposure_solver_benchmark_report_reimagined.json
+tmp_exposure_solver_benchmark_report.json
+tmp_exposure_solver_benchmark_rounds.py
+tmp*
+.venv-speciesnet/
+test_imgs/.kestrel*
+documentation/
+.claude*
+EXPCOMP_tests/
+_kestrel*
+.tmp*
+.wrangler/

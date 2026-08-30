@@ -11,29 +11,8 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-
-      - name: Download model files
-        shell: bash
-        run: |
-          echo "Downloading model files from GitHub release..."
-          mkdir -p analyzer/models
-
-          curl -L -o analyzer/models/mask_rcnn_resnet50_fpn_v2.pth \
-            "https://github.com/SanjaySoniLV/ProjectKestrel/releases/download/test/mask_rcnn_resnet50_fpn_v2.pth"
-
-          echo "Verifying download..."
-          if [ ! -f analyzer/models/mask_rcnn_resnet50_fpn_v2.pth ]; then
-            echo "ERROR: mask_rcnn_resnet50_fpn_v2.pth not found after download"
-            exit 1
-          fi
-          FILE_SIZE=$(stat -f%z analyzer/models/mask_rcnn_resnet50_fpn_v2.pth 2>/dev/null || stat -c%s analyzer/models/mask_rcnn_resnet50_fpn_v2.pth)
-          echo "Downloaded file size: ${FILE_SIZE} bytes"
-          if [ "${FILE_SIZE}" -lt 100000 ]; then
-            echo "ERROR: Downloaded file too small (${FILE_SIZE} bytes)"
-            exit 1
-          fi
-          echo "Contents of analyzer/models/:"
-          ls -lh analyzer/models/
+        with:
+          lfs: true
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -48,13 +27,164 @@ jobs:
           source .venv2/bin/activate
           python -m pip install --upgrade pip
           pip install -r requirements-macos.txt
-          pip install pyinstaller
+          pip install pyinstaller pytest
+
+      - name: Vendor pyexiv2 native deps (fixes JPEG XMP embedding off-Homebrew)
+        shell: bash
+        run: bash packaging/vendor_macos_native_deps.sh .venv2/bin/python
+
+      # Hard gate, not continue-on-error: this is a release artifact. The dev
+      # builds only warn, which is how a broken pyexiv2 reached a green DMG.
+      - name: Test gate — pytest (skip ui marker)
+        shell: bash
+        run: |
+          source .venv2/bin/activate
+          python -m pytest analyzer/tests/ -m "not ui" -q --tb=short
+
+      - name: Smoke test CLI from source (repo root, first 2 test images)
+        shell: bash
+        run: |
+          set -euo pipefail
+          SMOKE_DIR="${RUNNER_TEMP}/kestrel-smoke-source-input"
+          rm -rf "${SMOKE_DIR}"
+          mkdir -p "${SMOKE_DIR}"
+
+          smoke_imgs=()
+          while IFS= read -r img; do
+            smoke_imgs+=("${img}")
+          done < <(find test_imgs -maxdepth 1 -type f | sort | head -n 2)
+          if [ "${#smoke_imgs[@]}" -lt 2 ]; then
+            echo "Expected at least 2 images in test_imgs/ for source smoke test"
+            exit 1
+          fi
+
+          for img in "${smoke_imgs[@]}"; do
+            cp "${img}" "${SMOKE_DIR}/"
+          done
+
+          .venv2/bin/python analyzer/cli.py "${SMOKE_DIR}" --no-gpu --parallel-prefetch 1
+
+          META_PATH="${SMOKE_DIR}/.kestrel/kestrel_database.csv"
+          if [ ! -f "${META_PATH}" ]; then
+            echo "Source CLI smoke test did not produce kestrel_database.csv"
+            exit 1
+          fi
+          PROCESSED_ROWS=$(( $(wc -l < "${META_PATH}") - 1 ))
+          if [ "${PROCESSED_ROWS}" -lt 2 ]; then
+            echo "Source CLI smoke test processed fewer than 2 images (rows=${PROCESSED_ROWS})"
+            exit 1
+          fi
+
+      - name: Generate build attestation
+        id: attestation
+        shell: bash
+        env:
+          SIGNING_SECRET: ${{ secrets.KESTREL_BUILD_SIGNING_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SIGNING_SECRET:-}" ]; then
+            echo "::warning::KESTREL_BUILD_SIGNING_SECRET is not set; skipping attestation. This build will be tagged 'legacy' by the API worker."
+            exit 0
+          fi
+          if [ ! -d analyzer ]; then
+            echo "::error::analyzer/ directory is missing — cannot place build_attestation.json"
+            exit 1
+          fi
+
+          # Use python (already installed by setup-python@v5) to keep version-parsing
+          # logic in sync with kestrel_telemetry._read_version. Doing all work in a
+          # single python invocation avoids whitespace-splitting bugs in bash `read`
+          # when the version string contains spaces (e.g. "Nelson's Sparrow").
+          python3 - <<'PY' | tee -a "$GITHUB_OUTPUT"
+          import hashlib, hmac, json, os, time
+
+          def read_version():
+              for cand in ("VERSION.txt", os.path.join("analyzer", "VERSION.txt")):
+                  if not os.path.isfile(cand):
+                      continue
+                  with open(cand, "r", encoding="utf-8") as f:
+                      lines = [l.strip() for l in f if l.strip()]
+                  for line in lines:
+                      if line.lower().startswith("version:"):
+                          return line.split(":", 1)[1].strip()
+                  if len(lines) == 1:
+                      return lines[0]
+              return "unknown"
+
+          version = read_version()
+          sha = os.environ["GITHUB_SHA"]
+          ts = str(int(time.time()))
+          meta = f"{version}|{sha}|{ts}"
+          sig = hmac.new(
+              os.environ["SIGNING_SECRET"].encode("utf-8"),
+              meta.encode("utf-8"),
+              hashlib.sha256,
+          ).hexdigest()
+
+          with open("analyzer/build_attestation.json", "w", encoding="utf-8") as f:
+              json.dump({"meta": meta, "sig": sig}, f, separators=(",", ":"))
+
+          # GITHUB_OUTPUT lines (tee'd by the surrounding bash so they're visible too):
+          print(f"version={version}")
+          print(f"sha={sha}")
+          print(f"ts={ts}")
+          # Diagnostics on stderr so they don't pollute GITHUB_OUTPUT:
+          import sys
+          print(f"Build attestation generated:", file=sys.stderr)
+          print(f"  version : {version}", file=sys.stderr)
+          print(f"  sha     : {sha}", file=sys.stderr)
+          print(f"  ts      : {ts}", file=sys.stderr)
+          print(f"  meta    : {meta}", file=sys.stderr)
+          print(f"  sig     : {sig[:16]}... (truncated)", file=sys.stderr)
+          PY
 
       - name: Run macOS headless build
         shell: bash
         run: |
           chmod +x packaging/build_app_headless.sh
           ./packaging/build_app_headless.sh
+
+      - name: Smoke test built executable (first 2 test images)
+        id: smoke_test
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          SMOKE_DIR="${RUNNER_TEMP}/kestrel-smoke-input"
+          rm -rf "${SMOKE_DIR}"
+          mkdir -p "${SMOKE_DIR}"
+
+          # mapfile is unavailable in macOS runner bash (3.2), so use while-read.
+          smoke_imgs=()
+          while IFS= read -r img; do
+            smoke_imgs+=("${img}")
+          done < <(find test_imgs -maxdepth 1 -type f | sort | head -n 2)
+          if [ "${#smoke_imgs[@]}" -lt 2 ]; then
+            echo "Expected at least 2 images in test_imgs/ for smoke test"
+            exit 1
+          fi
+
+          for img in "${smoke_imgs[@]}"; do
+            cp "${img}" "${SMOKE_DIR}/"
+          done
+
+          analyzer/dist/ProjectKestrel/ProjectKestrel --cli "${SMOKE_DIR}" --no-gpu --parallel-prefetch 1
+
+          META_PATH="${SMOKE_DIR}/.kestrel/kestrel_database.csv"
+          if [ ! -f "${META_PATH}" ]; then
+            echo "Smoke test did not produce kestrel_database.csv"
+            exit 1
+          fi
+          PROCESSED_ROWS=$(( $(wc -l < "${META_PATH}") - 1 ))
+          if [ "${PROCESSED_ROWS}" -lt 2 ]; then
+            echo "Smoke test processed fewer than 2 images (rows=${PROCESSED_ROWS})"
+            exit 1
+          fi
+
+      - name: Warn if smoke test failed
+        if: ${{ always() && steps.smoke_test.outcome == 'failure' }}
+        shell: bash
+        run: echo "::warning::Smoke test failed on macOS artifacts build; continuing to publish available artifacts."
 
       - name: Collect macOS .app at workspace root
         shell: bash
@@ -182,25 +312,75 @@ jobs:
       # -------------------------------------------------------
 
       - name: Upload macOS DMG
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: macos-dmg
           path: artifact/ProjectKestrel.dmg
 
       - name: Upload macOS .app (zipped)
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: macos-app-ditto
           path: artifact/ProjectKestrel.zip
 
       - name: Upload macOS .app (folder)
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: macos-app
           path: artifact/
 
       - name: Upload macOS onedir bundle
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: macos-bundle
           path: analyzer/dist/ProjectKestrel/
+
+      - name: Register build with worker
+        if: ${{ always() && steps.attestation.outputs.sha != '' }}
+        shell: bash
+        continue-on-error: true
+        env:
+          SIGNING_SECRET: ${{ secrets.KESTREL_BUILD_SIGNING_SECRET }}
+          BUILD_VERSION:  ${{ steps.attestation.outputs.version }}
+          BUILD_SHA:      ${{ steps.attestation.outputs.sha }}
+          BUILD_TS:       ${{ steps.attestation.outputs.ts }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SIGNING_SECRET:-}" ]; then
+            echo "::warning::No signing secret available; skipping build registration."
+            exit 0
+          fi
+
+          # Build JSON via python to avoid quoting headaches when version contains apostrophes.
+          BODY=$(BUILD_VERSION="$BUILD_VERSION" BUILD_SHA="$BUILD_SHA" BUILD_TS="$BUILD_TS" \
+                 RUN_ID="$GITHUB_RUN_ID" ACTOR="$GITHUB_ACTOR" python3 -c '
+          import json, os
+          print(json.dumps({
+              "version": os.environ["BUILD_VERSION"],
+              "sha":     os.environ["BUILD_SHA"],
+              "ts":      os.environ["BUILD_TS"],
+              "run_id":  os.environ["RUN_ID"],
+              "actor":   os.environ["ACTOR"],
+          }))
+          ')
+
+          # --fail makes curl exit non-zero on HTTP errors; --max-time 15 bounds the call.
+          # Capture both stdout and exit code so failure is logged but non-blocking.
+          set +e
+          RESP=$(curl --silent --show-error --fail --max-time 15 \
+            -H "X-Kestrel-Signing-Token: ${SIGNING_SECRET}" \
+            -H "Content-Type: application/json" \
+            --data-raw "${BODY}" \
+            "https://api.projectkestrel.org/api/builds/register" 2>&1)
+          RC=$?
+          set -e
+
+          if [ "$RC" -eq 0 ]; then
+            echo "Build registered with worker: ${RESP}"
+          else
+            echo "::warning::Build registration failed (non-blocking, rc=${RC}): ${RESP}"
+          fi

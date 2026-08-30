@@ -9,9 +9,7 @@
         "IMG_1441.CR3",
         "IMG_1442.CR3",
         "IMG_1443.CR3",
-        "IMG_1444.CR3",
-        "IMG_1445.CR3",
-        "IMG_1446.CR3"
+        "IMG_1444.CR3"
       ],
       "name": "",
       "status": "pending",
@@ -23,21 +21,6 @@
     },
     "2": {
       "scene_id": "2",
-      "image_filenames": [
-        "IMG_1447.CR3",
-        "IMG_1448.CR3",
-        "IMG_1449.CR3"
-      ],
-      "name": "",
-      "status": "pending",
-      "user_tags": {
-        "species": [],
-        "families": [],
-        "finalized": false
-      }
-    },
-    "3": {
-      "scene_id": "3",
       "image_filenames": [
         "IMG_3633.CR3",
         "IMG_3634.CR3",
@@ -52,8 +35,8 @@
         "finalized": false
       }
     },
-    "4": {
-      "scene_id": "4",
+    "3": {
+      "scene_id": "3",
       "image_filenames": [
         "IMG_6946.CR3",
         "IMG_6947.CR3",
@@ -76,8 +59,8 @@
         "finalized": false
       }
     },
-    "5": {
-      "scene_id": "5",
+    "4": {
+      "scene_id": "4",
       "image_filenames": [
         "IMG_7392.CR3",
         "IMG_7393.CR3",
@@ -96,8 +79,8 @@
         "finalized": false
       }
     },
-    "6": {
-      "scene_id": "6",
+    "5": {
+      "scene_id": "5",
       "image_filenames": [
         "IMG_8378.CR3",
         "IMG_8379.CR3",
@@ -108,6 +91,23 @@
         "IMG_8384.CR3",
         "IMG_8385.CR3",
         "IMG_8386.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    },
+    "6": {
+      "scene_id": "6",
+      "image_filenames": [
+        "IMG_1445.CR3",
+        "IMG_1446.CR3",
+        "IMG_1447.CR3",
+        "IMG_1448.CR3",
+        "IMG_1449.CR3"
       ],
       "name": "",
       "status": "pending",

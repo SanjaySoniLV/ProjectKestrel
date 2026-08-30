@@ -1,0 +1,115 @@
+:root {
+  --bg: #0b0c0f;
+  --panel: #111318;
+  --muted: #8a9099;
+  --text: #e7e9ee;
+  --brand: #4aa3ff;
+  --ok: #2ecc71;
+  --warn: #f39c12;
+  --bad: #e74c3c;
+  --card: #161922;
+  --card-border: #222634;
+  --chip: #1d2230;
+  /* New: dialog column sizing */
+  --right-w: 510px;
+  --divider-w: 8px;
+  /* Sticky scene-grid stack heights — keep these in sync so each sticky
+     layer (search/filter bar → folder header → day banner) pins below the
+     one above it instead of overlapping. */
+  --filter-bar-h: 49px;     /* sticky search/filter bar height */
+  --folder-header-h: 44px;  /* sticky folder-group-header height */
+  /* Corner-radius scale — use these instead of ad-hoc px values so cards,
+     rows, buttons and bars stay visually consistent across panels.
+       sm  → buttons, chips, small controls
+       md  → cards, list rows, containers
+       lg  → dialogs / large surfaces
+       pill→ progress tracks / fully-rounded bars */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-pill: 999px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.35 system-ui, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* Generic utilities */
+.muted {
+  color: var(--muted);
+}
+
+.hidden {
+  display: none !important;
+}
+
+.notice {
+  background: #0e1117;
+  border: 1px dashed #3a84e6;
+  color: #a9c9ee;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 13px;
+}
+
+/* ── Dark scrollbar theme (global) ─────────────────────────────────────────
+   Matches the app's dark palette. Applies to every scrollable container
+   (folder tree, main timeline, dialogs, queue panel, etc.) via WebKit's
+   ::-webkit-scrollbar pseudo-elements. Firefox uses the scrollbar-color
+   property as a fallback. */
+* {
+  scrollbar-width: thin;                  /* Firefox */
+  scrollbar-color: #2a3445 #0a0d12;       /* Firefox: thumb + track */
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: #0a0d12;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a3445;
+  border-radius: 5px;
+  border: 2px solid #0a0d12;              /* inset look */
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3a4a6d;
+}
+::-webkit-scrollbar-corner {
+  background: #0a0d12;
+}
+
+.footer {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+/* Global kbd styling — used by welcome tips, tutorial body, workflow captions */
+kbd {
+  background: #161922;
+  border: 1px solid #2a3040;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 11px;
+  font-family: monospace;
+  color: #cbd2dc;
+  white-space: nowrap;
+}

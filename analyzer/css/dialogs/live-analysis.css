@@ -1,0 +1,187 @@
+/* ── Live Analysis Details dialog ─────────────────────────────────────
+   Outer sizing comes from .kdlg--lg on the parent <dialog>. This inner
+   container is the grid layout for the live-analysis content. */
+.live-dlg {
+  display: grid;
+  grid-template-columns: 2.2fr 0.8fr;
+  grid-template-rows: auto auto 1fr;
+  gap: 12px;
+  padding: 16px;
+  flex: 1 1 auto;
+  min-height: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.live-dlg-hdr {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+}
+
+.live-dlg-title {
+  font-size: 15px;
+  font-weight: 600;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.live-dlg-fname {
+  font-size: 12px;
+  color: #6a8aaa;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 300px;
+}
+
+.live-dlg-status-bar {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  font-size: 12px;
+  color: var(--muted);
+  min-height: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.live-dlg-preview-row {
+  grid-column: 1;
+  grid-row: 3;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.live-dlg-img-cell {
+  background: #05080f;
+  border: 1px solid #1d2230;
+  border-radius: 8px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.live-dlg-img-label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  flex: 0 0 auto;
+}
+
+.live-dlg-img {
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%;
+  object-fit: contain;
+  background: #020508;
+  border-radius: 4px;
+  display: block;
+}
+
+.live-dlg-detections-section {
+  grid-column: 2;
+  grid-row: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.live-dlg-section-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  margin-top: 0;
+  flex: 0 0 auto;
+}
+
+.live-dlg-crops-row {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  align-content: start;
+  gap: 8px;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.live-dlg-crop-card {
+  background: #080d12;
+  border: 1px solid #1d2230;
+  border-radius: 8px;
+  padding: 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  transition: opacity .2s;
+}
+
+.live-dlg-crop-img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  background: #020508;
+  border-radius: 5px;
+  display: block;
+}
+
+.ldc-conf {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.ldc-quality {
+  font-size: 11px;
+  color: #9fb7cc;
+  font-variant-numeric: tabular-nums;
+}
+
+.ldc-stars {
+  font-size: 13px;
+  letter-spacing: .05em;
+}
+
+.ldc-species {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ldc-family {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.high-conf {
+  font-weight: 700;
+  color: #d0eaff !important;
+}
+
+.low-conf {
+  font-style: italic;
+  color: #606878 !important;
+}

@@ -1,8 +1,54 @@
+import io
 import os
-import sys
+
 import numpy as np
 import rawpy
-from PIL import Image
+from PIL import Image, ImageOps
+
+from .config import RAW_EXTENSIONS
+
+_RAW_EXTENSION_SET = {ext.lower() for ext in RAW_EXTENSIONS}
+
+
+def decode_embedded_preview(path: str) -> np.ndarray | None:
+    """Return the embedded JPEG preview as a (H, W, 3) uint8 RGB array, or None.
+
+    Used as a graceful fallback when LibRaw can open the RAW container
+    (reads metadata fine) but can't decompress the sensor data — most
+    commonly Nikon's High Efficiency / HE* / NRAW formats on the Z8/Z9,
+    which use the proprietary TicoRAW codec from intoPIX. The embedded
+    JPEG preview is typically full sensor resolution; for ML inference
+    at 640-1280 px input it's indistinguishable from a metered RAW
+    decode. The only thing lost is sensor-level highlight recovery.
+
+    Opens a fresh LibRaw handle on each call — once a postprocess()
+    fails on a raw_obj, LibRaw rejects subsequent calls with
+    LibRawOutOfOrderCallError, so the helper must not try to reuse a
+    dirty handle.
+    """
+    try:
+        with rawpy.imread(path) as raw:
+            thumb = raw.extract_thumb()
+    except (rawpy.LibRawFileUnsupportedError,
+            rawpy.LibRawIOError,
+            rawpy.LibRawNoThumbnailError,
+            rawpy.LibRawUnsupportedThumbnailError):
+        return None
+    except Exception:
+        return None
+
+    if thumb is None or not thumb.data:
+        return None
+    if thumb.format != rawpy.ThumbFormat.JPEG:
+        return None
+    try:
+        with Image.open(io.BytesIO(thumb.data)) as img:
+            img = ImageOps.exif_transpose(img)
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            return np.array(img)
+    except Exception:
+        return None
 
 
 def read_image(path: str):
@@ -11,52 +57,37 @@ def read_image(path: str):
     Returns a numpy array in RGB format (H, W, 3) or None on failure.
     """
     try:
-        print(f"read_image: Reading {path}", flush=True)
-        
-        # Determine file type by extension
         ext = os.path.splitext(path)[1].lower()
-        
-        # RAW formats supported by rawpy
-        raw_extensions = {'.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.srw'}
-        
-        if ext in raw_extensions:
+
+        if ext in _RAW_EXTENSION_SET:
             # Use rawpy for RAW files
-            print(f"read_image: Detected RAW file, using rawpy", flush=True)
-            with rawpy.imread(path) as raw:
-                # postprocess() applies demosaicing, white balance, color correction, etc.
-                # Returns numpy array in RGB format
-                rgb = raw.postprocess()
-            print(f"read_image: Successfully read RAW image, shape={rgb.shape}", flush=True)
-            return rgb
+            try:
+                with rawpy.imread(path) as raw:
+                    # postprocess() applies demosaicing, white balance, color
+                    # correction, etc. Returns numpy array in RGB format.
+                    return raw.postprocess()
+            except rawpy.LibRawFileUnsupportedError:
+                # LibRaw could parse the container but can't decompress the
+                # sensor data (e.g. Nikon HE compression). Fall back to the
+                # embedded JPEG preview, which is full sensor resolution on
+                # modern Nikon bodies. Must reopen — the failed-postprocess
+                # handle is in an out-of-order state.
+                return decode_embedded_preview(path)
         else:
             # Use PIL for standard image formats (JPEG, PNG, TIFF, etc.)
-            print(f"read_image: Using PIL for standard image format", flush=True)
             img = Image.open(path)
-            
-            # Handle EXIF orientation
-            from PIL import ImageOps
             img = ImageOps.exif_transpose(img)
-            
-            # Convert to RGB (handles grayscale, RGBA, etc.)
+
             if img.mode != 'RGB':
-                print(f"read_image: Converting from {img.mode} to RGB", flush=True)
                 img = img.convert('RGB')
-            
-            # Convert to numpy array
-            rgb = np.array(img)
-            print(f"read_image: Successfully read image, shape={rgb.shape}", flush=True)
-            return rgb
-            
+
+            return np.array(img)
+
     except rawpy.LibRawFileUnsupportedError:
-        print(f"read_image: RAW format not supported for {path}", flush=True)
         return None
-    except rawpy.LibRawIOError as e:
-        print(f"read_image: I/O error reading RAW file {path}: {e}", flush=True)
+    except rawpy.LibRawIOError:
         return None
-    except Exception as e:
-        import traceback
-        print(f"Error in read_image({path}): {e}", flush=True)
-        traceback.print_exc()
+    except Exception:
         return None
 
 
@@ -73,28 +104,21 @@ def read_image_for_pipeline(path: str):
       - On failure:    (None, None)
     """
     try:
-        print(f"read_image_for_pipeline: Reading {path}", flush=True)
         ext = os.path.splitext(path)[1].lower()
-        raw_extensions = {'.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.srw'}
 
-        if ext in raw_extensions:
-            print(f"read_image_for_pipeline: Detected RAW file, keeping rawpy object open", flush=True)
+        if ext in _RAW_EXTENSION_SET:
             # Do NOT use a context manager — we intentionally keep the object open.
+            # Do NOT call raw.postprocess() here — the pipeline immediately calls
+            # build_metered_detection_image() which does its own decode.  The
+            # default postprocess result would be discarded, wasting ~2 s per image.
             raw = rawpy.imread(path)
-            rgb = raw.postprocess()  # same defaults as read_image()
-            print(f"read_image_for_pipeline: Successfully read RAW image, shape={rgb.shape}", flush=True)
-            return rgb, raw
+            return None, raw
         else:
             return read_image(path), None
 
     except rawpy.LibRawFileUnsupportedError:
-        print(f"read_image_for_pipeline: RAW format not supported for {path}", flush=True)
         return None, None
-    except rawpy.LibRawIOError as e:
-        print(f"read_image_for_pipeline: I/O error reading RAW file {path}: {e}", flush=True)
+    except rawpy.LibRawIOError:
         return None, None
-    except Exception as e:
-        import traceback
-        print(f"Error in read_image_for_pipeline({path}): {e}", flush=True)
-        traceback.print_exc()
+    except Exception:
         return None, None

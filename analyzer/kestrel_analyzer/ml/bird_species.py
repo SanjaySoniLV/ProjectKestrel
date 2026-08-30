@@ -4,32 +4,34 @@ import numpy as np
 import pandas as pd
 
 from ..config import MODELS_DIR
+from ..logging_utils import debug, error
+from .provider_coordinator import ProviderCoordinator
+from .resilient_session import ResilientOnnxSession
 
 
 class BirdSpeciesClassifier:
-    def __init__(self, model_path: str, labels_path: str, use_gpu: bool, models_dir: str | None = None):
-        try:
-            import onnxruntime as ort
-        except ImportError as e:
-            raise RuntimeError(
-                f"Failed to import onnxruntime: {e}\n"
-                "Try reinstalling: pip uninstall onnxruntime; pip install onnxruntime"
-            ) from e
-        with open(labels_path, "r") as f:
+    def __init__(
+        self,
+        model_path: str,
+        labels_path: str,
+        coord: ProviderCoordinator,
+        models_dir: str | None = None,
+    ):
+        with open(labels_path, "r", encoding="utf-8-sig") as f:
             self.labels = np.array([l.strip() for l in f.readlines()])
-        providers = ["DmlExecutionProvider", "CPUExecutionProvider"] if use_gpu else ["CPUExecutionProvider"]
-        try:
-            self.session = ort.InferenceSession(model_path, providers=providers)
-        except Exception as e:
-            print(f"Warning: Failed to load ONNX model with specified providers: {e}")
-            self.session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+        # Registered with the coordinator so a DML/CoreML failure that demotes
+        # the wrapper's sessions also rebuilds this one — otherwise every
+        # subsequent image dies at the species step on a still-broken provider.
+        self.session = ResilientOnnxSession("bird_species", model_path, coord)
+        active = self.session.get_providers()
+        debug(f"[BirdSpeciesClassifier] Active provider: {active[0] if active else 'unknown'}  all providers: {active}")
 
         try:
             base_dir = Path(models_dir) if models_dir else MODELS_DIR
             df_sf = pd.read_csv(base_dir / "labels_scispecies.csv")
             df_disp = pd.read_csv(base_dir / "scispecies_dispname.csv")
         except Exception as e:
-            print(f"Failed to load family mapping CSVs: {e}")
+            error(f"[BirdSpeciesClassifier] Failed to load family mapping CSVs: {e}")
             self.family_matrix = np.zeros((0, len(self.labels)), dtype=np.float32)
             self.family_display_names = []
             return

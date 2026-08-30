@@ -1,21 +1,36 @@
 import csv
-import time
 
 import cv2
 import numpy as np
-import tensorflow as tf
+
+from ..logging_utils import debug
+from .provider_coordinator import ProviderCoordinator
+from .resilient_session import ResilientOnnxSession
 
 
 class QualityClassifier:
-    def __init__(self, model_path: str, normalization_data_path: str = None):
-        self.model = tf.keras.models.load_model(model_path)
+    def __init__(
+        self,
+        model_path: str,
+        normalization_data_path: str = None,
+        *,
+        coord: ProviderCoordinator,
+    ):
+        # Registered with the coordinator so demote/promote rebuilds this
+        # session alongside the wrapper's. See note in BirdSpeciesClassifier.
+        self.session = ResilientOnnxSession("quality", model_path, coord)
+        self.providers_used = list(self.session.get_providers())
+        _active = self.providers_used[0] if self.providers_used else "unknown"
+        debug(f"[QualityClassifier] Active provider: {_active}  all providers: {self.providers_used}")
+
+        self._input_name = self.session.get_inputs()[0].name
+
         self._norm_qualities = None
         self._norm_percentiles = None
         if normalization_data_path:
             try:
                 self._load_normalization_data(normalization_data_path)
             except Exception:
-                # Fallback to raw quality output if normalization data cannot be read.
                 self._norm_qualities = None
                 self._norm_percentiles = None
 
@@ -74,13 +89,29 @@ class QualityClassifier:
         images = np.array([img1]).transpose(1, 2, 0)
         return images
 
-    def classify(self, cropped_image, cropped_mask, retry=5):
-        for _ in range(retry):
-            try:
-                input_data = self._preprocess(cropped_image, cropped_mask)
-                output_value = self.model.predict(np.expand_dims(input_data, axis=0), verbose=0)
-                raw_quality = float(output_value[0][0])
-                return self._normalize_quality_to_percentile(raw_quality)
-            except Exception:
-                time.sleep(0.05)
-        return -1.0
+    def classify(self, cropped_image, cropped_mask):
+        try:
+            input_data = self._preprocess(cropped_image, cropped_mask)
+            input_tensor = np.expand_dims(input_data, axis=0).astype(np.float32)
+        except Exception:
+            # Malformed crop/mask (None, unexpected shape/dtype) is a per-image
+            # data problem, not a model failure: return the "unrated" sentinel
+            # and let the pipeline continue. An all-zero mask is valid input
+            # to _preprocess (bitwise_and zeros the image) and does not raise.
+            return -1.0
+
+        # Do NOT wrap session.run() in a blanket except. A dead GPU/ONNX session
+        # (e.g. DirectML/CoreML device lost) must propagate so the pipeline's
+        # per-image handler records the failure and the provider coordinator can
+        # demote to CPU on the next image. Swallowing it here returned -1.0 for
+        # every remaining image and silently corrupted quality scores while the
+        # run still reported "complete".
+        outputs = self.session.run(None, {self._input_name: input_tensor})
+
+        try:
+            raw_quality = float(outputs[0][0][0])
+            return self._normalize_quality_to_percentile(raw_quality)
+        except Exception:
+            # Unexpected output shape / normalization issue -> unrated, but not a
+            # reason to abort the whole image.
+            return -1.0

@@ -1,0 +1,1179 @@
+/* ── Analyze Folders dialog (Phase 3: 3-column layout) ─────────────────────── */
+.analyze-dlg {
+  /* Sizing comes from .kdlg--lg on the parent <dialog>; this is the inner
+     layout container so it just fills the available flex slot. */
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  flex: 1 1 auto;
+  min-height: 0;
+  box-sizing: border-box;
+}
+
+.analyze-dlg h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.analyze-dlg-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Three-column grid: Queue Builder | Settings | Queue Summary + Start */
+.analyze-dlg-grid {
+  display: grid;
+  grid-template-columns: minmax(300px, 1fr) minmax(280px, 1fr) minmax(320px, 1fr);
+  gap: 14px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+@media (max-width: 980px) {
+  .analyze-dlg-grid { grid-template-columns: 1fr; overflow: auto; }
+}
+
+.analyze-dlg-col {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 8px;
+}
+
+.analyze-dlg-col-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #cbd6e4;
+  letter-spacing: 0.2px;
+  flex: 0 0 auto;
+  padding-bottom: 2px;
+}
+
+/* ── Column 1: Queue Builder ─────────────────────────────────────────────── */
+.analyze-dlg-pill-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 7px 11px;
+  background: #0a0d12;
+  border: 1px solid #2a3040;
+  border-radius: 6px;
+  font-size: 11.5px;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+.analyze-dlg-pill-legend .legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  white-space: nowrap;
+}
+.analyze-dlg-pill-legend .state-pill {
+  margin: 0 2px 0 0;
+  vertical-align: middle;
+}
+
+.analyze-dlg-tree-wrap {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #0a0d12;
+  border: 1px solid #2b6ec8;
+  border-radius: 10px;
+  padding: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+.analyze-dlg-tree-wrap .folder-load-btn {
+  border-radius: 10px 10px 0 0;
+  height: 36px;
+  font-size: 13px;
+}
+.analyze-dlg-tree-wrap #analyzeDlgRecentsRow {
+  padding: 6px 8px 4px;
+}
+.analyze-dlg-tree-wrap #analyzeDlgTreeEmptyHint {
+  padding: 18px 14px;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+  font-style: italic;
+  line-height: 1.5;
+}
+.analyze-dlg-tree-wrap.has-roots #analyzeDlgTreeEmptyHint { display: none; }
+.analyze-dlg-tree-wrap #analyzeDlgTree {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 4px 6px;
+}
+.analyze-dlg-tree-wrap .folder-tree-footer {
+  border-radius: 0 0 10px 10px;
+  border-top: 1px solid #2a3040;
+}
+
+/* ── Column 2: Settings ──────────────────────────────────────────────────── */
+.analyze-dlg-col-settings {
+  overflow-y: auto;
+}
+.analyze-dlg-settings-critical {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  background: #0a0d12;
+  border: 1px solid #2a3040;
+  border-radius: 10px;
+}
+
+/* Dividers between adjacent rows in the critical settings — darker than the
+   default to read clearly without overpowering. */
+.analyze-dlg-settings-critical > * + * {
+  border-top: 1px solid #2a3445;
+  padding-top: 10px;
+}
+
+/* Radio group for the wildlife model — horizontal pair (side-by-side) for
+   compactness; reads as a single decision. */
+.adlg-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.adlg-radio-label {
+  font-size: 13px;
+  color: #cbd6e4;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.adlg-radio-horiz {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.adlg-radio-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 0;
+  cursor: pointer;
+}
+.adlg-radio-row-horiz {
+  padding: 8px 10px;
+  background: #10141c;
+  border: 1px solid #2a3445;
+  border-radius: 6px;
+  align-items: flex-start;
+}
+.adlg-radio-row-horiz:hover { border-color: #3a4555; }
+.adlg-radio-row-horiz:has(input:checked) {
+  border-color: #2b6ec8;
+  background: rgba(43, 110, 200, 0.06);
+}
+.adlg-radio-row input[type="radio"] {
+  margin-top: 3px;
+  flex-shrink: 0;
+  accent-color: #2b6ec8;
+}
+.adlg-radio-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.adlg-radio-name { font-size: 13.5px; color: #e1e5ec; font-weight: 500; }
+.adlg-radio-hint { font-size: 12px; line-height: 1.4; }
+.adlg-radio-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12.5px;
+  color: #d4d8e0;
+  cursor: pointer;
+}
+.adlg-radio-inline input[type="radio"] { accent-color: #2b6ec8; }
+
+/* Question-and-answer settings blocks. Each block is one question about the
+   shoot with its answers directly beneath, so the column reads as a short
+   interview rather than a list of model parameters. */
+.adlg-question {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 0 0;
+  border-top: 1px solid #2a3445;
+}
+.adlg-question:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+.adlg-question-text {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #e1e5ec;
+  line-height: 1.35;
+}
+/* Answers sit side by side, and wrap to one per row when the dialog is too
+   narrow to keep both labels on a single line. */
+.adlg-answer-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+@media (max-width: 1100px) {
+  .adlg-answer-pair { grid-template-columns: 1fr; }
+}
+.adlg-answer-pair .adlg-radio-row-horiz { align-items: center; }
+.adlg-question-help {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+/* "More options" collapsible — flat list of less-critical settings. */
+.analyze-dlg-more-options {
+  border: 1px solid #2a3040;
+  border-radius: 8px;
+  background: #0a0d12;
+  font-size: 13px;
+  flex: 0 0 auto;
+}
+.analyze-dlg-more-options summary {
+  cursor: pointer;
+  padding: 10px 14px;
+  color: #cbd6e4;
+  font-weight: 600;
+  font-size: 13.5px;
+  letter-spacing: 0.2px;
+  user-select: none;
+  list-style: none;
+}
+.analyze-dlg-more-options summary::-webkit-details-marker { display: none; }
+.analyze-dlg-more-options summary:hover { color: #c8cdd8; }
+.analyze-dlg-more-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 4px 14px 14px;
+}
+/* Subheading-grouped settings inside More options. Divider is the darker
+   #2a3445 (matches the critical-settings dividers) so the group bounds
+   read clearly without competing with the outer card border. */
+.adlg-subgroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 0 0;
+  border-top: 1px solid #2a3445;
+}
+.adlg-subgroup:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+.adlg-subgroup-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #a0afc4;
+  margin-bottom: 4px;
+}
+.adlg-hint {
+  font-size: 12px;
+  line-height: 1.45;
+  margin: -2px 0 4px;
+  color: var(--muted);
+}
+
+.adlg-toggle-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 4px 0;
+  cursor: pointer;
+}
+.adlg-toggle-row input[type="checkbox"] {
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+.adlg-toggle-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+.adlg-toggle-label {
+  font-size: 13.5px;
+  color: #e1e5ec;
+}
+.adlg-toggle-hint {
+  font-size: 12px;
+  line-height: 1.4;
+}
+.adlg-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: #d0b8ff;
+  background: #3a2a5a;
+  border: 1px solid #5a4a7a;
+  border-radius: 4px;
+  vertical-align: middle;
+}
+
+.adlg-setting-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 0;
+}
+.adlg-setting-row label {
+  flex: 1;
+  font-size: 13.5px;
+  color: #e1e5ec;
+}
+.adlg-setting-row input[type="number"],
+.adlg-setting-row select {
+  flex-shrink: 0;
+  height: 30px;
+  font-size: 12.5px;
+}
+
+/* Inline warning under specific settings (e.g., suggested detection
+   confidence). Subtle yellow tint, sits flush under the input. */
+.adlg-inline-warning {
+  padding: 6px 10px;
+  margin: 2px 0;
+  background: rgba(243, 156, 18, 0.08);
+  border-left: 2px solid #f39c12;
+  border-radius: 0 6px 6px 0;
+  font-size: 12px;
+  color: #f5c542;
+  line-height: 1.4;
+}
+.adlg-inline-warning.hidden { display: none; }
+
+/* ── Column 3: Queued Folders list (top) + Summary card + action row ─────── */
+.analyze-dlg-col-summary {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 10px;
+}
+
+/* Folders list — the main detailed view. Each card is its own discrete unit
+   (name + pill + count + time + warnings). Scrollable. */
+.analyze-dlg-summary-list-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  background: #0a0d12;
+  border: 1px solid #2a3040;
+  border-radius: 10px;
+  padding: 6px;
+}
+.analyze-dlg-queued-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.analyze-dlg-queued-list-empty {
+  padding: 24px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: italic;
+  text-align: center;
+}
+.analyze-dlg-queued-item {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 9px 11px;
+  font-size: 12.5px;
+  background: #10141c;
+  border: 1px solid #2a3445;
+  border-radius: 8px;
+  transition: border-color .12s ease;
+}
+.analyze-dlg-queued-item:hover { border-color: #2a3445; }
+.analyze-dlg-queued-item.will-skip { opacity: 0.7; }
+.analyze-dlg-queued-item.has-warning {
+  border-color: rgba(243, 156, 18, 0.5);
+  background: rgba(243, 156, 18, 0.04);
+}
+.analyze-dlg-queued-item.has-error {
+  border-color: rgba(231, 76, 60, 0.5);
+  background: rgba(231, 76, 60, 0.04);
+}
+.analyze-dlg-queued-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.analyze-dlg-queued-item-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  font-size: 13.5px;
+  color: #e1e5ec;
+}
+.analyze-dlg-queued-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-left: 22px;            /* align with name (past the pill+gap) */
+  font-size: 12px;
+  color: var(--muted);
+}
+.analyze-dlg-queued-item-meta .meta-images,
+.analyze-dlg-queued-item-meta .meta-time {
+  white-space: nowrap;
+}
+.analyze-dlg-queued-item-meta .meta-skip {
+  font-style: italic;
+  color: var(--muted);
+}
+.analyze-dlg-queued-item-warning {
+  margin-left: 22px;
+  padding: 5px 9px;
+  background: rgba(243, 156, 18, 0.08);
+  border-left: 2px solid #f39c12;
+  border-radius: 0 4px 4px 0;
+  font-size: 12px;
+  color: #f5c542;
+  line-height: 1.4;
+}
+.analyze-dlg-queued-item-warning.error {
+  background: rgba(231, 76, 60, 0.08);
+  border-left-color: #e74c3c;
+  color: #ff8a7a;
+}
+
+/* Summary card — compact card sitting under the folders list, above the
+   action row. Holds the totals + destination + unlock + warnings. */
+.analyze-dlg-summary-card {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: #0a0d12;
+  border: 1px solid #2a3040;
+  border-radius: 10px;
+}
+/* Summary headline: 3 stat blocks laid out HORIZONTALLY (images | folders |
+   estimated time). Each block has a big number on top and a small label
+   underneath. Cleaner than the prior vertically-stacked sentence. */
+.analyze-dlg-summary-headline {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+}
+.analyze-dlg-summary-empty {
+  flex: 1;
+  color: var(--muted);
+  font-style: italic;
+  font-size: 13px;
+  padding: 4px 0;
+}
+.analyze-dlg-stat {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 4px 8px;
+  border-right: 1px solid #2a3445;
+}
+.analyze-dlg-stat:last-child { border-right: none; }
+.analyze-dlg-stat-value {
+  font-size: 22px;
+  font-weight: 600;
+  color: #e6edf6;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+.analyze-dlg-stat-value.dim {
+  color: var(--muted);
+  font-size: 16px;
+  font-weight: 500;
+}
+.analyze-dlg-stat-label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 500;
+}
+.analyze-dlg-stat-skip {
+  font-size: 11px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.analyze-dlg-warnings {
+  padding: 7px 10px;
+  background: rgba(243, 156, 18, 0.08);
+  border: 1px solid rgba(243, 156, 18, 0.45);
+  border-radius: 6px;
+  font-size: 12px;
+  color: #f5c542;
+  line-height: 1.4;
+}
+.analyze-dlg-warnings.hidden { display: none; }
+
+.analyze-dlg-unlock-row {
+  padding: 6px 8px;
+  border: 1px solid var(--warn);
+  background: rgba(243, 156, 18, 0.06);
+  border-radius: 6px;
+}
+
+.analyze-dlg-compute-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0 0;
+  border-top: 1px solid #1d2230;
+}
+.analyze-dlg-compute-label {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 500;
+}
+.adlg-radio-inline.disabled { opacity: 0.45; cursor: not-allowed; }
+.analyze-dlg-soon { font-size: 10px; color: var(--muted); }
+
+/* Compact action row. Cancel is a tiny X next to the primary Start button. */
+.analyze-dlg-action-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.analyze-dlg-cancel-icon {
+  flex: 0 0 40px;
+  width: 40px;
+  height: 42px;
+  font-size: 15px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid #2a3040;
+  color: var(--muted);
+  border-radius: 8px;
+}
+.analyze-dlg-cancel-icon:hover {
+  background: #1a2030;
+  color: var(--text);
+  border-color: #3a4555;
+}
+.analyze-dlg-start-btn {
+  flex: 1 1 auto;
+  height: 42px;
+  font-size: 15px;
+  font-weight: 600;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+.analyze-dlg-start-btn .start-btn-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+.analyze-dlg-start-btn .start-btn-text {
+  letter-spacing: 0.2px;
+}
+
+/* ── State pills (Phase 3F) ──────────────────────────────────────────────────
+   Two orthogonal CSS axes encode folder status in the queue builder:
+     color = relationship to queue (blue/orange/gray/red/dim)
+     shape = work progress (solid/half/outline/dot/warn)
+   Composed as <span class="state-pill state-pill--{color} state-pill--{shape}">.
+   Pure CSS — no SVG/Unicode/font glyphs that vary across platforms. */
+.state-pill {
+  display: inline-block;
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  margin: 0 6px 0 4px;
+  position: relative;
+  vertical-align: middle;
+}
+/* Colors */
+.state-pill--blue   { background: #3a84e6; border: 1px solid #3a84e6; }
+.state-pill--orange { background: #f39c12; border: 1px solid #f39c12; }
+.state-pill--gray   { background: #6a7585; border: 1px solid #6a7585; }
+.state-pill--red    { background: #e74c3c; border: 1px solid #e74c3c; }
+.state-pill--dim    { background: transparent; border: 1px solid #3a3f4d; }
+/* Shapes — these OVERRIDE color background for outline/half/dot/warn variants */
+.state-pill--outline {
+  background: transparent !important;
+}
+.state-pill--solid { /* default: keep color background */ }
+.state-pill--dot {
+  width: 6px;
+  height: 6px;
+  background: #3a3f4d !important;
+  border: none !important;
+  margin-left: 7px;
+  margin-right: 9px;
+}
+.state-pill--half {
+  /* Left half filled (color), right half transparent. The base background-color
+     is reused as the gradient stop; the border stays solid for definition. */
+  background: linear-gradient(to right, currentColor 0%, currentColor 50%, transparent 50%, transparent 100%) !important;
+}
+.state-pill--blue.state-pill--half   { color: #3a84e6; }
+.state-pill--orange.state-pill--half { color: #f39c12; }
+.state-pill--gray.state-pill--half   { color: #6a7585; }
+.state-pill--red.state-pill--half    { color: #e74c3c; }
+/* Errored pill: a solid red circle with a white "!" inside. CSS border-art
+   triangles don't compose reliably inside flex parents (zero-sized boxes
+   get collapsed). A filled circle is glanceable, consistent, and definitely
+   red — matches the conceptual sibling pills in shape, only color differs. */
+.state-pill--warn {
+  background: #e74c3c !important;
+  border: 1px solid #e74c3c !important;
+  border-radius: 50%;
+  position: relative;
+  width: 13px;
+  height: 13px;
+}
+.state-pill--warn::after {
+  content: '!';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+/* Outdated-version badge — small, sits AFTER the count in a tree row. */
+.adlg-outdated-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 4px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: #f5c542;
+  background: rgba(245, 197, 66, 0.08);
+  border: 1px solid rgba(245, 197, 66, 0.35);
+  border-radius: 3px;
+  vertical-align: middle;
+  line-height: 1.4;
+}
+.adlg-outdated-badge.warning {
+  /* When the folder is queued for re-analysis AND outdated, surface as warning. */
+  color: #ffb37a;
+  background: rgba(232, 154, 90, 0.12);
+  border-color: rgba(232, 154, 90, 0.55);
+}
+
+/* Queue-builder checkbox: orange-ish accent so it visually distinguishes
+   from the main tree's blue accent — these are queue selections, not
+   "load this folder for viewing" selections. */
+.adlg-cb {
+  flex: 0 0 13px;
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: #f39c12;
+}
+/* Faded checkbox for rows that can't be queued (no photos). Dim only the
+   label/icon/arrow/checkbox — NOT the rails — so the tree structure stays
+   readable even when individual rows fade. Same rule as the main tree's
+   .no-kestrel handling. */
+.adlg-node-row.no-photos-deep .adlg-cb,
+.adlg-node-row.no-photos-shallow .adlg-cb {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.adlg-node-row.no-photos-deep .tree-label,
+.adlg-node-row.no-photos-deep .tree-icon,
+.adlg-node-row.no-photos-deep .tree-arrow,
+.adlg-node-row.no-photos-deep .tree-count {
+  opacity: 0.5;
+}
+/* Rails always fully opaque — dimming the row should never bleed into the
+   tree connector lines. */
+.adlg-node-row .tree-rail {
+  opacity: 1 !important;
+}
+
+/* ── Pre-queue confirmation modal (Phase 3H) ──────────────────────────────
+   Sizing comes from .kdlg--sm on the parent <dialog>. */
+.analyze-confirm-dlg {
+  border: 2px solid var(--warn);
+  border-radius: 12px;
+  background: #161922;
+  color: var(--text);
+  box-shadow: 0 20px 64px rgba(0, 0, 0, 0.7);
+}
+.analyze-confirm-dlg::backdrop {
+  background: rgba(0, 0, 0, 0.6);
+}
+.analyze-confirm-body {
+  padding: 20px 22px;
+}
+.analyze-confirm-list {
+  margin: 6px 0 12px;
+  padding: 8px 12px 8px 28px;
+  background: #0a0d12;
+  border: 1px solid #2a3040;
+  border-radius: 6px;
+  max-height: 200px;
+  overflow-y: auto;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.analyze-confirm-list li {
+  color: #d4d8e0;
+  word-break: break-all;
+}
+.analyze-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+.analyze-confirm-danger {
+  background: #6e1f1a;
+  border-color: #a33028;
+  color: #fff5f4;
+  font-weight: 500;
+}
+.analyze-confirm-danger:hover {
+  background: #8c2a22;
+  border-color: #c43d32;
+}
+
+/* ── Analysis Queue floating notification panel ────────────────── */
+.queue-panel {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  width: 380px;
+  background: #111318;
+  border: 1px solid #2a3040;
+  border-radius: 12px;
+  box-shadow: 0 8px 36px rgba(0, 0, 0, .7);
+  z-index: 400;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.queue-panel.hidden {
+  display: none !important;
+}
+
+.queue-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: #161922;
+  border-bottom: 1px solid #1d2230;
+  cursor: pointer;
+  user-select: none;
+}
+
+.queue-panel-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.queue-panel-badge {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #1d5aa8;
+  border: 1px solid #2b6ec8;
+  color: #c8dcf5;
+}
+
+.queue-panel-badge.paused {
+  background: #3a2408;
+  border-color: #7a5010;
+  color: #f5c542;
+}
+
+.queue-panel-badge.done {
+  background: #0a2218;
+  border-color: #1a5e36;
+  color: #2ecc71;
+}
+
+.queue-panel-toggle {
+  font-size: 10px;
+  color: var(--muted);
+  transition: transform .15s;
+}
+
+.queue-panel-toggle.open {
+  transform: rotate(180deg);
+}
+
+/* Header close (X) — replaces "Clear done". Shown only when every queue item
+   is terminal (see renderQueuePanel / _ccRenderPanel). Sits next to the
+   collapse toggle; its click is stopPropagation'd so it doesn't also collapse
+   the panel. */
+.queue-panel-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  margin: -2px 0;
+  font-size: 15px;
+  line-height: 1;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.queue-panel-close:hover {
+  background: #3a1d1d;
+  color: #ff6b6b;
+}
+
+.queue-panel-body {
+  padding: 8px;
+  max-height: 340px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.queue-panel-controls {
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px;
+  border-top: 1px solid #1d2230;
+  flex-wrap: wrap;
+}
+
+.queue-panel-controls button {
+  flex: 1;
+  font-size: 12px;
+  height: 28px;
+  min-width: 60px;
+}
+
+.queue-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 8px;
+  background: #0e1117;
+  border: 1px solid #1d2230;
+  border-radius: 8px;
+}
+
+.queue-item.done-item {
+  opacity: .7;
+}
+
+.queue-item-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.queue-item-name {
+  flex: 1;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-item-status {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* Blue to match the cloud panel's "+ 📂 Load" (.cloud-account-load-btn) and the
+   pill's pause/cancel controls — the green here was an inconsistent outlier. */
+.queue-item-load-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid #3d5a7e;
+  background: #243650;
+  color: #cfe0ff;
+  cursor: pointer;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.queue-item-load-btn:hover { background: #2d456a; border-color: #4d6a9a; }
+
+.queue-item-status.pending {
+  background: #0f2310;
+  color: #3abf67;
+  border: 1px solid #1b6638;
+}
+
+.queue-item-status.running {
+  background: #0f2b4d;
+  color: #4aa3ff;
+  border: 1px solid #1d4f8c;
+}
+
+.queue-item-status.done {
+  background: #0a2218;
+  color: #2ecc71;
+  border: 1px solid #1a5e36;
+}
+
+.queue-item-status.error {
+  background: #2a0a0a;
+  color: #e74c3c;
+  border: 1px solid #5e1a1a;
+}
+
+.queue-item-status.cancelled {
+  background: #1d2230;
+  color: #8a9099;
+}
+
+.queue-item-progress {
+  height: 4px;
+  background: #1d2230;
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: 3px;
+}
+
+.queue-item-progress-fill {
+  height: 100%;
+  background: #3a84e6;
+  border-radius: 999px;
+  transition: width .4s ease;
+}
+
+.queue-item-eta {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.queue-item-file {
+  font-size: 11px;
+  color: #6a8aaa;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 1px;
+  max-width: 100%;
+}
+
+/* Live preview inside queue panel */
+.queue-live-preview {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.queue-live-thumb {
+  width: 100px;
+  min-width: 100px;
+  aspect-ratio: 3/2;
+  background: #0a0d12;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid #1d2230;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.queue-live-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.queue-live-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  justify-content: center;
+}
+
+.queue-live-info .ql-species {
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-live-info .ql-detail {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.queue-overall-eta {
+  font-size: 11px;
+  color: var(--muted);
+  padding: 3px 8px 5px;
+  text-align: right;
+}
+
+/* Est. time uncertainty badge — appears next to baseline-derived estimates */
+/* (i.e. when there aren't yet ~100 locally-sampled images for this mode). */
+.est-time-uncertain {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 6px;
+  border-radius: 50%;
+  border: 1px solid #6a7585;
+  color: #8a93a3;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: help;
+  vertical-align: middle;
+}
+.est-time-uncertain:hover {
+  color: #c8d0db;
+  border-color: #8a93a3;
+}
+
+/* ── Cloud destination affordances under the summary headline ─────────── */
+/* Hidden by default (destination=local); shown only when the user picks the
+   Cloud destination card. The speed-test button is the gateway from "?" to a
+   computed estimate; the beta notice + Learn more link stay visible after the
+   test so the user remembers the estimate is approximate. */
+.analyze-dlg-cloud-est-panel {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: rgba(43, 110, 200, 0.06);
+  border: 1px solid #1f3656;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.analyze-dlg-cloud-est-panel.hidden { display: none; }
+
+.adlg-cloud-speed-btn {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: #1f3656;
+  color: #cfe2ff;
+  border: 1px solid #2b6ec8;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.adlg-cloud-speed-btn:hover:not(:disabled) {
+  background: #2b6ec8;
+  color: #fff;
+  border-color: #4a8edc;
+}
+.adlg-cloud-speed-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.adlg-cloud-speed-btn-icon { font-size: 12px; }
+
+.adlg-cloud-speed-status {
+  font-size: 11px;
+  color: var(--muted);
+}
+.adlg-cloud-speed-status.success { color: var(--ok); }
+.adlg-cloud-speed-status.error { color: #e07c7c; }
+.adlg-cloud-speed-status.hidden { display: none; }
+
+.adlg-cloud-beta-note {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.adlg-beta-badge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #ffd57a;
+  background: rgba(255, 213, 122, 0.12);
+  border: 1px solid rgba(255, 213, 122, 0.4);
+  padding: 1px 5px;
+  border-radius: 3px;
+  margin-right: 6px;
+  vertical-align: 1px;
+}
+.adlg-cloud-learn-more {
+  color: #7eb8e0;
+  text-decoration: none;
+  margin-left: 4px;
+}
+.adlg-cloud-learn-more:hover {
+  text-decoration: underline;
+  color: #cfe2ff;
+}
+
+/* Cloud "?" badge variant — same visual as the local-baseline badge but
+   with a slight blue tint so the two contexts read distinctly when both
+   appear in proximity (e.g. switching destinations rapidly). */
+.est-time-uncertain--cloud {
+  border-color: #4a8edc;
+  color: #7eb8e0;
+}
+.est-time-uncertain--cloud:hover {
+  color: #cfe2ff;
+  border-color: #7eb8e0;
+}
+
+/* Pre-flight bottleneck chip under the cloud est. time stat. Tells the user
+   whether the quoted number is bounded by their connection or by Cloud
+   Compute, so a slow estimate points at something actionable. */
+.adlg-cloud-regime {
+  display: block;
+  margin-top: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--muted, #8a93a5);
+  cursor: help;
+}
+.adlg-cloud-regime--upload   { color: #7eb8e0; }
+.adlg-cloud-regime--compute  { color: #e0b070; }
+.adlg-cloud-regime--balanced { color: #7fc98a; }

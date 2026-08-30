@@ -1,0 +1,9 @@
+{
+    "version": "4.0.2a",
+    "type": "always_crop",
+    "classifier": "always_crop_99710272_22x8_v12_epoch_00148.pt",
+    "classifier_labels": "always_crop_99710272_22x8_v12_epoch_00148.labels.20251208.txt",
+    "detector": "md_v5a.0.0.pt",
+    "taxonomy": "taxonomy_release.20251208.txt",
+    "geofence": "geofence_release.20251208.json"
+}
