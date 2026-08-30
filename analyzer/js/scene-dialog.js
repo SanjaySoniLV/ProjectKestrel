@@ -6,6 +6,10 @@
       for (const r of rows) { if (r.culled === undefined) r.culled = ''; }
     }
 
+    // Set whenever a cull decision changes while the scene dialog is open;
+    // consumed once on close to refresh the grid behind it.
+    let _sceneCullDecisionsChanged = false;
+
     function getCullStatus(row) {
       const raw = (row.culled === 'accept' || row.culled === 'reject') ? row.culled : '';
       if (!raw) return '';
@@ -24,6 +28,12 @@
       row.culled = status || ''; // 'accept', 'reject', or ''
       row.culled_origin = status ? 'manual' : '';
       markDirty(row);
+      // The grid thumbnail is chosen from the user's accept/reject decisions
+      // (see _pickSceneRepresentative), so the card behind this dialog is now
+      // potentially stale. Re-rendering per keystroke would be far too costly
+      // on a large folder, so just record that the grid owes a refresh and let
+      // the dialog-close handler do it once.
+      _sceneCullDecisionsChanged = true;
     }
 
     async function _blobUrlToBlob(url) {
@@ -516,6 +526,20 @@
         _showSceneCropOverlay(r, cropState.activeIndex, 1000);
       }
     }
+
+    // Repaint the grid once, on close, if cull decisions changed while the
+    // dialog was open. Navigating between scenes with the dialog still open
+    // closes and reopens it, so the flag is only cleared once the dialog is
+    // actually gone.
+    sceneDlg?.addEventListener('close', () => {
+      if (!_sceneCullDecisionsChanged) return;
+      // Scene-to-scene navigation closes and immediately reopens the dialog.
+      // The close event is queued, so by the time it runs the next scene may
+      // already be showing -- leave the flag set and refresh on the real close.
+      if (sceneDlg.open) return;
+      _sceneCullDecisionsChanged = false;
+      renderScenes();
+    });
 
     // Allow other code to refresh the scene images when filter or ratings change
     window.refreshSceneFilter = function () {

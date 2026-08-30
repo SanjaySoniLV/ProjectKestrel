@@ -92,13 +92,30 @@
     if (zoomInBtn) zoomInBtn.addEventListener('click', () => { uiZoom = Math.min(1.4, uiZoom + 0.1); applyZoom(); });
     if (zoomOutBtn) zoomOutBtn.addEventListener('click', () => { uiZoom = Math.max(0.7, uiZoom - 0.1); applyZoom(); });
 
-    // Initialize toolbar toggle for scene-level manual-reviewed filter
-    (function initScenesManualFilter() {
-      const t = document.getElementById('filterScenesManualRated');
+    // Initialize the scene-level review-state filter (all / reviewed / unreviewed).
+    (function initSceneReviewStateFilter() {
+      const t = document.getElementById('filterSceneReviewState');
       if (!t) return;
-      try { t.checked = !!getSetting('onlyManualRatedScenes', false); } catch { }
+      const VALID = ['all', 'reviewed', 'unreviewed'];
+      try {
+        let mode = getSetting('sceneReviewFilter', null);
+        // Migrate the superseded boolean. This used to be a single
+        // "Only manually reviewed scenes" checkbox; an existing install that
+        // had it ticked should land on 'reviewed' rather than silently
+        // reverting to showing everything.
+        if (!VALID.includes(mode)) {
+          mode = getSetting('onlyManualRatedScenes', false) ? 'reviewed' : 'all';
+        }
+        t.value = mode;
+      } catch { t.value = 'all'; }
       t.addEventListener('change', () => {
-        const s = loadSettings(); s.onlyManualRatedScenes = !!t.checked; saveSettings(s);
+        const mode = VALID.includes(t.value) ? t.value : 'all';
+        const s = loadSettings();
+        s.sceneReviewFilter = mode;
+        // Keep the legacy key consistent so an older build reading these
+        // settings still behaves sensibly.
+        s.onlyManualRatedScenes = (mode === 'reviewed');
+        saveSettings(s);
         renderScenes();
       });
     })();

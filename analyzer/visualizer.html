@@ -183,9 +183,13 @@
         <div class="tfb-more-wrap">
           <button id="tfbMoreBtn" type="button" class="tfb-more-btn" aria-haspopup="true" aria-expanded="false" title="More filter and grouping options">⚙ More ▾</button>
           <div id="tfbMorePopover" class="tfb-more-popover hidden" role="menu" aria-label="Additional options">
-            <label class="tfb-popover-row" title="Only show scenes you've manually reviewed: user star ratings, user accept/reject culling decisions, reviewed scene tags, or renamed scene names.">
-              <input id="filterScenesManualRated" type="checkbox" />
-              <span>Only manually reviewed scenes</span>
+            <label class="tfb-popover-row" title="Filter by review state. A scene counts as reviewed once you have given it any user star rating, any accept/reject culling decision, reviewed scene tags, or a scene name. Unreviewed scenes are the ones that still need work.">
+              <span>Review state</span>
+              <select id="filterSceneReviewState">
+                <option value="all">All scenes</option>
+                <option value="reviewed">Reviewed only</option>
+                <option value="unreviewed">Unreviewed only</option>
+              </select>
             </label>
             <label class="tfb-popover-row">
               <input id="includeSecondarySpecies" type="checkbox" />
