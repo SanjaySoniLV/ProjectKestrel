@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import tempfile
 import time
 
@@ -564,6 +565,63 @@ def _to_csv_atomic(database: pd.DataFrame, db_path: str) -> None:
     except BaseException:
         # Do NOT fall back to a direct write — that is the partial-read path
         # this function exists to close. Leave the previous file intact.
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def copy_file_atomic(src_path: str, dst_path: str) -> None:
+    """Copy ``src_path`` onto ``dst_path`` atomically (temp file + os.replace).
+
+    Used by the backup-restore path: ``shutil.copy2`` writes the destination in
+    place, so an interrupted restore (this runs right after a risky operation
+    like reject-and-move, exactly when a crash is plausible) could leave the
+    live database/scenedata half-overwritten and corrupt. Copying raw bytes to a
+    temp file in the same directory and ``os.replace``-ing it in gives readers /
+    a crash an all-or-nothing view, and preserves the file's exact encoding/BOM.
+    Content is flushed+fsync'd before the replace (matching ``_to_csv_atomic``'s
+    durability), and file metadata (mode/mtime) is preserved like the previous
+    ``shutil.copy2``.
+    """
+    directory = os.path.dirname(dst_path) or "."
+    os.makedirs(directory, exist_ok=True)
+
+    tmp_fd, tmp = tempfile.mkstemp(prefix=".kestrel_atomic_", suffix=".tmp", dir=directory)
+    try:
+        # If fdopen raises it hasn't taken ownership of the descriptor; close it
+        # explicitly so it can't leak.
+        try:
+            dst_f = os.fdopen(tmp_fd, "wb")
+        except BaseException:
+            os.close(tmp_fd)
+            raise
+        # Close dst_f in a finally rather than relying on the with-statement's
+        # ordering: if opening the source (or the copy) raises, the destination
+        # handle must still be released. A leaked handle on Windows can block
+        # the os.replace below and strand the .tmp file. close() on an
+        # already-closed handle is a harmless no-op.
+        try:
+            with open(src_path, "rb") as src_f:
+                shutil.copyfileobj(src_f, dst_f)
+                dst_f.flush()
+                try:
+                    os.fsync(dst_f.fileno())
+                except OSError:
+                    # fsync can legitimately fail on some network filesystems;
+                    # the replace below still gives readers an all-or-nothing
+                    # view.
+                    pass
+        finally:
+            dst_f.close()
+        # Preserve mode/mtime as the previous shutil.copy2 did (best-effort).
+        try:
+            shutil.copystat(src_path, tmp)
+        except OSError:
+            pass
+        retry_on_file_lock(lambda: os.replace(tmp, dst_path))
+    except BaseException:
         try:
             os.remove(tmp)
         except OSError:
