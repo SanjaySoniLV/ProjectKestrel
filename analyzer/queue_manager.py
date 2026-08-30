@@ -7,6 +7,7 @@ for folder analysis, and the _QueueItem dataclass used internally.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import threading
 import time as _time_mod
@@ -38,6 +39,18 @@ _ALLOWED_DETECTOR_NAMES = {'mdv5a', 'mdv1000-cedar'}
 def _coerce_detector_name(value) -> str:
     name = str(value or _DEFAULT_DETECTOR_NAME).strip().lower()
     return name if name in _ALLOWED_DETECTOR_NAMES else _DEFAULT_DETECTOR_NAME
+
+
+def _folder_identity(path: str) -> str:
+    """Stable key for comparing photo-folder roots across queue and bridge."""
+    return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
+
+def _wipe_kestrel_dir(folder_path: str) -> None:
+    """Remove ``folder/.kestrel``. Raises on failure; does not swallow errors."""
+    kestrel_dir = os.path.join(folder_path, ".kestrel")
+    if os.path.isdir(kestrel_dir):
+        shutil.rmtree(kestrel_dir)
 
 
 def _utc_timestamp() -> str:
@@ -219,6 +232,20 @@ class QueueManager:
     @property
     def is_paused(self) -> bool:
         return not self._pause_event.is_set()
+
+    def has_running_writer(self, folder_path: str) -> bool:
+        """True if a queue item for ``folder_path`` is currently ``running``.
+
+        ``running`` means ``process_folder`` may be writing CSV/JSON/exports.
+        Pending items are not writers yet; the pre-analysis ``.kestrel`` wipe
+        happens while the item is still pending.
+        """
+        folder_key = _folder_identity(folder_path)
+        with self._lock:
+            return any(
+                it.status == "running" and _folder_identity(it.path) == folder_key
+                for it in self._items
+            )
 
     def get_status(self) -> dict:
         with self._lock:
@@ -425,18 +452,13 @@ class QueueManager:
             if item is None:
                 break
 
-            with self._lock:
-                item.status = 'running'
-                item.start_time = _time_mod.time()
-                item.initial_processed = 0
-            self._persist_recovery_state()
-
-            # ── Phase 3: per-item gates BEFORE the heavy pipeline call ────────
+            # ── Phase 3: per-item gates BEFORE marking running / pipeline ──
             # 1. skip_if_already_done — silently mark done without touching
             #    .kestrel if the folder is still fully analyzed with no errors.
             #    Re-inspect now (not at queue-build time) because state might
             #    have changed between dialog confirmation and the worker
-            #    reaching this folder.
+            #    reaching this folder. Keep status pending until we know work
+            #    will run, so UI clear cannot race a live writer.
             if item.skip_if_already_done and not self._retry_errored:
                 try:
                     import folder_inspector as _inspector
@@ -467,15 +489,38 @@ class QueueManager:
             # 2. delete_kestrel_on_start — wipe .kestrel JUST BEFORE this
             #    folder's analysis begins (NOT at queue-build time). If the
             #    user cancels mid-queue, later folders keep their .kestrel.
+            #    Never wipe while a writer already holds this root (status
+            #    running); a failed wipe aborts the item instead of analyzing
+            #    into a half-deleted directory.
             if item.delete_kestrel_on_start:
+                if self.has_running_writer(item.path):
+                    with self._lock:
+                        item.status = "error"
+                        item.end_time = _time_mod.time()
+                        item.error = (
+                            "Refusing to delete .kestrel while analysis is "
+                            "running for this folder"
+                        )
+                    error(f"[queue] {item.error}: {item.path!r}")
+                    self._persist_recovery_state()
+                    continue
                 try:
-                    import shutil as _shutil
-                    kestrel_dir = os.path.join(item.path, '.kestrel')
-                    if os.path.isdir(kestrel_dir):
-                        _shutil.rmtree(kestrel_dir, ignore_errors=True)
-                        info(f'[queue] Deleted .kestrel for {item.name!r} (per-item flag)')
+                    _wipe_kestrel_dir(item.path)
+                    info(f"[queue] Deleted .kestrel for {item.name!r} (per-item flag)")
                 except Exception as e:
-                    error(f'[queue] Failed to delete .kestrel for {item.path!r}: {e}')
+                    error(f"[queue] Failed to delete .kestrel for {item.path!r}: {e}")
+                    with self._lock:
+                        item.status = "error"
+                        item.end_time = _time_mod.time()
+                        item.error = str(e)
+                    self._persist_recovery_state()
+                    continue
+
+            with self._lock:
+                item.status = "running"
+                item.start_time = _time_mod.time()
+                item.initial_processed = 0
+            self._persist_recovery_state()
 
             try:
                 current_settings = load_persisted_settings()
