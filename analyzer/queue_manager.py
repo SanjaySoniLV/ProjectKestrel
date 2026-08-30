@@ -486,6 +486,15 @@ class QueueManager:
                 pass
 
             try:
+                # process_folder() logs a fatal error (e.g. a failed model load
+                # or DB read) and returns normally instead of raising, so capture
+                # it here; otherwise a folder that never analyzed is marked 'done'.
+                fatal_error = {'exc': None}
+
+                def _on_error(kind, exc, _fatal=fatal_error):
+                    if kind == 'fatal':
+                        _fatal['exc'] = exc
+
                 def _on_progress(processed, total, _it=item):
                     with self._lock:
                         if _it.initial_processed == 0 and processed > 0 and _it.processed == 0:
@@ -589,6 +598,7 @@ class QueueManager:
                         'on_crops': _on_crops,
                         'on_quality': _on_quality,
                         'on_species': _on_species,
+                        'on_error': _on_error,
                     },
                     analyzer_name='visualizer-queue',
                     wildlife_enabled=self._wildlife_enabled,
@@ -604,6 +614,17 @@ class QueueManager:
                     if self._cancel_event.is_set():
                         item.status = 'cancelled'
                         item.end_time = _time_mod.time()
+                    elif fatal_error['exc'] is not None:
+                        # process_folder() caught a fatal error and returned
+                        # without raising; surface it as an errored folder rather
+                        # than a false 'done'.
+                        item.status = 'error'
+                        # Some exceptions stringify to '' (e.g. RuntimeError());
+                        # fall back to the type name so the UI never shows a
+                        # blank error for a failed folder.
+                        _exc = fatal_error['exc']
+                        item.error = str(_exc) or type(_exc).__name__
+                        item.end_time = _time_mod.time()
                     else:
                         item.status = 'done'
                         item.end_time = _time_mod.time()
@@ -616,7 +637,7 @@ class QueueManager:
                 with self._lock:
                     item.status = 'error'
                     item.end_time = _time_mod.time()
-                    item.error = str(exc)
+                    item.error = str(exc) or type(exc).__name__
                 self._persist_recovery_state()
                 self._send_folder_analytics(item)
 
