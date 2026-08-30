@@ -274,6 +274,26 @@ def _is_sha256_hex(value) -> bool:
     return isinstance(value, str) and _SHA256_HEX_RE.match(value) is not None
 
 
+def _is_xmp_fp_key(key) -> bool:
+    """True iff ``key`` is a bare ``*.xmp`` basename (no directory components).
+
+    Sidecars are only ever written for jailed basenames, so the store only
+    needs basename keys. Path separators, ``..``, or a non-.xmp suffix are
+    garbage/foreign and must not be persisted back to disk.
+    """
+    if not isinstance(key, str) or not key:
+        return False
+    if not key.lower().endswith('.xmp'):
+        return False
+    if '/' in key or '\\' in key:
+        return False
+    if os.sep in key or (os.altsep and os.altsep in key):
+        return False
+    if key in ('.', '..') or os.path.basename(key) != key:
+        return False
+    return True
+
+
 def _file_sha256(path: str) -> str | None:
     """Return the hex sha256 of a file's bytes, or None if unreadable."""
     try:
@@ -291,7 +311,7 @@ def _xmp_fingerprint_path(root: str) -> str:
 
 
 def _load_xmp_fingerprints(root: str) -> dict:
-    """Load {relative-xmp-path -> sha256 as Kestrel last wrote it}.
+    """Load {basename.xmp -> sha256 as Kestrel last wrote it}.
 
     Returns {} on any error, so a missing/corrupt store never blocks writes —
     callers then fall back to the legacy "namespace substring" behavior.
@@ -302,14 +322,16 @@ def _load_xmp_fingerprints(root: str) -> dict:
         if not isinstance(data, dict):
             return {}
         # Keep only usable entries. A fingerprint must be a real sha256 hex
-        # digest. A null/other-typed value (older/corrupt store) or a
-        # non-sha256 string would otherwise be misused: a null behaves like
-        # "no fingerprint" and could silently allow an overwrite, while a
-        # bogus string would never match the file's real hash and wrongly
-        # route an untouched sidecar through the conflict path. Dropping both
-        # makes a corrupt store fall back cleanly to legacy handling.
+        # digest keyed by a bare ``*.xmp`` basename. A null/other-typed value
+        # (older/corrupt store) or a non-sha256 string would otherwise be
+        # misused: a null behaves like "no fingerprint" and could silently
+        # allow an overwrite, while a bogus string would never match the
+        # file's real hash and wrongly route an untouched sidecar through the
+        # conflict path. Path-shaped keys are never written (sidecars live
+        # next to the image in root) and must not be round-tripped. Dropping
+        # all of the above makes a corrupt store fall back to legacy handling.
         return {k: v for k, v in data.items()
-                if isinstance(k, str) and _is_sha256_hex(v)}
+                if _is_xmp_fp_key(k) and _is_sha256_hex(v)}
     except Exception:
         return {}
 
@@ -628,9 +650,10 @@ def write_xmp_metadata(
                 base, _ext = os.path.splitext(resolved_image)
                 xmp_path = base + '.xmp'
                 xmp_filename = os.path.basename(xmp_path)
-                # Key relative to the canonical root -> a stable basename-level
-                # key regardless of how the caller spelled root_path.
-                fp_key = os.path.relpath(xmp_path, root_real)
+                # Sidecars are jailed to a bare basename in root, so the
+                # fingerprint key is that basename — not a relpath that could
+                # carry separators if a corrupt store or future caller drifted.
+                fp_key = os.path.basename(xmp_path)
 
                 # Safety check: if XMP already exists, only overwrite it silently
                 # when it is a Kestrel sidecar that is unchanged since we wrote it

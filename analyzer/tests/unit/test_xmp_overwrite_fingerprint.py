@@ -72,7 +72,7 @@ def test_overwrite_external_true_forces_write(tmp_path):
 
     r = mw.write_xmp_metadata(str(tmp_path), [_entry()], overwrite_external=True)
     assert r['written'] == 1
-    assert 'edited' not in xmp.read_text(encoding='utf-8')
+    assert '<!-- edited -->' not in xmp.read_text(encoding='utf-8')
 
 
 def test_legacy_kestrel_sidecar_without_fingerprint_is_overwritten(tmp_path):
@@ -98,9 +98,10 @@ def test_non_kestrel_external_xmp_is_skipped(tmp_path):
 
 
 def test_load_fingerprints_keeps_only_sha256_hex(tmp_path):
-    """A store with null/non-string/non-sha256 values (older or corrupt) must
-    not feed ambiguous entries downstream; only real 64-char hex sha256
-    digests are kept. Everything else falls back to legacy handling."""
+    """A store with null/non-string/non-sha256 values or path-shaped keys
+    (older or corrupt) must not feed ambiguous entries downstream; only real
+    64-char hex sha256 digests keyed by a bare ``*.xmp`` basename are kept.
+    Everything else falls back to legacy handling."""
     import json
 
     good = "a" * 64  # a valid 64-char lowercase hex digest shape
@@ -114,6 +115,9 @@ def test_load_fingerprints_keeps_only_sha256_hex(tmp_path):
             "null.xmp": None,
             "num.xmp": 42,
             "list.xmp": ["x"],
+            "sub/dir.xmp": good,            # path separator — not a basename
+            "../evil.xmp": good,            # traversal-shaped key
+            "notxmp.txt": good,             # wrong suffix
         }),
         encoding='utf-8',
     )
