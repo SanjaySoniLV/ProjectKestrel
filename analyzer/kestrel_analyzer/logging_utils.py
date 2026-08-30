@@ -1,7 +1,8 @@
 import json
 import os
+import threading
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -28,12 +29,27 @@ except (ImportError, ValueError):
         def error(*_a, **_kw): pass  # type: ignore[no-redef]
 
 
+_log_write_lock = threading.RLock()
+
+
+def utc_now_naive() -> datetime:
+    """UTC now as a naive datetime.
+
+    The deprecated naive-UTC constructor emits DeprecationWarning on
+    Python 3.12+. If a ``warnings.showwarning`` hook logs via
+    :func:`log_warning` (which stamps the entry with this helper), that
+    warning would re-enter the hook and raise RecursionError.
+    ``datetime.now(timezone.utc)`` is silent.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def _utc_timestamp() -> str:
-    return datetime.utcnow().isoformat() + "Z"
+    return utc_now_naive().isoformat() + "Z"
 
 
 def _file_timestamp() -> str:
-    return datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    return utc_now_naive().strftime("%Y%m%dT%H%M%SZ")
 
 
 def resolve_log_dir(folder: Optional[str]) -> str:
@@ -72,10 +88,14 @@ def _read_log_entries(log_path: str) -> list:
 
 def log_event(log_path: str, entry: Dict[str, Any]) -> None:
     entry_with_time = {"timestamp_utc": _utc_timestamp(), **entry}
-    entries = _read_log_entries(log_path)
-    entries.append(entry_with_time)
-    with open(log_path, "w", encoding="utf-8") as handle:
-        json.dump(entries, handle, indent=2)
+    # Decoder threads can hit the warning hook concurrently. Serialize the
+    # read-modify-write so overlapping log_warning/log_exception calls cannot
+    # tear the JSON file or drop earlier session entries.
+    with _log_write_lock:
+        entries = _read_log_entries(log_path)
+        entries.append(entry_with_time)
+        with open(log_path, "w", encoding="utf-8") as handle:
+            json.dump(entries, handle, indent=2)
 
 
 def log_exception(
@@ -96,6 +116,54 @@ def log_exception(
             "traceback": traceback.format_exc(),
         },
     )
+
+
+def make_logged_showwarning(
+    log_path: str,
+    stage_ctx: Dict[str, Any],
+    folder: Optional[str] = None,
+    original_showwarning=None,
+):
+    """Build a ``warnings.showwarning`` hook that writes to the JSON log.
+
+    The hook is re-entrancy-safe: if logging itself emits a warning (the
+    historical ``datetime.utcnow`` DeprecationWarning, or any other), the
+    nested call skips JSON logging instead of stacking until RecursionError.
+    Nested warnings are still forwarded to ``original_showwarning`` so they
+    are not silently dropped.
+
+    The guard is thread-local: ``warnings.showwarning`` is process-global, and
+    decoder/worker threads can warn concurrently. A plain closure boolean
+    would drop or interleave those unrelated warnings.
+    """
+    state = threading.local()
+
+    def _showwarning(message, category, filename, lineno, file=None, line=None):
+        if getattr(state, "in_handler", False):
+            if original_showwarning is not None:
+                original_showwarning(
+                    message, category, filename, lineno, file=file, line=line
+                )
+            return
+        state.in_handler = True
+        try:
+            log_warning(
+                log_path,
+                message,
+                category=category,
+                filename=filename,
+                lineno=lineno,
+                stage=stage_ctx.get("stage"),
+                context={"file": stage_ctx.get("file"), "folder": folder},
+            )
+            if original_showwarning:
+                original_showwarning(
+                    message, category, filename, lineno, file=file, line=line
+                )
+        finally:
+            state.in_handler = False
+
+    return _showwarning
 
 
 def log_warning(
