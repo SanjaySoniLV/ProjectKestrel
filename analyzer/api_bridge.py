@@ -411,6 +411,55 @@ _CULLING_PRIMARY_IMAGE_EXTENSIONS = set(
     _normalize_extensions([*(_RAW_EXTENSIONS or []), *(_JPEG_EXTENSIONS or [])])
 )
 
+
+def _sidecar_basename_candidates(filename: str, ext: str) -> list[str]:
+    """Primary (``file.CR3.xmp``) then stem (``file.xmp``) sidecar names."""
+    names = [filename + ext]
+    if '.' in filename:
+        stem = filename.rsplit('.', 1)[0] + ext
+        if stem not in names:
+            names.append(stem)
+    return names
+
+
+def _sidecar_extension_probes(candidate: str, ext: str) -> tuple[str, ...]:
+    """``candidate`` plus the same stem with ``ext`` uppercased.
+
+    Companion extensions are stored lowercase. Cameras and Lightroom write
+    ``.XMP`` / ``.JPG``. On a case-sensitive filesystem
+    ``exists(base + '.xmp')`` misses that file; probe ``.XMP`` too.
+    """
+    probes = [candidate]
+    e = str(ext or '')
+    if e and len(candidate) >= len(e) and candidate.lower().endswith(e.lower()):
+        alt = candidate[:len(candidate) - len(e)] + e.upper()
+        if alt not in probes:
+            probes.append(alt)
+    return tuple(probes)
+
+
+def _existing_sidecar_names(root_path: str, names: tuple[str, ...]) -> list[str]:
+    """Return probe names that exist, skipping case-folded aliases of one file."""
+    hits: list[str] = []
+    for name in names:
+        path = os.path.join(root_path, name)
+        try:
+            if not os.path.exists(path):
+                continue
+        except OSError:
+            continue
+        duplicate = False
+        for prev in hits:
+            try:
+                if os.path.samefile(path, os.path.join(root_path, prev)):
+                    duplicate = True
+                    break
+            except OSError:
+                continue
+        if not duplicate:
+            hits.append(name)
+    return hits
+
 _REJECT_DEST_EXISTS_REASON = 'a file with this name already exists in the reject folder'
 _SHOOT_DEST_EXISTS_REASON = 'a file with this name already exists in the shoot folder'
 
@@ -6448,33 +6497,42 @@ class Api:
     class _DirIndex(dict):
         """Case-folded name -> last on-disk spelling, plus lookup tables.
 
-        Companion lookup still uses last-wins ``self[lower]`` (a string).
-        Main-file resolve uses ``names_set`` / ``folded_counts`` so two files
+        Main-file resolve uses ``names_set`` / ``folded_names`` so two files
         that differ only by case are not collapsed onto whichever listing
-        came last, in O(1) per request. ``names`` is None when listdir failed.
+        came last, in O(1) per request. Companion lookup uses ``matches()``
+        so every spelling is returned instead of last-wins ``self[lower]``.
+        ``names`` is None when listdir failed.
         """
 
         def __init__(self, names: list[str] | None):
             super().__init__()
             self.names = names
             self.names_set: set[str] = set()
-            self.folded_counts: dict[str, int] = {}
+            self.folded_names: dict[str, list[str]] = {}
             if not names:
                 return
             for entry in names:
                 key = entry.lower()
                 self[key] = entry
                 self.names_set.add(entry)
-                self.folded_counts[key] = self.folded_counts.get(key, 0) + 1
+                bucket = self.folded_names.get(key)
+                if bucket is None:
+                    self.folded_names[key] = [entry]
+                else:
+                    bucket.append(entry)
 
         def resolve(self, name: str) -> str | None:
             """Exact spelling, else the unique case-insensitive hit, else None."""
             if name in self.names_set:
                 return name
-            folded = name.lower()
-            if self.folded_counts.get(folded, 0) == 1:
-                return self[folded]
+            hits = self.folded_names.get(name.lower(), ())
+            if len(hits) == 1:
+                return hits[0]
             return None
+
+        def matches(self, name: str) -> list[str]:
+            """Every on-disk spelling that folds to ``name``. Empty if none."""
+            return list(self.folded_names.get(name.lower(), ()))
 
     def _build_dir_index(self, root_path: str) -> dict:
         """Map lowercased entry name -> real on-disk name for one directory.
@@ -6530,6 +6588,42 @@ class Api:
             return index.get(name.lower()) if index else None
         return self._DirIndex(listing).resolve(name)
 
+    def _lookup_sidecar_names(self, root_path: str, index, candidate: str,
+                              ext: str) -> list[str]:
+        """Resolve ``candidate`` through the dir index, or exists-probe on failure."""
+        if isinstance(index, self._DirIndex):
+            if index.names is not None:
+                return index.matches(candidate)
+            return _existing_sidecar_names(
+                root_path, _sidecar_extension_probes(candidate, ext)
+            )
+        if index:
+            hit = index.get(candidate.lower())
+            return [hit] if hit else []
+        return _existing_sidecar_names(
+            root_path, _sidecar_extension_probes(candidate, ext)
+        )
+
+    def _find_sidecar_matches(self, root_path: str, filename: str, ext: str = '.xmp',
+                              dir_index: dict | None = None) -> list[str]:
+        """All on-disk sidecar spellings for ``filename`` + ``ext``.
+
+        Uses the directory listing when available. When listdir failed, probes
+        ``exists()`` for the lowercase extension and the uppercased variant
+        (``.xmp`` vs ``.XMP``). Distinct files are all returned; a
+        case-folding filesystem's two names for one inode collapse to one.
+        """
+        index = self._build_dir_index(root_path) if dir_index is None else dir_index
+        found: list[str] = []
+        seen: set[str] = set()
+        for candidate in _sidecar_basename_candidates(filename, ext):
+            for hit in self._lookup_sidecar_names(root_path, index, candidate, ext):
+                if hit in seen:
+                    continue
+                seen.add(hit)
+                found.append(hit)
+        return found
+
     def _find_sidecar_file(self, root_path: str, filename: str, ext: str = '.xmp',
                            dir_index: dict | None = None):
         """Find sidecar file with given extension for an image file.
@@ -6539,7 +6633,9 @@ class Api:
         - name_without_ext + ext (e.g., IMG_001.xmp for IMG_001.CR3)
 
         Matching is case-insensitive; the returned name is the real on-disk
-        spelling, so callers can join it to a path directly.
+        spelling, so callers can join it to a path directly. Exact constructed
+        spelling wins over a last-wins fold. Ambiguous case variants without
+        an exact hit return None rather than the last listing.
 
         ``dir_index`` is an optional pre-built listing from
         ``_build_dir_index``. Pass it when resolving many files in one
@@ -6548,20 +6644,17 @@ class Api:
         Returns the filename (not path) if found, None otherwise.
         Searches in the same directory as the image.
         """
-        index = self._build_dir_index(root_path) if dir_index is None else dir_index
-
-        # Primary naming: filename + ext (e.g., IMG_001.CR3.xmp)
-        hit = index.get((filename + ext).lower())
-        if hit:
-            return hit
-
-        # Secondary naming: name_without_ext + ext (e.g., IMG_001.xmp)
-        if '.' in filename:
-            base_name = filename.rsplit('.', 1)[0]
-            hit = index.get((base_name + ext).lower())
-            if hit:
-                return hit
-
+        matches = self._find_sidecar_matches(
+            root_path, filename, ext, dir_index=dir_index
+        )
+        if not matches:
+            return None
+        match_set = set(matches)
+        for candidate in _sidecar_basename_candidates(filename, ext):
+            if candidate in match_set:
+                return candidate
+        if len(matches) == 1:
+            return matches[0]
         return None
 
     def _find_companion_files(self, root_path: str, filename: str,
@@ -6571,6 +6664,10 @@ class Api:
         ``dir_index`` is an optional pre-built listing from
         ``_build_dir_index``. Without it this lists the directory once per
         call; batch callers should build the index once and pass it in.
+
+        Every on-disk case variant of a companion is included (``.xmp`` and
+        ``.XMP`` are two files on a case-sensitive filesystem). The main file
+        itself is skipped even when its spelling differs only by case.
         """
         companions: list[str] = []
         seen: set[str] = set()
@@ -6578,14 +6675,13 @@ class Api:
         index = self._build_dir_index(root_path) if dir_index is None else dir_index
 
         for ext in self._culling_companion_extensions:
-            companion = self._find_sidecar_file(root_path, filename, ext, dir_index=index)
-            if not companion:
-                continue
-            key = companion.lower()
-            if key == filename_key or key in seen:
-                continue
-            seen.add(key)
-            companions.append(companion)
+            for companion in self._find_sidecar_matches(
+                root_path, filename, ext, dir_index=index
+            ):
+                if companion.lower() == filename_key or companion in seen:
+                    continue
+                seen.add(companion)
+                companions.append(companion)
 
         return companions
 
