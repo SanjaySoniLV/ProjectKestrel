@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 try:
     from kestrel_analyzer.pipeline import AnalysisPipeline
-    from kestrel_analyzer.logging_utils import log_event
+    from kestrel_analyzer.logging_utils import log_event, read_log_entries
     from kestrel_analyzer.ml import GPU_EP
 except Exception as exc:  # pragma: no cover - environment-dependent
     # The pipeline pulls in cv2 / onnxruntime / rawpy. Several CI containers
@@ -58,16 +58,17 @@ _SUPPRESS_UTCNOW_RECURSION = pytest.mark.filterwarnings(
 
 
 def _read_log(folder: Path) -> list:
-    """Return every event written to the analysis log under ``folder``."""
+    """Return every event written to the analysis log under ``folder``.
+
+    Deliberately goes through the production reader rather than parsing here,
+    so these tests break if the on-disk format and its reader ever drift
+    apart. Both extensions are globbed: sessions write ``.jsonl``, while a few
+    cases below point ``_log_path`` at an explicit ``.json`` name.
+    """
     log_dir = folder / ".kestrel"
     entries = []
-    for log_file in sorted(log_dir.glob("*.json")):
-        try:
-            data = json.loads(log_file.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        if isinstance(data, list):
-            entries.extend(data)
+    for log_file in sorted(log_dir.glob("*.json")) + sorted(log_dir.glob("*.jsonl")):
+        entries.extend(read_log_entries(str(log_file)))
     return entries
 
 
