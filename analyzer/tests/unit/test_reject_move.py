@@ -762,3 +762,85 @@ class TestMoveNoOverwrite:
         api_bridge._move_no_overwrite(str(src), str(dst))
         assert not src.exists()
         assert dst.read_bytes() == b"PAYLOAD"
+
+    # --- metadata preservation on the copy fallback -------------------------
+    #
+    # The hard-link path keeps mtime and mode for free: dst is the same inode as
+    # src. The copy fallback creates a genuinely new file, so without an explicit
+    # copystat the reject lands stamped with the time of the cull. That fallback
+    # runs whenever os.link fails -- cross-device, and on exFAT/FAT32, i.e. camera
+    # cards and portable drives -- so it is the common path for a reject folder on
+    # a second volume, not a rare one.
+
+    def test_copy_fallback_preserves_mtime(self, tmp_path, monkeypatch):
+        src = tmp_path / "src.bin"
+        dst = tmp_path / "dst.bin"
+        src.write_bytes(b"PAYLOAD")
+        # A capture time well in the past, so "kept" vs "stamped now" cannot be
+        # confused by clock granularity.
+        old = 1_000_000_000.0  # 2001-09-09 UTC
+        os.utime(src, (old, old))
+        expected = src.stat().st_mtime
+
+        def boom(_src, _dst):
+            raise OSError("link unsupported")
+
+        monkeypatch.setattr(api_bridge.os, "link", boom)
+        api_bridge._move_no_overwrite(str(src), str(dst))
+
+        assert not src.exists()
+        assert dst.read_bytes() == b"PAYLOAD"
+        assert dst.stat().st_mtime == pytest.approx(expected, abs=2), (
+            "the copy fallback stamped the reject with the time of the move; "
+            "sorting a reject folder by date would be meaningless"
+        )
+
+    def test_both_paths_agree_on_mtime(self, tmp_path, monkeypatch):
+        """The same cull must not depend on which drive the reject folder is on."""
+        old = 1_000_000_000.0
+
+        linked_src = tmp_path / "linked_src.bin"
+        linked_dst = tmp_path / "linked_dst.bin"
+        linked_src.write_bytes(b"PAYLOAD")
+        os.utime(linked_src, (old, old))
+        api_bridge._move_no_overwrite(str(linked_src), str(linked_dst))
+
+        copied_src = tmp_path / "copied_src.bin"
+        copied_dst = tmp_path / "copied_dst.bin"
+        copied_src.write_bytes(b"PAYLOAD")
+        os.utime(copied_src, (old, old))
+
+        def boom(_src, _dst):
+            raise OSError("link unsupported")
+
+        monkeypatch.setattr(api_bridge.os, "link", boom)
+        api_bridge._move_no_overwrite(str(copied_src), str(copied_dst))
+
+        assert linked_dst.stat().st_mtime == pytest.approx(
+            copied_dst.stat().st_mtime, abs=2
+        ), "hard-link and copy fallback disagree on the destination's mtime"
+
+    def test_copy_fallback_survives_copystat_failure(self, tmp_path, monkeypatch):
+        """copystat is best-effort: it must never fail an otherwise good move.
+
+        It can legitimately raise on SMB/NFS shares and on some exFAT targets,
+        which are exactly the volumes that force the fallback in the first place.
+        Losing a timestamp is acceptable; losing the cull is not.
+        """
+        src = tmp_path / "src.bin"
+        dst = tmp_path / "dst.bin"
+        src.write_bytes(b"PAYLOAD")
+
+        def boom_link(_src, _dst):
+            raise OSError("link unsupported")
+
+        def boom_copystat(_src, _dst, **_kw):
+            raise OSError("copystat unsupported on this filesystem")
+
+        monkeypatch.setattr(api_bridge.os, "link", boom_link)
+        monkeypatch.setattr(api_bridge.shutil, "copystat", boom_copystat)
+
+        api_bridge._move_no_overwrite(str(src), str(dst))
+
+        assert not src.exists()
+        assert dst.read_bytes() == b"PAYLOAD"

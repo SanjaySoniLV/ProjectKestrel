@@ -443,6 +443,17 @@ def _move_no_overwrite(src: str, dst: str) -> None:
     Windows setups), copy via ``O_CREAT|O_EXCL`` then unlink the source.
     Never falls through to ``shutil.move``. If unlinking ``src`` fails after
     ``dst`` exists, ``dst`` is removed so a retry is not blocked.
+
+    Both paths preserve the source's mtime and mode. The hard link gets that for
+    free — it is the same inode — but the copy fallback would otherwise stamp the
+    destination with the time of the move and default permission bits. That
+    fallback is not an exotic branch here: ``os.link`` fails cross-device and on
+    exFAT/FAT32, which is how camera cards and most portable drives are
+    formatted, so it is the *common* path for a reject folder on another volume.
+    Culling 200 files would then land 200 files all dated today, silently
+    destroying date-sort in the reject folder. ``copystat`` is best-effort — it
+    can legitimately fail on SMB/NFS and on exFAT targets, and a lost timestamp
+    must never fail a move that has otherwise succeeded.
     """
     src = os.fspath(src)
     dst = os.fspath(dst)
@@ -476,6 +487,13 @@ def _move_no_overwrite(src: str, dst: str) -> None:
             except OSError:
                 pass
             raise
+        # Carry mtime/mode across, as the hard-link path does implicitly. Same
+        # best-effort handling as ``database.copy_file_atomic``: the bytes are
+        # already durable, so a metadata failure must not fail the move.
+        try:
+            shutil.copystat(src, dst)
+        except OSError:
+            pass
         _unlink_src_or_rollback(src, dst)
         return
     _unlink_src_or_rollback(src, dst)
