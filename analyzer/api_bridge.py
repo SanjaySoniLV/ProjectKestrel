@@ -7448,6 +7448,12 @@ class Api:
         ``crop_path`` / ``export_path`` are stored relative to the folder root
         (``pipeline`` writes them via ``os.path.relpath``), plus every entry in
         ``crops_json`` for multi-crop rows.
+
+        De-duplicated: a single-crop row's ``crop_path`` and its lone
+        ``crops_json`` entry are the same file, so a naive list names it twice.
+        Callers delete or copy each path in turn, and the second pass over a
+        duplicate either fails with "file not found" or double-counts, so the
+        de-duplication belongs here rather than at each call site.
         """
         rels: list = []
         for col in ('crop_path', 'export_path'):
@@ -7471,7 +7477,17 @@ class Api:
                     text = str(crop.get('crop_path') or '').strip()
                     if text and text not in ('N/A', 'nan'):
                         rels.append(text)
-        return rels
+        # Order-preserving de-duplication. Compared case-insensitively because
+        # the same asset can be spelled differently between crop_path and
+        # crops_json, and the filesystems this runs on treat those as one file.
+        seen: set = set()
+        unique: list = []
+        for rel in rels:
+            key = rel.replace('\\', '/').lower()
+            if key not in seen:
+                seen.add(key)
+                unique.append(rel)
+        return unique
 
     def repair_forget_missing(self, folder_path: str, filenames):
         """Delete database rows for photos the user confirms are gone.
@@ -7622,6 +7638,9 @@ class Api:
         Pass ``filenames`` to move a subset; omit it to move every row whose
         file is present at the destination.
         """
+        # Set before the try so the rollback handler can always read it, even
+        # for a failure that happens long before a destination is staged.
+        created_dest = ''
         try:
             src_real, src_kestrel, _, err = self._resolve_folder_root_and_kestrel(
                 source_path,
@@ -7653,7 +7672,12 @@ class Api:
                 }
 
             dest_kestrel = os.path.join(dest_real, '.kestrel')
-            if os.path.isdir(dest_kestrel):
+            # Test for a real database, not merely for the directory. A bare
+            # `.kestrel/` shell is what a previously failed relocate leaves
+            # behind, and treating that as "already analysed" would refuse the
+            # retry forever while telling the user something untrue about why.
+            dest_db = os.path.join(dest_kestrel, 'kestrel_database.csv')
+            if os.path.isfile(dest_db):
                 return {
                     'success': False,
                     'error': (
@@ -7715,24 +7739,37 @@ class Api:
             asset_rels = self._repair_row_asset_paths(frame, mask)
 
             self._backup_before_repair(src_kestrel)
+
+            # The whole relocate is staged at the destination first and only
+            # committed to the source at step 5. Anything that raises before
+            # that point unwinds to the handler below, which removes the
+            # destination we built, leaving the source exactly as it was.
+            #
+            # This ordering is why assets are COPIED here and the source copies
+            # deleted afterwards: a move would make the asset step itself the
+            # commit, so a later failure would strand the source with rows whose
+            # crops had already left -- the broken-thumbnail state this repair
+            # exists to remove.
+            created_dest = dest_kestrel if not os.path.isdir(dest_kestrel) else ''
             os.makedirs(dest_kestrel, exist_ok=True)
 
             # 1. Write the moved rows as the destination's database.
             moving = frame.loc[mask].copy()
             self._write_repair_frame(moving, os.path.join(dest_kestrel, 'kestrel_database.csv'))
 
-            # 2. Split scenedata: ratings and scene membership follow their photos.
+            # 2. Split scenedata. Only the destination's copy is written now;
+            #    the source's is rewritten at the commit point.
             src_scenedata = self._read_scenedata_for_repair(src_kestrel)
             if src_scenedata:
                 dest_scenedata = self._split_scenedata_for_move(src_scenedata, move_set)
                 self._write_scenedata_for_repair(dest_kestrel, dest_scenedata)
-                self._scenedata_drop_filenames(src_scenedata, move_set)
-                self._write_scenedata_for_repair(src_kestrel, src_scenedata)
 
-            # 3. Move the crop/export JPEGs. Without these the destination's rows
+            # 3. Copy the crop/export JPEGs. Without these the destination's rows
             #    render as broken thumbnails — the CSV alone looks correct but the
-            #    folder is visibly wrong.
-            assets_moved = 0
+            #    folder is visibly wrong. Failures raise rather than warn: a
+            #    destination missing its assets is not a successful relocate, and
+            #    unwinding here still leaves the source whole.
+            copied_pairs = []
             for rel in asset_rels:
                 _r, src_asset, perr = self._resolve_path_in_root(
                     src_real, rel, context='repair_relocate', allow_absolute=False
@@ -7744,12 +7781,9 @@ class Api:
                 )
                 if perr2 or not dest_asset:
                     continue
-                try:
-                    os.makedirs(os.path.dirname(dest_asset), exist_ok=True)
-                    shutil.move(src_asset, dest_asset)
-                    assets_moved += 1
-                except Exception as e:
-                    warn(f'[repair] Could not move asset {rel}: {e}')
+                os.makedirs(os.path.dirname(dest_asset), exist_ok=True)
+                shutil.copy2(src_asset, dest_asset)
+                copied_pairs.append(src_asset)
 
             # 4. Give the destination an audit trail of its own.
             try:
@@ -7771,9 +7805,27 @@ class Api:
             except Exception as e:
                 warn(f'[repair] Could not write destination metadata: {e}')
 
-            # 5. Only now drop the rows from the source.
+            # 5. COMMIT. The destination is complete; drop the rows from the
+            #    source. Past this line the relocate has happened and failures
+            #    must no longer unwind the destination.
+            if src_scenedata:
+                self._scenedata_drop_filenames(src_scenedata, move_set)
+                self._write_scenedata_for_repair(src_kestrel, src_scenedata)
             self._write_repair_frame(frame.loc[~mask].copy(), csv_path)
+            created_dest = ''
 
+            # 6. Reclaim the source copies. Best-effort by design: the relocate
+            #    is already committed, and a leftover JPEG no row references is
+            #    wasted space, not damage.
+            for src_asset in copied_pairs:
+                try:
+                    os.remove(src_asset)
+                except Exception as e:
+                    warn(f'[repair] Could not remove relocated source asset: {e}')
+
+            # Reports what reached the destination, not what was reclaimed from
+            # the source — a failed cleanup does not make the relocate smaller.
+            assets_moved = len(copied_pairs)
             info(
                 f'[repair] Relocated {len(move_names)} row(s) and {assets_moved} '
                 f'asset file(s) from {src_real} to {dest_real}'
@@ -7788,6 +7840,16 @@ class Api:
             }
         except Exception as e:
             error(f'[API] repair_relocate error: {e}')
+            # Unwind anything staged at the destination. ``created_dest`` is
+            # cleared at the commit point, so this only ever fires while the
+            # source is still intact — it can never delete a destination the
+            # source has already been trimmed against.
+            if created_dest:
+                try:
+                    shutil.rmtree(created_dest, ignore_errors=True)
+                    info(f'[repair] Rolled back partial destination {created_dest}')
+                except Exception as cleanup_err:
+                    warn(f'[repair] Could not roll back {created_dest}: {cleanup_err}')
             return {'success': False, 'error': str(e)}
 
     @staticmethod

@@ -214,6 +214,34 @@ class TestRejectFolder:
         assert res["missing"] == []
         assert res["rejected"] == ["IMG_002.CR3"]
 
+    def test_unreadable_reject_folder_blocks_the_repair_path(self, tmp_path, monkeypatch):
+        """An unreadable _KESTREL_Rejects must not present culled photos as deleted.
+
+        A culled photo and a deleted one are indistinguishable when the reject
+        folder cannot be read. Reporting the culled ones as missing while
+        leaving scan_status 'ok' would let the repair UI offer "I deleted them"
+        for photos sitting intact in a folder we simply could not open --
+        destroying culling decisions that no re-run can reconstruct.
+        """
+        _write_image(tmp_path, "IMG_001.CR3", 100)
+        (tmp_path / "_KESTREL_Rejects").mkdir()
+        _write_db(tmp_path, [("IMG_001.CR3", 100), ("IMG_002.CR3", 200)])
+
+        real_scan = folder_diff.scan_folder_images
+
+        def _fail_on_rejects(folder):
+            if folder.endswith("_KESTREL_Rejects"):
+                return [], "PermissionError: [Errno 13] Permission denied"
+            return real_scan(folder)
+
+        monkeypatch.setattr(folder_diff, "scan_folder_images", _fail_on_rejects)
+        res = compute_folder_diff(str(tmp_path))
+
+        assert res["scan_status"] == "unreadable"
+        assert "_KESTREL_Rejects" in res["scan_error"]
+        assert res["missing"] == []
+        assert res["has_drift"] is False
+
     def test_reject_folder_is_not_a_relocation_candidate(self, tmp_path):
         _write_image(tmp_path / "_KESTREL_Rejects", "IMG_002.CR3", 200)
         _write_db(tmp_path, [("IMG_002.CR3", 200)])

@@ -266,18 +266,29 @@ def compute_folder_diff(root: str, scan_subfolders: bool = True) -> dict:
     # Culled originals live in _KESTREL_Rejects. The culling flow removes their
     # rows at move time, so this should normally be empty — but an interrupted
     # move would otherwise present every half-moved photo as deleted.
+    #
+    # If that folder exists but cannot be read, the scan is NOT authoritative:
+    # a culled photo and a deleted one become indistinguishable, and reporting
+    # the culled ones as missing would let the repair UI offer to delete
+    # analysis data for photos sitting intact in a folder we simply could not
+    # open. That is the same failure the root-level scan_status gate exists to
+    # prevent, one directory deeper, so it gets the same answer — refuse to
+    # draw a conclusion rather than draw a destructive one.
     reject_dir = os.path.join(root, REJECT_DIR_NAME)
     if raw_missing and os.path.isdir(reject_dir):
         reject_entries, reject_err = scan_folder_images(reject_dir)
-        if not reject_err:
-            reject_names = {name for name, _ in reject_entries}
-            still_missing = []
-            for name, size in raw_missing:
-                if name in reject_names:
-                    result["rejected"].append(name)
-                else:
-                    still_missing.append((name, size))
-            raw_missing = still_missing
+        if reject_err:
+            result["scan_status"] = "unreadable"
+            result["scan_error"] = f"{REJECT_DIR_NAME}: {reject_err}"
+            return result
+        reject_names = {name for name, _ in reject_entries}
+        still_missing = []
+        for name, size in raw_missing:
+            if name in reject_names:
+                result["rejected"].append(name)
+            else:
+                still_missing.append((name, size))
+        raw_missing = still_missing
 
     pairs, matched_missing, matched_new = _match_renames(raw_missing, raw_new)
     result["renamed"] = pairs

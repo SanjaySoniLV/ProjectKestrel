@@ -287,6 +287,74 @@ class TestRelocate:
         assert res["moved"] == 0
         assert list(_read_db(src)["filename"]) == ["IMG_001.CR3"]
 
+    def test_failed_relocate_rolls_back_and_leaves_source_intact(self, api, tmp_path, monkeypatch):
+        """A mid-relocate failure must undo the destination, not strand it.
+
+        Before the fix, a raise after `os.makedirs(dest/.kestrel)` left the
+        destination behind, and the guard then refused every retry with
+        'destination_has_kestrel' -- telling the user the folder was already
+        analyzed when nothing had been written to it.
+        """
+        src = _make_folder(tmp_path / "A", [("IMG_001.CR3", 100), ("IMG_002.CR3", 200)])
+        dest = tmp_path / "B"
+        dest.mkdir()
+        (src / "IMG_002.CR3").rename(dest / "IMG_002.CR3")
+
+        original = api._write_repair_frame
+
+        def _boom(frame, csv_path):
+            if str(csv_path).startswith(str(dest)):
+                raise OSError(28, "No space left on device")
+            return original(frame, csv_path)
+
+        monkeypatch.setattr(api, "_write_repair_frame", _boom)
+        res = api.repair_relocate(str(src), str(dest))
+        assert res["success"] is False
+
+        # Destination unwound entirely.
+        assert not (dest / ".kestrel").exists()
+        # Source untouched: both rows and both sets of assets still present.
+        assert sorted(_read_db(src)["filename"]) == ["IMG_001.CR3", "IMG_002.CR3"]
+        assert (src / ".kestrel/crop/IMG_002_crop_0.jpg").exists()
+        assert (src / ".kestrel/export/IMG_002_export.jpg").exists()
+
+    def test_retry_after_failed_relocate_succeeds(self, api, tmp_path, monkeypatch):
+        """The retry the old guard made impossible."""
+        src = _make_folder(tmp_path / "A", [("IMG_001.CR3", 100), ("IMG_002.CR3", 200)])
+        dest = tmp_path / "B"
+        dest.mkdir()
+        (src / "IMG_002.CR3").rename(dest / "IMG_002.CR3")
+
+        original = api._write_repair_frame
+        calls = {"n": 0}
+
+        def _boom_once(frame, csv_path):
+            if str(csv_path).startswith(str(dest)) and calls["n"] == 0:
+                calls["n"] += 1
+                raise OSError(28, "No space left on device")
+            return original(frame, csv_path)
+
+        monkeypatch.setattr(api, "_write_repair_frame", _boom_once)
+        assert api.repair_relocate(str(src), str(dest))["success"] is False
+
+        res = api.repair_relocate(str(src), str(dest))
+        assert res["success"] is True, res.get("error")
+        assert res.get("reason") != "destination_has_kestrel"
+        assert res["moved"] == 1
+        assert list(_read_db(dest)["filename"]) == ["IMG_002.CR3"]
+        assert (dest / ".kestrel/crop/IMG_002_crop_0.jpg").exists()
+
+    def test_empty_kestrel_shell_does_not_block_relocate(self, api, tmp_path):
+        """A bare .kestrel/ with no database is debris, not analysis data."""
+        src = _make_folder(tmp_path / "A", [("IMG_001.CR3", 100)])
+        dest = tmp_path / "B"
+        (dest / ".kestrel").mkdir(parents=True)
+        (src / "IMG_001.CR3").rename(dest / "IMG_001.CR3")
+
+        res = api.repair_relocate(str(src), str(dest))
+        assert res["success"] is True, res.get("error")
+        assert res["moved"] == 1
+
     def test_refuses_same_folder(self, api, tmp_path):
         src = _make_folder(tmp_path / "A", [("IMG_001.CR3", 100)])
         res = api.repair_relocate(str(src), str(src))
