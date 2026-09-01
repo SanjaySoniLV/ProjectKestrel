@@ -51,6 +51,15 @@ BASE_COLUMNS = [
     "exposure_meter_scale",
     "detection_scores",
     "capture_time",
+    # Size in bytes of the source image at analysis time. Half of the identity
+    # key: a database row corresponds to a photo by (filename, file_size), not
+    # by filename alone. Filename alone cannot tell IMG_0005.CR3 on a reshot SD
+    # card from the IMG_0005.CR3 that was analysed before it, so the pipeline
+    # skipped the new photo and the UI showed metadata for a photo that no
+    # longer existed. Blank on rows written before this column existed — see
+    # ``ensure_columns`` — and every consumer must fall back to filename-only
+    # matching when it is blank rather than treating blank as a mismatch.
+    "file_size",
 ]
 
 # Legacy user-editable columns previously stored in kestrel_database.csv.
@@ -59,6 +68,24 @@ LEGACY_USER_COLUMNS = ["rating", "normalized_rating", "scene_name", "rating_orig
 
 # Schema version for kestrel_scenedata.json
 SCENEDATA_VERSION = "2.0"
+
+# Schema version for kestrel_database.csv, recorded in kestrel_metadata.json.
+#
+# Distinct from the app version already stored there. The app version is a
+# proxy that answers the wrong question — it says which build wrote the folder,
+# not which columns that build wrote — and it stops working the first time a
+# schema change ships in a patch release or a schema is left unchanged across
+# several releases. Migration code needs to branch on the schema, so the schema
+# gets its own number.
+#
+#   1  everything up to and including the Dusky-Grouse release
+#   2  adds ``file_size`` (see BASE_COLUMNS)
+#
+# Bump this when BASE_COLUMNS changes meaning or shape, and add a fixture under
+# tests/fixtures/legacy_databases/ (see that directory's SCHEMA_NOTES.md).
+# Absent from a folder's metadata means "1 or older" — it is not an error, and
+# most folders in the wild will never carry it.
+DATABASE_SCHEMA_VERSION = 2
 
 REQUIRED_COLUMNS = [
     "family",
@@ -83,6 +110,7 @@ def load_database(kestrel_dir: str, analyzer_name: str, log_path: str = None):
             if not os.path.exists(metadata_path):
                 metadata = {
                     "version": VERSION,
+                    "schema_version": DATABASE_SCHEMA_VERSION,
                     "analyzer": analyzer_name,
                     "created_utc": utc_now_naive().isoformat() + "Z",
                     "database_file": DATABASE_NAME,
@@ -425,6 +453,36 @@ def save_scenedata(scenedata: dict, kestrel_dir: str) -> None:
     write_json_atomic(scenedata_path, scenedata, indent=2)
 
 
+def parse_file_size(value) -> "int | None":
+    """Coerce a stored ``file_size`` cell to an int, or ``None`` if unknown.
+
+    Shared by the pipeline's skip test and the folder-diff repair scan so the
+    two can never disagree about what counts as a known size. Returns ``None``
+    for every "we don't know" spelling this column takes in the wild: absent
+    (legacy rows predating the column), blank, ``NaN`` from ``pd.read_csv``,
+    the string ``'nan'`` after a CSV round-trip, or a negative sentinel.
+
+    ``None`` means *unknown*, and callers must fall back to filename-only
+    matching for that row. It must never be conflated with ``0``, which is a
+    real size that would make every legacy row mismatch its file on disk.
+    """
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    if not text or text.lower() in ("nan", "none", ""):
+        return None
+    try:
+        size = int(float(text))
+    except (TypeError, ValueError):
+        return None
+    return size if size >= 0 else None
+
+
 def ensure_columns(database: pd.DataFrame) -> pd.DataFrame:
     """Ensure required analysis columns exist with appropriate defaults."""
     for col in REQUIRED_COLUMNS:
@@ -451,6 +509,11 @@ def ensure_columns(database: pd.DataFrame) -> pd.DataFrame:
         database["primary_crop_index"] = 0
     if "capture_time" not in database.columns:
         database["capture_time"] = ""
+    if "file_size" not in database.columns:
+        # Blank, not 0: a legacy row has an *unknown* size, and 0 is a real
+        # (if degenerate) size that would make every legacy row look like a
+        # mismatch against the file on disk.
+        database["file_size"] = ""
     return database
 
 

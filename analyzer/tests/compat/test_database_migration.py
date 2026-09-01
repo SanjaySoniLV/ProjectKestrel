@@ -19,6 +19,7 @@ from kestrel_analyzer.database import (
     load_database,
     load_scenedata,
     _needs_upgrade,
+    parse_file_size,
     BASE_COLUMNS,
     LEGACY_USER_COLUMNS,
 )
@@ -120,6 +121,33 @@ class TestLegacyDatabaseMigration:
         for col in LEGACY_USER_COLUMNS:
             assert col not in db.columns, (
                 f"Migration failed to drop legacy column '{col}' from {fixture_path.name}"
+            )
+
+    def test_file_size_present_but_unknown_after_load(self, legacy_csv_in_temp_dir):
+        """Every pre-``file_size`` fixture gains the column as UNKNOWN, not zero.
+
+        ``file_size`` is half of a row's identity. A legacy row has no recorded
+        size, and the distinction between "unknown" and "0 bytes" is the whole
+        ballgame: if a legacy row loaded as size 0 it would mismatch its own file
+        on disk, and the pipeline would re-analyse an entire historical library
+        while the repair UI reported every photo as changed.
+        """
+        tmp_path, fixture_path = legacy_csv_in_temp_dir
+        kestrel_dir = tmp_path / ".kestrel"
+
+        original = pd.read_csv(kestrel_dir / "kestrel_database.csv")
+        if "file_size" in original.columns:
+            pytest.skip(f"{fixture_path.name} already carries file_size")
+
+        db, _ = load_database(str(kestrel_dir), "test_analyzer", None)
+
+        assert "file_size" in db.columns, (
+            f"ensure_columns did not backfill file_size for {fixture_path.name}"
+        )
+        for value in db["file_size"].values:
+            assert parse_file_size(value) is None, (
+                f"Legacy row in {fixture_path.name} produced a concrete size "
+                f"{value!r}; legacy sizes must read as unknown."
             )
 
     def test_rating_migrated_to_scenedata(self, legacy_csv_in_temp_dir):

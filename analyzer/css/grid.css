@@ -654,6 +654,21 @@
   border-color: #2a3040;
 }
 
+/* Repair — only present when a background diff found this folder's photos and
+   its .kestrel data out of sync. Amber so it reads as "needs a look" rather
+   than an error; nothing behind it acts without explicit confirmation. */
+.folder-group-right-actions .folder-repair-btn {
+  color: #e8b339;
+  font-weight: 500;
+}
+.folder-group-right-actions .folder-repair-btn:hover {
+  background: #2a2415;
+  color: #ffcf5c;
+}
+.folder-group-right-actions .folder-repair-btn i {
+  font-style: normal;
+}
+
 .culling-btn {
   margin-left: auto;
   padding: 3px 12px;

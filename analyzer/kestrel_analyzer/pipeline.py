@@ -6,7 +6,7 @@ import threading
 import time
 import traceback
 import warnings
-from typing import Callable, Dict, Generator, Optional
+from typing import Callable, Dict, Generator, List, Optional
 
 import cv2
 import numpy as np
@@ -28,6 +28,8 @@ from .database import (
     load_database,
     save_database,
     finalize_scenedata_after_analysis,
+    parse_file_size,
+    DATABASE_SCHEMA_VERSION,
 )
 from .exposure_compensation import (
     apply_exposure_crop_numpy,
@@ -679,12 +681,23 @@ class AnalysisPipeline:
 
         try:
             _mark_stage("list_files")
-            entries = [
-                name
-                for name in os.listdir(folder)
-                if os.path.isfile(os.path.join(folder, name))
-            ]
-            files = select_camera_images(entries)
+            # scandir rather than listdir + isfile: identical syscall count on
+            # POSIX and strictly fewer on Windows (the stat data comes back with
+            # the directory enumeration), and it yields each file's size, which
+            # the skip test below needs to tell a re-shot IMG_0005.CR3 from the
+            # IMG_0005.CR3 already in the database.
+            disk_sizes: Dict[str, int] = {}
+            with os.scandir(folder) as _it:
+                for _entry in _it:
+                    try:
+                        if not _entry.is_file():
+                            continue
+                        disk_sizes[_entry.name] = _entry.stat().st_size
+                    except OSError:
+                        # Present but unmeasurable — keep it, size unknown, so
+                        # it is still analysed rather than silently dropped.
+                        disk_sizes[_entry.name] = -1
+            files = select_camera_images(list(disk_sizes.keys()))
             files.sort()
             if not files:
                 if status_cb:
@@ -750,8 +763,82 @@ class AnalysisPipeline:
                     database = database.loc[~errored_mask].copy()
                     self._save_database_soft(database, db_path, "retry_errored_prune")
 
-            processed_set = set(database["filename"].values)
-            new_files = [f for f in files if f not in processed_set]
+            # ── Identity is (filename, file_size), not filename alone ────────
+            # Keying only on filename made the pipeline skip genuinely new
+            # photos: empty an SD card, shoot again, and the recycled
+            # IMG_0005.CR3 matched the old row, so it was never analysed while
+            # the UI kept showing the previous shoot's metadata for it.
+            #
+            # An unknown size on EITHER side falls back to filename-only
+            # matching, so rows written before this column existed (stored '')
+            # and files whose stat failed (disk -1) behave exactly as before.
+            stored_sizes: Dict[str, "int | None"] = {}
+            _has_size_col = "file_size" in database.columns
+            for _i, _fn in enumerate(database["filename"].values):
+                _raw = database["file_size"].values[_i] if _has_size_col else None
+                stored_sizes[str(_fn)] = parse_file_size(_raw)
+
+            # Same name on disk, provably different bytes: a different photo
+            # wearing a recycled filename. Its stale row is dropped below so the
+            # re-analysis appends a clean one instead of duplicating the name.
+            superseded: List[str] = []
+            new_files: List[str] = []
+            for f in files:
+                if f not in stored_sizes:
+                    new_files.append(f)
+                    continue
+                _stored = stored_sizes[f]
+                _disk = disk_sizes.get(f, -1)
+                if _stored is not None and _disk >= 0 and _stored != _disk:
+                    superseded.append(f)
+                    new_files.append(f)
+
+            if superseded:
+                if status_cb:
+                    status_cb(
+                        f"{len(superseded)} file(s) changed since the last analysis "
+                        f"— re-analyzing."
+                    )
+                log_event(
+                    self._log_path,
+                    {
+                        "level": "info",
+                        "event": "superseded_rows_dropped",
+                        "folder": folder,
+                        "count": len(superseded),
+                    },
+                )
+                _sup = set(superseded)
+                database = database.loc[
+                    ~database["filename"].astype(str).isin(_sup)
+                ].copy()
+                self._save_database_soft(database, db_path, "superseded_prune")
+                stored_sizes = {
+                    k: v for k, v in stored_sizes.items() if k not in _sup
+                }
+
+            # Backfill file_size for rows that predate the column. This is the
+            # one place a legacy folder's identity gets upgraded, and it is safe
+            # to write here because analysis is explicitly user-initiated and
+            # the folder is already being enumerated — a passive background scan
+            # must never rewrite a database just to add a column.
+            _backfilled = 0
+            if not database.empty:
+                _sizes_out = []
+                for _fn in database["filename"].astype(str).values:
+                    _cur = stored_sizes.get(_fn)
+                    if _cur is None:
+                        _disk = disk_sizes.get(_fn, -1)
+                        if _disk >= 0:
+                            _backfilled += 1
+                            _sizes_out.append(_disk)
+                            continue
+                        _sizes_out.append("")
+                    else:
+                        _sizes_out.append(_cur)
+                if _backfilled:
+                    database["file_size"] = _sizes_out
+                    self._save_database_soft(database, db_path, "file_size_backfill")
             # Index of every file in the sorted ``files`` list, so retry
             # iterations can look up each errored image's alphabetical
             # predecessor in O(1) for the previous_image reset path.
@@ -835,6 +922,14 @@ class AnalysisPipeline:
                     "exposure_meter_scale": 1.0,
                     "detection_scores": [],
                     "capture_time": "",
+                    # Half of the row's identity. Blank when the entry could not
+                    # be measured at listing time, which keeps it "unknown"
+                    # rather than asserting a size that was never observed.
+                    "file_size": (
+                        disk_sizes.get(raw_file, -1)
+                        if disk_sizes.get(raw_file, -1) >= 0
+                        else ""
+                    ),
                     "orientation": "unknown",
                 }
 
@@ -1609,6 +1704,12 @@ class AnalysisPipeline:
 
                         _meta["analyzed_utc"] = _dt.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
                         _meta["kestrel_version"] = VERSION
+                        # Stamped on every run, not just on folder creation, so
+                        # a folder analysed by an older build records its new
+                        # schema as soon as this build touches it. The app
+                        # version above cannot stand in for this: it says which
+                        # build wrote the folder, not which columns it wrote.
+                        _meta["schema_version"] = DATABASE_SCHEMA_VERSION
                         _meta["analysis_settings"] = {
                             "detector_name": str(getattr(self, "detector_name", "") or ""),
                             "use_gpu": bool(getattr(self, "use_gpu", False)),
