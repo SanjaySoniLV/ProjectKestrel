@@ -392,6 +392,46 @@ class AnalysisPipeline:
             f"avg_decode_ms={avg_decode:.0f} avg_wait_ms={avg_wait:.0f}"
         )
 
+    def _save_database_soft(self, database, db_path: str, stage: str) -> bool:
+        """``save_database`` whose failure skips the save instead of ending the run.
+
+        ``save_database`` re-reads the CSV to recover the user's ``culled`` marks
+        before overwriting it, and raises if that read fails. Raising is the right
+        contract -- writing without the merge would discard those marks -- but the
+        failure it raises on is a Windows sharing violation that
+        ``retry_on_file_lock`` documents as routine, and this runs after *every*
+        image. Letting it propagate meant one transient lock could end an entire
+        run, and worse: the per-image handler caught it, recorded the photo as
+        ``species="Error"`` though the photo decoded fine, then called save again
+        from inside its own ``except`` where nothing was left to catch the second
+        raise.
+
+        Skipping is safe because ``database`` is cumulative and every save writes
+        it whole -- the next image's save persists whatever this one missed. Only
+        the on-disk copy lags, by a photo or two, until a save succeeds.
+
+        The post-analysis save deliberately does NOT come through here: it is the
+        last one, has no successor to cover for it, and must surface.
+
+        Returns True if the save landed.
+        """
+        try:
+            save_database(database, db_path)
+            return True
+        except Exception as exc:
+            log_exception(
+                self._log_path,
+                exc,
+                stage=stage,
+                context={"db_path": db_path, "soft": True},
+            )
+            _error(
+                f"[pipeline] save_database skipped at stage={stage}: "
+                f"{type(exc).__name__}: {exc}. Results are held in memory and "
+                f"will be written by the next successful save."
+            )
+            return False
+
     def _log_resolved_providers(self) -> None:
         """Log the execution providers ONNX Runtime actually chose.
 
@@ -708,7 +748,7 @@ class AnalysisPipeline:
                     # produce duplicate (filename, species=Error) rows. The
                     # retried images will append fresh rows below.
                     database = database.loc[~errored_mask].copy()
-                    save_database(database, db_path)
+                    self._save_database_soft(database, db_path, "retry_errored_prune")
 
             processed_set = set(database["filename"].values)
             new_files = [f for f in files if f not in processed_set]
@@ -1104,7 +1144,7 @@ class AnalysisPipeline:
                         )
                         stage_ctx["stage"] = "save_database"
                         database = pd.concat([database, pd.DataFrame([entry])], ignore_index=True)
-                        save_database(database, db_path)
+                        self._save_database_soft(database, db_path, "save_database")
                         if image_cb:
                             image_cb(entry)
                         if progress_cb:
@@ -1447,7 +1487,7 @@ class AnalysisPipeline:
 
                     stage_ctx["stage"] = "save_database"
                     database = pd.concat([database, pd.DataFrame([entry])], ignore_index=True)
-                    save_database(database, db_path)
+                    self._save_database_soft(database, db_path, "save_database")
 
                     if image_cb:
                         image_cb(entry)
@@ -1491,7 +1531,10 @@ class AnalysisPipeline:
                     entry["species"] = "Error"
                     entry["similar"] = False
                     database = pd.concat([database, pd.DataFrame([entry])], ignore_index=True)
-                    save_database(database, db_path)
+                    # Must not raise: this is already the error path, and an
+                    # escaping exception here has no handler left and would end
+                    # the run while reporting the wrong cause.
+                    self._save_database_soft(database, db_path, "save_error_entry")
                     time.sleep(2)
 
                 if progress_cb:
@@ -1524,6 +1567,9 @@ class AnalysisPipeline:
             stage_ctx["stage"] = "post_analysis_normalization"
             try:
                 if not database.empty and "quality" in database.columns:
+                    # Deliberately strict, unlike the per-image saves above: no
+                    # later save can cover for this one, so a failure here must
+                    # surface rather than leave the run looking complete.
                     save_database(database, db_path)
 
                     # Update kestrel_metadata.json with the analysis-run audit trail

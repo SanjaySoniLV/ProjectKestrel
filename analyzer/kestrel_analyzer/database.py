@@ -458,6 +458,18 @@ def ensure_columns(database: pd.DataFrame) -> pd.DataFrame:
 # These are NOT in BASE_COLUMNS but may be added by the UI's saveCsv().
 _UI_PRESERVE_COLUMNS = ["culled", "culled_origin"]
 
+# Retry ceiling for the preserve-read inside ``save_database``.
+#
+# ``retry_on_file_lock`` escalates its backoff (delay * (attempt + 1)), so the
+# default 12 attempts at 20ms cap out around 1.3s; 20 attempts reaches roughly
+# 3.8s. The pipeline saves after every image while the UI's auto-refresh timer
+# reads the same file, and on Windows those collide by design -- see
+# ``retry_on_file_lock``, which describes the window as "wide open in practice".
+# Losing that race used to abort the run, so the writer is given a longer ceiling
+# than the shared default. It stays local to the writer: the UI's readers must
+# stay responsive and are better off failing fast and retrying on the next tick.
+_SAVE_PRESERVE_READ_ATTEMPTS = 20
+
 # Prefix/suffix for the temp file used by ``_to_csv_atomic``. Distinctive so a
 # temp left behind by a crashed/killed save is identifiable, and so it never
 # collides with the ``OLD_kestrel_database_*.csv`` upgrade backups.
@@ -501,13 +513,26 @@ def retry_on_file_lock(op, attempts: int = 12, delay: float = 0.02):
             time.sleep(delay * (attempt + 1))
 
 
-def read_database_csv(db_path: str, **read_csv_kwargs) -> pd.DataFrame:
+def read_database_csv(
+    db_path: str, *, attempts: int | None = None, **read_csv_kwargs
+) -> pd.DataFrame:
     """``pd.read_csv(db_path)`` that tolerates a concurrent atomic save.
 
     Use this anywhere the analysis pipeline might be writing the same CSV. See
     ``retry_on_file_lock`` for why the bare call is not enough on Windows.
+
+    ``attempts`` overrides the retry ceiling for callers that can afford to wait
+    longer than the default. It is deliberately opt-in: the UI's auto-refresh
+    reader goes through here too, and raising the shared default would make the
+    window block for seconds on a contended read. ``None`` keeps
+    ``retry_on_file_lock``'s own default so the ceiling lives in one place.
     """
-    return retry_on_file_lock(lambda: pd.read_csv(db_path, **read_csv_kwargs))
+    def _read() -> pd.DataFrame:
+        return pd.read_csv(db_path, **read_csv_kwargs)
+
+    if attempts is None:
+        return retry_on_file_lock(_read)
+    return retry_on_file_lock(_read, attempts=attempts)
 
 
 def read_database_text(db_path: str) -> str:
@@ -722,7 +747,11 @@ def save_database(database: pd.DataFrame, db_path: str) -> None:
             cols_to_read = ["filename"] + [
                 c for c in _UI_PRESERVE_COLUMNS
             ]
-            disk_df = read_database_csv(db_path, usecols=lambda c: c in cols_to_read)
+            disk_df = read_database_csv(
+                db_path,
+                usecols=lambda c: c in cols_to_read,
+                attempts=_SAVE_PRESERVE_READ_ATTEMPTS,
+            )
             if not disk_df.empty and "filename" in disk_df.columns:
                 for col in _UI_PRESERVE_COLUMNS:
                     if col in disk_df.columns and col not in database.columns:
