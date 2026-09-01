@@ -129,4 +129,10 @@ METADATA_FILENAME = "kestrel_metadata.json"
 SCENEDATA_FILENAME = "kestrel_scenedata.json"
 KESTREL_DIR_NAME = ".kestrel"
 LOG_FILENAME_PREFIX = "kestrel_error"
-LOG_FILE_EXTENSION = "json"
+# The analysis log is JSONL (one JSON object per line), so the extension says
+# so: a ``.json`` file that is not a single JSON document misleads every tool
+# and person that opens it. Logs written before the switch are ``.json``
+# arrays and are still read — see ``logging_utils.parse_log_text`` and the
+# legacy extension below, which readers must keep scanning for.
+LOG_FILE_EXTENSION = "jsonl"
+LEGACY_LOG_FILE_EXTENSION = "json"
