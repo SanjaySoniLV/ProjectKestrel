@@ -125,11 +125,31 @@ For each analyzed folder, Kestrel creates `.kestrel/` containing:
 Configured in `analyzer/tests/pytest.ini`. Markers: `unit`, `integration`, `e2e`,
 `compat`, `ui`.
 
+There are two lanes, and the difference matters:
+
 ```bash
+# Fast lane (~1 min). No ML weights needed, no LFS objects required.
+# Use this while iterating.
 pytest analyzer/tests -m unit
+
+# FULL PRE-DEPLOY LANE (~4 min on CPU). Run this before cutting a build.
+# Adds integration/e2e/compat, which load the real ONNX models -- so it needs
+# the Git LFS objects under analyzer/models/ actually materialised, not
+# pointer stubs.
+pytest analyzer/tests -m "not ui"
+
 pytest analyzer/tests/unit/test_database.py -v
 pytest analyzer/tests/unit/test_database.py::TestName::test_case
 ```
+
+**`-m unit` is not "the test suite".** It deliberately excludes every test that
+touches a model, so a broken model path stays green there indefinitely. Five
+quality-classifier integration tests were broken for roughly four months
+without being noticed, because the fast lane was the only command documented
+here and the dev build workflows mark their pytest step `continue-on-error`.
+The four release workflows *do* gate on `-m "not ui"`, so anything the fast
+lane misses surfaces as a failed release build rather than a failed commit.
+Run the full lane before you deploy.
 
 `conftest.py` puts `analyzer/` on `sys.path`, so tests import as
 `from kestrel_analyzer.database import ...` (not `from analyzer.kestrel_analyzer...`).
