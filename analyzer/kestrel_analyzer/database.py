@@ -735,7 +735,20 @@ def save_database(database: pd.DataFrame, db_path: str) -> None:
 
     Legacy user columns (rating, scene_name, etc.) are stripped — those now
     live in kestrel_scenedata.json.
+
+    ``database`` is never mutated. That is load-bearing, not politeness: the
+    merge below is guarded by "this column is absent from the caller's frame",
+    and the merge itself adds the column. Writing into the caller therefore
+    satisfied the guard once and failed it on every later save, so the pipeline
+    kept re-writing the snapshot it captured on its *first* save over whatever
+    the user had marked since. Since the pipeline saves after every image, a
+    second photo culled during a run was erased by the next image's save.
     """
+    # Copy up front so the merge cannot leak back into the caller. ``drop``
+    # below already returns a copy on the legacy path; doing it here makes both
+    # paths behave the same instead of depending on which columns are present.
+    database = database.copy()
+
     cols_to_drop = [c for c in LEGACY_USER_COLUMNS if c in database.columns]
     if cols_to_drop:
         database = database.drop(columns=cols_to_drop)
