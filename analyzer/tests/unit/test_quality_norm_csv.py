@@ -80,8 +80,24 @@ class TestLoadNormalizationData:
             qc._load_normalization_data(str(csv_path))
         assert qc._norm_qualities is None
 
+    def test_out_of_range_percentiles_raise(self, tmp_path):
+        csv_path = _write_csv(
+            tmp_path / "oor.csv",
+            [("-1", "0.1"), ("250", "0.9")],
+        )
+        qc = _qc()
+        with pytest.raises(ValueError, match="no valid percentile/quality"):
+            qc._load_normalization_data(str(csv_path))
+        assert qc._norm_qualities is None
 
-class TestInitDoesNotSwallowCsvErrors:
+    def test_out_of_range_rows_are_skipped_when_valid_remain(self, tmp_path):
+        csv_path = _write_csv(
+            tmp_path / "mixed.csv",
+            [("-1", "0.0"), ("0", "0.0"), ("100", "1.0"), ("250", "2.0")],
+        )
+        qc = _qc()
+        qc._load_normalization_data(str(csv_path))
+        assert qc._normalize_quality_to_percentile(0.5) == pytest.approx(0.5)
     @pytest.fixture(autouse=True)
     def _stub_onnx(self, monkeypatch):
         class FakeInput:

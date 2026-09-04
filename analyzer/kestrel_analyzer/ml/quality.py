@@ -49,6 +49,8 @@ class QualityClassifier:
                     continue
                 if not np.isfinite(p) or not np.isfinite(q):
                     continue
+                if p < 0.0 or p > 100.0:
+                    continue
                 rows.append((q, p / 100.0))
         if not rows:
             raise ValueError(
