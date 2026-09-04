@@ -438,6 +438,26 @@ def _sidecar_extension_probes(candidate: str, ext: str) -> tuple[str, ...]:
     return tuple(probes)
 
 
+def _sidecar_hits_for_constructed_name(hits: list[str], candidate: str) -> list[str]:
+    """Keep folded listing hits that share ``candidate``'s stem spelling.
+
+    ``_DirIndex.matches`` folds the whole name, so ``img.xmp`` is a hit for
+    ``IMG.xmp``. Companion lookup must not take a stem-case sibling's sidecar
+    when two RAWs differ only by case. Extension case still varies
+    (``.xmp`` / ``.XMP``).
+    """
+    stem, ext = os.path.splitext(candidate)
+    if not ext:
+        return list(hits)
+    want_ext = ext.lower()
+    kept: list[str] = []
+    for hit in hits:
+        hit_stem, hit_ext = os.path.splitext(hit)
+        if hit_stem == stem and hit_ext.lower() == want_ext:
+            kept.append(hit)
+    return kept
+
+
 def _existing_sidecar_names(root_path: str, names: tuple[str, ...]) -> list[str]:
     """Return probe names that exist, skipping case-folded aliases of one file."""
     hits: list[str] = []
@@ -6611,7 +6631,9 @@ class Api:
         """Resolve ``candidate`` through the dir index, or exists-probe on failure."""
         if isinstance(index, self._DirIndex):
             if index.names is not None:
-                return index.matches(candidate)
+                return _sidecar_hits_for_constructed_name(
+                    index.matches(candidate), candidate
+                )
             return _existing_sidecar_names(
                 root_path, _sidecar_extension_probes(candidate, ext)
             )
@@ -6626,10 +6648,12 @@ class Api:
                               dir_index: dict | None = None) -> list[str]:
         """All on-disk sidecar spellings for ``filename`` + ``ext``.
 
-        Uses the directory listing when available. When listdir failed, probes
-        ``exists()`` for the lowercase extension and the uppercased variant
-        (``.xmp`` vs ``.XMP``). Distinct files are all returned; a
-        case-folding filesystem's two names for one inode collapse to one.
+        Uses the directory listing when available. Listing hits keep the
+        constructed stem spelling; only the extension may differ by case.
+        When listdir failed, probes ``exists()`` for the lowercase extension
+        and the uppercased variant (``.xmp`` vs ``.XMP``). Distinct files are
+        all returned; a case-folding filesystem's two names for one inode
+        collapse to one.
         """
         index = self._build_dir_index(root_path) if dir_index is None else dir_index
         found: list[str] = []
@@ -6683,9 +6707,11 @@ class Api:
         ``_build_dir_index``. Without it this lists the directory once per
         call; batch callers should build the index once and pass it in.
 
-        Every on-disk case variant of a companion is included (``.xmp`` and
-        ``.XMP`` are two files on a case-sensitive filesystem). The main file
-        itself is skipped even when its spelling differs only by case.
+        Every on-disk extension-case variant of a companion is included
+        (``.xmp`` and ``.XMP`` are two files on a case-sensitive filesystem).
+        A sidecar whose stem differs only by case belongs to the other main
+        file and is left behind. The main file itself is skipped even when
+        its spelling differs only by case.
         """
         companions: list[str] = []
         seen: set[str] = set()

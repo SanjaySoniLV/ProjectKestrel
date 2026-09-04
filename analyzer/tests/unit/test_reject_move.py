@@ -418,6 +418,38 @@ class TestCompanionLastWinsAndExistsProbe:
         found = api._find_companion_files(str(tmp_path), "IMG_17.CR3")
         assert sorted(found) == ["IMG_17.XMP", "IMG_17.xmp"]
 
+    def test_listing_does_not_steal_stem_case_sibling_sidecar(self, api):
+        index = api._DirIndex([
+            "IMG_X.CR3", "img_x.cr3",
+            "IMG_X.xmp", "IMG_X.XMP", "img_x.xmp",
+        ])
+        assert sorted(api._find_companion_files(
+            "/unused", "IMG_X.CR3", dir_index=index
+        )) == ["IMG_X.XMP", "IMG_X.xmp"]
+        assert api._find_companion_files(
+            "/unused", "img_x.cr3", dir_index=index
+        ) == ["img_x.xmp"]
+
+    def test_reject_leaves_stem_case_sibling_sidecar(self, api, tmp_path):
+        workdir = tmp_path / "workdir"
+        workdir.mkdir()
+        _require_case_sensitive_fs(workdir)
+        (workdir / "IMG_X.CR3").write_bytes(b"UPPER")
+        (workdir / "img_x.cr3").write_bytes(b"lower")
+        (workdir / "IMG_X.xmp").write_text("upper-xmp", encoding="utf-8")
+        (workdir / "img_x.xmp").write_text("lower-xmp", encoding="utf-8")
+
+        result = api.move_rejects_to_folder(str(workdir), ["IMG_X.CR3"])
+        assert result["success"] is True
+        assert result["errors"] == []
+
+        reject_dir = workdir / "_KESTREL_Rejects"
+        assert (reject_dir / "IMG_X.CR3").exists()
+        assert (reject_dir / "IMG_X.xmp").read_text(encoding="utf-8") == "upper-xmp"
+        assert (workdir / "img_x.cr3").read_bytes() == b"lower"
+        assert (workdir / "img_x.xmp").read_text(encoding="utf-8") == "lower-xmp"
+        assert not (reject_dir / "img_x.xmp").exists()
+
 
 class TestMainFilenameCaseInsensitivity:
     """Main-file reject/undo must use on-disk spelling, not a case-sensitive join.
