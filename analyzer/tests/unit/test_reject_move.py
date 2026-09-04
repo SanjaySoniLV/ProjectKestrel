@@ -384,7 +384,13 @@ class TestCompanionLastWinsAndExistsProbe:
 
         monkeypatch.setattr(api_bridge.os, "listdir", fail_listdir)
         found = api._find_companion_files(str(tmp_path), "IMG_17.CR3")
-        assert found == ["IMG_17.XMP"]
+        # The exists-probe tries the lowercase companion extension first.
+        # On a case-sensitive filesystem that misses, and ``.XMP`` hits.
+        # Windows/macOS fold the two names onto one inode, so ``.xmp`` exists
+        # and is the name we join; both spellings are valid paths to the file.
+        assert len(found) == 1
+        assert found[0].lower() == "img_17.xmp"
+        assert (tmp_path / found[0]).exists()
 
     def test_lowercase_xmp_found_when_listdir_fails(self, api, tmp_path, monkeypatch):
         (tmp_path / "IMG_17.CR3").write_bytes(b"raw")
