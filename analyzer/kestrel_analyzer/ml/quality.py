@@ -28,13 +28,16 @@ class QualityClassifier:
         self._norm_qualities = None
         self._norm_percentiles = None
         if normalization_data_path:
-            try:
-                self._load_normalization_data(normalization_data_path)
-            except Exception:
-                self._norm_qualities = None
-                self._norm_percentiles = None
+            self._load_normalization_data(normalization_data_path)
 
     def _load_normalization_data(self, normalization_data_path: str) -> None:
+        """Load the percentile curve. A given path must yield at least one row.
+
+        Missing, unreadable, or header-only files used to be swallowed in
+        ``__init__``, leaving ``_norm_qualities`` as None. ``classify`` then
+        returned the raw model score instead of a 0–1 percentile, so star
+        ratings were wrong with no error.
+        """
         rows = []
         with open(normalization_data_path, "r", newline="", encoding="utf-8") as f:
             reader = csv.DictReader(f)
@@ -48,7 +51,10 @@ class QualityClassifier:
                     continue
                 rows.append((q, p / 100.0))
         if not rows:
-            return
+            raise ValueError(
+                "quality normalization CSV has no valid percentile/quality "
+                f"rows: {normalization_data_path}"
+            )
         rows.sort(key=lambda x: x[0])
         self._norm_qualities = np.array([q for q, _ in rows], dtype=np.float32)
         self._norm_percentiles = np.array([p for _, p in rows], dtype=np.float32)
