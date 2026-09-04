@@ -6674,10 +6674,11 @@ class Api:
         - filename + ext (e.g., IMG_001.CR3.xmp)
         - name_without_ext + ext (e.g., IMG_001.xmp for IMG_001.CR3)
 
-        Matching is case-insensitive; the returned name is the real on-disk
-        spelling, so callers can join it to a path directly. Exact constructed
-        spelling wins over a last-wins fold. Ambiguous case variants without
-        an exact hit return None rather than the last listing.
+        The constructed stem spelling must match on disk. Extension matching
+        is case-insensitive; the returned name is the real on-disk spelling,
+        so callers can join it to a path directly. Exact constructed spelling
+        wins over an extension-case fold. Ambiguous extension-case variants
+        without an exact hit return None rather than the last listing.
 
         ``dir_index`` is an optional pre-built listing from
         ``_build_dir_index``. Pass it when resolving many files in one
