@@ -54,6 +54,70 @@ def list_images_in_folder(folder: str) -> list:
 _list_images_in_folder = list_images_in_folder
 
 
+#: ``size`` value used when a directory entry is listed but its metadata could
+#: not be read. The file is definitely present — it just has no trustworthy
+#: byte count — so consumers must treat it as "exists, size unknown" and fall
+#: back to filename-only matching for that entry.
+SIZE_UNKNOWN = -1
+
+
+def scan_folder_images(folder: str) -> tuple[list[tuple[str, int]], str]:
+    """Return ``([(filename, size), ...], error)`` for ``folder``.
+
+    Same file-selection rule as :func:`list_images_in_folder` — it delegates to
+    :func:`select_camera_images` so the two can never disagree about which
+    files count — but with two differences that the repair path depends on:
+
+    1. It reports each file's size. ``os.scandir`` carries the stat data from
+       the directory enumeration on Windows, and on POSIX it costs the same one
+       stat per entry that ``list_images_in_folder``'s ``os.path.isfile`` check
+       already pays. So the size is effectively free either way.
+
+    2. **It reports enumeration failure instead of hiding it.** This is the
+       whole reason the function exists. ``list_images_in_folder`` returns
+       ``[]`` for every error, which makes "this folder is unreadable"
+       indistinguishable from "this folder is empty" — and the repair UI reads
+       an empty listing against a populated database as "every one of your
+       photos is gone", which is exactly the state in which it must NOT offer
+       to delete anything. A stale macOS security-scoped bookmark (see
+       ``mac_sandbox.resolve_bookmark``, which returns an explicit ``is_stale``
+       flag), an unresponsive network share, or an external drive mid-reconnect
+       all produce a readable-looking path whose enumeration raises.
+
+    ``error`` is ``''`` when the listing is authoritative and a human-readable
+    reason otherwise. When it is non-empty the file list is meaningless and
+    callers must not draw any conclusion about the folder's contents from it.
+
+    ``list_images_in_folder`` keeps its swallow-everything contract unchanged —
+    the analysis pipeline and both cloud discovery paths rely on it.
+    """
+    sizes: dict[str, int] = {}
+    try:
+        with os.scandir(folder) as it:
+            for entry in it:
+                try:
+                    if not entry.is_file():
+                        continue
+                except OSError:
+                    # Broken symlink or a racing delete — not a real file.
+                    continue
+                try:
+                    sizes[entry.name] = entry.stat().st_size
+                except OSError:
+                    # The entry is genuinely present; we just can't measure it.
+                    # Recording it as unknown keeps it out of the "missing" set,
+                    # which is the answer that matters here.
+                    sizes[entry.name] = SIZE_UNKNOWN
+    except OSError as e:
+        return [], f'{type(e).__name__}: {e}'
+    except Exception as e:  # pragma: no cover - defensive
+        return [], f'{type(e).__name__}: {e}'
+
+    names = select_camera_images(list(sizes.keys()))
+    names.sort()
+    return [(n, sizes[n]) for n in names], ''
+
+
 def inspect_folder(path: str) -> Dict[str, int | str | bool]:
     """Return a small summary about a folder.
 

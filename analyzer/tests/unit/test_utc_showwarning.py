@@ -26,6 +26,7 @@ from kestrel_analyzer.logging_utils import (  # noqa: E402
     _utc_timestamp,
     log_warning,
     make_logged_showwarning,
+    read_log_entries,
     utc_now_naive,
 )
 from queue_manager import _utc_timestamp as queue_utc_timestamp  # noqa: E402
@@ -88,7 +89,7 @@ def test_log_warning_does_not_recurse_under_error_filter(tmp_path):
     with warnings.catch_warnings():
         warnings.simplefilter("error", DeprecationWarning)
         log_warning(log_path, "hello", category=UserWarning, stage="unit")
-    entries = json.loads(Path(log_path).read_text(encoding="utf-8"))
+    entries = read_log_entries(log_path)
     assert entries[-1]["message"] == "hello"
     assert entries[-1]["timestamp_utc"].endswith("Z")
 
@@ -129,7 +130,7 @@ def test_logged_showwarning_is_reentrant_when_logging_emits(tmp_path, monkeypatc
     finally:
         warnings.showwarning = previous
 
-    entries = json.loads(Path(log_path).read_text(encoding="utf-8"))
+    entries = read_log_entries(log_path)
     messages = [e["message"] for e in entries]
     assert any("outer warning" in m for m in messages)
     assert not any("nested warning from logger" in m for m in messages)
@@ -181,7 +182,13 @@ def test_logged_showwarning_does_not_drop_concurrent_threads(tmp_path, monkeypat
 
 
 def test_concurrent_log_warning_keeps_valid_json(tmp_path):
-    """Overlapping log_event writes must not tear or drop the JSON log."""
+    """Overlapping log_event writes must not tear or drop log entries.
+
+    Under the JSONL format the invariant is per line: each concurrent write
+    must land as exactly one complete, parseable line, and none may be lost.
+    That is checked directly here rather than through the tolerant reader,
+    which skips unparseable lines by design and so would hide a torn write.
+    """
     log_path = str(tmp_path / "kestrel.log.json")
     n = 8
     barrier = threading.Barrier(n)
@@ -196,9 +203,14 @@ def test_concurrent_log_warning_keeps_valid_json(tmp_path):
     for t in threads:
         t.join()
 
-    entries = json.loads(Path(log_path).read_text(encoding="utf-8"))
+    lines = [
+        ln for ln in Path(log_path).read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert len(lines) == n, f"expected {n} lines, got {len(lines)}"
+    entries = [json.loads(ln) for ln in lines]  # raises if any line was torn
     messages = {e["message"] for e in entries}
-    assert {f"msg-{i}" for i in range(n)} <= messages
+    assert {f"msg-{i}" for i in range(n)} == messages
 
 
 def test_logged_showwarning_records_category_and_stage(tmp_path):
@@ -216,7 +228,7 @@ def test_logged_showwarning_records_category_and_stage(tmp_path):
     finally:
         warnings.showwarning = original
 
-    entry = json.loads(Path(log_path).read_text(encoding="utf-8"))[-1]
+    entry = read_log_entries(log_path)[-1]
     assert entry["stage"] == "list_files"
     assert entry["category"] == "RuntimeWarning"
     assert entry["context"]["file"] == "IMG_001.CR3"

@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import tempfile
 
 # XMP namespace URIs
@@ -107,6 +108,76 @@ _DEFAULT_FIELDS = {
 
 
 from settings_utils import debug, info, warn, error
+
+# ``os.replace`` is not collision-free on Windows: while any handle is open on
+# the destination, MoveFileEx fails with ERROR_ACCESS_DENIED / SHARING_VIOLATION,
+# surfacing as PermissionError. ``kestrel_analyzer.database`` already solves this
+# for the CSV, so reuse it rather than reimplementing the backoff. It is imported
+# defensively -- it pulls in pandas, and metadata writing must not start failing
+# just because the analyzer package cannot be imported in some frozen or
+# partially-installed context. The fallback mirrors the canonical implementation;
+# keep them in step.
+try:
+    from kestrel_analyzer.database import retry_on_file_lock  # type: ignore
+except Exception:  # pragma: no cover - import environment specific
+    import time as _time
+
+    def retry_on_file_lock(op, attempts: int = 12, delay: float = 0.02):
+        """Fallback copy of ``kestrel_analyzer.database.retry_on_file_lock``."""
+        for attempt in range(attempts):
+            try:
+                return op()
+            except PermissionError:
+                if attempt == attempts - 1:
+                    raise
+                _time.sleep(delay * (attempt + 1))
+
+
+def _default_file_mode():
+    """The mode a plain ``open(path, 'w')`` would have produced: 0666 & ~umask.
+
+    ``tempfile.mkstemp`` deliberately creates at 0600, and ``os.replace`` carries
+    that onto the destination -- so switching the sidecar writer to the atomic
+    temp-file pattern silently made every sidecar owner-only. Sidecars sit next
+    to the user's photos and exist to be read by other software, so they should
+    land with the permissions the previous non-atomic ``open()`` gave them.
+
+    Read once at import: querying the umask means temporarily setting it, which
+    is not thread-safe, and import runs under the import lock. Returns None on
+    Windows, where these bits carry no meaning beyond the read-only flag.
+    """
+    if os.name == 'nt':
+        return None
+    try:
+        mask = os.umask(0)
+        os.umask(mask)
+        return 0o666 & ~mask
+    except OSError:  # pragma: no cover - platform dependent
+        return None
+
+
+_DEFAULT_FILE_MODE = _default_file_mode()
+
+
+def _apply_sidecar_mode(tmp_path: str, dest_path: str) -> None:
+    """Give ``tmp_path`` the permissions the finished sidecar should carry.
+
+    Prefer the mode the destination already has, so rewriting a sidecar never
+    narrows access someone deliberately granted; fall back to the umask default
+    for a brand-new file. Only the permission bits are copied -- ``copystat``
+    would also carry the *old* mtime onto genuinely new content, making a
+    freshly written sidecar look stale to anything watching timestamps.
+
+    Best-effort: a filesystem that cannot represent these bits (exFAT, some SMB
+    mounts) must not fail a sidecar write that otherwise succeeded.
+    """
+    try:
+        if os.path.exists(dest_path):
+            os.chmod(tmp_path, stat.S_IMODE(os.stat(dest_path).st_mode))
+        elif _DEFAULT_FILE_MODE is not None:
+            os.chmod(tmp_path, _DEFAULT_FILE_MODE)
+    except OSError:
+        pass
 
 
 def _xml_escape(text: str) -> str:
@@ -357,7 +428,12 @@ def _save_xmp_fingerprints(root: str, fingerprints: dict) -> None:
                 raise
             with f:
                 json.dump(fingerprints, f, indent=2)
-            os.replace(tmp, _xmp_fingerprint_path(root))
+            # Same Windows sharing-violation exposure as the sidecar write. No
+            # mode fixup here: this file lives inside .kestrel and is read only
+            # by Kestrel, so mkstemp's 0600 is the right permission for it.
+            retry_on_file_lock(
+                lambda: os.replace(tmp, _xmp_fingerprint_path(root))
+            )
         except BaseException:
             try:
                 os.remove(tmp)
@@ -534,6 +610,16 @@ def _write_text_atomic(dest_path: str, content: str) -> None:
     it into place instead. ``os.replace`` is atomic on POSIX and on Windows, so a
     concurrent reader observes either the complete previous file or the complete
     new one. This mirrors ``settings_utils.save_settings`` / ``_to_csv_atomic``.
+
+    Two details the CSV writer already handles and this one needs more, not less:
+
+    * The replace is retried. On Windows it fails while any other process holds
+      the destination open, and sidecars are the files most exposed to that --
+      Lightroom, Bridge and Capture One watch and hold them by design, whereas
+      the CSV lives inside ``.kestrel`` where only Kestrel touches it.
+    * The temp file's permissions are corrected before the replace. ``mkstemp``
+      creates at 0600 and the replace carries that through, which would make
+      every sidecar owner-only. See ``_apply_sidecar_mode``.
     """
     directory = os.path.dirname(dest_path) or '.'
     os.makedirs(directory, exist_ok=True)
@@ -552,7 +638,8 @@ def _write_text_atomic(dest_path: str, content: str) -> None:
                 # fsync can legitimately fail on some network filesystems;
                 # the replace below still gives readers an all-or-nothing view.
                 pass
-        os.replace(tmp, dest_path)
+        _apply_sidecar_mode(tmp, dest_path)
+        retry_on_file_lock(lambda: os.replace(tmp, dest_path))
     except BaseException:
         # Do NOT fall back to a direct write — that is the truncate path this
         # helper exists to close. Leave the previous sidecar intact.

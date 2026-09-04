@@ -1020,6 +1020,9 @@
           // Freshly-analysed rows may be the first to carry the
           // embedded-preview fallback marker for this folder.
           try { refreshRawWarnBanner(); } catch (_) { }
+          // Analysis just changed what is on disk and in the database, so any
+          // drift the user was shown before is now stale.
+          try { refreshRepairState(toRefresh); } catch (_) { }
           // If a scene dialog is open, its filmstrip is stale after renderScenes
           // rebuilt the scenes array with fresh row objects — re-render it now.
           if (_currentScene) {

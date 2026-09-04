@@ -1001,6 +1001,23 @@
     </div>
   </dialog>
 
+  <!-- Repair dialog — surfaced when a folder's images and its .kestrel database
+       have drifted apart (files moved, renamed, or deleted outside Kestrel).
+       Body is built by js/repair.js; every destructive action is an explicit
+       user assertion, and NONE are offered unless the folder listing was read
+       successfully (diff.scan_status === 'ok'). -->
+  <dialog id="repairDlg" class="kdlg kdlg--md kdlg--flex" aria-labelledby="repairDlgTitle">
+    <div class="settings">
+      <h3 style="margin:0" id="repairDlgTitle">Repair Kestrel Data</h3>
+      <div id="repairDlgFolder" class="muted" style="font-size:12px;word-break:break-all">—</div>
+      <div id="repairDlgBody" style="max-height:52vh;overflow:auto"></div>
+      <div class="footer" style="gap:8px">
+        <button id="repairDlgDismiss" title="Stop showing this folder's warning until the next time Kestrel starts">Dismiss for now</button>
+        <button id="repairDlgClose">Close</button>
+      </div>
+    </div>
+  </dialog>
+
   <!-- Analyze Folders dialog (Phase 3: 3-column layout).
        Col 1: Queue Builder — + Add Folders, recents chips, dialog-local tree, Clear.
        Col 2: Settings — critical tier always visible + collapsed "More options".
@@ -1632,6 +1649,7 @@
   <script src="js/analyze-dialog.js"></script>
   <script src="js/queue.js"></script>
   <script src="js/raw-warn.js"></script>
+  <script src="js/repair.js"></script>
   <script src="js/multi-folder.js"></script>
   <script src="js/csv-init.js"></script>
   <script src="js/event-wiring.js"></script>
@@ -1666,6 +1684,7 @@
         ['perch.js',           '_perchOpenDialog'],
         ['cloud-compute.js',   '_ccSubmitSelectedFolders'],
         ['culling.js',         'openCullingAssistant'],
+        ['repair.js',          'openRepairDialog'],
         ['tutorial.js',        'startMainTutorial'],
         ['welcome.js',         'WELCOME_TIPS']
       ];

@@ -492,6 +492,17 @@ def _move_no_overwrite(src: str, dst: str) -> None:
     Windows setups), copy via ``O_CREAT|O_EXCL`` then unlink the source.
     Never falls through to ``shutil.move``. If unlinking ``src`` fails after
     ``dst`` exists, ``dst`` is removed so a retry is not blocked.
+
+    Both paths preserve the source's mtime and mode. The hard link gets that for
+    free — it is the same inode — but the copy fallback would otherwise stamp the
+    destination with the time of the move and default permission bits. That
+    fallback is not an exotic branch here: ``os.link`` fails cross-device and on
+    exFAT/FAT32, which is how camera cards and most portable drives are
+    formatted, so it is the *common* path for a reject folder on another volume.
+    Culling 200 files would then land 200 files all dated today, silently
+    destroying date-sort in the reject folder. ``copystat`` is best-effort — it
+    can legitimately fail on SMB/NFS and on exFAT targets, and a lost timestamp
+    must never fail a move that has otherwise succeeded.
     """
     src = os.fspath(src)
     dst = os.fspath(dst)
@@ -525,6 +536,13 @@ def _move_no_overwrite(src: str, dst: str) -> None:
             except OSError:
                 pass
             raise
+        # Carry mtime/mode across, as the hard-link path does implicitly. Same
+        # best-effort handling as ``database.copy_file_atomic``: the bytes are
+        # already durable, so a metadata failure must not fail the move.
+        try:
+            shutil.copystat(src, dst)
+        except OSError:
+            pass
         _unlink_src_or_rollback(src, dst)
         return
     _unlink_src_or_rollback(src, dst)
@@ -7342,6 +7360,643 @@ class Api:
         except Exception as e:
             error(f"[API] restore_kestrel_db_backup error: {e}")
             return {"success": False, "error": str(e)}
+
+    # ── Folder drift detection & repair ──────────────────────────────────────
+    #
+    # Kestrel keys a database row to a photo by name and location, both of which
+    # the filesystem lets the user change silently. These methods report that
+    # drift and apply user-confirmed fixes.
+    #
+    # BACKUPS: these deliberately do NOT call ``backup_kestrel_db``. That writes
+    # the single canonical ``kestrel_database_old.csv`` slot, and
+    # ``get_reject_restore_state`` decides whether to offer "Undo Move" purely
+    # by that file's existence while ``restore_kestrel_db_backup`` restores from
+    # it unconditionally. A repair backup in that slot would make the app offer
+    # to undo a culling move and then restore the pre-*repair* state instead of
+    # the pre-*cull* one. Repairs get their own slot.
+
+    _REPAIR_BACKUP_STEM = "prerepair_kestrel_database"
+    _REPAIR_SCENEDATA_BACKUP_STEM = "prerepair_kestrel_scenedata"
+
+    def _backup_before_repair(self, kestrel_dir: str) -> str:
+        """Snapshot the database and scenedata under a repair-only name.
+
+        Returns the backup CSV path, or '' if there was nothing to back up.
+        Raises on failure — a repair must not proceed without its undo point.
+        """
+        from datetime import datetime, timezone
+        try:
+            from kestrel_analyzer.database import copy_file_atomic
+        except ImportError:  # package-style import path
+            from analyzer.kestrel_analyzer.database import copy_file_atomic  # type: ignore[no-redef]
+
+        csv_path = os.path.join(kestrel_dir, 'kestrel_database.csv')
+        if not os.path.isfile(csv_path):
+            return ''
+        timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+        csv_backup = os.path.join(
+            kestrel_dir, f'{self._REPAIR_BACKUP_STEM}_{timestamp}.csv'
+        )
+        copy_file_atomic(csv_path, csv_backup)
+
+        scenedata_path = os.path.join(kestrel_dir, 'kestrel_scenedata.json')
+        if os.path.isfile(scenedata_path):
+            copy_file_atomic(
+                scenedata_path,
+                os.path.join(
+                    kestrel_dir,
+                    f'{self._REPAIR_SCENEDATA_BACKUP_STEM}_{timestamp}.json',
+                ),
+            )
+            self._prune_backup_archives(
+                kestrel_dir, f'{self._REPAIR_SCENEDATA_BACKUP_STEM}_', '.json'
+            )
+        self._prune_backup_archives(
+            kestrel_dir, f'{self._REPAIR_BACKUP_STEM}_', '.csv'
+        )
+        info(f'[repair] Pre-repair backup at {os.path.basename(csv_backup)}')
+        return csv_backup
+
+    def _repair_import(self):
+        """Import folder_diff, tolerating both import styles used in this repo."""
+        try:
+            import folder_diff  # type: ignore
+            return folder_diff
+        except ImportError:
+            from analyzer import folder_diff  # type: ignore
+            return folder_diff
+
+    def compute_folder_diff(self, folder_path: str, scan_subfolders: bool = True):
+        """Report drift between a folder's images and its .kestrel database.
+
+        Read-only. The caller MUST check ``scan_status``: only ``'ok'`` means the
+        listing is authoritative, and no repair may be offered on any other value.
+        """
+        try:
+            root_real, _kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path,
+                context='compute_folder_diff',
+                require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+
+            diff = self._repair_import().compute_folder_diff(
+                root_real, scan_subfolders=bool(scan_subfolders)
+            )
+            return {'success': True, 'diff': diff, 'error': ''}
+        except Exception as e:
+            error(f'[API] compute_folder_diff error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def _load_repair_frame(self, kestrel_dir: str):
+        """Load the database CSV for a repair edit, or raise with a clear reason."""
+        try:
+            from kestrel_analyzer.database import read_database_csv
+        except ImportError:  # package-style import path
+            from analyzer.kestrel_analyzer.database import read_database_csv  # type: ignore[no-redef]
+        csv_path = os.path.join(kestrel_dir, 'kestrel_database.csv')
+        if not os.path.isfile(csv_path):
+            raise FileNotFoundError('kestrel_database.csv not found')
+        return read_database_csv(csv_path), csv_path
+
+    @staticmethod
+    def _write_repair_frame(frame, csv_path: str) -> None:
+        try:
+            from kestrel_analyzer.database import _to_csv_atomic
+        except ImportError:  # package-style import path
+            from analyzer.kestrel_analyzer.database import _to_csv_atomic  # type: ignore[no-redef]
+        _to_csv_atomic(frame, csv_path)
+
+    def _read_scenedata_for_repair(self, kestrel_dir: str) -> dict:
+        path = os.path.join(kestrel_dir, 'kestrel_scenedata.json')
+        if not os.path.isfile(path):
+            return {}
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception as e:
+            warn(f'[repair] Could not read scenedata ({e}); leaving it untouched')
+            return {}
+
+    def _write_scenedata_for_repair(self, kestrel_dir: str, scenedata: dict) -> None:
+        if not scenedata:
+            return
+        try:
+            from kestrel_analyzer.database import save_scenedata
+        except ImportError:  # package-style import path
+            from analyzer.kestrel_analyzer.database import save_scenedata  # type: ignore[no-redef]
+        save_scenedata(scenedata, kestrel_dir)
+
+    @staticmethod
+    def _scenedata_drop_filenames(scenedata: dict, names) -> None:
+        """Remove ``names`` from scenedata ratings and scene membership in place.
+
+        A scene emptied by the removal is deleted rather than left behind: every
+        photo in it has gone, so keeping it would leave a memberless scene in the
+        timeline that the user can neither open nor get rid of.
+        """
+        drop = set(names)
+        ratings = scenedata.get('image_ratings')
+        if isinstance(ratings, dict):
+            for name in list(ratings.keys()):
+                if name in drop:
+                    del ratings[name]
+        scenes = scenedata.get('scenes')
+        if isinstance(scenes, dict):
+            emptied = []
+            for scene_id, scene in scenes.items():
+                if not isinstance(scene, dict):
+                    continue
+                members = scene.get('image_filenames')
+                if not isinstance(members, list):
+                    continue
+                remaining = [n for n in members if n not in drop]
+                scene['image_filenames'] = remaining
+                # Only scenes this call emptied — a scene that was already
+                # memberless is someone else's to reason about.
+                if members and not remaining:
+                    emptied.append(scene_id)
+            for scene_id in emptied:
+                del scenes[scene_id]
+
+    @staticmethod
+    def _scenedata_rename_filenames(scenedata: dict, mapping: dict) -> None:
+        """Apply ``{old: new}`` to scenedata ratings and scene membership in place."""
+        ratings = scenedata.get('image_ratings')
+        if isinstance(ratings, dict):
+            for old, new in mapping.items():
+                if old in ratings:
+                    ratings[new] = ratings.pop(old)
+        scenes = scenedata.get('scenes')
+        if isinstance(scenes, dict):
+            for scene in scenes.values():
+                if not isinstance(scene, dict):
+                    continue
+                members = scene.get('image_filenames')
+                if isinstance(members, list):
+                    scene['image_filenames'] = [mapping.get(n, n) for n in members]
+
+    def _repair_row_asset_paths(self, frame, mask) -> list:
+        """Collect the crop/export files referenced by the masked rows.
+
+        ``crop_path`` / ``export_path`` are stored relative to the folder root
+        (``pipeline`` writes them via ``os.path.relpath``), plus every entry in
+        ``crops_json`` for multi-crop rows.
+
+        De-duplicated: a single-crop row's ``crop_path`` and its lone
+        ``crops_json`` entry are the same file, so a naive list names it twice.
+        Callers delete or copy each path in turn, and the second pass over a
+        duplicate either fails with "file not found" or double-counts, so the
+        de-duplication belongs here rather than at each call site.
+        """
+        rels: list = []
+        for col in ('crop_path', 'export_path'):
+            if col not in frame.columns:
+                continue
+            for value in frame.loc[mask, col].values:
+                text = str(value or '').strip()
+                if text and text not in ('N/A', 'nan'):
+                    rels.append(text)
+        if 'crops_json' in frame.columns:
+            for value in frame.loc[mask, 'crops_json'].values:
+                try:
+                    crops = json.loads(str(value or '[]'))
+                except Exception:
+                    continue
+                if not isinstance(crops, list):
+                    continue
+                for crop in crops:
+                    if not isinstance(crop, dict):
+                        continue
+                    text = str(crop.get('crop_path') or '').strip()
+                    if text and text not in ('N/A', 'nan'):
+                        rels.append(text)
+        # Order-preserving de-duplication. Compared case-insensitively because
+        # the same asset can be spelled differently between crop_path and
+        # crops_json, and the filesystems this runs on treat those as one file.
+        seen: set = set()
+        unique: list = []
+        for rel in rels:
+            key = rel.replace('\\', '/').lower()
+            if key not in seen:
+                seen.add(key)
+                unique.append(rel)
+        return unique
+
+    def repair_forget_missing(self, folder_path: str, filenames):
+        """Delete database rows for photos the user confirms are gone.
+
+        Also removes each row's crop/export JPEGs, which is the point — those
+        are the bulk of the ``.kestrel`` footprint, and leaving them behind means
+        the user reclaims nothing.
+        """
+        try:
+            root_real, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path,
+                context='repair_forget_missing',
+                require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+
+            if _queue_manager.has_running_writer(root_real):
+                return {
+                    'success': False,
+                    'error': 'Cannot repair while analysis is running for this folder',
+                }
+
+            names = self._clean_filename_list(filenames, 'repair_forget_missing')
+            if not names:
+                return {'success': True, 'removed': 0, 'freed_files': 0, 'error': ''}
+
+            frame, csv_path = self._load_repair_frame(kestrel_dir)
+            if 'filename' not in frame.columns:
+                return {'success': False, 'error': 'Database has no filename column'}
+
+            mask = frame['filename'].astype(str).isin(names)
+            removed = int(mask.sum())
+            if removed == 0:
+                return {'success': True, 'removed': 0, 'freed_files': 0, 'error': ''}
+
+            self._backup_before_repair(kestrel_dir)
+            asset_rels = self._repair_row_asset_paths(frame, mask)
+            self._write_repair_frame(frame.loc[~mask].copy(), csv_path)
+
+            scenedata = self._read_scenedata_for_repair(kestrel_dir)
+            if scenedata:
+                self._scenedata_drop_filenames(scenedata, names)
+                self._write_scenedata_for_repair(kestrel_dir, scenedata)
+
+            freed = 0
+            for rel in asset_rels:
+                # Route every delete through the root jail: crop_path comes out
+                # of a CSV the user can edit by hand.
+                _r, target, perr = self._resolve_path_in_root(
+                    root_real, rel, context='repair_forget_missing', allow_absolute=False
+                )
+                if perr or not target:
+                    continue
+                try:
+                    if os.path.isfile(target):
+                        os.remove(target)
+                        freed += 1
+                except Exception as e:
+                    warn(f'[repair] Could not remove {rel}: {e}')
+
+            info(f'[repair] Forgot {removed} row(s), removed {freed} asset file(s) in {root_real}')
+            return {'success': True, 'removed': removed, 'freed_files': freed, 'error': ''}
+        except Exception as e:
+            error(f'[API] repair_forget_missing error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def repair_apply_renames(self, folder_path: str, pairs):
+        """Re-key database rows whose files were renamed on disk.
+
+        ``pairs`` is ``[{'from': old, 'to': new}, ...]`` as produced by
+        ``compute_folder_diff``'s ``renamed`` list and confirmed by the user.
+        """
+        try:
+            root_real, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path,
+                context='repair_apply_renames',
+                require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+
+            if _queue_manager.has_running_writer(root_real):
+                return {
+                    'success': False,
+                    'error': 'Cannot repair while analysis is running for this folder',
+                }
+
+            mapping = {}
+            for pair in (pairs or []):
+                if not isinstance(pair, dict):
+                    continue
+                old = self._sanitize_plain_filename(
+                    str(pair.get('from') or ''), context='repair_apply_renames'
+                )
+                new = self._sanitize_plain_filename(
+                    str(pair.get('to') or ''), context='repair_apply_renames'
+                )
+                if old and new and old != new:
+                    mapping[old] = new
+            if not mapping:
+                return {'success': True, 'renamed': 0, 'error': ''}
+
+            frame, csv_path = self._load_repair_frame(kestrel_dir)
+            if 'filename' not in frame.columns:
+                return {'success': False, 'error': 'Database has no filename column'}
+
+            current = frame['filename'].astype(str)
+            # Only rename rows that exist, and never rename onto a name the
+            # database already uses — that would silently merge two photos.
+            existing = set(current.values)
+            applied = {
+                old: new for old, new in mapping.items()
+                if old in existing and new not in existing
+            }
+            if not applied:
+                return {'success': True, 'renamed': 0, 'error': ''}
+
+            self._backup_before_repair(kestrel_dir)
+            frame['filename'] = current.map(lambda n: applied.get(n, n))
+            self._write_repair_frame(frame, csv_path)
+
+            scenedata = self._read_scenedata_for_repair(kestrel_dir)
+            if scenedata:
+                self._scenedata_rename_filenames(scenedata, applied)
+                self._write_scenedata_for_repair(kestrel_dir, scenedata)
+
+            info(f'[repair] Re-keyed {len(applied)} renamed row(s) in {root_real}')
+            return {'success': True, 'renamed': len(applied), 'error': ''}
+        except Exception as e:
+            error(f'[API] repair_apply_renames error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def repair_relocate(self, source_path: str, dest_path: str, filenames=None):
+        """Move analysis data for relocated photos from one folder to another.
+
+        This is a MOVE, not a copy: the premise is that the photos have left the
+        source, so leaving rows behind would recreate the stale-folder problem
+        the repair exists to solve.
+
+        Phase 1 supports an empty destination only. Merging into a folder that
+        already has a ``.kestrel`` would require renumbering ``scene_count`` —
+        a per-folder integer used both as a CSV column and as the key of
+        ``scenedata['scenes']`` — plus a rule for filename collisions between
+        incoming and existing rows. That is refused explicitly rather than
+        attempted silently.
+
+        Pass ``filenames`` to move a subset; omit it to move every row whose
+        file is present at the destination.
+        """
+        # Set before the try so the rollback handler can always read it, even
+        # for a failure that happens long before a destination is staged.
+        created_dest = ''
+        try:
+            src_real, src_kestrel, _, err = self._resolve_folder_root_and_kestrel(
+                source_path,
+                context='repair_relocate',
+                require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+
+            dest_real, err = self._validate_root_dir(
+                dest_path, context='repair_relocate', require_exists=True
+            )
+            if err:
+                return {'success': False, 'error': err}
+
+            if os.path.normcase(dest_real) == os.path.normcase(src_real):
+                return {'success': False, 'error': 'Source and destination are the same folder'}
+            if self._is_within_root(dest_real, src_kestrel):
+                self._log_security_reject(
+                    'repair_relocate', 'Destination inside .kestrel',
+                    source=src_real, dest=dest_real,
+                )
+                return {'success': False, 'error': 'Invalid destination folder'}
+
+            if _queue_manager.has_running_writer(src_real) or _queue_manager.has_running_writer(dest_real):
+                return {
+                    'success': False,
+                    'error': 'Cannot repair while analysis is running for these folders',
+                }
+
+            dest_kestrel = os.path.join(dest_real, '.kestrel')
+            # Test for a real database, not merely for the directory. A bare
+            # `.kestrel/` shell is what a previously failed relocate leaves
+            # behind, and treating that as "already analysed" would refuse the
+            # retry forever while telling the user something untrue about why.
+            dest_db = os.path.join(dest_kestrel, 'kestrel_database.csv')
+            if os.path.isfile(dest_db):
+                return {
+                    'success': False,
+                    'error': (
+                        'That folder already has Kestrel analysis data. Moving data '
+                        'into an already-analyzed folder is not supported yet.'
+                    ),
+                    'reason': 'destination_has_kestrel',
+                }
+
+            # What is actually at the destination, and how big.
+            fdiff = self._repair_import()
+            try:
+                from folder_inspector import scan_folder_images  # type: ignore
+            except ImportError:
+                from analyzer.folder_inspector import scan_folder_images  # type: ignore
+            dest_entries, scan_err = scan_folder_images(dest_real)
+            if scan_err:
+                return {
+                    'success': False,
+                    'error': f'Could not read the destination folder: {scan_err}',
+                }
+            dest_sizes = {name: size for name, size in dest_entries}
+
+            frame, csv_path = self._load_repair_frame(src_kestrel)
+            if 'filename' not in frame.columns:
+                return {'success': False, 'error': 'Database has no filename column'}
+
+            try:
+                from kestrel_analyzer.database import parse_file_size
+            except ImportError:  # package-style import path
+                from analyzer.kestrel_analyzer.database import parse_file_size  # type: ignore[no-redef]
+
+            requested = set(self._clean_filename_list(filenames, 'repair_relocate')) if filenames else None
+            has_size = 'file_size' in frame.columns
+
+            move_names = []
+            for idx, raw_name in enumerate(frame['filename'].astype(str).values):
+                if requested is not None and raw_name not in requested:
+                    continue
+                if raw_name not in dest_sizes:
+                    continue
+                if has_size:
+                    stored = parse_file_size(frame['file_size'].values[idx])
+                    disk = dest_sizes[raw_name]
+                    # Unknown on either side falls back to name-only matching,
+                    # the same rule the diff uses for legacy rows.
+                    if stored is not None and disk >= 0 and stored != disk:
+                        continue
+                move_names.append(raw_name)
+
+            if not move_names:
+                return {
+                    'success': True, 'moved': 0, 'assets_moved': 0,
+                    'matched': 0, 'error': '',
+                }
+
+            move_set = set(move_names)
+            mask = frame['filename'].astype(str).isin(move_set)
+            asset_rels = self._repair_row_asset_paths(frame, mask)
+
+            self._backup_before_repair(src_kestrel)
+
+            # The whole relocate is staged at the destination first and only
+            # committed to the source at step 5. Anything that raises before
+            # that point unwinds to the handler below, which removes the
+            # destination we built, leaving the source exactly as it was.
+            #
+            # This ordering is why assets are COPIED here and the source copies
+            # deleted afterwards: a move would make the asset step itself the
+            # commit, so a later failure would strand the source with rows whose
+            # crops had already left -- the broken-thumbnail state this repair
+            # exists to remove.
+            created_dest = dest_kestrel if not os.path.isdir(dest_kestrel) else ''
+            os.makedirs(dest_kestrel, exist_ok=True)
+
+            # 1. Write the moved rows as the destination's database.
+            moving = frame.loc[mask].copy()
+            self._write_repair_frame(moving, os.path.join(dest_kestrel, 'kestrel_database.csv'))
+
+            # 2. Split scenedata. Only the destination's copy is written now;
+            #    the source's is rewritten at the commit point.
+            src_scenedata = self._read_scenedata_for_repair(src_kestrel)
+            if src_scenedata:
+                dest_scenedata = self._split_scenedata_for_move(src_scenedata, move_set)
+                self._write_scenedata_for_repair(dest_kestrel, dest_scenedata)
+
+            # 3. Copy the crop/export JPEGs. Without these the destination's rows
+            #    render as broken thumbnails — the CSV alone looks correct but the
+            #    folder is visibly wrong. Failures raise rather than warn: a
+            #    destination missing its assets is not a successful relocate, and
+            #    unwinding here still leaves the source whole.
+            copied_pairs = []
+            for rel in asset_rels:
+                _r, src_asset, perr = self._resolve_path_in_root(
+                    src_real, rel, context='repair_relocate', allow_absolute=False
+                )
+                if perr or not src_asset or not os.path.isfile(src_asset):
+                    continue
+                _r2, dest_asset, perr2 = self._resolve_path_in_root(
+                    dest_real, rel, context='repair_relocate', allow_absolute=False
+                )
+                if perr2 or not dest_asset:
+                    continue
+                os.makedirs(os.path.dirname(dest_asset), exist_ok=True)
+                shutil.copy2(src_asset, dest_asset)
+                copied_pairs.append(src_asset)
+
+            # 4. Give the destination an audit trail of its own.
+            try:
+                from kestrel_analyzer.config import VERSION as _KVERSION
+            except ImportError:
+                _KVERSION = self.get_app_version().get('version', '')
+            try:
+                meta_path = os.path.join(dest_kestrel, 'kestrel_metadata.json')
+                if not os.path.exists(meta_path):
+                    from datetime import datetime, timezone
+                    write_json_atomic(meta_path, {
+                        'version': _KVERSION,
+                        'analyzer': 'repair-relocate',
+                        'created_utc': datetime.now(timezone.utc)
+                            .replace(tzinfo=None).isoformat() + 'Z',
+                        'database_file': 'kestrel_database.csv',
+                        'relocated_from': src_real,
+                    })
+            except Exception as e:
+                warn(f'[repair] Could not write destination metadata: {e}')
+
+            # 5. COMMIT. The destination is complete; drop the rows from the
+            #    source. Past this line the relocate has happened and failures
+            #    must no longer unwind the destination.
+            if src_scenedata:
+                self._scenedata_drop_filenames(src_scenedata, move_set)
+                self._write_scenedata_for_repair(src_kestrel, src_scenedata)
+            self._write_repair_frame(frame.loc[~mask].copy(), csv_path)
+            created_dest = ''
+
+            # 6. Reclaim the source copies. Best-effort by design: the relocate
+            #    is already committed, and a leftover JPEG no row references is
+            #    wasted space, not damage.
+            for src_asset in copied_pairs:
+                try:
+                    os.remove(src_asset)
+                except Exception as e:
+                    warn(f'[repair] Could not remove relocated source asset: {e}')
+
+            # Reports what reached the destination, not what was reclaimed from
+            # the source — a failed cleanup does not make the relocate smaller.
+            assets_moved = len(copied_pairs)
+            info(
+                f'[repair] Relocated {len(move_names)} row(s) and {assets_moved} '
+                f'asset file(s) from {src_real} to {dest_real}'
+            )
+            return {
+                'success': True,
+                'moved': len(move_names),
+                'assets_moved': assets_moved,
+                'matched': len(move_names),
+                'dest': dest_real,
+                'error': '',
+            }
+        except Exception as e:
+            error(f'[API] repair_relocate error: {e}')
+            # Unwind anything staged at the destination. ``created_dest`` is
+            # cleared at the commit point, so this only ever fires while the
+            # source is still intact — it can never delete a destination the
+            # source has already been trimmed against.
+            if created_dest:
+                try:
+                    shutil.rmtree(created_dest, ignore_errors=True)
+                    info(f'[repair] Rolled back partial destination {created_dest}')
+                except Exception as cleanup_err:
+                    warn(f'[repair] Could not roll back {created_dest}: {cleanup_err}')
+            return {'success': False, 'error': str(e)}
+
+    @staticmethod
+    def _split_scenedata_for_move(scenedata: dict, move_set: set) -> dict:
+        """Build the destination's scenedata from the moved photos' entries.
+
+        Scene ids are carried over unchanged, which is safe only because the
+        destination is required to be empty — there is nothing to collide with.
+        """
+        out = {
+            'version': str(scenedata.get('version') or '2.0'),
+            'image_ratings': {},
+            'scenes': {},
+        }
+        ratings = scenedata.get('image_ratings')
+        if isinstance(ratings, dict):
+            for name, value in ratings.items():
+                if name in move_set:
+                    out['image_ratings'][name] = value
+        scenes = scenedata.get('scenes')
+        if isinstance(scenes, dict):
+            for scene_id, scene in scenes.items():
+                if not isinstance(scene, dict):
+                    continue
+                members = scene.get('image_filenames')
+                if not isinstance(members, list):
+                    continue
+                moved_members = [n for n in members if n in move_set]
+                if not moved_members:
+                    continue
+                carried = dict(scene)
+                carried['image_filenames'] = moved_members
+                out['scenes'][str(scene_id)] = carried
+        return out
+
+    def _clean_filename_list(self, filenames, context: str) -> list:
+        """Sanitize a JS-supplied filename list to bare basenames."""
+        if isinstance(filenames, (list, tuple, set)):
+            raw = list(filenames)
+        elif filenames:
+            raw = [filenames]
+        else:
+            return []
+        out = []
+        seen = set()
+        for item in raw:
+            name = self._sanitize_plain_filename(str(item or ''), context=context)
+            if name and name not in seen:
+                seen.add(name)
+                out.append(name)
+        return out
 
     def open_reject_folder(self, root_path: str):
         """Open the _KESTREL_Rejects folder in the system file browser."""

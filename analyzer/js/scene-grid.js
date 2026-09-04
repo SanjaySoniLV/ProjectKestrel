@@ -650,6 +650,22 @@
           actionsWrap.appendChild(actionsTrigger);
           rightActions.appendChild(actionsWrap);
 
+          // Repair — only rendered visible once a background diff has found
+          // drift for this folder AND the folder listing was read successfully.
+          // Created hidden and toggled by repair.js::syncRepairIndicators,
+          // because the diff arrives after this render completes.
+          const repairBtn = document.createElement('button');
+          repairBtn.type = 'button';
+          repairBtn.className = 'action-btn folder-repair-btn hidden';
+          repairBtn.dataset.repairRoot = fd.folderPath;
+          repairBtn.innerHTML = '<i>⚠</i> Repair Kestrel Data';
+          repairBtn.title = 'Kestrel data and photos no longer match';
+          repairBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            if (typeof openRepairDialog === 'function') openRepairDialog(fd.folderPath);
+          });
+          rightActions.appendChild(repairBtn);
+
           const cullingBtn = document.createElement('button');
           cullingBtn.className = 'action-btn culling-assistant-btn';
           cullingBtn.innerHTML = '<i>✂</i> Open Culling Assistant';
@@ -741,6 +757,10 @@
       if (mainEl && savedScrollTop > 0) {
         mainEl.scrollTop = savedScrollTop;
       }
+
+      // Folder headers were just rebuilt with their Repair buttons hidden;
+      // re-apply whatever the last diff found. Cheap DOM toggle, no rescan.
+      try { if (typeof syncRepairIndicators === 'function') syncRepairIndicators(); } catch (_) { }
     }
 
     // Update card highlights and show/hide floating action bar based on current selection

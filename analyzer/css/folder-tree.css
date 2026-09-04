@@ -351,6 +351,21 @@
   opacity: 0.85;
 }
 
+/* Drift indicator — this folder's photos and its .kestrel data no longer match.
+   Sits on the right edge with the other status glyphs (perch feather,
+   in-progress hourglass). Amber rather than red: drift is a "look at this",
+   not an error, and every fix behind it is user-confirmed. */
+.tree-repair-warn {
+  font-size: 11px;
+  margin-left: 1px;
+  margin-right: 3px;
+  display: inline-block;
+  line-height: 1;
+  vertical-align: middle;
+  color: #e8b339;
+  cursor: help;
+}
+
 /* Recents chip row: primary chip + dismiss control */
 .folder-recents-chip-wrap {
   display: inline-flex;

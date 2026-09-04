@@ -353,6 +353,9 @@
       for (const root of _getAllRoots()) {
         container.appendChild(buildTreeNode(root, _treeFlatOrder));
       }
+      // Rows were just rebuilt, so re-apply the drift badges from the last
+      // diff. Cheap DOM pass, no rescan.
+      try { if (typeof syncRepairIndicators === 'function') syncRepairIndicators(); } catch (_) { }
       // Note: counts are only populated for the Analyze dialog tree.
     }
 
