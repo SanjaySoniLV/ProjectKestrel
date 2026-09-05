@@ -149,14 +149,51 @@
   right: 12px;
   background: none;
   border: none;
-  color: var(--muted);
+  color: var(--text);
   font-size: 15px;
   line-height: 1;
   cursor: pointer;
   padding: 4px 7px;
   border-radius: 6px;
+  /* Sits over the banner photo, which can be pale (sky, water), so it
+     carries its own backdrop rather than relying on the panel behind it. */
+  z-index: 2;
+  background: rgba(11, 12, 15, 0.55);
 }
-.wln-dismiss:hover { color: var(--text); background: rgba(255, 255, 255, 0.06); }
+.wln-dismiss:hover { color: var(--text); background: rgba(11, 12, 15, 0.78); }
+
+/* The release's namesake bird, full-bleed across the top of the panel.
+   Negative margins cancel `.wln`'s padding; `.wln`'s own `overflow: hidden`
+   clips the image to the rounded corners. The asset is a 5:2 crop, so
+   `cover` fills the box without distorting it. Falls back cleanly to a
+   text-only header when `heroImg` is absent. */
+.wln-banner {
+  position: relative;
+  z-index: 0;
+  margin: -22px -24px 18px;
+  height: 240px;
+  overflow: hidden;
+}
+
+.wln-banner img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Soften the cut into the panel body so the photo settles into the card
+   instead of ending on a hard line. */
+.wln-banner::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 84px;
+  background: linear-gradient(180deg, rgba(11, 12, 15, 0) 0%, rgba(11, 12, 15, 0.75) 100%);
+  pointer-events: none;
+}
 
 .wln-eyebrow {
   display: inline-flex;
