@@ -2765,6 +2765,7 @@
       el('#statusLabel').textContent = 'Processing\u2026';
 
       let anyFailed = false;
+      let xmpFailed = false;
       try {
         // 1. Optional confirm auto-categorizations
         if (doPromoteVerified) {
@@ -2807,6 +2808,7 @@
           if (!firstXmpRes.success) {
             setStep('xmp', 'failed', firstXmpRes.error || '');
             anyFailed = true;
+            xmpFailed = true;
           } else if (firstXmpRes.skipped_conflicts && firstXmpRes.skipped_conflicts.length > 0) {
             // Pause and ask the user about conflicts
             setStep('xmp', 'pending', `${firstXmpRes.skipped_conflicts.length} conflict${firstXmpRes.skipped_conflicts.length === 1 ? '' : 's'} detected`);
@@ -2821,6 +2823,7 @@
               if (!secondXmpRes.success) {
                 setStep('xmp', 'failed', secondXmpRes.error || '');
                 anyFailed = true;
+                xmpFailed = true;
               } else {
                 setStep('xmp', 'done', `${secondXmpRes.written} file${secondXmpRes.written === 1 ? '' : 's'} written${embedSuffix(secondXmpRes)}`);
               }
@@ -2899,8 +2902,9 @@
         el('#dlgProgressIcon').textContent = anyFailed ? '\u26A0\uFE0F' : '\u2705';
         el('#dlgProgressTitle').textContent = anyFailed ? 'Completed with warnings' : 'Complete!';
         const parts = [];
-        if (doXmp && !anyFailed)  parts.push('XMP files written');
-        if (doXmp &&  anyFailed)  parts.push('XMP had errors \u2014 check above');
+        if (doXmp && !xmpFailed)  parts.push('XMP files written');
+        if (doXmp &&  xmpFailed)  parts.push('XMP had errors \u2014 check above');
+        if (doMove && moveRes && moveRes.all_moved === false) parts.push('Some rejects were skipped');
         if (doMove && moveCompleted) parts.push('Undo available via the bottom bar');
         el('#dlgProgressSubtitle').textContent = parts.join(' \u00b7 ');
         el('#dlgProgressActions').style.display = 'flex';

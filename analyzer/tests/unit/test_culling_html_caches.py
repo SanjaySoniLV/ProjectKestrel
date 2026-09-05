@@ -99,3 +99,20 @@ def test_move_rejects_reads_all_moved():
     block = src[start:end]
     assert "moveRes.all_moved" in block
     assert "anyFailed = true" in block
+
+
+@pytest.mark.unit
+def test_partial_move_subtitle_does_not_blame_xmp():
+    src = _html()
+    start = src.find("async function executeActions")
+    if start == -1:
+        start = src.find("function executeActions")
+    end = src.find("async function undoMove")
+    assert start != -1
+    body = src[start:end]
+    assert "let xmpFailed = false" in body
+    assert "xmpFailed = true" in body
+    assert "if (doXmp &&  anyFailed)" not in body
+    assert "if (doXmp &&  xmpFailed)" in body or "if (doXmp && xmpFailed)" in body
+    assert "Some rejects were skipped" in body
+    assert "moveRes.all_moved === false" in body
