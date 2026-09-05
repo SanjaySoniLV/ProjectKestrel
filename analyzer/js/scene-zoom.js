@@ -4,7 +4,10 @@
     let sceneZoomThumbEl = null;
     let sceneZoomScale = 5;   // adjustable via scroll or slider
     let zoomLastX = 0, zoomLastY = 0; // last mouse pos for slider re-apply
-    const sceneRawCache = new Map();   // unique row key -> blob URL
+    // unique row key -> blob URL of a full RAW preview JPEG. BlobUrlCache
+    // (blob-zoom.js) LRU-caps and revokes on eviction/clear; a plain Map leaked
+    // createObjectURL bytes for every zoomed image in the session.
+    const sceneRawCache = new BlobUrlCache();
     const sceneRawLoading = new Set(); // (rootPath|filename) currently being fetched
 
     function getRowExposurePipelineMode(row) {
@@ -391,8 +394,14 @@
           console.info('[raw-debug][scene]', row.filename, res.debug);
         }
         if (res && res.success && res.data) {
-          const url = _base64ToBlobUrl(res.data, res.mime || 'image/jpeg');
-          sceneRawCache.set(key, url);
+          // Re-check after await: a concurrent load (or a cache that was filled
+          // while we decoded) must reuse one blob: URL. BlobUrlCache.set does
+          // not revoke an overwritten value.
+          let url = sceneRawCache.has(key) ? sceneRawCache.get(key) : null;
+          if (!url) {
+            url = _base64ToBlobUrl(res.data, res.mime || 'image/jpeg');
+            sceneRawCache.set(key, url);
+          }
           // Upgrade preview if this row is still the active zoom row
           if (sceneZoomActive && sceneZoomRow === row) {
             const box = el('#previewBox');
