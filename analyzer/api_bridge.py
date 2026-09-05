@@ -210,10 +210,13 @@ def _keyring_save(data: dict) -> None:
     environments.
 
     Fallback file is locked down to owner-read/write (``0o600``) in a
-    ``0o700`` directory. Without that the default umask leaves the file
-    world-readable on POSIX, which on a shared dev / CI box is a direct
-    JWT exfil path (audit Medium-13). On Windows, ``chmod`` is a weak ACL
-    approximation; the keyring path is the secure-by-default option there.
+    ``0o700`` directory. ``open(path, 'w')`` then ``chmod(0o600)`` leaves a
+    window where the JWT is world-readable (default umask, typically 0644).
+    ``write_text_atomic`` writes through ``mkstemp`` (already ``0o600``) and
+    ``os.replace``, so neither that window nor a truncated live file exists.
+    A follow-up ``chmod(0o600)`` still runs after replace for Windows ACLs and
+    any leftover 0644 dest. On Windows, ``chmod`` is a weak ACL approximation;
+    the keyring path is the secure-by-default option there.
     """
     serialized = json.dumps(data)
     fallback_path = _get_auth_fallback_path()
@@ -264,8 +267,7 @@ def _keyring_save(data: dict) -> None:
         os.chmod(directory, 0o700)
     except OSError:
         pass
-    with open(fallback_path, 'w', encoding='utf-8') as f:
-        f.write(serialized)
+    write_text_atomic(fallback_path, serialized)
     try:
         os.chmod(fallback_path, 0o600)
     except OSError:
