@@ -7384,6 +7384,33 @@ class Api:
             warn(f'[repair] Could not read scenedata ({e}); leaving it untouched')
             return {}
 
+    @staticmethod
+    def _load_repair_fingerprints(root_real: str) -> dict:
+        """Read the XMP fingerprint store, or {} when it is absent/unusable."""
+        try:
+            try:
+                from metadata_writer import _load_xmp_fingerprints
+            except ImportError:  # package-style import path
+                from analyzer.metadata_writer import _load_xmp_fingerprints  # type: ignore[no-redef]
+            return _load_xmp_fingerprints(root_real)
+        except Exception as e:
+            warn(f'[repair] Could not read XMP fingerprints: {e}')
+            return {}
+
+    @staticmethod
+    def _save_repair_fingerprints(root_real: str, fingerprints: dict) -> bool:
+        """Persist the XMP fingerprint store. Returns False if it could not be written."""
+        try:
+            try:
+                from metadata_writer import _save_xmp_fingerprints
+            except ImportError:  # package-style import path
+                from analyzer.metadata_writer import _save_xmp_fingerprints  # type: ignore[no-redef]
+            _save_xmp_fingerprints(root_real, fingerprints)
+            return True
+        except Exception as e:
+            warn(f'[repair] Could not write XMP fingerprints: {e}')
+            return False
+
     def _write_scenedata_for_repair(self, kestrel_dir: str, scenedata: dict) -> None:
         if not scenedata:
             return
@@ -7489,6 +7516,49 @@ class Api:
                 unique.append(rel)
         return unique
 
+    def _repair_asset_target(self, root_real: str, kestrel_dir: str,
+                             rel: str, context: str) -> str:
+        """Resolve a CSV-supplied asset path to a file a repair may delete or write.
+
+        ``crop_path`` / ``export_path`` / ``crops_json`` are read out of
+        ``kestrel_database.csv``, which travels with the photo folder and can
+        therefore be supplied by whoever shared that folder. The root jail
+        proves only that the target stays inside the analyzed folder, which
+        still covers every photo and document the user keeps there -- a
+        crafted CSV naming ``my_originals/IMG_0042.CR3`` would be accepted.
+
+        The pipeline writes crops to ``.kestrel/crop`` and exports to
+        ``.kestrel/export``, always as JPEGs, so require both of those before
+        touching the file. Returns '' when the path is unusable or falls
+        outside those bounds; callers skip it.
+        """
+        _r, target, perr = self._resolve_path_in_root(
+            root_real, rel, context=context, allow_absolute=False
+        )
+        if perr or not target:
+            return ''
+        if not self._is_within_root(target, kestrel_dir):
+            self._log_security_reject(
+                context, 'Asset path outside .kestrel', requested_path=rel
+            )
+            return ''
+        if os.path.splitext(target)[1].lower() not in ('.jpg', '.jpeg'):
+            self._log_security_reject(
+                context, 'Asset path is not a JPEG', requested_path=rel
+            )
+            return ''
+        return target
+
+    @staticmethod
+    def _xmp_fingerprint_keys_for(names) -> set:
+        """Fingerprint-store keys for ``names``.
+
+        The store is keyed by sidecar basename -- ``IMG_0005.CR3`` is recorded
+        under ``IMG_0005.xmp`` -- so filenames have to go through the same
+        transform ``write_xmp_metadata`` uses to build its key.
+        """
+        return {os.path.splitext(str(n))[0] + '.xmp' for n in (names or ())}
+
     def repair_forget_missing(self, folder_path: str, filenames):
         """Delete database rows for photos the user confirms are gone.
 
@@ -7535,12 +7605,14 @@ class Api:
 
             freed = 0
             for rel in asset_rels:
-                # Route every delete through the root jail: crop_path comes out
-                # of a CSV the user can edit by hand.
-                _r, target, perr = self._resolve_path_in_root(
-                    root_real, rel, context='repair_forget_missing', allow_absolute=False
+                # Route every delete through the asset jail. crop_path comes out
+                # of a CSV that ships with the folder, so staying inside the
+                # root is not enough -- it must be a JPEG under .kestrel, or a
+                # crafted row could name one of the user's own photos.
+                target = self._repair_asset_target(
+                    root_real, kestrel_dir, rel, context='repair_forget_missing'
                 )
-                if perr or not target:
+                if not target:
                     continue
                 try:
                     if os.path.isfile(target):
@@ -7641,6 +7713,14 @@ class Api:
         # Set before the try so the rollback handler can always read it, even
         # for a failure that happens long before a destination is staged.
         created_dest = ''
+        # Every artifact written at the destination, in write order. The
+        # rollback unwinds these individually because ``created_dest`` is set
+        # only when Kestrel created ``.kestrel`` itself: a destination that
+        # already had a bare shell -- a supported state, see the ``dest_db``
+        # comment below -- would otherwise skip cleanup entirely and strand
+        # the destination CSV, wedging every retry behind the
+        # 'already has Kestrel analysis data' refusal with no way out.
+        staged_files: list = []
         try:
             src_real, src_kestrel, _, err = self._resolve_folder_root_and_kestrel(
                 source_path,
@@ -7755,7 +7835,9 @@ class Api:
 
             # 1. Write the moved rows as the destination's database.
             moving = frame.loc[mask].copy()
-            self._write_repair_frame(moving, os.path.join(dest_kestrel, 'kestrel_database.csv'))
+            dest_csv = os.path.join(dest_kestrel, 'kestrel_database.csv')
+            self._write_repair_frame(moving, dest_csv)
+            staged_files.append(dest_csv)
 
             # 2. Split scenedata. Only the destination's copy is written now;
             #    the source's is rewritten at the commit point.
@@ -7763,6 +7845,27 @@ class Api:
             if src_scenedata:
                 dest_scenedata = self._split_scenedata_for_move(src_scenedata, move_set)
                 self._write_scenedata_for_repair(dest_kestrel, dest_scenedata)
+                staged_files.append(
+                    os.path.join(dest_kestrel, 'kestrel_scenedata.json')
+                )
+
+            # 2b. Carry the moved photos' XMP fingerprints to the destination.
+            #     Without them the destination has no record of the sidecars
+            #     Kestrel wrote, so ``_safe_to_overwrite_xmp`` takes its legacy
+            #     'no fingerprint recorded' branch and silently overwrites a
+            #     sidecar the user edited in Lightroom -- precisely the
+            #     protection this release added. Written here rather than at
+            #     the commit so a failure still unwinds with everything else;
+            #     the source's copy is pruned at step 5.
+            moved_fp_keys = self._xmp_fingerprint_keys_for(move_set)
+            src_fingerprints = self._load_repair_fingerprints(src_real)
+            carried_fp = {k: v for k, v in src_fingerprints.items()
+                          if k in moved_fp_keys}
+            if carried_fp:
+                if self._save_repair_fingerprints(dest_real, carried_fp):
+                    staged_files.append(
+                        os.path.join(dest_kestrel, 'xmp_fingerprints.json')
+                    )
 
             # 3. Copy the crop/export JPEGs. Without these the destination's rows
             #    render as broken thumbnails — the CSV alone looks correct but the
@@ -7771,18 +7874,23 @@ class Api:
             #    unwinding here still leaves the source whole.
             copied_pairs = []
             for rel in asset_rels:
-                _r, src_asset, perr = self._resolve_path_in_root(
-                    src_real, rel, context='repair_relocate', allow_absolute=False
+                # Both ends go through the asset jail: the source CSV is
+                # untrusted, so an unchecked rel would name both the file to
+                # read from the source and an arbitrary existing file to
+                # overwrite at the destination.
+                src_asset = self._repair_asset_target(
+                    src_real, src_kestrel, rel, context='repair_relocate'
                 )
-                if perr or not src_asset or not os.path.isfile(src_asset):
+                if not src_asset or not os.path.isfile(src_asset):
                     continue
-                _r2, dest_asset, perr2 = self._resolve_path_in_root(
-                    dest_real, rel, context='repair_relocate', allow_absolute=False
+                dest_asset = self._repair_asset_target(
+                    dest_real, dest_kestrel, rel, context='repair_relocate'
                 )
-                if perr2 or not dest_asset:
+                if not dest_asset:
                     continue
                 os.makedirs(os.path.dirname(dest_asset), exist_ok=True)
                 shutil.copy2(src_asset, dest_asset)
+                staged_files.append(dest_asset)
                 copied_pairs.append(src_asset)
 
             # 4. Give the destination an audit trail of its own.
@@ -7793,6 +7901,7 @@ class Api:
             try:
                 meta_path = os.path.join(dest_kestrel, 'kestrel_metadata.json')
                 if not os.path.exists(meta_path):
+                    staged_files.append(meta_path)
                     from datetime import datetime, timezone
                     write_json_atomic(meta_path, {
                         'version': _KVERSION,
@@ -7811,8 +7920,13 @@ class Api:
             if src_scenedata:
                 self._scenedata_drop_filenames(src_scenedata, move_set)
                 self._write_scenedata_for_repair(src_kestrel, src_scenedata)
+            if carried_fp:
+                remaining_fp = {k: v for k, v in src_fingerprints.items()
+                                if k not in moved_fp_keys}
+                self._save_repair_fingerprints(src_real, remaining_fp)
             self._write_repair_frame(frame.loc[~mask].copy(), csv_path)
             created_dest = ''
+            staged_files = []
 
             # 6. Reclaim the source copies. Best-effort by design: the relocate
             #    is already committed, and a leftover JPEG no row references is
@@ -7840,16 +7954,30 @@ class Api:
             }
         except Exception as e:
             error(f'[API] repair_relocate error: {e}')
-            # Unwind anything staged at the destination. ``created_dest`` is
+            # Unwind everything staged at the destination. ``staged_files`` is
             # cleared at the commit point, so this only ever fires while the
             # source is still intact — it can never delete a destination the
             # source has already been trimmed against.
-            if created_dest:
+            #
+            # The per-file unwind is what makes this correct when the
+            # destination already had a ``.kestrel``: ``created_dest`` is empty
+            # then, and removing only the directory Kestrel made would leave
+            # the staged CSV behind and refuse every retry.
+            for staged in reversed(staged_files):
                 try:
-                    shutil.rmtree(created_dest, ignore_errors=True)
-                    info(f'[repair] Rolled back partial destination {created_dest}')
-                except Exception as cleanup_err:
-                    warn(f'[repair] Could not roll back {created_dest}: {cleanup_err}')
+                    os.remove(staged)
+                except OSError:
+                    pass
+            if created_dest and os.path.isdir(created_dest):
+                shutil.rmtree(created_dest, ignore_errors=True)
+            # Report only a rollback that actually happened. ``rmtree`` runs
+            # with ignore_errors, so an unconditional success line would make
+            # a failed cleanup indistinguishable from a clean one in the log.
+            leftover = created_dest and os.path.exists(created_dest)
+            if leftover:
+                warn(f'[repair] Could not fully roll back {created_dest}')
+            else:
+                info(f'[repair] Rolled back partial destination at {dest_real}')
             return {'success': False, 'error': str(e)}
 
     @staticmethod

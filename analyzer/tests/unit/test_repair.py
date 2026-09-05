@@ -371,3 +371,211 @@ class TestRelocate:
         assert res["moved"] == 1
         assert list(_read_db(src)["filename"]) == ["IMG_001.CR3"]
         assert list(_read_db(dest)["filename"]) == ["IMG_002.CR3"]
+
+
+class TestRepairSafety:
+    """Regressions for the three defects found in the v(Ruddy Turnstone) review.
+
+    Each of these passed before the fix by doing the wrong thing quietly, so
+    they assert the absence of damage rather than the presence of a result.
+    """
+
+    # -- Group 1: the CSV that names assets is untrusted -------------------
+
+    def test_forget_does_not_delete_user_files_inside_the_root(self, api, tmp_path):
+        """crop_path must not reach a file outside .kestrel.
+
+        The root jail alone accepted any path that stayed inside the analyzed
+        folder, which is where the user's own photos live. `.kestrel` ships
+        with a shared folder, so its CSV is attacker-supplied.
+        """
+        root = _make_folder(tmp_path / "shoot", [("IMG_001.CR3", 100)])
+        keeper = root / "family.jpg"
+        keeper.write_bytes(b"KEEP")
+
+        kdir = root / ".kestrel"
+        (kdir / "kestrel_database.csv").write_text(
+            f"{CSV_HEADER}\n"
+            f"IMG_001.CR3,Unknown,0,family.jpg,family.jpg,[],100",
+            encoding="utf-8",
+        )
+
+        res = api.repair_forget_missing(str(root), ["IMG_001.CR3"])
+        assert res["success"] is True
+        assert keeper.exists(), "repair deleted a user file inside the root"
+        assert res["freed_files"] == 0
+
+    def test_forget_does_not_delete_other_photos(self, api, tmp_path):
+        """The same hole, aimed at another RAW rather than a JPEG."""
+        root = _make_folder(
+            tmp_path / "shoot", [("IMG_001.CR3", 100), ("IMG_002.CR3", 200)]
+        )
+        kdir = root / ".kestrel"
+        (kdir / "kestrel_database.csv").write_text(
+            f"{CSV_HEADER}\n"
+            f"IMG_001.CR3,Unknown,0,IMG_002.CR3,N/A,[],100",
+            encoding="utf-8",
+        )
+
+        api.repair_forget_missing(str(root), ["IMG_001.CR3"])
+        assert (root / "IMG_002.CR3").exists(), "repair deleted another photo"
+
+    def test_forget_still_removes_legitimate_crops(self, api, tmp_path):
+        """The jail must not break the case it exists to allow."""
+        root = _make_folder(tmp_path / "shoot", [("IMG_001.CR3", 100)])
+        crop = root / ".kestrel/crop/IMG_001_crop_0.jpg"
+        export = root / ".kestrel/export/IMG_001_export.jpg"
+        assert crop.exists() and export.exists()
+
+        res = api.repair_forget_missing(str(root), ["IMG_001.CR3"])
+        assert res["success"] is True
+        assert not crop.exists()
+        assert not export.exists()
+        assert res["freed_files"] == 2
+
+    def test_relocate_does_not_overwrite_files_at_the_destination(self, api, tmp_path):
+        """The write-side mirror: a crafted crop_path must not clobber the destination."""
+        src = _make_folder(
+            tmp_path / "A", [("IMG_001.CR3", 100), ("IMG_002.CR3", 200)]
+        )
+        dest = tmp_path / "B"
+        dest.mkdir()
+        (src / "IMG_002.CR3").rename(dest / "IMG_002.CR3")
+
+        # A file that exists in both folders, named as though it were a crop.
+        (src / "family.jpg").write_bytes(b"SOURCE")
+        victim = dest / "family.jpg"
+        victim.write_bytes(b"ORIGINAL")
+
+        kdir = src / ".kestrel"
+        (kdir / "kestrel_database.csv").write_text(
+            f"{CSV_HEADER}\n"
+            f"IMG_001.CR3,Unknown,0,N/A,N/A,[],100\n"
+            f"IMG_002.CR3,Unknown,1,family.jpg,N/A,[],200",
+            encoding="utf-8",
+        )
+
+        api.repair_relocate(str(src), str(dest), ["IMG_002.CR3"])
+        assert victim.read_bytes() == b"ORIGINAL", "relocate overwrote a destination file"
+
+    # -- Group 2: rollback must not depend on who created .kestrel ---------
+
+    def test_failed_relocate_into_existing_kestrel_shell_is_unwound(
+        self, api, tmp_path, monkeypatch
+    ):
+        """A pre-existing bare .kestrel/ disabled the rollback entirely.
+
+        `created_dest` was set only when Kestrel made the directory itself, so
+        a destination that already had a shell -- a state the guard explicitly
+        supports -- skipped cleanup and stranded the staged CSV. Every retry
+        was then refused with 'destination_has_kestrel', with no in-app way out.
+        """
+        src = _make_folder(
+            tmp_path / "A", [("IMG_001.CR3", 100), ("IMG_002.CR3", 200)]
+        )
+        dest = tmp_path / "B"
+        (dest / ".kestrel").mkdir(parents=True)
+        (src / "IMG_002.CR3").rename(dest / "IMG_002.CR3")
+
+        # Fail at the asset copy, i.e. after the destination CSV is written.
+        def _boom(*a, **kw):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(api_bridge.shutil, "copy2", _boom)
+        res = api.repair_relocate(str(src), str(dest))
+        assert res["success"] is False
+
+        assert not (dest / ".kestrel/kestrel_database.csv").exists(), (
+            "staged destination CSV survived the rollback"
+        )
+        assert sorted(_read_db(src)["filename"]) == ["IMG_001.CR3", "IMG_002.CR3"]
+
+    def test_retry_after_failure_into_existing_shell_succeeds(
+        self, api, tmp_path, monkeypatch
+    ):
+        """The wedge itself: the retry must not be refused."""
+        src = _make_folder(
+            tmp_path / "A", [("IMG_001.CR3", 100), ("IMG_002.CR3", 200)]
+        )
+        dest = tmp_path / "B"
+        (dest / ".kestrel").mkdir(parents=True)
+        (src / "IMG_002.CR3").rename(dest / "IMG_002.CR3")
+
+        real_copy2 = api_bridge.shutil.copy2
+        calls = {"n": 0}
+
+        def _boom_once(*a, **kw):
+            if calls["n"] == 0:
+                calls["n"] += 1
+                raise OSError(28, "No space left on device")
+            return real_copy2(*a, **kw)
+
+        monkeypatch.setattr(api_bridge.shutil, "copy2", _boom_once)
+        assert api.repair_relocate(str(src), str(dest))["success"] is False
+
+        res = api.repair_relocate(str(src), str(dest))
+        assert res["success"] is True, res.get("error")
+        assert res.get("reason") != "destination_has_kestrel"
+        assert list(_read_db(dest)["filename"]) == ["IMG_002.CR3"]
+
+    # -- Group 3: relocate must carry the sidecar-protection record --------
+
+    def test_relocate_carries_xmp_fingerprints(self, api, tmp_path):
+        """Without the fingerprint, the destination silently overwrites a sidecar.
+
+        `_safe_to_overwrite_xmp` treats "no fingerprint recorded" as a legacy
+        file that is safe to overwrite, so relocating turned off the external-
+        edit protection for exactly the photos that had just been relocated.
+        """
+        src = _make_folder(
+            tmp_path / "A", [("IMG_001.CR3", 100), ("IMG_002.CR3", 200)]
+        )
+        dest = tmp_path / "B"
+        dest.mkdir()
+        (src / "IMG_002.CR3").rename(dest / "IMG_002.CR3")
+
+        kept, moved = "a" * 64, "b" * 64
+        (src / ".kestrel/xmp_fingerprints.json").write_text(
+            json.dumps({"IMG_001.xmp": kept, "IMG_002.xmp": moved}),
+            encoding="utf-8",
+        )
+
+        res = api.repair_relocate(str(src), str(dest), ["IMG_002.CR3"])
+        assert res["success"] is True, res.get("error")
+
+        dest_fp = json.loads(
+            (dest / ".kestrel/xmp_fingerprints.json").read_text(encoding="utf-8")
+        )
+        assert dest_fp == {"IMG_002.xmp": moved}
+
+        src_fp = json.loads(
+            (src / ".kestrel/xmp_fingerprints.json").read_text(encoding="utf-8")
+        )
+        assert src_fp == {"IMG_001.xmp": kept}
+
+    def test_failed_relocate_does_not_strand_fingerprints(
+        self, api, tmp_path, monkeypatch
+    ):
+        """The carried store is staged, so it unwinds with everything else."""
+        src = _make_folder(
+            tmp_path / "A", [("IMG_001.CR3", 100), ("IMG_002.CR3", 200)]
+        )
+        dest = tmp_path / "B"
+        dest.mkdir()
+        (src / "IMG_002.CR3").rename(dest / "IMG_002.CR3")
+        (src / ".kestrel/xmp_fingerprints.json").write_text(
+            json.dumps({"IMG_002.xmp": "c" * 64}), encoding="utf-8"
+        )
+
+        def _boom(*a, **kw):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(api_bridge.shutil, "copy2", _boom)
+        assert api.repair_relocate(str(src), str(dest))["success"] is False
+
+        assert not (dest / ".kestrel/xmp_fingerprints.json").exists()
+        # The source keeps its record: the relocate never committed.
+        src_fp = json.loads(
+            (src / ".kestrel/xmp_fingerprints.json").read_text(encoding="utf-8")
+        )
+        assert src_fp == {"IMG_002.xmp": "c" * 64}
