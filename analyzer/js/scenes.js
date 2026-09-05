@@ -18,6 +18,44 @@
         && scene.images.some(r => isManualRated(r) || isManualCullDecision(r));
     }
 
+    /** Highest-quality row in ``pool``; ties keep the earliest, as before. */
+    function _bestByQuality(pool) {
+      let best = null;
+      for (const r of pool) {
+        if (best === null || parseNumber(r.quality) > parseNumber(best.quality)) best = r;
+      }
+      return best;
+    }
+
+    /** Count manual accept / reject / undecided decisions across a scene's rows. */
+    function _cullCounts(arr) {
+      let accepted = 0, rejected = 0;
+      for (const r of arr) {
+        const status = getCullStatus(r);
+        if (status === 'accept') accepted++;
+        else if (status === 'reject') rejected++;
+      }
+      return { accepted, rejected, undecided: arr.length - accepted - rejected };
+    }
+
+    /**
+     * Pick the scene thumbnail so it reflects the user's decisions, not just
+     * raw quality. In order: the best accepted photo; else the best photo the
+     * user has not rejected; else -- every photo was rejected -- the best of
+     * those.
+     *
+     * Only manual decisions count. getCullStatus() already returns '' for
+     * auto-culled rows, so a scene the user has not touched picks exactly the
+     * representative it always did.
+     */
+    function _pickSceneRepresentative(arr) {
+      const accepted = arr.filter(r => getCullStatus(r) === 'accept');
+      if (accepted.length) return _bestByQuality(accepted);
+      const notRejected = arr.filter(r => getCullStatus(r) !== 'reject');
+      if (notRejected.length) return _bestByQuality(notRejected);
+      return _bestByQuality(arr) || arr[0];
+    }
+
     function aggregateScenes(minSpeciesConf, searchTerm, sortBy, includeSecondary, includeFamilies) {
       const groups = new Map();
       for (const r of rows) {
@@ -29,9 +67,10 @@
 
       const list = [];
       for (const [sceneId, arr] of groups) {
-        // representative by max quality
-        let rep = arr[0];
-        for (const r of arr) if (parseNumber(r.quality) > parseNumber(rep.quality)) rep = r;
+        // Representative: best accepted, else best non-rejected, else best
+        // overall. See _pickSceneRepresentative.
+        const rep = _pickSceneRepresentative(arr);
+        const cullCounts = _cullCounts(arr);
 
         const computedTags = _computeSceneTagsFromRows(arr, minSpeciesConf, includeSecondary, includeFamilies);
         let species = computedTags.species.slice().sort();
@@ -56,6 +95,7 @@
           images: arr.slice().sort((a, b) => parseNumber(b.quality) - parseNumber(a.quality)),
           representative: rep,
           imageCount: arr.length,
+          cullCounts,
           species,
           families,
           maxQuality: maxQ,

@@ -7,6 +7,7 @@ for folder analysis, and the _QueueItem dataclass used internally.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import threading
 import time as _time_mod
@@ -40,8 +41,20 @@ def _coerce_detector_name(value) -> str:
     return name if name in _ALLOWED_DETECTOR_NAMES else _DEFAULT_DETECTOR_NAME
 
 
+def _folder_identity(path: str) -> str:
+    """Stable key for comparing photo-folder roots across queue and bridge."""
+    return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
+
+def _wipe_kestrel_dir(folder_path: str) -> None:
+    """Remove ``folder/.kestrel``. Raises on failure; does not swallow errors."""
+    kestrel_dir = os.path.join(folder_path, ".kestrel")
+    if os.path.isdir(kestrel_dir):
+        shutil.rmtree(kestrel_dir)
+
+
 def _utc_timestamp() -> str:
-    return datetime.utcnow().isoformat() + 'Z'
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + 'Z'
 
 
 def _ensure_pipeline_path() -> bool:
@@ -180,6 +193,10 @@ class QueueManager:
         self._pause_event.set()         # set = NOT paused
         self._cancel_event = threading.Event()
         self._thread: threading.Thread | None = None
+        # Claim owned by the running (or just-started) worker. enqueue() starts
+        # a successor iff this is False — not by Thread.is_alive(), which stays
+        # True while a worker that has already seen an empty queue is exiting.
+        self._worker_claimed = False
         self._pipeline = None
         self._use_gpu = True
         self._wildlife_enabled = True
@@ -219,6 +236,20 @@ class QueueManager:
     @property
     def is_paused(self) -> bool:
         return not self._pause_event.is_set()
+
+    def has_running_writer(self, folder_path: str) -> bool:
+        """True if a queue item for ``folder_path`` is currently ``running``.
+
+        ``running`` means ``process_folder`` may be writing CSV/JSON/exports.
+        Pending items are not writers yet; the pre-analysis ``.kestrel`` wipe
+        happens while the item is still pending.
+        """
+        folder_key = _folder_identity(folder_path)
+        with self._lock:
+            return any(
+                it.status == "running" and _folder_identity(it.path) == folder_key
+                for it in self._items
+            )
 
     def get_status(self) -> dict:
         with self._lock:
@@ -292,29 +323,51 @@ class QueueManager:
                     new_item.skip_if_already_done = bool(opts.get('skip_if_already_done'))
                     self._items.append(new_item)
                     added += 1
-        if not self.is_running:
-            self._cancel_event.clear()
-            self._pause_event.set()
-            self._use_gpu = use_gpu
-            self._wildlife_enabled = wildlife_enabled
-            self._species_detection_enabled = bool(species_detection_enabled)
-            self._detection_threshold = float(detection_threshold)
-            self._scene_time_threshold = float(scene_time_threshold)
-            self._mask_threshold = float(mask_threshold)
-            self._detector_name = _coerce_detector_name(detector_name)
-            try:
-                max_bird_crops_num = int(float(max_bird_crops))
-            except (TypeError, ValueError):
-                max_bird_crops_num = 10
-            self._max_bird_crops = max(1, min(20, max_bird_crops_num))
-            try:
-                parallel_prefetch_num = int(float(parallel_prefetch))
-            except (TypeError, ValueError):
-                parallel_prefetch_num = 3
-            self._parallel_prefetch = max(1, min(5, parallel_prefetch_num))
-            self._retry_errored = bool(retry_errored)
-            self._thread = threading.Thread(target=self._run, daemon=True, name='kestrel-queue')
-            self._thread.start()
+            # Decide whether to start the worker AND start it while STILL
+            # holding the lock, so two concurrent enqueue() calls (e.g. a
+            # double-clicked "Start") can't both observe "not running" and start
+            # two worker threads on the same _items list.
+            #
+            # Use _worker_claimed, not Thread.is_alive(). A worker that has
+            # already taken the last pending item may still be alive while it
+            # exits; is_alive() would then skip starting a successor and leave
+            # newly enqueued items stranded.
+            should_start = not self._worker_claimed
+            if should_start:
+                self._cancel_event.clear()
+                self._pause_event.set()
+                self._use_gpu = use_gpu
+                self._wildlife_enabled = wildlife_enabled
+                self._species_detection_enabled = bool(species_detection_enabled)
+                self._detection_threshold = float(detection_threshold)
+                self._scene_time_threshold = float(scene_time_threshold)
+                self._mask_threshold = float(mask_threshold)
+                self._detector_name = _coerce_detector_name(detector_name)
+                try:
+                    max_bird_crops_num = int(float(max_bird_crops))
+                except (TypeError, ValueError):
+                    max_bird_crops_num = 10
+                self._max_bird_crops = max(1, min(20, max_bird_crops_num))
+                try:
+                    parallel_prefetch_num = int(float(parallel_prefetch))
+                except (TypeError, ValueError):
+                    parallel_prefetch_num = 3
+                self._parallel_prefetch = max(1, min(5, parallel_prefetch_num))
+                self._retry_errored = bool(retry_errored)
+                self._worker_claimed = True
+                self._thread = threading.Thread(target=self._run, daemon=True, name='kestrel-queue')
+                # Start under the lock too. If start() ran outside it, a second
+                # concurrent enqueue() could acquire the lock in the window
+                # between creating the thread and starting it, see an
+                # unclaimed worker, and launch a duplicate. start() returns
+                # quickly and _run() doesn't take self._lock until later, so
+                # holding it here can't deadlock.
+                try:
+                    self._thread.start()
+                except BaseException:
+                    self._worker_claimed = False
+                    self._thread = None
+                    raise
         self._persist_recovery_state()
         return {'success': True, 'added': added}
 
@@ -400,7 +453,34 @@ class QueueManager:
 
     # ---- internal ----
 
+    def _take_next_pending(self):
+        """Claim the next pending item, or release the worker claim and return None.
+
+        Idle-exit and enqueue() share ``_worker_claimed`` under this lock so a
+        worker that has seen an empty queue cannot leave newly enqueued items
+        stranded: either this worker still owns the claim and will see the
+        item, or it has released the claim and enqueue() starts a successor.
+        """
+        with self._lock:
+            item = next((it for it in self._items if it.status == 'pending'), None)
+            if item is None:
+                self._worker_claimed = False
+                return None
+            # Deliberately does NOT mark the item running. #135 keeps the
+            # status 'pending' through the per-item gates so clear_kestrel_data
+            # cannot race a wipe against a writer that has not started yet; the
+            # call site flips it to 'running' once the gates have passed.
+            return item
+
     def _run(self):
+        try:
+            self._run_loop()
+        finally:
+            with self._lock:
+                if self._thread is threading.current_thread():
+                    self._worker_claimed = False
+
+    def _run_loop(self):
         if self._pipeline is None:
             cls = _get_pipeline_class()
             if cls is None:
@@ -416,27 +496,28 @@ class QueueManager:
         else:
             try:
                 self._pipeline.detector_name = self._detector_name
+                # Propagate the GPU/CPU choice too. The pipeline object is a
+                # manager-lifetime singleton reused across runs, and
+                # load_models() only rebuilds the model wrapper when
+                # pipeline.use_gpu actually changes. Without this, toggling
+                # "Use GPU" between runs was silently ignored (the first run's
+                # setting stuck for the whole session).
+                self._pipeline.use_gpu = self._use_gpu
             except Exception:
                 pass
 
         while not self._cancel_event.is_set():
-            with self._lock:
-                item = next((it for it in self._items if it.status == 'pending'), None)
+            item = self._take_next_pending()
             if item is None:
                 break
 
-            with self._lock:
-                item.status = 'running'
-                item.start_time = _time_mod.time()
-                item.initial_processed = 0
-            self._persist_recovery_state()
-
-            # ── Phase 3: per-item gates BEFORE the heavy pipeline call ────────
+            # ── Phase 3: per-item gates BEFORE marking running / pipeline ──
             # 1. skip_if_already_done — silently mark done without touching
             #    .kestrel if the folder is still fully analyzed with no errors.
             #    Re-inspect now (not at queue-build time) because state might
             #    have changed between dialog confirmation and the worker
-            #    reaching this folder.
+            #    reaching this folder. Keep status pending until we know work
+            #    will run, so UI clear cannot race a live writer.
             if item.skip_if_already_done and not self._retry_errored:
                 try:
                     import folder_inspector as _inspector
@@ -467,15 +548,38 @@ class QueueManager:
             # 2. delete_kestrel_on_start — wipe .kestrel JUST BEFORE this
             #    folder's analysis begins (NOT at queue-build time). If the
             #    user cancels mid-queue, later folders keep their .kestrel.
+            #    Never wipe while a writer already holds this root (status
+            #    running); a failed wipe aborts the item instead of analyzing
+            #    into a half-deleted directory.
             if item.delete_kestrel_on_start:
+                if self.has_running_writer(item.path):
+                    with self._lock:
+                        item.status = "error"
+                        item.end_time = _time_mod.time()
+                        item.error = (
+                            "Refusing to delete .kestrel while analysis is "
+                            "running for this folder"
+                        )
+                    error(f"[queue] {item.error}: {item.path!r}")
+                    self._persist_recovery_state()
+                    continue
                 try:
-                    import shutil as _shutil
-                    kestrel_dir = os.path.join(item.path, '.kestrel')
-                    if os.path.isdir(kestrel_dir):
-                        _shutil.rmtree(kestrel_dir, ignore_errors=True)
-                        info(f'[queue] Deleted .kestrel for {item.name!r} (per-item flag)')
+                    _wipe_kestrel_dir(item.path)
+                    info(f"[queue] Deleted .kestrel for {item.name!r} (per-item flag)")
                 except Exception as e:
-                    error(f'[queue] Failed to delete .kestrel for {item.path!r}: {e}')
+                    error(f"[queue] Failed to delete .kestrel for {item.path!r}: {e}")
+                    with self._lock:
+                        item.status = "error"
+                        item.end_time = _time_mod.time()
+                        item.error = str(e)
+                    self._persist_recovery_state()
+                    continue
+
+            with self._lock:
+                item.status = "running"
+                item.start_time = _time_mod.time()
+                item.initial_processed = 0
+            self._persist_recovery_state()
 
             try:
                 current_settings = load_persisted_settings()
@@ -486,6 +590,15 @@ class QueueManager:
                 pass
 
             try:
+                # process_folder() logs a fatal error (e.g. a failed model load
+                # or DB read) and returns normally instead of raising, so capture
+                # it here; otherwise a folder that never analyzed is marked 'done'.
+                fatal_error = {'exc': None}
+
+                def _on_error(kind, exc, _fatal=fatal_error):
+                    if kind == 'fatal':
+                        _fatal['exc'] = exc
+
                 def _on_progress(processed, total, _it=item):
                     with self._lock:
                         if _it.initial_processed == 0 and processed > 0 and _it.processed == 0:
@@ -589,6 +702,7 @@ class QueueManager:
                         'on_crops': _on_crops,
                         'on_quality': _on_quality,
                         'on_species': _on_species,
+                        'on_error': _on_error,
                     },
                     analyzer_name='visualizer-queue',
                     wildlife_enabled=self._wildlife_enabled,
@@ -604,6 +718,17 @@ class QueueManager:
                     if self._cancel_event.is_set():
                         item.status = 'cancelled'
                         item.end_time = _time_mod.time()
+                    elif fatal_error['exc'] is not None:
+                        # process_folder() caught a fatal error and returned
+                        # without raising; surface it as an errored folder rather
+                        # than a false 'done'.
+                        item.status = 'error'
+                        # Some exceptions stringify to '' (e.g. RuntimeError());
+                        # fall back to the type name so the UI never shows a
+                        # blank error for a failed folder.
+                        _exc = fatal_error['exc']
+                        item.error = str(_exc) or type(_exc).__name__
+                        item.end_time = _time_mod.time()
                     else:
                         item.status = 'done'
                         item.end_time = _time_mod.time()
@@ -616,7 +741,7 @@ class QueueManager:
                 with self._lock:
                     item.status = 'error'
                     item.end_time = _time_mod.time()
-                    item.error = str(exc)
+                    item.error = str(exc) or type(exc).__name__
                 self._persist_recovery_state()
                 self._send_folder_analytics(item)
 

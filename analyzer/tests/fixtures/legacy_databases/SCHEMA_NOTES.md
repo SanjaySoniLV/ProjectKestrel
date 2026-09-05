@@ -27,10 +27,51 @@ Committed CSV/JSON files are literal outputs from each tag run (no hand-synthesi
 | Willow-Ptarmigan-F1 | 2026-03-19 | dedup → `v_Willow-Ptarmigan_kestrel_database.csv` | no | Header matched Willow-Ptarmigan |
 | Kentucky-Warbler | 2026-04-02 | `v_Kentucky-Warbler_kestrel_database.csv` | yes | Added crops/exposure pipeline columns |
 | Gambels-Quail | 2026-04-23 | dedup → `v_Kentucky-Warbler_kestrel_database.csv` | no | Header matched Kentucky-Warbler |
+| *(through Dusky-Grouse)* | 2026-09-01 | dedup → `v_Kentucky-Warbler_kestrel_database.csv` | no | Every release up to and including `Dusky-Grouse` shipped the Kentucky-Warbler header (27 cols). That fixture therefore represents the schema of essentially every already-analysed folder on users' disks. |
+| *(untagged working tree)* | 2026-09-01 | `v_file-size_kestrel_database.csv` | yes | Added `file_size`. **Not captured from a release tag** — see below. |
+
+## Schema versioning
+
+`kestrel_metadata.json` now carries `schema_version` (`database.DATABASE_SCHEMA_VERSION`), numbering
+the CSV schema independently of the app version. Bump it whenever `BASE_COLUMNS` changes shape or
+meaning, and capture a fixture here in the same pass.
+
+| `schema_version` | Covers | Newest fixture |
+|---|---|---|
+| *(absent)* / 1 | everything through `Dusky-Grouse` | `v_Kentucky-Warbler_*` |
+| 2 | adds `file_size` | `v_file-size_*` |
+
+Absent means "1 or older". It is stamped on every analysis run, not just at folder creation, so a
+folder written by an older build records the new schema as soon as a newer build touches it — but
+folders never re-analysed will carry no `schema_version` indefinitely, and readers must handle that.
+
+## The `file_size` fixture (untagged)
+
+`v_file-size_*` is the one fixture here **not** captured from a release tag. It was generated from
+the working tree at the commit that introduced `file_size`, using the same procedure as every other
+fixture (`analyzer/cli.py --no-gpu` over the 4 CR3s in `test_sets/set_a_fresh/`), so it is still a
+literal pipeline output rather than hand-synthesis. Rename it to `v_<Tag>_*` when the change ships
+under a release tag.
+
+It exists so the *next* schema change has a baseline to migrate from. Until then the interesting
+fixture is `v_Kentucky-Warbler_*`, which is the schema real users' folders are actually in.
+
+`file_size` is half of a row's identity — a row corresponds to a photo by `(filename, file_size)`,
+not by filename alone. Every fixture above it stores no size, and **a missing or blank `file_size`
+means UNKNOWN, never 0**. `ensure_columns` backfills it as `""`, and `database.parse_file_size`
+maps every "we don't know" spelling (absent, blank, `NaN`, `'nan'`, negative) to `None`. Consumers
+must fall back to filename-only matching on `None`. Treating a legacy blank as `0` would make every
+historical row mismatch its own file on disk, which would re-analyse entire libraries and report
+every photo as changed.
+
+Covered by `compat/test_database_migration.py::test_file_size_present_but_unknown_after_load` and
+by `unit/test_folder_diff.py::TestRealLegacyDatabases`, which selects its fixtures by reading each
+header for `file_size` rather than by filename — so adding a newer-schema fixture to this directory
+does not silently invalidate the legacy-path tests.
 
 ## Schema Differences From Current
 
-Current `BASE_COLUMNS` count: 26.
+Current `BASE_COLUMNS` count: 27.
 
 ### `v_alpha-2026_02_04_kestrel_database.csv` (19 columns)
 - Includes legacy inline user column: `rating`
@@ -45,8 +86,14 @@ Current `BASE_COLUMNS` count: 26.
 - Still missing: `crops_json`, `exposure_meter_scale`, `exposure_pipeline`, `exposure_subject_stops`, `primary_crop_index`
 
 ### `v_Kentucky-Warbler_kestrel_database.csv` (27 columns)
+- Missing current column: `file_size`
+- Extra historical column not in current base schema: `orientation`
+- The schema of every release through `Dusky-Grouse`, so it is the realistic legacy case
+
+### `v_file-size_kestrel_database.csv` (28 columns)
 - Includes all current `BASE_COLUMNS`
 - Extra historical column not in current base schema: `orientation`
+- Adds `file_size` compared with Kentucky-Warbler
 
 ## Failed Tags
 

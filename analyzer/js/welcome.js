@@ -9,8 +9,14 @@
     // projectkestrel.org/whats-new.json; that remote-override path was removed —
     // the note now lives entirely in the app.)
     const WHATS_NEW = {
-      version: 'dusky-grouse',
-      eyebrow: 'v(Dusky Grouse)',
+      version: 'ruddy-turnstone',
+      eyebrow: 'v(Ruddy Turnstone)',
+      // The release's namesake bird. `whatsnew-bird.jpg` is a STABLE filename
+      // whose contents are replaced each release, so the three PyInstaller
+      // specs list it once and never need touching again. Update `heroAlt`
+      // with the new bird — it is the only per-release part.
+      heroImg: 'whatsnew-bird.jpg',
+      heroAlt: 'Ruddy Turnstone',
       title: 'What’s New in Project Kestrel',
       subtitle: 'Updates across Project Kestrel, Perch & Cloud Compute',
       cards: [
@@ -18,16 +24,12 @@
           // Desktop app logo — bundled at the static-server root (see .spec datas).
           iconImg: 'logo.png',
           name: 'Project Kestrel',
-          tag: 'New in v(Dusky Grouse)',
+          tag: 'New in v(Ruddy Turnstone)',
           bullets: [
-            // Worded to read correctly on both channels: welcome.js has no
-            // access to dist_channel, so this must not assume the reader is on
-            // the free build (nor read as a purchase pitch on the App Store one).
-            'Project Kestrel is now on the <b>Mac App Store</b> — a way to support development, with automatic updates handled for you. It adds <b>no extra features</b>: the free download stays free, open source, and identical.',
-            'The Analyze dialog now asks <b>plain questions about your shoot</b> instead of model settings — what you photographed, whether the birds are North American, and how many subjects per image to analyze.',
-            'New <b>Custom rating profile</b>: drag each star to the quality score it should require. The Culling Assistant now cuts on the <b>quality score</b> too, with your star thresholds drawn right on the slider. Find this in <b>Settings</b>.',
-            'Optional <b>XMP embedded into JPEG originals</b>, so Lightroom finally reads your Kestrel ratings if you shoot JPEGs.',
-            'Nearly a dozen <b>bug fixes and stability improvements</b> across Windows and macOS.',
+            'If you moved or deleted photos from a folder, Kestrel will notice and finally offer you a path to fix the data. A new <b>Repair</b> dialog offers to reconcile the differences so you don’t need to re-analyze each time.',
+            'The scene grid now <b>shows your decisions</b>: each thumbnail is the best photo you accepted, hovering the image count breaks out accepted, undecided and rejected, and a new filter shows <b>only unreviewed scenes</b>. (this feature came from a user suggestion!)',
+            '<b>7/8/9</b> join Z/X/C for Accept/Undecided/Reject (accessibility improvement, from a user suggestion!)',
+            'Very large round of bug fixes and stability improvements: <b>culling decisions made during analysis are no longer erased</b>, sidecars you edited in Lightroom are no longer overwritten silently, and a crash now records <b>which stage it died in</b>.',
           ],
         },
         {
@@ -214,6 +216,12 @@
           '</div>';
       }).join('');
 
+      var heroFile = safeAssetFile(note.heroImg);
+      var heroHtml = heroFile
+        ? '<div class="wln-banner"><img src="' + escapeAttr(heroFile) +
+            '" alt="' + escapeAttr(note.heroAlt || '') + '" /></div>'
+        : '';
+
       var blogBtn = '';
       var blogHref = note.blogLink && note.blogLink.href ? safeHttpsUrl(note.blogLink.href) : null;
       if (blogHref) {
@@ -224,6 +232,7 @@
       return '' +
         '<div class="wln">' +
           '<button type="button" class="wln-dismiss" id="wwnDismiss" aria-label="Dismiss">✕</button>' +
+          heroHtml +
           '<span class="wln-eyebrow">🎉&nbsp; ' + sr(note.eyebrow || '') + '</span>' +
           '<h2 class="wln-title">' + sr(note.title || '') + '</h2>' +
           (note.subtitle ? '<div class="wln-subtitle">' + sr(note.subtitle) + '</div>' : '') +

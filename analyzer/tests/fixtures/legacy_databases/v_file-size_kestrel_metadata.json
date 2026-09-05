@@ -1,0 +1,30 @@
+{
+  "version": "2.0.4",
+  "schema_version": 2,
+  "analyzer": "cli",
+  "created_utc": "2026-09-01T12:24:16.942249Z",
+  "database_file": "kestrel_database.csv",
+  "exposure_pipeline_version": 3,
+  "exposure_render_mode": "numpy_linear_v2",
+  "exposure_quality": "balanced",
+  "analyzed_utc": "2026-09-01T12:25:49.341236Z",
+  "kestrel_version": "2.0.4",
+  "analysis_settings": {
+    "detector_name": "mdv5a",
+    "use_gpu": false,
+    "wildlife_enabled": false,
+    "species_detection_enabled": true,
+    "detection_threshold": 0.25,
+    "scene_time_threshold": 1.0,
+    "mask_threshold": 0.5,
+    "max_bird_crops": 10,
+    "parallel_prefetch": 3,
+    "rating_profile": "balanced",
+    "exposure_quality": "balanced",
+    "exposure_render_mode": "numpy_linear_v2",
+    "exposure_pipeline_version": 3,
+    "thumbnail_max_width": 1200,
+    "thumbnail_jpeg_compression": 0.75,
+    "thumbnail_jpeg_quality": 75
+  }
+}

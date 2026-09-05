@@ -6,7 +6,7 @@ import threading
 import time
 import traceback
 import warnings
-from typing import Callable, Dict, Generator, Optional
+from typing import Callable, Dict, Generator, List, Optional
 
 import cv2
 import numpy as np
@@ -27,10 +27,9 @@ from .config import (
 from .database import (
     load_database,
     save_database,
-    load_scenedata,
-    save_scenedata,
-    build_scenedata_from_database,
-    update_scenedata_with_database,
+    finalize_scenedata_after_analysis,
+    parse_file_size,
+    DATABASE_SCHEMA_VERSION,
 )
 from .exposure_compensation import (
     apply_exposure_crop_numpy,
@@ -43,7 +42,13 @@ from .image_utils import decode_embedded_preview, read_image, read_image_for_pip
 from .ratings import quality_to_rating, resolve_thresholds
 from .similarity import compute_image_similarity_akaze, compute_similarity_timestamp
 from .raw_exif import get_capture_time
-from .logging_utils import get_log_path, log_event, log_exception, log_warning
+from .logging_utils import (
+    get_log_path,
+    log_event,
+    log_exception,
+    log_warning,
+    make_logged_showwarning,
+)
 
 try:
     from ..settings_utils import load_persisted_settings, debug as _debug, info as _info, error as _error
@@ -59,6 +64,7 @@ except (ImportError, ValueError):
         def _debug(*_a, **_kw): pass
         def _info(*_a, **_kw): pass
         def _error(*_a, **_kw): pass
+from .ml import GPU_EP
 from .ml.speciesnet_sam_hq import SpeciesNetSAMHQWrapper
 from .ml.provider_coordinator import ResilienceConfig
 from .ml.bird_species import BirdSpeciesClassifier
@@ -268,6 +274,7 @@ class AnalysisPipeline:
         max_buffered = max_workers + 1
         semaphore = threading.Semaphore(max_buffered)
         futures_q: queue.Queue = queue.Queue()
+        stop_event = threading.Event()
 
         # Fixed cadence (every 10 images) rather than a percentage of total so
         # long runs remain observable in real time. First 3 images always
@@ -289,7 +296,14 @@ class AnalysisPipeline:
             nonlocal submitted, peak_inflight
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 for raw_file in file_list:
+                    if stop_event.is_set():
+                        break
                     semaphore.acquire()
+                    if stop_event.is_set():
+                        # Consumer abandoned the generator (cancel / fatal error)
+                        # while we waited for a free buffer slot; stop submitting
+                        # so the pool can drain and shut down.
+                        break
                     future = executor.submit(
                         _decode_and_time,
                         os.path.join(folder, raw_file),
@@ -312,33 +326,44 @@ class AnalysisPipeline:
             f"buffer={max_buffered}"
         )
 
-        while True:
-            future = futures_q.get()
-            if future is None:
-                break
-            t_wait = time.monotonic()
-            decoded = future.result()
-            wait_ms = (time.monotonic() - t_wait) * 1000.0
-            with metrics_lock:
-                total_wait_ms += wait_ms
-                snap_submitted = submitted
-                snap_completed = completed
-            idx += 1
+        try:
+            while True:
+                future = futures_q.get()
+                if future is None:
+                    break
+                t_wait = time.monotonic()
+                decoded = future.result()
+                wait_ms = (time.monotonic() - t_wait) * 1000.0
+                with metrics_lock:
+                    total_wait_ms += wait_ms
+                    snap_submitted = submitted
+                    snap_completed = completed
+                idx += 1
 
-            # Print for the first 3 images (warm-up visibility), then every
-            # ~10% of the run, and always on the last image.
-            if idx <= 3 or idx % log_every_n == 0 or idx == total:
-                decode_ms = decoded.get("_decode_ms")
-                decode_ms_str = f"{decode_ms:.0f}" if decode_ms is not None else "?"
-                inflight_now = max(0, snap_submitted - snap_completed)
-                ahead = max(0, snap_submitted - idx)
-                _debug(
-                    f"[decode-queue] idx={idx}/{total} "
-                    f"inflight={inflight_now} ahead={ahead} "
-                    f"decode_ms={decode_ms_str} wait_ms={wait_ms:.0f}"
-                )
+                # Print for the first 3 images (warm-up visibility), then every
+                # ~10% of the run, and always on the last image.
+                if idx <= 3 or idx % log_every_n == 0 or idx == total:
+                    decode_ms = decoded.get("_decode_ms")
+                    decode_ms_str = f"{decode_ms:.0f}" if decode_ms is not None else "?"
+                    inflight_now = max(0, snap_submitted - snap_completed)
+                    ahead = max(0, snap_submitted - idx)
+                    _debug(
+                        f"[decode-queue] idx={idx}/{total} "
+                        f"inflight={inflight_now} ahead={ahead} "
+                        f"decode_ms={decode_ms_str} wait_ms={wait_ms:.0f}"
+                    )
 
-            yield decoded
+                yield decoded
+                semaphore.release()
+        finally:
+            # If the consumer abandons this generator early -- an outer cancel or
+            # a fatal error makes process_folder return, which raises
+            # GeneratorExit at the yield above -- the loop stops releasing the
+            # semaphore. Signal the producer to stop and free one slot so it
+            # unblocks from semaphore.acquire(), lets its ThreadPoolExecutor
+            # drain, and exits. Without this the decode-worker threads (and their
+            # buffered full-res images) leak for the rest of the process.
+            stop_event.set()
             semaphore.release()
 
         submit_thread.join()
@@ -368,6 +393,81 @@ class AnalysisPipeline:
             f"[decode-queue] done: files={total} peak_inflight={peak_inflight} "
             f"avg_decode_ms={avg_decode:.0f} avg_wait_ms={avg_wait:.0f}"
         )
+
+    def _save_database_soft(self, database, db_path: str, stage: str) -> bool:
+        """``save_database`` whose failure skips the save instead of ending the run.
+
+        ``save_database`` re-reads the CSV to recover the user's ``culled`` marks
+        before overwriting it, and raises if that read fails. Raising is the right
+        contract -- writing without the merge would discard those marks -- but the
+        failure it raises on is a Windows sharing violation that
+        ``retry_on_file_lock`` documents as routine, and this runs after *every*
+        image. Letting it propagate meant one transient lock could end an entire
+        run, and worse: the per-image handler caught it, recorded the photo as
+        ``species="Error"`` though the photo decoded fine, then called save again
+        from inside its own ``except`` where nothing was left to catch the second
+        raise.
+
+        Skipping is safe because ``database`` is cumulative and every save writes
+        it whole -- the next image's save persists whatever this one missed. Only
+        the on-disk copy lags, by a photo or two, until a save succeeds.
+
+        The post-analysis save deliberately does NOT come through here: it is the
+        last one, has no successor to cover for it, and must surface.
+
+        Returns True if the save landed.
+        """
+        try:
+            save_database(database, db_path)
+            return True
+        except Exception as exc:
+            log_exception(
+                self._log_path,
+                exc,
+                stage=stage,
+                context={"db_path": db_path, "soft": True},
+            )
+            _error(
+                f"[pipeline] save_database skipped at stage={stage}: "
+                f"{type(exc).__name__}: {exc}. Results are held in memory and "
+                f"will be written by the next successful save."
+            )
+            return False
+
+    def _log_resolved_providers(self) -> None:
+        """Log the execution providers ONNX Runtime actually chose.
+
+        ``use_gpu`` on ``analysis_start`` records what was *requested*; this
+        records what was *granted*. They differ whenever a GPU provider fails
+        to initialise and the coordinator falls back to CPU, and that gap is
+        the thing crash reports currently cannot show. Purely diagnostic —
+        every lookup is defensive so a missing attribute can never fail a run.
+        """
+        providers = {}
+        for name, holder, attr in (
+            ("quality", self.quality_clf, "providers_used"),
+            ("species", self.species_clf, "providers_used"),
+            ("detector", getattr(self.sn_sam, "classifier", None), "providers_used"),
+        ):
+            try:
+                value = getattr(holder, attr, None)
+                if value:
+                    providers[name] = list(value)
+            except Exception:
+                continue
+        try:
+            log_event(
+                self._log_path,
+                {
+                    "level": "info",
+                    "event": "models_loaded",
+                    "use_gpu": bool(self.use_gpu),
+                    "gpu_ep": GPU_EP,
+                    "providers": providers,
+                },
+            )
+        except Exception:
+            pass
 
     def load_models(
         self,
@@ -546,31 +646,58 @@ class AnalysisPipeline:
         self._log_path = get_log_path(folder)
         stage_ctx = {"stage": "startup", "file": None}
 
+        def _mark_stage(stage: str) -> None:
+            """Record a one-time setup stage, and persist it to the analysis log.
+
+            A native-level process death (segfault/abort inside onnxruntime,
+            LibRaw, OpenCV) never unwinds to an ``except`` block, so the
+            ``stage_ctx`` that ``log_exception`` reports is lost in exactly the
+            crashes hardest to diagnose. Writing each transition means the last
+            record in the log names the stage the process died in.
+
+            Only the ONCE-PER-RUN setup stages call this. ``log_event`` reads,
+            re-serialises and rewrites the whole JSON log on every call, so
+            marking the per-file stages (``read_image``, ``compute_similarity``)
+            would make analysis O(n^2) in file count. Those stages still update
+            ``stage_ctx`` for exception reporting, they just are not persisted.
+            """
+            stage_ctx["stage"] = stage
+            try:
+                log_event(
+                    self._log_path,
+                    {"level": "debug", "event": "stage", "stage": stage},
+                )
+            except Exception:
+                # Instrumentation must never break an analysis run.
+                pass
+
         original_showwarning = warnings.showwarning
-
-        def _showwarning(message, category, filename, lineno, file=None, line=None):
-            log_warning(
-                self._log_path,
-                message,
-                category=category,
-                filename=filename,
-                lineno=lineno,
-                stage=stage_ctx["stage"],
-                context={"file": stage_ctx["file"], "folder": folder},
-            )
-            if original_showwarning:
-                original_showwarning(message, category, filename, lineno, file=file, line=line)
-
-        warnings.showwarning = _showwarning
+        warnings.showwarning = make_logged_showwarning(
+            self._log_path,
+            stage_ctx,
+            folder=folder,
+            original_showwarning=original_showwarning,
+        )
 
         try:
-            stage_ctx["stage"] = "list_files"
-            entries = [
-                name
-                for name in os.listdir(folder)
-                if os.path.isfile(os.path.join(folder, name))
-            ]
-            files = select_camera_images(entries)
+            _mark_stage("list_files")
+            # scandir rather than listdir + isfile: identical syscall count on
+            # POSIX and strictly fewer on Windows (the stat data comes back with
+            # the directory enumeration), and it yields each file's size, which
+            # the skip test below needs to tell a re-shot IMG_0005.CR3 from the
+            # IMG_0005.CR3 already in the database.
+            disk_sizes: Dict[str, int] = {}
+            with os.scandir(folder) as _it:
+                for _entry in _it:
+                    try:
+                        if not _entry.is_file():
+                            continue
+                        disk_sizes[_entry.name] = _entry.stat().st_size
+                    except OSError:
+                        # Present but unmeasurable — keep it, size unknown, so
+                        # it is still analysed rather than silently dropped.
+                        disk_sizes[_entry.name] = -1
+            files = select_camera_images(list(disk_sizes.keys()))
             files.sort()
             if not files:
                 if status_cb:
@@ -597,17 +724,19 @@ class AnalysisPipeline:
                     "detector_name": self.detector_name,
                     "detection_threshold": float(detection_threshold),
                     "parallel_prefetch": int(decode_workers),
+                    "use_gpu": bool(self.use_gpu),
+                    "gpu_ep": GPU_EP,
                 },
             )
 
-            stage_ctx["stage"] = "create_kestrel_dirs"
+            _mark_stage("create_kestrel_dirs")
             kestrel_dir = os.path.join(folder, KESTREL_DIR_NAME)
             export_dir = os.path.join(kestrel_dir, "export")
             crop_dir = os.path.join(kestrel_dir, "crop")
             os.makedirs(export_dir, exist_ok=True)
             os.makedirs(crop_dir, exist_ok=True)
 
-            stage_ctx["stage"] = "load_database"
+            _mark_stage("load_database")
             database, db_path = load_database(kestrel_dir, analyzer_name, log_path=self._log_path)
 
             # When retrying errored images, capture each errored row's previously-
@@ -632,10 +761,84 @@ class AnalysisPipeline:
                     # produce duplicate (filename, species=Error) rows. The
                     # retried images will append fresh rows below.
                     database = database.loc[~errored_mask].copy()
-                    save_database(database, db_path)
+                    self._save_database_soft(database, db_path, "retry_errored_prune")
 
-            processed_set = set(database["filename"].values)
-            new_files = [f for f in files if f not in processed_set]
+            # ── Identity is (filename, file_size), not filename alone ────────
+            # Keying only on filename made the pipeline skip genuinely new
+            # photos: empty an SD card, shoot again, and the recycled
+            # IMG_0005.CR3 matched the old row, so it was never analysed while
+            # the UI kept showing the previous shoot's metadata for it.
+            #
+            # An unknown size on EITHER side falls back to filename-only
+            # matching, so rows written before this column existed (stored '')
+            # and files whose stat failed (disk -1) behave exactly as before.
+            stored_sizes: Dict[str, "int | None"] = {}
+            _has_size_col = "file_size" in database.columns
+            for _i, _fn in enumerate(database["filename"].values):
+                _raw = database["file_size"].values[_i] if _has_size_col else None
+                stored_sizes[str(_fn)] = parse_file_size(_raw)
+
+            # Same name on disk, provably different bytes: a different photo
+            # wearing a recycled filename. Its stale row is dropped below so the
+            # re-analysis appends a clean one instead of duplicating the name.
+            superseded: List[str] = []
+            new_files: List[str] = []
+            for f in files:
+                if f not in stored_sizes:
+                    new_files.append(f)
+                    continue
+                _stored = stored_sizes[f]
+                _disk = disk_sizes.get(f, -1)
+                if _stored is not None and _disk >= 0 and _stored != _disk:
+                    superseded.append(f)
+                    new_files.append(f)
+
+            if superseded:
+                if status_cb:
+                    status_cb(
+                        f"{len(superseded)} file(s) changed since the last analysis "
+                        f"— re-analyzing."
+                    )
+                log_event(
+                    self._log_path,
+                    {
+                        "level": "info",
+                        "event": "superseded_rows_dropped",
+                        "folder": folder,
+                        "count": len(superseded),
+                    },
+                )
+                _sup = set(superseded)
+                database = database.loc[
+                    ~database["filename"].astype(str).isin(_sup)
+                ].copy()
+                self._save_database_soft(database, db_path, "superseded_prune")
+                stored_sizes = {
+                    k: v for k, v in stored_sizes.items() if k not in _sup
+                }
+
+            # Backfill file_size for rows that predate the column. This is the
+            # one place a legacy folder's identity gets upgraded, and it is safe
+            # to write here because analysis is explicitly user-initiated and
+            # the folder is already being enumerated — a passive background scan
+            # must never rewrite a database just to add a column.
+            _backfilled = 0
+            if not database.empty:
+                _sizes_out = []
+                for _fn in database["filename"].astype(str).values:
+                    _cur = stored_sizes.get(_fn)
+                    if _cur is None:
+                        _disk = disk_sizes.get(_fn, -1)
+                        if _disk >= 0:
+                            _backfilled += 1
+                            _sizes_out.append(_disk)
+                            continue
+                        _sizes_out.append("")
+                    else:
+                        _sizes_out.append(_cur)
+                if _backfilled:
+                    database["file_size"] = _sizes_out
+                    self._save_database_soft(database, db_path, "file_size_backfill")
             # Index of every file in the sorted ``files`` list, so retry
             # iterations can look up each errored image's alphabetical
             # predecessor in O(1) for the previous_image reset path.
@@ -653,8 +856,9 @@ class AnalysisPipeline:
                     progress_cb(total, total)
                 return
 
-            stage_ctx["stage"] = "load_models"
+            _mark_stage("load_models")
             self.load_models(status_cb=status_cb, max_bird_crops=max_bird_crops)
+            self._log_resolved_providers()
 
             previous_image = None
             previous_image_path = None
@@ -718,6 +922,14 @@ class AnalysisPipeline:
                     "exposure_meter_scale": 1.0,
                     "detection_scores": [],
                     "capture_time": "",
+                    # Half of the row's identity. Blank when the entry could not
+                    # be measured at listing time, which keeps it "unknown"
+                    # rather than asserting a size that was never observed.
+                    "file_size": (
+                        disk_sizes.get(raw_file, -1)
+                        if disk_sizes.get(raw_file, -1) >= 0
+                        else ""
+                    ),
                     "orientation": "unknown",
                 }
 
@@ -1027,7 +1239,7 @@ class AnalysisPipeline:
                         )
                         stage_ctx["stage"] = "save_database"
                         database = pd.concat([database, pd.DataFrame([entry])], ignore_index=True)
-                        save_database(database, db_path)
+                        self._save_database_soft(database, db_path, "save_database")
                         if image_cb:
                             image_cb(entry)
                         if progress_cb:
@@ -1370,7 +1582,7 @@ class AnalysisPipeline:
 
                     stage_ctx["stage"] = "save_database"
                     database = pd.concat([database, pd.DataFrame([entry])], ignore_index=True)
-                    save_database(database, db_path)
+                    self._save_database_soft(database, db_path, "save_database")
 
                     if image_cb:
                         image_cb(entry)
@@ -1414,7 +1626,10 @@ class AnalysisPipeline:
                     entry["species"] = "Error"
                     entry["similar"] = False
                     database = pd.concat([database, pd.DataFrame([entry])], ignore_index=True)
-                    save_database(database, db_path)
+                    # Must not raise: this is already the error path, and an
+                    # escaping exception here has no handler left and would end
+                    # the run while reporting the wrong cause.
+                    self._save_database_soft(database, db_path, "save_error_entry")
                     time.sleep(2)
 
                 if progress_cb:
@@ -1447,6 +1662,9 @@ class AnalysisPipeline:
             stage_ctx["stage"] = "post_analysis_normalization"
             try:
                 if not database.empty and "quality" in database.columns:
+                    # Deliberately strict, unlike the per-image saves above: no
+                    # later save can cover for this one, so a failure here must
+                    # surface rather than leave the run looking complete.
                     save_database(database, db_path)
 
                     # Update kestrel_metadata.json with the analysis-run audit trail
@@ -1486,6 +1704,12 @@ class AnalysisPipeline:
 
                         _meta["analyzed_utc"] = _dt.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
                         _meta["kestrel_version"] = VERSION
+                        # Stamped on every run, not just on folder creation, so
+                        # a folder analysed by an older build records its new
+                        # schema as soon as this build touches it. The app
+                        # version above cannot stand in for this: it says which
+                        # build wrote the folder, not which columns it wrote.
+                        _meta["schema_version"] = DATABASE_SCHEMA_VERSION
                         _meta["analysis_settings"] = {
                             "detector_name": str(getattr(self, "detector_name", "") or ""),
                             "use_gpu": bool(getattr(self, "use_gpu", False)),
@@ -1513,15 +1737,11 @@ class AnalysisPipeline:
                             stage="post_analysis_normalization",
                         )
 
-                    # Create or update kestrel_scenedata.json
+                    # Create or update kestrel_scenedata.json. Reload+merge
+                    # UI fields immediately before save so ratings/names/tags
+                    # written during the run are not overwritten (S1-08).
                     try:
-                        existing_scenedata = load_scenedata(kestrel_dir)
-                        if not existing_scenedata.get("scenes"):
-                            new_scenedata = build_scenedata_from_database(database)
-                            save_scenedata(new_scenedata, kestrel_dir)
-                        else:
-                            update_scenedata_with_database(existing_scenedata, database)
-                            save_scenedata(existing_scenedata, kestrel_dir)
+                        finalize_scenedata_after_analysis(kestrel_dir, database)
                     except Exception as _sd_e:
                         log_warning(
                             self._log_path,

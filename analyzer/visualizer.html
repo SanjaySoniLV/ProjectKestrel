@@ -183,9 +183,13 @@
         <div class="tfb-more-wrap">
           <button id="tfbMoreBtn" type="button" class="tfb-more-btn" aria-haspopup="true" aria-expanded="false" title="More filter and grouping options">⚙ More ▾</button>
           <div id="tfbMorePopover" class="tfb-more-popover hidden" role="menu" aria-label="Additional options">
-            <label class="tfb-popover-row" title="Only show scenes you've manually reviewed: user star ratings, user accept/reject culling decisions, reviewed scene tags, or renamed scene names.">
-              <input id="filterScenesManualRated" type="checkbox" />
-              <span>Only manually reviewed scenes</span>
+            <label class="tfb-popover-row" title="Filter by review state. A scene counts as reviewed once you have given it any user star rating, any accept/reject culling decision, reviewed scene tags, or a scene name. Unreviewed scenes are the ones that still need work.">
+              <span>Review state</span>
+              <select id="filterSceneReviewState">
+                <option value="all">All scenes</option>
+                <option value="reviewed">Reviewed only</option>
+                <option value="unreviewed">Unreviewed only</option>
+              </select>
             </label>
             <label class="tfb-popover-row">
               <input id="includeSecondarySpecies" type="checkbox" />
@@ -371,9 +375,9 @@
         <span><kbd>Enter</kbd> Promote active crop</span>
         <span><kbd>Tab</kbd> Next scene</span>
         <span><kbd>Shift</kbd>+<kbd>Tab</kbd> or <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Tab</kbd> Previous scene</span>
-        <span><kbd>Z</kbd> Accept</span>
-        <span><kbd>X</kbd> Reset</span>
-        <span><kbd>C</kbd> Reject</span>
+        <span><kbd>Z</kbd> or <kbd>7</kbd> Accept</span>
+        <span><kbd>X</kbd> or <kbd>8</kbd> Reset</span>
+        <span><kbd>C</kbd> or <kbd>9</kbd> Reject</span>
         <span><kbd>1</kbd>–<kbd>5</kbd> Rate</span>
         <span><kbd>Space</kbd> Open in editor</span>
         <span><kbd>M1</kbd> RAW Zoom (Scroll to zoom in/out)</span>
@@ -437,9 +441,9 @@
           <div class="scene-info-stars" id="sceneInfoStars"></div>
           <div class="scene-info-quality" id="sceneInfoQuality">—</div>
           <div class="scene-cull-toggle" id="sceneCullToggle">
-            <button class="cull-btn accept" data-cull="accept" title="Accept (Z)">✓ Accept</button>
-            <button class="cull-btn unrated" data-cull="none" title="Reset (X)">Undecided</button>
-            <button class="cull-btn reject" data-cull="reject" title="Reject (C)">✗ Reject</button>
+            <button class="cull-btn accept" data-cull="accept" title="Accept (Z or 7)">✓ Accept</button>
+            <button class="cull-btn unrated" data-cull="none" title="Reset (X or 8)">Undecided</button>
+            <button class="cull-btn reject" data-cull="reject" title="Reject (C or 9)">✗ Reject</button>
           </div>
           <div class="scene-info-meta" id="sceneInfoMeta">
             <span class="scene-info-meta-text" id="sceneInfoMetaText">—</span>
@@ -993,6 +997,23 @@
         style="max-height:50vh;overflow:auto;font-family:monospace;font-size:12px;white-space:pre;">—</div>
       <div class="footer">
         <button id="infoClose">Close</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Repair dialog — surfaced when a folder's images and its .kestrel database
+       have drifted apart (files moved, renamed, or deleted outside Kestrel).
+       Body is built by js/repair.js; every destructive action is an explicit
+       user assertion, and NONE are offered unless the folder listing was read
+       successfully (diff.scan_status === 'ok'). -->
+  <dialog id="repairDlg" class="kdlg kdlg--md kdlg--flex" aria-labelledby="repairDlgTitle">
+    <div class="settings">
+      <h3 style="margin:0" id="repairDlgTitle">Repair Kestrel Data</h3>
+      <div id="repairDlgFolder" class="muted" style="font-size:12px;word-break:break-all">—</div>
+      <div id="repairDlgBody" style="max-height:52vh;overflow:auto"></div>
+      <div class="footer" style="gap:8px">
+        <button id="repairDlgDismiss" title="Stop showing this folder's warning until the next time Kestrel starts">Dismiss for now</button>
+        <button id="repairDlgClose">Close</button>
       </div>
     </div>
   </dialog>
@@ -1628,6 +1649,7 @@
   <script src="js/analyze-dialog.js"></script>
   <script src="js/queue.js"></script>
   <script src="js/raw-warn.js"></script>
+  <script src="js/repair.js"></script>
   <script src="js/multi-folder.js"></script>
   <script src="js/csv-init.js"></script>
   <script src="js/event-wiring.js"></script>
@@ -1662,6 +1684,7 @@
         ['perch.js',           '_perchOpenDialog'],
         ['cloud-compute.js',   '_ccSubmitSelectedFolders'],
         ['culling.js',         'openCullingAssistant'],
+        ['repair.js',          'openRepairDialog'],
         ['tutorial.js',        'startMainTutorial'],
         ['welcome.js',         'WELCOME_TIPS']
       ];

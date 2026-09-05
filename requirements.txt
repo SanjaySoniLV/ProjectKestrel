@@ -28,7 +28,7 @@ pyinstaller==6.20.0
 
 # EXIF reading
 exifread
-pillow==12.2.0
+pillow==12.3.0
 
 # speciesnet removed: ensemble logic is inlined in kestrel_analyzer/ml/_speciesnet_ensemble.py
 # (Apache 2.0, adapted from google/cameratrapai). This eliminates the torch/optree dependency.

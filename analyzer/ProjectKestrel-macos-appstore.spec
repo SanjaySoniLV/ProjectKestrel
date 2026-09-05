@@ -65,7 +65,7 @@ if not os.path.exists(_icns):
     _icns = None
 
 # Identical payload to ProjectKestrel-macos.spec, plus mac_sandbox.py.
-datas = [('models', 'models'), ('kestrel_telemetry.py', '.'), ('build_attestation.py', '.'), ('folder_inspector.py', '.'), ('cli.py', '.'), ('VERSION.txt', '.'), ('VERSION_NUMBER.txt', '.'), ('kestrel_analyzer', 'kestrel_analyzer'), ('visualizer.html', '.'), ('css', 'css'), ('js', 'js'), ('csv_parser.js', '.'), ('culling.html', '.'), ('logo.png', '.'), ('perch-logo.png', '.'), ('logo.ico', '.'), ('settings_utils.py', '.'), ('editor_launch.py', '.'), ('queue_manager.py', '.'), ('api_bridge.py', '.'), ('mac_sandbox.py', '.'), ('mac_oauth.py', '.'), ('mac_apple_signin.py', '.'), ('dist_channel.py', '.'), ('dist_channel.txt', '.')]
+datas = [('models', 'models'), ('kestrel_telemetry.py', '.'), ('build_attestation.py', '.'), ('folder_inspector.py', '.'), ('cli.py', '.'), ('VERSION.txt', '.'), ('VERSION_NUMBER.txt', '.'), ('kestrel_analyzer', 'kestrel_analyzer'), ('visualizer.html', '.'), ('css', 'css'), ('js', 'js'), ('csv_parser.js', '.'), ('culling.html', '.'), ('logo.png', '.'), ('perch-logo.png', '.'), ('whatsnew-bird.jpg', '.'), ('logo.ico', '.'), ('settings_utils.py', '.'), ('editor_launch.py', '.'), ('queue_manager.py', '.'), ('api_bridge.py', '.'), ('mac_sandbox.py', '.'), ('mac_oauth.py', '.'), ('mac_apple_signin.py', '.'), ('dist_channel.py', '.'), ('dist_channel.txt', '.')]
 
 if os.path.exists('build_attestation.json'):
     datas.append(('build_attestation.json', '.'))

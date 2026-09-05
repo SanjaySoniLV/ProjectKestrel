@@ -7,6 +7,8 @@ destination and streams rows into it, so a concurrent reader can observe a
 partial file and raise ``EmptyDataError`` or ``ParserError``.
 """
 
+import errno
+import json
 import os
 import sys
 import threading
@@ -21,7 +23,11 @@ from kestrel_analyzer.database import (
     _to_csv_atomic,
     read_database_csv,
     save_database,
+    save_scenedata,
+    write_json_atomic,
+    write_text_atomic,
 )
+import kestrel_analyzer.database as _dbmod
 
 pytestmark = pytest.mark.unit
 
@@ -149,3 +155,202 @@ class TestAtomicCsvWrite:
 
         assert sorted(os.listdir(tmp_path)) == ["kestrel_database.csv"]
         assert len(pd.read_csv(db_path)) == len(df)
+
+    def test_flush_error_does_not_replace_existing(self, tmp_path, monkeypatch):
+        """ENOSPC on flush must not promote a partial CSV temp over the last good file."""
+        db_path = tmp_path / "kestrel_database.csv"
+        _to_csv_atomic(_frame(5), str(db_path))
+        good = db_path.read_bytes()
+        real_fdopen = _dbmod.os.fdopen
+
+        class FlushBoom:
+            def __init__(self, real):
+                self._real = real
+
+            def write(self, *a, **k):
+                return self._real.write(*a, **k)
+
+            def flush(self):
+                raise OSError(errno.ENOSPC, "No space left on device")
+
+            def fileno(self):
+                return self._real.fileno()
+
+            def close(self):
+                return self._real.close()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.close()
+                return False
+
+        def wrapping_fdopen(*a, **k):
+            return FlushBoom(real_fdopen(*a, **k))
+
+        monkeypatch.setattr(_dbmod.os, "fdopen", wrapping_fdopen)
+        with pytest.raises(OSError):
+            _to_csv_atomic(_frame(5), str(db_path))
+        assert db_path.read_bytes() == good
+        assert sorted(x.name for x in tmp_path.iterdir()) == ["kestrel_database.csv"]
+
+
+class TestAtomicTextWrite:
+    """write_text_atomic backs the UI CSV write path."""
+
+    def test_writes_content_and_leaves_no_temp(self, tmp_path):
+        p = tmp_path / "kestrel_database.csv"
+        write_text_atomic(str(p), "filename,quality\n")
+        assert p.read_text() == "filename,quality\n"
+        assert sorted(x.name for x in tmp_path.iterdir()) == ["kestrel_database.csv"]
+
+    def test_existing_file_survives_a_failed_write(self, tmp_path, monkeypatch):
+        """A crash/replace failure mid-write must leave the previous file intact."""
+        p = tmp_path / "kestrel_database.csv"
+        write_text_atomic(str(p), "filename,quality\nIMG_1.CR3,0.9\n")
+        good = p.read_bytes()
+
+        def boom(*_a, **_k):
+            raise OSError("simulated crash during replace")
+
+        monkeypatch.setattr(_dbmod.os, "replace", boom)
+        with pytest.raises(OSError):
+            write_text_atomic(str(p), "partial,")  # deliberately truncated
+
+        assert p.read_bytes() == good
+        assert sorted(x.name for x in tmp_path.iterdir()) == ["kestrel_database.csv"]
+
+    def test_flush_error_does_not_replace_existing(self, tmp_path, monkeypatch):
+        """ENOSPC on flush must not promote a partial temp over the last good file."""
+        p = tmp_path / "kestrel_database.csv"
+        write_text_atomic(str(p), "filename,quality\n")
+        good = p.read_bytes()
+        real_fdopen = _dbmod.os.fdopen
+
+        class FlushBoom:
+            """Delegates to the real fdopen file; flush is not assignable on TextIOWrapper."""
+
+            def __init__(self, real):
+                self._real = real
+
+            def write(self, *a, **k):
+                return self._real.write(*a, **k)
+
+            def flush(self):
+                raise OSError(errno.ENOSPC, "No space left on device")
+
+            def fileno(self):
+                return self._real.fileno()
+
+            def close(self):
+                return self._real.close()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.close()
+                return False
+
+        def wrapping_fdopen(*a, **k):
+            return FlushBoom(real_fdopen(*a, **k))
+
+        monkeypatch.setattr(_dbmod.os, "fdopen", wrapping_fdopen)
+        with pytest.raises(OSError):
+            write_text_atomic(str(p), "partial,\n")
+        assert p.read_bytes() == good
+        assert sorted(x.name for x in tmp_path.iterdir()) == ["kestrel_database.csv"]
+
+    def test_fsync_error_still_replaces(self, tmp_path, monkeypatch):
+        """Network-FS fsync failures are ignored; the flushed temp still replaces."""
+        def boom_fsync(_fd):
+            raise OSError(errno.EINVAL, "Operation not supported")
+
+        monkeypatch.setattr(_dbmod.os, "fsync", boom_fsync)
+        p = tmp_path / "kestrel_database.csv"
+        write_text_atomic(str(p), "ok\n")
+        assert p.read_text() == "ok\n"
+
+
+class TestAtomicJsonWrite:
+    """write_json_atomic streams json.dump into the temp file (no dumps buffer)."""
+
+    def test_roundtrips_and_leaves_no_temp(self, tmp_path):
+        p = tmp_path / "kestrel_scenedata.json"
+        obj = {"version": "2.0", "image_ratings": {"IMG_1.CR3": 5}, "scenes": {}}
+        write_json_atomic(str(p), obj, indent=2)
+        assert json.loads(p.read_text()) == obj
+        assert sorted(x.name for x in tmp_path.iterdir()) == ["kestrel_scenedata.json"]
+
+    def test_streams_via_dump_not_dumps(self, tmp_path, monkeypatch):
+        """Peak-memory path: serialize directly into the temp file."""
+        dumped = {"via": None}
+
+        real_dump = json.dump
+        real_dumps = json.dumps
+
+        def tracking_dump(obj, fp, *a, **k):
+            dumped["via"] = "dump"
+            return real_dump(obj, fp, *a, **k)
+
+        def tracking_dumps(*a, **k):
+            dumped["via"] = "dumps"
+            return real_dumps(*a, **k)
+
+        monkeypatch.setattr(_dbmod.json, "dump", tracking_dump)
+        monkeypatch.setattr(_dbmod.json, "dumps", tracking_dumps)
+
+        write_json_atomic(str(tmp_path / "kestrel_scenedata.json"), {"a": 1}, indent=2)
+        assert dumped["via"] == "dump"
+
+    def test_existing_file_survives_a_failed_write(self, tmp_path, monkeypatch):
+        p = tmp_path / "kestrel_scenedata.json"
+        write_json_atomic(str(p), {"good": True}, indent=2)
+        good = p.read_bytes()
+
+        def boom(*_a, **_k):
+            raise OSError("simulated crash during replace")
+
+        monkeypatch.setattr(_dbmod.os, "replace", boom)
+        with pytest.raises(OSError):
+            write_json_atomic(str(p), {"partial": True}, indent=2)
+
+        assert p.read_bytes() == good
+        assert sorted(x.name for x in tmp_path.iterdir()) == ["kestrel_scenedata.json"]
+
+    def test_save_scenedata_is_atomic_and_roundtrips(self, tmp_path, monkeypatch):
+        scenedata = {"version": "2.0", "image_ratings": {"IMG_1.CR3": 5}, "scenes": {}}
+        save_scenedata(scenedata, str(tmp_path))
+        out = tmp_path / "kestrel_scenedata.json"
+        assert json.loads(out.read_text()) == scenedata
+
+        # A failed re-save must not destroy the previously saved decisions.
+        good = out.read_bytes()
+
+        def boom(*_a, **_k):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(_dbmod.os, "replace", boom)
+        with pytest.raises(OSError):
+            save_scenedata({"version": "2.0", "image_ratings": {}, "scenes": {}}, str(tmp_path))
+        assert out.read_bytes() == good
+        # no stray temp files
+        assert sorted(x.name for x in tmp_path.iterdir()) == ["kestrel_scenedata.json"]
+
+    def test_save_scenedata_does_not_call_dumps(self, tmp_path, monkeypatch):
+        def fail_dumps(*_a, **_k):
+            raise AssertionError("json.dumps must not be used")
+
+        monkeypatch.setattr(_dbmod.json, "dumps", fail_dumps)
+        save_scenedata({"version": "2.0", "image_ratings": {}, "scenes": {}}, str(tmp_path))
+        assert (tmp_path / "kestrel_scenedata.json").exists()
+
+
+def test_api_bridge_atomic_writers_are_callable():
+    """Import fallback must not leave write_*_atomic as None (TypeError on save)."""
+    import api_bridge
+
+    assert callable(api_bridge.write_json_atomic)
+    assert callable(api_bridge.write_text_atomic)
+

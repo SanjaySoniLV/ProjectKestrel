@@ -479,9 +479,9 @@ def _read_exif_in_jpeg(f, jpeg_offset: int, jpeg_size: int) -> str | None:
 TIFF_MAGICS = (
     b'II\x2a\x00',  # Little-endian TIFF (CR2, NEF, DNG, ARW, RW2, PEF, SR2...)
     b'MM\x00\x2a',  # Big-endian TIFF
-    b'II\x52\x4f',  # ORF (Olympus) variant
-    b'II\x55\x00',  # ORF variant 2
-    b'MM\x00\x4f',  # ORF variant 3
+    b'II\x52\x4f',  # ORF little-endian magic 0x4F52 ('OR')
+    b'II\x52\x55',  # ORF little-endian magic 0x5552 ('UR') — used by some Olympus models
+    b'MM\x4f\x52',  # ORF big-endian magic 0x4F52 ('OR')
 )
 
 
