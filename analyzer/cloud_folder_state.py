@@ -21,10 +21,10 @@ Bootstrap reconciliation reads BOTH this file (folder truth) and the legacy
 set used to compute "packs to download". New merges write here; the legacy
 field is left untouched but no longer the dedup driver.
 
-Atomic-write pattern mirrors `settings_utils.py` and `cloud_jobs_store.py`:
-write to tempfile, then `os.replace` over the canonical file. A per-folder
-in-process lock serializes saves because the live job's `_on_pack_merged`
-callback and the resume worker can both write concurrently.
+Atomic-write pattern mirrors `settings_utils.py` / `_to_csv_atomic`:
+write to tempfile, flush+fsync, then `os.replace` over the canonical file.
+A per-folder in-process lock serializes saves because the live job's
+`_on_pack_merged` callback and the resume worker can both write concurrently.
 """
 
 from __future__ import annotations
@@ -96,6 +96,15 @@ def _write_atomic(folder: Path, data: dict) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, sort_keys=False)
+            # flush() errors (ENOSPC, EIO) must propagate: a partial temp
+            # file must not be os.replace'd over a good destination.
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                # fsync can legitimately fail on some network filesystems;
+                # the replace below still gives readers an all-or-nothing view.
+                pass
         os.replace(tmp_path, final_path)
     except Exception:
         try:
