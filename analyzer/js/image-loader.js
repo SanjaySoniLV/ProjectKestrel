@@ -4,6 +4,7 @@
     // Concurrency-limited to avoid flooding the Python IPC bridge with dozens of
     // simultaneous read_image_file calls when a large section of the grid scrolls
     // into view.  Excess loads are queued and drained as earlier ones finish.
+    const _IMG_LOAD_QUEUE_MAX = 256;
     const _imgLoadThrottle = { active: 0, max: 100, queue: [] };
     function _scheduleLoad(fn) {
       if (_imgLoadThrottle.active < _imgLoadThrottle.max) {
@@ -13,6 +14,9 @@
           if (_imgLoadThrottle.queue.length) _scheduleLoad(_imgLoadThrottle.queue.shift());
         });
       } else {
+        while (_imgLoadThrottle.queue.length >= _IMG_LOAD_QUEUE_MAX) {
+          _imgLoadThrottle.queue.shift();
+        }
         _imgLoadThrottle.queue.push(fn);
       }
     }
@@ -33,11 +37,9 @@
         // rating keypress the scene dialog does grid.innerHTML='' and recreates
         // every card) the old <img> nodes are detached from the document. Their
         // loaders may still be waiting in the shared FIFO concurrency queue;
-        // running them wastes one read_image_file IPC round-trip each and, since
-        // the queue is global and never pruned, pushes the freshly-rendered,
-        // still-visible thumbnails to the back of an ever-growing backlog. After
-        // rapid switching the visible thumbnails then never get their turn and
-        // appear to "stop loading". Bail out early if the element is gone.
+        // running them wastes one read_image_file IPC round-trip each.
+        // _scheduleLoad drops the oldest queued loaders beyond
+        // _IMG_LOAD_QUEUE_MAX so a rebuild cannot grow the FIFO without bound.
         if (!img.isConnected) return;
         const url = await resolverFn();
         // The element may have been detached while we awaited the IPC read; if so
