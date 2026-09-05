@@ -521,6 +521,7 @@ class Api:
         # Set externally by visualizer.main() after window/server come up.
         self._main_window = None
         self._culling_window = None
+        self._culling_window_root = None
         self._server_port: int | None = None
         # Async share-with-perch state (job_id -> {progress, cancel_event, thread})
         self._share_jobs: dict = {}
@@ -2935,8 +2936,43 @@ class Api:
     _oauth_cancel_event = None      # threading.Event for the active flow
     _oauth_thread = None            # the active oauth-flow worker thread
 
+    def _culling_window_is_open(self) -> bool:
+        """True if the Culling Assistant webview is still in ``webview.windows``."""
+        win = getattr(self, '_culling_window', None)
+        if win is None:
+            return False
+        try:
+            import webview as _wv
+            windows = getattr(_wv, 'windows', None) or []
+            return win in windows
+        except Exception:
+            return False
+
+    def _on_culling_window_closed(self):
+        self._culling_window = None
+        self._culling_window_root = None
+
+    def _focus_culling_window(self, win) -> None:
+        restore = getattr(win, 'restore', None)
+        if callable(restore):
+            try:
+                restore()
+            except Exception as e:
+                warn(f'[culling] restore failed: {e}')
+        show = getattr(win, 'show', None)
+        if callable(show):
+            try:
+                show()
+            except Exception as e:
+                warn(f'[culling] show failed: {e}')
+
     def open_culling_window(self, root_path: str):
-        """Open a new pywebview window for the Culling Assistant."""
+        """Open a pywebview window for the Culling Assistant.
+
+        One window only: a later click focuses the existing assistant and,
+        if the folder changed, reloads it. Stacking windows shares ``js_api``
+        and would race cull state and IPC.
+        """
         try:
             if not WEBVIEW_IMPORT_SUCCESS:
                 return {'success': False, 'error': 'pywebview not available'}
@@ -2950,15 +2986,35 @@ class Api:
             port = self._server_port or 8765
             from urllib.parse import quote
             culling_url = f'http://{HOST}:{port}/culling.html?root={quote(root_real, safe="")}'
+            title = f'Culling Assistant \u2014 {folder_name}'
+
+            if self._culling_window_is_open():
+                win = self._culling_window
+                if self._culling_window_root != root_real:
+                    win.load_url(culling_url)
+                    self._culling_window_root = root_real
+                    try:
+                        win.title = title
+                    except Exception as e:
+                        warn(f'[culling] set title failed: {e}')
+                self._focus_culling_window(win)
+                return {'success': True}
 
             win = _wv.create_window(
-                f'Culling Assistant \u2014 {folder_name}',
+                title,
                 culling_url,
                 js_api=self,
                 width=1400,
                 height=900,
             )
             self._culling_window = win
+            self._culling_window_root = root_real
+            closed = getattr(getattr(win, 'events', None), 'closed', None)
+            if closed is not None:
+                try:
+                    closed += self._on_culling_window_closed
+                except TypeError:
+                    warn('[culling] closed-handler subscribe failed')
             return {'success': True}
         except Exception as e:
             error(f'[API] open_culling_window error: {e}')
