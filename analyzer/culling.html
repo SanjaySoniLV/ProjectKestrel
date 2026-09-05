@@ -1361,7 +1361,46 @@
     let header = [];
     let scenes = [];            // [{id, images[], species, ...}]
     let cullingState = new Map(); // filename -> 'accept' | 'reject'
-    let blobUrlCache = new Map();
+    // Same LRU+revoke contract as blob-zoom.js. This page does not load that
+    // file, so the helper lives here. A plain Map of data:/blob: URLs grew
+    // without bound for every thumb and RAW preview in the culling window.
+    const BLOB_URL_CACHE_MAX = 512;
+    function _revokeBlobUrl(url) {
+      if (typeof url === 'string' && url.startsWith('blob:')) {
+        try { URL.revokeObjectURL(url); } catch (_) { /* already revoked */ }
+      }
+    }
+    function _base64ToBlobUrl(b64, mime) {
+      const bin = atob(b64);
+      const buf = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+      return URL.createObjectURL(new Blob([buf], { type: mime || 'image/jpeg' }));
+    }
+    class BlobUrlCache extends Map {
+      get(key) {
+        if (!super.has(key)) return undefined;
+        const val = super.get(key);
+        super.delete(key);
+        super.set(key, val);
+        return val;
+      }
+      set(key, val) {
+        if (super.has(key)) super.delete(key);
+        super.set(key, val);
+        while (super.size > BLOB_URL_CACHE_MAX) {
+          const oldestKey = super.keys().next().value;
+          _revokeBlobUrl(super.get(oldestKey));
+          super.delete(oldestKey);
+        }
+        return this;
+      }
+      clear() {
+        for (const url of super.values()) _revokeBlobUrl(url);
+        super.clear();
+      }
+    }
+    let blobUrlCache = new BlobUrlCache();
+    let _previewGen = 0;
     let _normalizedRatings = {};   // filename -> auto rating from apply_normalization()
     let _scenedata = { version: '2.0', image_ratings: {}, scenes: {} };
     let _needsLegacyCullOriginUpgrade = false;
@@ -1438,7 +1477,9 @@
       try {
         const res = await window.pywebview.api.read_image_file(relPath, root);
         if (res && res.success && res.data) {
-          const url = `data:${res.mime || 'image/jpeg'};base64,${res.data}`;
+          // Re-check after await: a concurrent load may have filled the cache.
+          if (blobUrlCache.has(key)) return blobUrlCache.get(key);
+          const url = _base64ToBlobUrl(res.data, res.mime || 'image/jpeg');
           blobUrlCache.set(key, url);
           return url;
         }
@@ -1461,7 +1502,11 @@
 
     function lazyLoadImg(img, resolverFn) {
       img._lazyLoader = async () => {
+        // Skip stale loads. renderScene / renderAllScenes replace innerHTML and
+        // detach the old <img> while this loader may still be awaiting IPC.
+        if (!img.isConnected) return;
         const url = await resolverFn();
+        if (!img.isConnected) return;
         if (url) img.src = url;
       };
       _lazyObserver.observe(img);
@@ -2388,6 +2433,7 @@
     // ---- Update preview pane ----
     async function updatePreview(row) {
       if (zoomActive) return; // don't interrupt an active zoom session
+      const gen = ++_previewGen;
       previewRow = row;
       const cropState = getRowActiveCropState(row);
       const activeCrop = cropState.activeCrop;
@@ -2402,6 +2448,7 @@
       const exportBox = el('#previewExport');
       exportBox.innerHTML = '<span class="muted">Loading…</span>';
       const exportUrl = await getBlobUrl(row.export_path, rootPath);
+      if (gen !== _previewGen) return;
       if (exportUrl) {
         exportBox.innerHTML = '';
         const img = document.createElement('img');
@@ -2415,6 +2462,7 @@
       const cropBox = el('#previewCrop');
       cropBox.innerHTML = '<span class="muted">Loading…</span>';
       const cropUrl = await getBlobUrl(activeCropPath, rootPath);
+      if (gen !== _previewGen) return;
       if (cropUrl) {
         cropBox.innerHTML = '';
         const img = document.createElement('img');
@@ -2810,7 +2858,15 @@
           const skipNote = skippedMains.length
             ? `, ${skippedMains.length} skipped`
             : '';
-          setStep('move', 'done', `${movedMains.length} reject${movedMains.length === 1 ? '' : 's'} moved${skipNote}`);
+          // success can be true while all_moved is false (partial batch).
+          // Callers that gate only on success would mark this done; the flag
+          // is what distinguishes a complete move from a name-conflict skip.
+          if (moveRes.all_moved === false) {
+            anyFailed = true;
+            setStep('move', 'failed', `${movedMains.length} reject${movedMains.length === 1 ? '' : 's'} moved${skipNote}`);
+          } else {
+            setStep('move', 'done', `${movedMains.length} reject${movedMains.length === 1 ? '' : 's'} moved${skipNote}`);
+          }
 
           const movedMainSet = new Set(movedMains);
           rows = rows.filter(r => !movedMainSet.has(r.filename));
@@ -3143,7 +3199,7 @@
     let zoomActive = false;
     let zoomRow = null;
     let previewRow = null;       // row currently shown in the preview pane
-    let rawCache = new Map();    // filename -> base64 data URL
+    let rawCache = new BlobUrlCache(); // cacheKey -> blob URL of a full RAW preview
     let rawLoading = new Set();  // filename currently loading
 
     function getRowExposurePipelineMode(row) {
@@ -3297,8 +3353,11 @@
           meterScale
         );
         if (res && res.success && res.data) {
-          const url = `data:image/jpeg;base64,${res.data}`;
-          rawCache.set(cacheKey, url);
+          let url = rawCache.has(cacheKey) ? rawCache.get(cacheKey) : null;
+          if (!url) {
+            url = _base64ToBlobUrl(res.data, res.mime || 'image/jpeg');
+            rawCache.set(cacheKey, url);
+          }
           // If still zooming on this row, swap to the high-res source
           if (zoomActive && zoomRow === row) {
             const img = el('#previewExport')?.querySelector('img');
