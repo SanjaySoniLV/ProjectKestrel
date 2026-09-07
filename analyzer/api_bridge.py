@@ -1781,25 +1781,30 @@ class Api:
                 return {'success': False, 'error': 'paths must be a list', 'results': {}}
 
             validated_paths = []
-            invalid_paths = []
+            missing_paths = []
             for raw in paths:
                 root_real, err = self._validate_root_dir(raw, context='inspect_folders', require_exists=True)
+                if err == 'Path outside allowed root':
+                    # A path escaping the sandbox taints the whole request:
+                    # refuse all of it, exactly as before.
+                    self._log_security_reject('inspect_folders', 'One or more invalid folder paths', invalid_count=1)
+                    return {
+                        'success': False,
+                        'error': 'Invalid folder path in request',
+                        'invalid_paths': [str(raw)],
+                        'results': {},
+                    }
                 if err:
-                    invalid_paths.append(str(raw))
+                    # Renamed, deleted, or on a card that has been ejected since
+                    # the path was last seen. Benign and routine -- a stale entry
+                    # in recents must not stop the folders that are still there
+                    # from being inspected.
+                    missing_paths.append(str(raw))
                     continue
                 validated_paths.append(root_real)
 
-            if invalid_paths:
-                self._log_security_reject('inspect_folders', 'One or more invalid folder paths', invalid_count=len(invalid_paths))
-                return {
-                    'success': False,
-                    'error': 'Invalid folder path in request',
-                    'invalid_paths': invalid_paths,
-                    'results': {},
-                }
-
             results = inspector.inspect_folders(validated_paths)
-            return {'success': True, 'results': results}
+            return {'success': True, 'results': results, 'missing_paths': missing_paths}
         except Exception as e:
             error(f'[API] inspect_folders error: {e}')
             return {'success': False, 'error': str(e), 'results': {}}
@@ -2693,7 +2698,7 @@ class Api:
                 per_item_options = None
 
             validated_paths = []
-            invalid_paths = []
+            skipped_paths = []
             # Map raw->validated so per_item_options keyed by the raw frontend
             # path still resolves to the canonical realpath the worker uses.
             raw_to_validated = {}
@@ -2701,26 +2706,36 @@ class Api:
                 if not raw:
                     continue
                 root_real, err = self._validate_root_dir(raw, context='start_analysis_queue', require_exists=True)
+                if err == 'Path outside allowed root':
+                    # Sandbox escape: refuse the request rather than quietly
+                    # running the acceptable part of it.
+                    self._log_security_reject(
+                        'start_analysis_queue',
+                        'One or more queue paths are invalid',
+                        invalid_count=1,
+                    )
+                    return {
+                        'success': False,
+                        'error': 'Invalid folder path in queue request',
+                        'invalid_paths': [str(raw)],
+                    }
                 if err:
-                    invalid_paths.append(str(raw))
+                    # Gone since it was queued -- renamed, deleted, or on a card
+                    # that has been ejected. Analyse the folders that are still
+                    # there and name the ones that are not, rather than
+                    # cancelling a whole night's queue over one of them.
+                    skipped_paths.append(str(raw))
                     continue
                 if root_real not in validated_paths:
                     validated_paths.append(root_real)
                 raw_to_validated[str(raw)] = root_real
 
-            if invalid_paths:
-                self._log_security_reject(
-                    'start_analysis_queue',
-                    'One or more queue paths are invalid',
-                    invalid_count=len(invalid_paths),
-                )
+            if not validated_paths:
                 return {
                     'success': False,
-                    'error': 'Invalid folder path in queue request',
-                    'invalid_paths': invalid_paths,
+                    'error': 'No valid paths provided',
+                    'skipped_paths': skipped_paths,
                 }
-            if not validated_paths:
-                return {'success': False, 'error': 'No valid paths provided'}
 
             # Re-key per_item_options against the validated paths so the
             # queue manager can look up options by the same path it stores.
@@ -2774,17 +2789,20 @@ class Api:
             except (TypeError, ValueError):
                 parallel_prefetch = 3
             parallel_prefetch = max(1, min(5, parallel_prefetch))
-            return _queue_manager.enqueue(validated_paths, use_gpu=bool(use_gpu),
-                                          wildlife_enabled=bool(wildlife_enabled),
-                                          species_detection_enabled=bool(species_detection_enabled),
-                                          detection_threshold=detection_threshold,
-                                          scene_time_threshold=scene_time_threshold,
-                                          mask_threshold=mask_threshold,
-                                          max_bird_crops=max_bird_crops,
-                                          parallel_prefetch=parallel_prefetch,
-                                          detector_name=detector_name,
-                                          retry_errored=bool(retry_errored),
-                                          per_item_options=validated_per_item_options)
+            result = _queue_manager.enqueue(validated_paths, use_gpu=bool(use_gpu),
+                                            wildlife_enabled=bool(wildlife_enabled),
+                                            species_detection_enabled=bool(species_detection_enabled),
+                                            detection_threshold=detection_threshold,
+                                            scene_time_threshold=scene_time_threshold,
+                                            mask_threshold=mask_threshold,
+                                            max_bird_crops=max_bird_crops,
+                                            parallel_prefetch=parallel_prefetch,
+                                            detector_name=detector_name,
+                                            retry_errored=bool(retry_errored),
+                                            per_item_options=validated_per_item_options)
+            if isinstance(result, dict) and skipped_paths:
+                result = dict(result, skipped_paths=skipped_paths)
+            return result
         except Exception as e:
             error(f'[API] start_analysis_queue error: {e}')
             return {'success': False, 'error': str(e)}

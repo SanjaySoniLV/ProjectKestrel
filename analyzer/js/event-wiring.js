@@ -187,7 +187,15 @@
           startPollingQueue();
           const status = await apiGetQueueStatus();
           renderQueuePanel(status);
-          setStatus(`Analysis queue started — ${result.added || paths.length} folder(s) queued`);
+          const skipped = Array.isArray(result.skipped_paths) ? result.skipped_paths : [];
+          const queued = result.added || (paths.length - skipped.length);
+          if (skipped.length) {
+            // Folders that vanished between being listed and being queued.
+            // Say so; the rest of the queue is running.
+            setStatus(`Analysis queue started — ${queued} folder(s) queued; ${skipped.length} skipped (no longer exist): ${skipped.join(', ')}`);
+          } else {
+            setStatus(`Analysis queue started — ${queued} folder(s) queued`);
+          }
           setTimeout(() => { try { hideLoadingAnalyzer(); } catch (e) { } }, 30000);
         } else {
           hideLoadingAnalyzer();
