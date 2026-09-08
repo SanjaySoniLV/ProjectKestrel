@@ -371,23 +371,23 @@
         return;
       }
       // Probe existence via inspect_folders so missing-drive paths drop out.
-      // Note: inspect_folders returns success=true ONLY if every input path is
-      // a valid existing folder (require_exists=True in _validate_root_dir).
-      // The results dict is keyed by os.path.realpath which may not match the
+      // The results dict is keyed by os.path.realpath, which may not match the
       // original strings (case canonicalization etc.), so we DON'T do per-path
-      // result lookup — instead we treat success=true as "all exist, show all"
-      // and only filter when the backend gives us an explicit invalid_paths list.
+      // result lookup. Instead the backend names the paths it could not open:
+      // missing_paths on success (renamed, deleted, card ejected) and
+      // invalid_paths when it refused the request outright.
       let available = recents;
       try {
         if (hasPywebviewApi && window.pywebview?.api?.inspect_folders) {
           const res = await window.pywebview.api.inspect_folders(recents);
           console.log('[recents] inspect_folders result:', res);
-          if (res && res.success) {
-            available = recents; // all valid
-          } else if (res && Array.isArray(res.invalid_paths)) {
+          if (res) {
             const normRoot = q => (q || '').replace(/\\/g, '/').replace(/\/+$/, '');
-            const invalid = new Set(res.invalid_paths.map(normRoot));
-            available = recents.filter(p => !invalid.has(normRoot(p)));
+            const gone = new Set([
+              ...(Array.isArray(res.missing_paths) ? res.missing_paths : []),
+              ...(Array.isArray(res.invalid_paths) ? res.invalid_paths : []),
+            ].map(normRoot));
+            if (gone.size) available = recents.filter(p => !gone.has(normRoot(p)));
           }
         }
       } catch (e) { console.warn('[recents] inspect_folders threw:', e); }
