@@ -174,7 +174,17 @@ class _TeeStream:
 
 
 def _enable_runtime_log_capture() -> str:
-    """Capture process stdout/stderr to a persistent runtime log file."""
+    """Capture process stdout/stderr to a persistent runtime log file.
+
+    The file name carries the pid as well as the start timestamp. The stamp
+    alone has one-second resolution, so two instances launched in the same
+    second (a double-click, or a second copy started while the first is open —
+    a case the recovery-dialog logic explicitly handles) opened the *same*
+    file in append mode and interleaved their output line by line. Crash
+    reports from such a session show every line twice and two different pids
+    reporting the same ``session_start``, which is exactly when the log is
+    needed to tell the two instances apart.
+    """
     global _RUNTIME_LOG_HANDLE
     try:
         try:
@@ -190,7 +200,12 @@ def _enable_runtime_log_capture() -> str:
         runtime_dir = os.path.join(base_log_dir, 'logs')
         os.makedirs(runtime_dir, exist_ok=True)
         ts = datetime.now(timezone.utc).replace(tzinfo=None).strftime('%Y%m%dT%H%M%SZ')
-        runtime_log_path = os.path.join(runtime_dir, f'kestrel_runtime_{ts}.log')
+        # Prefix and suffix are load-bearing: kestrel_telemetry selects the
+        # recent runtime logs for a crash report by them. The timestamp stays
+        # first so the names still sort in start order.
+        runtime_log_path = os.path.join(
+            runtime_dir, f'kestrel_runtime_{ts}_p{os.getpid()}.log'
+        )
 
         _RUNTIME_LOG_HANDLE = open(runtime_log_path, 'a', encoding='utf-8', buffering=1)
         sys.stdout = _TeeStream(sys.stdout, _RUNTIME_LOG_HANDLE)
