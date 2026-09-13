@@ -1985,8 +1985,6 @@ class Api:
             }
         """
         try:
-            import pandas as pd
-
             try:
                 from kestrel_analyzer.ratings import (
                     quality_to_rating,
@@ -2015,7 +2013,20 @@ class Api:
             profile = settings.get('rating_profile', 'balanced')
             thresholds = resolve_thresholds(profile, settings.get('rating_thresholds_custom'))
 
-            df = pd.read_csv(csv_path)
+            # The analysis pipeline saves this CSV after every processed image
+            # while the UI calls this method on every refresh, and on Windows the
+            # two collide even though the save is atomic: CPython opens files
+            # without FILE_SHARE_DELETE, so a reader that lands during the
+            # rename gets PermissionError. read_database_csv retries through
+            # that window; a bare pd.read_csv surfaces it to the user as a
+            # spurious "Permission denied" and the folder shows no ratings. See
+            # kestrel_analyzer.database.retry_on_file_lock.
+            try:
+                from kestrel_analyzer.database import read_database_csv
+            except ImportError:  # package-style import path
+                from analyzer.kestrel_analyzer.database import read_database_csv  # type: ignore[no-redef]
+
+            df = read_database_csv(csv_path)
             if df.empty:
                 return {'success': True, 'normalized_ratings': {}, 'mode_used': profile, 'error': ''}
 
