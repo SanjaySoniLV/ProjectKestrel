@@ -85,6 +85,16 @@ def parse_args(argv: Sequence[str] | None = None):
         help="Seconds between images to group as one burst/scene (0-60). Default: 1.0.",
     )
     parser.add_argument(
+        "--scene-break-gap",
+        type=float,
+        default=0.0,
+        help=(
+            "Start a new scene whenever more than this many seconds pass between "
+            "consecutive images, even if they look alike (0-86400). "
+            "0 disables the rule. Default: 0."
+        ),
+    )
+    parser.add_argument(
         "--thumbnail-max-width",
         type=int,
         default=None,
@@ -278,6 +288,7 @@ def main(argv: Sequence[str] | None = None):
         parallel_pf = max(1, min(5, int(float(args.parallel_prefetch))))
         max_bird_crops = max(1, min(20, int(float(args.max_bird_crops))))
         scene_time_threshold = max(0.0, min(60.0, float(args.scene_time_threshold)))
+        scene_break_gap_seconds = max(0.0, min(86400.0, float(args.scene_break_gap)))
         thumbnail_max_width = None
         if args.thumbnail_max_width is not None:
             thumbnail_max_width = max(400, min(2400, int(float(args.thumbnail_max_width))))
@@ -335,6 +346,7 @@ def main(argv: Sequence[str] | None = None):
                 "parallel_prefetch": parallel_pf,
                 "max_bird_crops": max_bird_crops,
                 "scene_time_threshold": scene_time_threshold,
+                "scene_break_gap_seconds": scene_break_gap_seconds,
                 "exposure_quality": args.exposure_quality,
                 "thumbnail_max_width": thumbnail_max_width,
                 "thumbnail_jpeg_compression": thumbnail_jpeg_compression,
@@ -355,6 +367,7 @@ def main(argv: Sequence[str] | None = None):
             species_detection_enabled=args.species_detection_enabled,
             detection_threshold=detection_threshold,
             scene_time_threshold=scene_time_threshold,
+            scene_break_gap_seconds=scene_break_gap_seconds,
             max_bird_crops=max_bird_crops,
             parallel_prefetch=parallel_pf,
             retry_errored=args.retry_errored,

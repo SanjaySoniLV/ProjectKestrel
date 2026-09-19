@@ -32,6 +32,8 @@
           run: () => window.pywebview.api.open_file_explorer(folderPath) },
         { icon: '⏱', label: 'Adjust Capture Time',
           run: () => showAdjustCaptureTimeDialog(folderPath) },
+        { icon: '🗂', label: 'Regroup Scenes…',
+          run: () => openRegroupDialog(folderPath) },
         { icon: '↺', label: 'Reset Culling Decisions',
           run: () => showFolderOptionsDialog(folderPath) },
         { icon: '📝', label: 'Write Photo Metadata',

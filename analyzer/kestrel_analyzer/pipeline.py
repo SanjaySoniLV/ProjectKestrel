@@ -40,7 +40,7 @@ from .exposure_compensation import (
 )
 from .image_utils import decode_embedded_preview, read_image, read_image_for_pipeline
 from .ratings import quality_to_rating, resolve_thresholds
-from .similarity import compute_image_similarity_akaze, compute_similarity_timestamp
+from .similarity import compute_capture_time_gap, compute_image_similarity_akaze
 from .raw_exif import get_capture_time
 from .logging_utils import (
     get_log_path,
@@ -553,6 +553,7 @@ class AnalysisPipeline:
         species_detection_enabled: bool = True,
         detection_threshold: float = 0.25,
         scene_time_threshold: float = 1.0,
+        scene_break_gap_seconds: float = 0.0,
         mask_threshold: float = 0.5,
         max_bird_crops: int = 5,
         parallel_prefetch: int = 3,
@@ -583,6 +584,14 @@ class AnalysisPipeline:
         except (TypeError, ValueError):
             decode_workers = self._DEFAULT_DECODE_WORKERS
         decode_workers = max(1, min(5, decode_workers))
+
+        # 0 (and anything unparseable) disables the long-gap scene break.
+        try:
+            scene_break_gap_seconds = float(scene_break_gap_seconds)
+        except (TypeError, ValueError):
+            scene_break_gap_seconds = 0.0
+        if scene_break_gap_seconds != scene_break_gap_seconds or scene_break_gap_seconds < 0:  # NaN / negative
+            scene_break_gap_seconds = 0.0
 
         rating_thresholds = None
         rating_profile = "balanced"
@@ -1047,11 +1056,10 @@ class AnalysisPipeline:
                                 previous_image_path = None
                                 previous_orientation = None
 
-                        timestamp_similar = None
+                        capture_gap_seconds = None
                         try:
-                            timestamp_similar = compute_similarity_timestamp(
-                                previous_image_path, image_path,
-                                threshold_seconds=scene_time_threshold
+                            capture_gap_seconds = compute_capture_time_gap(
+                                previous_image_path, image_path
                             ) if previous_image_path else None
                         except Exception as e:
                             log_warning(
@@ -1061,6 +1069,23 @@ class AnalysisPipeline:
                                 context={"file": raw_file, "folder": folder},
                             )
 
+                        timestamp_similar = (
+                            None if capture_gap_seconds is None
+                            else capture_gap_seconds <= scene_time_threshold
+                        )
+                        # A long pause between frames is a scene break on its
+                        # own, regardless of how alike the two frames look.
+                        # Without it, AKAZE chains visually-similar frames
+                        # indefinitely: an hour at one pond against one
+                        # background collapses into a single scene of hundreds
+                        # of images. Disabled (0) by default so existing
+                        # folders re-analyze to the same scenes as before.
+                        time_gap_break = (
+                            scene_break_gap_seconds > 0
+                            and capture_gap_seconds is not None
+                            and capture_gap_seconds > scene_break_gap_seconds
+                        )
+
                         orientation_changed = (
                             previous_orientation is not None
                             and current_orientation != "unknown"
@@ -1068,7 +1093,7 @@ class AnalysisPipeline:
                             and current_orientation != previous_orientation
                         )
 
-                        if orientation_changed:
+                        if orientation_changed or time_gap_break:
                             scene_count += 1
                             entry.update(
                                 {
@@ -1717,6 +1742,7 @@ class AnalysisPipeline:
                             "species_detection_enabled": bool(species_detection_enabled),
                             "detection_threshold": float(detection_threshold),
                             "scene_time_threshold": float(scene_time_threshold),
+                            "scene_break_gap_seconds": float(scene_break_gap_seconds),
                             "mask_threshold": float(mask_threshold),
                             "max_bird_crops": int(max_bird_crops),
                             "parallel_prefetch": int(decode_workers),

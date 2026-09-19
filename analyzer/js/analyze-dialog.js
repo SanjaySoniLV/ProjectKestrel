@@ -1193,6 +1193,8 @@
       }
       const _adlgSt = document.getElementById('adlgSceneTime');
       if (_adlgSt) _adlgSt.value = getSetting('scene_time_threshold', 1.0);
+      const _adlgSbg = document.getElementById('adlgSceneBreakGap');
+      if (_adlgSbg) _adlgSbg.value = getSetting('scene_break_gap_seconds', 0);
       const _adlgPp = document.getElementById('adlgParallelPrefetch');
       if (_adlgPp) _adlgPp.value = getSetting('parallel_prefetch', 3);
       const _adlgThumbW = document.getElementById('adlgThumbnailMaxWidth');

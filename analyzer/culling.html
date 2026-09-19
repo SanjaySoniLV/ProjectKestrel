@@ -970,6 +970,32 @@
       min-width: 34px;
       font-variant-numeric: tabular-nums;
     }
+    /* Per-scene keep/reject counts are click-to-type: the sliders cover the
+       range most people want, but a photographer shooting 100-frame bursts
+       needs values the track cannot sensibly reach. The dotted underline is
+       the affordance; the value stays plain text until it is clicked. */
+    .auto-cat-panel .slider-val--editable {
+      cursor: text;
+      border-bottom: 1px dashed var(--muted);
+      padding-bottom: 1px;
+    }
+    .auto-cat-panel .slider-val--editable:hover,
+    .auto-cat-panel .slider-val--editable:focus-visible {
+      border-bottom-color: var(--brand);
+      color: var(--brand);
+    }
+    .auto-cat-panel .slider-val-edit {
+      width: 62px;
+      font-size: 13px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: var(--text);
+      background: var(--bg);
+      border: 1px solid var(--brand);
+      border-radius: 3px;
+      padding: 1px 3px;
+    }
+    .auto-cat-panel .slider-val-edit.hidden { display: none; }
     .auto-cat-panel .unrated-group {
       justify-content: flex-end;
     }
@@ -1073,15 +1099,23 @@
         <div class="slider-group">
           <label for="minPerSceneSlider">Min Accepted Per Scene</label>
           <div class="slider-row">
-            <input type="range" id="minPerSceneSlider" min="0" max="5" value="0" step="1" />
-            <span class="slider-val" id="minPerSceneVal">0</span>
+            <input type="range" id="minPerSceneSlider" min="0" max="25" value="0" step="1" />
+            <span class="slider-val slider-val--editable" id="minPerSceneVal"
+                  role="button" tabindex="0"
+                  title="Click to type an exact value">0</span>
+            <input type="number" class="slider-val-edit hidden" id="minPerSceneEdit"
+                   min="0" step="1" aria-label="Min accepted per scene" />
           </div>
         </div>
         <div class="slider-group">
           <label for="maxPerSceneSlider" title="0 = no cap">Max Accepted Per Scene</label>
           <div class="slider-row">
-            <input type="range" id="maxPerSceneSlider" min="0" max="20" value="0" step="1" />
-            <span class="slider-val" id="maxPerSceneVal">∞</span>
+            <input type="range" id="maxPerSceneSlider" min="0" max="100" value="0" step="1" />
+            <span class="slider-val slider-val--editable" id="maxPerSceneVal"
+                  role="button" tabindex="0"
+                  title="Click to type an exact value (0 = no cap)">∞</span>
+            <input type="number" class="slider-val-edit hidden" id="maxPerSceneEdit"
+                   min="0" step="1" aria-label="Max accepted per scene, 0 for no cap" />
           </div>
         </div>
         <div class="slider-group unrated-group">
@@ -1961,11 +1995,86 @@
     function getSliderValues() {
       const rawCutoff = parseFloat(el('#qualityCutoffSlider')?.value ?? '0.60');
       const qualityCutoff = Number.isFinite(rawCutoff) ? Math.max(0, Math.min(1, rawCutoff)) : 0.60;
+      // The slider element is the store of record for both counts. Typed
+      // values raise its `max` first (see setPerSceneValue), so reading
+      // .value here still returns whatever the user asked for.
       const minKeep = parseInt(el('#minPerSceneSlider')?.value  ?? '0', 10);
       const maxRaw  = parseInt(el('#maxPerSceneSlider')?.value  ?? '0', 10);
       const maxKeep = maxRaw === 0 ? Infinity : maxRaw;
       const unratedDefault = (el('#unratedDefaultSelect')?.value === 'accept') ? 'accept' : 'reject';
       return { qualityCutoff, minKeep, maxKeep, unratedDefault };
+    }
+
+    // ---- Click-to-type for the per-scene counts ----
+    // The sliders cover the usual range, but "max accepted per scene" is
+    // meaningless at 20 for someone shooting 100-frame bursts, so the number
+    // itself is editable and accepts any non-negative value. Typing a value
+    // above the track's max grows the track rather than clamping the input.
+    const PER_SCENE_BASE_MAX = { min: 25, max: 100 };
+    // A scene cannot hold more photos than a shoot contains; this is purely a
+    // sanity rail against a typo like 1e9 locking up the re-apply pass.
+    const PER_SCENE_HARD_MAX = 100000;
+    let _editingPerScene = null;
+
+    function setPerSceneValue(which, value) {
+      const slider = el(which === 'min' ? '#minPerSceneSlider' : '#maxPerSceneSlider');
+      if (!slider) return 0;
+      let n = parseInt(value, 10);
+      if (!Number.isFinite(n) || n < 0) n = 0;
+      n = Math.min(PER_SCENE_HARD_MAX, n);
+      // Grow the track so the thumb can actually represent the typed value;
+      // shrink it back to the base span when the value fits again.
+      slider.max = String(Math.max(PER_SCENE_BASE_MAX[which], n));
+      slider.value = String(n);
+      return n;
+    }
+
+    function _openPerSceneEditor(which) {
+      const span = el(which === 'min' ? '#minPerSceneVal' : '#maxPerSceneVal');
+      const input = el(which === 'min' ? '#minPerSceneEdit' : '#maxPerSceneEdit');
+      const slider = el(which === 'min' ? '#minPerSceneSlider' : '#maxPerSceneSlider');
+      if (!span || !input || !slider || _editingPerScene) return;
+      _editingPerScene = which;
+      input.value = String(parseInt(slider.value, 10) || 0);
+      span.classList.add('hidden');
+      input.classList.remove('hidden');
+      input.focus();
+      input.select();
+    }
+
+    function _closePerSceneEditor(which, commit) {
+      const span = el(which === 'min' ? '#minPerSceneVal' : '#maxPerSceneVal');
+      const input = el(which === 'min' ? '#minPerSceneEdit' : '#maxPerSceneEdit');
+      if (!span || !input) return;
+      _editingPerScene = null;
+      if (commit) setPerSceneValue(which, input.value);
+      input.classList.add('hidden');
+      span.classList.remove('hidden');
+      updateSliderLabels();
+      if (commit) saveCullingSettings();
+    }
+
+    function _wirePerSceneEditor(which) {
+      const span = el(which === 'min' ? '#minPerSceneVal' : '#maxPerSceneVal');
+      const input = el(which === 'min' ? '#minPerSceneEdit' : '#maxPerSceneEdit');
+      if (!span || !input) return;
+      span.addEventListener('click', () => _openPerSceneEditor(which));
+      span.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter' || ev.key === ' ') {
+          ev.preventDefault();
+          _openPerSceneEditor(which);
+        }
+      });
+      input.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') { ev.preventDefault(); _closePerSceneEditor(which, true); }
+        else if (ev.key === 'Escape') { ev.preventDefault(); _closePerSceneEditor(which, false); }
+        // Keep arrows and digits inside the field rather than letting the
+        // page's cull shortcuts act on them.
+        ev.stopPropagation();
+      });
+      input.addEventListener('blur', () => {
+        if (_editingPerScene === which) _closePerSceneEditor(which, true);
+      });
     }
 
     let _autoRulesLoaded = false; // set true after first settings load so initial load doesn't flash
@@ -1976,8 +2085,12 @@
       const maxEl = el('#maxPerSceneVal');
       const cutoffText = qualityCutoff.toFixed(2);
       if (qEl)   qEl.textContent   = cutoffText;
-      if (minEl) minEl.textContent = String(minKeep);
-      if (maxEl) maxEl.textContent = maxKeep === Infinity ? '\u221e' : String(maxKeep);
+      // Skip a value that is currently open for typing — writing to it would
+      // fight the user mid-keystroke.
+      if (minEl && _editingPerScene !== 'min') minEl.textContent = String(minKeep);
+      if (maxEl && _editingPerScene !== 'max') {
+        maxEl.textContent = maxKeep === Infinity ? '\u221e' : String(maxKeep);
+      }
 
       // Say which star band the cutoff currently lands in, so the score stays
       // legible to anyone who thinks in stars.
@@ -3056,8 +3169,11 @@
           const sl = el('#qualityCutoffSlider');
           if (sl) sl.value = String(Math.max(0, Math.min(1, cutoff)));
         }
-        if (minPS   >= 0 && minPS   <= 5)  { const sl = el('#minPerSceneSlider');   if (sl) sl.value = minPS; }
-        if (maxPS   >= 0 && maxPS   <= 20) { const sl = el('#maxPerSceneSlider');   if (sl) sl.value = maxPS; }
+        // Any non-negative value is valid now that these are typed as well as
+        // dragged; setPerSceneValue grows the track to fit before assigning,
+        // so a stored 250 survives a reload instead of being silently dropped.
+        if (Number.isFinite(minPS) && minPS >= 0) setPerSceneValue('min', minPS);
+        if (Number.isFinite(maxPS) && maxPS >= 0) setPerSceneValue('max', maxPS);
         const unratedSel = el('#unratedDefaultSelect');
         if (unratedSel) unratedSel.value = unratedDefault === 'accept' ? 'accept' : 'reject';
         updateSliderLabels(true);
@@ -3701,6 +3817,8 @@
       const sl = el('#' + id);
       if (sl) sl.addEventListener('input', () => { updateSliderLabels(); saveCullingSettings(); });
     });
+    _wirePerSceneEditor('min');
+    _wirePerSceneEditor('max');
     const unratedSel = el('#unratedDefaultSelect');
     if (unratedSel) unratedSel.addEventListener('change', () => { updateSliderLabels(); saveCullingSettings(); });
     el('#tutorialNext').addEventListener('click', function() { var step = TUTORIAL_STEPS[_tutStep]; if (step && step.waitFor) return; _tutAdvance(); });

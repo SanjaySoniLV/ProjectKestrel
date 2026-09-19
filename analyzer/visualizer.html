@@ -29,6 +29,7 @@
   <link rel="stylesheet" href="css/dialogs/base.css" />
   <link rel="stylesheet" href="css/dialogs/kdlg.css" />
   <link rel="stylesheet" href="css/dialogs/scene.css" />
+  <link rel="stylesheet" href="css/dialogs/regroup.css" />
   <link rel="stylesheet" href="css/dialogs/settings.css" />
   <link rel="stylesheet" href="css/dialogs/analyze.css" />
   <link rel="stylesheet" href="css/dialogs/live-analysis.css" />
@@ -1001,6 +1002,69 @@
     </div>
   </dialog>
 
+  <!-- Regroup Scenes dialog — re-scene an already-analyzed folder from the
+       values the analysis already stored, with a live before/after preview.
+       Body logic in js/scene-regroup.js; the grouping rules themselves live in
+       kestrel_analyzer/regroup.py so they can be tested against the pipeline's
+       own ladder. -->
+  <dialog id="regroupDlg" class="kdlg kdlg--lg kdlg--flex" aria-labelledby="regroupDlgTitle">
+    <div class="kdlg-body regroup-body">
+      <h3 style="margin:0" id="regroupDlgTitle">Regroup Scenes</h3>
+      <div class="muted" style="font-size:12px;word-break:break-all" id="regroupFolderName">—</div>
+      <div class="regroup-intro muted">
+        Rebuilds this folder's scenes from the analysis that already ran &mdash; no photos are
+        re-analyzed and nothing is re-uploaded. Your star ratings and Accept/Reject decisions are
+        kept; scene names and verified tags follow their photos where that is unambiguous.
+      </div>
+
+      <div class="regroup-controls">
+        <div class="regroup-control">
+          <label for="regroupGroupWithin">Group photos taken within (seconds)</label>
+          <input id="regroupGroupWithin" type="number" min="0" max="60" step="0.5" value="1" />
+          <div class="regroup-hint muted">
+            A burst shot inside this window always stays in one scene.
+          </div>
+        </div>
+        <div class="regroup-control">
+          <label for="regroupSplitAfter">Start a new scene after a pause of</label>
+          <div class="regroup-slider-row">
+            <input id="regroupSplitAfter" type="range" min="0" max="3600" step="15" value="0" />
+            <span class="regroup-val" id="regroupSplitAfterVal">off</span>
+          </div>
+          <div class="regroup-hint muted">
+            Splits a long session into separate scenes by elapsed time. 0 turns it off.
+          </div>
+        </div>
+        <div class="regroup-control">
+          <label for="regroupSimilarity">How alike photos must look to share a scene</label>
+          <div class="regroup-slider-row">
+            <input id="regroupSimilarity" type="range" min="0" max="1" step="0.01" value="0.5" />
+            <span class="regroup-val" id="regroupSimilarityVal">0.50</span>
+          </div>
+          <div class="regroup-hint muted" id="regroupSimilarityNote"></div>
+          <div class="regroup-hint muted" id="regroupScoredNote"></div>
+        </div>
+      </div>
+
+      <div class="regroup-summary" id="regroupSummary">—</div>
+
+      <div class="regroup-compare">
+        <div class="regroup-col">
+          <div class="regroup-col-head" id="regroupCurrentHead">Current</div>
+          <div class="regroup-col-list" id="regroupCurrentList"></div>
+        </div>
+        <div class="regroup-col">
+          <div class="regroup-col-head" id="regroupProposedHead">After regrouping</div>
+          <div class="regroup-col-list" id="regroupProposedList"></div>
+        </div>
+      </div>
+    </div>
+    <div class="kdlg-footer">
+      <button type="button" class="btn" id="regroupCancelBtn">Cancel</button>
+      <button type="button" class="btn primary" id="regroupApplyBtn" disabled>Apply Regrouping</button>
+    </div>
+  </dialog>
+
   <!-- Repair dialog — surfaced when a folder's images and its .kestrel database
        have drifted apart (files moved, renamed, or deleted outside Kestrel).
        Body is built by js/repair.js; every destructive action is an explicit
@@ -1206,6 +1270,12 @@
                     style="width:80px" />
                 </div>
                 <div class="adlg-hint muted">Images captured within this many seconds of each other are treated as the same burst/scene.</div>
+                <div class="adlg-setting-row">
+                  <label for="adlgSceneBreakGap">Start a new scene after a pause of (seconds)</label>
+                  <input id="adlgSceneBreakGap" type="number" min="0" max="86400" step="1" value="0"
+                    style="width:80px" />
+                </div>
+                <div class="adlg-hint muted">Forces a scene break whenever this much time passes between two shots, even if they look alike &mdash; useful when a long session against the same background would otherwise become one huge scene. 0 turns it off.</div>
               </div>
 
               <div class="adlg-subgroup">
@@ -1640,6 +1710,7 @@
   <script src="js/scenes.js"></script>
   <script src="js/scene-grid.js"></script>
   <script src="js/scene-zoom.js"></script>
+  <script src="js/scene-regroup.js"></script>
   <!-- settings.js MUST load before scene-dialog.js: scene-dialog's IIFE
        (setupScenePreviewDivider) calls getSetting() at parse time. -->
   <script src="js/settings.js"></script>
@@ -1685,6 +1756,7 @@
         ['cloud-compute.js',   '_ccSubmitSelectedFolders'],
         ['culling.js',         'openCullingAssistant'],
         ['repair.js',          'openRepairDialog'],
+        ['scene-regroup.js',   'openRegroupDialog'],
         ['tutorial.js',        'startMainTutorial'],
         ['welcome.js',         'WELCOME_TIPS']
       ];
