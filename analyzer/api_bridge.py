@@ -526,6 +526,12 @@ class Api:
         self._share_jobs: dict = {}
         self._share_jobs_lock = None
         self._active_share_job: str | None = None
+        # Scene-regroup working set. The dialog ships the folder's immutable
+        # analysis columns once on open, then drags sliders against the cached
+        # copy — re-sending thousands of rows per slider tick would make the
+        # live preview unusable. Only one folder is ever held (the dialog is
+        # modal) and it is dropped when the dialog closes.
+        self._regroup_cache: dict | None = None
         self._perch_account_cache: dict | None = None
         self._perch_account_cache_at: float = 0.0
         self._perch_usage_cache: dict | None = None
@@ -2043,6 +2049,155 @@ class Api:
         except Exception as e:
             error(f'[API] apply_normalization error: {e}')
             return {'success': False, 'error': str(e), 'normalized_ratings': {}, 'mode_used': ''}
+
+    # ---- Scene regrouping -------------------------------------------------
+    # Regroup replays the pipeline's scene-boundary rules against values the
+    # analysis already wrote to kestrel_database.csv, so a folder can be
+    # re-scened without decoding an image. The frontend owns the in-memory
+    # rows (it may hold unsaved edits, and it is what the user is looking at),
+    # so it ships the immutable analysis columns here rather than having this
+    # side re-read the CSV and risk disagreeing with the screen.
+
+    _REGROUP_MAX_IMAGES = 200000
+
+    def regroup_scenes_prepare(self, folder_path: str, items: list) -> dict:
+        """Cache a folder's analysis columns for the regroup dialog.
+
+        ``items`` is one entry per image with the columns the rules need:
+        filename, capture_time, orientation, feature_similarity,
+        feature_confidence, color_similarity, color_confidence, scene_count.
+
+        Returns {'success', 'image_count', 'scored_pairs', 'unscored_pairs',
+                 'analyzed_group_within', 'analyzed_split_after', 'error'}.
+        The two ``analyzed_*`` values are the settings the folder was last
+        analyzed with, read from kestrel_metadata.json, so the dialog can open
+        on the settings that reproduce the current grouping.
+        """
+        try:
+            from kestrel_analyzer.regroup import count_scored_pairs, sort_items
+
+            root_path, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path,
+                context='regroup_scenes_prepare',
+                require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            if not isinstance(items, list):
+                return {'success': False, 'error': 'items must be a list'}
+            if len(items) > self._REGROUP_MAX_IMAGES:
+                return {'success': False,
+                        'error': f'Folder has too many images to regroup '
+                                 f'({len(items)} > {self._REGROUP_MAX_IMAGES})'}
+
+            cleaned = []
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                name = str(it.get('filename', '') or '')
+                if not name:
+                    continue
+                cleaned.append({
+                    'filename': name,
+                    'capture_time': it.get('capture_time', ''),
+                    'orientation': it.get('orientation', ''),
+                    'feature_similarity': it.get('feature_similarity', -1),
+                    'feature_confidence': it.get('feature_confidence', -1),
+                    'color_similarity': it.get('color_similarity', -1),
+                    'color_confidence': it.get('color_confidence', -1),
+                    'scene_count': it.get('scene_count', ''),
+                })
+            cleaned = sort_items(cleaned)
+            self._regroup_cache = {'root': root_path, 'items': cleaned}
+
+            scored, unscored = count_scored_pairs(cleaned)
+            analyzed = self._read_analyzed_scene_settings(kestrel_dir)
+            return {
+                'success': True,
+                'error': '',
+                'image_count': len(cleaned),
+                'scored_pairs': scored,
+                'unscored_pairs': unscored,
+                'analyzed_group_within': analyzed['group_within'],
+                'analyzed_split_after': analyzed['split_after'],
+            }
+        except Exception as e:
+            error(f'[API] regroup_scenes_prepare({folder_path!r}) error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    @staticmethod
+    def _read_analyzed_scene_settings(kestrel_dir: str) -> dict:
+        """Scene settings from a folder's kestrel_metadata.json.
+
+        Falls back to the pipeline defaults when the folder predates the
+        analysis_settings block or the file is unreadable — the dialog just
+        opens on 1s / off, which is what those older runs used anyway.
+        """
+        out = {'group_within': 1.0, 'split_after': 0.0}
+        try:
+            meta_path = os.path.join(kestrel_dir, 'kestrel_metadata.json')
+            if not os.path.exists(meta_path):
+                return out
+            with open(meta_path, 'r', encoding='utf-8') as f:
+                meta = json.load(f)
+            settings = (meta or {}).get('analysis_settings') or {}
+            for key, wire in (('group_within', 'scene_time_threshold'),
+                              ('split_after', 'scene_break_gap_seconds')):
+                raw = settings.get(wire)
+                if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+                    value = float(raw)
+                    if value == value and value >= 0:
+                        out[key] = value
+        except Exception:
+            pass
+        return out
+
+    def regroup_scenes_preview(self, folder_path: str, options: dict = None,
+                               include_assignment: bool = False) -> dict:
+        """Group the cached folder under ``options`` and describe the result.
+
+        ``include_assignment`` is off for the live preview (the per-image map
+        is the largest part of the payload and the preview never reads it) and
+        on for the apply step, which needs the filename -> scene mapping.
+        """
+        try:
+            from kestrel_analyzer.regroup import plan_regroup
+
+            cache = self._regroup_cache
+            if not cache:
+                return {'success': False, 'error': 'No regroup session — reopen the dialog'}
+
+            root_path, _, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path,
+                context='regroup_scenes_preview',
+                require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            if os.path.normcase(root_path) != os.path.normcase(cache['root']):
+                return {'success': False,
+                        'error': 'Regroup session is for a different folder — reopen the dialog'}
+
+            options = options if isinstance(options, dict) else {}
+            plan = plan_regroup(
+                cache['items'],
+                group_within_seconds=options.get('group_within_seconds', 1.0),
+                split_after_seconds=options.get('split_after_seconds', 0.0),
+                similarity_threshold=options.get('similarity_threshold', 0.5),
+            )
+            if not include_assignment:
+                plan.pop('assignment', None)
+            plan['success'] = True
+            plan['error'] = ''
+            return plan
+        except Exception as e:
+            error(f'[API] regroup_scenes_preview({folder_path!r}) error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def regroup_scenes_release(self) -> dict:
+        """Drop the cached working set when the dialog closes."""
+        self._regroup_cache = None
+        return {'success': True, 'error': ''}
 
     def read_kestrel_scenedata(self, folder_path: str) -> dict:
         """Read kestrel_scenedata.json from a folder's .kestrel directory.
