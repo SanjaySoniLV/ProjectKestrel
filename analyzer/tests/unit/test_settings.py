@@ -180,6 +180,23 @@ class TestSanitizePayload:
         assert "detection_threshold" in result
         assert result["detection_threshold"] == 0.5
 
+    def test_scene_break_gap_seconds_clamped(self):
+        """Long-gap scene break is a 0..86400 float: absent when not provided,
+        coerced + clamped when present. 0 means the rule is off."""
+        assert "scene_break_gap_seconds" not in _sanitize_settings_payload({})
+        assert _sanitize_settings_payload(
+            {"scene_break_gap_seconds": 120}
+        )["scene_break_gap_seconds"] == 120.0
+        assert _sanitize_settings_payload(
+            {"scene_break_gap_seconds": -5}
+        )["scene_break_gap_seconds"] == 0.0
+        assert _sanitize_settings_payload(
+            {"scene_break_gap_seconds": 999999}
+        )["scene_break_gap_seconds"] == 86400.0
+        assert _sanitize_settings_payload(
+            {"scene_break_gap_seconds": "not-a-number"}
+        )["scene_break_gap_seconds"] == 0.0
+
     def test_unknown_keys_preserved_via_passthrough(self):
         """Unknown keys should be preserved for forward compatibility."""
         payload = {

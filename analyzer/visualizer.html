@@ -1206,6 +1206,12 @@
                     style="width:80px" />
                 </div>
                 <div class="adlg-hint muted">Images captured within this many seconds of each other are treated as the same burst/scene.</div>
+                <div class="adlg-setting-row">
+                  <label for="adlgSceneBreakGap">Start a new scene after a pause of (seconds)</label>
+                  <input id="adlgSceneBreakGap" type="number" min="0" max="86400" step="1" value="0"
+                    style="width:80px" />
+                </div>
+                <div class="adlg-hint muted">Forces a scene break whenever this much time passes between two shots, even if they look alike &mdash; useful when a long session against the same background would otherwise become one huge scene. 0 turns it off.</div>
               </div>
 
               <div class="adlg-subgroup">

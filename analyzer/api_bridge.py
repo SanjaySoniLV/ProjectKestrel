@@ -2746,6 +2746,11 @@ class Api:
             detection_threshold = max(0.1, min(0.99, detection_threshold))
             scene_time_threshold = float(sett.get('scene_time_threshold', 1.0))
             scene_time_threshold = max(0.0, scene_time_threshold)
+            try:
+                scene_break_gap_seconds = float(sett.get('scene_break_gap_seconds', 0.0))
+            except (TypeError, ValueError):
+                scene_break_gap_seconds = 0.0
+            scene_break_gap_seconds = max(0.0, min(86400.0, scene_break_gap_seconds))
             detector_name = 'mdv5a'
             mode_raw = str(sett.get('wildlife_model_mode', '') or '').strip().lower()
             if mode_raw == 'accurate':
@@ -2779,6 +2784,7 @@ class Api:
                                           species_detection_enabled=bool(species_detection_enabled),
                                           detection_threshold=detection_threshold,
                                           scene_time_threshold=scene_time_threshold,
+                                          scene_break_gap_seconds=scene_break_gap_seconds,
                                           mask_threshold=mask_threshold,
                                           max_bird_crops=max_bird_crops,
                                           parallel_prefetch=parallel_prefetch,

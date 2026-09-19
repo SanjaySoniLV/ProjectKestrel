@@ -47,6 +47,7 @@ class TestDefaults:
         assert args.max_bird_crops == 10
         assert args.exposure_quality is None
         assert args.scene_time_threshold == pytest.approx(1.0)
+        assert args.scene_break_gap == pytest.approx(0.0)
         assert args.thumbnail_max_width is None
         assert args.thumbnail_jpeg_compression is None
         assert args.wildlife_enabled is False
@@ -90,6 +91,10 @@ class TestNewFlagsAccepted:
     def test_scene_time_threshold(self):
         args = parse_args(["/tmp/photos", "--scene-time-threshold", "5.5"])
         assert args.scene_time_threshold == pytest.approx(5.5)
+
+    def test_scene_break_gap(self):
+        args = parse_args(["/tmp/photos", "--scene-break-gap", "120"])
+        assert args.scene_break_gap == pytest.approx(120.0)
 
     def test_thumbnail_max_width(self):
         args = parse_args(["/tmp/photos", "--thumbnail-max-width", "1800"])
@@ -351,6 +356,20 @@ class TestMainForwardsToPipeline:
         assert instance.process_folder.call_args.kwargs["scene_time_threshold"] == pytest.approx(0.0)
         _, instance = self._run_main([str(folder), "--scene-time-threshold", "9999"])
         assert instance.process_folder.call_args.kwargs["scene_time_threshold"] == pytest.approx(60.0)
+
+    def test_scene_break_gap_clamped(self, tmp_path):
+        folder = tmp_path / "photos"
+        folder.mkdir()
+        _, instance = self._run_main([str(folder), "--scene-break-gap", "-5"])
+        assert instance.process_folder.call_args.kwargs["scene_break_gap_seconds"] == pytest.approx(0.0)
+        _, instance = self._run_main([str(folder), "--scene-break-gap", "999999"])
+        assert instance.process_folder.call_args.kwargs["scene_break_gap_seconds"] == pytest.approx(86400.0)
+
+    def test_scene_break_gap_defaults_to_disabled(self, tmp_path):
+        folder = tmp_path / "photos"
+        folder.mkdir()
+        _, instance = self._run_main([str(folder)])
+        assert instance.process_folder.call_args.kwargs["scene_break_gap_seconds"] == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------

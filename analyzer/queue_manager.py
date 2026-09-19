@@ -203,6 +203,7 @@ class QueueManager:
         self._species_detection_enabled = True
         self._detection_threshold = 0.25
         self._scene_time_threshold = 1.0
+        self._scene_break_gap_seconds = 0.0
         self._mask_threshold = 0.5
         self._max_bird_crops = 10
         self._parallel_prefetch = 3
@@ -272,6 +273,7 @@ class QueueManager:
         detector_name: str = _DEFAULT_DETECTOR_NAME,
         detection_threshold: float = 0.25,
         scene_time_threshold: float = 1.0,
+        scene_break_gap_seconds: float = 0.0,
         mask_threshold: float = 0.5,
         max_bird_crops: int = 10,
         parallel_prefetch: int = 3,
@@ -341,6 +343,10 @@ class QueueManager:
                 self._species_detection_enabled = bool(species_detection_enabled)
                 self._detection_threshold = float(detection_threshold)
                 self._scene_time_threshold = float(scene_time_threshold)
+                try:
+                    self._scene_break_gap_seconds = max(0.0, float(scene_break_gap_seconds))
+                except (TypeError, ValueError):
+                    self._scene_break_gap_seconds = 0.0
                 self._mask_threshold = float(mask_threshold)
                 self._detector_name = _coerce_detector_name(detector_name)
                 try:
@@ -709,6 +715,7 @@ class QueueManager:
                     species_detection_enabled=self._species_detection_enabled,
                     detection_threshold=self._detection_threshold,
                     scene_time_threshold=self._scene_time_threshold,
+                    scene_break_gap_seconds=self._scene_break_gap_seconds,
                     mask_threshold=self._mask_threshold,
                     max_bird_crops=self._max_bird_crops,
                     parallel_prefetch=self._parallel_prefetch,
