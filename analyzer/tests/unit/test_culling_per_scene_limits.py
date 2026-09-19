@@ -22,7 +22,11 @@ import sys
 import unittest
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+pytestmark = pytest.mark.unit
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _ANALYZER_DIR = os.path.dirname(os.path.dirname(_THIS_DIR))
