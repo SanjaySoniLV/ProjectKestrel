@@ -152,10 +152,7 @@ def _install_macos(
 ) -> bool:
     try:
         from AppKit import NSWorkspace  # type: ignore[import-not-found]
-        from Foundation import (  # type: ignore[import-not-found]
-            NSNotificationCenter,
-            NSObject,
-        )
+        from Foundation import NSObject  # type: ignore[import-not-found]
         import objc  # type: ignore[import-not-found]  # noqa: F401
     except Exception:
         return False
@@ -187,9 +184,15 @@ def _install_macos(
 
     # User-initiated quit (⌘Q / app menu / Dock). Posted by NSApplication on
     # the *default* centre, not the workspace one. Registered independently
-    # of the power-off observer so one failing does not cost us the other.
+    # of the power-off observer so one failing does not cost us the other —
+    # hence the import here rather than beside the others above, where a
+    # failure would take the long-standing power-off observer down with it.
     if on_app_quit is not None:
         try:
+            from Foundation import (  # type: ignore[import-not-found]
+                NSNotificationCenter,
+            )
+
             default_center = NSNotificationCenter.defaultCenter()
             default_center.addObserver_selector_name_object_(
                 observer,

@@ -162,6 +162,31 @@ class TestMacOSAppQuit:
         workspace_center.post('NSWorkspaceWillPowerOffNotification')
         assert fired == ['power_off']
 
+    def test_quit_registration_failure_keeps_power_off_observer(self, fake_cocoa):
+        """The new observer must not be able to break the old one.
+
+        The power-off observer has shipped for releases; the quit observer is
+        new. If anything about the quit registration fails — an older PyObjC
+        without the symbol, a raising centre — power-off must survive it.
+        """
+        _, workspace_center = fake_cocoa
+        import types
+
+        # An older PyObjC: NSObject is there, NSNotificationCenter is not, so
+        # `from Foundation import NSNotificationCenter` raises ImportError.
+        older_pyobjc = types.ModuleType('Foundation')
+        older_pyobjc.NSObject = _FakeNSObject
+        sys.modules['Foundation'] = older_pyobjc  # undone by the fixture's monkeypatch
+
+        fired = []
+        assert shutdown_watch._install_macos(
+            lambda: fired.append('power_off'), lambda: fired.append('app_quit')
+        ) is True
+
+        assert shutdown_watch.installed_listeners() == ('macos_power_off',)
+        workspace_center.post('NSWorkspaceWillPowerOffNotification')
+        assert fired == ['power_off']
+
     def test_install_reports_which_listeners_landed(self, fake_cocoa, monkeypatch):
         monkeypatch.setattr(shutdown_watch.sys, 'platform', 'darwin', raising=False)
         monkeypatch.delenv('KESTREL_FAKE_OS_SHUTDOWN', raising=False)
