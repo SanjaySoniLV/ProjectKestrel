@@ -1136,14 +1136,28 @@ def main():
     try:
         import shutdown_watch
         _watch_installed = shutdown_watch.install(
-            lambda: _mark_session_exit_reason('os_shutdown', source='shutdown_watch')
+            lambda: _mark_session_exit_reason('os_shutdown', source='shutdown_watch'),
+            # macOS-only. ⌘Q / the app menu's Quit / Quit from the Dock all
+            # route through NSApplication.terminate:, which calls exit()
+            # without returning from NSApp.run(). webview.start() therefore
+            # never returns, the _webview_returned gate below stays False, and
+            # the clean-exit write in main()'s finally never runs — so a
+            # perfectly normal quit left app_session_exit_reason at 'unknown'
+            # and the *next* launch raised a false unclean-shutdown prompt.
+            # NSApplicationWillTerminateNotification fires just before that
+            # exit(), which is our only chance to record the quit.
+            on_app_quit=lambda: _mark_session_clean_exit(
+                source='shutdown_watch:app_will_terminate'
+            ),
         )
         # If no listener installed, an OS reboot/logoff cannot be
         # distinguished from a crash and *will* raise a false unclean
-        # shutdown on the next launch. Worth knowing per-platform.
+        # shutdown on the next launch. Worth knowing per-platform, and
+        # which listeners landed tells us whether the ⌘Q fix is live.
         _log_shutdown_state(
             'watch_install',
             installed=bool(_watch_installed),
+            listeners=','.join(shutdown_watch.installed_listeners()) or None,
             platform=sys.platform,
         )
     except Exception as _e:
