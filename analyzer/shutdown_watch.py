@@ -1,4 +1,4 @@
-"""OS-shutdown / logoff / reboot detection.
+"""OS-shutdown / logoff / reboot detection, plus macOS app-quit detection.
 
 Distinguishes "the OS told the process to exit" (reboot, logoff, power off)
 from "the application crashed" so the next launch can suppress the false
@@ -15,7 +15,10 @@ Per-platform strategy:
   SIGKILL; SIGHUP covers TTY logout. The handler marks exit reason and
   returns; the OS will follow up with SIGKILL.
 * **macOS**: ``NSWorkspaceWillPowerOffNotification`` observer on the
-  shared workspace notification center. Skipped if PyObjC is unavailable.
+  shared workspace notification center, plus an
+  ``NSApplicationWillTerminateNotification`` observer on the default
+  notification center (see ``on_app_quit`` on :func:`install`). Skipped if
+  PyObjC is unavailable.
 * **Windows**: hidden ``ctypes`` window pumped on a daemon thread, listening
   for ``WM_QUERYENDSESSION`` / ``WM_ENDSESSION``. ``SetConsoleCtrlHandler``
   is also registered as a belt-and-braces fallback (no-op for ``--windowed``
@@ -34,15 +37,40 @@ _lock = threading.Lock()
 # Module-level retain for macOS observer / Windows window class so they
 # aren't garbage-collected.
 _keepalive: list = []
+# Names of the listeners that actually landed, so the caller can log which
+# ones are live. Without this a missing listener is indistinguishable from
+# one that installed and never fired.
+_listeners: set = set()
 
 
-def install(callback: Callable[[], None]) -> bool:
+def installed_listeners() -> tuple:
+    """Return the names of the listeners :func:`install` actually registered.
+
+    Sorted, so the value is stable in logs. Empty before ``install()`` runs.
+    """
+    return tuple(sorted(_listeners))
+
+
+def install(
+    callback: Callable[[], None],
+    on_app_quit: Optional[Callable[[], None]] = None,
+) -> bool:
     """Register OS-shutdown listeners that invoke ``callback`` once.
 
     The callback receives no arguments and its return value is ignored.
     It MUST be fast (single small file write) — on Linux it runs in a
     signal handler context, and on Windows it runs in the message-pump
     thread during the system's shutdown grace window.
+
+    ``on_app_quit`` is a *separate*, macOS-only callback for a user-initiated
+    application quit (⌘Q, the app menu's Quit, or Quit from the Dock). Those
+    route through ``NSApplication.terminate:``, which calls ``exit()`` without
+    ever returning from ``NSApp.run()`` — so ``webview.start()`` does not
+    return and ``visualizer.main()``'s clean-exit write never runs. It is
+    invoked at most once, on the main thread, and has the same be-fast
+    contract as ``callback``. Closing the window (red button) is unaffected:
+    pywebview stops the run loop there and ``webview.start()`` returns
+    normally.
 
     Returns True if at least one listener was installed.
     """
@@ -52,13 +80,14 @@ def install(callback: Callable[[], None]) -> bool:
             return True
 
         wrapped = _wrap_once(callback)
+        wrapped_quit = _wrap_once(on_app_quit) if on_app_quit is not None else None
         installed_any = False
 
         try:
             if sys.platform.startswith('win'):
                 installed_any |= _install_windows(wrapped)
             elif sys.platform == 'darwin':
-                installed_any |= _install_macos(wrapped)
+                installed_any |= _install_macos(wrapped, wrapped_quit)
             else:
                 installed_any |= _install_posix(wrapped)
         except Exception:
@@ -67,6 +96,7 @@ def install(callback: Callable[[], None]) -> bool:
         if os.environ.get('KESTREL_FAKE_OS_SHUTDOWN') == '1':
             try:
                 threading.Timer(0.5, wrapped).start()
+                _listeners.add('fake_os_shutdown')
                 installed_any = True
             except Exception:
                 pass
@@ -108,6 +138,7 @@ def _install_posix(callback: Callable[[], None]) -> bool:
             continue
         try:
             signal.signal(sig, _handler)
+            _listeners.add(f'posix_{sig_name.lower()}')
             installed = True
         except (ValueError, OSError):
             # ValueError: not on main thread. OSError: signal not allowed.
@@ -115,7 +146,10 @@ def _install_posix(callback: Callable[[], None]) -> bool:
     return installed
 
 
-def _install_macos(callback: Callable[[], None]) -> bool:
+def _install_macos(
+    callback: Callable[[], None],
+    on_app_quit: Optional[Callable[[], None]] = None,
+) -> bool:
     try:
         from AppKit import NSWorkspace  # type: ignore[import-not-found]
         from Foundation import NSObject  # type: ignore[import-not-found]
@@ -127,7 +161,14 @@ def _install_macos(callback: Callable[[], None]) -> bool:
         def powerOff_(self, _notification):
             callback()
 
+        def appWillTerminate_(self, _notification):
+            if on_app_quit is not None:
+                on_app_quit()
+
     observer = _ShutdownObserver.alloc().init()
+    installed_any = False
+
+    # Power off / restart / log out. Posted on the *workspace* centre.
     try:
         center = NSWorkspace.sharedWorkspace().notificationCenter()
         center.addObserver_selector_name_object_(
@@ -136,10 +177,37 @@ def _install_macos(callback: Callable[[], None]) -> bool:
             'NSWorkspaceWillPowerOffNotification',
             None,
         )
+        _listeners.add('macos_power_off')
+        installed_any = True
     except Exception:
-        return False
-    _keepalive.append(observer)
-    return True
+        pass
+
+    # User-initiated quit (⌘Q / app menu / Dock). Posted by NSApplication on
+    # the *default* centre, not the workspace one. Registered independently
+    # of the power-off observer so one failing does not cost us the other —
+    # hence the import here rather than beside the others above, where a
+    # failure would take the long-standing power-off observer down with it.
+    if on_app_quit is not None:
+        try:
+            from Foundation import (  # type: ignore[import-not-found]
+                NSNotificationCenter,
+            )
+
+            default_center = NSNotificationCenter.defaultCenter()
+            default_center.addObserver_selector_name_object_(
+                observer,
+                'appWillTerminate:',
+                'NSApplicationWillTerminateNotification',
+                None,
+            )
+            _listeners.add('macos_app_quit')
+            installed_any = True
+        except Exception:
+            pass
+
+    if installed_any:
+        _keepalive.append(observer)
+    return installed_any
 
 
 def _install_windows(callback: Callable[[], None]) -> bool:
@@ -236,6 +304,7 @@ def _install_windows(callback: Callable[[], None]) -> bool:
     t = threading.Thread(target=_pump, name='KestrelShutdownWatch', daemon=True)
     t.start()
     _keepalive.append(t)
+    _listeners.add('windows_endsession')
 
     # Belt-and-braces: SetConsoleCtrlHandler. No-op in --windowed
     # PyInstaller builds (no console), but free in console builds.
@@ -254,6 +323,7 @@ def _install_windows(callback: Callable[[], None]) -> bool:
         ctrl = HANDLER_ROUTINE(_ctrl)
         _keepalive.append(ctrl)
         kernel32.SetConsoleCtrlHandler(ctrl, True)
+        _listeners.add('windows_console_ctrl')
     except Exception:
         pass
 
