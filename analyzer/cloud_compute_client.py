@@ -1333,8 +1333,15 @@ def _merge_database_csv(
     errored_keys: set[str] = set()
     cloud_sourced_keys: set[str] = set()  # rows whose data came from src this merge
 
+    # utf-8-sig, not utf-8: the desktop UI's save path (api_bridge
+    # write_kestrel_csv) writes this file with a byte-order mark. Read as plain
+    # utf-8 the BOM becomes part of the first header, which turns "filename"
+    # into "\ufefffilename"; every local row then has no "filename" key and
+    # was silently discarded below, so the first pack merged after any UI save
+    # deleted every row already in the folder. utf-8-sig strips a BOM when
+    # present and reads BOM-less files (the pipeline's own output) unchanged.
     if dst.is_file():
-        with dst.open("r", encoding="utf-8", newline="") as f:
+        with dst.open("r", encoding="utf-8-sig", newline="") as f:
             reader = csv.DictReader(f)
             fieldnames = list(reader.fieldnames or [])
             for row in reader:
@@ -1345,7 +1352,7 @@ def _merge_database_csv(
                     if (row.get("species") or "").strip() == "Error":
                         errored_keys.add(key)
 
-    with src.open("r", encoding="utf-8", newline="") as f:
+    with src.open("r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
         new_fields = list(reader.fieldnames or [])
         if not fieldnames:
