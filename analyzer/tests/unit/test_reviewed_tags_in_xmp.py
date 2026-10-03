@@ -175,3 +175,67 @@ def _resolve(row):
 )
 def test_resolve_row_tags(row, expected):
     assert _resolve(row) == expected
+
+
+# ---------------------------------------------------------------------------
+# Culling Assistant scene labels
+# ---------------------------------------------------------------------------
+#
+# The Culling Assistant built each scene's label from the union of every image's
+# model prediction and never read the reviewed tags, so a corrected scene kept
+# listing the species the user had removed. It now applies the main window's
+# display rule. Exercised by running the page's real ``aggregateScenes`` under
+# node against stubbed page state.
+
+
+def test_culling_assistant_scene_label_reads_reviewed_tags():
+    src = _read(_CULLING_HTML)
+    body = re.search(r"function aggregateScenes\(\)[\s\S]*?\n    }\n", src).group(0)
+    assert "reviewedTagsForScene" in body, "scene labels ignore reviewed tags again"
+    assert "sdScene?.name" in body, "scene labels ignore the scenedata name again"
+
+
+@pytest.mark.skipif(_NODE is None, reason="no node runtime available")
+def test_culling_assistant_aggregate_scenes():
+    script = textwrap.dedent(
+        r"""
+        const fs = require('fs');
+        const g = {};
+        new Function('window', fs.readFileSync(process.argv[1], 'utf8'))(g);
+        const window = g;
+        const html = fs.readFileSync(process.argv[2], 'utf8');
+        const src = html.match(/function aggregateScenes\(\)[\s\S]*?\n    }\n/)[0];
+        const parseNumber = x => parseFloat(x) || 0;
+        const needsRatingAttention = () => false;
+        let rows = [
+          {filename: 'a', scene_count: '1', species: 'Cinnamon Teal', quality: '0.5', scene_name: ''},
+          {filename: 'b', scene_count: '1', species: 'Mallard', quality: '0.6', scene_name: ''},
+          {filename: 'c', scene_count: '2', species: 'Cinnamon Teal', quality: '0.5', scene_name: 'csv name'},
+          {filename: 'd', scene_count: '3', species: 'Cinnamon Teal', quality: '0.5', scene_name: ''},
+          {filename: 'e', scene_count: '4', species: 'Mallard', quality: '0.5', scene_name: ''},
+        ];
+        let _scenedata = {scenes: {
+          '1': {name: '', user_tags: {species: ['Least Grebe'], families: [], finalized: true}},
+          '2': {name: 'Pond', user_tags: {species: ['Cinnamon Teal'], finalized: false}},
+          '3': {name: '', user_tags: {species: [], families: [], finalized: true}},
+        }};
+        eval(src);
+        const out = {};
+        for (const s of aggregateScenes()) out[s.id] = {species: s.species, reviewed: s.reviewed, name: s.sceneName};
+        process.stdout.write(JSON.stringify(out));
+        """
+    )
+    proc = subprocess.run(
+        [_NODE, "-e", script, _RESOLVER, _CULLING_HTML],
+        capture_output=True, text=True, check=True,
+    )
+    out = json.loads(proc.stdout)
+    # Reviewed: the user's correction only, not the union of model predictions.
+    assert out["1"] == {"species": ["Least Grebe"], "reviewed": True, "name": ""}
+    # Not ticked Reviewed: model predictions as before; scenedata name wins over
+    # the legacy CSV column.
+    assert out["2"] == {"species": ["Cinnamon Teal"], "reviewed": False, "name": "Pond"}
+    # Reviewed down to no species.
+    assert out["3"] == {"species": [], "reviewed": True, "name": ""}
+    # No scenedata entry at all.
+    assert out["4"] == {"species": ["Mallard"], "reviewed": False, "name": ""}
