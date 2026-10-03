@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import math
 import os
@@ -1941,8 +1942,91 @@ class Api:
             error(f'[API] list_subfolders error: {e}')
             return {'success': False, 'tree': [], 'error': str(e)}
 
+    @staticmethod
+    def _parse_csv_text_faithfully(text: str):
+        """Parse CSV text into a DataFrame without coercing any value.
+
+        ``dtype=str`` + ``keep_default_na=False`` keep every cell exactly as it
+        was written, so a row read here and written straight back out is
+        unchanged. Anything looser would rewrite the caller's own rows while
+        merging -- turning ``quality`` into ``0.78000000000000003``, blank
+        cells into ``nan``, and ``culled`` values like ``NA`` into nulls.
+        """
+        import pandas as pd
+        return pd.read_csv(io.StringIO(text), dtype=str, keep_default_na=False)
+
+    def _merge_unknown_csv_rows(self, csv_path: str, csv_content: str) -> str:
+        """Return ``csv_content`` plus any on-disk row the caller does not know about.
+
+        The UI saves the database by serialising its whole in-memory row set and
+        handing it to ``write_kestrel_csv``, which replaced the file outright. A
+        row the UI had never loaded therefore ceased to exist: analysis appends
+        rows to the CSV after every image, so a user who opened a folder and
+        began culling while it was still analysing was holding a snapshot that
+        stopped at whatever had been analysed when the view loaded. Saving that
+        snapshot deleted every image analysed since -- the tail of the run --
+        from both the database and (via ``write_kestrel_scenedata``) the scene
+        membership. The crops and exports stayed on disk, so the photos were
+        intact but invisible to the app and never got a rating written.
+
+        Rows are unioned on ``filename`` with the caller winning, mirroring the
+        inverse merge ``kestrel_analyzer.database.save_database`` already does
+        when the pipeline preserves the UI's columns. Keying on filename is
+        what makes this safe for the operations that legitimately move or drop
+        rows: a scene merge keeps every filename (it only changes
+        ``scene_count``), so nothing is resurrected, and the delete/rename
+        repair paths write the CSV through ``_to_csv_atomic`` rather than this
+        method, so they are unaffected.
+
+        Returns ``csv_content`` unchanged when there is nothing to preserve, so
+        the common save path keeps its exact previous bytes.
+        """
+        try:
+            incoming = self._parse_csv_text_faithfully(csv_content)
+        except Exception as exc:
+            # Unparseable payload: this method has no opinion on it. Let the
+            # caller write what it was given, exactly as before.
+            warn(f'[API] write_kestrel_csv: could not parse incoming CSV for merge ({exc}); writing as-is')
+            return csv_content
+        if 'filename' not in incoming.columns:
+            return csv_content
+
+        try:
+            with open(csv_path, 'r', encoding='utf-8-sig') as f:
+                on_disk = self._parse_csv_text_faithfully(f.read())
+        except Exception as exc:
+            # A missing/corrupt/empty existing file is not a reason to fail the
+            # user's save; there is simply nothing to preserve from it.
+            warn(f'[API] write_kestrel_csv: could not read existing CSV for merge ({exc}); writing as-is')
+            return csv_content
+        if on_disk.empty or 'filename' not in on_disk.columns:
+            return csv_content
+
+        known = set(incoming['filename'].astype(str))
+        survivors = on_disk.loc[~on_disk['filename'].astype(str).isin(known)]
+        if survivors.empty:
+            return csv_content
+
+        import pandas as pd
+        # Project onto the caller's columns so the file keeps one header. A
+        # column the caller dropped is not carried back in; a column it added
+        # is blank for preserved rows, which is what ensure_columns would do.
+        survivors = survivors.reindex(columns=incoming.columns, fill_value='')
+        merged = pd.concat([incoming, survivors], ignore_index=True)
+        info(
+            f'[API] write_kestrel_csv: preserved {len(survivors)} row(s) absent '
+            f'from the save payload (likely analysed after the view loaded)'
+        )
+        # \r\n matches how both the UI serialiser and pandas' default write
+        # this file, so a merged save is not a whole-file line-ending churn.
+        return merged.to_csv(index=False, lineterminator='\r\n')
+
     def write_kestrel_csv(self, folder_path: str, csv_content: str):
-        """Write CSV content back to .kestrel/kestrel_database.csv for the given folder."""
+        """Write CSV content back to .kestrel/kestrel_database.csv for the given folder.
+
+        Rows already on disk that the payload does not mention are preserved --
+        see ``_merge_unknown_csv_rows`` for why.
+        """
         try:
             _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
                 folder_path,
@@ -1955,6 +2039,7 @@ class Api:
             csv_path = os.path.join(kestrel_dir, 'kestrel_database.csv')
             if not os.path.exists(csv_path):
                 return {'success': False, 'error': f'CSV not found: {csv_path}'}
+            csv_content = self._merge_unknown_csv_rows(csv_path, csv_content)
             # Atomic write: the analysis pipeline / auto-refresh may read this
             # same file, and a crash mid-write must not truncate the database.
             write_text_atomic(csv_path, csv_content, encoding='utf-8-sig')
@@ -2079,6 +2164,97 @@ class Api:
             error(f'[API] read_kestrel_scenedata({folder_path!r}) error: {e}')
             return {'success': False, 'data': {}, 'error': str(e)}
 
+    @staticmethod
+    def _merge_unknown_scenedata_images(scenedata_path: str, scenedata: dict) -> dict:
+        """Re-add scene membership for images the incoming payload never mentions.
+
+        The counterpart to ``_merge_unknown_csv_rows``: the UI rebuilds
+        ``scenes`` wholesale from its in-memory rows
+        (``_normalizeScenedataForSave``), so an image analysed after the view
+        loaded was dropped from scene membership and from ``image_ratings`` the
+        moment the user saved -- leaving the photo on disk but absent from the
+        timeline and from any later metadata write.
+
+        Preservation is keyed on "this filename appears nowhere in the incoming
+        payload", which is what keeps the deliberate reshuffles intact: merging
+        scenes moves filenames between scene ids and deletes the emptied scene,
+        and because the moved filenames are still present, neither the old
+        scene nor its membership comes back.
+
+        Mutates and returns ``scenedata``; returns it untouched when there is
+        nothing on disk to preserve.
+        """
+        try:
+            with open(scenedata_path, 'r', encoding='utf-8') as f:
+                existing = json.load(f)
+        except FileNotFoundError:
+            return scenedata
+        except Exception as exc:
+            warn(f'[API] write_kestrel_scenedata: could not read existing scenedata for merge ({exc}); writing as-is')
+            return scenedata
+        if not isinstance(existing, dict):
+            return scenedata
+        existing_scenes = existing.get('scenes')
+        if not isinstance(existing_scenes, dict):
+            return scenedata
+
+        incoming_scenes = scenedata.get('scenes')
+        if not isinstance(incoming_scenes, dict):
+            incoming_scenes = {}
+            scenedata['scenes'] = incoming_scenes
+
+        known = set()
+        for scene in incoming_scenes.values():
+            if not isinstance(scene, dict):
+                continue
+            for name in scene.get('image_filenames') or []:
+                known.add(str(name))
+
+        preserved = 0
+        for sid, scene in existing_scenes.items():
+            if not isinstance(scene, dict):
+                continue
+            survivors = [
+                str(n) for n in (scene.get('image_filenames') or [])
+                if str(n) and str(n) not in known
+            ]
+            if not survivors:
+                continue
+            target = incoming_scenes.get(str(sid))
+            if not isinstance(target, dict):
+                # The payload dropped this scene entirely because it knew none
+                # of its images. Restore the disk entry (name/status/tags
+                # included) rather than inventing a bare one.
+                target = dict(scene)
+                target['image_filenames'] = []
+                incoming_scenes[str(sid)] = target
+            members = target.get('image_filenames')
+            if not isinstance(members, list):
+                members = []
+                target['image_filenames'] = members
+            for name in survivors:
+                members.append(name)
+                known.add(name)
+            preserved += len(survivors)
+
+        if preserved:
+            existing_ratings = existing.get('image_ratings')
+            if isinstance(existing_ratings, dict):
+                ratings = scenedata.get('image_ratings')
+                if not isinstance(ratings, dict):
+                    ratings = {}
+                    scenedata['image_ratings'] = ratings
+                for name, value in existing_ratings.items():
+                    # Caller wins where it has an opinion; this only fills in
+                    # ratings for images it had never loaded.
+                    if str(name) not in ratings:
+                        ratings[str(name)] = value
+            info(
+                f'[API] write_kestrel_scenedata: preserved {preserved} image(s) '
+                f'absent from the save payload (likely analysed after the view loaded)'
+            )
+        return scenedata
+
     def write_kestrel_scenedata(self, folder_path: str, scenedata: dict) -> dict:
         """Write kestrel_scenedata.json to a folder's .kestrel directory.
 
@@ -2104,6 +2280,8 @@ class Api:
             scenedata_path = os.path.join(kestrel_dir, 'kestrel_scenedata.json')
             if not isinstance(scenedata, dict):
                 return {'success': False, 'error': 'scenedata must be a dict', 'path': ''}
+
+            scenedata = self._merge_unknown_scenedata_images(scenedata_path, scenedata)
 
             # Atomic write: scenedata holds the user's ratings/tags/cull
             # decisions; a crash mid-write must not truncate the existing file.
