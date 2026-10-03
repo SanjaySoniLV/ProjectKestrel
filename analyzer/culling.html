@@ -15,6 +15,7 @@
   <title>Culling Assistant — Project Kestrel</title>
   <link rel="icon" href="data:," />
   <script src="csv_parser.js"></script>
+  <script src="js/reviewed-tags.js"></script>
   <style>
     :root {
       --bg: #0b0c0f;
@@ -1865,13 +1866,27 @@
         const allUnrated = arr.length > 0 && arr.every(r => needsRatingAttention(r));
         const hasAnyUnrated = arr.some(r => needsRatingAttention(r));
         const hasDetections = arr.some(r => r.species && r.species !== 'No Bird' && r.species !== 'Unknown' && r.species !== '');
+        // A reviewed scene shows the user's tags, not the union of every
+        // image's model prediction -- the same rule the main window applies
+        // (js/scenes.js). Without it a corrected scene still listed the
+        // species the user had removed. An empty reviewed list means the user
+        // reviewed it down to none, so it shows none.
+        const sdScene = _scenedata?.scenes?.[sceneId];
+        const reviewedTags = window.KestrelReviewedTags.reviewedTagsForScene(_scenedata?.scenes, sceneId);
+        const species = reviewedTags
+          ? Array.from(new Set((reviewedTags.species || []).map(t => String(t || '').trim()).filter(Boolean))).sort()
+          : Array.from(speciesSet).sort();
         list.push({
           id: sceneId,
           images: arr.slice().sort((a, b) => parseNumber(b.quality) - parseNumber(a.quality)),
           representative: rep,
-          species: Array.from(speciesSet).sort(),
+          species,
+          reviewed: !!reviewedTags,
           maxQuality: maxQ,
-          sceneName: (arr.find(a => (a.scene_name || '').trim().length)?.scene_name || '').trim(),
+          // The scenedata name is what the user typed; the CSV column is the
+          // legacy pre-scenedata location. Same precedence as the main window.
+          sceneName: String(sdScene?.name || '').trim()
+            || (arr.find(a => (a.scene_name || '').trim().length)?.scene_name || '').trim(),
           allUnrated,
           hasAnyUnrated,
           hasDetections,
@@ -2248,7 +2263,7 @@
         // Scene label
         const label = document.createElement('div');
         label.className = 'scene-label';
-        const speciesText = scene.species.length ? scene.species.join(', ') : 'Unknown';
+        const speciesText = scene.species.length ? scene.species.join(', ') : (scene.reviewed ? 'No species' : 'Unknown');
         label.innerHTML = `<b>Scene #${escapeHtml(scene.id)}</b>` +
           (scene.sceneName ? ` — ${escapeHtml(scene.sceneName)}` : '') +
           ` <span style="color:var(--muted);font-size:11px">${escapeHtml(speciesText)} · ${scene.images.length} image${scene.images.length === 1 ? '' : 's'}</span>` +
@@ -2744,15 +2759,22 @@
         // 4. XMP
         if (doXmp) {
           setStep('xmp', 'running');
-          const xmpPayload = rows.map(r => ({
-            filename: r.filename,
-            rating: getRating(r),
-            culled: cullingState.get(r.filename) || r.culled || '',
-            species: r.species || '',
-            family: r.family || '',
-            quality: r.quality != null ? r.quality : null,
-            culled_origin: getCullOrigin(r),
-          }));
+          // A reviewed scene's corrected species/family replace the model's
+          // per-image prediction, as they already do wherever the app displays
+          // them. See js/reviewed-tags.js.
+          const xmpSceneTags = _scenedata?.scenes || {};
+          const xmpPayload = rows.map(r => {
+            const tags = window.KestrelReviewedTags.resolveRowTags(xmpSceneTags, r);
+            return {
+              filename: r.filename,
+              rating: getRating(r),
+              culled: cullingState.get(r.filename) || r.culled || '',
+              species: tags.species,
+              family: tags.family,
+              quality: r.quality != null ? r.quality : null,
+              culled_origin: getCullOrigin(r),
+            };
+          });
 
           // First pass: detect conflicts (existing non-Kestrel XMPs)
           const firstXmpRes = await window.pywebview.api.write_xmp_metadata(rootPath, xmpPayload, false, doAutoLabels, xmpFieldSel, doEmbedJpeg);
