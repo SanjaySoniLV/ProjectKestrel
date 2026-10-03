@@ -10,7 +10,10 @@ run -- from the database and from scene membership, while leaving its crops and
 exports on disk. The photos were intact but invisible to the app, and never got
 a rating written to their metadata.
 
-Both writers now union on filename with the caller winning.
+Both writers now union on filename with the caller winning -- but only for
+photos still in the folder, because the Culling Assistant's reject-and-move
+drops moved files from its payload on purpose and relies on this save to remove
+their rows.
 """
 
 import json
@@ -38,7 +41,14 @@ def _rows_csv(rows):
     return "\r\n".join([HEADER] + [",".join(r) for r in rows])
 
 
+def _touch_photos(root: Path, names):
+    root.mkdir(parents=True, exist_ok=True)
+    for n in names:
+        (root / n).write_bytes(b"raw")
+
+
 def _make_folder(root: Path, rows):
+    _touch_photos(root, [r[0] for r in rows])
     (root / ".kestrel").mkdir(parents=True, exist_ok=True)
     (root / ".kestrel" / "kestrel_database.csv").write_text(
         _rows_csv(rows) + "\r\n", encoding="utf-8-sig"
@@ -164,6 +174,40 @@ def test_unparseable_payload_is_written_through(api, tmp_path):
     ) == ""
 
 
+def test_reject_move_removal_is_not_undone(api, tmp_path):
+    """Culling Assistant: moved rejects leave the folder, then the payload drops them.
+
+    ``move_rejects_to_folder`` never edits the CSV; the follow-up save is the
+    only place those rows are removed. Their photos are gone from the folder,
+    so they must not be preserved.
+    """
+    root = _make_folder(
+        tmp_path / "shoot",
+        [("A.CR3", "Teal", "0", "0.5", ""), ("B.CR3", "Teal", "0", "0.5", "reject")],
+    )
+    rejects = root / "_KESTREL_Rejects"
+    rejects.mkdir()
+    (root / "B.CR3").rename(rejects / "B.CR3")
+
+    api.write_kestrel_csv(str(root), _rows_csv([("A.CR3", "Teal", "0", "0.5", "")]))
+
+    assert _read_csv_filenames(root) == ["A.CR3"], "moved reject was resurrected"
+
+
+def test_row_with_path_component_is_never_preserved(api, tmp_path):
+    root = _make_folder(tmp_path / "shoot", [("A.CR3", "Teal", "0", "0.5", "")])
+    csv_path = root / ".kestrel" / "kestrel_database.csv"
+    csv_path.write_text(
+        _rows_csv([("A.CR3", "Teal", "0", "0.5", ""), ("../x.CR3", "Teal", "0", "0.5", "")]),
+        encoding="utf-8-sig",
+    )
+    (tmp_path / "x.CR3").write_bytes(b"raw")  # exists, but outside the folder
+
+    api.write_kestrel_csv(str(root), _rows_csv([("A.CR3", "Teal", "0", "0.5", "")]))
+
+    assert _read_csv_filenames(root) == ["A.CR3"]
+
+
 # --------------------------------------------------------------------------
 # kestrel_scenedata.json
 # --------------------------------------------------------------------------
@@ -182,6 +226,8 @@ def _scene(sid, filenames, **over):
 
 
 def _write_scenedata(root: Path, sd):
+    names = {n for sc in sd.get("scenes", {}).values() for n in sc["image_filenames"]}
+    _touch_photos(root, names)
     (root / ".kestrel").mkdir(parents=True, exist_ok=True)
     (root / ".kestrel" / "kestrel_scenedata.json").write_text(
         json.dumps(sd), encoding="utf-8"
@@ -288,3 +334,25 @@ def test_scenedata_no_duplicate_membership_on_repeated_saves(api, tmp_path):
     api.write_kestrel_scenedata(str(root), json.loads(json.dumps(stale)))
 
     assert _read_scenedata(root)["scenes"]["0"]["image_filenames"].count("B.CR3") == 1
+
+
+def test_scenedata_moved_reject_is_not_re_added(api, tmp_path):
+    root = tmp_path / "shoot"
+    _write_scenedata(
+        root,
+        {
+            "version": 1,
+            "image_ratings": {"A.CR3": 4, "B.CR3": 1},
+            "scenes": {"0": _scene("0", ["A.CR3", "B.CR3"])},
+        },
+    )
+    (root / "B.CR3").unlink()  # moved to _KESTREL_Rejects
+
+    api.write_kestrel_scenedata(
+        str(root),
+        {"version": 1, "image_ratings": {"A.CR3": 4}, "scenes": {"0": _scene("0", ["A.CR3"])}},
+    )
+
+    out = _read_scenedata(root)
+    assert out["scenes"]["0"]["image_filenames"] == ["A.CR3"]
+    assert "B.CR3" not in out["image_ratings"]

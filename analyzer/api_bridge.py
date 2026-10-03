@@ -1943,6 +1943,24 @@ class Api:
             return {'success': False, 'tree': [], 'error': str(e)}
 
     @staticmethod
+    def _photo_still_in_folder(root_dir: str, filename) -> bool:
+        """True if ``filename`` names a photo still present directly in ``root_dir``.
+
+        This is what separates the two reasons a save payload can omit a row.
+        An image analysed after the view loaded is still in the folder and must
+        be preserved; an image the Culling Assistant just moved into
+        ``_KESTREL_Rejects`` (or one the user deleted) is gone, and its removal
+        from the payload is the whole point of that save -- ``move_rejects_to_folder``
+        never touches the CSV itself, so this save is the only place the row is
+        dropped. Only bare basenames qualify; anything with a path component
+        is not a real photo row and is not preserved.
+        """
+        name = str(filename or '')
+        if not name or name != os.path.basename(name) or name in ('.', '..'):
+            return False
+        return os.path.isfile(os.path.join(root_dir, name))
+
+    @staticmethod
     def _parse_csv_text_faithfully(text: str):
         """Parse CSV text into a DataFrame without coercing any value.
 
@@ -1955,7 +1973,7 @@ class Api:
         import pandas as pd
         return pd.read_csv(io.StringIO(text), dtype=str, keep_default_na=False)
 
-    def _merge_unknown_csv_rows(self, csv_path: str, csv_content: str) -> str:
+    def _merge_unknown_csv_rows(self, root_dir: str, csv_path: str, csv_content: str) -> str:
         """Return ``csv_content`` plus any on-disk row the caller does not know about.
 
         The UI saves the database by serialising its whole in-memory row set and
@@ -1971,9 +1989,11 @@ class Api:
 
         Rows are unioned on ``filename`` with the caller winning, mirroring the
         inverse merge ``kestrel_analyzer.database.save_database`` already does
-        when the pipeline preserves the UI's columns. Keying on filename is
-        what makes this safe for the operations that legitimately move or drop
-        rows: a scene merge keeps every filename (it only changes
+        when the pipeline preserves the UI's columns. An omitted row is only
+        preserved while its photo is still in the folder
+        (``_photo_still_in_folder``): the Culling Assistant's reject-and-move
+        drops moved files from its payload deliberately, and those files are
+        no longer there. A scene merge keeps every filename (it only changes
         ``scene_count``), so nothing is resurrected, and the delete/rename
         repair paths write the CSV through ``_to_csv_atomic`` rather than this
         method, so they are unaffected.
@@ -2004,6 +2024,11 @@ class Api:
 
         known = set(incoming['filename'].astype(str))
         survivors = on_disk.loc[~on_disk['filename'].astype(str).isin(known)]
+        if not survivors.empty:
+            still_here = survivors['filename'].map(
+                lambda fn: self._photo_still_in_folder(root_dir, fn)
+            )
+            survivors = survivors.loc[still_here]
         if survivors.empty:
             return csv_content
 
@@ -2028,7 +2053,7 @@ class Api:
         see ``_merge_unknown_csv_rows`` for why.
         """
         try:
-            _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+            root_dir, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
                 folder_path,
                 context='write_kestrel_csv',
                 require_root_exists=True,
@@ -2039,7 +2064,7 @@ class Api:
             csv_path = os.path.join(kestrel_dir, 'kestrel_database.csv')
             if not os.path.exists(csv_path):
                 return {'success': False, 'error': f'CSV not found: {csv_path}'}
-            csv_content = self._merge_unknown_csv_rows(csv_path, csv_content)
+            csv_content = self._merge_unknown_csv_rows(root_dir, csv_path, csv_content)
             # Atomic write: the analysis pipeline / auto-refresh may read this
             # same file, and a crash mid-write must not truncate the database.
             write_text_atomic(csv_path, csv_content, encoding='utf-8-sig')
@@ -2164,8 +2189,8 @@ class Api:
             error(f'[API] read_kestrel_scenedata({folder_path!r}) error: {e}')
             return {'success': False, 'data': {}, 'error': str(e)}
 
-    @staticmethod
-    def _merge_unknown_scenedata_images(scenedata_path: str, scenedata: dict) -> dict:
+    @classmethod
+    def _merge_unknown_scenedata_images(cls, root_dir: str, scenedata_path: str, scenedata: dict) -> dict:
         """Re-add scene membership for images the incoming payload never mentions.
 
         The counterpart to ``_merge_unknown_csv_rows``: the UI rebuilds
@@ -2176,7 +2201,10 @@ class Api:
         timeline and from any later metadata write.
 
         Preservation is keyed on "this filename appears nowhere in the incoming
-        payload", which is what keeps the deliberate reshuffles intact: merging
+        payload, and the photo is still in the folder" -- the second half is
+        what lets the Culling Assistant drop the files it just moved into
+        ``_KESTREL_Rejects``. The first half keeps the deliberate reshuffles
+        intact: merging
         scenes moves filenames between scene ids and deletes the emptied scene,
         and because the moved filenames are still present, neither the old
         scene nor its membership comes back.
@@ -2217,6 +2245,7 @@ class Api:
             survivors = [
                 str(n) for n in (scene.get('image_filenames') or [])
                 if str(n) and str(n) not in known
+                and cls._photo_still_in_folder(root_dir, n)
             ]
             if not survivors:
                 continue
@@ -2246,8 +2275,8 @@ class Api:
                     scenedata['image_ratings'] = ratings
                 for name, value in existing_ratings.items():
                     # Caller wins where it has an opinion; this only fills in
-                    # ratings for images it had never loaded.
-                    if str(name) not in ratings:
+                    # ratings for images it had never loaded and still exist.
+                    if str(name) not in ratings and cls._photo_still_in_folder(root_dir, name):
                         ratings[str(name)] = value
             info(
                 f'[API] write_kestrel_scenedata: preserved {preserved} image(s) '
@@ -2266,7 +2295,7 @@ class Api:
             {'success': bool, 'path': str, 'error': str}
         """
         try:
-            _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+            root_dir, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
                 folder_path,
                 context='write_kestrel_scenedata',
                 require_root_exists=True,
@@ -2281,7 +2310,7 @@ class Api:
             if not isinstance(scenedata, dict):
                 return {'success': False, 'error': 'scenedata must be a dict', 'path': ''}
 
-            scenedata = self._merge_unknown_scenedata_images(scenedata_path, scenedata)
+            scenedata = self._merge_unknown_scenedata_images(root_dir, scenedata_path, scenedata)
 
             # Atomic write: scenedata holds the user's ratings/tags/cull
             # decisions; a crash mid-write must not truncate the existing file.
