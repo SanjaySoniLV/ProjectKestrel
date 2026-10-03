@@ -43,15 +43,22 @@
   //     in the scene. This is the case a user hits when they fix a misidentified
   //     bird and tick Reviewed.
   //
+  //   * the review names NO tag → write none. The scene displays no species,
+  //     and a user who deleted a wrong tag without adding one has said the
+  //     prediction is wrong; writing it anyway is the original bug again.
+  //
   // A scene reviewed with SEVERAL species is left alone: which of them belongs
   // to this particular image is not recorded anywhere, so overriding the
   // per-image prediction would be a guess, and a guess is worse than the
   // prediction it replaced.
+  //
+  // A missing list (older scenedata without the field) asserts nothing, so the
+  // prediction stands.
   function resolveTag(rowValue, reviewedList) {
     const current = _clean(rowValue);
     if (!Array.isArray(reviewedList)) return current;
     const reviewed = reviewedList.map(_clean).filter(Boolean);
-    if (!reviewed.length) return current;
+    if (!reviewed.length) return '';
     const lowered = current.toLowerCase();
     if (current && reviewed.some((t) => t.toLowerCase() === lowered)) return current;
     return reviewed.length === 1 ? reviewed[0] : current;

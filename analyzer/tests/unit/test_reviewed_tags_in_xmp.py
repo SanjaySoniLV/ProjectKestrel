@@ -88,6 +88,10 @@ _SCENES = {
     "11": {"user_tags": {"species": ["Least Grebe"], "families": ["Podicipedidae"], "finalized": True}},
     # Reviewed, several species: which one applies to a given image is unknown.
     "12": {"user_tags": {"species": ["Least Grebe", "Cinnamon Teal"], "families": [], "finalized": True}},
+    # Reviewed with the wrong tag deleted and nothing added.
+    "14": {"user_tags": {"species": [], "families": [], "finalized": True}},
+    # Reviewed, from older scenedata with no families field at all.
+    "15": {"user_tags": {"species": ["Least Grebe"], "finalized": True}},
     # Edited but not ticked Reviewed.
     "13": {"user_tags": {"species": ["Least Grebe"], "families": [], "finalized": False}},
 }
@@ -151,6 +155,16 @@ def _resolve(row):
         (
             {"species": "Cinnamon Teal", "family": "Anatidae", "scene_count": "13"},
             {"species": "Cinnamon Teal", "family": "Anatidae"},
+        ),
+        # Reviewed down to no species: the display shows none, so write none.
+        (
+            {"species": "Cinnamon Teal", "family": "Anatidae", "scene_count": "14"},
+            {"species": "", "family": ""},
+        ),
+        # No families field: nothing asserted about family, prediction stands.
+        (
+            {"species": "Cinnamon Teal", "family": "Anatidae", "scene_count": "15"},
+            {"species": "Least Grebe", "family": "Anatidae"},
         ),
         # Scene the scenedata has never heard of.
         (
