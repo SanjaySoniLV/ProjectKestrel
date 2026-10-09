@@ -46,6 +46,22 @@ _LOCKS: dict[str, threading.RLock] = {}
 _LOCKS_GLOBAL = threading.Lock()
 
 
+def _retry_on_file_lock(op, attempts: int = 12, delay: float = 0.02):
+    """Run ``op()``, retrying briefly on Windows' transient file-sharing errors.
+
+    Canonical implementation: ``kestrel_analyzer.database.retry_on_file_lock``.
+    This copy exists so folder-local cloud state does not import pandas via
+    ``database``.
+    """
+    for attempt in range(attempts):
+        try:
+            return op()
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay * (attempt + 1))
+
+
 def _lock_for(folder_abs: str) -> threading.RLock:
     with _LOCKS_GLOBAL:
         lk = _LOCKS.get(folder_abs)
@@ -96,7 +112,7 @@ def _write_atomic(folder: Path, data: dict) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, sort_keys=False)
-        os.replace(tmp_path, final_path)
+        _retry_on_file_lock(lambda: os.replace(tmp_path, final_path))
     except Exception:
         try:
             os.unlink(tmp_path)

@@ -22,6 +22,24 @@ from typing import Any
 # file specified" on os.replace when the other thread deleted our tmp).
 _SAVE_LOCK = threading.RLock()
 
+
+def _retry_on_file_lock(op, attempts: int = 12, delay: float = 0.02):
+    """Run ``op()``, retrying briefly on Windows' transient file-sharing errors.
+
+    Canonical implementation: ``kestrel_analyzer.database.retry_on_file_lock``.
+    This copy exists so settings I/O does not import pandas via ``database``.
+    ``os.replace`` of ``settings.json`` fails with ``PermissionError`` while
+    Explorer, Defender, or a previous Kestrel instance holds the file.
+    """
+    for attempt in range(attempts):
+        try:
+            return op()
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay * (attempt + 1))
+
+
 # Prefix/suffix for ``tempfile.mkstemp`` tmp files we emit. The glob
 # ``settings.json.*.tmp`` uniquely identifies orphans left by a crashed save.
 _TMP_FILE_PREFIX = 'settings.json.'
@@ -929,7 +947,7 @@ def save_persisted_settings(data: dict) -> None:
                 except OSError as exc:
                     warn(f'[settings] could not refresh .bak: {exc}')
 
-            os.replace(tmp, path)
+            _retry_on_file_lock(lambda: os.replace(tmp, path))
         except OSError as exc:
             # Do NOT fall back to a non-atomic direct write — that path is how
             # partial writes corrupt settings.json in the first place. Leave the

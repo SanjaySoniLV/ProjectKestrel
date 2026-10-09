@@ -39,6 +39,21 @@ from typing import Any
 CLOUD_JOBS_FILENAME = "cloud_jobs.json"
 _SAVE_LOCK = threading.RLock()
 
+
+def _retry_on_file_lock(op, attempts: int = 12, delay: float = 0.02):
+    """Run ``op()``, retrying briefly on Windows' transient file-sharing errors.
+
+    Canonical implementation: ``kestrel_analyzer.database.retry_on_file_lock``.
+    This copy exists so the job ledger does not import pandas via ``database``.
+    """
+    for attempt in range(attempts):
+        try:
+            return op()
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay * (attempt + 1))
+
 # 'incomplete' = the client disconnected >10min with uploads UNFINISHED. Uploads
 # are halted, but analysis CONTINUES server-side and result packs remain
 # downloadable from R2 for ~30 days. It stays in _TERMINAL_STATUSES because it's
@@ -167,7 +182,7 @@ def _write_atomic(data: dict) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, sort_keys=False)
-        os.replace(tmp_path, final_path)
+        _retry_on_file_lock(lambda: os.replace(tmp_path, final_path))
     except Exception:
         try:
             os.unlink(tmp_path)
