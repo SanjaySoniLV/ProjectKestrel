@@ -20,7 +20,9 @@
     // ETA smoothing: exponential moving average to prevent wild per-image swings
     let _etaSmoothed = null;   // smoothed secs/image
     let _etaLastPath = null;   // reset EMA when folder changes
-    const _thumbCache = new Map();    // relPath+'|'+rootPath → dataUrl (avoids reload flash)
+    // relPath+'|'+rootPath → blob: URL. BlobUrlCache (blob-zoom.js) LRU-caps
+    // and revokes on eviction/clear; a plain Map leaked createObjectURL bytes.
+    const _thumbCache = new BlobUrlCache();
     let _liveAnalysisDlgOpen = false;
     let _liveLastThumbKey = '';
     let _liveLastOverlayKey = '';
@@ -375,20 +377,8 @@
       body.appendChild(frag);
 
       // Async: load thumbnails for any img[data-thumb-rel] elements (cache avoids reload flash)
-      body.querySelectorAll('img[data-thumb-rel]').forEach(async img => {
-        try {
-          const rel = img.dataset.thumbRel || '';
-          const root = img.dataset.thumbRoot || '';
-          const key = rel + '|' + root;
-          const isLive = rel.indexOf('__live_') >= 0;
-          if (!isLive && _thumbCache.has(key)) { img.src = _thumbCache.get(key); return; }
-          const result = await window.pywebview.api.read_image_file(rel, root);
-          if (result && result.success && result.data) {
-            const url = _base64ToBlobUrl(result.data, result.mime);
-            if (!isLive) _thumbCache.set(key, url);
-            img.src = url;
-          }
-        } catch (_) { }
+      body.querySelectorAll('img[data-thumb-rel]').forEach(img => {
+        _loadImg(img, img.dataset.thumbRel || '', img.dataset.thumbRoot || '');
       });
 
       // Check if any folder newly finished — refresh tree + auto-reload CSV data
@@ -643,7 +633,9 @@
 
     /**
      * Load an image by relative path + root into an <img> element, using _thumbCache.
-     * Only issues a network/IPC call on cache miss.
+     * Only issues a network/IPC call on cache miss. Re-checks the cache after
+     * the await so concurrent loads for the same key reuse one blob: URL
+     * (BlobUrlCache.set does not revoke an overwritten value).
      */
     async function _loadImg(imgEl, relPath, rootPath) {
       if (!relPath || !rootPath || !hasPywebviewApi) return;
@@ -653,6 +645,7 @@
       try {
         const r = await window.pywebview.api.read_image_file(relPath, rootPath);
         if (r && r.success && r.data) {
+          if (!isLive && _thumbCache.has(key)) { imgEl.src = _thumbCache.get(key); return; }
           const url = _base64ToBlobUrl(r.data, r.mime);
           if (!isLive) _thumbCache.set(key, url);
           imgEl.src = url;
@@ -1178,6 +1171,7 @@
 
       // Also clear in-memory caches so the UI can't show stale previews.
       try { blobUrlCache.clear(); } catch (_) {}
+      try { _thumbCache.clear(); } catch (_) {}
       try { sceneRawCache.clear(); } catch (_) {}
       try { sceneRawLoading.clear(); } catch (_) {}
 
