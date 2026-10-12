@@ -335,3 +335,64 @@ class TestSessionStartLogging:
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+
+class TestNativeCrashProbeWiring:
+    """Flagging a prior session unclean must ask the event-log probe how that
+    process died, and log its findings where the crash report will see them."""
+
+    def test_unclean_prior_session_starts_the_probe(self, fake_settings, monkeypatch):
+        calls = []
+        monkeypatch.setattr(visualizer, '_start_native_crash_probe',
+                            lambda pid, started: calls.append((pid, started)))
+        fake_settings['data'] = {
+            EXIT_REASON_KEY: 'unknown',
+            'app_session_started_utc': '2026-07-01T00:00:00Z',
+            'app_session_pid': 4242,
+        }
+        visualizer._mark_session_start()
+        assert calls == [(4242, '2026-07-01T00:00:00Z')]
+
+    def test_clean_prior_session_does_not_probe(self, fake_settings, monkeypatch):
+        calls = []
+        monkeypatch.setattr(visualizer, '_start_native_crash_probe',
+                            lambda pid, started: calls.append((pid, started)))
+        fake_settings['data'] = {
+            EXIT_REASON_KEY: 'clean',
+            'app_session_started_utc': '2026-07-01T00:00:00Z',
+            'app_session_pid': 4242,
+        }
+        visualizer._mark_session_start()
+        assert calls == []
+
+    def test_probe_findings_are_logged(self, monkeypatch, shutdown_log):
+        import native_crash_probe
+        seen = {}
+
+        def _probe(pid, started):
+            seen['args'] = (pid, started)
+            return ['crash: exception=0xc0000409 (fail-fast) module=DirectML.dll']
+
+        monkeypatch.setattr(native_crash_probe, 'probe_prior_session', _probe)
+        visualizer._run_native_crash_probe(4242, '2026-07-01T00:00:00Z')
+        assert seen['args'] == (4242, _parse_session_timestamp('2026-07-01T00:00:00Z'))
+        assert any('native_crash_probe: crash: exception=0xc0000409' in ln and 'prev_pid=4242' in ln
+                   for ln in shutdown_log())
+
+    def test_probe_failure_never_raises(self, monkeypatch, shutdown_log):
+        import native_crash_probe
+
+        def _boom(pid, started):
+            raise RuntimeError('nope')
+
+        monkeypatch.setattr(native_crash_probe, 'probe_prior_session', _boom)
+        visualizer._run_native_crash_probe(4242, '2026-07-01T00:00:00Z')
+        assert any('native_crash_probe: failed: RuntimeError' in ln for ln in shutdown_log())
+
+    def test_start_is_a_no_op_off_windows(self, monkeypatch):
+        started = []
+        monkeypatch.setattr(visualizer.sys, 'platform', 'darwin')
+        monkeypatch.setattr(visualizer.threading, 'Thread',
+                            lambda *a, **k: started.append(k) or pytest.fail('thread started'))
+        visualizer._start_native_crash_probe(4242, '2026-07-01T00:00:00Z')
+        assert started == []

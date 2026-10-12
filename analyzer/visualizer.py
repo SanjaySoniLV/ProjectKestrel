@@ -369,6 +369,40 @@ def _verify_exit_reason_persisted(event: str, expected: str) -> None:
         warn(f'{_SHUTDOWN_TAG} {event}: verification read failed: {exc}')
 
 
+def _run_native_crash_probe(prev_pid: int, prev_started: str) -> None:
+    """Log what the Windows event log recorded about the prior process's death.
+
+    Native deaths that bypass faulthandler (fail-fast, heap corruption, a hung
+    window ended by the user) leave the runtime log ending with no traceback.
+    The lines logged here land in the current session's runtime log, which the
+    recovery crash report bundles. Never raises.
+    """
+    try:
+        import native_crash_probe
+        lines = native_crash_probe.probe_prior_session(
+            prev_pid, _parse_session_timestamp(prev_started)
+        )
+        for line in lines:
+            _log_shutdown_state(f'native_crash_probe: {line}', prev_pid=prev_pid)
+    except Exception as exc:
+        warn(f'{_SHUTDOWN_TAG} native_crash_probe: failed: {type(exc).__name__}')
+
+
+def _start_native_crash_probe(prev_pid: int, prev_started: str) -> None:
+    """Run the probe off the startup path; ``wevtutil`` can take a second."""
+    if sys.platform != 'win32' or not prev_pid:
+        return
+    try:
+        threading.Thread(
+            target=_run_native_crash_probe,
+            args=(prev_pid, prev_started),
+            name='native-crash-probe',
+            daemon=True,
+        ).start()
+    except Exception:
+        pass
+
+
 def _classify_prior_session(settings: dict) -> str:
     """Return the previous session's exit reason, applying legacy migration.
 
@@ -438,6 +472,7 @@ def _mark_session_start() -> None:
                 reason=prev_reason,
                 unclean_utc=prev_started,
             )
+            _start_native_crash_probe(prev_pid, prev_started)
         else:
             had_flag = bool(str(settings.get('last_unclean_shutdown_utc', '') or '').strip())
             settings.pop('last_unclean_shutdown_utc', None)
