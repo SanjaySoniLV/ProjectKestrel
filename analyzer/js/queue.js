@@ -317,6 +317,16 @@
         }
         div.appendChild(hdr);
 
+        // Persistent warning (e.g. results can't be saved). Shown in every
+        // state so it outlives the run; the pipeline clears it on recovery.
+        if (item.warning) {
+          const warnEl = document.createElement('div');
+          warnEl.className = 'queue-item-warning';
+          warnEl.setAttribute('role', 'alert');
+          warnEl.textContent = `⚠ ${item.warning}`;
+          div.appendChild(warnEl);
+        }
+
         // Progress bar
         if (item.status === 'running' && item.total > 0) {
           const prog = document.createElement('div'); prog.className = 'queue-item-progress';
