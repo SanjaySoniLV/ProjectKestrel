@@ -2486,11 +2486,15 @@
       if (_scenedata && _scenedata.scenes) {
         const scenesToRemove = [];
         for (const [sceneId, sceneData] of Object.entries(_scenedata.scenes)) {
-          if (sceneData.images && Array.isArray(sceneData.images)) {
+          // Scenedata stores membership in `image_filenames` (see
+          // kestrel_analyzer/database.py). This used to read `images`, which a
+          // scenedata entry never has, so moved rejects were never removed
+          // from their scenes.
+          if (Array.isArray(sceneData.image_filenames)) {
             // Filter out rejected images from this scene
-            sceneData.images = sceneData.images.filter(f => !rejectSet.has(f));
+            sceneData.image_filenames = sceneData.image_filenames.filter(f => !rejectSet.has(f));
             // If scene has no images left, mark for removal
-            if (sceneData.images.length === 0) {
+            if (sceneData.image_filenames.length === 0) {
               scenesToRemove.push(sceneId);
             }
           }
