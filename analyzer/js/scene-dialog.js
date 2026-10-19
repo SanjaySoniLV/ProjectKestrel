@@ -26,7 +26,8 @@
     function setCullStatus(row, status) {
       ensureRatingColumns();
       row.culled = status || ''; // 'accept', 'reject', or ''
-      row.culled_origin = status ? 'manual' : '';
+      // Empty is explicit Undecided (X / "none"), not "never touched".
+      row.culled_origin = 'manual';
       markDirty(row);
       // The grid thumbnail is chosen from the user's accept/reject decisions
       // (see _pickSceneRepresentative), so the card behind this dialog is now
@@ -1935,6 +1936,7 @@
         case 'z':
         case 'Z':
         case '7':
+          if (hasSceneModifier) break;
           e.preventDefault();
           if (images[currentImageIndex]) {
             setCullStatus(images[currentImageIndex], 'accept');
@@ -1944,6 +1946,7 @@
         case 'x':
         case 'X':
         case '8':
+          if (hasSceneModifier) break;
           e.preventDefault();
           if (images[currentImageIndex]) {
             setCullStatus(images[currentImageIndex], '');
@@ -1953,6 +1956,7 @@
         case 'c':
         case 'C':
         case '9':
+          if (hasSceneModifier) break;
           e.preventDefault();
           if (images[currentImageIndex]) {
             setCullStatus(images[currentImageIndex], 'reject');
