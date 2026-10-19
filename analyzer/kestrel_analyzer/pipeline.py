@@ -1238,7 +1238,15 @@ class AnalysisPipeline:
                             }
                         )
                         stage_ctx["stage"] = "save_database"
-                        database = pd.concat([database, pd.DataFrame([entry])], ignore_index=True)
+                        entry_df = pd.DataFrame([entry])
+                        if database.empty:
+                            # pandas deprecates concat with an all-empty frame; keep the
+                            # schema's column order and take the row directly.
+                            database = entry_df.reindex(
+                                columns=database.columns.union(entry_df.columns, sort=False)
+                            )
+                        else:
+                            database = pd.concat([database, entry_df], ignore_index=True)
                         self._save_database_soft(database, db_path, "save_database")
                         if image_cb:
                             image_cb(entry)
@@ -1581,7 +1589,15 @@ class AnalysisPipeline:
                     )
 
                     stage_ctx["stage"] = "save_database"
-                    database = pd.concat([database, pd.DataFrame([entry])], ignore_index=True)
+                    entry_df = pd.DataFrame([entry])
+                    if database.empty:
+                        # pandas deprecates concat with an all-empty frame; keep the
+                        # schema's column order and take the row directly.
+                        database = entry_df.reindex(
+                            columns=database.columns.union(entry_df.columns, sort=False)
+                        )
+                    else:
+                        database = pd.concat([database, entry_df], ignore_index=True)
                     self._save_database_soft(database, db_path, "save_database")
 
                     if image_cb:
@@ -1625,7 +1641,15 @@ class AnalysisPipeline:
                     entry["scene_count"] = scene_count
                     entry["species"] = "Error"
                     entry["similar"] = False
-                    database = pd.concat([database, pd.DataFrame([entry])], ignore_index=True)
+                    entry_df = pd.DataFrame([entry])
+                    if database.empty:
+                        # pandas deprecates concat with an all-empty frame; keep the
+                        # schema's column order and take the row directly.
+                        database = entry_df.reindex(
+                            columns=database.columns.union(entry_df.columns, sort=False)
+                        )
+                    else:
+                        database = pd.concat([database, entry_df], ignore_index=True)
                     # Must not raise: this is already the error path, and an
                     # escaping exception here has no handler left and would end
                     # the run while reporting the wrong cause.
