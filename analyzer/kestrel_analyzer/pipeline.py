@@ -167,6 +167,11 @@ class AnalysisPipeline:
             "error": None,
         }
         try:
+            # read_image_for_pipeline() raises on failure, and this whole body
+            # runs inside the ``except Exception`` below, so the real cause
+            # (PermissionError, FileNotFoundError, LibRawFileUnsupportedError,
+            # …) lands on result["error"] instead of a generic message. The
+            # check below is a backstop against a future contract regression.
             img, raw_obj = read_image_for_pipeline(image_path)
             if img is None and raw_obj is None:
                 raise RuntimeError("Image read returned None for both img and raw_obj")
