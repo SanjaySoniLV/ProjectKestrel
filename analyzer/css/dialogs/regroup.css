@@ -1,0 +1,158 @@
+/* ═══ Regroup Scenes dialog ═══════════════════════════════════════════════
+   Outer sizing comes from .kdlg--lg + .kdlg--flex on the <dialog>; this file
+   paints the controls row and the side-by-side before/after comparison.
+   Tokens are the shared ones from base.css so the dialog tracks the theme.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.regroup-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.regroup-intro {
+  font-size: 12px;
+  line-height: 1.5;
+  max-width: 70ch;
+}
+
+/* Controls sit on one row on a wide dialog and wrap on a narrow one. */
+.regroup-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.regroup-control {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.regroup-control > label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.regroup-control input[type="number"] {
+  width: 90px;
+}
+
+.regroup-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.regroup-slider-row input[type="range"] {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Tabular figures keep the dialog from reflowing as a slider is dragged. */
+.regroup-val {
+  min-width: 56px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.regroup-hint {
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.regroup-summary {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+
+/* Before/after columns share the remaining height and scroll independently. */
+.regroup-compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+}
+
+.regroup-col {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.regroup-col-head {
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.regroup-col-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.regroup-scene-row {
+  display: grid;
+  grid-template-columns: 44px 84px 1fr auto;
+  gap: 8px;
+  align-items: baseline;
+  padding: 4px 6px;
+  font-size: 12px;
+  border-radius: 4px;
+}
+
+.regroup-scene-row:nth-child(odd) {
+  background: color-mix(in srgb, var(--panel) 60%, transparent);
+}
+
+.regroup-scene-idx {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.regroup-scene-size {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Filenames are the least important column, so they are the ones that clip. */
+.regroup-scene-range {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.regroup-scene-reason {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.regroup-empty {
+  padding: 10px;
+  font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .regroup-compare {
+    grid-template-columns: 1fr;
+  }
+}

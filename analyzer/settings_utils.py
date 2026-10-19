@@ -492,6 +492,10 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
         )
     _set_float('detection_threshold', default=0.25, min_value=0.1, max_value=0.99, digits=4)
     _set_float('scene_time_threshold', default=1.0, min_value=0.0, max_value=60.0, digits=4)
+    # Long-gap scene break, in seconds. 0 = disabled (the historical behaviour:
+    # scene boundaries come from AKAZE visual similarity alone, which chains
+    # look-alike frames across arbitrarily long pauses). Ceiling is 24h.
+    _set_float('scene_break_gap_seconds', default=0.0, min_value=0.0, max_value=86400.0, digits=4)
     _set_float('mask_threshold', default=0.5, min_value=0.5, max_value=0.95, digits=4)
     _set_int('max_bird_crops', default=10, min_value=1, max_value=20)
     _set_int('parallel_prefetch', default=3, min_value=1, max_value=5)
