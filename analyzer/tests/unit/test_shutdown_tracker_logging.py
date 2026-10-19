@@ -449,16 +449,34 @@ class TestNativeCrashProbeWiring:
     process died, and log its findings where the crash report will see them."""
 
     def test_unclean_prior_session_starts_the_probe(self, fake_settings, monkeypatch):
+        # A recent start: a session weeks old is not flagged at all (it is
+        # "too stale to prompt"), so it never reaches the probe.
+        from datetime import timedelta
         calls = []
         monkeypatch.setattr(visualizer, '_start_native_crash_probe',
                             lambda pid, started: calls.append((pid, started)))
+        monkeypatch.setattr(visualizer, '_pid_is_alive', lambda _pid: False)
+        recent = (visualizer.datetime.utcnow() - timedelta(hours=2)).isoformat() + 'Z'
+        fake_settings['data'] = {
+            EXIT_REASON_KEY: 'unknown',
+            'app_session_started_utc': recent,
+            'app_session_pid': 4242,
+        }
+        visualizer._mark_session_start()
+        assert calls == [(4242, recent)]
+
+    def test_stale_prior_session_does_not_probe(self, fake_settings, monkeypatch):
+        calls = []
+        monkeypatch.setattr(visualizer, '_start_native_crash_probe',
+                            lambda pid, started: calls.append((pid, started)))
+        monkeypatch.setattr(visualizer, '_pid_is_alive', lambda _pid: False)
         fake_settings['data'] = {
             EXIT_REASON_KEY: 'unknown',
             'app_session_started_utc': '2026-07-01T00:00:00Z',
             'app_session_pid': 4242,
         }
         visualizer._mark_session_start()
-        assert calls == [(4242, '2026-07-01T00:00:00Z')]
+        assert calls == []
 
     def test_clean_prior_session_does_not_probe(self, fake_settings, monkeypatch):
         calls = []
