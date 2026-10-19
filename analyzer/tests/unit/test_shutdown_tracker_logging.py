@@ -28,6 +28,7 @@ try:
         _parse_session_timestamp,
         _pid_is_alive,
         _prior_session_still_running,
+        _prior_session_too_stale_to_prompt,
         _settings_file_hint,
         _utc_now_iso,
         _verify_exit_reason_persisted,
@@ -117,6 +118,35 @@ class TestPriorSessionStillRunning:
         monkeypatch.setattr(visualizer, '_pid_is_alive', lambda _pid: True)
         just_ahead = (visualizer.datetime.utcnow() + timedelta(seconds=5)).isoformat() + 'Z'
         assert _prior_session_still_running(4242, just_ahead) is True
+
+
+class TestPriorSessionTooStaleToPrompt:
+    """A prompt raised weeks after the session it refers to cannot lead
+    anywhere: the user has nothing to describe and the runtime logs the
+    report carries have rotated past it."""
+
+    def test_a_session_from_minutes_ago_is_not_stale(self):
+        assert _prior_session_too_stale_to_prompt(_utc_now_iso()) is False
+
+    def test_a_session_from_weeks_ago_is_stale(self):
+        from datetime import timedelta
+        weeks_ago = (
+            visualizer.datetime.utcnow() - timedelta(days=22)
+        ).isoformat() + 'Z'
+        assert _prior_session_too_stale_to_prompt(weeks_ago) is True
+
+    def test_boundary_is_the_documented_week(self):
+        from datetime import timedelta
+        now = visualizer.datetime.utcnow()
+        just_inside = (now - timedelta(days=7, minutes=-5)).isoformat() + 'Z'
+        just_outside = (now - timedelta(days=7, minutes=5)).isoformat() + 'Z'
+        assert _prior_session_too_stale_to_prompt(just_inside) is False
+        assert _prior_session_too_stale_to_prompt(just_outside) is True
+
+    def test_missing_or_unparseable_timestamp_fails_closed(self):
+        """Fail closed = keep the pre-existing behaviour (still flag)."""
+        assert _prior_session_too_stale_to_prompt('') is False
+        assert _prior_session_too_stale_to_prompt('not-a-timestamp') is False
 
 
 class TestParseSessionTimestamp:
@@ -263,10 +293,16 @@ class TestCleanExit:
 
 
 class TestSessionStartLogging:
-    def test_logs_classification_inputs_and_flags_unclean(self, fake_settings, shutdown_log):
+    def test_logs_classification_inputs_and_flags_unclean(
+        self, monkeypatch, fake_settings, shutdown_log
+    ):
+        # Dead pid and a recent start: the plain flagging path, with neither
+        # the concurrent-instance nor the staleness guard in the way.
+        monkeypatch.setattr(visualizer, '_pid_is_alive', lambda _pid: False)
+        started = _utc_now_iso()
         fake_settings['data'] = {
             EXIT_REASON_KEY: 'unknown',
-            'app_session_started_utc': '2026-07-01T00:00:00Z',
+            'app_session_started_utc': started,
             'app_session_pid': 4242,
         }
         visualizer._mark_session_start()
@@ -274,7 +310,7 @@ class TestSessionStartLogging:
         assert any('classifying prior session' in ln for ln in lines)
         assert any('FLAGGING prior session unclean' in ln for ln in lines)
         assert any('prev_pid=4242' in ln for ln in lines)
-        assert fake_settings['data']['last_unclean_shutdown_utc'] == '2026-07-01T00:00:00Z'
+        assert fake_settings['data']['last_unclean_shutdown_utc'] == started
 
     def test_clean_prior_session_is_not_flagged(self, fake_settings, shutdown_log):
         fake_settings['data'] = {
@@ -324,6 +360,77 @@ class TestSessionStartLogging:
         visualizer._mark_session_start()
         assert any('FLAGGING prior session unclean' in ln for ln in shutdown_log())
         assert fake_settings['data']['last_unclean_shutdown_utc'] == started
+
+    def test_stale_prior_session_is_not_flagged(
+        self, monkeypatch, fake_settings, shutdown_log
+    ):
+        """The reports this guards against: a prompt raised on a session
+        three weeks old, every launch, until some session exits cleanly."""
+        from datetime import timedelta
+        monkeypatch.setattr(visualizer, '_pid_is_alive', lambda _pid: False)
+        stale = (visualizer.datetime.utcnow() - timedelta(days=22)).isoformat() + 'Z'
+        fake_settings['data'] = {
+            EXIT_REASON_KEY: 'unknown',
+            'app_session_started_utc': stale,
+            'app_session_pid': 4242,
+        }
+        visualizer._mark_session_start()
+        lines = shutdown_log()
+        assert any('too stale to prompt' in ln for ln in lines)
+        assert not any('FLAGGING prior session unclean' in ln for ln in lines)
+        assert 'last_unclean_shutdown_utc' not in fake_settings['data']
+
+    def test_stale_prior_session_also_clears_an_older_pending_flag(
+        self, monkeypatch, fake_settings
+    ):
+        """A pending flag points at a session older than this one, so leaving
+        it standing would raise the very prompt this branch suppresses."""
+        from datetime import timedelta
+        monkeypatch.setattr(visualizer, '_pid_is_alive', lambda _pid: False)
+        stale = (visualizer.datetime.utcnow() - timedelta(days=22)).isoformat() + 'Z'
+        fake_settings['data'] = {
+            EXIT_REASON_KEY: 'unknown',
+            'app_session_started_utc': stale,
+            'app_session_pid': 4242,
+            'last_unclean_shutdown_utc': '2026-06-01T00:00:00Z',
+        }
+        visualizer._mark_session_start()
+        assert 'last_unclean_shutdown_utc' not in fake_settings['data']
+
+    def test_a_stale_recorded_crash_is_still_flagged(
+        self, monkeypatch, fake_settings, shutdown_log
+    ):
+        """The staleness guard is scoped to 'unknown'. A prior session
+        classified 'crash' had the top-level handler actually run and write
+        that reason, so it is a real crash however old it is."""
+        from datetime import timedelta
+        monkeypatch.setattr(visualizer, '_pid_is_alive', lambda _pid: False)
+        stale = (visualizer.datetime.utcnow() - timedelta(days=22)).isoformat() + 'Z'
+        fake_settings['data'] = {
+            EXIT_REASON_KEY: 'crash',
+            'app_session_started_utc': stale,
+            'app_session_pid': 4242,
+        }
+        visualizer._mark_session_start()
+        assert any('FLAGGING prior session unclean' in ln for ln in shutdown_log())
+        assert fake_settings['data']['last_unclean_shutdown_utc'] == stale
+
+    def test_a_recent_dead_session_is_unaffected_by_the_staleness_guard(
+        self, monkeypatch, fake_settings, shutdown_log
+    ):
+        """The case that actually produces useful reports: a real process
+        death the user relaunches straight after."""
+        from datetime import timedelta
+        monkeypatch.setattr(visualizer, '_pid_is_alive', lambda _pid: False)
+        recent = (visualizer.datetime.utcnow() - timedelta(hours=2)).isoformat() + 'Z'
+        fake_settings['data'] = {
+            EXIT_REASON_KEY: 'unknown',
+            'app_session_started_utc': recent,
+            'app_session_pid': 4242,
+        }
+        visualizer._mark_session_start()
+        assert any('FLAGGING prior session unclean' in ln for ln in shutdown_log())
+        assert fake_settings['data']['last_unclean_shutdown_utc'] == recent
 
     def test_opens_new_session_as_unknown(self, fake_settings, shutdown_log):
         fake_settings['data'] = {EXIT_REASON_KEY: 'clean'}

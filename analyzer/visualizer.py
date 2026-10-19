@@ -320,6 +320,45 @@ def _prior_session_still_running(prev_pid: int, prev_started: str) -> bool:
     return -60 <= age_s <= _CONCURRENT_INSTANCE_MAX_AGE_S
 
 
+# How long after an ambiguous session a recovery prompt is still worth
+# raising. See _prior_session_too_stale_to_prompt.
+_UNCLEAN_PROMPT_MAX_AGE_S = 7 * 24 * 60 * 60
+
+
+def _prior_session_too_stale_to_prompt(prev_started: str) -> bool:
+    """True when an 'unknown' prior session is too old to prompt about.
+
+    The unclean flag is written at launch and only cleared when some later
+    session records a clean exit, so an ambiguous session that is never
+    followed by a clean one keeps prompting on every launch — reports have
+    arrived for sessions 22, 41 and 45 days old.
+
+    A prompt that stale cannot lead anywhere. The user has no memory of a
+    session from six weeks ago to describe, and the runtime logs attached to
+    the report have long since rotated past it, so the report arrives with
+    neither a traceback nor a usable log tail.
+
+    Age separates the two populations cleanly in the reports received so far:
+    every prompt confirmed to follow a real process death was raised on a
+    session the user had relaunched within minutes, while every prompt raised
+    on a session more than a week old turned out to be a false positive
+    (a clean exit whose marker was lost, or a pid recycled onto an unrelated
+    process). A week is well clear of both clusters.
+
+    Applies to 'unknown' only. A prior session classified 'crash' had the
+    top-level handler actually run and write that reason, so it is a real
+    crash however old it is, and the caller keeps flagging it.
+
+    Fails closed: an unparseable timestamp returns False, i.e. the
+    pre-existing behaviour.
+    """
+    started = _parse_session_timestamp(prev_started)
+    if started is None:
+        return False
+    age_s = (datetime.now(timezone.utc).replace(tzinfo=None) - started).total_seconds()
+    return age_s > _UNCLEAN_PROMPT_MAX_AGE_S
+
+
 def _settings_file_hint() -> Optional[str]:
     """Basename + parent of the settings file, for the session-start line.
 
@@ -430,6 +469,23 @@ def _mark_session_start() -> None:
                 reason=prev_reason,
                 prev_pid=prev_pid or None,
                 prev_started=prev_started,
+            )
+        elif (
+            should_flag
+            and prev_reason == 'unknown'
+            and _prior_session_too_stale_to_prompt(prev_started)
+        ):
+            # Too old to be worth a prompt. Clear any pending flag as well:
+            # it points at a session older still than this one, so leaving it
+            # standing would raise the prompt this branch exists to suppress.
+            had_flag = bool(str(settings.get('last_unclean_shutdown_utc', '') or '').strip())
+            settings.pop('last_unclean_shutdown_utc', None)
+            _log_shutdown_state(
+                'session_start: prior session too stale to prompt, not flagging unclean',
+                reason=prev_reason,
+                prev_started=prev_started,
+                max_age_days=_UNCLEAN_PROMPT_MAX_AGE_S // 86400,
+                cleared_stale_flag=had_flag or None,
             )
         elif should_flag:
             settings['last_unclean_shutdown_utc'] = prev_started
