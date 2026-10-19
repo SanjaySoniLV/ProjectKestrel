@@ -1,7 +1,9 @@
 import concurrent.futures
+import errno
 import json
 import os
 import queue
+import sys
 import threading
 import time
 import traceback
@@ -89,6 +91,9 @@ class AnalysisPipeline:
         self.species_clf: Optional[BirdSpeciesClassifier] = None
         self.quality_clf: Optional[QualityClassifier] = None
         self._log_path: Optional[str] = None
+        self._save_failure_streak = 0
+        self._save_warning_cb: Optional[Callable[[str], None]] = None
+        self._save_warning_shown = False
 
     @staticmethod
     def _create_mask_overlay(
@@ -399,6 +404,62 @@ class AnalysisPipeline:
             f"avg_decode_ms={avg_decode:.0f} avg_wait_ms={avg_wait:.0f}"
         )
 
+    # Transient sharing violations are already retried inside save_database for
+    # ~1.3s, so three failed saves in a row is a block, not a blip.
+    _SAVE_WARNING_AFTER_FAILURES = 3
+
+    @staticmethod
+    def _save_failure_message(exc: BaseException) -> str:
+        """User-facing text for repeated failed saves. No paths -- the queue
+        panel already names the folder."""
+        lead = (
+            "Kestrel can't save analysis results to this folder. Results so far "
+            "are kept in memory and will be written if a later save succeeds; if "
+            "Kestrel closes first they will need re-analyzing. Your photos are "
+            "not affected."
+        )
+        if getattr(exc, "errno", None) == errno.ENOSPC:
+            return f"{lead} The drive is full."
+        if isinstance(exc, PermissionError):
+            if sys.platform == "win32":
+                hint = (
+                    "Windows is denying access. Check that antivirus or Windows "
+                    "Security's Controlled Folder Access isn't blocking Kestrel, "
+                    "and that the folder isn't read-only or being synced."
+                )
+            else:
+                hint = "Access was denied. Check the folder's permissions."
+            return f"{lead} {hint}"
+        return f"{lead} ({type(exc).__name__})"
+
+    def _note_save_result(self, exc: Optional[BaseException]) -> None:
+        """Track consecutive soft-save failures and raise/clear the warning."""
+        cb = getattr(self, "_save_warning_cb", None)
+        shown = getattr(self, "_save_warning_shown", False)
+        if exc is None:
+            self._save_failure_streak = 0
+            if shown:
+                self._save_warning_shown = False
+                if cb:
+                    try:
+                        cb("")
+                    except Exception:
+                        pass
+            return
+        self._save_failure_streak = getattr(self, "_save_failure_streak", 0) + 1
+        if shown or self._save_failure_streak < self._SAVE_WARNING_AFTER_FAILURES:
+            return
+        self._save_warning_shown = True
+        _error(
+            f"[pipeline] {self._save_failure_streak} consecutive saves failed; "
+            f"warning the user ({type(exc).__name__})"
+        )
+        if cb:
+            try:
+                cb(self._save_failure_message(exc))
+            except Exception:
+                pass
+
     def _save_database_soft(self, database, db_path: str, stage: str) -> bool:
         """``save_database`` whose failure skips the save instead of ending the run.
 
@@ -420,12 +481,21 @@ class AnalysisPipeline:
         The post-analysis save deliberately does NOT come through here: it is the
         last one, has no successor to cover for it, and must surface.
 
+        A skipped save is only safe while some later save lands. If they keep
+        failing -- antivirus or Controlled Folder Access blocking the rename, a
+        read-only or full drive -- every result in the run is lost when the app
+        closes, and until now the only trace was a log line. After
+        ``_SAVE_WARNING_AFTER_FAILURES`` consecutive failures the queue item gets
+        a persistent warning; the next successful save clears it.
+
         Returns True if the save landed.
         """
         try:
             save_database(database, db_path)
+            self._note_save_result(None)
             return True
         except Exception as exc:
+            self._note_save_result(exc)
             log_exception(
                 self._log_path,
                 exc,
@@ -576,6 +646,9 @@ class AnalysisPipeline:
         quality_cb = callbacks.get("on_quality")
         species_cb = callbacks.get("on_species")
         error_cb = callbacks.get("on_error")
+        self._save_warning_cb = callbacks.get("on_warning")
+        self._save_failure_streak = 0
+        self._save_warning_shown = False
 
         try:
             max_bird_crops = int(max_bird_crops)
