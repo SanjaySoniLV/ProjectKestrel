@@ -1154,6 +1154,104 @@
       wireAnalyzeAnswerMirrors();
     }
 
+    // ── Species geofence (per queued folder) ─────────────────────────────────
+    // "Where were these photos taken?" picks the species list BioCLIP chooses
+    // from for the folders queued by this Start. Options: the user's default
+    // regions (Settings → Species & Region, ``bird_regions``), one region,
+    // several regions (checkbox grid), or Global. Reset to the default on every
+    // open so a one-off trip abroad doesn't silently stick.
+    function _adlgRegionLabel(code) {
+      const meta = (typeof _birdCatalogMeta !== 'undefined' && _birdCatalogMeta) || null;
+      const hit = meta && Array.isArray(meta.regions) ? meta.regions.find(r => r.code === code) : null;
+      return hit ? hit.label : code;
+    }
+
+    function _adlgDefaultRegions() {
+      try {
+        if (typeof _getCurrentBirdRegions === 'function') return _getCurrentBirdRegions();
+      } catch (_) { /* fall through */ }
+      const v = getSetting('bird_regions', null);
+      return (Array.isArray(v) && v.length) ? v : ['NA'];
+    }
+
+    function _adlgFmtCount(n) {
+      return (typeof n === 'number' && n > 0) ? n.toLocaleString() : '';
+    }
+
+    function _adlgRenderSpeciesRegionPicker() {
+      const sel = document.getElementById('adlgSpeciesRegionMode');
+      const custom = document.getElementById('adlgSpeciesRegionCustom');
+      if (!sel || !custom) return;
+      const meta = (typeof _birdCatalogMeta !== 'undefined' && _birdCatalogMeta) || { regions: [], region_counts: {}, total_species: 0 };
+      const counts = meta.region_counts || {};
+      // "Worldwide" on its own only means cosmopolitan species; it is always
+      // included in any region's list, so it is not offered as a choice.
+      const regions = (Array.isArray(meta.regions) ? meta.regions : []).filter(r => r && r.code && r.code !== 'Worldwide');
+      const defaults = _adlgDefaultRegions();
+      const defaultLabel = defaults.map(_adlgRegionLabel).join(', ') || 'North America';
+      let html = `<option value="default">My default regions (${escapeHtml(defaultLabel)})</option>`;
+      if (regions.length) {
+        html += '<optgroup label="One region">';
+        for (const r of regions) {
+          const c = _adlgFmtCount(counts[r.code]);
+          html += `<option value="region:${escapeHtml(r.code)}">${escapeHtml(r.label)}${c ? ` — ${c} species` : ''}</option>`;
+        }
+        html += '</optgroup>';
+        html += '<option value="custom">Several regions…</option>';
+      }
+      const total = _adlgFmtCount(meta.total_species);
+      html += `<option value="global">Global — all world birds${total ? ` (${total})` : ''}</option>`;
+      sel.innerHTML = html;
+      sel.value = 'default';
+      const defaultSet = new Set(defaults);
+      custom.innerHTML = regions.map(r =>
+        `<label title="${escapeHtml(r.label)}"><input type="checkbox" class="adlg-species-region-cb" data-region-code="${escapeHtml(r.code)}" ${defaultSet.has(r.code) ? 'checked' : ''} />` +
+        `<span>${escapeHtml(r.label)}</span></label>`
+      ).join('');
+      _adlgSyncSpeciesRegionUi();
+    }
+
+    function _adlgSyncSpeciesRegionUi() {
+      const sel = document.getElementById('adlgSpeciesRegionMode');
+      const custom = document.getElementById('adlgSpeciesRegionCustom');
+      const block = document.getElementById('adlgSpeciesRegionBlock');
+      const speciesOn = document.getElementById('analyzeSpeciesDetection')?.checked ?? true;
+      if (block) block.classList.toggle('hidden', !speciesOn);
+      if (custom && sel) custom.classList.toggle('hidden', sel.value !== 'custom');
+    }
+
+    /** Species regions for the folders being queued: list of region codes,
+     *  or ['global']. Never empty (falls back to the default regions). */
+    function getAnalyzeDlgSpeciesRegions() {
+      const sel = document.getElementById('adlgSpeciesRegionMode');
+      const mode = sel ? String(sel.value || 'default') : 'default';
+      if (mode === 'global') return ['global'];
+      if (mode.startsWith('region:')) return [mode.slice('region:'.length)];
+      if (mode === 'custom') {
+        const picked = Array.from(document.querySelectorAll('#adlgSpeciesRegionCustom input.adlg-species-region-cb'))
+          .filter(cb => cb.checked).map(cb => cb.dataset.regionCode).filter(Boolean);
+        if (picked.length) return picked;
+      }
+      return _adlgDefaultRegions().slice();
+    }
+
+    function _adlgWireSpeciesRegionPicker() {
+      const sel = document.getElementById('adlgSpeciesRegionMode');
+      if (sel && !sel.dataset.wired) {
+        sel.dataset.wired = '1';
+        sel.addEventListener('change', _adlgSyncSpeciesRegionUi);
+      }
+      for (const id of ['adlgSpeciesScopeYes', 'adlgSpeciesScopeNo']) {
+        const el = document.getElementById(id);
+        if (el && !el.dataset.wiredRegion) {
+          el.dataset.wiredRegion = '1';
+          // Runs after the mirror listener (attached at load), so the hidden
+          // checkbox already reflects the new answer.
+          el.addEventListener('change', _adlgSyncSpeciesRegionUi);
+        }
+      }
+    }
+
     async function openAnalyzeDialog() {
       if (!hasPywebviewApi) {
         alert('Analysis queue is only available in the desktop (pywebview) mode.\n\nRun kestrel_visualizer as a desktop app to use this feature.');
@@ -1221,6 +1319,19 @@
 
       // Point the visible answers at the freshly-hydrated checkbox state.
       syncAnalyzeAnswersFromSettings();
+
+      // Species geofence picker: paint synchronously from whatever catalog
+      // meta is cached, then repaint once it has loaded (cached after the
+      // first call, so this is normally instant).
+      _adlgWireSpeciesRegionPicker();
+      _adlgRenderSpeciesRegionPicker();
+      if (typeof loadSpeciesFamilyMap === 'function') {
+        loadSpeciesFamilyMap().then(() => {
+          const sel = document.getElementById('adlgSpeciesRegionMode');
+          // Don't clobber a choice the user already made.
+          if (!sel || sel.value === 'default') _adlgRenderSpeciesRegionPicker();
+        }).catch(() => {});
+      }
 
       // Unlock checkbox state — reset every open. User must explicitly re-tick
       // it to unlock destructive re-analysis on each queue.

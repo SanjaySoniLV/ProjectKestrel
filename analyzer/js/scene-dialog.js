@@ -682,11 +682,11 @@
 
     // Species → family taxonomy map (loaded once from backend on startup).
     // Used to auto-add the family chip when a recognized species is added and
-    // to cascade-remove species when a family chip is X'd. Populated from the
-    // legacy ``get_species_family_map`` endpoint so the auto-link behaviour
-    // stays scoped to the 500 ML-model species the existing flow was designed
-    // for -- the combobox itself sources its candidates from the bigger
-    // regional bird catalog via ``search_birds``.
+    // to cascade-remove species when a family chip is X'd. Populated from
+    // ``get_species_family_map``, which covers every species in the bundled
+    // IOC world catalog (the BioCLIP species classifier can name any of them);
+    // the combobox itself sources its candidates region-filtered via
+    // ``search_birds``.
     let _speciesFamilyMap = null;        // { "American Robin": "Thrush sp.", ... } (canonical case)
     let _speciesFamilyMapLower = null;   // lowercase keys → { canonicalName, family }
 
@@ -702,7 +702,7 @@
     // loop terminates without polluting ``_lookupFamilyForSpecies`` with
     // empty-family sentinel rows.
     const _birdRecordMisses = new Set();
-    let _birdCatalogMeta = null;         // { regions: [...], default_regions: [...], total_species: N }
+    let _birdCatalogMeta = null;         // { regions: [...], default_regions: [...], total_species: N, region_counts: {code: N} }
     // family_common -> family_sci (e.g. "Hawk/Eagle/Kite sp." -> "Accipitridae").
     // Hydrated once at startup. Mirrors the catalog's full mapping so a family
     // pill can render its scientific-family subtext without needing a sibling
@@ -718,7 +718,7 @@
       if (!hasPywebviewApi || !window.pywebview?.api?.get_species_family_map) {
         _speciesFamilyMap = _speciesFamilyMap || {};
         _speciesFamilyMapLower = _speciesFamilyMapLower || {};
-        _birdCatalogMeta = _birdCatalogMeta || { regions: [], default_regions: ['NA'], total_species: 0 };
+        _birdCatalogMeta = _birdCatalogMeta || { regions: [], default_regions: ['NA'], total_species: 0, region_counts: {} };
         return;
       }
       try {
@@ -744,6 +744,7 @@
               regions: Array.isArray(m.regions) ? m.regions : [],
               default_regions: Array.isArray(m.default_regions) ? m.default_regions : ['NA'],
               total_species: typeof m.total_species === 'number' ? m.total_species : 0,
+              region_counts: (m.region_counts && typeof m.region_counts === 'object') ? m.region_counts : {},
             };
             kdebug(`[loadSpeciesFamilyMap] bird catalog: ${_birdCatalogMeta.total_species} species across ${_birdCatalogMeta.regions.length} regions`);
           }
@@ -752,7 +753,7 @@
         console.warn('[bird catalog meta] failed:', e);
       }
       if (!_birdCatalogMeta) {
-        _birdCatalogMeta = { regions: [], default_regions: ['NA'], total_species: 0 };
+        _birdCatalogMeta = { regions: [], default_regions: ['NA'], total_species: 0, region_counts: {} };
       }
       // Family-common -> family-sci direct lookup. Replaces the old
       // sibling-species fallback: family pills can now resolve their

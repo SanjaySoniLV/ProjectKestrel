@@ -1414,44 +1414,27 @@ class Api:
         return payload
 
     def get_species_family_map(self):
-        """Return a {species_display_name: family_display_name} mapping for the
-        bird species classifier's North American taxonomy.
+        """Return a {species_display_name: family_display_name} mapping for
+        every species in the bundled IOC world catalog (~11,250 rows).
 
-        Joins ``labels_scispecies.csv`` (Species → Scientific Family) with
-        ``scispecies_dispname.csv`` (Scientific Family → Display Name) and
-        caches the result on the bridge instance. Used by the frontend to
-        auto-link species/family chips and populate species autocomplete.
+        The species classifier (BioCLIP) can name any of these, so the
+        frontend's species→family auto-link must cover all of them, not just
+        the legacy CNN's 498 North-American labels. Family names are the
+        catalog's ``family_common`` display names ("Thrush sp."), the same
+        strings the classifier writes to the ``family`` column. Cached on the
+        bridge instance.
         """
         cached = getattr(self, '_species_family_map_cache', None)
         if cached is not None:
             return cached
         try:
-            import csv
-            try:
-                from kestrel_analyzer.config import MODELS_DIR as _models_dir
-            except ImportError:
-                from analyzer.kestrel_analyzer.config import MODELS_DIR as _models_dir
-            base = str(_models_dir)
-            species_to_scifam: dict[str, str] = {}
-            with open(os.path.join(base, 'labels_scispecies.csv'), 'r', encoding='utf-8-sig', newline='') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    sp = (row.get('Species') or '').strip()
-                    fam = (row.get('Scientific Family') or '').strip()
-                    if sp and fam:
-                        species_to_scifam[sp] = fam
-            scifam_to_display: dict[str, str] = {}
-            with open(os.path.join(base, 'scispecies_dispname.csv'), 'r', encoding='utf-8-sig', newline='') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    sci = (row.get('Scientific Family') or '').strip()
-                    disp = (row.get('Display Name') or '').strip()
-                    if sci and disp:
-                        scifam_to_display[sci] = disp
+            cat = self._get_bird_catalog()
+            if cat is None:
+                raise RuntimeError('catalog unavailable')
             mapping: dict[str, str] = {}
-            for sp, sci in species_to_scifam.items():
-                disp = scifam_to_display.get(sci, sci)
-                mapping[sp] = disp
+            for rec in cat.records:
+                if rec.canonical_common_name and rec.family_common:
+                    mapping[rec.canonical_common_name] = rec.family_common
             result = {'success': True, 'map': mapping}
         except Exception as e:
             error(f'[API] get_species_family_map error: {e}')
@@ -1484,6 +1467,31 @@ class Api:
         self._bird_catalog_cache = cached
         return cached
 
+    def _sanitize_species_regions(self, value):
+        """Per-folder species geofence from the frontend → list or ``None``.
+
+        ``None`` (or nothing valid) means "use the ``bird_regions`` setting";
+        the worker resolves that just before the folder runs.
+        """
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            return None
+        vals = [v.strip() for v in value if isinstance(v, str) and v.strip()]
+        if not vals:
+            return None
+        try:
+            try:
+                from kestrel_analyzer.bird_catalog import ALLOWED_REGION_CODES, GLOBAL_REGION
+            except ImportError:
+                from analyzer.kestrel_analyzer.bird_catalog import ALLOWED_REGION_CODES, GLOBAL_REGION
+        except Exception:
+            return None
+        if any(v.lower() == GLOBAL_REGION for v in vals):
+            return [GLOBAL_REGION]
+        picked = [c for c in ALLOWED_REGION_CODES if c in set(vals)]
+        return picked or None
+
     def get_bird_catalog_meta(self):
         """Return UI metadata: region labels + default selection + catalog size.
 
@@ -1508,6 +1516,11 @@ class Api:
                 ],
                 'default_regions': list(DEFAULT_REGION_SELECTION),
                 'total_species': len(cat) if cat is not None else 0,
+                # Species per region (geofence size shown in the analyze
+                # dialog's region picker). Worldwide species count everywhere.
+                'region_counts': {
+                    code: len(cat.filter([code])) for code in ALLOWED_REGION_CODES
+                } if cat is not None else {},
             }
         except Exception as e:
             error(f'[API] get_bird_catalog_meta error: {e}')
@@ -2676,6 +2689,10 @@ class Api:
             no deletion) if it's still fully analyzed with no errors. Used
             so a user's accidental check on an already-done folder is a
             no-op rather than destructive.
+          - ``species_regions``: the bird-species geofence for that folder —
+            a list of ``bird_catalog.ALLOWED_REGION_CODES``, or ``["global"]``
+            for every IOC world species. Omitted/invalid = the user's
+            ``bird_regions`` setting.
         """
         try:
             if isinstance(paths, str):
@@ -2739,6 +2756,7 @@ class Api:
                         validated_per_item_options[real] = {
                             'delete_kestrel_on_start': bool(opts.get('delete_kestrel_on_start')),
                             'skip_if_already_done': bool(opts.get('skip_if_already_done')),
+                            'species_regions': self._sanitize_species_regions(opts.get('species_regions')),
                         }
 
             sett = load_persisted_settings()

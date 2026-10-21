@@ -837,8 +837,10 @@
       </div>
       <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">
         Selects which biogeographic regions to include in the species
-        autocomplete (Ctrl+Shift+R). Multiple regions show their union.
-        Species outside the selected regions are hidden from the combobox.
+        autocomplete (Ctrl+Shift+R), and the default list of species Kestrel
+        identifies from when you analyze a folder (you can override it per
+        analysis). Multiple regions show their union. Species outside the
+        selected regions are hidden from the combobox.
       </div>
 
       <div class="row">
@@ -1097,7 +1099,7 @@
             <input id="analyzeWildlife" type="checkbox" class="hidden" aria-hidden="true" tabindex="-1" />
 
             <div class="adlg-question">
-              <div class="adlg-question-text">Does this shoot contain North American birds?</div>
+              <div class="adlg-question-text">Should Kestrel identify the bird species?</div>
               <div class="adlg-answer-pair" role="radiogroup" aria-label="Bird species identification">
                 <label class="adlg-radio-row adlg-radio-row-horiz">
                   <input type="radio" name="adlgSpeciesScope" id="adlgSpeciesScopeYes" value="yes" checked />
@@ -1112,7 +1114,21 @@
                   </div>
                 </label>
               </div>
-              <div class="adlg-question-help muted">Kestrel's bird species classifier only recognizes North American birds. Skipping it makes analysis faster; finding your subjects and scoring their quality work exactly the same either way.</div>
+              <div class="adlg-question-help muted">Kestrel names each bird with BioCLIP&nbsp;2, choosing from the world's ~11,000 bird species narrowed to the region below. Skipping it makes analysis faster; finding your subjects and scoring their quality work exactly the same either way.</div>
+              <!-- Species geofence for the folders being queued. Sent per item
+                   as per_item_options[path].species_regions; analyze-dialog.js
+                   populates the options from get_bird_catalog_meta. -->
+              <div id="adlgSpeciesRegionBlock" class="adlg-species-region">
+                <div class="adlg-setting-row">
+                  <label for="adlgSpeciesRegionMode">Where were these photos taken?</label>
+                  <select id="adlgSpeciesRegionMode" style="flex:1;max-width:260px">
+                    <option value="default" selected>My default regions</option>
+                    <option value="global">Global — all world birds</option>
+                  </select>
+                </div>
+                <div id="adlgSpeciesRegionCustom" class="adlg-species-region-custom hidden" role="group" aria-label="Species regions"></div>
+                <div id="adlgSpeciesRegionHint" class="adlg-hint muted">A narrower region list makes identification more accurate. Change your default regions in Settings → Species &amp; Region.</div>
+              </div>
             </div>
             <input id="analyzeSpeciesDetection" type="checkbox" class="hidden" aria-hidden="true" tabindex="-1" checked />
 
