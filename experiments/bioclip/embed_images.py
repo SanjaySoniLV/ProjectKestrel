@@ -23,7 +23,17 @@ MODELS = {
     "bioclip-1": "hf-hub:imageomics/bioclip",  # ViT-B/16, for the cost/accuracy curve
     "bioclip-2": "hf-hub:imageomics/bioclip-2",
     "bioclip-2.5": "hf-hub:imageomics/bioclip-2.5-vith14",
+    # General-purpose CLIP (OpenAI weights, MIT) for the semantic-search / quality probes.
+    "clip-b16": "ViT-B-16:openai",
 }
+
+
+def create(model_key):
+    spec = MODELS[model_key]
+    if spec.startswith("hf-hub:"):
+        return open_clip.create_model_and_transforms(spec)
+    arch, tag = spec.split(":")
+    return open_clip.create_model_and_transforms(arch, pretrained=tag)
 
 
 def centre(img, frac):
@@ -71,7 +81,7 @@ def main():
     os.makedirs(CACHE, exist_ok=True)
     out = os.path.join(CACHE, f"img_{a.model}_f{a.frac:g}{'_flip' if a.flip else ''}{a.tag}.npz")
 
-    model, _, pre = open_clip.create_model_and_transforms(MODELS[a.model])
+    model, _, pre = create(a.model)
     model.eval()
     if a.onnx:
         import onnxruntime as ort

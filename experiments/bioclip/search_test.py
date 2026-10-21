@@ -67,6 +67,7 @@ def main():
     ap.add_argument("--exports", action="store_true", help="search full frames instead of crops")
     ap.add_argument("-k", type=int, default=8)
     ap.add_argument("--model", default=HUB)
+    ap.add_argument("--baseline", help="subtract this prompt's score (e.g. 'a bird') to cancel generic/blurry hubs")
     ap.add_argument("--emb", help="precomputed embed_images.py npz (emb, crop_id) to use instead of embedding")
     ap.add_argument("queries", nargs="+")
     a = ap.parse_args()
@@ -89,6 +90,11 @@ def main():
     with torch.inference_mode():
         txt = torch.nn.functional.normalize(model.encode_text(tok([f"a photo of {q}." for q in a.queries])), dim=-1).numpy()
     sims = img @ txt.T
+    if a.baseline:
+        with torch.inference_mode():
+            b = torch.nn.functional.normalize(model.encode_text(tok([f"a photo of {a.baseline}."])), dim=-1).numpy()
+        sims = sims - img @ b.T
+        tag += "_minus_baseline"
     res = {}
     for qi, q in enumerate(a.queries):
         order = np.argsort(-sims[:, qi])

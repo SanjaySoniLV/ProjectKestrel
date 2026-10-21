@@ -8,8 +8,6 @@ wholesale, so this notice ships alongside the weights).
 | `bioclip2_image_int8.onnx` | BioCLIP 2 (ViT-L/14) image tower, exported to ONNX and dynamically quantised (int8 MatMuls). Input `image` float32 [N,3,224,224], CLIP-normalised; output `emb` [N,768], not normalised. Used by `kestrel_analyzer/ml/bioclip_species.py`. |
 | `species_text_emb.npy` | float16 [11251,768], L2-normalised BioCLIP 2 text embedding of `"a photo of {common name}."` for every species in `../birds/birds_global.csv`. |
 | `species_index.json` | Row order of the `.npy` (IOC scientific names), prompt, model id and `logit_scale`. |
-| `bioclip2_text_int8.onnx` | BioCLIP 2 text tower (int8), input `tokens` int64 [N,77]. Not loaded by the app yet (reserved for free-text search). |
-| `bpe_simple_vocab_16e6.txt.gz` | CLIP BPE vocabulary for the text tower's tokenizer. Not loaded by the app yet. |
 
 The ONNX / int8 files and the text embeddings are a conversion of the original BioCLIP 2
 weights made by `experiments/bioclip/export_app_assets.py` (open_clip → `torch.onnx.export` →
@@ -70,33 +68,4 @@ SOFTWARE.
   volume = {38},
   year = {2025}
 }
-```
-
-## CLIP BPE vocabulary (`bpe_simple_vocab_16e6.txt.gz`)
-
-From OpenAI CLIP (https://github.com/openai/CLIP), as redistributed by open_clip
-(https://github.com/mlfoundations/open_clip). Licence: MIT.
-
-```
-MIT License
-
-Copyright (c) 2021 OpenAI
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
 ```

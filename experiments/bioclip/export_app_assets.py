@@ -12,7 +12,11 @@ Writes (all consumed by analyzer/kestrel_analyzer/ml/bioclip_species.py):
   species_text_emb.npy         float16 [11251,768], L2-normalised text embedding
                                per IOC species, prompt "a photo of {common name}."
   species_index.json           row order (IOC scientific names) + provenance
-With --search, also:
+With --clip, the general-purpose CLIP used for free-text search (exp/semantic-search):
+  clip_b16_image_int8.onnx     OpenAI CLIP ViT-B/16 image tower (MIT), same I/O as above, [N,512]
+  clip_b16_text_int8.onnx      its text tower, input "tokens" [N,77] int64, output "emb" [N,512]
+  bpe_simple_vocab_16e6.txt.gz CLIP BPE vocab
+With --search, also (BioCLIP text tower; superseded by --clip for search):
   bioclip2_text_int8.onnx      text tower, input "tokens" [N,77] int64, output
                                "emb" [N,768] (not normalised); free-text search
   bpe_simple_vocab_16e6.txt.gz CLIP BPE vocab (from open_clip, MIT)
@@ -40,9 +44,9 @@ HUB = "hf-hub:imageomics/bioclip-2"
 PROMPT = "a photo of {}."
 
 
-def quantize(src, dst):
+def quantize(src, dst, ops=("MatMul",)):
     from onnxruntime.quantization import QuantType, quantize_dynamic
-    quantize_dynamic(src, dst, weight_type=QuantType.QInt8, op_types_to_quantize=["MatMul"])
+    quantize_dynamic(src, dst, weight_type=QuantType.QInt8, op_types_to_quantize=list(ops))
 
 
 class TextTower(torch.nn.Module):
@@ -61,14 +65,40 @@ class TextTower(torch.nn.Module):
         return x @ m.text_projection
 
 
+def export_clip(out):
+    """General CLIP for free-text search. Export with grad enabled (see image tower note);
+    the text tower's Gather (token table) is quantised too, which drops ~75 MB."""
+    model, _, _ = open_clip.create_model_and_transforms("ViT-B-16", pretrained="openai")
+    model.eval()
+    tok = open_clip.get_tokenizer("ViT-B-16")
+    tmp = tempfile.mkdtemp()
+    x = torch.randn(1, 3, 224, 224)
+    p = os.path.join(tmp, "img.onnx")
+    torch.onnx.export(model.visual, x, p, input_names=["image"], output_names=["emb"],
+                      dynamic_axes={"image": {0: "n"}, "emb": {0: "n"}}, opset_version=17, dynamo=False)
+    quantize(p, os.path.join(out, "clip_b16_image_int8.onnx"))
+    p = os.path.join(tmp, "txt.onnx")
+    torch.onnx.export(TextTower(model), tok(["a photo of a bird."]), p, input_names=["tokens"], output_names=["emb"],
+                      dynamic_axes={"tokens": {0: "n"}, "emb": {0: "n"}}, opset_version=17, dynamo=False)
+    quantize(p, os.path.join(out, "clip_b16_text_int8.onnx"), ops=("MatMul", "Gather"))
+    shutil.copy(os.path.join(os.path.dirname(open_clip.__file__), "bpe_simple_vocab_16e6.txt.gz"), out)
+    for f in ("clip_b16_image_int8.onnx", "clip_b16_text_int8.onnx"):
+        print(f, os.path.getsize(os.path.join(out, f)) / 1e6, "MB")
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(HERE, "..", "..", "analyzer", "models", "bioclip"))
-    ap.add_argument("--search", action="store_true", help="also export the text tower + tokenizer vocab")
+    ap.add_argument("--search", action="store_true", help="also export the BioCLIP text tower + tokenizer vocab")
+    ap.add_argument("--clip", action="store_true", help="ONLY export the general CLIP ViT-B/16 towers for search")
     a = ap.parse_args()
     out = os.path.abspath(a.out)
     os.makedirs(out, exist_ok=True)
     torch.set_num_threads(os.cpu_count())
+    if a.clip:
+        export_clip(out)
+        return
     model, _, _ = open_clip.create_model_and_transforms(HUB)
     model.eval()
     tok = open_clip.get_tokenizer(HUB)
