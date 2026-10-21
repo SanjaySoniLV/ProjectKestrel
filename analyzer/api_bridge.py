@@ -2127,6 +2127,179 @@ class Api:
             error(f'[API] write_kestrel_scenedata({folder_path!r}) error: {e}')
             return {'success': False, 'error': str(e), 'path': ''}
 
+    # ─── Smart search (experimental free-text CLIP search) ──────────────
+    #
+    # Read-only queries over a folder's CLIP crop index, plus a background
+    # backfill job (poll ``get_smart_search_index_progress``) that indexes
+    # crops of folders analysed before smart search existed. Every method
+    # validates the folder through ``_resolve_folder_root_and_kestrel``.
+
+    @staticmethod
+    def _smart_search_modules():
+        try:
+            from kestrel_analyzer import smart_search as _ss
+            from kestrel_analyzer.ml import clip_search as _cs
+        except ImportError:  # package-style import path
+            from analyzer.kestrel_analyzer import smart_search as _ss  # type: ignore[no-redef]
+            from analyzer.kestrel_analyzer.ml import clip_search as _cs  # type: ignore[no-redef]
+        return _ss, _cs
+
+    def _smart_jobs(self):
+        import threading as _t
+        if getattr(self, '_smart_index_lock', None) is None:
+            self._smart_index_lock = _t.Lock()
+            self._smart_index_jobs = {}
+        return self._smart_index_lock, self._smart_index_jobs
+
+    def smart_search_status(self, folder_path: str) -> dict:
+        """How much of a folder the smart-search index covers.
+
+        Returns ``{success, indexed_images, indexable_images, needs_index,
+        available, indexing_job}``; ``available`` is False when the CLIP
+        model files are missing from this build.
+        """
+        try:
+            _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path, context='smart_search_status', require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            _ss, _cs = self._smart_search_modules()
+            cov = _ss.coverage(kestrel_dir)
+            lock, jobs = self._smart_jobs()
+            with lock:
+                job = next((jid for jid, j in jobs.items()
+                            if j.get('kestrel_dir') == kestrel_dir and not j['progress'].get('done')), None)
+            return {
+                'success': True,
+                'available': _cs.assets_available(),
+                'needs_index': cov['indexed_images'] < cov['indexable_images'],
+                'indexing_job': job,
+                **cov,
+            }
+        except Exception as e:
+            error(f'[API] smart_search_status({folder_path!r}) error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def smart_search(self, folder_path: str, query: str, limit: int = 48) -> dict:
+        """Rank a folder's scenes for a free-text query (experimental).
+
+        Returns ``{success, query, scenes: [{scene_id, score, best_filename,
+        best_crop}], images: [{filename, scene_id, score, crop_index}],
+        indexed_images, indexable_images, needs_index}``. ``scenes`` are best
+        first; ``images`` covers the returned scenes. When the folder has no
+        CLIP embeddings yet, ``scenes`` is empty and ``needs_index`` is True.
+        """
+        try:
+            _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path, context='smart_search', require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            if not isinstance(query, str):
+                return {'success': False, 'error': 'query must be a string'}
+            _ss, _cs = self._smart_search_modules()
+            if not _cs.assets_available():
+                return {'success': False, 'error': 'smart_search_unavailable'}
+            res = _ss.search_folder(kestrel_dir, query, limit=limit)
+            return {'success': True, **res}
+        except Exception as e:
+            error(f'[API] smart_search({folder_path!r}) error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def smart_search_index_folder(self, folder_path: str) -> dict:
+        """Start indexing a folder's existing crops for smart search.
+
+        Returns ``{success, job_id}``; poll ``get_smart_search_index_progress``.
+        Refused while the folder is being analysed (both would append to the
+        same index); a job already running for the folder is returned as is.
+        """
+        try:
+            root_real, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path, context='smart_search_index_folder', require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            if not os.path.isdir(kestrel_dir):
+                return {'success': False, 'error': 'Folder has not been analyzed'}
+            _ss, _cs = self._smart_search_modules()
+            if not _cs.assets_available():
+                return {'success': False, 'error': 'smart_search_unavailable'}
+            if _queue_manager.has_running_writer(root_real):
+                return {'success': False, 'error': 'analysis_running'}
+            import threading as _t
+            import uuid as _uuid
+            lock, jobs = self._smart_jobs()
+            with lock:
+                for jid, j in jobs.items():
+                    if j.get('kestrel_dir') == kestrel_dir and not j['progress'].get('done'):
+                        return {'success': True, 'job_id': jid, 'already_running': True}
+                job_id = _uuid.uuid4().hex
+                cancel = _t.Event()
+                jobs[job_id] = {
+                    'kestrel_dir': kestrel_dir,
+                    'cancel_event': cancel,
+                    'progress': {'done': False, 'current': 0, 'total': 0, 'phase': 'starting'},
+                }
+                # Keep only the most recent finished jobs.
+                finished = [k for k, v in jobs.items() if v['progress'].get('done')]
+                for k in finished[:-8]:
+                    jobs.pop(k, None)
+
+            def _set(**kw):
+                with lock:
+                    jobs[job_id]['progress'].update(kw)
+
+            def _runner():
+                embedder = None
+                try:
+                    from kestrel_analyzer.ml.provider_coordinator import ProviderCoordinator
+                    _set(phase='loading_model')
+                    # CPU only: the backfill can run next to an analysis of
+                    # another folder, which owns the GPU provider.
+                    embedder = _cs.ClipImageEmbedder(
+                        _cs.default_assets_dir(), ProviderCoordinator(user_gpu_enabled=False),
+                    )
+                    _set(phase='indexing')
+                    stats = _ss.index_folder(
+                        kestrel_dir,
+                        embedder,
+                        progress_cb=lambda done, total, fn: _set(current=int(done), total=int(total)),
+                        cancel_event=cancel,
+                        should_stop=lambda: _queue_manager.has_running_writer(root_real),
+                    )
+                    _set(phase='stopped' if stats.get('stopped') else 'canceled' if stats.get('canceled') else 'complete',
+                         stats=stats)
+                except Exception as e:
+                    error(f'[API] smart_search_index_folder({folder_path!r}) failed: {e}')
+                    _set(phase='error', error=str(e))
+                finally:
+                    embedder = None
+                    _set(done=True)
+
+            _t.Thread(target=_runner, name=f'SmartSearchIndex-{job_id[:8]}', daemon=True).start()
+            return {'success': True, 'job_id': job_id}
+        except Exception as e:
+            error(f'[API] smart_search_index_folder({folder_path!r}) error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def get_smart_search_index_progress(self, job_id: str) -> dict:
+        lock, jobs = self._smart_jobs()
+        with lock:
+            job = jobs.get(str(job_id))
+            if job is None:
+                return {'success': False, 'error': 'not_found'}
+            return {'success': True, 'progress': dict(job['progress'])}
+
+    def cancel_smart_search_index(self, job_id: str) -> dict:
+        lock, jobs = self._smart_jobs()
+        with lock:
+            job = jobs.get(str(job_id))
+        if job is None:
+            return {'success': False, 'error': 'not_found'}
+        job['cancel_event'].set()
+        return {'success': True}
+
     def open_folder(self, path: str):
         """Open a folder in the system file browser (pywebview desktop mode)."""
         try:
