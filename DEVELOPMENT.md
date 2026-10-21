@@ -28,9 +28,11 @@ ProjectKestrel/
 │   ├── ProjectKestrel.spec          # PyInstaller spec (Windows)
 │   ├── ProjectKestrel-macos.spec    # PyInstaller spec (macOS)
 │   ├── models/                      # Bundled AI model files
-│   │   ├── model.onnx               # Bird species classifier
-│   │   ├── labels.txt
-│   │   ├── labels_scispecies.csv
+│   │   ├── bioclip/                 # BioCLIP 2 species head: int8 image tower ONNX,
+│   │   │                            #   species_text_emb.npy + species_index.json
+│   │   ├── birds/birds_global.csv   # IOC world bird catalog (species label space + regions)
+│   │   ├── labels.txt               # legacy CNN species list (catalog build input only)
+│   │   ├── labels_scispecies.csv    # catalog build inputs (family display names)
 │   │   ├── scispecies_dispname.csv
 │   │   ├── quality.onnx             # Quality assessment model
 │   │   ├── quality_normalization_data.csv
@@ -82,7 +84,9 @@ Re-pin `numpy==2.1.3` afterward if pip upgrades it — TensorFlow expects
 ### 2. Required model files
 
 All under `analyzer/models/`:
-- `model.onnx`, `labels.txt`, `labels_scispecies.csv`, `scispecies_dispname.csv`
+- `bioclip/` (`bioclip2_image_int8.onnx`, `species_text_emb.npy`, `species_index.json`; the
+  text tower + BPE vocab there are for a future free-text search and aren't loaded yet)
+- `birds/birds_global.csv`
 - `quality.onnx`, `quality_normalization_data.csv`
 - `speciesnet/` (MegaDetector ONNX variants, SAM-HQ ViT-Tiny encoder/decoder ONNX, SpeciesNet weights)
 
@@ -269,7 +273,11 @@ caller. All ML model loading is lazy and triggered by
 - `ml/speciesnet_sam_hq.py` — SpeciesNet (MegaDetector + classifier) + SAM-HQ
   ViT-Tiny wrapper, all on ONNX Runtime with DirectML/CoreML/CPU provider
   coordination.
-- `ml/bird_species.py` — Custom ONNX bird species classifier.
+- `ml/bioclip_species.py` — BioCLIP 2 zero-shot bird species classifier
+  (int8 ONNX image tower + precomputed IOC species text embeddings),
+  geofenced per folder via `bird_catalog` regions.
+- `embedding_store.py` — per-folder sidecar (`.kestrel/embeddings/`) of the
+  normalised BioCLIP crop embeddings, kept for a future search feature.
 - `ml/quality.py` — Custom ONNX quality model with percentile normalization.
 - `ratings.py` — Quality score → 1–5 star mapping using hardcoded
   per-profile thresholds (`very_strict`, `strict`, `balanced`, `lenient`,

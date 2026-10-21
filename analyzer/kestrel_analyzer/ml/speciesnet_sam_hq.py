@@ -1098,7 +1098,7 @@ class SpeciesNetSAMHQWrapper:
 
         Walks the coordinator's session registry, which covers BOTH the
         wrapper's detector/classifier/SAM sessions AND any pipeline-owned
-        sessions (BirdSpeciesClassifier, QualityClassifier) — they all share
+        sessions (BioClipSpeciesClassifier, QualityClassifier) — they all share
         the same coord. This avoids the partial-recovery failure mode where
         the wrapper's sessions migrate to CPU but a separately-owned session
         stays on the dead provider, throwing on every subsequent image.

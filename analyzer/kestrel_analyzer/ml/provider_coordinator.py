@@ -143,7 +143,7 @@ class ProviderCoordinator:
         # All ResilientOnnxSession instances built against this coord. The
         # coordinator walks this list to recreate sessions on demote/promote,
         # so that ALL pipeline sessions (wrapper detector/classifier/SAM AND
-        # the separately-owned BirdSpeciesClassifier / QualityClassifier) move
+        # the separately-owned BioClipSpeciesClassifier / QualityClassifier) move
         # together. If only some sessions migrate, the dead-provider sessions
         # error every subsequent image and the run looks "stuck on error".
         self._sessions: list["ResilientOnnxSession"] = []

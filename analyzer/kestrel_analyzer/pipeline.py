@@ -14,8 +14,7 @@ import pandas as pd
 
 from .config import (
     DEFAULT_DETECTOR_NAME,
-    SPECIESCLASSIFIER_LABELS,
-    SPECIESCLASSIFIER_PATH,
+    BIOCLIP_MODELS_DIR,
     QUALITYCLASSIFIER_PATH,
     QUALITY_NORMALIZATION_DATA_PATH,
     MODELS_DIR,
@@ -67,7 +66,9 @@ except (ImportError, ValueError):
 from .ml import GPU_EP
 from .ml.speciesnet_sam_hq import SpeciesNetSAMHQWrapper
 from .ml.provider_coordinator import ResilienceConfig
-from .ml.bird_species import BirdSpeciesClassifier
+from .ml.bioclip_species import BioClipSpeciesClassifier, MODEL_ID as SPECIES_MODEL_ID
+from .bird_catalog import resolve_species_regions
+from . import embedding_store
 from .ml.quality import QualityClassifier
 
 
@@ -86,7 +87,7 @@ class AnalysisPipeline:
         self.use_gpu = use_gpu
         self.detector_name = str(detector_name)
         self.sn_sam: Optional[SpeciesNetSAMHQWrapper] = None
-        self.species_clf: Optional[BirdSpeciesClassifier] = None
+        self.species_clf: Optional[BioClipSpeciesClassifier] = None
         self.quality_clf: Optional[QualityClassifier] = None
         self._log_path: Optional[str] = None
 
@@ -527,12 +528,7 @@ class AnalysisPipeline:
         # species step and the run looks "stuck on error".
         coord = self.sn_sam.coord
         if not self.species_clf:
-            self.species_clf = BirdSpeciesClassifier(
-                str(SPECIESCLASSIFIER_PATH),
-                str(SPECIESCLASSIFIER_LABELS),
-                coord,
-                models_dir=str(MODELS_DIR),
-            )
+            self.species_clf = BioClipSpeciesClassifier(str(BIOCLIP_MODELS_DIR), coord)
         if not self.quality_clf:
             self.quality_clf = QualityClassifier(
                 str(QUALITYCLASSIFIER_PATH),
@@ -560,7 +556,15 @@ class AnalysisPipeline:
         exposure_quality: Optional[str] = None,
         thumbnail_max_width: Optional[int] = None,
         thumbnail_jpeg_compression: Optional[float] = None,
+        species_regions: Optional[List[str]] = None,
     ) -> None:
+        """Analyse ``folder``.
+
+        ``species_regions`` geofences the bird species classifier: a list of
+        ``bird_catalog.ALLOWED_REGION_CODES``, or ``["global"]`` for every IOC
+        world species. ``None`` falls back to the persisted ``bird_regions``
+        setting (default ``["NA"]``).
+        """
         callbacks = callbacks or {}
         status_cb = callbacks.get("on_status")
         progress_cb = callbacks.get("on_progress")
@@ -638,6 +642,12 @@ class AnalysisPipeline:
             except (TypeError, ValueError):
                 pass
         thumbnail_max_width = max(400, min(2400, thumbnail_max_width))
+        if species_regions is None and callable(load_persisted_settings):
+            try:
+                species_regions = (load_persisted_settings() or {}).get("bird_regions")
+            except Exception:
+                species_regions = None
+        species_regions = resolve_species_regions(species_regions)
         thumbnail_jpeg_compression = max(0.5, min(1.0, thumbnail_jpeg_compression))
         thumbnail_jpeg_quality = int(round(thumbnail_jpeg_compression * 100.0))
         thumbnail_jpeg_quality = max(50, min(100, thumbnail_jpeg_quality))
@@ -738,6 +748,9 @@ class AnalysisPipeline:
 
             _mark_stage("load_database")
             database, db_path = load_database(kestrel_dir, analyzer_name, log_path=self._log_path)
+            emb_store = embedding_store.EmbeddingStore(
+                kestrel_dir, model=SPECIES_MODEL_ID, log_path=self._log_path
+            )
 
             # When retrying errored images, capture each errored row's previously-
             # computed values BEFORE dropping it. Many errors hit during detection
@@ -762,6 +775,7 @@ class AnalysisPipeline:
                     # retried images will append fresh rows below.
                     database = database.loc[~errored_mask].copy()
                     self._save_database_soft(database, db_path, "retry_errored_prune")
+                    emb_store.remove(errored_rows_by_filename.keys())
 
             # ── Identity is (filename, file_size), not filename alone ────────
             # Keying only on filename made the pipeline skip genuinely new
@@ -813,6 +827,7 @@ class AnalysisPipeline:
                     ~database["filename"].astype(str).isin(_sup)
                 ].copy()
                 self._save_database_soft(database, db_path, "superseded_prune")
+                emb_store.remove(_sup)
                 stored_sizes = {
                     k: v for k, v in stored_sizes.items() if k not in _sup
                 }
@@ -859,6 +874,17 @@ class AnalysisPipeline:
             _mark_stage("load_models")
             self.load_models(status_cb=status_cb, max_bird_crops=max_bird_crops)
             self._log_resolved_providers()
+            if species_detection_enabled and self.species_clf is not None:
+                self.species_clf.set_regions(species_regions)
+                log_event(
+                    self._log_path,
+                    {
+                        "level": "info",
+                        "event": "species_geofence",
+                        "regions": list(self.species_clf.regions),
+                        "species_count": int(self.species_clf.allowed_count),
+                    },
+                )
 
             previous_image = None
             previous_image_path = None
@@ -1291,7 +1317,6 @@ class AnalysisPipeline:
                                 original_patch = img[y0:y1, x0:x1].copy()
                                 img[y0:y1, x0:x1] = corrected_crop
                                 try:
-                                    species_crop = self.sn_sam.get_species_crop(pred_boxes[i], img)
                                     quality_crop, quality_mask = self.sn_sam.get_square_crop(masks[i], img, resize=True)
                                 finally:
                                     img[y0:y1, x0:x1] = original_patch
@@ -1305,13 +1330,11 @@ class AnalysisPipeline:
                                 total_stops = 0.0
                                 meter_scale = 1.0
                                 pipeline_mode = "legacy_auto_bright_v1"
-                                species_crop = self.sn_sam.get_species_crop(pred_boxes[i], img)
                                 quality_crop, quality_mask = self.sn_sam.get_square_crop(masks[i], img, resize=True)
                             items.append(
                                 {
                                     "index": i,
                                     "confidence": float(pred_score[i]),
-                                    "species_crop": species_crop,
                                     "quality_crop": quality_crop,
                                     "quality_mask": quality_mask,
                                     "stops": stops,
@@ -1330,11 +1353,27 @@ class AnalysisPipeline:
                                     "confidences": [i["confidence"] for i in items],
                                 }
                             )
+                        # BioCLIP sees the square, exposure-corrected SAM crop
+                        # (the same image written to crop/), not the tight
+                        # detector box the legacy CNN used: that is the crop it
+                        # was evaluated on. All bird crops go in one batch.
+                        species_results = {}
+                        if species_detection_enabled:
+                            bird_items = [it for it in items if pred_class[it["index"]] == "bird"]
+                            if bird_items:
+                                stage_ctx["stage"] = "species_classify"
+                                batch = self.species_clf.classify_batch(
+                                    [it["quality_crop"] for it in bird_items]
+                                )
+                                species_results = {
+                                    it["index"]: res for it, res in zip(bird_items, batch)
+                                }
                         for item in items:
                             i = item["index"]
                             if pred_class[i] == "bird":
                                 if species_detection_enabled:
-                                    species_result = self.species_clf.classify(item["species_crop"])
+                                    species_result = species_results[i]
+                                    item["embedding"] = species_result.get("embedding")
                                     item["species"] = (
                                         species_result["top_species_labels"][0]
                                         if len(species_result["top_species_labels"])
@@ -1421,6 +1460,7 @@ class AnalysisPipeline:
                                 "exposure_subject_stops": i.get("exposure_subject_stops", 0.0),
                                 "exposure_meter_scale": i.get("exposure_meter_scale", 1.0),
                                 "crop_bbox": i.get("crop_bbox"),
+                                "embedding": i.get("embedding"),
                             }
                             for i in subject_items
                         ]
@@ -1583,6 +1623,15 @@ class AnalysisPipeline:
                     stage_ctx["stage"] = "save_database"
                     database = pd.concat([database, pd.DataFrame([entry])], ignore_index=True)
                     self._save_database_soft(database, db_path, "save_database")
+                    # Never raises: embeddings are a best-effort sidecar.
+                    emb_store.put(
+                        raw_file,
+                        {
+                            int(c): it.get("embedding")
+                            for c, it in enumerate(crop_items_for_write)
+                            if it.get("embedding") is not None
+                        },
+                    )
 
                     if image_cb:
                         image_cb(entry)
@@ -1727,7 +1776,14 @@ class AnalysisPipeline:
                             "thumbnail_max_width": int(thumbnail_max_width),
                             "thumbnail_jpeg_compression": float(round(thumbnail_jpeg_compression, 4)),
                             "thumbnail_jpeg_quality": int(thumbnail_jpeg_quality),
+                            "species_model": SPECIES_MODEL_ID,
+                            "species_regions": list(species_regions),
                         }
+                        # Top-level too, so the browse UI / Perch can show the
+                        # label space a folder was classified against without
+                        # digging into the settings snapshot. Additive keys.
+                        _meta["species_model"] = SPECIES_MODEL_ID
+                        _meta["species_regions"] = list(species_regions)
                         with open(metadata_path, "w", encoding="utf-8") as mf:
                             _json.dump(_meta, mf, indent=2)
                     except Exception as _meta_e:
@@ -1736,6 +1792,10 @@ class AnalysisPipeline:
                             f"Failed to write analysis metadata: {_meta_e}",
                             stage="post_analysis_normalization",
                         )
+
+                    # Drop embeddings for files no longer in the database and
+                    # rewrite the sidecar compactly (best-effort).
+                    emb_store.compact(database["filename"].astype(str).tolist())
 
                     # Create or update kestrel_scenedata.json. Reload+merge
                     # UI fields immediately before save so ratings/names/tags

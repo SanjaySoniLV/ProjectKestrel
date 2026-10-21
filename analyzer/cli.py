@@ -118,7 +118,7 @@ def parse_args(argv: Sequence[str] | None = None):
         "--species-detection",
         dest="species_detection_enabled",
         action="store_true",
-        help="Run bird species classifier on each detection (default).",
+        help="Run the BioCLIP bird species classifier on each detection (default).",
     )
     parser.add_argument(
         "--no-species-detection",
@@ -127,6 +127,16 @@ def parse_args(argv: Sequence[str] | None = None):
         help=(
             "Skip bird species classification. Detection, quality scoring, and "
             "culling are unaffected."
+        ),
+    )
+    parser.add_argument(
+        "--species-regions",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated region codes the species classifier chooses from "
+            "(e.g. 'NA' or 'PAL,AF'), or 'global' for every IOC world species. "
+            "Default: the bird_regions setting in settings.json, else 'NA'."
         ),
     )
     parser.add_argument(
@@ -361,6 +371,10 @@ def main(argv: Sequence[str] | None = None):
             exposure_quality=args.exposure_quality,
             thumbnail_max_width=thumbnail_max_width,
             thumbnail_jpeg_compression=thumbnail_jpeg_compression,
+            species_regions=(
+                [t.strip() for t in args.species_regions.split(",") if t.strip()]
+                if args.species_regions else None
+            ),
         )
         print()
     except Exception as e:

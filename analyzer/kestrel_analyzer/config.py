@@ -8,8 +8,10 @@ ANALYZER_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = ANALYZER_DIR.parent
 MODELS_DIR = ANALYZER_DIR / "models"
 
-SPECIESCLASSIFIER_PATH = MODELS_DIR / "model.onnx"
-SPECIESCLASSIFIER_LABELS = MODELS_DIR / "labels.txt"
+# Bird species: BioCLIP 2 zero-shot image tower + precomputed IOC species text
+# embeddings (see kestrel_analyzer/ml/bioclip_species.py).
+BIOCLIP_MODELS_DIR = MODELS_DIR / "bioclip"
+BIOCLIP_IMAGE_MODEL_PATH = BIOCLIP_MODELS_DIR / "bioclip2_image_int8.onnx"
 QUALITYCLASSIFIER_PATH = MODELS_DIR / "quality.onnx"
 QUALITY_NORMALIZATION_DATA_PATH = MODELS_DIR / "quality_normalization_data.csv"
 

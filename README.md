@@ -60,7 +60,7 @@ Publish your outing as an interactive timeline anyone can explore — see [Perch
 ## Features
 
 - **Automatic Bird Detection**: Kestrel finds exactly where the bird is in your photo and focuses its analysis there.
-- **Family & Species Search**: Classifies birds so you can filter your library by species or family keywords. Automatic classification currently covers **North American** species; you can manually tag any bird on Earth from a bundled catalog of ~11,250 species, searchable by common name, four-letter banding code, or scientific name.
+- **Family & Species Search**: Classifies birds so you can filter your library by species or family keywords. Automatic identification covers the world's ~11,250 bird species (IOC list), narrowed to the region(s) you pick for each analysis; you can also manually tag any bird on Earth from the same bundled catalog, searchable by common name, four-letter banding code, or scientific name.
 - **Objective Quality Ranking**: Only considers sharpness, motion blur, and noise, letting you keep full artistic control.
 - **Intelligent Scene Grouping**: Bursts are grouped automatically so you can compare similar frames side-by-side.
 - **Editor Sync**: Kestrel writes XMP sidecar files natively supported by almost all photo editors — your ratings show up as stars in Lightroom, Darktable, Capture One, and more.
@@ -139,8 +139,8 @@ Kestrel runs a four-stage pipeline that builds objective data about every frame.
 - Detects animals, routes birds vs other wildlife, and segments subjects so quality is assessed on wildlife pixels, not background — a busy or cluttered background never sways the score.
 
 ### 2. Species Classification
-- A custom machine learning model was trained for bird species identification for North American birds.
-- Improvements to classification are planned, including wider automatic coverage.
+- Bird species are identified zero-shot with [BioCLIP 2](https://huggingface.co/imageomics/bioclip-2) (MIT licence; an int8 ONNX export of its image tower runs on-device) against precomputed text embeddings for every IOC world bird species.
+- Each analysis is geofenced to the region(s) you choose (default: your *Settings → Species & Region* list), so scores are probabilities over the birds that actually occur there.
 
 ### 3. Quality Assessment
 - A custom machine learning model was trained to analyze the quality of the images.
@@ -286,6 +286,14 @@ italicised scientific names) is powered by data bundled in
 
 See [`analyzer/models/birds/NOTICES.md`](analyzer/models/birds/NOTICES.md)
 for the full attribution.
+
+### Bundled species-identification model
+
+- **BioCLIP 2** — Imageomics Institute,
+  [imageomics/bioclip-2](https://huggingface.co/imageomics/bioclip-2), MIT
+  licence. `analyzer/models/bioclip/` holds an int8 ONNX export of its image
+  (and text) tower plus precomputed text embeddings for every catalog species.
+  See [`analyzer/models/bioclip/NOTICES.md`](analyzer/models/bioclip/NOTICES.md).
 
 ---
 

@@ -24,11 +24,14 @@ from kestrel_analyzer.config import (
     QUALITYCLASSIFIER_PATH,
     SAM_DEC_ONNX_PATH,
     SAM_ENC_ONNX_PATH,
+    BIOCLIP_IMAGE_MODEL_PATH,
+    METADATA_FILENAME,
     SCENEDATA_FILENAME,
-    SPECIESCLASSIFIER_PATH,
     SPECIESNET_MODEL_DIR,
 )
+from kestrel_analyzer.bird_catalog import get_catalog
 from kestrel_analyzer.database import BASE_COLUMNS, load_database, load_scenedata
+from kestrel_analyzer.embedding_store import load_embeddings
 from kestrel_analyzer.pipeline import AnalysisPipeline
 
 
@@ -40,7 +43,7 @@ _REQUIRED_MODELS = [
     SPECIESNET_MODEL_DIR / "speciesNet_v4.0.1a.onnx",
     Path(SAM_ENC_ONNX_PATH),
     Path(SAM_DEC_ONNX_PATH),
-    Path(SPECIESCLASSIFIER_PATH),
+    Path(BIOCLIP_IMAGE_MODEL_PATH),
     Path(QUALITYCLASSIFIER_PATH),
 ]
 
@@ -125,6 +128,7 @@ class TestPipelineE2EOnCR3:
             scene_time_threshold=60.0,
             max_bird_crops=5,
             parallel_prefetch=1,
+            species_regions=["NA"],
         )
         return work, len(cr3_files)
 
@@ -193,6 +197,39 @@ class TestPipelineE2EOnCR3:
         db, _ = load_database(kestrel_dir, "pytest_e2e")
         ec = db["exposure_correction"].dropna()
         assert len(ec) == len(db), "Some rows missing exposure_correction"
+
+    def test_species_are_catalog_names_in_region(self, pipeline_result_dir):
+        work, _ = pipeline_result_dir
+        db, _ = load_database(str(work / KESTREL_DIR_NAME), "pytest_e2e")
+        cat = get_catalog()
+        na = frozenset({"NA"})
+        birds = 0
+        for _, row in db.iterrows():
+            for crop in json.loads(row["crops_json"] or "[]"):
+                if crop["family"] in ("N/A",) or crop["species"] in ("Unknown", "Error"):
+                    continue
+                rec = cat.lookup(crop["species"])
+                if rec is None:
+                    continue  # non-bird SpeciesNet label
+                birds += 1
+                assert rec.matches_any_region(na), crop["species"]
+                assert crop["family"] == rec.family_common
+                assert 0.0 < crop["species_confidence"] <= 1.0
+                assert crop["species_confidence"] <= crop["family_confidence"] + 1e-6
+        assert birds >= 1, "no bird crops were classified"
+
+    def test_embeddings_sidecar_and_metadata(self, pipeline_result_dir):
+        work, _ = pipeline_result_dir
+        kdir = work / KESTREL_DIR_NAME
+        keys, mat, header = load_embeddings(str(kdir))
+        assert header is not None and header["model"] == "bioclip-2"
+        assert len(keys) >= 1 and mat.shape == (len(keys), 768)
+        db, _ = load_database(str(kdir), "pytest_e2e")
+        assert {k[0] for k in keys} <= set(db["filename"].astype(str))
+        meta = json.loads((kdir / METADATA_FILENAME).read_text(encoding="utf-8"))
+        assert meta["species_regions"] == ["NA"]
+        assert meta["species_model"] == "bioclip-2"
+        assert meta["analysis_settings"]["species_regions"] == ["NA"]
 
     def test_export_thumbnails_created(self, pipeline_result_dir):
         work, _ = pipeline_result_dir
