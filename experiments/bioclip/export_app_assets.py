@@ -13,8 +13,11 @@ Writes (all consumed by analyzer/kestrel_analyzer/ml/bioclip_species.py):
                                per IOC species, prompt "a photo of {common name}."
   species_index.json           row order (IOC scientific names) + provenance
 With --clip, the general-purpose CLIP used for free-text search (exp/semantic-search):
-  clip_b16_image_int8.onnx     OpenAI CLIP ViT-B/16 image tower (MIT), same I/O as above, [N,512]
-  clip_b16_text_int8.onnx      its text tower, input "tokens" [N,77] int64, output "emb" [N,512]
+  clip_b16_image_int8.onnx     OpenAI CLIP ViT-B/16 image tower (MIT), same I/O as above, [N,512];
+                               per-channel int8 MatMuls (keeps the sharpness signal: rho 0.69 vs 0.74 fp32)
+  clip_b16_text_fp16w.onnx     its text tower, input "tokens" [N,77] int64, output "emb" [N,512];
+                               fp16 *weights*, fp32 compute (int8 text reordered top-50 results by up to
+                               96%; weight-only fp16 is exact and half size)
   bpe_simple_vocab_16e6.txt.gz CLIP BPE vocab
 With --search, also (BioCLIP text tower; superseded by --clip for search):
   bioclip2_text_int8.onnx      text tower, input "tokens" [N,77] int64, output
@@ -44,9 +47,30 @@ HUB = "hf-hub:imageomics/bioclip-2"
 PROMPT = "a photo of {}."
 
 
-def quantize(src, dst, ops=("MatMul",)):
+def quantize(src, dst, ops=("MatMul",), per_channel=False):
     from onnxruntime.quantization import QuantType, quantize_dynamic
-    quantize_dynamic(src, dst, weight_type=QuantType.QInt8, op_types_to_quantize=list(ops))
+    quantize_dynamic(src, dst, weight_type=QuantType.QInt8, op_types_to_quantize=list(ops), per_channel=per_channel)
+
+
+def weights_fp16(src, dst, min_size=1024):
+    """Store large float initializers as fp16 + a Cast back to fp32 (exact-enough, half size)."""
+    import onnx
+    from onnx import TensorProto, helper, numpy_helper
+    m = onnx.load(src)
+    g = m.graph
+    inits, casts = [], []
+    for init in g.initializer:
+        if init.data_type == TensorProto.FLOAT and int(np.prod(init.dims)) >= min_size:
+            inits.append(numpy_helper.from_array(numpy_helper.to_array(init).astype(np.float16), init.name + "__fp16"))
+            casts.append(helper.make_node("Cast", [init.name + "__fp16"], [init.name], to=TensorProto.FLOAT))
+        else:
+            inits.append(init)
+    del g.initializer[:]
+    g.initializer.extend(inits)
+    nodes = list(g.node)
+    del g.node[:]
+    g.node.extend(casts + nodes)
+    onnx.save(m, dst)
 
 
 class TextTower(torch.nn.Module):
@@ -66,8 +90,7 @@ class TextTower(torch.nn.Module):
 
 
 def export_clip(out):
-    """General CLIP for free-text search. Export with grad enabled (see image tower note);
-    the text tower's Gather (token table) is quantised too, which drops ~75 MB."""
+    """General CLIP for free-text search. Export with grad enabled (see image tower note)."""
     model, _, _ = open_clip.create_model_and_transforms("ViT-B-16", pretrained="openai")
     model.eval()
     tok = open_clip.get_tokenizer("ViT-B-16")
@@ -76,13 +99,13 @@ def export_clip(out):
     p = os.path.join(tmp, "img.onnx")
     torch.onnx.export(model.visual, x, p, input_names=["image"], output_names=["emb"],
                       dynamic_axes={"image": {0: "n"}, "emb": {0: "n"}}, opset_version=17, dynamo=False)
-    quantize(p, os.path.join(out, "clip_b16_image_int8.onnx"))
+    quantize(p, os.path.join(out, "clip_b16_image_int8.onnx"), per_channel=True)
     p = os.path.join(tmp, "txt.onnx")
     torch.onnx.export(TextTower(model), tok(["a photo of a bird."]), p, input_names=["tokens"], output_names=["emb"],
                       dynamic_axes={"tokens": {0: "n"}, "emb": {0: "n"}}, opset_version=17, dynamo=False)
-    quantize(p, os.path.join(out, "clip_b16_text_int8.onnx"), ops=("MatMul", "Gather"))
+    weights_fp16(p, os.path.join(out, "clip_b16_text_fp16w.onnx"))
     shutil.copy(os.path.join(os.path.dirname(open_clip.__file__), "bpe_simple_vocab_16e6.txt.gz"), out)
-    for f in ("clip_b16_image_int8.onnx", "clip_b16_text_int8.onnx"):
+    for f in ("clip_b16_image_int8.onnx", "clip_b16_text_fp16w.onnx"):
         print(f, os.path.getsize(os.path.join(out, f)) / 1e6, "MB")
     shutil.rmtree(tmp, ignore_errors=True)
 
