@@ -190,8 +190,14 @@ class BioClipSpeciesClassifier:
         """L2-normalised float32 embeddings, one row per RGB uint8 image."""
         if isinstance(images, np.ndarray) and images.ndim == 3:
             images = [images]
-        batch = np.stack([preprocess(im) for im in images])
-        emb = self.session.run(None, {self._input_name: batch})[0].astype(np.float32)
+        # One crop per run, deliberately. The tower is dynamically quantised:
+        # DynamicQuantizeLinear picks one scale per tensor over the WHOLE batch,
+        # so batching would make a crop's embedding (and its species) depend
+        # on which other birds share the frame.
+        emb = np.concatenate([
+            self.session.run(None, {self._input_name: preprocess(im)[None]})[0]
+            for im in images
+        ]).astype(np.float32)
         emb /= np.maximum(np.linalg.norm(emb, axis=1, keepdims=True), 1e-12)
         return emb
 
@@ -223,7 +229,7 @@ class BioClipSpeciesClassifier:
         }
 
     def classify_batch(self, images, top_k: int = 5) -> list[dict]:
-        """``classify`` for several crops with one session run."""
+        """``classify`` for several crops (one session run per crop; see ``embed``)."""
         if not len(images):
             return []
         return [self.classify_embedding(e, top_k=top_k) for e in self.embed(list(images))]

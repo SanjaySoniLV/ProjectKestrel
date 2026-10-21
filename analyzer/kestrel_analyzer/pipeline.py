@@ -1356,7 +1356,7 @@ class AnalysisPipeline:
                         # BioCLIP sees the square, exposure-corrected SAM crop
                         # (the same image written to crop/), not the tight
                         # detector box the legacy CNN used: that is the crop it
-                        # was evaluated on. All bird crops go in one batch.
+                        # was evaluated on.
                         species_results = {}
                         if species_detection_enabled:
                             bird_items = [it for it in items if pred_class[it["index"]] == "bird"]

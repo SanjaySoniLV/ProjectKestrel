@@ -159,7 +159,8 @@ class TestClassifyContract:
         clf.set_regions(None)
         _point_at(clf, "House Sparrow")
         out = clf.classify_batch([np.zeros((300, 300, 3), np.uint8)] * 3, top_k=2)
-        assert len(out) == 3 and clf.session.last_batch.shape == (3, 3, 224, 224)
+        # One crop per run: dynamic int8 quantisation scales over the batch.
+        assert len(out) == 3 and clf.session.last_batch.shape == (1, 3, 224, 224)
         assert all(o["top_species_labels"][0] == "House Sparrow" for o in out)
         assert clf.classify_batch([], top_k=2) == []
 

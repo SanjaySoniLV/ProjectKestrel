@@ -51,13 +51,15 @@ def test_embedding_is_normalised_768(clf):
 
 
 def test_batch_matches_single(clf):
+    # Must be exact: a crop's species may not depend on the other crops in
+    # the frame (dynamic int8 quantisation would make it so if batched).
     rng = np.random.default_rng(0)
     imgs = [rng.integers(0, 255, (512, 512, 3), dtype=np.uint8) for _ in range(3)]
     batch = clf.classify_batch(imgs, top_k=3)
     single = [clf.classify(im, top_k=3) for im in imgs]
     for b, s in zip(batch, single):
         assert list(b["top_species_labels"]) == list(s["top_species_labels"])
-        np.testing.assert_allclose(b["embedding"], s["embedding"], atol=1e-3)
+        np.testing.assert_allclose(b["embedding"], s["embedding"], atol=1e-6)
 
 
 def test_classify_on_real_image(clf, set_a_path):
