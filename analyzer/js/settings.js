@@ -338,6 +338,8 @@
       // Auto-Save setting
       const autoSaveCb = document.getElementById('settingsAutoSave');
       if (autoSaveCb) autoSaveCb.checked = getSetting('auto_save_enabled', true);
+      const smartSearchCb = document.getElementById('settingsSmartSearch');
+      if (smartSearchCb) smartSearchCb.checked = getSetting('smart_search_enabled', true) !== false;
 
       // Preview exposure-compensation strength — one slider shared with the
       // scene viewer (see scene-zoom.js). Mirror the current value and drive the
@@ -400,6 +402,8 @@
       const rawPreviewCacheEnabled = rawCacheCb2 ? rawCacheCb2.checked : true;
       const autoSaveCb = document.getElementById('settingsAutoSave');
       const autoSaveEnabled = autoSaveCb ? autoSaveCb.checked : true;
+      const smartSearchCb2 = document.getElementById('settingsSmartSearch');
+      const smartSearchEnabled = smartSearchCb2 ? smartSearchCb2.checked : true;
       // Merge into existing settings so keys like machine_id / analytics_consent_shown are preserved
       const existing = loadSettings();
       const prevProfile = existing.rating_profile || 'balanced';
@@ -435,6 +439,7 @@
         rating_thresholds_custom: normalizeCustomThresholds(_customThresholds),
         raw_preview_cache_enabled: rawPreviewCacheEnabled,
         auto_save_enabled: autoSaveEnabled,
+        smart_search_enabled: smartSearchEnabled,
         bird_regions: finalRegions,
         show_scientific_names: showScientificNames,
       };

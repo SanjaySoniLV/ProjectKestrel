@@ -71,8 +71,10 @@
       const sortBy = el('#sortBy').value;
       const reviewStateFilter = document.getElementById('filterSceneReviewState')?.value
         || getSetting('sceneReviewFilter', 'all');
-      const groupByFolder = document.getElementById('groupByFolder')?.checked ?? getSetting('groupByFolder', true);
-      const groupByTime = document.getElementById('groupByTime')?.checked ?? getSetting('groupByTime', true);
+      // Smart-search results are shown flat, in score order (no folder/time grouping).
+      const _smartActive = typeof smartSearchIsActive === 'function' && smartSearchIsActive();
+      const groupByFolder = !_smartActive && (document.getElementById('groupByFolder')?.checked ?? getSetting('groupByFolder', true));
+      const groupByTime = !_smartActive && (document.getElementById('groupByTime')?.checked ?? getSetting('groupByTime', true));
       const showBirdThumbs = document.getElementById('showBirdThumbs')?.checked ?? getSetting('showBirdThumbs', false);
       // Widen each card's grid track when bird-crop thumbs are shown, so the
       // main thumb keeps its "no-crop" height and the crop slots into the
@@ -280,6 +282,14 @@
           s.representative?.__rootPath
         ));
         th.appendChild(img);
+        if (_smartActive && s.smartRank) {
+          th.classList.add('has-smart-rank');
+          const rank = document.createElement('span');
+          rank.className = 'smart-search-rank';
+          rank.textContent = `#${s.smartRank}`;
+          rank.title = `Smart search rank ${s.smartRank} (score ${Number(s.smartScore).toFixed(3)})`;
+          th.appendChild(rank);
+        }
         if (showBirdThumbs && s.representative?.crop_path && s.representative?.export_path) {
           const row = document.createElement('div');
           row.className = 'thumb-row';

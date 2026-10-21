@@ -1,0 +1,101 @@
+/* Experimental smart search: toggle next to #search and the results strip
+   under the filter bar. See js/smart-search.js. */
+
+.tfb-smart-toggle {
+  height: 30px;
+  font-size: 12px;
+  padding: 0 12px;
+  background: #0e1117;
+  border: 1px solid #2a3040;
+  white-space: nowrap;
+}
+
+.tfb-smart-toggle .tfb-smart-exp {
+  color: #7d869a;
+  font-size: 11px;
+}
+
+.tfb-smart-toggle[aria-pressed="true"] {
+  background: #2a2140;
+  border-color: #6a4fb3;
+  color: #e7dcff;
+}
+
+.tfb-smart-toggle[aria-pressed="true"] .tfb-smart-exp {
+  color: #b9a7e8;
+}
+
+#search.tfb-search--smart {
+  border-color: #6a4fb3;
+  box-shadow: 0 0 0 1px rgba(106, 79, 179, 0.35);
+}
+
+.smart-search-bar {
+  flex: 1 0 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 24px;
+  font-size: 12px;
+  color: #b9c0d0;
+}
+
+.smart-search-bar.hidden {
+  display: none;
+}
+
+.smart-search-hint {
+  flex: 0 1 auto;
+}
+
+.smart-search-hint .smart-search-exp {
+  color: #9a86d6;
+}
+
+.smart-search-btn {
+  height: 24px;
+  font-size: 12px;
+  padding: 0 10px;
+  background: #0e1117;
+  border: 1px solid #2a3040;
+}
+
+.smart-search-btn.hidden,
+.smart-search-spinner.hidden {
+  display: none;
+}
+
+.smart-search-btn:not(.smart-search-clear) {
+  background: #2a2140;
+  border-color: #6a4fb3;
+}
+
+.smart-search-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #3a3f52;
+  border-top-color: #b9a7e8;
+  border-radius: 50%;
+  animation: smart-search-spin 0.8s linear infinite;
+}
+
+@keyframes smart-search-spin {
+  to { transform: rotate(360deg); }
+}
+
+.thumb.has-smart-rank {
+  position: relative;
+}
+
+.thumb .smart-search-rank {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 2;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 11px;
+  background: rgba(42, 33, 64, 0.88);
+  color: #e7dcff;
+  pointer-events: none;
+}

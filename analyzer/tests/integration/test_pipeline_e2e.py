@@ -12,6 +12,7 @@ import shutil
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -129,6 +130,7 @@ class TestPipelineE2EOnCR3:
             max_bird_crops=5,
             parallel_prefetch=1,
             species_regions=["NA"],
+            smart_search_enabled=True,
         )
         return work, len(cr3_files)
 
@@ -230,6 +232,27 @@ class TestPipelineE2EOnCR3:
         assert meta["species_regions"] == ["NA"]
         assert meta["species_model"] == "bioclip-2"
         assert meta["analysis_settings"]["species_regions"] == ["NA"]
+
+    def test_smart_search_clip_slot(self, pipeline_result_dir):
+        from kestrel_analyzer import smart_search
+        from kestrel_analyzer.ml import clip_search
+
+        work, _ = pipeline_result_dir
+        kdir = work / KESTREL_DIR_NAME
+        keys, mat, header = clip_search.load_store(str(kdir))
+        assert header is not None and header["model"] == clip_search.MODEL_ID
+        assert mat.shape == (len(keys), clip_search.DIM)
+        np.testing.assert_allclose(np.linalg.norm(mat, axis=1), 1.0, atol=5e-3)
+        # Exactly the subject crops (every detection, not the whole-frame fallback).
+        db, _ = load_database(str(kdir), "pytest_e2e")
+        expected = {
+            (str(row["filename"]), int(c["crop_index"]))
+            for _, row in db.iterrows()
+            for c in clip_search.subject_crops(json.loads(row["crops_json"] or "[]"))
+        }
+        assert set(keys) == expected and len(keys) >= 1
+        res = smart_search.search_folder(str(kdir), "in flight")
+        assert res["scenes"] and not res["needs_index"]
 
     def test_export_thumbnails_created(self, pipeline_result_dir):
         work, _ = pipeline_result_dir
