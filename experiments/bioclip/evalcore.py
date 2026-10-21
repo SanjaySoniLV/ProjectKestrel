@@ -50,6 +50,12 @@ def load_txt(model, text_type, templates="single", subset=""):
 
 
 def logit_scale(model):
+    """Saved by embed_text.py in each text cache; logit_scale.json covers early caches."""
+    for f in sorted(os.listdir(CACHE)):
+        if f.startswith(f"txt_{model}_") and f.endswith(".npz"):
+            d = np.load(os.path.join(CACHE, f))
+            if "logit_scale" in d:
+                return float(d["logit_scale"])
     return json.load(open(os.path.join(CACHE, "logit_scale.json")))[model]
 
 

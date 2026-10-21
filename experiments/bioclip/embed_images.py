@@ -59,7 +59,8 @@ def main():
     ap.add_argument("--onnx", help="run this exported image-tower ONNX (e.g. int8) via onnxruntime instead of torch")
     ap.add_argument("--tag", default="", help="suffix for the cache file, e.g. _int8")
     ap.add_argument("--bf16", action="store_true",
-                    help="CPU bf16 autocast (AMX/AVX512-bf16); cos-sim vs fp32 >= 0.9998 in our check")
+                    help="CPU bf16 autocast (AMX/AVX512-bf16). ~2.5-3x faster at --batch 1; batched bf16 "
+                         "hit a very slow attention path in our runs, so pair it with --batch 1")
     a = ap.parse_args()
 
     torch.set_num_threads(os.cpu_count())

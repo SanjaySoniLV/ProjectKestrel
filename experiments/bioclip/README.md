@@ -34,7 +34,8 @@ continent-level geofence) and a `checklist` (a file in `geofence/`).
 | 3. Text embeddings | `embed_text.py --model bioclip-2 --text-type taxon_com [--templates single\|bird7\|openai80] [--subset names.txt]` | One embedding per IOC species (11,251 by default). |
 | 4. Baseline | `kestrel_cnn.py --frac 1.0` | Runs the current CNN on the same crops with the app's exact preprocessing. |
 | 5. Cost | `bench.py` | CPU latency of every pipeline ONNX model vs the BioCLIP image towers (torch fp32, bf16, ONNX fp32, ONNX int8). |
-| 6. Scoring | `run_experiments.py [name...]` | All experiments; writes `$BIOCLIP_WORK/results/<name>.json`. |
+| 6. Scoring | `run_experiments.py [name...]` | All experiments; writes `$BIOCLIP_WORK/results/<name>.json`. Prompt default is `com`; trick experiments use `$BIOCLIP_MODEL` (default `bioclip-2`). |
+| 7. Summary | `summarize.py` | Headline per-perch table, int8/bf16 fidelity, and a list of scenes where the model confidently disagrees with the tag. |
 
 Shared code: `common.py` (eval set, IOC taxonomy, prompt strings), `labelsets.py` (geofence tiers),
 `evalcore.py` (metrics, scene aggregation).
@@ -66,7 +67,8 @@ canonical common name. Kingdom, phylum and class are fixed, because every class 
 Each string is wrapped in one or more templates, and a class embedding is the normalised mean of its
 per-template embeddings:
 
-- `single`: `a photo of {c}.`. This is the default, used for every 11k-species run.
+- `single`: `a photo of {c}.`. This is the default, used for every 11k-species run. With `com` it
+  tied or beat every other text type and template set in our runs.
 - `bird7`: seven photography-flavoured templates of our own (see `common.templates`).
 - `openai80`: the 80 OpenAI ImageNet templates, imported from `open_clip`. This is the set BioCLIP's
   own NABirds evaluation uses.

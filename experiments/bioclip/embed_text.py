@@ -69,7 +69,8 @@ def main():
     acc /= np.linalg.norm(acc, axis=1, keepdims=True)
     os.makedirs(CACHE, exist_ok=True)
     out = os.path.join(CACHE, f"txt_{a.model}_{a.text_type}_{a.templates}{tag}.npz")
-    np.savez(out, emb=acc.astype(np.float16), sci=np.array([r["scientific_name"] for r in cat]))
+    np.savez(out, emb=acc.astype(np.float16), sci=np.array([r["scientific_name"] for r in cat]),
+             logit_scale=float(model.logit_scale.exp()))
     print(f"wrote {out}: {len(names)} classes x {len(tmpls)} templates in {time.time()-t0:.0f}s")
 
 

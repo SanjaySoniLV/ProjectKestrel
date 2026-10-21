@@ -168,7 +168,12 @@ def best_text(model):
     return t / np.linalg.norm(t, axis=1, keepdims=True), cl
 
 
-def logits_for(model, text="ens", variants=("f1",)):
+# Default prompt: `a photo of {common name}.` It tied or beat every other text
+# type and the common+taxonomy ensemble (see prompt_text_types / prompt_ensemble).
+DEFAULT_TEXT = "com"
+
+
+def logits_for(model, text=DEFAULT_TEXT, variants=("f1",)):
     img = E.load_img(model, variants, ROWS)
     if text == "ens":
         txt, cl = best_text(model)
@@ -183,9 +188,10 @@ def prompt_ensemble():
     for model in ("bioclip-1", "bioclip-2", "bioclip-2.5"):
         if not (have(f"img_{model}_f1.npz", f"txt_{model}_com_single.npz", f"txt_{model}_taxon_com_single.npz")):
             continue
-        lg, cl = logits_for(model, "ens")
-        for tier in ("global", "checklist"):
-            out += eval_tier(lg, cl, tier, f"{model} taxon_com+com / {tier}")
+        for text in ("com", "ens"):
+            lg, cl = logits_for(model, text)
+            for tier in ("global", "checklist"):
+                out += eval_tier(lg, cl, tier, f"{model} {'taxon_com+com' if text == 'ens' else text} / {tier}")
     return out
 
 
@@ -217,7 +223,7 @@ def crop_framing():
 @exp
 def scene_aggregation():
     out = []
-    model = "bioclip-2.5" if have("img_bioclip-2.5_f1.npz", "txt_bioclip-2.5_com_single.npz") else "bioclip-2"
+    model = best_model()
     lg, cl = logits_for(model)
     for agg in ("mean_prob", "mean_logprob", "vote", "weighted", "max_conf"):
         out += eval_tier(lg, cl, "checklist", f"{model} checklist / agg={agg}", agg=agg)
@@ -228,7 +234,8 @@ def scene_aggregation():
 
 
 def best_model():
-    return "bioclip-2.5" if have("img_bioclip-2.5_f1.npz", "txt_bioclip-2.5_com_single.npz") else "bioclip-2"
+    """The model the recommendation is about; the trick/aggregation experiments use it."""
+    return os.environ.get("BIOCLIP_MODEL", "bioclip-2")
 
 
 @exp
@@ -274,7 +281,7 @@ def few_shot():
     out = []
     model = best_model()
     img = E.load_img(model, ("f1",), ROWS)
-    txt, cl = best_text(model)
+    txt, cl = E.load_txt(model, DEFAULT_TEXT)
     scale = E.logit_scale(model)
     zs_cos = img @ txt.T
     pos = {c: j for j, c in enumerate(cl)}
