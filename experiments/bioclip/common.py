@@ -140,3 +140,13 @@ def load_eval_crops(single_species_only=True):
         row["abspath"] = os.path.join(DATA, row["path"])
         out.append(row)
     return out
+
+
+def load_all_crops():
+    """Every crop in crops_index.csv (tagged or not), for embedding / stress tests."""
+    out = []
+    for row in csv.DictReader(open(os.path.join(DATA, "crops_index.csv"))):
+        row["abspath"] = os.path.join(DATA, row["path"])
+        if os.path.exists(row["abspath"]):
+            out.append(row)
+    return out

@@ -17,10 +17,12 @@ import numpy as np
 import onnxruntime as ort
 from PIL import Image
 
-from common import CACHE, REPO, load_catalog, load_eval_crops, name_index, resolve
+from common import CACHE, REPO, load_all_crops, load_catalog, load_eval_crops, name_index, resolve
 from embed_images import centre
 
-MODEL = os.path.join(REPO, "analyzer", "models", "model.onnx")
+# The CNN was removed from the app when BioCLIP replaced it; recover it with
+#   git show c48bc3d:analyzer/models/model.onnx > legacy_model.onnx
+MODEL = os.environ.get("KESTREL_CNN_ONNX", os.path.join(REPO, "analyzer", "models", "model.onnx"))
 LABELS = os.path.join(REPO, "analyzer", "models", "labels.txt")
 
 
@@ -37,8 +39,9 @@ def cnn_labels_sci():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--frac", type=float, default=0.5)
+    ap.add_argument("--all", action="store_true", help="every crop in crops_index.csv, not just the scored eval set")
     a = ap.parse_args()
-    rows = load_eval_crops()
+    rows = load_all_crops() if a.all else load_eval_crops()
     labels, sci = cnn_labels_sci()
     print(f"{sum(1 for s in sci if not s)} CNN labels unmapped to IOC: {[l for l, s in zip(labels, sci) if not s]}")
     sess = ort.InferenceSession(MODEL, providers=["CPUExecutionProvider"])

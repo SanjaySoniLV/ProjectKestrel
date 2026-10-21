@@ -87,3 +87,18 @@ on CPU.
 | `checklist` | `geofence/<name>.txt`: a country or state list filtered from the IOC catalog by an LLM sub-agent that could not see the eval labels. Treat these lists as approximate. |
 | `cnn500` | Exactly the CNN's vocabulary |
 | `oracle` | Only the species present in that perch (an upper bound, not deployable) |
+
+## Citation
+
+BioCLIP 2 (MIT, Imageomics Institute), trained on TreeOfLife-200M (iNaturalist, GBIF, EOL and
+BIOSCAN images under various CC licenses):
+
+> Gu, J., Stevens, S., Campolongo, E., Thompson, M., Zhang, N., Wu, J., Kopanev, A., Mai, Z., White, A.,
+> Balhoff, J., Dahdul, W., Rubenstein, D., Lapp, H., Berger-Wolf, T., Chao, W.-L., & Su, Y. (2025).
+> *BioCLIP 2: Emergent Properties from Scaling Hierarchical Contrastive Learning.* Advances in Neural
+> Information Processing Systems 38, 102778–102811. Model: [imageomics/bioclip-2](https://huggingface.co/imageomics/bioclip-2),
+> doi:10.57967/hf/5765.
+
+The code here also uses [OpenCLIP](https://github.com/mlfoundations/open_clip) (Ilharco et al., 2021,
+doi:10.5281/zenodo.5143773) and compares against BioCLIP 1 (Stevens et al., CVPR 2024) and BioCLIP 2.5
+Huge ([imageomics/bioclip-2.5-vith14](https://huggingface.co/imageomics/bioclip-2.5-vith14)).

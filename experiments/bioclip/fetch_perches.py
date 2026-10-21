@@ -6,6 +6,7 @@ Usage:
 Writes, per slug:
     DATA_DIR/<slug>/perch.json        raw /v1/public/perches/<slug> response
     DATA_DIR/<slug>/crops/<assetId>.jpg
+    DATA_DIR/<slug>/exports/<assetId>.jpg   (with --exports)
 And one combined index:
     DATA_DIR/crops_index.csv          one row per crop (scene labels joined on)
 
@@ -17,6 +18,7 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
@@ -31,15 +33,17 @@ def get(url, retries=4):
             with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=60) as r:
                 return r.read()
         except Exception as e:  # noqa: BLE001
-            if attempt == retries - 1:
+            if attempt == retries - 1 or getattr(e, "code", None) == 404:
                 raise
             time.sleep(2 ** attempt)
             print(f"  retry {url[:80]}: {e}", file=sys.stderr)
 
 
-def fetch_slug(slug, out):
+def fetch_slug(slug, out, exports=False):
     sdir = os.path.join(out, slug)
     os.makedirs(os.path.join(sdir, "crops"), exist_ok=True)
+    if exports:
+        os.makedirs(os.path.join(sdir, "exports"), exist_ok=True)
     data = json.loads(get(f"{API}/v1/public/perches/{slug}"))
     with open(os.path.join(sdir, "perch.json"), "w") as f:
         json.dump(data, f)
@@ -48,6 +52,10 @@ def fetch_slug(slug, out):
     for scene in data["scenes"]:
         for exp in scene["exports"]:
             crops = exp.get("crops") or []
+            if exports:
+                epath = os.path.join(sdir, "exports", f"{exp['assetId']}.jpg")
+                if not os.path.exists(epath):
+                    jobs.append((exp["fileUrl"], epath))
             for ci, crop in enumerate(crops):
                 path = os.path.join(sdir, "crops", f"{crop['assetId']}.jpg")
                 rows.append({
@@ -73,9 +81,14 @@ def fetch_slug(slug, out):
 
     def dl(job):
         url, path = job
+        try:
+            data = get(url)
+        except urllib.error.HTTPError as e:  # e.g. an asset whose bytes are gone from R2
+            print(f"  skip {os.path.basename(path)}: HTTP {e.code}", file=sys.stderr)
+            return
         tmp = path + ".tmp"
         with open(tmp, "wb") as f:
-            f.write(get(url))
+            f.write(data)
         os.replace(tmp, path)
 
     print(f"{slug}: {len(rows)} crops, {len(jobs)} to download")
@@ -89,11 +102,12 @@ def fetch_slug(slug, out):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
+    ap.add_argument("--exports", action="store_true", help="also download each export (full frame)")
     ap.add_argument("slugs", nargs="+")
     a = ap.parse_args()
     rows = []
     for s in a.slugs:
-        rows += fetch_slug(s, a.out)
+        rows += fetch_slug(s, a.out, a.exports)
     with open(os.path.join(a.out, "crops_index.csv"), "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         w.writeheader()

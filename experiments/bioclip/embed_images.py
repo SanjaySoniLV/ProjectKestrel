@@ -17,7 +17,7 @@ import open_clip
 import torch
 from PIL import Image
 
-from common import CACHE, load_eval_crops
+from common import CACHE, load_all_crops, load_eval_crops
 
 MODELS = {
     "bioclip-1": "hf-hub:imageomics/bioclip",  # ViT-B/16, for the cost/accuracy curve
@@ -55,6 +55,7 @@ def main():
     ap.add_argument("--frac", type=float, default=1.0)
     ap.add_argument("--flip", action="store_true")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--all", action="store_true", help="every crop in crops_index.csv, not just the scored eval set")
     ap.add_argument("--batch", type=int, default=16)
     ap.add_argument("--onnx", help="run this exported image-tower ONNX (e.g. int8) via onnxruntime instead of torch")
     ap.add_argument("--tag", default="", help="suffix for the cache file, e.g. _int8")
@@ -64,7 +65,7 @@ def main():
     a = ap.parse_args()
 
     torch.set_num_threads(os.cpu_count())
-    rows = load_eval_crops()
+    rows = load_all_crops() if a.all else load_eval_crops()
     if a.limit:
         rows = rows[: a.limit]
     os.makedirs(CACHE, exist_ok=True)
