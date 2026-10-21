@@ -135,7 +135,7 @@ Security baseline:
 Kestrel runs a four-stage pipeline that builds objective data about every frame.
 
 ### 1. Wildlife detection and segmentation
-- Uses Google's [SpeciesNet](https://github.com/google/cameratrapai) ensemble (MegaDetector + species classifier) for animal bounding boxes and taxonomy, and [SAM-HQ](https://github.com/SysCV/sam-hq) (ViT-Tiny, via ONNX) for high-quality masks.
+- Uses Google's [SpeciesNet](https://github.com/google/cameratrapai) ensemble (MegaDetector + species classifier) for animal bounding boxes, bird-vs-wildlife routing and non-bird wildlife labels, and [SAM-HQ](https://github.com/SysCV/sam-hq) (ViT-Tiny, via ONNX) for high-quality masks. Bird species are identified by [BioCLIP 2](https://huggingface.co/imageomics/bioclip-2) (see below).
 - Detects animals, routes birds vs other wildlife, and segments subjects so quality is assessed on wildlife pixels, not background — a busy or cluttered background never sways the score.
 
 ### 2. Species Classification
@@ -171,7 +171,7 @@ ProjectKestrel/
 │   ├── cloud_compute_client.py  # Cloud Compute (optional)
 │   ├── perch_uploader.py     # Perch publishing (optional)
 │   ├── auth_client.py        # Sign-in (optional)
-│   ├── models/               # AI model files (ONNX + SpeciesNet)
+│   ├── models/               # AI model files (ONNX: SpeciesNet, SAM-HQ, BioCLIP 2, quality)
 │   ├── kestrel_analyzer/     # Core analysis pipeline (no UI dependencies)
 │   └── tests/                # pytest suites (~350 tests)
 ├── packaging/                # PyInstaller specs + installer build scripts
@@ -264,6 +264,15 @@ The canonical Terms of Service and Privacy Policy live on the marketing site and
 
 - **rawpy** library for robust RAW image file format handling
 - **pyinstaller project** for robust python packaging and distribution solutions.
+- **[BioCLIP 2](https://huggingface.co/imageomics/bioclip-2)** (Imageomics Institute, MIT licence) —
+  the bird species classifier. Gu, J., Stevens, S., Campolongo, E., Thompson, M., Zhang, N., Wu, J.,
+  Kopanev, A., Mai, Z., White, A., Balhoff, J., Dahdul, W., Rubenstein, D., Lapp, H., Berger-Wolf, T.,
+  Chao, W.-L., & Su, Y. (2025). "BioCLIP 2: Emergent Properties from Scaling Hierarchical Contrastive
+  Learning." *Advances in Neural Information Processing Systems 38*, 102778–102811. Model:
+  doi:[10.57967/hf/5765](https://doi.org/10.57967/hf/5765). Trained on TreeOfLife-200M (iNaturalist,
+  GBIF, EOL, BIOSCAN — various CC licences). Kestrel bundles an int8 ONNX conversion of it; see
+  [`analyzer/models/bioclip/NOTICES.md`](analyzer/models/bioclip/NOTICES.md) for the licence text and
+  BibTeX.
 
 ### Bundled bird-catalog data
 
@@ -286,14 +295,6 @@ italicised scientific names) is powered by data bundled in
 
 See [`analyzer/models/birds/NOTICES.md`](analyzer/models/birds/NOTICES.md)
 for the full attribution.
-
-### Bundled species-identification model
-
-- **BioCLIP 2** — Imageomics Institute,
-  [imageomics/bioclip-2](https://huggingface.co/imageomics/bioclip-2), MIT
-  licence. `analyzer/models/bioclip/` holds an int8 ONNX export of its image
-  (and text) tower plus precomputed text embeddings for every catalog species.
-  See [`analyzer/models/bioclip/NOTICES.md`](analyzer/models/bioclip/NOTICES.md).
 
 ---
 
