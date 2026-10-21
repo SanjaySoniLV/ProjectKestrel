@@ -273,6 +273,11 @@ The canonical Terms of Service and Privacy Policy live on the marketing site and
   GBIF, EOL, BIOSCAN — various CC licences). Kestrel bundles an int8 ONNX conversion of it; see
   [`analyzer/models/bioclip/NOTICES.md`](analyzer/models/bioclip/NOTICES.md) for the licence text and
   BibTeX.
+- **[OpenAI CLIP](https://github.com/openai/CLIP)** (ViT-B/16, MIT licence), loaded via
+  **[open_clip](https://github.com/mlfoundations/open_clip)** — the experimental free-text smart
+  search. Radford, A., et al. (2021). "Learning Transferable Visual Models From Natural Language
+  Supervision." *ICML*. Kestrel bundles ONNX conversions of the image (int8) and text (fp16) towers
+  plus the CLIP BPE vocabulary; see [`analyzer/models/clip/NOTICES.md`](analyzer/models/clip/NOTICES.md).
 
 ### Bundled bird-catalog data
 
