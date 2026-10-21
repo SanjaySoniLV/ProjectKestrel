@@ -29,7 +29,7 @@ import labelsets as L
 import run_experiments as R
 from common import CACHE, DATA, PERCHES, load_all_crops
 
-VARIANT = ("f1_app",)
+VARIANT = (os.environ.get("BIOCLIP_VARIANT", "f1_app"),)
 
 
 def tagged():
@@ -45,7 +45,7 @@ def tagged():
 
 def stress(slug, sheet_dir, n_sheet=24):
     rows = [r for r in load_all_crops() if r["slug"] == slug]
-    d = np.load(os.path.join(CACHE, "img_bioclip-2_f1_app.npz"))
+    d = np.load(os.path.join(CACHE, f"img_bioclip-2_{VARIANT[0]}.npz"))
     pos = {c: i for i, c in enumerate(d["crop_id"])}
     rows = [r for r in rows if r["crop_id"] in pos]
     img = d["emb"][[pos[r["crop_id"]] for r in rows]].astype(np.float32)
