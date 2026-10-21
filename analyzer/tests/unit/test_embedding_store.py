@@ -117,3 +117,61 @@ def test_bad_vectors_skipped_and_never_raises(tmp_path):
 def test_load_missing_is_empty(tmp_path):
     keys, mat, header = load_embeddings(str(tmp_path))
     assert keys == [] and mat.shape == (0, DIM) and header is None
+
+
+# ---------------------------------------------------------------- model slots
+
+
+def _vec_dim(seed, dim):
+    v = np.random.default_rng(seed).standard_normal(dim).astype(np.float32)
+    return v / np.linalg.norm(v)
+
+
+def test_slots_side_by_side_roundtrip(tmp_path):
+    bio = EmbeddingStore(str(tmp_path), model="bioclip-2")
+    clip = EmbeddingStore(str(tmp_path), model="clip-b16", dim=512, slot="clip-b16")
+    bio.put("a", {0: _vec(1)})
+    clip.put("a", {0: _vec_dim(2, 512), 1: _vec_dim(3, 512)})
+    clip.put("b", {0: _vec_dim(4, 512)})
+    keys, mat, header = load_embeddings(str(tmp_path))
+    assert keys == [("a", 0)] and header["model"] == "bioclip-2" and mat.shape == (1, DIM)
+    keys, mat, header = load_embeddings(str(tmp_path), slot="clip-b16", model="clip-b16", dim=512)
+    assert keys == [("a", 0), ("a", 1), ("b", 0)] and mat.shape == (3, 512)
+    np.testing.assert_allclose(mat[2].astype(np.float32), _vec_dim(4, 512), atol=2e-3)
+    # Compacting / reopening one slot leaves the other untouched.
+    clip.compact(["b"])
+    EmbeddingStore(str(tmp_path), model="bioclip-2").compact([])
+    assert load_embeddings(str(tmp_path))[0] == []
+    assert load_embeddings(str(tmp_path), slot="clip-b16")[0] == [("b", 0)]
+
+
+def test_primary_reset_does_not_touch_slot(tmp_path):
+    clip = EmbeddingStore(str(tmp_path), model="clip-b16", dim=512, slot="clip-b16")
+    clip.put("a", {0: _vec_dim(1, 512)})
+    EmbeddingStore(str(tmp_path), model="old").put("x", {0: _vec(1)})
+    EmbeddingStore(str(tmp_path), model="new")  # resets the primary slot only
+    assert load_embeddings(str(tmp_path))[0] == []
+    assert load_embeddings(str(tmp_path), slot="clip-b16")[0] == [("a", 0)]
+
+
+def test_bioclip_only_store_reads_unchanged(tmp_path):
+    """A folder written before slots existed: primary store only, no subfolder."""
+    EmbeddingStore(str(tmp_path), model="bioclip-2").put("a", {0: _vec(1)})
+    d = tmp_path / EMBEDDINGS_DIRNAME
+    assert sorted(p.name for p in d.iterdir() if p.is_dir()) == []
+    # Reading the absent slot is empty and must not create anything.
+    keys, mat, header = load_embeddings(str(tmp_path), slot="clip-b16", dim=512)
+    assert keys == [] and mat.shape == (0, 512) and header is None
+    assert not (d / "clip-b16").exists()
+    # Opening the slot keeps the primary rows.
+    EmbeddingStore(str(tmp_path), model="clip-b16", dim=512, slot="clip-b16")
+    assert load_embeddings(str(tmp_path))[0] == [("a", 0)]
+
+
+def test_model_filter_and_bad_slot(tmp_path):
+    EmbeddingStore(str(tmp_path), model="bioclip-2").put("a", {0: _vec(1)})
+    assert load_embeddings(str(tmp_path), model="other")[0] == []
+    bad = EmbeddingStore(str(tmp_path), model="m", slot="../escape")
+    bad.put("a", {0: _vec(1)})  # disabled, never raises
+    assert not (tmp_path.parent / "escape").exists()
+    assert load_embeddings(str(tmp_path), slot="../escape")[0] == []

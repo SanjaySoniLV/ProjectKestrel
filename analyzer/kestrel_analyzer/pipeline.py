@@ -69,6 +69,7 @@ from .ml.provider_coordinator import ResilienceConfig
 from .ml.bioclip_species import BioClipSpeciesClassifier, MODEL_ID as SPECIES_MODEL_ID
 from .bird_catalog import resolve_species_regions
 from . import embedding_store
+from .ml import clip_search
 from .ml.quality import QualityClassifier
 
 
@@ -89,7 +90,38 @@ class AnalysisPipeline:
         self.sn_sam: Optional[SpeciesNetSAMHQWrapper] = None
         self.species_clf: Optional[BioClipSpeciesClassifier] = None
         self.quality_clf: Optional[QualityClassifier] = None
+        # Experimental smart search (CLIP ViT-B/16 image tower), loaded lazily
+        # by ``_ensure_clip_embedder`` only when ``smart_search_enabled``.
+        self.clip_embedder: Optional["clip_search.ClipImageEmbedder"] = None
+        self._clip_coord = None
         self._log_path: Optional[str] = None
+
+    def _ensure_clip_embedder(self) -> Optional["clip_search.ClipImageEmbedder"]:
+        """Load the CLIP image tower on the run's coordinator; ``None`` on any failure.
+
+        Smart search is best-effort: missing assets or a load error only log a
+        warning, analysis carries on without CLIP embeddings.
+        """
+        coord = getattr(self.sn_sam, "coord", None)
+        if coord is None:
+            return None
+        if self.clip_embedder is not None and self._clip_coord is coord:
+            return self.clip_embedder
+        self.clip_embedder, self._clip_coord = None, None
+        if not clip_search.assets_available():
+            log_warning(self._log_path, "[smart_search] CLIP assets missing; skipping", stage="clip_embed")
+            return None
+        try:
+            self.clip_embedder = clip_search.ClipImageEmbedder(clip_search.default_assets_dir(), coord)
+            self._clip_coord = coord
+        except Exception as e:
+            log_warning(
+                self._log_path,
+                f"[smart_search] CLIP image tower failed to load: {type(e).__name__}: {e}",
+                stage="clip_embed",
+            )
+            self.clip_embedder = None
+        return self.clip_embedder
 
     @staticmethod
     def _create_mask_overlay(
@@ -448,6 +480,7 @@ class AnalysisPipeline:
         for name, holder, attr in (
             ("quality", self.quality_clf, "providers_used"),
             ("species", self.species_clf, "providers_used"),
+            ("clip", self.clip_embedder, "providers_used"),
             ("detector", getattr(self.sn_sam, "classifier", None), "providers_used"),
         ):
             try:
@@ -557,8 +590,13 @@ class AnalysisPipeline:
         thumbnail_max_width: Optional[int] = None,
         thumbnail_jpeg_compression: Optional[float] = None,
         species_regions: Optional[List[str]] = None,
+        smart_search_enabled: Optional[bool] = None,
     ) -> None:
         """Analyse ``folder``.
+
+        ``smart_search_enabled`` (experimental) also stores a CLIP embedding
+        per subject crop for free-text search; ``None`` falls back to the
+        persisted ``smart_search_enabled`` setting (default on).
 
         ``species_regions`` geofences the bird species classifier: a list of
         ``bird_catalog.ALLOWED_REGION_CODES``, or ``["global"]`` for every IOC
@@ -648,6 +686,16 @@ class AnalysisPipeline:
             except Exception:
                 species_regions = None
         species_regions = resolve_species_regions(species_regions)
+        if smart_search_enabled is None:
+            smart_search_enabled = True
+            if callable(load_persisted_settings):
+                try:
+                    smart_search_enabled = bool(
+                        (load_persisted_settings() or {}).get("smart_search_enabled", True)
+                    )
+                except Exception:
+                    smart_search_enabled = True
+        smart_search_enabled = bool(smart_search_enabled)
         thumbnail_jpeg_compression = max(0.5, min(1.0, thumbnail_jpeg_compression))
         thumbnail_jpeg_quality = int(round(thumbnail_jpeg_compression * 100.0))
         thumbnail_jpeg_quality = max(50, min(100, thumbnail_jpeg_quality))
@@ -751,6 +799,12 @@ class AnalysisPipeline:
             emb_store = embedding_store.EmbeddingStore(
                 kestrel_dir, model=SPECIES_MODEL_ID, log_path=self._log_path
             )
+            # Smart-search slot. Opened when enabled, or when it already exists
+            # (so re-analysed / dropped files still get their stale rows removed
+            # while the feature is switched off).
+            clip_store = None
+            if smart_search_enabled or os.path.isdir(clip_search.store_dir(kestrel_dir)):
+                clip_store = clip_search.open_store(kestrel_dir, log_path=self._log_path)
 
             # When retrying errored images, capture each errored row's previously-
             # computed values BEFORE dropping it. Many errors hit during detection
@@ -776,6 +830,8 @@ class AnalysisPipeline:
                     database = database.loc[~errored_mask].copy()
                     self._save_database_soft(database, db_path, "retry_errored_prune")
                     emb_store.remove(errored_rows_by_filename.keys())
+                    if clip_store is not None:
+                        clip_store.remove(errored_rows_by_filename.keys())
 
             # ── Identity is (filename, file_size), not filename alone ────────
             # Keying only on filename made the pipeline skip genuinely new
@@ -828,6 +884,8 @@ class AnalysisPipeline:
                 ].copy()
                 self._save_database_soft(database, db_path, "superseded_prune")
                 emb_store.remove(_sup)
+                if clip_store is not None:
+                    clip_store.remove(_sup)
                 stored_sizes = {
                     k: v for k, v in stored_sizes.items() if k not in _sup
                 }
@@ -873,6 +931,8 @@ class AnalysisPipeline:
 
             _mark_stage("load_models")
             self.load_models(status_cb=status_cb, max_bird_crops=max_bird_crops)
+            clip_embedder = self._ensure_clip_embedder() if smart_search_enabled else None
+            clip_errors = [0]
             self._log_resolved_providers()
             if species_detection_enabled and self.species_clf is not None:
                 self.species_clf.set_regions(species_regions)
@@ -1368,6 +1428,23 @@ class AnalysisPipeline:
                                 species_results = {
                                     it["index"]: res for it, res in zip(bird_items, batch)
                                 }
+                        # Smart search: CLIP embedding of the same square crop,
+                        # for every subject (birds AND other wildlife). Never
+                        # fails the image; the first few errors are logged.
+                        if clip_embedder is not None:
+                            stage_ctx["stage"] = "clip_embed"
+                            for it in items:
+                                try:
+                                    it["clip_embedding"] = clip_embedder.embed(it["quality_crop"])[0]
+                                except Exception as _clip_e:
+                                    clip_errors[0] += 1
+                                    if clip_errors[0] <= 3:
+                                        log_warning(
+                                            self._log_path,
+                                            f"[smart_search] CLIP embed failed for {raw_file}: "
+                                            f"{type(_clip_e).__name__}: {_clip_e}",
+                                            stage="clip_embed",
+                                        )
                         for item in items:
                             i = item["index"]
                             if pred_class[i] == "bird":
@@ -1461,6 +1538,7 @@ class AnalysisPipeline:
                                 "exposure_meter_scale": i.get("exposure_meter_scale", 1.0),
                                 "crop_bbox": i.get("crop_bbox"),
                                 "embedding": i.get("embedding"),
+                                "clip_embedding": i.get("clip_embedding"),
                             }
                             for i in subject_items
                         ]
@@ -1632,6 +1710,15 @@ class AnalysisPipeline:
                             if it.get("embedding") is not None
                         },
                     )
+                    if clip_store is not None:
+                        clip_store.put(
+                            raw_file,
+                            {
+                                int(c): it.get("clip_embedding")
+                                for c, it in enumerate(crop_items_for_write)
+                                if it.get("clip_embedding") is not None
+                            },
+                        )
 
                     if image_cb:
                         image_cb(entry)
@@ -1796,6 +1883,8 @@ class AnalysisPipeline:
                     # Drop embeddings for files no longer in the database and
                     # rewrite the sidecar compactly (best-effort).
                     emb_store.compact(database["filename"].astype(str).tolist())
+                    if clip_store is not None:
+                        clip_store.compact(database["filename"].astype(str).tolist())
 
                     # Create or update kestrel_scenedata.json. Reload+merge
                     # UI fields immediately before save so ratings/names/tags

@@ -121,6 +121,16 @@ def parse_args(argv: Sequence[str] | None = None):
         help="Run the BioCLIP bird species classifier on each detection (default).",
     )
     parser.add_argument(
+        "--no-smart-search",
+        dest="smart_search_enabled",
+        action="store_false",
+        default=None,
+        help=(
+            "Skip the experimental smart-search CLIP embedding of each crop "
+            "(~50-100 ms per crop on CPU). Default: the smart_search_enabled setting (on)."
+        ),
+    )
+    parser.add_argument(
         "--no-species-detection",
         dest="species_detection_enabled",
         action="store_false",
@@ -375,6 +385,7 @@ def main(argv: Sequence[str] | None = None):
                 [t.strip() for t in args.species_regions.split(",") if t.strip()]
                 if args.species_regions else None
             ),
+            smart_search_enabled=args.smart_search_enabled,
         )
         print()
     except Exception as e:

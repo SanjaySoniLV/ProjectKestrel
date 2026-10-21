@@ -511,6 +511,9 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     # pass them as runtime parameters.
     _set_bool('wildlife_enabled', default=False)
     _set_bool('species_detection_enabled', default=True)
+    # Experimental smart search: compute a CLIP embedding per subject crop at
+    # analysis time (~50–100 ms per crop on CPU). Off = analysis skips it.
+    _set_bool('smart_search_enabled', default=True)
     # ONNX provider resilience (auto GPU↔CPU fallback). Advanced/triage knobs;
     # not exposed in the UI. ``gpu_resilience_enabled=False`` reverts to the
     # pre-resilience behavior (single GPU session, no recovery).

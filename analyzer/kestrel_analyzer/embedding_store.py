@@ -1,6 +1,13 @@
-"""Per-folder sidecar of BioCLIP crop embeddings (for a future search feature).
+"""Per-folder sidecar of crop embeddings (BioCLIP species head, CLIP smart search).
 
-Layout, under ``<folder>/.kestrel/embeddings/``::
+Several models live side by side, one *slot* each. The primary slot (``None``)
+is the original store directly under ``<folder>/.kestrel/embeddings/`` (BioCLIP
+2); every other slot is a subfolder ``embeddings/<slot>/`` with the identical
+layout (smart search uses ``slot="clip-b16"``). Slots are independent: each
+one resets only when ITS model or dim changes, so adding a model never touches
+the BioCLIP rows, and a folder written before slots existed reads unchanged.
+
+Layout of one slot directory::
 
     index.jsonl      line 1: header {"format", "version", "model", "dim",
                      "dtype", "data"}; then one line per image write:
@@ -25,6 +32,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import uuid
 from typing import Dict, Iterable, Optional, Tuple
 
@@ -39,8 +47,22 @@ VERSION = 1
 DEFAULT_DIM = 768
 
 
-def _dir(kestrel_dir: str) -> str:
-    return os.path.join(kestrel_dir, EMBEDDINGS_DIRNAME)
+_SLOT_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+
+
+def _valid_slot(slot: Optional[str]) -> Optional[str]:
+    if slot is None:
+        return None
+    slot = str(slot)
+    if not _SLOT_RE.match(slot) or slot.endswith(".f16") or slot.endswith(".tmp"):
+        raise ValueError(f"invalid embedding slot name: {slot!r}")
+    return slot
+
+
+def _dir(kestrel_dir: str, slot: Optional[str] = None) -> str:
+    base = os.path.join(kestrel_dir, EMBEDDINGS_DIRNAME)
+    slot = _valid_slot(slot)
+    return base if slot is None else os.path.join(base, slot)
 
 
 def _read_index(path: str) -> Tuple[Optional[dict], Dict[str, Dict[int, int]]]:
@@ -72,23 +94,28 @@ def _read_index(path: str) -> Tuple[Optional[dict], Dict[str, Dict[int, int]]]:
     return header, live
 
 
-def load_embeddings(kestrel_dir: str):
-    """Return ``(keys, matrix, header)``.
+def load_embeddings(kestrel_dir: str, slot: Optional[str] = None, model: Optional[str] = None,
+                    dim: int = DEFAULT_DIM):
+    """Return ``(keys, matrix, header)`` for one slot (default: the primary one).
 
     ``keys`` is a list of ``(filename, crop_index)``; ``matrix`` is float16
-    ``[len(keys), dim]`` (rows are L2-normalised). Empty when absent/corrupt.
+    ``[len(keys), dim]`` (rows are L2-normalised). Empty when absent/corrupt,
+    or when ``model`` is given and the slot holds a different model.
     """
-    d = _dir(kestrel_dir)
+    empty = ([], np.zeros((0, int(dim)), np.float16), None)
     try:
+        d = _dir(kestrel_dir, slot)
         header, live = _read_index(os.path.join(d, INDEX_FILENAME))
         if header is None:
             raise ValueError("missing header")
+        if model is not None and header.get("model") != model:
+            return empty
         dim = int(header.get("dim", DEFAULT_DIM))
         data = np.fromfile(os.path.join(d, str(header["data"])), dtype="<f2")
         n_rows = data.size // dim
         data = data[: n_rows * dim].reshape(n_rows, dim)
     except Exception:
-        return [], np.zeros((0, DEFAULT_DIM), np.float16), None
+        return empty
     keys, idx = [], []
     for fn in sorted(live):
         for crop, row in sorted(live[fn].items()):
@@ -98,17 +125,31 @@ def load_embeddings(kestrel_dir: str):
     return keys, data[np.array(idx, dtype=np.int64)] if idx else np.zeros((0, dim), np.float16), header
 
 
+def live_filenames(kestrel_dir: str, slot: Optional[str] = None, model: Optional[str] = None) -> set:
+    """Filenames with at least one live row in a slot (cheap: reads only the index)."""
+    try:
+        header, live = _read_index(os.path.join(_dir(kestrel_dir, slot), INDEX_FILENAME))
+    except Exception:
+        return set()
+    if header is None or (model is not None and header.get("model") != model):
+        return set()
+    return set(live)
+
+
 class EmbeddingStore:
-    def __init__(self, kestrel_dir: str, model: str, dim: int = DEFAULT_DIM, log_path: Optional[str] = None):
-        self.dir = _dir(kestrel_dir)
+    def __init__(self, kestrel_dir: str, model: str, dim: int = DEFAULT_DIM, log_path: Optional[str] = None,
+                 slot: Optional[str] = None):
         self.model = str(model)
         self.dim = int(dim)
+        self.slot = slot
+        self.dir = ""
         self._log_path = log_path
         self._ok = False
         self._live: Dict[str, Dict[int, int]] = {}
         self._rows = 0
         self._data_name = ""
         try:
+            self.dir = _dir(kestrel_dir, slot)
             self._open()
             self._ok = True
         except Exception as e:
@@ -118,7 +159,8 @@ class EmbeddingStore:
 
     def _warn(self, msg: str) -> None:
         try:
-            log_warning(self._log_path, f"[embeddings] {msg}", stage="embeddings")
+            tag = "embeddings" if self.slot is None else f"embeddings:{self.slot}"
+            log_warning(self._log_path, f"[{tag}] {msg}", stage="embeddings")
         except Exception:
             pass
 
@@ -176,8 +218,9 @@ class EmbeddingStore:
         return f"{uuid.uuid4().hex[:16]}.f16"
 
     def _reset(self) -> None:
+        # Only plain files of THIS slot: other slots are subdirectories.
         for name in os.listdir(self.dir):
-            if name.endswith(".f16") or name.endswith(".tmp"):
+            if (name.endswith(".f16") or name.endswith(".tmp")) and os.path.isfile(os.path.join(self.dir, name)):
                 try:
                     os.remove(os.path.join(self.dir, name))
                 except OSError:
@@ -232,6 +275,13 @@ class EmbeddingStore:
             self._live[filename] = rows
         except Exception as e:
             self._warn(f"put({filename}) failed: {type(e).__name__}: {e}")
+
+    def has(self, filename: str) -> bool:
+        return str(filename) in self._live
+
+    @property
+    def filenames(self) -> set:
+        return set(self._live)
 
     def remove(self, filenames: Iterable[str]) -> None:
         if not self._ok:
