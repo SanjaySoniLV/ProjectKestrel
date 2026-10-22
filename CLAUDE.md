@@ -43,9 +43,10 @@ The rest of this file adds detail for working on the code.
        │                sessions start instantly; reuses loaded models across items.
        ▼
   kestrel_analyzer/pipeline.py (AnalysisPipeline.process_folder)
-       │   decode → detect (MegaDetector) → classify (SpeciesNet + custom ONNX
-       │   bird model) → segment (SAM-HQ) → quality score → exposure solve →
-       │   scene-cluster → crop/export → write .kestrel/
+       │   decode → detect (MegaDetector) → animal gate + species ID (BioCLIP 2)
+       │   → segment (SAM-HQ) → quality score (SigLIP 2, legacy CNN fallback)
+       │   → exposure solve → scene-cluster → crop/export → write .kestrel/
+       │   (pipeline 3.0; `upgrade_v3.py` backfills older folders in place)
        ▼
   kestrel_analyzer/ml/   ── ONNX Runtime sessions (DirectML on Windows, CoreML on
        │                     macOS, CPU everywhere). Lazy-loaded on first analysis.
@@ -128,7 +129,7 @@ packaging\build_installer_headless.bat
   security-sensitive — the `analyzer/tests/test_security_*.py` regression tests cover XSS, path traversal
   and URL-scheme abuse; keep them passing.
 - **opencv duplicate install:** if pip ends up with both `opencv-python` and `opencv-python-headless`
-  (speciesnet pulls in the headless one), `cv2.imwrite` rejects the JPEG-quality argument. Fix:
+  (an old environment that still has `speciesnet` installed pulls in the headless one), `cv2.imwrite` rejects the JPEG-quality argument. Fix:
   `pip uninstall -y opencv-python-headless` then `pip install --force-reinstall opencv-python==4.11.0.86`.
 - **The `.kestrel/` schema is shared** by the browse UI, the Cloud Compute result-pack merge and the Perch
   upload. Changing columns in `kestrel_analyzer/database.py` affects all three. The Cloud Compute GPU
