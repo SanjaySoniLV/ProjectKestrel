@@ -362,8 +362,10 @@ Both image towers are dynamically quantised int8 graphs
 ops, so a CoreML session splits the graph into many CoreML/CPU partitions and
 copies activations between devices every layer; DirectML implements them.
 Default (`tower_device = auto`): towers on CPU with CoreML, on the GPU with
-DirectML. Override with the *Settings → BioCLIP / SigLIP device* select or
-`KESTREL_TOWER_DEVICE=cpu|gpu|auto`.
+DirectML. Override with the *Settings → BioCLIP device* select or
+`KESTREL_TOWER_DEVICE=cpu|gpu|auto`. The SigLIP image tower ignores this and always runs
+its int8 graph on CPU (`providers.CPU_PINNED_KINDS`): its embedding is the default quality
+score, and the GPU graph would move ~12% of crops by one star between machines.
 
 Every ONNX session logs what it asked for and what it got, including how many
 graph nodes ORT placed on each execution provider (parsed from ORT's verbose

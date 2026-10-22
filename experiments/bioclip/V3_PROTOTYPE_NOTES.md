@@ -387,3 +387,13 @@ Still to confirm on DML: the shared-data GPU graph is still ~52 ms / 10 ms per c
 <1 s extra; GPU memory (the folded fp16 weights are ~600 MB for BioCLIP + ~180 MB for SigLIP on
 the device, plus ORT keeps the mmapped int8 `.data`); and that a DML device-lost demotion
 rebuilds the towers on CPU with the int8 graph.
+
+### Decision (Sanjay, 2026-10-22): SigLIP stays on the CPU int8 graph everywhere
+
+The SigLIP crop embedding is the default quality score. On 300 real crops its DirectML (wdq16)
+graph is closer to fp32 (cos 0.9996 vs 0.993) but moves 12% of crops by one star against the CPU
+int8 graph — per-crop activation-quantisation noise, which a calibration refit cannot remove.
+To keep star ratings identical across machines (and between analysis and upgrade), `siglip_image`
+is in `providers.CPU_PINNED_KINDS`: it always runs the int8 graph on CPU (~44 ms/crop), whatever
+the GPU or `tower_device` setting. BioCLIP keeps the DirectML graph (13 s -> 52 ms; species top-1
+agrees on 39/40 crops). The SigLIP wdq16 graph stays in the repo for a future change of mind.

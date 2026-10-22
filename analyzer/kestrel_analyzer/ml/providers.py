@@ -55,6 +55,13 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 TOWER_KINDS = frozenset({"bird_species", "siglip_image"})
+# Towers pinned to the CPU int8 graph on every machine. SigLIP's crop embedding IS the
+# default quality score: its GPU (wdq16) graph is closer to fp32, but it moves ~12% of
+# crops by one star against the CPU int8 graph (per-crop quantisation noise, not a shift
+# a calibration refit could remove). Pinning it keeps stars identical across machines
+# and between analysis and upgrade; SigLIP is ~44 ms/crop on CPU, small next to the
+# detector. BioCLIP keeps its GPU graph (13 s -> 52 ms on DirectML; top-1 agrees 39/40).
+CPU_PINNED_KINDS = frozenset({"siglip_image"})
 TOWER_DEVICES = ("auto", "cpu", "gpu")
 
 # EPs that get the fp16 "wdq16" tower graph instead of the dynamic-int8 one.

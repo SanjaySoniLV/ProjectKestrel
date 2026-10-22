@@ -132,3 +132,18 @@ def test_non_tower_session_unchanged(graphs, monkeypatch):
     monkeypatch.setattr(P, "build_session", _fake_build(calls))
     ResilientOnnxSession("detector", cpu, _Coord(DML))
     assert calls == [(str(cpu.resolve()), DML, {})]
+
+
+def test_siglip_tower_is_pinned_to_cpu_even_on_gpu(monkeypatch):
+    """The SigLIP crop embedding is the default quality score; its stars must not
+    depend on the machine, so it never gets a GPU EP (BioCLIP still does)."""
+    from kestrel_analyzer.ml import provider_coordinator as pc
+    from kestrel_analyzer.ml import providers as prov
+    monkeypatch.setattr(prov, "tower_device_setting", lambda: "auto")
+    coord = pc.ProviderCoordinator(user_gpu_enabled=True)
+    coord._state = pc.ProviderState.GPU
+    monkeypatch.setattr("kestrel_analyzer.ml.GPU_EP", "DmlExecutionProvider")
+    monkeypatch.setattr(pc, "gpu_providers", lambda: ["DmlExecutionProvider", "CPUExecutionProvider"])
+    assert coord.providers_for("siglip_image") == ["CPUExecutionProvider"]
+    assert coord.providers_for("bird_species") == ["DmlExecutionProvider", "CPUExecutionProvider"]
+    assert "siglip_image" in prov.CPU_PINNED_KINDS and "bird_species" not in prov.CPU_PINNED_KINDS
