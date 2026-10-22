@@ -1,6 +1,7 @@
 """Follow-up experiment 1: zero-shot CLIP sharpness vs Kestrel's quality CNN.
 
     python exp_quality.py prepare --work DIR [--work DIR ...] --out OUT --n-disagree 16 --n-agree 8 --n-random 16
+    python exp_quality.py prepare --work DIR ... --out OUT --best-crop --min-range 0.15 --cap 5 --select disagree_any --n-disagree 150
     python exp_quality.py score --out OUT --judge OUT/judge_a.json [--judge OUT/judge_b.json]
 
 Within-scene ranking task. Only images with exactly one crop are used, so which
@@ -37,12 +38,27 @@ NEG = "a blurry, out-of-focus photo of a bird"
 TILE = 400
 
 
-def rows_for(work_dirs):
+def rows_for(work_dirs, best_crop=False):
+    """Single-crop images only, or (best_crop) every image via its highest-quality crop,
+    which is the crop Kestrel's pipeline uses as the image's primary crop."""
     out = []
     for w in work_dirs:
+        best = {}
         for r in csv.DictReader(open(os.path.join(w, "data", "crops_index.csv"))):
-            if r["n_crops_in_export"] != "1" or r["quality"] in ("", "None"):
+            if r["quality"] in ("", "None"):
                 continue
+            if best_crop:
+                k = (r["slug"], r["export_id"])
+                if k not in best or float(r["quality"]) > float(best[k]["quality"]):
+                    best[k] = r
+                continue
+            if r["n_crops_in_export"] != "1":
+                continue
+            r["abspath"] = os.path.join(w, "data", r["path"])
+            r["work"] = w
+            if os.path.exists(r["abspath"]):
+                out.append(r)
+        for r in best.values():
             r["abspath"] = os.path.join(w, "data", r["path"])
             r["work"] = w
             if os.path.exists(r["abspath"]):
@@ -122,45 +138,58 @@ def grid(tiles, per_row=4):
 
 
 def prepare(a):
-    rows = rows_for(a.work)
+    rows = rows_for(a.work, a.best_crop)
     clip = load_emb(a.work, "img_clip-b16_f1.npz")
     d_clip = text_dir("ViT-B-16", "openai")
     scenes = {}
     for r in rows:
         if r["crop_id"] in clip:
             scenes.setdefault((r["slug"], r["scene_id"]), []).append(r)
-    cands = []
     rng = random.Random(0)
+    pool = []
     for key, rs in scenes.items():
         if len(rs) < 5:
             continue
         rs = sorted(rs, key=lambda r: float(r["quality"]))
-        if len(rs) > 8:  # spread across Kestrel's range
-            idx = np.linspace(0, len(rs) - 1, 8).round().astype(int)
-            rs = [rs[i] for i in sorted(set(idx))]
         k = [float(r["quality"]) for r in rs]
-        c = [float(clip[r["crop_id"]] @ d_clip) for r in rs]
-        if np.std(k) < 1e-6:
+        if k[-1] - k[0] < a.min_range:  # near-identical frames: unscorable
             continue
-        cands.append((spearmanr(k, c).correlation, key, rs))
+        if len(rs) > a.cap:  # spread across Kestrel's range
+            idx = np.linspace(0, len(rs) - 1, a.cap).round().astype(int)
+            rs = [rs[i] for i in sorted(set(idx))]
+        pool.append((key, rs))
+    sig = siglip_scores([r["abspath"] for _, rs in pool for r in rs]) if a.select == "disagree_any" else {}
+    cands = []
+    for key, rs in pool:
+        k = [float(r["quality"]) for r in rs]
+        rho = spearmanr(k, [float(clip[r["crop_id"]] @ d_clip) for r in rs]).correlation
+        if sig:  # disagreement with either zero-shot ranker
+            rho = min(rho, spearmanr(k, [sig[r["abspath"]] for r in rs]).correlation)
+        cands.append((rho, key, rs))
     cands.sort(key=lambda x: x[0])
-    dis = cands[: a.n_disagree]
-    agr = cands[-a.n_agree:]
-    rest = cands[a.n_disagree:-a.n_agree]
-    rnd = rng.sample(rest, min(a.n_random, len(rest)))
-    chosen = [("disagree", *x) for x in dis] + [("agree", *x) for x in agr] + [("random", *x) for x in rnd]
+    if a.select == "disagree_any":
+        chosen = [("disagree", *x) for x in cands[: a.n_disagree]]
+    else:
+        dis = cands[: a.n_disagree]
+        agr = cands[-a.n_agree:]
+        rest = cands[a.n_disagree:-a.n_agree]
+        rnd = rng.sample(rest, min(a.n_random, len(rest)))
+        chosen = [("disagree", *x) for x in dis] + [("agree", *x) for x in agr] + [("random", *x) for x in rnd]
     rng.shuffle(chosen)
-    print(f"{len(cands)} candidate scenes; chosen {len(chosen)}")
+    print(f"{len(pool)} scorable scenes; chosen {len(chosen)}; max disagreement rho among chosen "
+          f"{max(c[1] for c in chosen):.2f}")
     paths = [r["abspath"] for _, _, _, rs in chosen for r in rs]
-    sig = siglip_scores(paths)
+    missing = [p for p in paths if p not in sig]
+    if missing:
+        sig.update(siglip_scores(missing))
     os.makedirs(os.path.join(a.out, "blind"), exist_ok=True)
     key = {}
     for n, (group, rho, (slug, sid), rs) in enumerate(chosen):
-        name = f"scene_{n:02d}"
+        name = f"scene_{n:03d}"
         order = list(range(len(rs)))
         rng.shuffle(order)
         labels = string.ascii_uppercase[: len(rs)]
-        tiles, entry = [], {"group": group, "slug": slug, "scene_id": sid, "clip_vs_kestrel_rho": rho, "tiles": {}}
+        tiles, entry = [], {"group": group, "slug": slug, "scene_id": sid, "selection_rho": rho, "tiles": {}}
         for lab, i in zip(labels, order):
             r = rs[i]
             tiles.append(tile(r["abspath"], lab))
@@ -169,7 +198,7 @@ def prepare(a):
                 "kestrel": float(r["quality"]), "clip": float(clip[r["crop_id"]] @ d_clip),
                 "siglip2": sig[r["abspath"]], "laplacian": laplacian(r["abspath"]),
             }
-        grid(tiles).save(os.path.join(a.out, "blind", f"{name}.jpg"), quality=90)
+        grid(tiles, per_row=len(tiles) if len(tiles) <= 5 else 4).save(os.path.join(a.out, "blind", f"{name}.jpg"), quality=90)
         key[name] = entry
     json.dump(key, open(os.path.join(a.out, "key.json"), "w"), indent=1)
 
@@ -236,6 +265,12 @@ def main():
     p.add_argument("--n-disagree", type=int, default=16)
     p.add_argument("--n-agree", type=int, default=8)
     p.add_argument("--n-random", type=int, default=16)
+    p.add_argument("--best-crop", action="store_true", help="use every image via its best crop, not single-crop images only")
+    p.add_argument("--min-range", type=float, default=0.0, help="skip scenes whose Kestrel quality range is below this")
+    p.add_argument("--cap", type=int, default=8, help="max images per scene, spread over Kestrel's range")
+    p.add_argument("--select", choices=["groups", "disagree_any"], default="groups",
+                   help="groups: disagree/agree/random vs CLIP; disagree_any: n-disagree scenes where Kestrel "
+                        "disagrees most with CLIP or SigLIP 2")
     s = sub.add_parser("score")
     s.add_argument("--out", required=True)
     s.add_argument("--judge", action="append", required=True)
