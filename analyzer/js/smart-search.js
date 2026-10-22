@@ -9,7 +9,7 @@
     // points each card at its best-matching image.
     const SMART_SEARCH_LIMIT = 48;
     const SMART_SEARCH_DEBOUNCE_MS = 400;
-    const SMART_SEARCH_PLACEHOLDER = '✨ e.g. "heron in a marsh", "dove pair", "bird in flight"';
+    const SMART_SEARCH_PLACEHOLDER = '✨ e.g. "dove pair", "bird in flight"';
     const SMART_SEARCH_EXAMPLES = ['bird in flight', 'dove pair', 'heron in a marsh', 'perched on a wire', 'two birds', 'blurry'];
     const SMART_CHIP_KIND_LABEL = {
       species: 'species', family: 'family', wildlife: 'wildlife', group: 'species group',
@@ -327,6 +327,7 @@
       if (!start_fn || _smart.indexing) return;
       const targets = _smart.needsIndex.filter(n => n.upgrade !== 'reanalyze').map(n => n.root);
       let upgradedAny = false;
+      let canceledAny = false;
       _smart.cancelUpgrade = false;
       for (const rp of targets) {
         if (_smart.cancelUpgrade) break;
@@ -354,7 +355,7 @@
           if (p.done) {
             if (p.phase === 'error') showToast(`Upgrade failed: ${p.error || 'unknown error'}`, 6000);
             else if (p.phase === 'stopped') showToast('Upgrade paused because analysis started. Try again when it finishes.', 6000);
-            else if (p.phase === 'canceled') { showToast(`Upgrade of ${_smartFolderName(rp)} stopped — run it again to resume.`, 5000); upgradedAny = true; }
+            else if (p.phase === 'canceled') { showToast(`Upgrade of ${_smartFolderName(rp)} stopped — run it again to resume.`, 5000); upgradedAny = true; canceledAny = true; }
             else if (p.phase === 'complete') upgradedAny = true;
             break;
           }
@@ -371,7 +372,7 @@
           if (dirty && typeof saveCsv === 'function') await saveCsv();
           if (typeof reloadCurrentFolders === 'function') await reloadCurrentFolders();
         } catch (e) { console.warn('[smart-search] reload after upgrade failed', e); }
-        showToast('Upgraded to pipeline 3.0 — species, quality and smart search are up to date.', 5000);
+        if (!canceledAny) showToast('Upgraded to pipeline 3.0 — species, quality and smart search are up to date.', 5000);
       }
       await _smartRun();
     }
