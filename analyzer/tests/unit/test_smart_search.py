@@ -361,3 +361,22 @@ def test_settings_are_sanitised():
     assert s({"quality_model": "bogus"})["quality_model"] == "siglip"
     assert s({"tower_device": "cpu"})["tower_device"] == "cpu"
     assert s({"tower_device": 7})["tower_device"] == "auto"
+
+
+def test_read_kestrel_csv_applies_the_quality_model_lazily(api, folder, monkeypatch):
+    import pandas as pd
+
+    kdir = str(folder / ".kestrel")
+    _upgrade(kdir)  # siglip effective
+    monkeypatch.setattr(api_bridge, "load_persisted_settings", lambda: {"quality_model": "legacy"})
+    r = api.read_kestrel_csv(str(folder))
+    assert r["success"]
+    df = pd.read_csv(os.path.join(kdir, "kestrel_database.csv"))
+    rows = df[df["quality_siglip"] >= 0]
+    assert len(rows) and (rows["quality"] - rows["quality_legacy"]).abs().max() < 1e-6
+    # Not while the folder is being analysed.
+    monkeypatch.setattr(api_bridge, "load_persisted_settings", lambda: {"quality_model": "siglip"})
+    monkeypatch.setattr(api_bridge._queue_manager, "has_running_writer", lambda root: True)
+    api.read_kestrel_csv(str(folder))
+    df2 = pd.read_csv(os.path.join(kdir, "kestrel_database.csv"))
+    assert (df2["quality"] - df2["quality_legacy"]).abs().max() < 1e-6
