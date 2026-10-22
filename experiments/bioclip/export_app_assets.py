@@ -19,6 +19,14 @@ With --clip, the general-purpose CLIP used for free-text search (exp/semantic-se
                                fp16 *weights*, fp32 compute (int8 text reordered top-50 results by up to
                                96%; weight-only fp16 is exact and half size)
   bpe_simple_vocab_16e6.txt.gz CLIP BPE vocab
+With --siglip, SigLIP 2 ViT-B/16 (Apache-2.0), the v3 search + zero-shot quality model, into models/siglip/:
+  siglip2_b16_image_int8.onnx  image tower, input "image" [N,3,224,224] (bicubic squash to 224, (x/255-0.5)/0.5),
+                               output "emb" [N,768]; int8 MatMuls except one outlier layer, fp16 weights
+  siglip2_b16_text_fp16w.onnx  text tower WITHOUT its token table: input "x" [N,64,768] gathered token
+                               embeddings, output "emb" [N,768]
+  siglip2_token_emb_int8.npz   pruned token table (rows = siglip_tokenizer subset), int8 + per-row scale
+  siglip_index.json            preprocessing + logit scale/bias
+  (siglip2_tokenizer.json.gz comes from export_siglip_tokenizer.py)
 With --search, also (BioCLIP text tower; superseded by --clip for search):
   bioclip2_text_int8.onnx      text tower, input "tokens" [N,77] int64, output
                                "emb" [N,768] (not normalised); free-text search
@@ -47,9 +55,10 @@ HUB = "hf-hub:imageomics/bioclip-2"
 PROMPT = "a photo of {}."
 
 
-def quantize(src, dst, ops=("MatMul",), per_channel=False):
+def quantize(src, dst, ops=("MatMul",), per_channel=False, exclude=()):
     from onnxruntime.quantization import QuantType, quantize_dynamic
-    quantize_dynamic(src, dst, weight_type=QuantType.QInt8, op_types_to_quantize=list(ops), per_channel=per_channel)
+    quantize_dynamic(src, dst, weight_type=QuantType.QInt8, op_types_to_quantize=list(ops), per_channel=per_channel,
+                     nodes_to_exclude=list(exclude))
 
 
 def weights_fp16(src, dst, min_size=1024):
@@ -110,17 +119,132 @@ def export_clip(out):
     shutil.rmtree(tmp, ignore_errors=True)
 
 
+# Non-bird animals SpeciesNet's classifier never sees often enough to have a label for,
+# added so BioCLIP can still name common invertebrates/herps at a coarse level.
+EXTRA_WILDLIFE = [
+    ("insect", "insecta", "", ""), ("butterfly", "insecta", "lepidoptera", ""), ("moth", "insecta", "lepidoptera", ""),
+    ("dragonfly", "insecta", "odonata", ""), ("damselfly", "insecta", "odonata", ""), ("bee", "insecta", "hymenoptera", ""),
+    ("wasp", "insecta", "hymenoptera", ""), ("beetle", "insecta", "coleoptera", ""), ("grasshopper", "insecta", "orthoptera", ""),
+    ("spider", "arachnida", "araneae", ""), ("frog", "amphibia", "anura", ""), ("toad", "amphibia", "anura", ""),
+    ("salamander", "amphibia", "caudata", ""), ("turtle", "reptilia", "testudines", ""), ("lizard", "reptilia", "squamata", ""),
+    ("snake", "reptilia", "squamata", ""), ("alligator", "reptilia", "crocodylia", ""), ("fish", "actinopterygii", "", ""),
+    ("crab", "malacostraca", "decapoda", ""), ("snail", "gastropoda", "", ""),
+]
+
+
+def export_wildlife(out):
+    """BioCLIP 2 text embeddings for the non-bird animals the v3 pipeline routes to "wildlife",
+    replacing SpeciesNet's classifier. Labels come from SpeciesNet's own label list (non-Aves,
+    named, not blank/human/vehicle) plus EXTRA_WILDLIFE; same prompt as the bird head."""
+    lab = os.path.join(HERE, "..", "..", "analyzer", "models", "speciesnet",
+                       "always_crop_99710272_22x8_v12_epoch_00148.labels.20251208.txt")
+    rows, seen = [], set()
+    for line in open(lab, encoding="utf-8"):
+        parts = line.rstrip("\n").split(";")
+        if len(parts) < 7:
+            continue
+        _, cls, order, fam, genus, sp, common = parts[:7]
+        common = common.strip()
+        if cls in ("aves", "") or not common or common in ("blank", "human", "vehicle", "animal", "no cv result"):
+            continue
+        if common.lower() in seen:
+            continue
+        seen.add(common.lower())
+        rows.append({"common_name": common, "scientific_name": f"{genus} {sp}".strip(), "class": cls,
+                     "order": order, "family": fam})
+    for common, cls, order, fam in EXTRA_WILDLIFE:
+        if common not in seen:
+            seen.add(common)
+            rows.append({"common_name": common, "scientific_name": "", "class": cls, "order": order, "family": fam})
+    model, _, _ = open_clip.create_model_and_transforms(HUB)
+    model.eval()
+    tok = open_clip.get_tokenizer(HUB)
+    names = [PROMPT.format(r["common_name"]) for r in rows]
+    emb = np.zeros((len(names), model.text_projection.shape[1]), np.float32)
+    with torch.inference_mode():
+        for i in range(0, len(names), 256):
+            emb[i:i + 256] = torch.nn.functional.normalize(encode_text_trimmed(model, tok(names[i:i + 256])), dim=-1).numpy()
+    np.save(os.path.join(out, "wildlife_text_emb.npy"), emb.astype(np.float16))
+    json.dump({"model": HUB, "prompt": PROMPT, "source": "SpeciesNet v4.0.1a labels (non-Aves) + EXTRA_WILDLIFE",
+               "labels": rows}, open(os.path.join(out, "wildlife_index.json"), "w"))
+    print("wildlife labels ->", len(rows))
+
+
+class SiglipTextBody(torch.nn.Module):
+    """SigLIP 2 text tower minus its 256k-row token table: input "x" = gathered token
+    embeddings [N,64,768] (the app looks them up from the pruned int8 table), output "emb"
+    [N,768] (not normalised). Pooling is the last position, so ids never enter the graph."""
+
+    def __init__(self, t):
+        super().__init__()
+        self.t = t
+
+    def forward(self, x):
+        t = self.t
+        x = x + t.positional_embedding[: x.shape[1]]
+        x = t.transformer(x, attn_mask=None)
+        x = t.ln_final(x)[:, -1]
+        return t.text_projection(x)
+
+
+def export_siglip(out, tokenizer_asset):
+    """SigLIP 2 ViT-B/16 (Apache-2.0) for search + zero-shot quality (exp/pipeline-v3)."""
+    import gzip
+    sys.path.insert(0, os.path.join(HERE, "..", "..", "analyzer"))
+    from kestrel_analyzer.ml.siglip_tokenizer import SiglipTokenizer
+    model, _, _ = open_clip.create_model_and_transforms("ViT-B-16-SigLIP2", pretrained="webli")
+    model.eval()
+    tmp = tempfile.mkdtemp()
+    p = os.path.join(tmp, "img.onnx")
+    torch.onnx.export(model.visual, torch.randn(1, 3, 224, 224), p, input_names=["image"], output_names=["emb"],
+                      dynamic_axes={"image": {0: "n"}, "emb": {0: "n"}}, opset_version=17, dynamo=False)
+    # Dynamic int8 on every MatMul wrecks this tower (cos 0.69 vs fp32): one layer, block 5's
+    # MLP fc2, carries activation outliers. Quantised alone it drops cos to 0.72; every other
+    # MatMul is harmless (>= 0.995). So leave that one float, and store it (and every other
+    # float weight) as fp16: cos 0.994 vs fp32, 97 MB.
+    q = os.path.join(tmp, "img_q.onnx")
+    quantize(p, q, per_channel=True, exclude=["/trunk/blocks/blocks.5/mlp/fc2/MatMul"])
+    weights_fp16(q, os.path.join(out, "siglip2_b16_image_int8.onnx"))
+    p = os.path.join(tmp, "txt.onnx")
+    torch.onnx.export(SiglipTextBody(model.text), torch.randn(1, 64, 768), p, input_names=["x"], output_names=["emb"],
+                      dynamic_axes={"x": {0: "n"}, "emb": {0: "n"}}, opset_version=17, dynamo=False)
+    # int8 text reorders top-50 results (84% overlap vs 98% for fp16 weights), as with CLIP.
+    weights_fp16(p, os.path.join(out, "siglip2_b16_text_fp16w.onnx"))
+    tok = SiglipTokenizer(tokenizer_asset)
+    tok.subset_size  # loads the asset (lazy)
+    W = model.text.token_embedding.weight.detach().numpy()[np.asarray(tok.subset_ids)]
+    scale = np.abs(W).max(1) / 127.0
+    q = np.round(W / scale[:, None]).astype(np.int8)
+    np.savez(os.path.join(out, "siglip2_token_emb_int8.npz"), q=q, scale=scale.astype(np.float32))
+    json.dump({"model": "open_clip ViT-B-16-SigLIP2 / webli", "image_size": 224,
+               "image_mean": [0.5, 0.5, 0.5], "image_std": [0.5, 0.5, 0.5],
+               "context_length": 64, "logit_scale": float(model.logit_scale.exp()),
+               "logit_bias": float(model.logit_bias), "token_table_rows": int(len(q))},
+              open(os.path.join(out, "siglip_index.json"), "w"), indent=1)
+    for f in sorted(os.listdir(out)):
+        print(f, round(os.path.getsize(os.path.join(out, f)) / 1e6, 1), "MB")
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(HERE, "..", "..", "analyzer", "models", "bioclip"))
     ap.add_argument("--search", action="store_true", help="also export the BioCLIP text tower + tokenizer vocab")
     ap.add_argument("--clip", action="store_true", help="ONLY export the general CLIP ViT-B/16 towers for search")
+    ap.add_argument("--wildlife", action="store_true", help="ONLY export BioCLIP text embeddings for non-bird wildlife")
+    ap.add_argument("--siglip", action="store_true", help="ONLY export the SigLIP 2 ViT-B/16 towers + pruned token table")
     a = ap.parse_args()
     out = os.path.abspath(a.out)
     os.makedirs(out, exist_ok=True)
     torch.set_num_threads(os.cpu_count())
     if a.clip:
         export_clip(out)
+        return
+    if a.wildlife:
+        export_wildlife(out)
+        return
+    if a.siglip:
+        export_siglip(out, os.path.join(HERE, "..", "..", "analyzer", "models", "siglip", "siglip2_tokenizer.json.gz"))
         return
     model, _, _ = open_clip.create_model_and_transforms(HUB)
     model.eval()
