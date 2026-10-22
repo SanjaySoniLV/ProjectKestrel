@@ -12,6 +12,7 @@ import shutil
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -24,11 +25,14 @@ from kestrel_analyzer.config import (
     QUALITYCLASSIFIER_PATH,
     SAM_DEC_ONNX_PATH,
     SAM_ENC_ONNX_PATH,
+    BIOCLIP_IMAGE_MODEL_PATH,
+    METADATA_FILENAME,
     SCENEDATA_FILENAME,
-    SPECIESCLASSIFIER_PATH,
-    SPECIESNET_MODEL_DIR,
+    SIGLIP_MODELS_DIR,
 )
+from kestrel_analyzer.bird_catalog import get_catalog
 from kestrel_analyzer.database import BASE_COLUMNS, load_database, load_scenedata
+from kestrel_analyzer.embedding_store import load_embeddings
 from kestrel_analyzer.pipeline import AnalysisPipeline
 
 
@@ -37,10 +41,12 @@ pytestmark = [pytest.mark.integration, pytest.mark.e2e]
 
 _REQUIRED_MODELS = [
     DETECTOR_ONNX_PATHS[DEFAULT_DETECTOR_NAME],
-    SPECIESNET_MODEL_DIR / "speciesNet_v4.0.1a.onnx",
+    SIGLIP_MODELS_DIR / "siglip2_b16_image_int8.onnx",
+    SIGLIP_MODELS_DIR / "siglip2_b16_image.data",
+    Path(BIOCLIP_IMAGE_MODEL_PATH).with_name("bioclip2_image.data"),
     Path(SAM_ENC_ONNX_PATH),
     Path(SAM_DEC_ONNX_PATH),
-    Path(SPECIESCLASSIFIER_PATH),
+    Path(BIOCLIP_IMAGE_MODEL_PATH),
     Path(QUALITYCLASSIFIER_PATH),
 ]
 
@@ -125,6 +131,8 @@ class TestPipelineE2EOnCR3:
             scene_time_threshold=60.0,
             max_bird_crops=5,
             parallel_prefetch=1,
+            species_regions=["NA"],
+            smart_search_enabled=True,
         )
         return work, len(cr3_files)
 
@@ -193,6 +201,77 @@ class TestPipelineE2EOnCR3:
         db, _ = load_database(kestrel_dir, "pytest_e2e")
         ec = db["exposure_correction"].dropna()
         assert len(ec) == len(db), "Some rows missing exposure_correction"
+
+    def test_species_are_catalog_names_in_region(self, pipeline_result_dir):
+        work, _ = pipeline_result_dir
+        db, _ = load_database(str(work / KESTREL_DIR_NAME), "pytest_e2e")
+        cat = get_catalog()
+        na = frozenset({"NA"})
+        birds = 0
+        for _, row in db.iterrows():
+            for crop in json.loads(row["crops_json"] or "[]"):
+                if crop["family"] in ("N/A",) or crop["species"] in ("Unknown", "Error"):
+                    continue
+                rec = cat.lookup(crop["species"])
+                if rec is None:
+                    continue  # non-bird wildlife label
+                birds += 1
+                assert rec.matches_any_region(na), crop["species"]
+                assert crop["family"] == rec.family_common
+                assert 0.0 < crop["species_confidence"] <= 1.0
+                assert crop["species_confidence"] <= crop["family_confidence"] + 1e-6
+        assert birds >= 1, "no bird crops were classified"
+
+    def test_embeddings_sidecar_and_metadata(self, pipeline_result_dir):
+        work, _ = pipeline_result_dir
+        kdir = work / KESTREL_DIR_NAME
+        keys, mat, header = load_embeddings(str(kdir))
+        assert header is not None and header["model"] == "bioclip-2"
+        assert len(keys) >= 1 and mat.shape == (len(keys), 768)
+        db, _ = load_database(str(kdir), "pytest_e2e")
+        assert {k[0] for k in keys} <= set(db["filename"].astype(str))
+        meta = json.loads((kdir / METADATA_FILENAME).read_text(encoding="utf-8"))
+        assert meta["species_regions"] == ["NA"]
+        assert meta["species_model"] == "bioclip-2"
+        assert meta["analysis_settings"]["species_regions"] == ["NA"]
+
+    def test_smart_search_siglip_slots(self, pipeline_result_dir):
+        from kestrel_analyzer import smart_search
+        from kestrel_analyzer.ml import siglip
+
+        work, n = pipeline_result_dir
+        kdir = work / KESTREL_DIR_NAME
+        keys, mat, header = siglip.load_store(str(kdir), siglip.MODEL_ID)
+        assert header is not None and header["model"] == siglip.MODEL_ID
+        assert mat.shape == (len(keys), siglip.DIM)
+        np.testing.assert_allclose(np.linalg.norm(mat, axis=1), 1.0, atol=5e-3)
+        db, _ = load_database(str(kdir), "pytest_e2e")
+        expected = {
+            (str(row["filename"]), int(c["crop_index"]))
+            for _, row in db.iterrows()
+            for c in smart_search.subject_crops(json.loads(row["crops_json"] or "[]"))
+        }
+        assert set(keys) == expected and len(keys) >= 1
+        fkeys, fmat, fheader = siglip.load_store(str(kdir), siglip.FRAME_SLOT)
+        assert fheader is not None and {k[0] for k in fkeys} == set(db["filename"].astype(str))
+        res = smart_search.search_folder(str(kdir), "bird in flight")
+        assert res["scenes"] and not res["needs_index"] and res["mode"] == "semantic"
+
+    def test_v3_quality_columns_and_metadata(self, pipeline_result_dir):
+        work, _ = pipeline_result_dir
+        kdir = work / KESTREL_DIR_NAME
+        db, _ = load_database(str(kdir), "pytest_e2e")
+        meta = json.loads((kdir / METADATA_FILENAME).read_text(encoding="utf-8"))
+        assert meta["pipeline_major"] == 3 and meta["schema_version"] == 3
+        assert meta["models"]["siglip"] == "siglip2-b16" and meta["models"]["species"] == "bioclip-2"
+        model = meta["quality_model"]
+        for _, row in db.iterrows():
+            for c in json.loads(row["crops_json"] or "[]"):
+                if int(c.get("detection_index", -1)) < 0:
+                    continue
+                assert 0.0 <= c["quality_siglip"] <= 1.0 and 0.0 <= c["quality_legacy"] <= 1.0
+                assert c["quality"] == pytest.approx(c["quality_siglip" if model == "siglip" else "quality_legacy"])
+                assert 0.0 <= c["animal_score"] <= 1.0 and c["subject"] in ("bird", "wildlife")
 
     def test_export_thumbnails_created(self, pipeline_result_dir):
         work, _ = pipeline_result_dir

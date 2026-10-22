@@ -1,0 +1,8 @@
+{
+ "model": "siglip2-b16",
+ "prompts": [
+  "a sharp, in-focus photo of a bird",
+  "a blurry, out-of-focus photo of a bird"
+ ],
+ "built_by": "tools/build_v3_text_assets.py"
+}

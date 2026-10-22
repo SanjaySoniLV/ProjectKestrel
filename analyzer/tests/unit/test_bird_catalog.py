@@ -452,3 +452,80 @@ class TestTokenPrefix:
 
     def test_query_token_must_be_prefix_not_substring(self):
         assert not _token_prefix_match(["rob"], ["barnswallow"])
+
+
+# ----------------------------------------------------------------------------
+# Introduced / legacy-model species regions (geofence fix)
+# ----------------------------------------------------------------------------
+
+def _load_build_tool():
+    import importlib.util
+    path = Path(__file__).resolve().parents[3] / "tools" / "build_bird_catalog.py"
+    spec = importlib.util.spec_from_file_location("build_bird_catalog", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestIntroducedSpeciesRegions:
+    """IOC breeding ranges omit established introductions, so the catalog adds
+    NA for every legacy model species plus a curated introductions list. The
+    same filter drives the species combobox and the BioCLIP geofence."""
+
+    @pytest.mark.parametrize("name", [
+        "House Sparrow", "European Starling", "Eurasian Collared-Dove",
+        "Rock Pigeon", "Mute Swan", "Ring-necked Pheasant", "Monk Parakeet",
+    ])
+    def test_established_exotics_match_na(self, catalog, name):
+        rec = catalog.lookup(name)
+        assert rec is not None
+        assert rec.matches_any_region(frozenset({"NA"})), (name, sorted(rec.regions))
+        assert rec in catalog.search(name, ["NA"], limit=5)
+
+    def test_old_world_only_species_does_not_match_na(self, catalog):
+        rec = catalog.lookup("Pygmy Sunbird")
+        assert rec is not None
+        assert not rec.matches_any_region(frozenset({"NA"}))
+        assert rec.matches_any_region(frozenset({"AF"}))
+
+    def test_introductions_outside_na(self, catalog):
+        assert catalog.lookup("House Sparrow").matches_any_region(frozenset({"AU"}))
+        assert catalog.lookup("Common Myna").matches_any_region(frozenset({"AU"}))
+        assert catalog.lookup("Rose-ringed Parakeet").matches_any_region(frozenset({"PAL"}))
+        # Native ranges are preserved.
+        assert catalog.lookup("House Sparrow").matches_any_region(frozenset({"PAL"}))
+
+    def test_every_legacy_model_species_matches_na(self, catalog):
+        bad = [r.canonical_common_name for r in catalog.records
+               if r.is_model_species and not r.matches_any_region(frozenset({"NA"}))]
+        assert not bad, bad
+
+    def test_csv_is_consistent_with_build_rules(self):
+        """birds_global.csv must already contain everything the build tool's
+        augmentation rules add (one source of truth: the tool)."""
+        tool = _load_build_tool()
+        for rec in load_catalog():
+            regs = sorted(rec.regions)
+            again = tool.augment_regions(regs, rec.scientific_name, rec.is_model_species)
+            assert set(again) == set(regs), (rec.canonical_common_name, regs, again)
+        for sci in tool.INTRODUCED_RANGES:
+            assert any(r.scientific_name == sci for r in load_catalog()), sci
+
+    def test_augment_is_idempotent_and_order_preserving(self):
+        tool = _load_build_tool()
+        out = tool.augment_regions(["PAL", "OR", "AF"], "Passer domesticus", True)
+        assert out[:3] == ["PAL", "OR", "AF"] and "NA" in out and "AU" in out
+        assert tool.augment_regions(out, "Passer domesticus", True) == out
+        assert tool.augment_regions(["Worldwide"], "Columba livia", True) == ["Worldwide"]
+
+
+class TestResolveSpeciesRegions:
+    def test_cases(self):
+        from kestrel_analyzer.bird_catalog import resolve_species_regions
+        assert resolve_species_regions(None) == list(DEFAULT_REGION_SELECTION)
+        assert resolve_species_regions([]) == list(DEFAULT_REGION_SELECTION)
+        assert resolve_species_regions(["bogus"]) == list(DEFAULT_REGION_SELECTION)
+        assert resolve_species_regions(["Global"]) == ["global"]
+        assert resolve_species_regions(["PAL", "NA", "PAL"]) == ["NA", "PAL"]
+        assert resolve_species_regions("AF") == ["AF"]
+        assert resolve_species_regions(42) == list(DEFAULT_REGION_SELECTION)

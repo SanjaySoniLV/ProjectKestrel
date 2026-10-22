@@ -1,0 +1,9 @@
+{
+  "perches": {
+    "<perch-slug>": {"name": "Some outing (Houston, TX)", "region": "us", "checklist": "texas"},
+    "<perch-slug>": {"name": "Some trip abroad", "region": "india", "checklist": "india"}
+  },
+  "exclude_scene_labels": [
+    ["<perch-slug>", "<scene species label>", "why it is excluded"]
+  ]
+}

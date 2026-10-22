@@ -2,19 +2,38 @@ import os
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "2.0.4"
+VERSION = "3.0.0"
+
+# Analysis pipeline generation. 3 = MegaDetector + SAM-HQ + BioCLIP 2 (species,
+# false-positive gate, bird/wildlife routing) + SigLIP 2 (search embeddings and
+# the default quality score), SpeciesNet classifier removed. Recorded in
+# kestrel_metadata.json as ``pipeline_major`` once every row of a folder was
+# produced (or upgraded) by this generation; absent = older rows present.
+PIPELINE_MAJOR = 3
+
+# First pipeline version that wrote MegaDetector + SAM-HQ square subject crops
+# (``crop/<base>_crop_<i>.jpg`` with ``crops_json``) and downscaled ``export/``
+# frames -- what the v3 upgrade needs. See kestrel_analyzer/upgrade_v3.py.
+MIN_UPGRADABLE_VERSION = (2, 0, 0)
+
+# Model ids recorded in metadata.
+LEGACY_QUALITY_MODEL_ID = "kestrel-quality-cnn-v1"
 
 ANALYZER_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = ANALYZER_DIR.parent
 MODELS_DIR = ANALYZER_DIR / "models"
 
-SPECIESCLASSIFIER_PATH = MODELS_DIR / "model.onnx"
-SPECIESCLASSIFIER_LABELS = MODELS_DIR / "labels.txt"
+# Bird species: BioCLIP 2 zero-shot image tower + precomputed IOC species text
+# embeddings (see kestrel_analyzer/ml/bioclip_species.py).
+BIOCLIP_MODELS_DIR = MODELS_DIR / "bioclip"
+BIOCLIP_IMAGE_MODEL_PATH = BIOCLIP_MODELS_DIR / "bioclip2_image_int8.onnx"
 QUALITYCLASSIFIER_PATH = MODELS_DIR / "quality.onnx"
 QUALITY_NORMALIZATION_DATA_PATH = MODELS_DIR / "quality_normalization_data.csv"
 
-# SpeciesNet: bundled Kaggle-style folder (info.json + .pt + taxonomy). Passed as local model_name to speciesnet.ModelInfo.
+# MegaDetector + SAM-HQ ONNX files. The folder keeps its historical name; the
+# SpeciesNet classifier that used to live here was removed in pipeline 3.0.0.
 SPECIESNET_MODEL_DIR = MODELS_DIR / "speciesnet"
+SIGLIP_MODELS_DIR = MODELS_DIR / "siglip"
 
 # Runtime-selectable MegaDetector ONNX variants.
 # mdv5a (accurate, YOLOv5x6 @ 1280) and mdv1000-cedar (fast, YOLOv9 gelan-c @ 640)
@@ -33,9 +52,6 @@ DETECTOR_ONNX_PATHS = {
 SAM_ENC_ONNX_PATH = SPECIESNET_MODEL_DIR / "sam_hq_vit_tiny_encoder.onnx"
 SAM_DEC_ONNX_PATH = SPECIESNET_MODEL_DIR / "sam_hq_vit_tiny_decoder.onnx"
 
-WILDLIFE_CATEGORIES = [
-    "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "bird"
-]
 
 # Canonical RAW format list. Single source of truth — all other modules import
 # from here rather than maintaining their own copies. Adding a format here

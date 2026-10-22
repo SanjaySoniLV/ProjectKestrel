@@ -11,6 +11,10 @@
     
     // In-progress folder tracking and auto-refresh for live updates
     let _inProgressFolderPaths = new Set(); // folders with pending/running status
+    // Pipeline-3 upgrades (status.upgrades from get_queue_status) share the panel.
+    let _upgradeInProgressPaths = new Set(); // normalized paths of running upgrades (tree hourglass)
+    const _upgradeSeenRunning = new Set();   // job ids seen (or started) running → finish handling
+    const _upgradeCancelRequested = new Set(); // job ids whose Cancel was clicked
     let _autoRefreshTimers = new Map(); // path -> intervalId for auto-refresh listeners
     let _inProgressFoldersCheckedCount = 0; // count of in-progress folders that are checked
     
@@ -155,14 +159,20 @@
       if (!panel || !badge || !body) return;
 
       const items = status.items || [];
+      const upgrades = Array.isArray(status.upgrades) ? status.upgrades : [];
       const running = !!status.running;
       const paused = !!status.paused;
       const hasItems = items.length > 0;
+      const runningUpgrades = upgrades.filter(u => u.status === 'running');
 
       // While the queue is running, keep a short-lived poll to update folder rows
       if (running) startQueueCountsPoll(); else stopQueueCountsPoll();
 
-      if (!hasItems && !running) {
+      // Upgrades: finish handling (toast + reload) and the folder-tree hourglass.
+      // Runs before the early return so a dismissed/hidden panel still settles.
+      _syncUpgradeState(upgrades);
+
+      if (!hasItems && !upgrades.length && !running) {
         panel.classList.add('hidden');
         if (overallEtaEl) overallEtaEl.classList.add('hidden');
         stopPollingQueue();
@@ -170,6 +180,9 @@
       }
 
       panel.classList.remove('hidden');
+      // Pause / Cancel / Live act on analysis only — hide them while the panel
+      // shows nothing but upgrades (each upgrade row has its own Cancel).
+      panel.classList.toggle('queue-panel--upgrades-only', !hasItems && !running);
 
       // Badge
       const runningItems = items.filter(i => i.status === 'running');
@@ -184,7 +197,11 @@
         } else {
           badge.textContent = `${pendingItems.length + runningItems.length} pending`; badge.className = 'queue-panel-badge';
         }
-      } else if (doneItems.length === items.length && items.length > 0) {
+      } else if (runningUpgrades.length) {
+        const u = runningUpgrades[0];
+        badge.textContent = u.total > 0 ? `${u.current} / ${u.total}` : 'Upgrading';
+        badge.className = 'queue-panel-badge';
+      } else if (pendingItems.length === 0 && doneItems.length === items.length) {
         badge.textContent = 'Done'; badge.className = 'queue-panel-badge done';
       } else {
         badge.textContent = `${pendingItems.length} pending`; badge.className = 'queue-panel-badge';
@@ -199,8 +216,9 @@
       // early-return) so it works whether the panel is expanded or collapsed.
       const closeBtn = document.getElementById('queuePanelCloseBtn');
       if (closeBtn) {
-        const allTerminal = hasItems && !running
-          && runningItems.length === 0 && pendingItems.length === 0;
+        const allTerminal = (hasItems || upgrades.length > 0) && !running
+          && runningItems.length === 0 && pendingItems.length === 0
+          && runningUpgrades.length === 0;
         closeBtn.classList.toggle('hidden', !allTerminal);
       }
 
@@ -383,8 +401,23 @@
 
         frag.appendChild(div);
       }
-      body.innerHTML = '';
-      body.appendChild(frag);
+      // Analysis rows are rebuilt each poll; upgrade rows live in their own
+      // container and are updated in place, so their Cancel button is not
+      // replaced mid-click (polls run every 500 ms).
+      let analysisBox = body.querySelector(':scope > .queue-analysis-rows');
+      let upgradeBox = body.querySelector(':scope > .queue-upgrade-rows');
+      if (!analysisBox || !upgradeBox) {
+        body.innerHTML = '';
+        analysisBox = document.createElement('div');
+        analysisBox.className = 'queue-analysis-rows';
+        upgradeBox = document.createElement('div');
+        upgradeBox.className = 'queue-upgrade-rows';
+        body.appendChild(analysisBox);
+        body.appendChild(upgradeBox);
+      }
+      analysisBox.innerHTML = '';
+      analysisBox.appendChild(frag);
+      _renderUpgradeRows(upgradeBox, upgrades);
 
       // Async: load thumbnails for any img[data-thumb-rel] elements (cache avoids reload flash)
       body.querySelectorAll('img[data-thumb-rel]').forEach(img => {
@@ -484,6 +517,150 @@
       }
     }
 
+    const _UPGRADE_LABELS = {
+      running: '✨ Upgrading to pipeline 3',
+      done: '✓ Upgraded to pipeline 3',
+      cancelled: '— Upgrade stopped',
+      stopped: '⏸ Upgrade paused',
+      error: '✗ Upgrade failed',
+    };
+
+    /** Sync the upgrade rows in `box` with status.upgrades (keyed by job id, updated in place). */
+    function _renderUpgradeRows(box, upgrades) {
+      const keep = new Set(upgrades.map(u => String(u.job_id || '')));
+      for (const el of Array.from(box.children)) {
+        if (!keep.has(el.dataset.jobId)) el.remove();
+      }
+      let prev = null;
+      for (const u of upgrades) {
+        const id = String(u.job_id || '');
+        let el = Array.from(box.children).find(c => c.dataset.jobId === id);
+        if (!el) el = _createUpgradeRow(id);
+        _updateUpgradeRow(el, u);
+        const want = prev ? prev.nextSibling : box.firstChild;
+        if (el !== want) box.insertBefore(el, want);
+        prev = el;
+      }
+    }
+
+    /** Skeleton of one upgrade row; _updateUpgradeRow fills it. */
+    function _createUpgradeRow(jobId) {
+      const div = document.createElement('div');
+      div.className = 'queue-item queue-item--upgrade';
+      div.dataset.jobId = jobId;
+      div.innerHTML = '<div class="queue-item-header"><span class="queue-item-name"></span>'
+        + '<span class="queue-item-status upgrade"></span>'
+        + '<button type="button" class="queue-item-cancel-btn hidden">✕ Cancel</button></div>'
+        + '<div class="queue-item-progress"><div class="queue-item-progress-fill"></div></div>'
+        + '<div class="queue-item-eta"></div>';
+      const cancelBtn = div.querySelector('.queue-item-cancel-btn');
+      cancelBtn.title = 'Stop the upgrade. Progress so far is kept; running it again resumes where it stopped.';
+      cancelBtn.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        if (!jobId || _upgradeCancelRequested.has(jobId)) return;
+        _upgradeCancelRequested.add(jobId);
+        cancelBtn.textContent = 'Stopping…';
+        cancelBtn.disabled = true;
+        try { await window.pywebview?.api?.cancel_smart_search_index(jobId); } catch (_) { }
+      });
+      return div;
+    }
+
+    /** Fill one upgrade row from a status.upgrades entry. */
+    function _updateUpgradeRow(div, u) {
+      const isRunning = u.status === 'running';
+      div.classList.toggle('done-item', !isRunning);
+
+      const nameEl = div.querySelector('.queue-item-name');
+      nameEl.textContent = u.name || u.path || 'Folder';
+      nameEl.title = u.path || '';
+
+      const statusEl = div.querySelector('.queue-item-status');
+      const statusCls = { running: 'running', done: 'done', error: 'error' }[u.status] || 'cancelled';
+      statusEl.className = `queue-item-status upgrade ${statusCls}`;
+      statusEl.textContent = _UPGRADE_LABELS[u.status] || u.status;
+      statusEl.title = u.status === 'error' ? (u.error || '')
+        : u.status === 'stopped' ? 'Analysis of this folder started, so the upgrade paused. Run it again once analysis finishes.'
+          : u.status === 'cancelled' ? 'Progress so far is kept; running the upgrade again resumes where it stopped.'
+            : '';
+
+      const cancelBtn = div.querySelector('.queue-item-cancel-btn');
+      cancelBtn.classList.toggle('hidden', !isRunning);
+      if (isRunning) {
+        const stopping = _upgradeCancelRequested.has(u.job_id);
+        cancelBtn.textContent = stopping ? 'Stopping…' : '✕ Cancel';
+        cancelBtn.disabled = stopping;
+        cancelBtn.setAttribute('aria-label', `Cancel the pipeline 3 upgrade of ${u.name || 'this folder'}`);
+      }
+
+      const total = Number(u.total) || 0;
+      const current = total > 0 ? Math.min(Number(u.current) || 0, total) : 0;
+      const prog = div.querySelector('.queue-item-progress');
+      const fill = div.querySelector('.queue-item-progress-fill');
+      prog.classList.toggle('hidden', !(isRunning || u.status === 'done' || total > 0));
+      prog.classList.toggle('indeterminate', isRunning && total === 0);
+      if (u.status === 'done') {
+        fill.style.width = '100%'; fill.style.background = '#2ecc71';
+      } else if (total > 0) {
+        fill.style.width = Math.round((current / total) * 100) + '%';
+        fill.style.background = isRunning ? '' : '#5a6372';
+      } else {
+        fill.style.width = ''; fill.style.background = '';
+      }
+
+      const info = div.querySelector('.queue-item-eta');
+      if (isRunning) {
+        if (total > 0) info.textContent = `${current} / ${total} photos`;
+        else info.textContent = u.phase === 'loading_model' ? '⏳ Loading models…' : '⏳ Starting…';
+      } else if (u.status === 'done') {
+        info.textContent = total > 0 ? `${total} photo${total === 1 ? '' : 's'} upgraded` : 'Up to date';
+      } else if (u.status === 'error') {
+        info.textContent = u.error ? `Failed: ${u.error}` : 'Failed';
+      } else {
+        info.textContent = total > 0 ? `Stopped at ${current} / ${total} — run it again to resume` : 'Run it again to resume';
+      }
+    }
+
+    /** Register an upgrade job started from this page so its finish is handled
+     *  even if it ends before the next queue poll sees it running. */
+    function queueTrackUpgradeJob(jobId) {
+      if (!jobId) return;
+      _upgradeSeenRunning.add(String(jobId));
+      startPollingQueue();
+      apiGetQueueStatus().then(renderQueuePanel).catch(() => { });
+    }
+    window.queueTrackUpgradeJob = queueTrackUpgradeJob;
+
+    /** Running upgrade paths (normalized) — used by smart search to hide its Upgrade button. */
+    function queueUpgradeRunningPaths() { return new Set(_upgradeInProgressPaths); }
+    window.queueUpgradeRunningPaths = queueUpgradeRunningPaths;
+
+    /** Track upgrade jobs across polls: fire finish handling once per job, keep
+     *  the folder-tree hourglass in sync, tell smart search when the set changes. */
+    function _syncUpgradeState(upgrades) {
+      const norm = p => (p || '').replace(/\\/g, '/');
+      const runningNow = new Set();
+      for (const u of upgrades) {
+        if (u.status === 'running') {
+          _upgradeSeenRunning.add(u.job_id);
+          runningNow.add(norm(u.path));
+        } else if (_upgradeSeenRunning.has(u.job_id)) {
+          _upgradeSeenRunning.delete(u.job_id);
+          _upgradeCancelRequested.delete(u.job_id);
+          try {
+            if (typeof window.smartSearchOnUpgradeFinished === 'function') window.smartSearchOnUpgradeFinished(u);
+          } catch (e) { console.warn('[queue] upgrade finish handler failed:', e); }
+        }
+      }
+      const changed = runningNow.size !== _upgradeInProgressPaths.size
+        || [...runningNow].some(p => !_upgradeInProgressPaths.has(p));
+      _upgradeInProgressPaths = runningNow;
+      if (changed) {
+        try { updateInProgressFoldersInTree(); } catch (_) { }
+        try { if (typeof window.smartSearchOnUpgradesChanged === 'function') window.smartSearchOnUpgradesChanged(); } catch (_) { }
+      }
+    }
+
     // Normalize paths consistently: strip trailing slashes
     function normalizePath(p) {
       if (!p) return '';
@@ -569,7 +746,8 @@
             }
           }
 
-          if (!status.running && (status.items || []).every(i => i.status !== 'pending' && i.status !== 'running')) {
+          if (!status.running && (status.items || []).every(i => i.status !== 'pending' && i.status !== 'running')
+              && !(status.upgrades || []).some(u => u.status === 'running')) {
             stopPollingQueue();
           }
         } catch (_) { }
@@ -1087,7 +1265,8 @@
         const rows = Array.from(document.querySelectorAll('#folderTree .tree-node-row'));
         for (const row of rows) {
           const rp = norm(row.dataset.path || '');
-          const isNowInProgress = _inProgressFolderPaths.has(rp)
+          const isUpgrading = _upgradeInProgressPaths.has(rp) && !_inProgressFolderPaths.has(rp);
+          const isNowInProgress = _inProgressFolderPaths.has(rp) || isUpgrading
             || (window._ccInProgressFolderPaths && window._ccInProgressFolderPaths.has(rp));
 
           if (isNowInProgress) {
@@ -1100,12 +1279,13 @@
               const hg = document.createElement('span');
               hg.className = 'tree-in-progress-hourglass';
               hg.textContent = '⏳';
-              hg.title = 'Analysis in progress';
               const featherEl = row.querySelector('.tree-perch-feather');
               const anchorEl = featherEl || row.querySelector('.tree-icon');
               if (anchorEl && anchorEl.nextSibling) anchorEl.parentNode.insertBefore(hg, anchorEl.nextSibling);
               else if (anchorEl) anchorEl.parentNode.appendChild(hg);
             }
+            const hgEl = row.querySelector('.tree-in-progress-hourglass');
+            if (hgEl) hgEl.title = isUpgrading ? 'Upgrading to pipeline 3' : 'Analysis in progress';
 
             if (!row.querySelector('.tree-cb')) {
               const cb = document.createElement('input');

@@ -961,6 +961,41 @@
   color: #8a9099;
 }
 
+/* Pipeline-3 upgrade rows (status.upgrades) — violet like the ✨ smart-search
+   toggle, so an upgrade reads as distinct from an analysis row. */
+.queue-item-status.upgrade.running {
+  background: #2a2140;
+  color: #d4c6ff;
+  border: 1px solid #6a4fb3;
+}
+.queue-item--upgrade .queue-item-progress-fill { background: #8a6fe0; }
+.queue-item-progress.indeterminate .queue-item-progress-fill {
+  width: 30%;
+  animation: queue-progress-indeterminate 1.2s ease-in-out infinite;
+}
+@keyframes queue-progress-indeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(340%); }
+}
+.queue-item-cancel-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid #5e2a2a;
+  background: #2a1414;
+  color: #f0b4b4;
+  cursor: pointer;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.queue-item-cancel-btn:hover:not(:disabled) { background: #3a1d1d; border-color: #8a3a3a; color: #ffd0d0; }
+.queue-item-cancel-btn:disabled { opacity: .6; cursor: default; }
+/* Row containers inside .queue-panel-body: keep the body's flex gap. */
+.queue-analysis-rows, .queue-upgrade-rows { display: contents; }
+.queue-item-cancel-btn.hidden, .queue-item-progress.hidden { display: none; }
+/* Pause / Cancel / Live drive the analysis queue only. */
+.queue-panel.queue-panel--upgrades-only .queue-panel-controls { display: none; }
+
 .queue-item-progress {
   height: 4px;
   background: #1d2230;
@@ -1188,3 +1223,38 @@
 .adlg-cloud-regime--upload   { color: #7eb8e0; }
 .adlg-cloud-regime--compute  { color: #e0b070; }
 .adlg-cloud-regime--balanced { color: #7fc98a; }
+
+/* Species geofence picker under "Should Kestrel identify the bird species?".
+   Hidden (via .hidden on the block) when species identification is off. */
+.adlg-species-region {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #2a3445;
+}
+.adlg-species-region-custom {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px 12px;
+  padding: 6px 8px;
+  border: 1px solid #2a3040;
+  border-radius: 6px;
+  background: #0a0d12;
+}
+.adlg-species-region-custom.hidden { display: none; }
+.adlg-species-region-custom label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: #cbd6e4;
+  cursor: pointer;
+  min-width: 0;
+}
+.adlg-species-region-custom label span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

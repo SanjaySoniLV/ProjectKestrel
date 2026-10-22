@@ -30,6 +30,9 @@ BASE_COLUMNS = [
     "species_confidence",
     "family",
     "family_confidence",
+    # The EFFECTIVE quality (0-1, -1 = unrated): whichever of the two stored
+    # scorer outputs below the ``quality_model`` setting selects (see
+    # quality_model.py). Every existing reader keeps using this column.
     "quality",
     "export_path",
     "crop_path",
@@ -60,6 +63,12 @@ BASE_COLUMNS = [
     # ``ensure_columns`` — and every consumer must fall back to filename-only
     # matching when it is blank rather than treating blank as a mismatch.
     "file_size",
+    # Schema 3 (pipeline 3.0.0): the raw 0-1 output of each quality scorer for
+    # the primary crop (per-crop copies live in ``crops_json``). -1 = not
+    # scored. ``quality_siglip`` is the SigLIP 2 zero-shot sharpness score
+    # (default), ``quality_legacy`` the pre-3.0 quality CNN.
+    "quality_siglip",
+    "quality_legacy",
 ]
 
 # Legacy user-editable columns previously stored in kestrel_database.csv.
@@ -80,12 +89,14 @@ SCENEDATA_VERSION = "2.0"
 #
 #   1  everything up to and including the Dusky-Grouse release
 #   2  adds ``file_size`` (see BASE_COLUMNS)
+#   3  pipeline 3.0.0: adds ``quality_siglip`` + ``quality_legacy``; ``quality``
+#      becomes the effective score selected by the ``quality_model`` setting
 #
 # Bump this when BASE_COLUMNS changes meaning or shape, and add a fixture under
 # tests/fixtures/legacy_databases/ (see that directory's SCHEMA_NOTES.md).
 # Absent from a folder's metadata means "1 or older" — it is not an error, and
 # most folders in the wild will never carry it.
-DATABASE_SCHEMA_VERSION = 2
+DATABASE_SCHEMA_VERSION = 3
 
 REQUIRED_COLUMNS = [
     "family",
@@ -514,6 +525,15 @@ def ensure_columns(database: pd.DataFrame) -> pd.DataFrame:
         # (if degenerate) size that would make every legacy row look like a
         # mismatch against the file on disk.
         database["file_size"] = ""
+    if "quality_legacy" not in database.columns:
+        # Before schema 3 the only quality scorer WAS the legacy CNN, so a
+        # pre-3.0 row's ``quality`` is its legacy score.
+        if "quality" in database.columns:
+            database["quality_legacy"] = database["quality"]
+        else:
+            database["quality_legacy"] = -1.0
+    if "quality_siglip" not in database.columns:
+        database["quality_siglip"] = -1.0
     return database
 
 

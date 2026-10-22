@@ -19,7 +19,10 @@ print(f'[spec] dist_channel = {_dist_channel}')
 # See if sample_sets exists
 print(os.listdir("sample_sets"))
 # Build datas list with proper sample_sets bundling using Tree()
-# models/ includes bundled SpeciesNet (models/speciesnet/info.json + weights) and SAM-HQ checkpoints.
+# models/ includes MegaDetector + SAM-HQ ONNX (models/speciesnet/), the BioCLIP 2 species head,
+# gate and wildlife labels (models/bioclip/, ~330 MB), SigLIP 2 for smart search and the default
+# quality score (models/siglip/, ~359 MB) and the legacy quality CNN. Pipeline 3.0 dropped the
+# SpeciesNet classifier (224 MB) and the CLIP smart-search prototype (209 MB).
 datas = [('models', 'models'), ('kestrel_telemetry.py', '.'), ('build_attestation.py', '.'), ('folder_inspector.py', '.'), ('cli.py', '.'), ('VERSION.txt', '.'), ('VERSION_NUMBER.txt', '.'), ('kestrel_analyzer', 'kestrel_analyzer'), ('visualizer.html', '.'), ('css', 'css'), ('js', 'js'), ('csv_parser.js', '.'), ('culling.html', '.'), ('logo.png', '.'), ('perch-logo.png', '.'), ('whatsnew-bird.jpg', '.'), ('logo.ico', '.'), ('settings_utils.py', '.'), ('editor_launch.py', '.'), ('queue_manager.py', '.'), ('api_bridge.py', '.'), ('mac_sandbox.py', '.'), ('mac_oauth.py', '.'), ('dist_channel.py', '.'), ('dist_channel.txt', '.')]
 
 # CI generates build_attestation.json with the HMAC attestation for official builds.

@@ -33,6 +33,7 @@ class ResilientOnnxSession:
         kind: str,
         model_path: Path | str,
         coord: "ProviderCoordinator",
+        gpu_model_path: Path | str | None = None,
     ) -> None:
         # Normalize to an absolute path before handing it to ONNX Runtime. This
         # is the macOS Bug A mitigation — CoreML's graph-optimization path can
@@ -40,6 +41,11 @@ class ResilientOnnxSession:
         # ``Initializer ... model_path must not be empty``.
         self._kind = str(kind)
         self._path = Path(model_path).resolve()
+        # Transformer towers: an alternative graph for GPU EPs (see
+        # providers.tower_graph). ``model_path`` is then the CPU graph, which is
+        # also what a failed GPU build falls back to.
+        self._gpu_path = Path(gpu_model_path).resolve() if gpu_model_path else None
+        self.model_path_used = str(self._path)
         self._coord = coord
         self._session: Any = None
         self._build()
@@ -49,10 +55,32 @@ class ResilientOnnxSession:
         coord._register_session(self)
 
     def _build(self) -> None:
-        import onnxruntime as ort  # imported lazily so test environments without ORT can import this module
+        from .providers import build_session  # lazy: ORT-free test environments import this module
 
         providers = self._coord.providers_for(self._kind)
-        self._session = ort.InferenceSession(str(self._path), providers=providers)
+        # build_session records requested/actual providers + per-EP node
+        # placement for the analysis log (see ml/providers.py).
+        if self._gpu_path is None:
+            self._session = build_session(str(self._path), providers, kind=self._kind)
+            self.model_path_used = str(self._path)
+            return
+        from .providers import tower_graph
+
+        path, provs, cfg = tower_graph(providers, self._path, self._gpu_path)
+        try:
+            self._session = build_session(path, provs, kind=self._kind, config=cfg)
+            self.model_path_used = path
+        except Exception as e:
+            if path == str(self._path) and provs == ["CPUExecutionProvider"]:
+                raise
+            try:
+                from ..logging_utils import debug
+                debug(f"[providers] {self._kind}: {Path(path).name} on {provs} failed "
+                      f"({type(e).__name__}: {str(e)[:200]}); using {self._path.name} on CPU")
+            except Exception:
+                pass
+            self._session = build_session(str(self._path), ["CPUExecutionProvider"], kind=self._kind)
+            self.model_path_used = str(self._path)
 
     def _rebuild(self) -> None:
         """Drop the current session and build a new one using the coordinator's

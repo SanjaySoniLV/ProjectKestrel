@@ -338,6 +338,15 @@
       // Auto-Save setting
       const autoSaveCb = document.getElementById('settingsAutoSave');
       if (autoSaveCb) autoSaveCb.checked = getSetting('auto_save_enabled', true);
+      const smartSearchCb = document.getElementById('settingsSmartSearch');
+      if (smartSearchCb) smartSearchCb.checked = getSetting('smart_search_enabled', true) !== false;
+      const qualityModelSel = document.getElementById('settingsQualityModel');
+      if (qualityModelSel) qualityModelSel.value = getSetting('quality_model', 'siglip') === 'legacy' ? 'legacy' : 'siglip';
+      const towerSel = document.getElementById('settingsTowerDevice');
+      if (towerSel) {
+        const td = String(getSetting('tower_device', 'auto') || 'auto');
+        towerSel.value = ['auto', 'cpu', 'gpu'].includes(td) ? td : 'auto';
+      }
 
       // Preview exposure-compensation strength — one slider shared with the
       // scene viewer (see scene-zoom.js). Mirror the current value and drive the
@@ -400,6 +409,12 @@
       const rawPreviewCacheEnabled = rawCacheCb2 ? rawCacheCb2.checked : true;
       const autoSaveCb = document.getElementById('settingsAutoSave');
       const autoSaveEnabled = autoSaveCb ? autoSaveCb.checked : true;
+      const smartSearchCb2 = document.getElementById('settingsSmartSearch');
+      const smartSearchEnabled = smartSearchCb2 ? smartSearchCb2.checked : true;
+      const qualityModelEl = document.getElementById('settingsQualityModel');
+      const qualityModel = qualityModelEl && qualityModelEl.value === 'legacy' ? 'legacy' : 'siglip';
+      const towerEl = document.getElementById('settingsTowerDevice');
+      const towerDevice = towerEl && ['auto', 'cpu', 'gpu'].includes(towerEl.value) ? towerEl.value : 'auto';
       // Merge into existing settings so keys like machine_id / analytics_consent_shown are preserved
       const existing = loadSettings();
       const prevProfile = existing.rating_profile || 'balanced';
@@ -435,6 +450,9 @@
         rating_thresholds_custom: normalizeCustomThresholds(_customThresholds),
         raw_preview_cache_enabled: rawPreviewCacheEnabled,
         auto_save_enabled: autoSaveEnabled,
+        smart_search_enabled: smartSearchEnabled,
+        quality_model: qualityModel,
+        tower_device: towerDevice,
         bird_regions: finalRegions,
         show_scientific_names: showScientificNames,
       };
@@ -454,7 +472,19 @@
       const thresholdsChanged =
         ratingProfile !== prevProfile ||
         (ratingProfile === 'custom' && nextCustom !== prevCustom);
-      if (thresholdsChanged && rows.length > 0) {
+      // Quality scorer switch: the backend rewrites each folder's effective
+      // `quality` from the stored scores when its CSV is next read, so save
+      // pending edits and reload what is open (no re-analysis).
+      const qualityModelChanged = (existing.quality_model === 'legacy' ? 'legacy' : 'siglip') !== qualityModel;
+      if (qualityModelChanged && rows.length > 0) {
+        try {
+          if (dirty && typeof saveCsv === 'function') await saveCsv();
+          if (typeof reloadCurrentFolders === 'function') await reloadCurrentFolders();
+          showToast(`Quality scorer: ${qualityModel === 'legacy' ? 'legacy model' : 'SigLIP 2 sharpness'}`, 3000);
+        } catch (e) {
+          console.warn('[quality_model] reload failed', e);
+        }
+      } else if (thresholdsChanged && rows.length > 0) {
         await reapplyNormalizationForLoadedFolders();
       }
       // Preview exposure-compensation strength is applied live by the shared

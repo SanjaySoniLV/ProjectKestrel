@@ -41,6 +41,27 @@ def _coerce_detector_name(value) -> str:
     return name if name in _ALLOWED_DETECTOR_NAMES else _DEFAULT_DETECTOR_NAME
 
 
+def _coerce_species_regions(value):
+    """Per-item species geofence: ``None`` (use settings) or a sanitised list."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        return None
+    vals = [str(v).strip() for v in value if isinstance(v, str) and str(v).strip()]
+    if not vals:
+        return None
+    try:
+        try:
+            from kestrel_analyzer.bird_catalog import resolve_species_regions
+        except ImportError:
+            from analyzer.kestrel_analyzer.bird_catalog import resolve_species_regions  # type: ignore
+        return resolve_species_regions(vals)
+    except Exception:
+        return None
+
+
 def _folder_identity(path: str) -> str:
     """Stable key for comparing photo-folder roots across queue and bridge."""
     return os.path.normcase(os.path.realpath(os.path.abspath(path)))
@@ -127,7 +148,10 @@ class _QueueItem:
                  'initial_processed', 'warning',
                  # Phase 3 per-item options (set at enqueue time by the analyze
                  # dialog; honored by the worker just-before processing).
-                 'delete_kestrel_on_start', 'skip_if_already_done')
+                 'delete_kestrel_on_start', 'skip_if_already_done',
+                 # Species geofence for this folder: list of bird_catalog
+                 # region codes, ["global"], or None = settings default.
+                 'species_regions')
 
     def __init__(self, path: str, name: str):
         self.path = path
@@ -157,6 +181,7 @@ class _QueueItem:
         # per_item_options. Default False so legacy callers behave unchanged.
         self.delete_kestrel_on_start: bool = False
         self.skip_if_already_done: bool = False
+        self.species_regions: list | None = None
 
     def to_dict(self) -> dict:
         elapsed = 0.0
@@ -185,6 +210,7 @@ class _QueueItem:
             'current_quality_results': list(self.current_quality_results),
             'current_species_results': list(self.current_species_results),
             'warning': self.warning,
+            'species_regions': list(self.species_regions) if self.species_regions else None,
         }
 
 
@@ -257,6 +283,22 @@ class QueueManager:
                 for it in self._items
             )
 
+    def shared_pipeline(self, use_gpu: bool):
+        """The manager-lifetime ``AnalysisPipeline`` (created on demand).
+
+        Local jobs that need the analysis models outside the queue -- the
+        pipeline-3 folder upgrade -- borrow it so the process keeps exactly
+        one ONNX session per model (and one ProviderCoordinator) instead of
+        loading a second BioCLIP / SigLIP next to the queue's.
+        """
+        with self._lock:
+            if self._pipeline is None:
+                cls = _get_pipeline_class()
+                if cls is None:
+                    raise RuntimeError(f"Pipeline unavailable: {_pipeline_import_error}")
+                self._pipeline = cls(use_gpu=bool(use_gpu), detector_name=self._detector_name)
+            return self._pipeline
+
     def get_status(self) -> dict:
         with self._lock:
             return {
@@ -284,7 +326,8 @@ class QueueManager:
         parallel_prefetch: int = 3,
         retry_errored: bool = False,
         # Phase 3: per-path option map. Keys: path. Values: dict with optional
-        # 'delete_kestrel_on_start' and 'skip_if_already_done' booleans.
+        # 'delete_kestrel_on_start' and 'skip_if_already_done' booleans, and
+        # 'species_regions' (list of region codes or ["global"]).
         # Used by the analyze dialog to defer .kestrel deletion to just-before
         # the worker reaches that folder, and to silently-skip folders the
         # user accidentally queued that are already fully analyzed.
@@ -321,6 +364,7 @@ class QueueManager:
                         existing_item.initial_processed = 0
                         existing_item.delete_kestrel_on_start = bool(opts.get('delete_kestrel_on_start'))
                         existing_item.skip_if_already_done = bool(opts.get('skip_if_already_done'))
+                        existing_item.species_regions = _coerce_species_regions(opts.get('species_regions'))
                         added += 1
                     # If already pending/running, leave it alone (don't clobber flags either)
                 else:
@@ -328,6 +372,7 @@ class QueueManager:
                     new_item = _QueueItem(p, name)
                     new_item.delete_kestrel_on_start = bool(opts.get('delete_kestrel_on_start'))
                     new_item.skip_if_already_done = bool(opts.get('skip_if_already_done'))
+                    new_item.species_regions = _coerce_species_regions(opts.get('species_regions'))
                     self._items.append(new_item)
                     added += 1
             # Decide whether to start the worker AND start it while STILL
@@ -735,6 +780,7 @@ class QueueManager:
                     max_bird_crops=self._max_bird_crops,
                     parallel_prefetch=self._parallel_prefetch,
                     retry_errored=self._retry_errored,
+                    species_regions=item.species_regions,
                 )
                 with self._lock:
                     if self._cancel_event.is_set():

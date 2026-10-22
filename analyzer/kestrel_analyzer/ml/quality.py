@@ -17,7 +17,7 @@ class QualityClassifier:
         coord: ProviderCoordinator,
     ):
         # Registered with the coordinator so demote/promote rebuilds this
-        # session alongside the wrapper's. See note in BirdSpeciesClassifier.
+        # session alongside the wrapper's. See note in BioClipSpeciesClassifier.
         self.session = ResilientOnnxSession("quality", model_path, coord)
         self.providers_used = list(self.session.get_providers())
         _active = self.providers_used[0] if self.providers_used else "unknown"

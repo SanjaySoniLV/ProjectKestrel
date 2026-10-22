@@ -29,6 +29,7 @@ Committed CSV/JSON files are literal outputs from each tag run (no hand-synthesi
 | Gambels-Quail | 2026-04-23 | dedup → `v_Kentucky-Warbler_kestrel_database.csv` | no | Header matched Kentucky-Warbler |
 | *(through Dusky-Grouse)* | 2026-09-01 | dedup → `v_Kentucky-Warbler_kestrel_database.csv` | no | Every release up to and including `Dusky-Grouse` shipped the Kentucky-Warbler header (27 cols). That fixture therefore represents the schema of essentially every already-analysed folder on users' disks. |
 | *(untagged working tree)* | 2026-09-01 | `v_file-size_kestrel_database.csv` | yes | Added `file_size`. **Not captured from a release tag** — see below. |
+| *(untagged, exp/pipeline-v3)* | 2026-10-22 | `v_pipeline-v3_kestrel_database.csv` | yes | Analysis pipeline 3.0.0: added `quality_siglip`, `quality_legacy`; `quality` is now the effective score. **Not captured from a release tag** — see below. |
 
 ## Schema versioning
 
@@ -40,6 +41,7 @@ meaning, and capture a fixture here in the same pass.
 |---|---|---|
 | *(absent)* / 1 | everything through `Dusky-Grouse` | `v_Kentucky-Warbler_*` |
 | 2 | adds `file_size` | `v_file-size_*` |
+| 3 | pipeline 3.0.0: adds `quality_siglip` + `quality_legacy`; `quality` = effective score | `v_pipeline-v3_*` |
 
 Absent means "1 or older". It is stamped on every analysis run, not just at folder creation, so a
 folder written by an older build records the new schema as soon as a newer build touches it — but
@@ -69,9 +71,26 @@ by `unit/test_folder_diff.py::TestRealLegacyDatabases`, which selects its fixtur
 header for `file_size` rather than by filename — so adding a newer-schema fixture to this directory
 does not silently invalidate the legacy-path tests.
 
+## The `pipeline-v3` fixture (untagged, schema 3)
+
+`v_pipeline-v3_*` was generated on `exp/pipeline-v3` with the same procedure
+(`analyzer/cli.py --no-gpu` over the 4 CR3s in `test_sets/set_a_fresh/`, CPU), so it is a literal
+pipeline output. Rename it to `v_<Tag>_*` when pipeline 3.0 ships under a release tag.
+
+Schema 3 changes the *meaning* of `quality` without breaking any reader: it is the effective score,
+copied from whichever of the two new raw columns the `quality_model` setting selects (`siglip`,
+the default, or `legacy`); per-crop copies of all three live in `crops_json`. Metadata gains
+`pipeline_major: 3`, `models{}` and `quality_model`. When an older folder is loaded,
+`ensure_columns` sets `quality_legacy = quality` (before 3.0 the only scorer *was* the legacy CNN)
+and `quality_siglip = -1` (not scored), so nothing about an old folder's ratings changes until it
+is upgraded (`kestrel_analyzer/upgrade_v3.py`). Covered by
+`compat/test_database_migration.py::{test_schema3_quality_columns_after_load,
+test_quality_switch_leaves_pre_v3_folders_alone, TestSchema3Fixture}` and
+`unit/test_upgrade_v3.py`.
+
 ## Schema Differences From Current
 
-Current `BASE_COLUMNS` count: 27.
+Current `BASE_COLUMNS` count: 29 (schema 3).
 
 ### `v_alpha-2026_02_04_kestrel_database.csv` (19 columns)
 - Includes legacy inline user column: `rating`
@@ -91,7 +110,7 @@ Current `BASE_COLUMNS` count: 27.
 - The schema of every release through `Dusky-Grouse`, so it is the realistic legacy case
 
 ### `v_file-size_kestrel_database.csv` (28 columns)
-- Includes all current `BASE_COLUMNS`
+- Missing current columns: `quality_siglip`, `quality_legacy` (schema 3)
 - Extra historical column not in current base schema: `orientation`
 - Adds `file_size` compared with Kentucky-Warbler
 
@@ -104,3 +123,7 @@ All fetched tags produced a database fixture (no skipped/failed tags in final ca
 `analyzer/tests/compat/test_database_migration.py` parametrizes over
 `v_*_kestrel_database.csv` fixtures and verifies current migration logic can load and
 upgrade every retained historical schema.
+
+### `v_pipeline-v3_kestrel_database.csv` (30 columns)
+- Includes all current `BASE_COLUMNS` (schema 3)
+- Extra historical column not in current base schema: `orientation`

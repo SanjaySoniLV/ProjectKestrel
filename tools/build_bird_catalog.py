@@ -29,6 +29,9 @@ Run:
   python tools/build_bird_catalog.py \\
       --ioc /tmp/ioc_v15.1.xlsx \\
       --alpha-codes-text /tmp/alpha_codes.txt
+
+  # Re-apply only the region augmentation rules to the committed CSV:
+  python tools/build_bird_catalog.py --patch-regions
 """
 
 from __future__ import annotations
@@ -122,6 +125,94 @@ REGION_CODES = {
     'TrO':       'Tropical Ocean',
     'Worldwide': 'Worldwide',
 }
+
+
+# ---------------------------------------------------------------------------
+# Region augmentation (applied on top of IOC breeding ranges)
+# ---------------------------------------------------------------------------
+#
+# IOC's ``Breeding Range`` codes describe *native* breeding ranges, so
+# well-established introductions are missing: House Sparrow is "PAL,OR,AF",
+# European Starling "PAL". The region filter drives both the species-tag
+# combobox and the species classifier's geofence, so a North-American user
+# could neither be offered nor auto-identified as a House Sparrow. Two rules
+# fix that, and they are the single source of truth for those extra codes
+# (``birds_global.csv`` is regenerated from them; ``--patch-regions`` applies
+# them to the committed CSV when the IOC workbook isn't at hand):
+#
+# 1. Every legacy model species (``is_model_species``; an AOS North-American
+#    list that includes established exotics, pelagics and regular vagrants)
+#    also matches ``NA``.
+# 2. ``INTRODUCED_RANGES``: a short, conservative list of introductions that
+#    are self-sustaining and widespread in the added regions (keyed by IOC
+#    scientific name). Only add an entry when the population is established
+#    and common enough that a photographer there would plausibly meet it.
+INTRODUCED_RANGES: dict[str, tuple[str, ...]] = {
+    'Passer domesticus':      ('NA', 'MA', 'SA', 'AU', 'PO'),  # House Sparrow
+    'Passer montanus':        ('NA', 'AU'),                    # Eurasian Tree Sparrow (St. Louis, SE Australia)
+    'Sturnus vulgaris':       ('NA', 'AU', 'AF'),              # European Starling
+    'Acridotheres tristis':   ('AU', 'PO', 'AF'),              # Common Myna
+    'Psittacula krameri':     ('PAL',),                        # Rose-ringed Parakeet (W Europe)
+    'Myiopsitta monachus':    ('NA', 'PAL'),                   # Monk Parakeet
+    'Alopochen aegyptiaca':   ('PAL',),                        # Egyptian Goose
+    'Cygnus olor':            ('NA', 'AU'),                    # Mute Swan
+    'Branta canadensis':      ('PAL', 'AU'),                   # Canada Goose (UK/Europe, New Zealand)
+    'Anas platyrhynchos':     ('AU',),                         # Mallard (New Zealand, SE Australia)
+    'Phasianus colchicus':    ('NA', 'AU', 'PO'),              # Ring-necked Pheasant
+    'Streptopelia decaocto':  ('NA', 'MA'),                    # Eurasian Collared-Dove
+    'Spilopelia chinensis':   ('AU', 'PO'),                    # Spotted Dove
+    'Pycnonotus jocosus':     ('AU', 'NA'),                    # Red-whiskered Bulbul (Sydney, Miami)
+    'Pycnonotus cafer':       ('PO',),                         # Red-vented Bulbul (Hawaii, Fiji, Samoa)
+    'Zosterops japonicus':    ('PO',),                         # Warbling White-eye (Hawaii)
+    'Padda oryzivora':        ('PO',),                         # Java Sparrow (Hawaii)
+    'Pavo cristatus':         ('AU', 'PO'),                    # Indian Peafowl
+    'Turdus merula':          ('AU',),                         # Common Blackbird (New Zealand, SE Australia)
+    'Turdus philomelos':      ('AU',),                         # Song Thrush (New Zealand)
+    'Carduelis carduelis':    ('AU',),                         # European Goldfinch (New Zealand, SE Australia)
+}
+
+
+def augment_regions(regions: list[str], scientific_name: str, is_model_species: bool) -> list[str]:
+    """Return ``regions`` plus the codes added by the two rules above.
+
+    Order is preserved and new codes are appended, so re-applying is a no-op.
+    """
+    out = [r for r in regions if r]
+    extra: list[str] = []
+    if is_model_species:
+        extra.append('NA')
+    extra.extend(INTRODUCED_RANGES.get(scientific_name, ()))
+    if 'Worldwide' in out:
+        return out
+    for code in extra:
+        if code not in out:
+            out.append(code)
+    return out
+
+
+def patch_regions_in_csv(csv_path: Path) -> int:
+    """Apply ``augment_regions`` to an existing catalog CSV in place.
+
+    Used when the IOC workbook isn't available to regenerate from scratch.
+    Returns the number of rows changed.
+    """
+    with open(csv_path, encoding='utf-8', newline='') as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames
+        rows = list(reader)
+    changed = 0
+    for row in rows:
+        before = [t.strip() for t in (row.get('regions') or '').split(',') if t.strip()]
+        after = augment_regions(before, row.get('scientific_name', ''),
+                                (row.get('is_model_species') or '').strip() == '1')
+        if after != before:
+            row['regions'] = ','.join(after)
+            changed += 1
+    with open(csv_path, 'w', encoding='utf-8', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        w.writerows(rows)
+    return changed
 
 
 def parse_ioc(xlsx_path: Path) -> list[dict]:
@@ -386,6 +477,12 @@ def build(ioc_xlsx: Path, alpha_codes_txt: Path) -> None:
             entry['family_common'] = entry['family_common_ioc']
         entry.pop('family_common_ioc', None)
 
+    # Add NA to legacy model species + curated introductions (see above).
+    for entry in by_sci.values():
+        regs = [t for t in entry['regions'].split(',') if t]
+        entry['regions'] = ','.join(
+            augment_regions(regs, entry['scientific'], entry['is_model_species']))
+
     # Sanity: every model label is in the catalog.
     by_canonical = {e['canonical']: e for e in by_sci.values()}
     missing = [lbl for lbl in model_labels if lbl not in by_canonical]
@@ -455,6 +552,9 @@ def _render_notices() -> str:
         "* Hand-curated AOS-to-IOC name overrides for model species whose\n"
         "  preferred English name differs between authorities (see\n"
         "  ``tools/build_bird_catalog.py``, ``AOS_TO_IOC_OVERRIDES``).\n"
+        "* Region codes add ``NA`` for every legacy model species and a short\n"
+        "  curated list of well-established introductions on top of IOC's\n"
+        "  native breeding ranges (``INTRODUCED_RANGES``).\n"
         "* Family display names (``family_common``) preserve the existing "
         "``analyzer/models/scispecies_dispname.csv`` mapping where present and "
         "fall back to IOC's *Family (English)* otherwise.\n"
@@ -463,9 +563,18 @@ def _render_notices() -> str:
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument('--ioc', type=Path, required=True,
+    p.add_argument('--ioc', type=Path,
                    help='Path to IOC master XLSX (downloaded out-of-band).')
-    p.add_argument('--alpha-codes-text', type=Path, required=True,
+    p.add_argument('--alpha-codes-text', type=Path,
                    help='Path to pdftotext -layout output of IBP alpha codes PDF.')
+    p.add_argument('--patch-regions', action='store_true',
+                   help='Only re-apply the region augmentation rules to the committed '
+                        'birds_global.csv (no IOC workbook needed).')
     args = p.parse_args()
-    build(args.ioc, args.alpha_codes_text)
+    if args.patch_regions:
+        n = patch_regions_in_csv(OUT_DIR / 'birds_global.csv')
+        print(f"Patched regions on {n} rows")
+    elif args.ioc and args.alpha_codes_text:
+        build(args.ioc, args.alpha_codes_text)
+    else:
+        p.error('--ioc and --alpha-codes-text are required unless --patch-regions is given')
