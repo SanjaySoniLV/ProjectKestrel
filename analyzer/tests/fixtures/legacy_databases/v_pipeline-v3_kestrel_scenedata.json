@@ -1,0 +1,34 @@
+{
+  "version": "2.0",
+  "image_ratings": {},
+  "scenes": {
+    "1": {
+      "scene_id": "1",
+      "image_filenames": [
+        "IMG_2014.CR3",
+        "IMG_2015.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    },
+    "2": {
+      "scene_id": "2",
+      "image_filenames": [
+        "IMG_3067.CR3",
+        "IMG_3068.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    }
+  }
+}

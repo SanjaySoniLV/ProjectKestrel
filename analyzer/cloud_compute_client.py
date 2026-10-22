@@ -21,6 +21,7 @@ import json
 import os
 import shutil
 import socket
+import sys
 import tempfile
 import threading
 import time
@@ -31,10 +32,29 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+# Shared certifi-backed TLS context. Without it, bare urlopen() fails every
+# HTTPS request with CERTIFICATE_VERIFY_FAILED in a frozen macOS .app. See
+# net_tls for the full rationale. Dual import so the module resolves whether
+# this package is on sys.path as the root (frozen / tests) or as ``analyzer``.
+try:
+    from net_tls import ssl_context as _ssl_context
+except ImportError:  # pragma: no cover - package-style import path
+    from analyzer.net_tls import ssl_context as _ssl_context
+
+try:
+    from kestrel_analyzer.database import retry_on_file_lock
+except ImportError:  # pragma: no cover - package-style import path
+    from analyzer.kestrel_analyzer.database import retry_on_file_lock
+
 
 _DEFAULT_API_BASE = "https://cloudcompute.projectkestrel.org"
 _MAX_UPLOAD_WORKERS = 6
 _POLL_INTERVAL_SEC = 5
+# R2 PUTs stream the whole file body; cap each attempt so a stalled socket
+# can't hang the upload pool forever — critical at app shutdown, where the
+# ThreadPoolExecutor's atexit join would otherwise wait on a wedged upload
+# even after cancel_event short-circuits the queued ones.
+_PUT_TIMEOUT_SEC = 60
 # Per-call timeouts. Status polls are short so a stuck poller can't freeze the
 # UI; submit/notify need a bit more headroom for the first request after a cold
 # Worker. See JobCancelled below for cooperative shutdown.
@@ -86,6 +106,29 @@ def filter_analysis_settings(raw: Any) -> dict | None:
 def default_api_base() -> str:
     """Resolve cloud-compute Worker base URL — env override, then default."""
     return os.environ.get("KESTREL_CC_API_BASE", _DEFAULT_API_BASE).rstrip("/")
+
+
+def _safe_pack_filename(name: Any) -> Optional[str]:
+    """Reduce a Worker-supplied pack filename to a trusted basename, or None.
+
+    Result packs are named server-side, so a malicious/compromised Worker (or a
+    MITM, despite TLS) could return a traversal name like ``../../evil.zip`` or
+    ``/etc/x.zip``. Joining that to the local pack dir would let it be written —
+    or, worse, read back and merged — from an arbitrary path. We accept the name
+    only when it is already a bare basename with no separators, parent refs,
+    drive/colon, or NUL. This mirrors the zip-member guard in
+    ``merge_pack_into_kestrel`` and ``_sanitize_plain_filename`` in api_bridge.
+    """
+    raw = str(name or "").strip()
+    if not raw:
+        return None
+    # Any separator (posix or windows), parent ref, drive-colon or NUL is out.
+    if ("/" in raw or "\\" in raw or "\x00" in raw or ":" in raw):
+        return None
+    base = os.path.basename(raw)
+    if base != raw or base in ("", ".", ".."):
+        return None
+    return base
 
 
 def _discover_upload_images(folder: Path) -> list[Path]:
@@ -270,7 +313,7 @@ class CloudComputeClient:
             }
             req = urllib.request.Request(url, data=data, method=method, headers=headers)
             try:
-                with urllib.request.urlopen(req, timeout=timeout or self.timeout) as resp:
+                with urllib.request.urlopen(req, timeout=timeout or self.timeout, context=_ssl_context()) as resp:
                     raw = resp.read()
                     if not raw:
                         return {}
@@ -439,9 +482,9 @@ class CloudComputeClient:
             body["failed"] = failed
         return self._request("POST", f"/api/jobs/{job_id}/complete", body)
 
-    # W1: /pause and /resume endpoints were retired — pause is now purely
-    # client-side (the desktop holds its own upload pool via a local
-    # pause_event in api_bridge). No worker round-trip on pause/resume.
+    # The cloud-compute pause feature was removed entirely — there are no
+    # /pause or /resume endpoints and the desktop no longer holds an upload
+    # pause. Cancel is the only client-driven job control.
 
     def cancel_job_remote(self, job_id: str, *, origin: str = "user") -> dict:
         """POST /api/jobs/{jobId}/cancel — terminal cancellation. Worker marks
@@ -556,6 +599,18 @@ class CloudComputeClient:
         header is absent on legacy packs and on segment packs; verification
         is skipped silently in that case.
         """
+        # Path-traversal guard at the sink (defends every caller): the Worker
+        # supplies ``filename``, so refuse anything that isn't a bare basename
+        # and ensure ``dest`` actually lands on that name (no escaping pack_dir).
+        safe = _safe_pack_filename(filename)
+        if safe is None:
+            raise CloudComputeError(0, f"Refusing unsafe pack filename: {filename!r}")
+        filename = safe
+        dest = Path(dest)
+        if dest.name != filename:
+            raise CloudComputeError(
+                0, f"Pack dest {dest.name!r} does not match filename {filename!r}"
+            )
         url = f"{self.api_base}/api/jobs/{job_id}/results/{filename}"
         # Same 401 refresh-and-retry contract as _request: a session that
         # expires mid-download (laptop sleep) self-heals instead of failing.
@@ -566,7 +621,7 @@ class CloudComputeClient:
             }
             req = urllib.request.Request(url, headers=headers)
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                with urllib.request.urlopen(req, timeout=self.timeout, context=_ssl_context()) as resp:
                     expected_sha = resp.headers.get("X-Pack-SHA256") or ""
                     data = resp.read()
                     if expected_sha:
@@ -614,7 +669,7 @@ class CloudComputeClient:
                 headers={"Content-Type": "application/octet-stream"},
             )
             try:
-                with urllib.request.urlopen(req) as resp:
+                with urllib.request.urlopen(req, timeout=_PUT_TIMEOUT_SEC, context=_ssl_context()) as resp:
                     return resp.status
             except urllib.error.HTTPError as e:
                 last_status = e.code
@@ -653,8 +708,14 @@ class CloudComputeClient:
         test... N/10``.
 
         Returns ``{mbps, samples_uploaded, total_bytes, elapsed_ms,
-        bytes_per_sample, errors}``. Raises :class:`CloudComputeError` if the
-        Worker rejects the request (e.g. a 200 MB file size cap is hit).
+        bytes_per_sample, errors, pipeline}``. Raises :class:`CloudComputeError`
+        if the Worker rejects the request (e.g. a 200 MB file size cap is hit).
+
+        ``pipeline`` is the Worker's dispatch/scale-out descriptor (thresholds,
+        container cap, cold start, per-container throughput) used by the
+        analyze dialog's job-time estimate. It is passed through verbatim and
+        is ``None`` against a Worker too old to serve it — the estimate falls
+        back to its own built-in values, so this is advisory, never fatal.
         """
         folder = Path(folder).resolve()
         if not folder.is_dir():
@@ -710,7 +771,7 @@ class CloudComputeClient:
                 headers={"Content-Type": "application/octet-stream"},
             )
             try:
-                with urllib.request.urlopen(req) as r:
+                with urllib.request.urlopen(req, timeout=_PUT_TIMEOUT_SEC, context=_ssl_context()) as r:
                     status = int(r.status)
             except urllib.error.HTTPError as e:
                 status = int(e.code)
@@ -738,6 +799,7 @@ class CloudComputeClient:
         ok_results = [r for r in results if 200 <= r[0] < 300]
         total_bytes = sum(r[1] for r in ok_results)
         mbps = (total_bytes / 1_048_576) / elapsed_total if elapsed_total > 0 else 0.0
+        pipeline = resp.get("pipeline")
         return {
             "mbps": mbps,
             "samples_uploaded": len(ok_results),
@@ -746,6 +808,7 @@ class CloudComputeClient:
             "elapsed_ms": int(elapsed_total * 1000),
             "bytes_per_sample": sizes,
             "errors": errors,
+            "pipeline": pipeline if isinstance(pipeline, dict) else None,
         }
 
     # ─── End-to-end orchestrator ─────────────────────────────────────────
@@ -758,7 +821,6 @@ class CloudComputeClient:
         on_progress: Optional[Callable[[dict], None]] = None,
         on_pack_merged: Optional[Callable[[str], None]] = None,
         cancel_event: Optional[threading.Event] = None,
-        pause_event: Optional[threading.Event] = None,
         merge_into_kestrel: bool = True,
         protected_filenames: Optional[set[str]] = None,
         overwrite_errors: bool = False,
@@ -891,6 +953,11 @@ class CloudComputeClient:
                         fname = str(meta.get("filename") or "")
                         if not fname.endswith(".zip"):
                             continue
+                        safe = _safe_pack_filename(fname)
+                        if safe is None:
+                            _emit("pack_rejected", filename=fname, reason="unsafe_filename")
+                            continue
+                        fname = safe
                         # Dedup under the lock; the actual download + merge
                         # runs OUTSIDE so concurrent merges of different packs
                         # don't serialise.
@@ -960,14 +1027,6 @@ class CloudComputeClient:
         def _upload_and_notify(item: dict, file_path: Path) -> None:
             nonlocal notified_count
             _check_cancel()
-            # Honour pause-event: when uploads are paused via the Worker
-            # endpoint, the api_bridge clears this event; we block (with a
-            # short timeout so cancellation can still preempt) until resumed.
-            if pause_event is not None:
-                while not pause_event.is_set():
-                    _check_cancel()
-                    if pause_event.wait(timeout=1.0):
-                        break
             status = self._put_file(item["url"], file_path)
             if status >= 400 or status == 0:
                 with notified_lock:
@@ -1110,6 +1169,11 @@ def merge_pack_into_kestrel(
                 return True
         return False
 
+    # Pipeline-3 provenance of the folder BEFORE this pack lands (see
+    # _stamp_pipeline_major below).
+    prior_major = _read_pipeline_major(target_kestrel)
+    prior_had_rows = _csv_has_rows(target_kestrel / "kestrel_database.csv")
+
     with tempfile.TemporaryDirectory(prefix="kestrel-cc-pack-") as tmp:
         tmp_path = Path(tmp)
         with zipfile.ZipFile(pack_path, "r") as zf:
@@ -1154,6 +1218,11 @@ def merge_pack_into_kestrel(
                     continue
                 shutil.copy2(entry, dst_path)
 
+        # Pipeline 3: per-folder embedding sidecars (BioCLIP species head +
+        # SigLIP smart search). Each pack carries only the rows of its own
+        # images; local rows are authoritative, like crops/exports above.
+        _merge_pack_embeddings(src_kestrel, target_kestrel, protected)
+
         # CSV merge — last-write-wins on filename column, EXCEPT protected
         # filenames where the existing row (if any) is preserved.
         src_csv = src_kestrel / "kestrel_database.csv"
@@ -1197,6 +1266,166 @@ def merge_pack_into_kestrel(
         src_metadata = src_kestrel / "kestrel_metadata.json"
         if src_metadata.is_file():
             shutil.copy2(src_metadata, target_kestrel / "kestrel_metadata.json")
+        _stamp_pipeline_major(
+            target_kestrel,
+            pack_is_v3=_csv_has_column(src_csv, "quality_siglip"),
+            prior_major=prior_major,
+            prior_had_rows=prior_had_rows,
+        )
+
+
+def _read_pipeline_major(kestrel_dir: Path) -> int:
+    try:
+        with (kestrel_dir / "kestrel_metadata.json").open("r", encoding="utf-8") as f:
+            return int(json.load(f).get("pipeline_major") or 0)
+    except Exception:
+        return 0
+
+
+def _csv_header(path: Path) -> list[str]:
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as f:
+            return next(csv.reader(f), [])
+    except Exception:
+        return []
+
+
+def _csv_has_column(path: Path, column: str) -> bool:
+    return column in _csv_header(path)
+
+
+def _csv_has_rows(path: Path) -> bool:
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.reader(f)
+            next(reader, None)
+            return next(reader, None) is not None
+    except Exception:
+        return False
+
+
+def _stamp_pipeline_major(
+    target_kestrel: Path, *, pack_is_v3: bool, prior_major: int, prior_had_rows: bool
+) -> None:
+    """Set ``pipeline_major`` in the merged folder's metadata.
+
+    The pack's metadata replaced the local one above, but Modal exits on the
+    caught-up path before the pipeline's post-analysis step that stamps
+    ``pipeline_major``, and a pack only describes its own images. So decide
+    from the folder as a whole: it is pipeline 3 when the pack is (its CSV has
+    ``quality_siglip``) and every row that was there before was too (prior
+    stamp >= 3, or no rows yet). A pre-3 pack landing in a pipeline-3 folder
+    drops the stamp, so the folder is offered the local upgrade again.
+    """
+    try:
+        from kestrel_analyzer.config import PIPELINE_MAJOR
+    except ImportError:  # pragma: no cover - package-relative layout
+        from analyzer.kestrel_analyzer.config import PIPELINE_MAJOR  # type: ignore[no-redef]
+
+    meta_path = target_kestrel / "kestrel_metadata.json"
+    try:
+        with meta_path.open("r", encoding="utf-8") as f:
+            meta = json.load(f)
+    except Exception:
+        meta = {}
+    if pack_is_v3 and (prior_major >= PIPELINE_MAJOR or not prior_had_rows):
+        major = PIPELINE_MAJOR
+    elif not prior_had_rows:
+        major = int(meta.get("pipeline_major") or 0)
+    else:
+        major = 0  # mixed folder: some rows predate pipeline 3
+    if int(meta.get("pipeline_major") or 0) == major and "pipeline_major" in meta:
+        return
+    meta["pipeline_major"] = major
+    try:
+        _write_file_atomic(meta_path, lambda f: json.dump(meta, f, indent=2))
+    except Exception as e:
+        print(f"[cloud-compute] could not stamp pipeline_major in {meta_path}: {e}", file=sys.stderr)
+
+
+def _merge_pack_embeddings(src_kestrel: Path, target_kestrel: Path, protected: set[str]) -> None:
+    """Copy a pack's embedding rows into the local sidecars (best-effort).
+
+    Every slot in the pack (the primary BioCLIP store and each ``embeddings/<slot>/``)
+    is appended to the matching local slot via ``EmbeddingStore.put``. A filename
+    the local slot already has, or a protected one, is skipped: local rows win.
+    """
+    try:
+        from kestrel_analyzer import embedding_store as es
+    except ImportError:
+        try:
+            from analyzer.kestrel_analyzer import embedding_store as es  # type: ignore[no-redef]
+        except ImportError:
+            return
+    src_root = src_kestrel / es.EMBEDDINGS_DIRNAME
+    if not (src_root / es.INDEX_FILENAME).is_file() and not src_root.is_dir():
+        return
+    slots: list[Optional[str]] = []
+    if (src_root / es.INDEX_FILENAME).is_file():
+        slots.append(None)
+    for sub in sorted(src_root.iterdir()) if src_root.is_dir() else []:
+        if sub.is_dir() and (sub / es.INDEX_FILENAME).is_file():
+            slots.append(sub.name)
+    for slot in slots:
+        try:
+            keys, matrix, header = es.load_embeddings(str(src_kestrel), slot)
+            if header is None or not keys:
+                continue
+            store = es.EmbeddingStore(
+                str(target_kestrel), header.get("model", ""), int(header.get("dim", es.DEFAULT_DIM)), slot=slot
+            )
+            by_file: dict[str, dict[int, Any]] = {}
+            for (fn, crop), vec in zip(keys, matrix):
+                by_file.setdefault(fn, {})[crop] = vec
+            for fn, vecs in by_file.items():
+                if fn in protected or store.has(fn):
+                    continue
+                store.put(fn, vecs)
+        except Exception as e:
+            print(f"[cloud-compute] embedding merge failed for slot {slot!r}: {e}", file=sys.stderr)
+
+
+def _write_file_atomic(
+    path: Path,
+    write: Callable[[Any], None],
+    *,
+    newline: Optional[str] = None,
+) -> None:
+    """Write ``path`` via tempfile + fsync + ``os.replace``.
+
+    Mirrors ``kestrel_analyzer.database._to_csv_atomic`` and
+    ``settings_utils.save_settings``: the destination is never opened with
+    ``"w"``, so a crash or ENOSPC cannot truncate a live ``.kestrel`` file.
+    ``write`` receives the open temp file. Failures propagate; the previous
+    destination is left intact. ``os.replace`` goes through
+    ``retry_on_file_lock`` so a Windows UI reader holding the CSV does not
+    abort the pack merge.
+    """
+    directory = str(path.parent)
+    os.makedirs(directory, exist_ok=True)
+    tmp_fd, tmp = tempfile.mkstemp(
+        prefix=".kestrel_merge_",
+        suffix=".tmp",
+        dir=directory,
+    )
+    try:
+        open_kw: dict[str, Any] = {"encoding": "utf-8"}
+        if newline is not None:
+            open_kw["newline"] = newline
+        with os.fdopen(tmp_fd, "w", **open_kw) as f:
+            write(f)
+            try:
+                f.flush()
+                os.fsync(f.fileno())
+            except OSError:
+                pass
+        retry_on_file_lock(lambda: os.replace(tmp, path))
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _merge_database_csv(
@@ -1300,11 +1529,13 @@ def _merge_database_csv(
             except (TypeError, ValueError):
                 pass
 
-    with dst.open("w", encoding="utf-8", newline="") as f:
+    def _write_csv(f) -> None:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         for key in sorted_keys:
             writer.writerow(rows[key])
+
+    _write_file_atomic(dst, _write_csv, newline="")
 
 
 def _rebuild_scenedata_from_csv(
@@ -1468,8 +1699,7 @@ def _merge_scenedata_additive(src: Path, dst: Path) -> None:
         return
 
     if not dst.is_file():
-        with dst.open("w", encoding="utf-8") as f:
-            json.dump(incoming, f, indent=2)
+        _write_file_atomic(dst, lambda f: json.dump(incoming, f, indent=2))
         return
 
     try:
@@ -1523,5 +1753,4 @@ def _merge_scenedata_additive(src: Path, dst: Path) -> None:
                 if f not in local_scene and f in inc_scene:
                     local_scene[f] = inc_scene[f]
 
-    with dst.open("w", encoding="utf-8") as f:
-        json.dump(existing, f, indent=2)
+    _write_file_atomic(dst, lambda f: json.dump(existing, f, indent=2))

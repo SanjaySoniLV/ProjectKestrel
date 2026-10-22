@@ -6,6 +6,10 @@
       for (const r of rows) { if (r.culled === undefined) r.culled = ''; }
     }
 
+    // Set whenever a cull decision changes while the scene dialog is open;
+    // consumed once on close to refresh the grid behind it.
+    let _sceneCullDecisionsChanged = false;
+
     function getCullStatus(row) {
       const raw = (row.culled === 'accept' || row.culled === 'reject') ? row.culled : '';
       if (!raw) return '';
@@ -24,6 +28,12 @@
       row.culled = status || ''; // 'accept', 'reject', or ''
       row.culled_origin = status ? 'manual' : '';
       markDirty(row);
+      // The grid thumbnail is chosen from the user's accept/reject decisions
+      // (see _pickSceneRepresentative), so the card behind this dialog is now
+      // potentially stale. Re-rendering per keystroke would be far too costly
+      // on a large folder, so just record that the grid owes a refresh and let
+      // the dialog-close handler do it once.
+      _sceneCullDecisionsChanged = true;
     }
 
     async function _blobUrlToBlob(url) {
@@ -201,6 +211,10 @@
         if (cullOrigin === 'verified') card.classList.add('verified-cull');
         if (cullOrigin === 'auto') card.classList.add('auto-cull');
         if (idx === currentImageIndex) card.classList.add('active');
+        // Smart search: highlight the photos of this scene that matched.
+        if (typeof smartSearchImageScore === 'function' && smartSearchImageScore(r) !== undefined) {
+          card.classList.add('smart-match');
+        }
 
         // Thumbnail
         const th = document.createElement('div');
@@ -347,13 +361,18 @@
           eimg.src = eurl;
           applyThumbnailExposureToImg(eimg, r);
           exportBox.appendChild(eimg);
+          // Refresh "% clipped" readout + highlight clip overlay for this row.
+          updateExportClipPreview(r);
         } else {
           const muted = document.createElement('span');
           muted.className = 'muted';
           muted.textContent = 'No export preview';
           exportBox.appendChild(muted);
+          _setOverexposedReadout(NaN);
         }
       }
+      // Reflect this image's applied exposure compensation in the slider label.
+      updateExpCompEvLabel();
 
       // Load crop preview
       const cropBox = el('#previewCropBox');
@@ -512,6 +531,20 @@
       }
     }
 
+    // Repaint the grid once, on close, if cull decisions changed while the
+    // dialog was open. Navigating between scenes with the dialog still open
+    // closes and reopens it, so the flag is only cleared once the dialog is
+    // actually gone.
+    sceneDlg?.addEventListener('close', () => {
+      if (!_sceneCullDecisionsChanged) return;
+      // Scene-to-scene navigation closes and immediately reopens the dialog.
+      // The close event is queued, so by the time it runs the next scene may
+      // already be showing -- leave the flag set and refresh on the real close.
+      if (sceneDlg.open) return;
+      _sceneCullDecisionsChanged = false;
+      renderScenes();
+    });
+
     // Allow other code to refresh the scene images when filter or ratings change
     window.refreshSceneFilter = function () {
       if (currentSceneId != null && _currentScene) {
@@ -653,11 +686,11 @@
 
     // Species → family taxonomy map (loaded once from backend on startup).
     // Used to auto-add the family chip when a recognized species is added and
-    // to cascade-remove species when a family chip is X'd. Populated from the
-    // legacy ``get_species_family_map`` endpoint so the auto-link behaviour
-    // stays scoped to the 500 ML-model species the existing flow was designed
-    // for -- the combobox itself sources its candidates from the bigger
-    // regional bird catalog via ``search_birds``.
+    // to cascade-remove species when a family chip is X'd. Populated from
+    // ``get_species_family_map``, which covers every species in the bundled
+    // IOC world catalog (the BioCLIP species classifier can name any of them);
+    // the combobox itself sources its candidates region-filtered via
+    // ``search_birds``.
     let _speciesFamilyMap = null;        // { "American Robin": "Thrush sp.", ... } (canonical case)
     let _speciesFamilyMapLower = null;   // lowercase keys → { canonicalName, family }
 
@@ -673,7 +706,7 @@
     // loop terminates without polluting ``_lookupFamilyForSpecies`` with
     // empty-family sentinel rows.
     const _birdRecordMisses = new Set();
-    let _birdCatalogMeta = null;         // { regions: [...], default_regions: [...], total_species: N }
+    let _birdCatalogMeta = null;         // { regions: [...], default_regions: [...], total_species: N, region_counts: {code: N} }
     // family_common -> family_sci (e.g. "Hawk/Eagle/Kite sp." -> "Accipitridae").
     // Hydrated once at startup. Mirrors the catalog's full mapping so a family
     // pill can render its scientific-family subtext without needing a sibling
@@ -689,7 +722,7 @@
       if (!hasPywebviewApi || !window.pywebview?.api?.get_species_family_map) {
         _speciesFamilyMap = _speciesFamilyMap || {};
         _speciesFamilyMapLower = _speciesFamilyMapLower || {};
-        _birdCatalogMeta = _birdCatalogMeta || { regions: [], default_regions: ['NA'], total_species: 0 };
+        _birdCatalogMeta = _birdCatalogMeta || { regions: [], default_regions: ['NA'], total_species: 0, region_counts: {} };
         return;
       }
       try {
@@ -715,6 +748,7 @@
               regions: Array.isArray(m.regions) ? m.regions : [],
               default_regions: Array.isArray(m.default_regions) ? m.default_regions : ['NA'],
               total_species: typeof m.total_species === 'number' ? m.total_species : 0,
+              region_counts: (m.region_counts && typeof m.region_counts === 'object') ? m.region_counts : {},
             };
             kdebug(`[loadSpeciesFamilyMap] bird catalog: ${_birdCatalogMeta.total_species} species across ${_birdCatalogMeta.regions.length} regions`);
           }
@@ -723,7 +757,7 @@
         console.warn('[bird catalog meta] failed:', e);
       }
       if (!_birdCatalogMeta) {
-        _birdCatalogMeta = { regions: [], default_regions: ['NA'], total_species: 0 };
+        _birdCatalogMeta = { regions: [], default_regions: ['NA'], total_species: 0, region_counts: {} };
       }
       // Family-common -> family-sci direct lookup. Replaces the old
       // sibling-species fallback: family pills can now resolve their
@@ -1899,8 +1933,13 @@
             }
           }
           break;
+        // Cull decisions. ZXC is the home-row set; 789 is the right-hand
+        // alternate (top row or numpad with NumLock on), which sits directly
+        // above the 1–5 rating keys on a numpad and keeps the whole review
+        // flow on one hand for left-handed mouse users.
         case 'z':
         case 'Z':
+        case '7':
           e.preventDefault();
           if (images[currentImageIndex]) {
             setCullStatus(images[currentImageIndex], 'accept');
@@ -1909,6 +1948,7 @@
           break;
         case 'x':
         case 'X':
+        case '8':
           e.preventDefault();
           if (images[currentImageIndex]) {
             setCullStatus(images[currentImageIndex], '');
@@ -1917,6 +1957,7 @@
           break;
         case 'c':
         case 'C':
+        case '9':
           e.preventDefault();
           if (images[currentImageIndex]) {
             setCullStatus(images[currentImageIndex], 'reject');
@@ -2348,10 +2389,16 @@
           const parts2 = String(scene.id).split(':');
           const oldSceneCount = parts2.pop();
           const sd = _initScenedata(rpForSplit);
-          const movedFilenames = sceneRowsBefore.filter(r => _splitSelected.has(r.filename || r.export_path || '')).map(r => r.filename || '').filter(Boolean);
-          const remainFilenames = sceneRowsBefore.filter(r => !_splitSelected.has(r.filename || r.export_path || '')).map(r => r.filename || '').filter(Boolean);
+          const movedRows = sceneRowsBefore.filter(r => _splitSelected.has(r.filename || r.export_path || ''));
+          const remainRows = sceneRowsBefore.filter(r => !_splitSelected.has(r.filename || r.export_path || ''));
+          const movedFilenames = movedRows.map(r => r.filename || '').filter(Boolean);
+          const remainFilenames = remainRows.map(r => r.filename || '').filter(Boolean);
           if (sd.scenes[oldSceneCount]) {
             sd.scenes[oldSceneCount].image_filenames = remainFilenames;
+            // An approved scene shows its stored tags instead of the ones its
+            // rows imply, so without this the original scene keeps species
+            // that only the images we just moved out accounted for.
+            _pruneFinalizedSceneTagsAfterRemoval(sd.scenes[oldSceneCount], remainRows, movedRows);
           }
           sd.scenes[newSceneCount] = {
             scene_id: newSceneCount,

@@ -49,6 +49,29 @@ except Exception:
 
     def redact_user_paths_in_obj(obj):  # type: ignore[no-redef]
         return obj
+
+# Distribution channel ('direct' website build vs 'appstore' sandboxed build),
+# baked at build time. Every telemetry payload is tagged with it (see _post_json)
+# so the worker can cohort events by how the build was distributed.
+try:
+    import dist_channel as _dist_channel_mod
+except Exception:
+    try:
+        from analyzer import dist_channel as _dist_channel_mod  # type: ignore
+    except Exception:
+        _dist_channel_mod = None  # type: ignore[assignment]
+
+
+def _get_dist_channel() -> str:
+    """Return the build's distribution channel, defaulting to 'direct'. Failsafe."""
+    try:
+        if _dist_channel_mod is not None:
+            return _dist_channel_mod.get_channel()
+    except Exception:
+        pass
+    return 'direct'
+
+
 # ---------------------------------------------------------------------------
 # Configuration — the shared secret and endpoint URL
 # ---------------------------------------------------------------------------
@@ -158,6 +181,15 @@ def _post_json(endpoint: str, payload: dict) -> None:
         return
     url = f"{KESTREL_API_URL}{endpoint}"
     try:
+        # Tag every payload with the distribution channel (direct vs appstore) so
+        # the worker can record DMG/installer/Store vs App Store cohorts. Shallow-
+        # copied so the caller's dict is never mutated; an explicit 'channel'
+        # already on the payload is left untouched.
+        try:
+            if isinstance(payload, dict) and 'channel' not in payload:
+                payload = {**payload, 'channel': _get_dist_channel()}
+        except Exception:
+            pass
         data = json.dumps(payload).encode('utf-8')
         headers = {
             'Content-Type': 'application/json',
@@ -481,16 +513,52 @@ def get_recent_log_tail(
         JSON-formatted payload containing recent analysis/runtime tails, or ''.
     """
     try:
-        from kestrel_analyzer.config import KESTREL_DIR_NAME, LOG_FILENAME_PREFIX, LOG_FILE_EXTENSION
+        from kestrel_analyzer.config import KESTREL_DIR_NAME, LOG_FILENAME_PREFIX, LOG_FILE_EXTENSION, LEGACY_LOG_FILE_EXTENSION
     except ImportError:
         try:
             # Fallback: import from relative path
-            from analyzer.kestrel_analyzer.config import KESTREL_DIR_NAME, LOG_FILENAME_PREFIX, LOG_FILE_EXTENSION
+            from analyzer.kestrel_analyzer.config import KESTREL_DIR_NAME, LOG_FILENAME_PREFIX, LOG_FILE_EXTENSION, LEGACY_LOG_FILE_EXTENSION
         except ImportError:
             # Cannot import config — use defaults
             KESTREL_DIR_NAME = '.kestrel'
             LOG_FILENAME_PREFIX = 'kestrel_error'
-            LOG_FILE_EXTENSION = 'json'
+            LOG_FILE_EXTENSION = 'jsonl'
+            LEGACY_LOG_FILE_EXTENSION = 'json'
+
+    try:
+        from kestrel_analyzer.logging_utils import parse_log_text
+    except ImportError:
+        try:
+            from analyzer.kestrel_analyzer.logging_utils import parse_log_text  # type: ignore
+        except ImportError:
+            def parse_log_text(text):  # type: ignore[misc]
+                """Minimal stand-in mirroring logging_utils.parse_log_text.
+
+                Crash reporting must keep working even when the analyzer
+                package cannot be imported — that is precisely the situation
+                a crash report is describing.
+                """
+                stripped = text.lstrip()
+                if not stripped:
+                    return []
+                if stripped[0] == '[':
+                    try:
+                        data = json.loads(stripped)
+                    except Exception:
+                        return []
+                    return [i for i in data if isinstance(i, dict)] if isinstance(data, list) else []
+                out = []
+                for line in text.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except Exception:
+                        continue
+                    if isinstance(obj, dict):
+                        out.append(obj)
+                return out
 
     try:
         # Build list of candidate log directories
@@ -508,7 +576,13 @@ def get_recent_log_tail(
                 continue
             try:
                 for fname in os.listdir(log_dir):
-                    if fname.startswith(LOG_FILENAME_PREFIX) and fname.endswith(f'.{LOG_FILE_EXTENSION}'):
+                    # Both extensions: current sessions write .jsonl, but a
+                    # machine that has just updated still holds .json logs from
+                    # earlier runs, and those are often the ones describing the
+                    # crash being reported.
+                    if fname.startswith(LOG_FILENAME_PREFIX) and fname.endswith(
+                        (f'.{LOG_FILE_EXTENSION}', f'.{LEGACY_LOG_FILE_EXTENSION}')
+                    ):
                         fp = os.path.join(log_dir, fname)
                         try:
                             mt = os.path.getmtime(fp)
@@ -524,9 +598,9 @@ def get_recent_log_tail(
 
         if analysis_path:
             with open(analysis_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            if isinstance(data, list):
-                payload['analysis_entries'] = data[-max_entries:]
+                entries = parse_log_text(f.read())
+            if entries:
+                payload['analysis_entries'] = entries[-max_entries:]
 
         # Runtime logs are plain text files in <...>/.kestrel/logs/
         runtime_file_limit = max(1, min(int(runtime_log_files or 1), 5))

@@ -28,19 +28,22 @@ ProjectKestrel/
 │   ├── ProjectKestrel.spec          # PyInstaller spec (Windows)
 │   ├── ProjectKestrel-macos.spec    # PyInstaller spec (macOS)
 │   ├── models/                      # Bundled AI model files
-│   │   ├── model.onnx               # Bird species classifier
-│   │   ├── labels.txt
-│   │   ├── labels_scispecies.csv
+│   │   ├── bioclip/                 # BioCLIP 2 species head: int8 image tower ONNX,
+│   │   │                            #   species_text_emb.npy + species_index.json
+│   │   ├── birds/birds_global.csv   # IOC world bird catalog (species label space + regions)
+│   │   ├── labels.txt               # legacy CNN species list (catalog build input only)
+│   │   ├── labels_scispecies.csv    # catalog build inputs (family display names)
 │   │   ├── scispecies_dispname.csv
-│   │   ├── quality.onnx             # Quality assessment model
+│   │   ├── quality.onnx             # Legacy quality CNN (optional scorer since 3.0)
 │   │   ├── quality_normalization_data.csv
-│   │   └── speciesnet/              # MegaDetector ONNX + SAM-HQ encoder/decoder + SpeciesNet weights
+│   │   ├── siglip/                  # SigLIP 2 ViT-B/16: smart search + default quality score
+│   │   └── speciesnet/              # MegaDetector ONNX + SAM-HQ encoder/decoder (folder name is historical)
 │   ├── kestrel_analyzer/            # Core analysis pipeline (no UI dependencies)
 │   │   ├── pipeline.py              # Main orchestration (`AnalysisPipeline`)
 │   │   ├── config.py                # Paths and constants
 │   │   ├── database.py              # kestrel_database.csv I/O + scenedata migration
 │   │   ├── image_utils.py, raw_exif.py, similarity.py, ratings.py, ...
-│   │   └── ml/                      # SpeciesNet+SAM-HQ wrapper, species classifier, quality classifier
+│   │   └── ml/                      # detector+SAM-HQ wrapper, BioCLIP head, gate, SigLIP, quality CNN
 │   └── tests/                       # pytest + unittest
 ├── packaging/                       # MSIX manifest + installer build scripts
 │   ├── ProjectKestrel.appxmanifest
@@ -82,12 +85,19 @@ Re-pin `numpy==2.1.3` afterward if pip upgrades it — TensorFlow expects
 ### 2. Required model files
 
 All under `analyzer/models/`:
-- `model.onnx`, `labels.txt`, `labels_scispecies.csv`, `scispecies_dispname.csv`
-- `quality.onnx`, `quality_normalization_data.csv`
-- `speciesnet/` (MegaDetector ONNX variants, SAM-HQ ViT-Tiny encoder/decoder ONNX, SpeciesNet weights)
+- `bioclip/` (`bioclip2_image_int8.onnx` CPU graph + `bioclip2_image_wdq16.onnx` DirectML graph,
+  both reading the int8 weights in `bioclip2_image.data`; `species_text_emb.npy`, `species_index.json`,
+  `wildlife_text_emb.npy` + `wildlife_index.json` (bird/wildlife routing),
+  `gate_text_emb.npy` + `gate_index.json` (false-positive gate))
+- `siglip/` (SigLIP 2 image tower as CPU + DirectML graphs over one `siglip2_b16_image.data`, text tower, pruned token table, tokenizer, quality calibration,
+  precomputed quality-prompt embeddings)
+- `birds/birds_global.csv`
+- `quality.onnx`, `quality_normalization_data.csv` (legacy quality CNN)
+- `speciesnet/` (MegaDetector ONNX variants, SAM-HQ ViT-Tiny encoder/decoder ONNX)
 
-SpeciesNet weights are bundled in the repo via Git LFS. SAM-HQ ViT-Tiny ONNX
-files are also bundled. No first-run downloads are needed.
+All weights are bundled in the repo via Git LFS. No first-run downloads are needed.
+Pipeline 3.0 removed the SpeciesNet classifier (224 MB) and the OpenAI CLIP prototype
+(209 MB) and added SigLIP 2 (~359 MB).
 
 ### 3. Running the app
 
@@ -125,23 +135,40 @@ For each analyzed folder, Kestrel creates `.kestrel/` containing:
 Configured in `analyzer/tests/pytest.ini`. Markers: `unit`, `integration`, `e2e`,
 `compat`, `ui`.
 
+There are two lanes, and the difference matters:
+
 ```bash
+# Fast lane (~1 min). No ML weights needed, no LFS objects required.
+# Use this while iterating.
 pytest analyzer/tests -m unit
+
+# FULL PRE-DEPLOY LANE (~4 min on CPU). Run this before cutting a build.
+# Adds integration/e2e/compat, which load the real ONNX models -- so it needs
+# the Git LFS objects under analyzer/models/ actually materialised, not
+# pointer stubs.
+pytest analyzer/tests -m "not ui"
+
 pytest analyzer/tests/unit/test_database.py -v
 pytest analyzer/tests/unit/test_database.py::TestName::test_case
 ```
 
+**`-m unit` is not "the test suite".** It deliberately excludes every test that
+touches a model, so a broken model path stays green there indefinitely. Five
+quality-classifier integration tests were broken for roughly four months
+without being noticed, because the fast lane was the only command documented
+here and the dev build workflows mark their pytest step `continue-on-error`.
+The four release workflows *do* gate on `-m "not ui"`, so anything the fast
+lane misses surfaces as a failed release build rather than a failed commit.
+Run the full lane before you deploy.
+
 `conftest.py` puts `analyzer/` on `sys.path`, so tests import as
 `from kestrel_analyzer.database import ...` (not `from analyzer.kestrel_analyzer...`).
 
-Taxonomy-routing test (no ML weights needed, no pytest required):
+Per-stage benchmark (old build vs this one, same photos):
 ```bash
-# Windows
-$env:PYTHONPATH = "analyzer"
-python -m unittest analyzer.tests.test_speciesnet_taxonomy -v
-
-# POSIX
-PYTHONPATH=analyzer python -m unittest analyzer.tests.test_speciesnet_taxonomy -v
+python tools/bench_pipeline.py analyzer/tests/fixtures/test_sets/set_a_fresh --json new.json
+python tools/bench_pipeline.py analyzer/tests/fixtures/test_sets/set_a_fresh --repo ../other-checkout --json old.json
+python tools/bench_pipeline.py --compare old.json new.json
 ```
 
 Pipeline smoke test on the bundled images:
@@ -174,6 +201,62 @@ packaging/build_app_headless.sh
 
 Targets `analyzer/ProjectKestrel-macos.spec`.
 
+#### Building on Intel (x86_64) Macs
+
+The spec builds for the host architecture (`target_arch=None`), so a native
+Intel build needs no code changes — just an x86_64 environment. Verified on
+macOS 26 / Intel with Python 3.12:
+
+1. Make sure Git LFS is installed and the model weights are pulled **before**
+   building:
+
+   ```bash
+   brew install git-lfs
+   git lfs install
+   git lfs pull
+   ```
+
+   Without this, the ONNX files under `analyzer/models/` are tiny pointer
+   stubs (e.g. `quality.onnx` at ~130 bytes instead of ~1.1 MB) and the
+   build "succeeds" but the app fails at model load.
+
+2. Create the venv the build script expects, using an **x86_64** Python 3.12:
+
+   ```bash
+   python3.12 -m venv .venv2
+   .venv2/bin/pip install -r requirements-macos.txt
+   ```
+
+   All pinned packages ship x86_64 macOS wheels except `rawpy`, which pip
+   builds from source automatically (takes a few minutes).
+
+3. Run `packaging/build_app_headless.sh`. Output lands in
+   `analyzer/dist/Project Kestrel.app`. Confirm the architecture with:
+
+   ```bash
+   lipo -archs "analyzer/dist/Project Kestrel.app/Contents/MacOS/ProjectKestrel"
+   ```
+
+To produce a DMG locally, mirror the CI packaging step
+(`.github/workflows/build-macos.yml`):
+
+```bash
+brew install create-dmg
+create-dmg \
+  --volname "Project Kestrel" \
+  --window-size 540 380 \
+  --icon-size 128 \
+  --icon "Project Kestrel.app" 140 190 \
+  --app-drop-link 400 190 \
+  --hide-extension "Project Kestrel.app" \
+  "artifact/ProjectKestrel.dmg" \
+  "analyzer/dist/Project Kestrel.app"
+```
+
+Note that local builds are neither Developer ID-signed nor notarized
+(`codesign_identity=None` in the spec), so Gatekeeper will warn on other
+machines. Signing and notarization happen in CI.
+
 Both spec files use `analyzer/visualizer.py` as the entry point.
 
 ## Code Organization
@@ -185,16 +268,33 @@ caller. All ML model loading is lazy and triggered by
 `AnalysisPipeline.load_models()`. Key modules:
 
 - `pipeline.py` — `AnalysisPipeline.process_folder()` is the main entry. Drives
-  decode → detection (SpeciesNet + SAM-HQ) → species classification → quality
-  scoring → scene grouping → CSV write.
+  decode → MegaDetector + SAM-HQ → square subject crop → one BioCLIP 2
+  embedding per crop (false-positive gate, bird/wildlife routing, bird
+  species) → SigLIP 2 crop embedding (default quality) + legacy quality CNN →
+  SigLIP 2 whole-frame embedding → scene grouping → CSV write (pipeline 3.0).
 - `database.py` — `kestrel_database.csv` I/O. Includes a one-time migration that
   moves user-editable columns (`rating`, `scene_name`, etc.) out of the CSV
   and into `kestrel_scenedata.json`.
-- `ml/speciesnet_sam_hq.py` — SpeciesNet (MegaDetector + classifier) + SAM-HQ
-  ViT-Tiny wrapper, all on ONNX Runtime with DirectML/CoreML/CPU provider
-  coordination.
-- `ml/bird_species.py` — Custom ONNX bird species classifier.
-- `ml/quality.py` — Custom ONNX quality model with percentile normalization.
+- `ml/speciesnet_sam_hq.py` — MegaDetector + SAM-HQ ViT-Tiny wrapper
+  (`DetectorSAMHQWrapper`; the module/alias keep the pre-3.0 SpeciesNet name),
+  on ONNX Runtime with DirectML/CoreML/CPU provider coordination.
+- `ml/animal_gate.py` — zero-shot false-positive gate on the BioCLIP crop
+  embedding (method + threshold mapping are one-line knobs).
+- `ml/siglip.py` — SigLIP 2 image/text encoders and the calibrated sharpness
+  score; `quality_model.py` picks which stored score is "the" quality.
+- `smart_search.py` + `query_parser.py` — smart search (species chips +
+  SigLIP crop/frame scoring); `upgrade_v3.py` — upgrade an analysed folder to
+  pipeline 3.0 from its stored crops.
+- `ml/providers.py` — per-session provider / node-placement diagnostics and
+  the BioCLIP/SigLIP tower device policy.
+- `ml/bioclip_species.py` — BioCLIP 2 zero-shot bird species classifier
+  (int8 ONNX image tower + precomputed IOC species text embeddings),
+  geofenced per folder via `bird_catalog` regions.
+- `embedding_store.py` — per-folder sidecar (`.kestrel/embeddings/`): BioCLIP
+  crop embeddings (primary slot) plus `siglip2-b16` (crops) and
+  `siglip2-b16-frame` (whole frames) slots for smart search.
+- `ml/quality.py` — legacy ONNX quality model with percentile normalization
+  (optional scorer since 3.0).
 - `ratings.py` — Quality score → 1–5 star mapping using hardcoded
   per-profile thresholds (`very_strict`, `strict`, `balanced`, `lenient`,
   `very_lenient`).
@@ -254,3 +354,28 @@ session failure.
 Released installers ship CPU-only. Running from source on Windows with
 `requirements-windows.txt` enables DirectML; the `--gpu` flag on `cli.py`
 opts in.
+
+### Transformer towers (BioCLIP 2, SigLIP 2) and node placement
+
+Both image towers are dynamically quantised int8 graphs
+(`DynamicQuantizeLinear` + `MatMulInteger`). CoreML has no kernels for those
+ops, so a CoreML session splits the graph into many CoreML/CPU partitions and
+copies activations between devices every layer; DirectML implements them.
+Default (`tower_device = auto`): towers on CPU with CoreML, on the GPU with
+DirectML. Override with the *Settings → BioCLIP device* select or
+`KESTREL_TOWER_DEVICE=cpu|gpu|auto`. The SigLIP image tower ignores this and always runs
+its int8 graph on CPU (`providers.CPU_PINNED_KINDS`): its embedding is the default quality
+score, and the GPU graph would move ~12% of crops by one star between machines.
+
+Every ONNX session logs what it asked for and what it got, including how many
+graph nodes ORT placed on each execution provider (parsed from ORT's verbose
+"Node placements" log at session creation):
+
+    [providers] siglip_image: requested=['DmlExecutionProvider', 'CPUExecutionProvider']
+                actual=['DmlExecutionProvider', 'CPUExecutionProvider'] nodes: Dml=412, CPU=6
+
+(`KESTREL_LOG_LEVEL=DEBUG` to see it on the console; the same records are in
+the analysis log's `models_loaded` event under `placement`.) Many CPU nodes
+next to a GPU EP = a split graph; compare the per-stage timings with
+`tools/bench_pipeline.py --gpu` against the tower pinned to CPU.
+`KESTREL_ORT_PLACEMENT_DIAG=0` disables the capture.

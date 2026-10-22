@@ -36,6 +36,8 @@
           run: () => showFolderOptionsDialog(folderPath) },
         { icon: '📝', label: 'Write Photo Metadata',
           run: () => writeMetadataForFolder(folderPath) },
+        { icon: '✨', label: 'Upgrade to Analysis Pipeline 3.0…',
+          run: () => upgradeFolderToV3(folderPath) },
         { divider: true },
         { icon: '🗑', label: 'Clear Kestrel Analysis Data', danger: true,
           run: () => {
@@ -64,14 +66,45 @@
       return menu;
     }
 
+    /** Folder action: upgrade an analysed folder to pipeline 3.0 from its stored
+     *  crops (species re-ID, SigLIP quality, smart-search index). Local only. */
+    async function upgradeFolderToV3(folderPath) {
+      const api = window.pywebview?.api;
+      if (!api?.smart_search_status) return;
+      let st = null;
+      try { st = await api.smart_search_status(folderPath); } catch (_) { st = null; }
+      const up = st?.upgrade || {};
+      const name = (folderPath || '').split(/[\\/]/).filter(Boolean).pop() || folderPath;
+      if (up.status === 'current') {
+        showToast(`${name} is already on analysis pipeline 3.0.`, 4000);
+        return;
+      }
+      if (up.status === 'reanalyze' || up.status === 'not_analyzed') {
+        showToast(`${name}: ${up.reason || 're-analyse this folder to use pipeline 3.0.'}`, 7000);
+        return;
+      }
+      const ok = window.confirm(
+        `Upgrade “${name}” to analysis pipeline 3.0?\n\n` +
+        'Kestrel re-reads the bird crops and preview images it already saved (no RAW decoding) to ' +
+        'update species IDs, add the new SigLIP sharpness score and build the smart-search index. ' +
+        'Your culling decisions, star ratings and edited tags are not changed, and the database is ' +
+        'backed up first. Runs on this computer only (uses the GPU when enabled).'
+      );
+      if (!ok) return;
+      if (typeof smartSearchUpgradeFolder === 'function') await smartSearchUpgradeFolder(folderPath);
+    }
+
     async function renderScenes() {
       const myVer = ++_renderScenesVersion;
       const minC = parseFloat(el('#speciesConf').value) || 0;
       const search = el('#search').value;
       const sortBy = el('#sortBy').value;
-      const onlyReviewedScenes = !!document.getElementById('filterScenesManualRated')?.checked;
-      const groupByFolder = document.getElementById('groupByFolder')?.checked ?? getSetting('groupByFolder', true);
-      const groupByTime = document.getElementById('groupByTime')?.checked ?? getSetting('groupByTime', true);
+      const reviewStateFilter = document.getElementById('filterSceneReviewState')?.value
+        || getSetting('sceneReviewFilter', 'all');
+      // Smart-search results are shown flat, in score order (no folder/time grouping).
+      const _smartActive = typeof smartSearchIsActive === 'function' && smartSearchIsActive();
+      const groupByFolder = !_smartActive && (document.getElementById('groupByFolder')?.checked ?? getSetting('groupByFolder', true));
+      const groupByTime = !_smartActive && (document.getElementById('groupByTime')?.checked ?? getSetting('groupByTime', true));
       const showBirdThumbs = document.getElementById('showBirdThumbs')?.checked ?? getSetting('showBirdThumbs', false);
       // Widen each card's grid track when bird-crop thumbs are shown, so the
       // main thumb keeps its "no-crop" height and the crop slots into the
@@ -90,12 +123,17 @@
         if (refreshed) _currentScene = refreshed;
       }
 
-      // Apply scene-level manual-reviewed filter without mutating global scenes.
+      // Apply the scene-level review-state filter without mutating global scenes.
       // Reviewed means any of:
       //  - scene tags finalized by user, or scene renamed by user
       //  - manual/verified accept-reject culling decision on any image
       //  - manual star rating on any image
-      const visibleScenes = onlyReviewedScenes ? scenes.filter(isManuallyReviewedScene) : scenes;
+      // 'unreviewed' is the exact complement: scenes carrying no user-assigned
+      // trait at all, i.e. the ones that still need work.
+      const visibleScenes =
+        reviewStateFilter === 'reviewed' ? scenes.filter(isManuallyReviewedScene)
+        : reviewStateFilter === 'unreviewed' ? scenes.filter(s => !isManuallyReviewedScene(s))
+        : scenes;
 
       // Batched hydration of bird-catalog records for every species pill we're
       // about to paint when the show-scientific-names toggle is on. Collect
@@ -274,6 +312,22 @@
           s.representative?.__rootPath
         ));
         th.appendChild(img);
+        if (_smartActive && s.smartRank) {
+          th.classList.add('has-smart-rank');
+          const rank = document.createElement('span');
+          rank.className = 'smart-search-rank';
+          rank.textContent = `#${s.smartRank}`;
+          rank.title = `Smart search rank ${s.smartRank} (score ${Number(s.smartScore).toFixed(3)})`;
+          th.appendChild(rank);
+          const nImgs = (s.images || []).length;
+          if (nImgs > 1 && s.smartMatchCount) {
+            const m = document.createElement('span');
+            m.className = 'smart-search-matches';
+            m.textContent = `${s.smartMatchCount}/${nImgs}`;
+            m.title = `${s.smartMatchCount} of ${nImgs} photos in this scene match; the card shows the best match`;
+            th.appendChild(m);
+          }
+        }
         if (showBirdThumbs && s.representative?.crop_path && s.representative?.export_path) {
           const row = document.createElement('div');
           row.className = 'thumb-row';
@@ -409,6 +463,14 @@
         const countEl = document.createElement('span');
         countEl.className = 'meta-count';
         countEl.textContent = `📸 ${s.imageCount}`;
+        // Break the count down on hover rather than on the tile: the split is
+        // useful when triaging but not worth the visual weight on every card.
+        if (s.cullCounts) {
+          const { accepted, rejected, undecided } = s.cullCounts;
+          countEl.title = accepted || rejected
+            ? `${accepted} accepted · ${undecided} undecided · ${rejected} rejected`
+            : `${s.imageCount} image${s.imageCount === 1 ? '' : 's'}, none decided yet`;
+        }
         meta.appendChild(countEl);
         metaRow.appendChild(meta);
 
@@ -636,6 +698,22 @@
           actionsWrap.appendChild(actionsTrigger);
           rightActions.appendChild(actionsWrap);
 
+          // Repair — only rendered visible once a background diff has found
+          // drift for this folder AND the folder listing was read successfully.
+          // Created hidden and toggled by repair.js::syncRepairIndicators,
+          // because the diff arrives after this render completes.
+          const repairBtn = document.createElement('button');
+          repairBtn.type = 'button';
+          repairBtn.className = 'action-btn folder-repair-btn hidden';
+          repairBtn.dataset.repairRoot = fd.folderPath;
+          repairBtn.innerHTML = '<i>⚠</i> Repair Kestrel Data';
+          repairBtn.title = 'Kestrel data and photos no longer match';
+          repairBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            if (typeof openRepairDialog === 'function') openRepairDialog(fd.folderPath);
+          });
+          rightActions.appendChild(repairBtn);
+
           const cullingBtn = document.createElement('button');
           cullingBtn.className = 'action-btn culling-assistant-btn';
           cullingBtn.innerHTML = '<i>✂</i> Open Culling Assistant';
@@ -669,6 +747,21 @@
               }
             } catch {}
           })();
+
+          // Block sharing while this folder is still being analyzed — uploading
+          // partial results to Perch would publish an incomplete timeline. The
+          // disabled state is kept in sync as analysis starts/finishes by
+          // updateInProgressFoldersInTree() (queue.js).
+          try {
+            const _np = String(fd.folderPath || '').replace(/\\/g, '/');
+            const _analyzing =
+              (typeof _inProgressFolderPaths !== 'undefined' && _inProgressFolderPaths.has(_np))
+              || (window._ccInProgressFolderPaths && window._ccInProgressFolderPaths.has(_np));
+            if (_analyzing) {
+              perchBtn.disabled = true;
+              perchBtn.title = 'Wait for analysis to finish before uploading to Perch.';
+            }
+          } catch {}
 
 
           hdr.appendChild(rightActions);
@@ -712,6 +805,10 @@
       if (mainEl && savedScrollTop > 0) {
         mainEl.scrollTop = savedScrollTop;
       }
+
+      // Folder headers were just rebuilt with their Repair buttons hidden;
+      // re-apply whatever the last diff found. Cheap DOM toggle, no rescan.
+      try { if (typeof syncRepairIndicators === 'function') syncRepairIndicators(); } catch (_) { }
     }
 
     // Update card highlights and show/hide floating action bar based on current selection
@@ -768,6 +865,11 @@
       e.preventDefault();
 
       if (isEnter) {
+        // Mirror the mouse path: opening a scene by click also moves the
+        // shift-click anchor (see the card click handler), so opening one by
+        // keyboard must too, or the anchor is left behind at whichever card
+        // was last clicked.
+        _lastSelectedIdx = _visibleSceneOrder.indexOf(String(_focusedCardId));
         openSceneDialog(_focusedCardId);
         return;
       }
@@ -800,7 +902,18 @@
       }
 
       if (nextIdx >= 0 && nextIdx < cards.length) {
-        _focusGridCard(cards[nextIdx].dataset.sceneId);
+        const nextId = cards[nextIdx].dataset.sceneId;
+        _focusGridCard(nextId);
+        // Keep the shift-click anchor with the focused card. Without this,
+        // arrowing across the grid leaves _lastSelectedIdx wherever the last
+        // mouse click happened, and the next Shift+Click selects everything
+        // between that stale card and the clicked one rather than starting a
+        // fresh range from where the user actually is.
+        //
+        // Safe against clobbering a range selection: this handler returns
+        // early while selectedSceneIds is non-empty, so arrow keys never move
+        // the anchor mid-selection.
+        _lastSelectedIdx = _visibleSceneOrder.indexOf(String(nextId));
       }
     }
     document.addEventListener('keydown', _gridKeyHandler);

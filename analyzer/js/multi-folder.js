@@ -14,6 +14,7 @@
         sceneGrid.innerHTML = '';
         // Re-render so scene-grid.js can flip the welcome panel back on.
         try { if (typeof renderScenes === 'function') renderScenes(); } catch (_) { }
+        try { hideRawWarnBanner(); } catch (_) { }
         setStatus('No folders selected — check folders in the tree to load scenes');
       }
     }, 400);
@@ -84,6 +85,10 @@
       header = [];
       let loadedCount = 0;
       let slot = 0;
+      // The bridge's resolved realpath per folder — what rows and folder headers
+      // are keyed by. The drift scan is given these rather than the raw input
+      // paths so both sides agree on the key without relying on a fallback.
+      const loadedRoots = [];
       const total = paths.length;
       showProgress(`Loading 0 / ${total} folders…`, 0);
       for (let i = 0; i < paths.length; i++) {
@@ -100,6 +105,7 @@
           const newFields = parsed.meta.fields || [];
           for (const f of newFields) if (!header.includes(f)) header.push(f);
           const root = result.root || p;
+          loadedRoots.push(root);
           const currentSlot = slot++;
           for (const r of newRows) { r.__rootPath = root; r.__folderSlot = currentSlot; }
           rows = rows.concat(newRows);
@@ -144,6 +150,10 @@
       treeActivePath = paths.length === 1 ? paths[0] : null;
       renderFolderTree();
       await renderScenes();
+      try { refreshRawWarnBanner(); } catch (_) { }
+      // Drift check runs AFTER the view is up: the CSV has already rendered, so
+      // a slow directory read never delays browsing. Deliberately not awaited.
+      try { refreshRepairState(loadedRoots); } catch (_) { }
       showProgress('Done', 100);
       await sleep(400);
       hideProgress();
@@ -202,6 +212,8 @@
 
         // Now render with rootPath set
         await renderScenes();
+        try { refreshRawWarnBanner(); } catch (_) { }
+        try { refreshRepairState([loadedRoot]); } catch (_) { }
 
         // Also save in settings for file opening (use rootHint for consistency)
         const settings = loadSettings();

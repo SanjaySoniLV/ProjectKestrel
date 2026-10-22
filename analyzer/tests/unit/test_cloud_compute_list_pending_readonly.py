@@ -18,7 +18,12 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture
 def api():
-    return api_bridge.Api()
+    a = api_bridge.Api()
+    # Pin a deterministic owner so job-history filtering doesn't depend on the
+    # ambient OS keychain (signed-out → empty history). Upserted test jobs have
+    # no ownerId and are adopted to this owner on first list.
+    a._cc_owner_id = lambda: "test-owner"
+    return a
 
 
 @pytest.fixture
@@ -192,3 +197,59 @@ class TestListPendingJobsReadOnly:
         assert r["ok"] is True
         rows = {j["jobId"]: j for j in store.load_jobs()}
         assert rows["job-offline"]["status"] == "uploading"
+
+
+class TestJobHistoryOwnerScoping:
+    def test_history_filtered_to_current_owner(self, api, store, tmp_path, monkeypatch):
+        """Account B never sees account A's jobs; A's stay on disk."""
+        folder = tmp_path / "f"
+        folder.mkdir()
+        store.upsert_job({
+            "jobId": "job-A", "ownerId": "owner-A",
+            "folderPath": str(folder), "status": "done", "imageCount": 5,
+        })
+        store.upsert_job({
+            "jobId": "job-B", "ownerId": "owner-B",
+            "folderPath": str(folder), "status": "done", "imageCount": 5,
+        })
+        monkeypatch.setattr(api, "_cc_make_client", lambda: (None, {"ok": False, "error": "x"}))
+
+        api._cc_owner_id = lambda: "owner-B"
+        r = api.cloud_compute_list_pending_jobs(include_terminal=True)
+        ids = {j["jobId"] for j in r["jobs"]}
+        assert ids == {"job-B"}
+        # A's job is filtered from the view but NOT deleted from the ledger.
+        assert {j["jobId"] for j in store.load_jobs()} == {"job-A", "job-B"}
+
+    def test_signed_out_sees_no_history(self, api, store, tmp_path, monkeypatch):
+        folder = tmp_path / "f"
+        folder.mkdir()
+        store.upsert_job({
+            "jobId": "job-A", "ownerId": "owner-A",
+            "folderPath": str(folder), "status": "done", "imageCount": 5,
+        })
+        monkeypatch.setattr(api, "_cc_make_client", lambda: (None, {"ok": False, "error": "x"}))
+        api._cc_owner_id = lambda: ""
+        r = api.cloud_compute_list_pending_jobs(include_terminal=True)
+        assert r == {"ok": True, "jobs": []}
+
+    def test_legacy_unowned_jobs_adopted_by_current_owner(self, api, store, tmp_path, monkeypatch):
+        """A pre-tagging row (no ownerId) is claimed by the first lister and
+        then scoped to that owner — preserving pre-upgrade history."""
+        folder = tmp_path / "f"
+        folder.mkdir()
+        store.upsert_job({
+            "jobId": "job-legacy",
+            "folderPath": str(folder), "status": "done", "imageCount": 5,
+        })
+        monkeypatch.setattr(api, "_cc_make_client", lambda: (None, {"ok": False, "error": "x"}))
+
+        api._cc_owner_id = lambda: "owner-A"
+        r = api.cloud_compute_list_pending_jobs(include_terminal=True)
+        assert {j["jobId"] for j in r["jobs"]} == {"job-legacy"}
+        # Persisted claim: a different account no longer sees it.
+        adopted = {j["jobId"]: j for j in store.load_jobs()}
+        assert adopted["job-legacy"]["ownerId"] == "owner-A"
+        api._cc_owner_id = lambda: "owner-B"
+        r2 = api.cloud_compute_list_pending_jobs(include_terminal=True)
+        assert r2["jobs"] == []

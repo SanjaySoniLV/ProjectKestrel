@@ -1,0 +1,121 @@
+name: Tests
+
+# The only workflow that tests a change *before* it is part of a build.
+#
+# Every other workflow here is a build/release job triggered by push to `main`
+# or a manual dispatch, so nothing verified a pull request and nothing verified
+# `dev`. The four release workflows do gate on `-m "not ui"`, but that is the
+# last possible moment to find out: a break introduced on `dev` stayed invisible
+# until a release was cut. Five quality-classifier integration tests sat broken
+# for roughly four months that way -- the three dev build workflows *did* run
+# them, but mark the pytest step `continue-on-error`, so a failure was only a
+# non-blocking annotation in a build log nobody reads.
+#
+# Split into two lanes for one reason: cost. The repo carries ~939 MB of Git LFS
+# model weights and LFS bandwidth is metered, so fetching them on every push to
+# a PR branch would burn a month's allowance in a run or two. The `unit` marker
+# is defined as needing no model weights, so that lane checks out *without* LFS
+# and costs nothing; the full lane runs once per merge to `dev` and restores the
+# weights from the Actions cache (free, 10 GB) instead of re-downloading them.
+#
+# Both jobs are blocking. The release gates in main.yml / build-macos*.yml are
+# deliberately untouched -- they remain the real gate for a release artifact.
+
+on:
+  pull_request:
+  push:
+    branches: [ dev ]
+
+# A newer push supersedes an in-flight run on the same ref.
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Unit lane (no model weights)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        # Deliberately no `lfs: true`. The unit marker is "no ML models, no real
+        # images needed", so the pointer stubs are enough and this job costs zero
+        # LFS bandwidth. Do not add LFS here without re-reading the note above.
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # The full dependency set, not a trimmed one. Several unit modules import
+      # cv2 / onnxruntime / rawpy and skip themselves when those are missing, so
+      # a lighter install would turn real coverage into silent skips.
+      - name: Install dependencies
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-windows.txt
+          pip install pytest
+
+      - name: pytest -m unit
+        shell: powershell
+        run: python -m pytest analyzer/tests/ -m unit -q --tb=short
+
+  full:
+    name: Full suite (integration + e2e + compat)
+    # PRs get the unit lane only; this runs on merge to dev, so the LFS cache is
+    # populated once per model change rather than once per pushed branch.
+    if: github.event_name == 'push'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        # Checked out without LFS on purpose, so the cache below can satisfy the
+        # objects before anything reaches the network.
+
+      # Pointer files contain the object IDs, so hashing them keys the cache on
+      # the *contents* of the models -- it only misses when a model actually
+      # changes, which is rare.
+      - name: Restore Git LFS cache
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: lfs-${{ runner.os }}-${{ hashFiles('analyzer/models/**') }}
+          restore-keys: |
+            lfs-${{ runner.os }}-
+
+      - name: Materialise model weights
+        shell: powershell
+        run: git lfs pull
+
+      # An LFS stub satisfies is_file() but fails to deserialise as ONNX, which
+      # surfaces as a confusing model-load error rather than a missing file.
+      # Fail loudly here instead.
+      - name: Verify weights are real, not pointer stubs
+        shell: powershell
+        run: |
+          $f = "analyzer/models/quality.onnx"
+          $head = Get-Content $f -TotalCount 1 -ErrorAction Stop
+          if ($head -like "version https://git-lfs*") {
+            Write-Error "LFS objects were not materialised: $f is still a pointer stub."
+            exit 1
+          }
+          Write-Host "Model weights present."
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-windows.txt
+          pip install pytest
+
+      - name: pytest -m "not ui"
+        shell: powershell
+        run: python -m pytest analyzer/tests/ -m "not ui" -q --tb=short

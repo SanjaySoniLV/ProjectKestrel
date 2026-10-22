@@ -700,7 +700,7 @@
         case 'perch_storage_limit_reached':
           return {
             title: 'Perch is full',
-            body: `This perch has hit the storage limit (${limitMB != null ? limitMB + ' MB' : 'plan cap'}). Upgrade for more storage per perch, or split the upload across multiple perches.${tierLine}`,
+            body: `This perch has hit the storage limit (${limitMB != null ? limitMB + ' MB' : 'plan cap'}). Split the upload across multiple perches, or get in touch from your account portal — extra storage can often be arranged.${tierLine}`,
           };
         case 'perch_image_limit_reached':
           return {
@@ -715,7 +715,7 @@
         case 'asset_too_large':
           return {
             title: 'File too large for your plan',
-            body: `${filename ? `"${filename}" is` : 'A file is'} larger than your plan's per-file limit (${limitMB != null ? limitMB + ' MB' : 'plan cap'}). Upgrade for higher per-file limits.${tierLine}`,
+            body: `${filename ? `"${filename}" is` : 'A file is'} larger than your plan's per-file limit (${limitMB != null ? limitMB + ' MB' : 'plan cap'}). Get in touch from your account portal if you need a higher limit.${tierLine}`,
           };
         default:
           return {
@@ -728,7 +728,12 @@
     function _perchSwapToPlanLimitState(card, prog) {
       if (!card) return;
       const copy = _perchPlanLimitCopy(prog);
-      const upgradeUrl = (prog && prog.upgradeUrl) || 'https://myaccount.projectkestrel.org/perch';
+      // Account management, not a purchase CTA. Perch tiers grant no extra
+      // storage today — caps are lifted per-account on request — so "Upgrade"
+      // would sell a fix that doesn't exist. It would also void the App Store's
+      // 3.1.3(f) IAP exemption, which requires no purchase calls-to-action.
+      const manageUrl = (prog && (prog.manageUrl || prog.upgradeUrl))
+        || 'https://myaccount.projectkestrel.org/perch';
       const esc = (s) => String(s).replace(/[<>&"']/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]));
       card.className = 'perch-upload-card is-error';
       card.innerHTML = `
@@ -738,13 +743,13 @@
         </div>
         <div class="perch-upload-card-body">
           <div class="perch-upload-card-err">${esc(copy.body)}</div>
-          <button type="button" class="perch-upload-card-cta" data-role="upgrade">Upgrade plan →</button>
+          <button type="button" class="perch-upload-card-cta" data-role="manage">Manage my account →</button>
         </div>
       `;
-      const upgrade = card.querySelector('[data-role="upgrade"]');
-      if (upgrade) {
-        upgrade.addEventListener('click', () => {
-          try { window.pywebview.api.open_perch_url(upgradeUrl); } catch {}
+      const manage = card.querySelector('[data-role="manage"]');
+      if (manage) {
+        manage.addEventListener('click', () => {
+          try { window.pywebview.api.open_perch_url(manageUrl); } catch {}
         });
       }
       const dismiss = card.querySelector('[data-role="dismiss"]');
@@ -755,8 +760,8 @@
 
     function _perchSwapToErrorState(card, prog, rootPath) {
       if (!card) return;
-      // Stage 7: tier-cap denials get their own card with an Upgrade CTA
-      // (no Retry — retrying without upgrading would just 403 again).
+      // Stage 7: tier-cap denials get their own card with an account CTA
+      // (no Retry — retrying against the same cap would just 403 again).
       if (prog && prog.message === 'plan_limit_exceeded') {
         _perchSwapToPlanLimitState(card, prog);
         return;
@@ -808,6 +813,9 @@
         _perchActiveJobId = null;
         if (_perchActivePollTimer) { clearInterval(_perchActivePollTimer); _perchActivePollTimer = null; }
         _perchSetButtonsDisabled(false);
+        // Server confirmed the perch is live → transition the folder's
+        // "Share with Perch" button straight to "On Perch".
+        if (rootPath) _perchMarkFolderOnPerch(rootPath, prog.perch_url || prog.perchUrl || '');
       } else if (phase === 'canceled') {
         _perchSwapToCanceledState(card, prog);
         _perchActiveJobId = null;
@@ -1062,6 +1070,19 @@
       });
       const rejectCb = document.getElementById('perchRejectToggleCb');
       if (rejectCb) rejectCb.addEventListener('change', _perchOnRejectToggleChange);
+      // Re-link an already-shared folder to an existing perch (no re-upload).
+      const relinkOpen = document.getElementById('perchRelinkOpenBtn');
+      if (relinkOpen) relinkOpen.addEventListener('click', () => _perchOpenRelinkPicker());
+      const relinkClose = document.getElementById('perchRelinkClose');
+      if (relinkClose) relinkClose.addEventListener('click', () => {
+        const d = document.getElementById('perchRelinkDlg');
+        if (d && d.open) { try { d.close(); } catch {} }
+      });
+      const relinkList = document.getElementById('perchRelinkList');
+      if (relinkList) relinkList.addEventListener('click', (e) => {
+        const row = e.target.closest('.perch-relink-row');
+        if (row) _perchDoRelink(row.getAttribute('data-perch-id'));
+      });
       // Linked-state takeover buttons.
       const linkedOpen = document.getElementById('perchLinkedOpenBtn');
       const linkedUnlink = document.getElementById('perchLinkedUnlinkBtn');
@@ -1241,6 +1262,131 @@
       const tagBanner = document.getElementById('perchTagSyncBanner');
       if (tagBanner) tagBanner.classList.add('hidden');
       _perchDlgState.tagDiff = null;
+    }
+
+    /** Flip every .folder-perch-btn for this path straight to the linked
+     *  ("On Perch") state from a known perch URL — no disk read. Used the moment
+     *  a share job reports phase 'done' (server-confirmed), since the bridge
+     *  writes perch_link.json *after* emitting 'done', so a read_perch_link here
+     *  could race the file write. The disk becomes the source of truth again on
+     *  the next natural refresh (e.g. reopening the Perch dialog). */
+    function _perchMarkFolderOnPerch(rootPath, perchUrl) {
+      const sel = `.folder-perch-btn[data-folder-path="${cssEscape(rootPath)}"]`;
+      document.querySelectorAll(sel).forEach(btn => {
+        const lbl = btn.querySelector('.folder-perch-btn-label');
+        btn.classList.add('is-linked');
+        if (lbl) lbl.textContent = 'On Perch';
+        if (perchUrl) btn.dataset.perchUrl = String(perchUrl);
+        btn.title = 'This folder is published to Perch (click to manage)';
+      });
+      // Reflect the new Perch link in the sidebar folder tree immediately. The
+      // 🪶 feather marker is data-driven off node.has_perch_link, which is only
+      // re-scanned from disk on folder load / app restart — so without this the
+      // feather wouldn't appear until a restart. Set the flag in-memory and
+      // repaint the tree now.
+      try {
+        if (typeof findNodeInAnyRoot === 'function') {
+          const node = findNodeInAnyRoot(rootPath);
+          if (node && !node.has_perch_link) {
+            node.has_perch_link = true;
+            if (typeof renderFolderTree === 'function') renderFolderTree();
+          }
+        }
+      } catch (e) { /* tree refresh is best-effort */ }
+    }
+
+    // ── Re-link: associate this folder with an EXISTING perch (no re-upload) ──
+    function _perchEsc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+    function _perchFmtBytes(n) {
+      n = Number(n) || 0;
+      if (n < 1024) return n + ' B';
+      const u = ['KB', 'MB', 'GB', 'TB'];
+      let v = n / 1024, i = 0;
+      while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+      return v.toFixed(v >= 100 ? 0 : 1) + ' ' + u[i];
+    }
+
+    /** Open the picker listing the user's existing perches to re-link to. */
+    async function _perchOpenRelinkPicker() {
+      const dlg = document.getElementById('perchRelinkDlg');
+      const list = document.getElementById('perchRelinkList');
+      if (!dlg || !list) return;
+      list.innerHTML = '<div class="perch-relink-empty">Loading your perches…</div>';
+      try { dlg.showModal(); } catch { try { dlg.show(); } catch {} }
+      let perches = [];
+      try {
+        const r = await window.pywebview?.api?.get_perch_list?.(200);
+        if (r && r.success && Array.isArray(r.perches)) {
+          perches = r.perches;
+        } else {
+          list.innerHTML = '<div class="perch-relink-empty">Could not load your perches'
+            + (r && r.error ? ' (' + _perchEsc(r.error) + ')' : '') + '.</div>';
+          return;
+        }
+      } catch {
+        list.innerHTML = '<div class="perch-relink-empty">Could not load your perches.</div>';
+        return;
+      }
+      if (!perches.length) {
+        list.innerHTML = '<div class="perch-relink-empty">You don’t have any perches yet — upload one instead.</div>';
+        return;
+      }
+      list.innerHTML = perches.map((p) => {
+        const id = _perchEsc(p.id || '');
+        const title = _perchEsc(p.title || '(untitled)');
+        const imgs = (Number(p.imageCount) || 0).toLocaleString();
+        const bytes = _perchFmtBytes(p.actualBytes);
+        const state = _perchEsc(String(p.uploadState || p.status || ''));
+        return '<button type="button" class="perch-relink-row" data-perch-id="' + id + '">'
+          + '<span class="perch-relink-row-title">' + title + '</span>'
+          + '<span class="perch-relink-row-meta">' + imgs + ' photos · ' + bytes
+          + (state ? ' · ' + state : '') + '</span>'
+          + '</button>';
+      }).join('');
+    }
+
+    /** Write the local link for the chosen perch, then show the linked view. */
+    async function _perchDoRelink(perchId) {
+      const root = _perchDlgState.rootPath;
+      if (!root || !perchId) return;
+      let res = null;
+      try {
+        res = await window.pywebview?.api?.relink_perch?.(root, perchId);
+      } catch (e) {
+        showToast('Re-link failed: ' + (e?.message || String(e)), 5000);
+        return;
+      }
+      if (!res || !res.success) {
+        const map = {
+          not_found: 'That perch no longer exists on Perch.',
+          forbidden: 'That perch belongs to a different account.',
+          unauthorized: 'Please sign in to Perch again.',
+          no_auth: 'Please sign in to Perch again.',
+        };
+        showToast('Re-link failed: ' + (map[res?.error] || res?.error || 'unknown error'), 5500);
+        return;
+      }
+      const dlg = document.getElementById('perchRelinkDlg');
+      if (dlg && dlg.open) { try { dlg.close(); } catch {} }
+      showToast('Folder re-linked to Perch.', 3000);
+      _perchMarkFolderOnPerch(root, (res.link && res.link.perch_url) || '');
+      // Swap the open share dialog to the linked takeover; probe live status.
+      if (res.link) {
+        _perchOpenLinkedView(root, res.link);
+        const pid = String(res.link.perch_id || '').trim();
+        if (pid) {
+          (async () => {
+            try {
+              const s = await window.pywebview.api.get_perch_status(pid);
+              if (s && s.ok) _perchPopulateLinkedView(s.status);
+            } catch { /* advisory */ }
+          })();
+        }
+      }
     }
 
     /** Refresh every .folder-perch-btn for this path to its current linked state.

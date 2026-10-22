@@ -657,7 +657,7 @@ Bare-throated Whistler,Pachycephala nudigula,Pachycephalidae,Whistlers & Allies,
 Barka Indigobird,Vidua larvaticola,Viduidae,"Indigobirds, Whydahs",Passeriformes,AF,,,0
 Barking Imperial Pigeon,Ducula latrans,Columbidae,Pigeon/Dove sp.,Columbiformes,PO,,,0
 Barking Owl,Ninox connivens,Strigidae,Owl sp.,Strigiformes,AU,,,0
-Barn Owl,Tyto alba,Tytonidae,Barn Owl,Strigiformes,"AF,PAL",,Western Barn Owl,1
+Barn Owl,Tyto alba,Tytonidae,Barn Owl,Strigiformes,"AF,PAL,NA",,Western Barn Owl,1
 Barn Swallow,Hirundo rustica,Hirundinidae,Swallow sp.,Passeriformes,Worldwide,BARS,,1
 Barnacle Goose,Branta leucopsis,Anatidae,Waterfowl sp.,Anseriformes,PAL,BARG,,0
 Barolo Shearwater,Puffinus baroli,Procellariidae,Shearwater/Petrel sp.,Procellariiformes,AO,BASH,,0
@@ -1195,7 +1195,7 @@ Black-headed Duck,Heteronetta atricapilla,Anatidae,Waterfowl sp.,Anseriformes,SA
 Black-headed Gonolek,Laniarius erythrogaster,Malaconotidae,Bushshrikes,Passeriformes,AF,,,0
 Black-headed Greenfinch,Chloris ambigua,Fringillidae,Finch sp.,Passeriformes,OR,,,0
 Black-headed Grosbeak,Pheucticus melanocephalus,Cardinalidae,Cardinal/Grosbeak/Bunting sp.,Passeriformes,NA,BHGR,,1
-Black-headed Gull,Chroicocephalus ridibundus,Laridae,Gull/Tern/Skimmer sp.,Charadriiformes,PAL,BHGU,,1
+Black-headed Gull,Chroicocephalus ridibundus,Laridae,Gull/Tern/Skimmer sp.,Charadriiformes,"PAL,NA",BHGU,,1
 Black-headed Hemispingus,Pseudospingus verticalis,Thraupidae,Tanagers & Allies,Passeriformes,SA,,,0
 Black-headed Heron,Ardea melanocephala,Ardeidae,Heron/Egret/Bittern sp.,Pelecaniformes,AF,,,0
 Black-headed Honeyeater,Melithreptus affinis,Meliphagidae,Honeyeaters,Passeriformes,AU,,,0
@@ -2053,7 +2053,7 @@ Campina Thrush,Turdus arthuri,Turdidae,Thrush sp.,Passeriformes,SA,,,0
 Campo Flicker,Colaptes campestris,Picidae,Woodpecker sp.,Piciformes,SA,,,0
 Campo Miner,Geositta poeciloptera,Furnariidae,Ovenbirds,Passeriformes,SA,,,0
 Campo Troupial,Icterus jamacaii,Icteridae,Blackbird/Oriole sp.,Passeriformes,SA,,,0
-Canada Goose,Branta canadensis,Anatidae,Waterfowl sp.,Anseriformes,NA,CANG,,1
+Canada Goose,Branta canadensis,Anatidae,Waterfowl sp.,Anseriformes,"NA,PAL,AU",CANG,,1
 Canada Jay,Perisoreus canadensis,Corvidae,Corvid sp.,Passeriformes,NA,CAJA,,1
 Canada Warbler,Cardellina canadensis,Parulidae,Warbler sp.,Passeriformes,NA,CAWA,,1
 Canary Flyrobin,Devioeca papuana,Petroicidae,Australasian Robins,Passeriformes,AU,,,0
@@ -2457,7 +2457,7 @@ Chubb's Cisticola,Cisticola chubbi,Cisticolidae,Cisticolas & Allies,Passeriforme
 Chubut Steamer Duck,Tachyeres leucocephalus,Anatidae,Waterfowl sp.,Anseriformes,SA,,,0
 Chucao Tapaculo,Scelorchilus rubecula,Rhinocryptidae,Tapaculos,Passeriformes,SA,,,0
 Chuck-will's-widow,Antrostomus carolinensis,Caprimulgidae,Nightjar sp.,Caprimulgiformes,NA,CWWI,,0
-Chukar,Alectoris chukar,Phasianidae,Grouse/Pheasant sp.,Galliformes,PAL,CHUK,Chukar Partridge,1
+Chukar,Alectoris chukar,Phasianidae,Grouse/Pheasant sp.,Galliformes,"PAL,NA",CHUK,Chukar Partridge,1
 Churring Cisticola,Cisticola njombe,Cisticolidae,Cisticolas & Allies,Passeriformes,AF,,,0
 Chusquea Tapaculo,Scytalopus parkeri,Rhinocryptidae,Tapaculos,Passeriformes,SA,,,0
 Chuuk Flycatcher,Myiagra oceanica,Monarchidae,Monarchs,Passeriformes,PO,,,0
@@ -2618,7 +2618,7 @@ Comb Duck,Sarkidiornis sylvicola,Anatidae,Waterfowl sp.,Anseriformes,SA,CODU,,0
 Comb-crested Jacana,Irediparra gallinacea,Jacanidae,Jacanas,Charadriiformes,AU,,,0
 Common Babbler,Argya caudata,Leiothrichidae,Laughingthrushes & Allies,Passeriformes,OR,,,0
 Common Black Hawk,Buteogallus anthracinus,Accipitridae,Hawk/Eagle/Kite sp.,Accipitriformes,"NA,MA,SA",COBH,,0
-Common Blackbird,Turdus merula,Turdidae,Thrush sp.,Passeriformes,"PAL,OR",EUBB,,0
+Common Blackbird,Turdus merula,Turdidae,Thrush sp.,Passeriformes,"PAL,OR,AU",EUBB,,0
 Common Bronzewing,Phaps chalcoptera,Columbidae,Pigeon/Dove sp.,Columbiformes,AU,,,0
 Common Bulbul,Pycnonotus barbatus,Pycnonotidae,Bulbuls,Passeriformes,AF,,,0
 Common Buttonquail,Turnix sylvaticus,Turnicidae,Buttonquail,Charadriiformes,"PAL,AF,OR",,,0
@@ -2653,7 +2653,7 @@ Common Merganser,Mergus merganser,Anatidae,Waterfowl sp.,Anseriformes,"NA,PAL",C
 Common Miner,Geositta cunicularia,Furnariidae,Ovenbirds,Passeriformes,SA,,,0
 Common Moorhen,Gallinula chloropus,Rallidae,Rail/Gallinule/Coot sp.,Gruiformes,"PAL,AF,IO,OR,PO",COMO,,0
 Common Murre,Uria aalge,Alcidae,Auk/Murre/Puffin sp.,Charadriiformes,"NA,PAL",COMU,,1
-Common Myna,Acridotheres tristis,Sturnidae,Starling/Myna sp.,Passeriformes,OR,COMY,,0
+Common Myna,Acridotheres tristis,Sturnidae,Starling/Myna sp.,Passeriformes,"OR,AU,PO,AF",COMY,,0
 Common Newtonia,Newtonia brunneicauda,Vangidae,Vangas & Allies,Passeriformes,AF,,,0
 Common Nighthawk,Chordeiles minor,Caprimulgidae,Nightjar sp.,Caprimulgiformes,"NA,MA",CONI,,1
 Common Nightingale,Luscinia megarhynchos,Muscicapidae,"Chats, Old World Flycatchers",Passeriformes,PAL,,,0
@@ -2805,7 +2805,7 @@ Crested Jayshrike,Platylophus galericulatus,Platylophidae,Jayshrike,Passeriforme
 Crested Kingfisher,Megaceryle lugubris,Alcedinidae,Kingfisher sp.,Coraciiformes,"OR,PAL",,,0
 Crested Lark,Galerida cristata,Alaudidae,Horned Lark,Passeriformes,"PAL,AF",,,0
 Crested Malimbe,Malimbus malimbicus,Ploceidae,"Weavers, Widowbirds",Passeriformes,AF,,,0
-Crested Myna,Acridotheres cristatellus,Sturnidae,Starling/Myna sp.,Passeriformes,OR,,,1
+Crested Myna,Acridotheres cristatellus,Sturnidae,Starling/Myna sp.,Passeriformes,"OR,NA",,,1
 Crested Oropendola,Psarocolius decumanus,Icteridae,Blackbird/Oriole sp.,Passeriformes,SA,CROR,,0
 Crested Owl,Lophostrix cristata,Strigidae,Owl sp.,Strigiformes,"MA,SA",CROW,,0
 Crested Partridge,Rollulus rouloul,Phasianidae,Grouse/Pheasant sp.,Galliformes,OR,,,0
@@ -3217,7 +3217,7 @@ Ecuadorian Tyrannulet,Phylloscartes gualaquizae,Tyrannidae,Flycatcher sp.,Passer
 Edible-nest Swiftlet,Aerodramus fuciphagus,Apodidae,Swift sp.,Apodiformes,"OR,AU",,,0
 Edwards's Fig Parrot,Psittaculirostris edwardsii,Psittaculidae,Old World Parrots,Psittaciformes,AU,,,0
 Edwards's Pheasant,Lophura edwardsi,Phasianidae,Grouse/Pheasant sp.,Galliformes,OR,,,0
-Egyptian Goose,Alopochen aegyptiaca,Anatidae,Waterfowl sp.,Anseriformes,AF,EGGO,,0
+Egyptian Goose,Alopochen aegyptiaca,Anatidae,Waterfowl sp.,Anseriformes,"AF,PAL",EGGO,,0
 Egyptian Nightjar,Caprimulgus aegyptius,Caprimulgidae,Nightjar sp.,Caprimulgiformes,"PAL,AF",,,0
 Egyptian Plover,Pluvianus aegyptius,Pluvianidae,Egyptian Plover,Charadriiformes,AF,,,0
 Egyptian Vulture,Neophron percnopterus,Accipitridae,Hawk/Eagle/Kite sp.,Accipitriformes,"AF,PAL,OR",,,0
@@ -3291,7 +3291,7 @@ Eurasian Blackcap,Sylvia atricapilla,Sylviidae,Sylviid Babblers,Passeriformes,PA
 Eurasian Blue Tit,Cyanistes caeruleus,Paridae,Titmouse/Chickadee sp.,Passeriformes,PAL,,,0
 Eurasian Bullfinch,Pyrrhula pyrrhula,Fringillidae,Finch sp.,Passeriformes,PAL,EUBU,,0
 Eurasian Chaffinch,Fringilla coelebs,Fringillidae,Finch sp.,Passeriformes,PAL,CCHA,,0
-Eurasian Collared-Dove,Streptopelia decaocto,Columbidae,Pigeon/Dove sp.,Columbiformes,"PAL,OR",EUCD,Eurasian Collared Dove,1
+Eurasian Collared-Dove,Streptopelia decaocto,Columbidae,Pigeon/Dove sp.,Columbiformes,"PAL,OR,NA,MA",EUCD,Eurasian Collared Dove,1
 Eurasian Coot,Fulica atra,Rallidae,Rail/Gallinule/Coot sp.,Gruiformes,"PAL,OR,AU",EUCO,,0
 Eurasian Crag Martin,Ptyonoprogne rupestris,Hirundinidae,Swallow sp.,Passeriformes,PAL,,,0
 Eurasian Curlew,Numenius arquata,Scolopacidae,Sandpiper sp.,Charadriiformes,PAL,EUCU,,0
@@ -3315,16 +3315,16 @@ Eurasian Spoonbill,Platalea leucorodia,Threskiornithidae,Ibis/Spoonbill sp.,Pele
 Eurasian Stone-curlew,Burhinus oedicnemus,Burhinidae,"Stone-curlews, Thick-knees",Charadriiformes,PAL,,,0
 Eurasian Teal,Anas crecca,Anatidae,Waterfowl sp.,Anseriformes,"PAL,NA",GWTE,,0
 Eurasian Three-toed Woodpecker,Picoides tridactylus,Picidae,Woodpecker sp.,Piciformes,PAL,,,0
-Eurasian Tree Sparrow,Passer montanus,Passeridae,Old World Sparrow sp.,Passeriformes,"PAL,OR",ETSP,,0
+Eurasian Tree Sparrow,Passer montanus,Passeridae,Old World Sparrow sp.,Passeriformes,"PAL,OR,NA,AU",ETSP,,0
 Eurasian Treecreeper,Certhia familiaris,Certhiidae,Brown Creeper,Passeriformes,PAL,,,0
 Eurasian Whimbrel,Numenius phaeopus,Scolopacidae,Sandpiper sp.,Charadriiformes,PAL,WHIM,,0
-Eurasian Wigeon,Mareca penelope,Anatidae,Waterfowl sp.,Anseriformes,PAL,EUWI,,1
+Eurasian Wigeon,Mareca penelope,Anatidae,Waterfowl sp.,Anseriformes,"PAL,NA",EUWI,,1
 Eurasian Woodcock,Scolopax rusticola,Scolopacidae,Sandpiper sp.,Charadriiformes,PAL,EUWO,,0
 Eurasian Wren,Troglodytes troglodytes,Troglodytidae,Wren sp.,Passeriformes,PAL,,,0
 Eurasian Wryneck,Jynx torquilla,Picidae,Woodpecker sp.,Piciformes,PAL,EUWR,,0
 European Bee-eater,Merops apiaster,Meropidae,Bee-eaters,Coraciiformes,"PAL,AF",,,0
 European Golden Plover,Pluvialis apricaria,Charadriidae,Plover sp.,Charadriiformes,PAL,EUGP,,0
-European Goldfinch,Carduelis carduelis,Fringillidae,Finch sp.,Passeriformes,PAL,EGOL,,0
+European Goldfinch,Carduelis carduelis,Fringillidae,Finch sp.,Passeriformes,"PAL,AU",EGOL,,0
 European Green Woodpecker,Picus viridis,Picidae,Woodpecker sp.,Piciformes,PAL,,,0
 European Greenfinch,Chloris chloris,Fringillidae,Finch sp.,Passeriformes,PAL,,,0
 European Herring Gull,Larus argentatus,Laridae,Gull/Tern/Skimmer sp.,Charadriiformes,PAL,EHGU,,0
@@ -3337,7 +3337,7 @@ European Rock Pipit,Anthus petrosus,Motacillidae,Pipit/Wagtail sp.,Passeriformes
 European Roller,Coracias garrulus,Coraciidae,Rollers,Coraciiformes,PAL,,,0
 European Serin,Serinus serinus,Fringillidae,Finch sp.,Passeriformes,"PAL,AF",,,0
 European Shag,Gulosus aristotelis,Phalacrocoracidae,Cormorant sp.,Suliformes,"PAL,AF",,,0
-European Starling,Sturnus vulgaris,Sturnidae,Starling/Myna sp.,Passeriformes,PAL,EUST,Common Starling,1
+European Starling,Sturnus vulgaris,Sturnidae,Starling/Myna sp.,Passeriformes,"PAL,NA,AU,AF",EUST,Common Starling,1
 European Stonechat,Saxicola rubicola,Muscicapidae,"Chats, Old World Flycatchers",Passeriformes,PAL,,,0
 European Storm Petrel,Hydrobates pelagicus,Hydrobatidae,Storm-Petrel sp.,Procellariiformes,AO,EUSP,,0
 European Turtle Dove,Streptopelia turtur,Columbidae,Pigeon/Dove sp.,Columbiformes,PAL,EUTD,,0
@@ -3859,7 +3859,7 @@ Grauer's Cuckooshrike,Ceblepyris graueri,Campephagidae,Cuckooshrikes,Passeriform
 Grauer's Swamp Warbler,Bradypterus graueri,Locustellidae,Grassbirds & Allies,Passeriformes,AF,,,0
 Grauer's Warbler,Graueria vittata,Acrocephalidae,Reed Warblers & Allies,Passeriformes,AF,,,0
 Gray Catbird,Dumetella carolinensis,Mimidae,Mockingbird/Thrasher sp.,Passeriformes,NA,GRCA,Grey Catbird,1
-Gray Partridge,Perdix perdix,Phasianidae,Grouse/Pheasant sp.,Galliformes,PAL,GRAP,Grey Partridge,1
+Gray Partridge,Perdix perdix,Phasianidae,Grouse/Pheasant sp.,Galliformes,"PAL,NA",GRAP,Grey Partridge,1
 Gray's Grasshopper Warbler,Helopsaltes fasciolatus,Locustellidae,Grassbirds & Allies,Passeriformes,PAL,,,0
 Gray's Lark,Ammomanopsis grayi,Alaudidae,Horned Lark,Passeriformes,AF,,,0
 Gray-cheeked Thrush,Catharus minimus,Turdidae,Thrush sp.,Passeriformes,"PAL,NA",GCTH,Grey-cheeked Thrush,1
@@ -3907,7 +3907,7 @@ Great Reed Warbler,Acrocephalus arundinaceus,Acrocephalidae,Reed Warblers & Alli
 Great Rosefinch,Carpodacus rubicilla,Fringillidae,Finch sp.,Passeriformes,PAL,,,0
 Great Rufous Woodcreeper,Xiphocolaptes major,Furnariidae,Ovenbirds,Passeriformes,SA,,,0
 Great Sapphirewing,Pterophanes cyanopterus,Trochilidae,Hummingbird sp.,Apodiformes,SA,,,0
-Great Shearwater,Ardenna gravis,Procellariidae,Shearwater/Petrel sp.,Procellariiformes,AO,GRSH,,1
+Great Shearwater,Ardenna gravis,Procellariidae,Shearwater/Petrel sp.,Procellariiformes,"AO,NA",GRSH,,1
 Great Shortwing,Heinrichia calligyna,Muscicapidae,"Chats, Old World Flycatchers",Passeriformes,AU,,,0
 Great Shrike-Tyrant,Agriornis lividus,Tyrannidae,Flycatcher sp.,Passeriformes,SA,,,0
 Great Skua,Stercorarius skua,Stercorariidae,Jaeger/Skua sp.,Charadriiformes,PAL,GRSK,,0
@@ -3995,7 +3995,7 @@ Green Ibis,Mesembrinibis cayennensis,Threskiornithidae,Ibis/Spoonbill sp.,Peleca
 Green Imperial Pigeon,Ducula aenea,Columbidae,Pigeon/Dove sp.,Columbiformes,OR,,,0
 Green Inca,Coeligena conradii,Trochilidae,Hummingbird sp.,Apodiformes,SA,,,0
 Green Iora,Aegithina viridissima,Aegithinidae,Ioras,Passeriformes,OR,,,0
-Green Jay,Cyanocorax luxuosus,Corvidae,Corvid sp.,Passeriformes,MA,GRJA,,1
+Green Jay,Cyanocorax luxuosus,Corvidae,Corvid sp.,Passeriformes,"MA,NA",GRJA,,1
 Green Jery,Neomixis viridis,Cisticolidae,Cisticolas & Allies,Passeriformes,AF,,,0
 Green Junglefowl,Gallus varius,Phasianidae,Grouse/Pheasant sp.,Galliformes,OR,,,0
 Green Kingfisher,Chloroceryle americana,Alcedinidae,Kingfisher sp.,Coraciiformes,"NA,MA,SA",GKIN,,0
@@ -4610,7 +4610,7 @@ Hose's Broadbill,Calyptomena hosii,Calyptomenidae,African & Green Broadbills,Pas
 House Bunting,Emberiza sahari,Emberizidae,Buntings,Passeriformes,AF,,,0
 House Crow,Corvus splendens,Corvidae,Corvid sp.,Passeriformes,OR,,,0
 House Finch,Haemorhous mexicanus,Fringillidae,Finch sp.,Passeriformes,"NA,MA",HOFI,,1
-House Sparrow,Passer domesticus,Passeridae,Old World Sparrow sp.,Passeriformes,"PAL,OR,AF",HOSP,,1
+House Sparrow,Passer domesticus,Passeridae,Old World Sparrow sp.,Passeriformes,"PAL,OR,AF,NA,MA,SA,AU,PO",HOSP,,1
 House Swift,Apus nipalensis,Apodidae,Swift sp.,Apodiformes,OR,,,0
 House Wren,Troglodytes aedon,Troglodytidae,Wren sp.,Passeriformes,"NA,MA",NHWR,Northern House Wren,1
 Huallaga Tanager,Ramphocelus melanogaster,Thraupidae,Tanagers & Allies,Passeriformes,SA,,,0
@@ -4691,7 +4691,7 @@ Indian Jungle Crow,Corvus culminatus,Corvidae,Corvid sp.,Passeriformes,OR,,,0
 Indian Nightjar,Caprimulgus asiaticus,Caprimulgidae,Nightjar sp.,Caprimulgiformes,OR,,,0
 Indian Nuthatch,Sitta castanea,Sittidae,Nuthatch sp.,Passeriformes,OR,,,0
 Indian Paradise Flycatcher,Terpsiphone paradisi,Monarchidae,Monarchs,Passeriformes,OR,,,0
-Indian Peafowl,Pavo cristatus,Phasianidae,Grouse/Pheasant sp.,Galliformes,OR,INPE,,0
+Indian Peafowl,Pavo cristatus,Phasianidae,Grouse/Pheasant sp.,Galliformes,"OR,AU,PO",INPE,,0
 Indian Pied Myna,Gracupica contra,Sturnidae,Starling/Myna sp.,Passeriformes,OR,,,0
 Indian Pitta,Pitta brachyura,Pittidae,Pittas,Passeriformes,OR,,,0
 Indian Pond Heron,Ardeola grayii,Ardeidae,Heron/Egret/Bittern sp.,Pelecaniformes,"PAL,OR",,,0
@@ -4809,7 +4809,7 @@ Japanese Sparrowhawk,Tachyspiza gularis,Accipitridae,Hawk/Eagle/Kite sp.,Accipit
 Japanese Thrush,Turdus cardis,Turdidae,Thrush sp.,Passeriformes,PAL,,,0
 Japanese Wagtail,Motacilla grandis,Motacillidae,Pipit/Wagtail sp.,Passeriformes,PAL,,,0
 Japanese Waxwing,Bombycilla japonica,Bombycillidae,Waxwing sp.,Passeriformes,PAL,,,0
-Java Sparrow,Padda oryzivora,Estrildidae,Scaly-breasted Munia,Passeriformes,OR,JASP,,0
+Java Sparrow,Padda oryzivora,Estrildidae,Scaly-breasted Munia,Passeriformes,"OR,PO",JASP,,0
 Javan Banded Pitta,Hydrornis guajanus,Pittidae,Pittas,Passeriformes,OR,,,0
 Javan Black-capped Babbler,Pellorneum capistratum,Pellorneidae,Ground Babblers,Passeriformes,OR,,,0
 Javan Blue Flycatcher,Cyornis banyumas,Muscicapidae,"Chats, Old World Flycatchers",Passeriformes,OR,,,0
@@ -5082,7 +5082,7 @@ Laysan Rail,Zapornia palmeri †,Rallidae,Rail/Gallinule/Coot sp.,Gruiformes,PO,
 Lazuli Bunting,Passerina amoena,Cardinalidae,Cardinal/Grosbeak/Bunting sp.,Passeriformes,"NA,MA",LAZB,,1
 Lazuli Kingfisher,Todiramphus lazuli,Alcedinidae,Kingfisher sp.,Coraciiformes,AU,,,0
 Lazuline Sabrewing,Campylopterus falcatus,Trochilidae,Hummingbird sp.,Apodiformes,SA,,,0
-Leach's Storm-Petrel,Hydrobates leucorhous,Hydrobatidae,Storm-Petrel sp.,Procellariiformes,"PO,AO",LESP,Leach's Storm Petrel,1
+Leach's Storm-Petrel,Hydrobates leucorhous,Hydrobatidae,Storm-Petrel sp.,Procellariiformes,"PO,AO,NA",LESP,Leach's Storm Petrel,1
 Leaden Antwren,Myrmotherula assimilis,Thamnophilidae,Antbirds,Passeriformes,SA,,,0
 Leaden Flycatcher,Myiagra rubecula,Monarchidae,Monarchs,Passeriformes,AU,,,0
 Leaden Honeyeater,Ptiloprora plumbea,Meliphagidae,Honeyeaters,Passeriformes,AU,,,0
@@ -5128,7 +5128,7 @@ Lesser Antillean Saltator,Saltator albicollis,Thraupidae,Tanagers & Allies,Passe
 Lesser Antillean Swift,Chaetura martinica,Apodidae,Swift sp.,Apodiformes,NA,LASW,,0
 Lesser Antillean Tanager,Stilpnia cucullata,Thraupidae,Tanagers & Allies,Passeriformes,NA,LATA,,0
 Lesser Bird-of-paradise,Paradisaea minor,Paradisaeidae,Birds-of-paradise,Passeriformes,AU,,,0
-Lesser Black-backed Gull,Larus fuscus,Laridae,Gull/Tern/Skimmer sp.,Charadriiformes,PAL,LBBG,,1
+Lesser Black-backed Gull,Larus fuscus,Laridae,Gull/Tern/Skimmer sp.,Charadriiformes,"PAL,NA",LBBG,,1
 Lesser Blue-eared Starling,Lamprotornis chloropterus,Sturnidae,Starling/Myna sp.,Passeriformes,AF,,,0
 Lesser Coucal,Centropus bengalensis,Cuculidae,Cuckoo/Roadrunner sp.,Cuculiformes,"OR,AU",,,0
 Lesser Crested Tern,Thalasseus bengalensis,Laridae,Gull/Tern/Skimmer sp.,Charadriiformes,"AF,OR,AU",,,0
@@ -5253,7 +5253,7 @@ Little Grey Flycatcher,Muscicapa epulata,Muscicapidae,"Chats, Old World Flycatch
 Little Grey Greenbul,Eurillas gracilis,Pycnonotidae,Bulbuls,Passeriformes,AF,,,0
 Little Grey Woodpecker,Dendropicos elachus,Picidae,Woodpecker sp.,Piciformes,AF,,,0
 Little Ground Tyrant,Syrtidicola fluviatilis,Tyrannidae,Flycatcher sp.,Passeriformes,SA,,,0
-Little Gull,Hydrocoloeus minutus,Laridae,Gull/Tern/Skimmer sp.,Charadriiformes,PAL,LIGU,,1
+Little Gull,Hydrocoloeus minutus,Laridae,Gull/Tern/Skimmer sp.,Charadriiformes,"PAL,NA",LIGU,,1
 Little Hermit,Phaethornis longuemareus,Trochilidae,Hummingbird sp.,Apodiformes,SA,,,0
 Little Heron,Butorides atricapilla,Ardeidae,Heron/Egret/Bittern sp.,Pelecaniformes,"PAL,AF,AU",,,0
 Little Inca Finch,Incaspiza watkinsi,Thraupidae,Tanagers & Allies,Passeriformes,SA,,,0
@@ -5576,7 +5576,7 @@ Malherbe's Parakeet,Cyanoramphus malherbi,Psittaculidae,Old World Parrots,Psitta
 Mali Firefinch,Lagonosticta virata,Estrildidae,Scaly-breasted Munia,Passeriformes,AF,,,0
 Malia,Malia grata,Locustellidae,Grassbirds & Allies,Passeriformes,AU,,,0
 Malindi Pipit,Anthus melindae,Motacillidae,Pipit/Wagtail sp.,Passeriformes,AF,,,0
-Mallard,Anas platyrhynchos,Anatidae,Waterfowl sp.,Anseriformes,"NA,PAL",MALL,,1
+Mallard,Anas platyrhynchos,Anatidae,Waterfowl sp.,Anseriformes,"NA,PAL,AU",MALL,,1
 Mallee Emu-wren,Stipiturus mallee,Maluridae,Australasian Wrens,Passeriformes,AU,,,0
 Malleefowl,Leipoa ocellata,Megapodiidae,Megapodes,Galliformes,AU,,,0
 Mamberamo Shrikethrush,Colluricincla obscura,Pachycephalidae,Whistlers & Allies,Passeriformes,AU,,,0
@@ -5620,7 +5620,7 @@ Manus Fantail,Rhipidura semirubra,Rhipiduridae,Fantails,Passeriformes,AU,,,0
 Manus Friarbird,Philemon albitorques,Meliphagidae,Honeyeaters,Passeriformes,AU,,,0
 Manus Masked Owl,Tyto manusi,Tytonidae,Barn Owl,Strigiformes,AU,,,0
 Manus Monarch,Symposiachrus infelix,Monarchidae,Monarchs,Passeriformes,AU,,,0
-Manx Shearwater,Puffinus puffinus,Procellariidae,Shearwater/Petrel sp.,Procellariiformes,AO,MASH,,1
+Manx Shearwater,Puffinus puffinus,Procellariidae,Shearwater/Petrel sp.,Procellariiformes,"AO,NA",MASH,,1
 Many-banded Aracari,Pteroglossus pluricinctus,Ramphastidae,Toucans,Piciformes,SA,,,0
 Many-colored Bushshrike,Chlorophoneus multicolor,Malaconotidae,Bushshrikes,Passeriformes,AF,,,0
 Many-colored Chaco Finch,Saltatricula multicolor,Thraupidae,Tanagers & Allies,Passeriformes,SA,,,0
@@ -5904,7 +5904,7 @@ Mongolian Ground Jay,Podoces hendersoni,Corvidae,Corvid sp.,Passeriformes,PAL,,,
 Mongolian Gull,Larus mongolicus,Laridae,Gull/Tern/Skimmer sp.,Charadriiformes,PAL,,,0
 Mongolian Lark,Melanocorypha mongolica,Alaudidae,Horned Lark,Passeriformes,PAL,,,0
 Mongolian Short-toed Lark,Calandrella dukhunensis,Alaudidae,Horned Lark,Passeriformes,PAL,,,0
-Monk Parakeet,Myiopsitta monachus,Psittacidae,Parrot sp.,Psittaciformes,SA,MOPA,,1
+Monk Parakeet,Myiopsitta monachus,Psittacidae,Parrot sp.,Psittaciformes,"SA,NA,PAL",MOPA,,1
 Monotonous Lark,Mirafra passerina,Alaudidae,Horned Lark,Passeriformes,AF,,,0
 Montagu's Harrier,Circus pygargus,Accipitridae,Hawk/Eagle/Kite sp.,Accipitriformes,PAL,,,0
 Montane Foliage-gleaner,Anabacerthia striaticollis,Furnariidae,Ovenbirds,Passeriformes,SA,,,0
@@ -6049,7 +6049,7 @@ Mussau Fantail,Rhipidura matthiae,Rhipiduridae,Fantails,Passeriformes,AU,,,0
 Mussau Flycatcher,Myiagra hebetior,Monarchidae,Monarchs,Passeriformes,AU,,,0
 Mussau Monarch,Symposiachrus menckei,Monarchidae,Monarchs,Passeriformes,AU,,,0
 Mussau Triller,Lalage conjuncta,Campephagidae,Cuckooshrikes,Passeriformes,AU,,,0
-Mute Swan,Cygnus olor,Anatidae,Waterfowl sp.,Anseriformes,PAL,MUSW,,1
+Mute Swan,Cygnus olor,Anatidae,Waterfowl sp.,Anseriformes,"PAL,NA,AU",MUSW,,1
 Nacunda Nighthawk,Chordeiles nacunda,Caprimulgidae,Nightjar sp.,Caprimulgiformes,SA,,,0
 Naga Wren-Babbler,Spelaeornis chocolatinus,Timaliidae,"Babblers, Scimitar Babblers",Passeriformes,OR,,,0
 Nahan's Partridge,Ptilopachus nahani,Odontophoridae,New World Quail sp.,Galliformes,AF,,,0
@@ -6239,7 +6239,7 @@ Northern Fantail,Rhipidura rufiventris,Rhipiduridae,Fantails,Passeriformes,AU,,,
 Northern Fiscal,Lanius humeralis,Laniidae,Shrike sp.,Passeriformes,AF,,,0
 Northern Flicker,Colaptes auratus,Picidae,Woodpecker sp.,Piciformes,"NA,MA",NOFL,,1
 Northern Fulmar,Fulmarus glacialis,Procellariidae,Shearwater/Petrel sp.,Procellariiformes,"NA,PAL",NOFU,,1
-Northern Gannet,Morus bassanus,Sulidae,Gannet/Booby sp.,Suliformes,AO,NOGA,,1
+Northern Gannet,Morus bassanus,Sulidae,Gannet/Booby sp.,Suliformes,"AO,NA",NOGA,,1
 Northern Giant Petrel,Macronectes halli,Procellariidae,Shearwater/Petrel sp.,Procellariiformes,SO,NOGP,,0
 Northern Goshawk,Astur atricapillus,Accipitridae,Hawk/Eagle/Kite sp.,Accipitriformes,"NA,MA",AGOS,American Goshawk,1
 Northern Grey-headed Sparrow,Passer griseus,Passeridae,Old World Sparrow sp.,Passeriformes,AF,,,0
@@ -6815,7 +6815,7 @@ Pectoral Sparrow,Arremon taciturnus,Passerellidae,Sparrow sp.,Passeriformes,SA,,
 Pectoral-patch Cisticola,Cisticola brunnescens,Cisticolidae,Cisticolas & Allies,Passeriformes,AF,,,0
 Peg-billed Finch,Acanthidops bairdi,Thraupidae,Tanagers & Allies,Passeriformes,MA,PBFI,,0
 Pel's Fishing Owl,Scotopelia peli,Strigidae,Owl sp.,Strigiformes,AF,,,0
-Pelagic Cormorant,Urile pelagicus,Phalacrocoracidae,Cormorant sp.,Suliformes,PO,PECO,,1
+Pelagic Cormorant,Urile pelagicus,Phalacrocoracidae,Cormorant sp.,Suliformes,"PO,NA",PECO,,1
 Peleng Fantail,Rhipidura habibiei,Rhipiduridae,Fantails,Passeriformes,AU,,,0
 Pelzeln's Tody-Tyrant,Hemitriccus inornatus,Tyrannidae,Flycatcher sp.,Passeriformes,SA,,,0
 Pemba Green Pigeon,Treron pembaensis,Columbidae,Pigeon/Dove sp.,Columbiformes,AF,,,0
@@ -6968,7 +6968,7 @@ Pink-breasted Flowerpecker,Dicaeum keiense,Dicaeidae,Flowerpeckers,Passeriformes
 Pink-breasted Lark,Calendulauda poecilosterna,Alaudidae,Horned Lark,Passeriformes,AF,,,0
 Pink-browed Rosefinch,Carpodacus rodochroa,Fringillidae,Finch sp.,Passeriformes,"PAL,OR",,,0
 Pink-eared Duck,Malacorhynchus membranaceus,Anatidae,Waterfowl sp.,Anseriformes,AU,,,0
-Pink-footed Goose,Anser brachyrhynchus,Anatidae,Waterfowl sp.,Anseriformes,PAL,PFGO,,1
+Pink-footed Goose,Anser brachyrhynchus,Anatidae,Waterfowl sp.,Anseriformes,"PAL,NA",PFGO,,1
 Pink-footed Puffback,Dryoscopus angolensis,Malaconotidae,Bushshrikes,Passeriformes,AF,,,0
 Pink-footed Shearwater,Ardenna creatopus,Procellariidae,Shearwater/Petrel sp.,Procellariiformes,PO,PFSH,,0
 Pink-headed Duck,Rhodonessa † caryophyllacea †,Anatidae,Waterfowl sp.,Anseriformes,OR,,,0
@@ -7566,12 +7566,12 @@ Red-throated Twinspot,Hypargos niveoguttatus,Estrildidae,Scaly-breasted Munia,Pa
 Red-throated Wryneck,Jynx ruficollis,Picidae,Woodpecker sp.,Piciformes,AF,,,0
 Red-tinged Myzomela,Myzomela rubrotincta,Meliphagidae,Honeyeaters,Passeriformes,AU,,,0
 Red-vented Barbet,Psilopogon lagrandieri,Megalaimidae,Asian Barbets,Piciformes,OR,,,0
-Red-vented Bulbul,Pycnonotus cafer,Pycnonotidae,Bulbuls,Passeriformes,OR,RVBU,,0
+Red-vented Bulbul,Pycnonotus cafer,Pycnonotidae,Bulbuls,Passeriformes,"OR,PO",RVBU,,0
 Red-vented Cockatoo,Cacatua haematuropygia,Cacatuidae,Cockatoos,Psittaciformes,OR,,,0
 Red-vented Malimbe,Malimbus scutatus,Ploceidae,"Weavers, Widowbirds",Passeriformes,AF,,,0
 Red-vested Myzomela,Myzomela malaitae,Meliphagidae,Honeyeaters,Passeriformes,AU,,,0
 Red-wattled Lapwing,Vanellus indicus,Charadriidae,Plover sp.,Charadriiformes,OR,,,0
-Red-whiskered Bulbul,Pycnonotus jocosus,Pycnonotidae,Bulbuls,Passeriformes,OR,RWBU,,0
+Red-whiskered Bulbul,Pycnonotus jocosus,Pycnonotidae,Bulbuls,Passeriformes,"OR,AU,NA",RWBU,,0
 Red-winged Blackbird,Agelaius phoeniceus,Icteridae,Blackbird/Oriole sp.,Passeriformes,"NA,MA",RWBL,,1
 Red-winged Fairywren,Malurus elegans,Maluridae,Australasian Wrens,Passeriformes,AU,,,0
 Red-winged Francolin,Scleroptila levaillantii,Phasianidae,Grouse/Pheasant sp.,Galliformes,AF,,,0
@@ -7642,7 +7642,7 @@ Ring-billed Gull,Larus delawarensis,Laridae,Gull/Tern/Skimmer sp.,Charadriiforme
 Ring-necked Dove,Streptopelia capicola,Columbidae,Pigeon/Dove sp.,Columbiformes,AF,,,0
 Ring-necked Duck,Aythya collaris,Anatidae,Waterfowl sp.,Anseriformes,NA,RNDU,,1
 Ring-necked Francolin,Scleroptila streptophora,Phasianidae,Grouse/Pheasant sp.,Galliformes,AF,,,0
-Ring-necked Pheasant,Phasianus colchicus,Phasianidae,Grouse/Pheasant sp.,Galliformes,"PAL,OR",RNEP,Common Pheasant,1
+Ring-necked Pheasant,Phasianus colchicus,Phasianidae,Grouse/Pheasant sp.,Galliformes,"PAL,OR,NA,AU,PO",RNEP,Common Pheasant,1
 Ring-tailed Pigeon,Patagioenas caribaea,Columbidae,Pigeon/Dove sp.,Columbiformes,NA,RTAP,,0
 Ringed Antpipit,Corythopis torquatus,Tyrannidae,Flycatcher sp.,Passeriformes,SA,,,0
 Ringed Kingfisher,Megaceryle torquata,Alcedinidae,Kingfisher sp.,Coraciiformes,"NA,MA,SA",RIKI,,0
@@ -7722,7 +7722,7 @@ Rose-crowned Fruit Dove,Ptilinopus regina,Columbidae,Pigeon/Dove sp.,Columbiform
 Rose-crowned Parakeet,Pyrrhura rhodocephala,Psittacidae,Parrot sp.,Psittaciformes,SA,,,0
 Rose-faced Parrot,Pyrilia pulchra,Psittacidae,Parrot sp.,Psittaciformes,SA,,,0
 Rose-fronted Parakeet,Pyrrhura roseifrons,Psittacidae,Parrot sp.,Psittaciformes,SA,,,0
-Rose-ringed Parakeet,Psittacula krameri,Psittaculidae,Old World Parrots,Psittaciformes,"AF,OR",RRPA,,0
+Rose-ringed Parakeet,Psittacula krameri,Psittaculidae,Old World Parrots,Psittaciformes,"AF,OR,PAL",RRPA,,0
 Rose-throated Becard,Pachyramphus aglaiae,Tityridae,"Tityras, Becards & Allies",Passeriformes,MA,RTBE,,0
 Rose-throated Tanager,Piranga roseogularis,Cardinalidae,Cardinal/Grosbeak/Bunting sp.,Passeriformes,MA,RTTA,,0
 Roseate Spoonbill,Platalea ajaja,Threskiornithidae,Ibis/Spoonbill sp.,Pelecaniformes,"NA,MA,SA",ROSP,,1
@@ -7795,7 +7795,7 @@ Rufescent Imperial Pigeon,Ducula chalconota,Columbidae,Pigeon/Dove sp.,Columbifo
 Rufescent Prinia,Prinia rufescens,Cisticolidae,Cisticolas & Allies,Passeriformes,OR,,,0
 Rufescent Screech Owl,Megascops ingens,Strigidae,Owl sp.,Strigiformes,SA,,,0
 Rufescent Tiger Heron,Tigrisoma lineatum,Ardeidae,Heron/Egret/Bittern sp.,Pelecaniformes,"MA,SA",RTHE,,0
-Ruff,Calidris pugnax,Scolopacidae,Sandpiper sp.,Charadriiformes,PAL,RUFF,,1
+Ruff,Calidris pugnax,Scolopacidae,Sandpiper sp.,Charadriiformes,"PAL,NA",RUFF,,1
 Ruffed Grouse,Bonasa umbellus,Phasianidae,Grouse/Pheasant sp.,Galliformes,NA,RUGR,,1
 Rufous Babbler,Argya subrufa,Leiothrichidae,Laughingthrushes & Allies,Passeriformes,OR,,,0
 Rufous Bristlebird,Dasyornis broadbenti,Dasyornithidae,Bristlebirds,Passeriformes,AU,,,0
@@ -8188,7 +8188,7 @@ Sanderling,Calidris alba,Scolopacidae,Sandpiper sp.,Charadriiformes,"NA,PAL",SAN
 Sandhill Crane,Antigone canadensis,Gruidae,Crane sp.,Gruiformes,NA,SACR,,1
 Sandhill Grasswren,Amytornis oweni,Maluridae,Australasian Wrens,Passeriformes,AU,,,0
 Sandstone Shrikethrush,Colluricincla woodwardi,Pachycephalidae,Whistlers & Allies,Passeriformes,AU,,,0
-Sandwich Tern,Thalasseus sandvicensis,Laridae,Gull/Tern/Skimmer sp.,Charadriiformes,"PAL,AF",SATE,,1
+Sandwich Tern,Thalasseus sandvicensis,Laridae,Gull/Tern/Skimmer sp.,Charadriiformes,"PAL,AF,NA",SATE,,1
 Sandy Gallito,Teledromas fuscus,Rhinocryptidae,Tapaculos,Passeriformes,SA,,,0
 Sandy Scops Owl,Otus icterorhynchus,Strigidae,Owl sp.,Strigiformes,AF,,,0
 Sanford's Sea Eagle,Icthyophaga sanfordi,Accipitridae,Hawk/Eagle/Kite sp.,Accipitriformes,AU,,,0
@@ -8303,7 +8303,7 @@ Scaly-breasted Hummingbird,Phaeochroa cuvierii,Trochilidae,Hummingbird sp.,Apodi
 Scaly-breasted Illadopsis,Illadopsis albipectus,Pellorneidae,Ground Babblers,Passeriformes,AF,,,0
 Scaly-breasted Kingfisher,Actenoides princeps,Alcedinidae,Kingfisher sp.,Coraciiformes,AU,,,0
 Scaly-breasted Lorikeet,Trichoglossus chlorolepidotus,Psittaculidae,Old World Parrots,Psittaciformes,AU,,,0
-Scaly-breasted Munia,Lonchura punctulata,Estrildidae,Scaly-breasted Munia,Passeriformes,"OR,AU",SBMU,,1
+Scaly-breasted Munia,Lonchura punctulata,Estrildidae,Scaly-breasted Munia,Passeriformes,"OR,AU,NA",SBMU,,1
 Scaly-breasted Thrasher,Allenia fusca,Mimidae,Mockingbird/Thrasher sp.,Passeriformes,NA,SBTH,,0
 Scaly-crowned Babbler,Malacopteron cinereum,Pellorneidae,Ground Babblers,Passeriformes,OR,,,0
 Scaly-crowned Honeyeater,Sugomel lombokium,Meliphagidae,Honeyeaters,Passeriformes,AU,,,0
@@ -8800,7 +8800,7 @@ Sombre Rock Chat,Oenanthe dubia,Muscicapidae,"Chats, Old World Flycatchers",Pass
 Sombre Tit,Poecile lugubris,Paridae,Titmouse/Chickadee sp.,Passeriformes,PAL,,,0
 Song Parrot,Geoffroyus heteroclitus,Psittaculidae,Old World Parrots,Psittaciformes,AU,,,0
 Song Sparrow,Melospiza melodia,Passerellidae,Sparrow sp.,Passeriformes,NA,SOSP,,1
-Song Thrush,Turdus philomelos,Turdidae,Thrush sp.,Passeriformes,PAL,SOTH,,0
+Song Thrush,Turdus philomelos,Turdidae,Thrush sp.,Passeriformes,"PAL,AU",SOTH,,0
 Song Wren,Cyphorhinus phaeocephalus,Troglodytidae,Wren sp.,Passeriformes,"MA,SA",SONW,,0
 Sooretama Slaty Antshrike,Thamnophilus ambiguus,Thamnophilidae,Antbirds,Passeriformes,SA,,,0
 Sooty Albatross,Phoebetria fusca,Diomedeidae,Albatrosses,Procellariiformes,"IO,AO",,,0
@@ -9057,7 +9057,7 @@ Spotted Buttonquail,Turnix ocellatus,Turnicidae,Buttonquail,Charadriiformes,OR,,
 Spotted Catbird,Ailuroedus maculosus,Ptilonorhynchidae,Bowerbirds,Passeriformes,AU,,,0
 Spotted Crake,Porzana porzana,Rallidae,Rail/Gallinule/Coot sp.,Gruiformes,PAL,SPCR,,0
 Spotted Crocias,Laniellus albonotatus,Leiothrichidae,Laughingthrushes & Allies,Passeriformes,OR,,,0
-Spotted Dove,Spilopelia chinensis,Columbidae,Pigeon/Dove sp.,Columbiformes,OR,SPDO,,0
+Spotted Dove,Spilopelia chinensis,Columbidae,Pigeon/Dove sp.,Columbiformes,"OR,AU,PO",SPDO,,0
 Spotted Eagle-Owl,Bubo africanus,Strigidae,Owl sp.,Strigiformes,AF,,,0
 Spotted Elachura,Elachura formosa,Elachuridae,Elachura,Passeriformes,OR,,,0
 Spotted Fantail,Rhipidura perlata,Rhipiduridae,Fantails,Passeriformes,OR,,,0
@@ -9843,7 +9843,7 @@ Tucuman Amazon,Amazona tucumana,Psittacidae,Parrot sp.,Psittaciformes,SA,,,0
 Tucuman Mountain Finch,Poospiza baeri,Thraupidae,Tanagers & Allies,Passeriformes,SA,,,0
 Tufted Antshrike,Mackenziaena severa,Thamnophilidae,Antbirds,Passeriformes,SA,,,0
 Tufted Coquette,Lophornis ornatus,Trochilidae,Hummingbird sp.,Apodiformes,SA,,,0
-Tufted Duck,Aythya fuligula,Anatidae,Waterfowl sp.,Anseriformes,PAL,TUDU,,1
+Tufted Duck,Aythya fuligula,Anatidae,Waterfowl sp.,Anseriformes,"PAL,NA",TUDU,,1
 Tufted Jay,Cyanocorax dickeyi,Corvidae,Corvid sp.,Passeriformes,MA,TUJA,,0
 Tufted Puffin,Fratercula cirrhata,Alcidae,Auk/Murre/Puffin sp.,Charadriiformes,"PAL,NA",TUPU,,0
 Tufted Tit-Spinetail,Leptasthenura platensis,Furnariidae,Ovenbirds,Passeriformes,SA,,,0
@@ -10127,7 +10127,7 @@ Wandering Whistling Duck,Dendrocygna arcuata,Anatidae,Waterfowl sp.,Anseriformes
 Wangi-wangi White-eye,Zosterops paruhbesar,Zosteropidae,White-eyes,Passeriformes,AU,,,0
 Warbling Doradito,Pseudocolopteryx flaviventris,Tyrannidae,Flycatcher sp.,Passeriformes,SA,,,0
 Warbling Vireo,Vireo gilvus,Vireonidae,Vireo sp.,Passeriformes,"NA,MA",EAWV,,1
-Warbling White-eye,Zosterops japonicus,Zosteropidae,White-eyes,Passeriformes,"PAL,OR,AU",WAWE,,0
+Warbling White-eye,Zosterops japonicus,Zosteropidae,White-eyes,Passeriformes,"PAL,OR,AU,PO",WAWE,,0
 Ward's Flycatcher,Pseudobias wardi,Vangidae,Vangas & Allies,Passeriformes,AF,,,0
 Ward's Trogon,Harpactes wardi,Trogonidae,Trogons,Trogoniformes,OR,,,0
 Warsangli Linnet,Linaria johannis,Fringillidae,Finch sp.,Passeriformes,AF,,,0
@@ -10862,7 +10862,7 @@ Wilson's Indigobird,Vidua wilsoni,Viduidae,"Indigobirds, Whydahs",Passeriformes,
 Wilson's Phalarope,Phalaropus tricolor,Scolopacidae,Sandpiper sp.,Charadriiformes,NA,WIPH,,1
 Wilson's Plover,Anarhynchus wilsonia,Charadriidae,Plover sp.,Charadriiformes,"NA,MA,SA",WIPL,,0
 Wilson's Snipe,Gallinago delicata,Scolopacidae,Sandpiper sp.,Charadriiformes,NA,WISN,,1
-Wilson's Storm-Petrel,Oceanites oceanicus,Oceanitidae,Austral Storm Petrels,Procellariiformes,SO,WISP,Wilson's Storm Petrel,1
+Wilson's Storm-Petrel,Oceanites oceanicus,Oceanitidae,Austral Storm Petrels,Procellariiformes,"SO,NA",WISP,Wilson's Storm Petrel,1
 Wilson's Warbler,Cardellina pusilla,Parulidae,Warbler sp.,Passeriformes,NA,WIWA,,1
 Winding Cisticola,Cisticola marginatus,Cisticolidae,Cisticolas & Allies,Passeriformes,AF,,,0
 Wine-throated Hummingbird,Selasphorus ellioti,Trochilidae,Hummingbird sp.,Apodiformes,MA,WTHH,,0

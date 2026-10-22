@@ -12,8 +12,8 @@
     //   - Live state lives in #cloudQueuePanel, a sibling of #queuePanel.
     //     We mirror the local queue's polling shape but at 10s cadence
     //     (Worker rate limits + packs arrive in batches of 10).
-    //   - Pause = upload-side only (Modal keeps analyzing already-uploaded
-    //     backlog). Cancel = terminal (stops Modal, deletes staging).
+    //   - Cancel = terminal (stops Modal, deletes staging). (Client-side pause
+    //     was removed — cancel is the only per-job control.)
     //   - Pack-merged events drain into rescanFolderTree + scheduleAutoRefresh
     //     so folder gallery updates as packs arrive — mirrors local live update.
     //   - Startup: list pending jobs (read-only); surface unmerged packs via
@@ -38,7 +38,10 @@
     // Map<jobId, {uploadComplete: bool, status: string}> snapshot of the
     // previous poll tick, used to detect the trigger transitions.
     let _ccPrevJobSnapshot = new Map();
-    let _ccLastDoneFolderPaths = new Set();
+    // Folders whose completed cloud job we've already pushed into the "recents"
+    // chips this session — bump once per folder so an already-done job (e.g.
+    // surfaced after a restart) registers too, without re-bumping every tick.
+    let _ccRecentsBumped = new Set();
     // JS-side terminal statuses (set by api_bridge._worker terminal handler).
     // The Worker's 'complete'|'cancelled'|'failed' normalise to 'done'|'failed'|
     // 'cancelled'; the Worker's 'incomplete' (client disconnected >10min, uploads
@@ -503,11 +506,9 @@
       // Phase of the upload half of the round-trip. Independent of analysis.
       const s = (state && state.status) || 'running';
       if (s === 'cancelled' || s === 'failed' || s === 'incomplete') return s;
-      // Worker flipped the job to 'incomplete' (client disconnected >10min with
-      // uploads unfinished): uploads are halted server-side even while the local
-      // job is still draining downloads. Grey the upload half immediately.
+      // 'incomplete' on the Worker is now truly terminal (it only lands once the
+      // job has drained), so surface it on the upload half immediately.
       if (state && state.remoteStatus === 'incomplete') return 'incomplete';
-      if (s === 'upload_paused') return 'upload_paused';
       // Use total-with-anchor here so the "Uploaded" pill flips only when ALL
       // wire-level uploads are complete (including the anchor), even though
       // the visible bar uses newImageCount as denominator.
@@ -519,15 +520,36 @@
       return 'uploading';
     }
 
+    // An 'incomplete' job is terminal on the Worker (client vanished with
+    // uploads unfinished). While the desktop drains the last result packs the
+    // LOCAL job status can still read 'uploading'/'running' for a poll cycle or
+    // two — but once every uploaded image has been analyzed there is no more
+    // server-side work and nothing left to produce or download. Treat that as
+    // terminal in the UI so we stop showing "Analyzing" and hide the
+    // cancel / retrieve affordances (the job is done — just partial).
+    // True when `path` is already open as a loaded folder root in the browser.
+    // Shares scope with folder-tree.js (folderTreeRootOrder); guarded so a load-
+    // order race or missing global degrades to "not loaded" rather than throwing.
+    // Paths are normalized case-insensitively (Windows filesystem).
+    function _ccIsFolderLoaded(path) {
+      if (!path) return false;
+      try {
+        if (typeof folderTreeRootOrder === 'undefined' || !Array.isArray(folderTreeRootOrder)) return false;
+        const norm = (p) => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+        const target = norm(path);
+        return folderTreeRootOrder.some((r) => norm(r) === target);
+      } catch { return false; }
+    }
+
     function _ccAnalysisPhase(state) {
-      // Phase of the analysis half of the round-trip. NOTE: 'incomplete' analysis
-      // continues server-side during the in-session drain, so we only show the
-      // terminal 'incomplete' label once the LOCAL job is terminal — while
-      // draining (local status still uploading/running) the counts below keep the
-      // bar advancing.
+      // Phase of the analysis half of the round-trip. 'incomplete' is now a
+      // truly-terminal Worker state (it only lands after the job has drained —
+      // active_container_count==0, no analysis will advance again), so we surface
+      // it as terminal here without any count-based "is it actually done" check.
       const s = (state && state.status) || 'running';
       if (s === 'cancelled' || s === 'failed' || s === 'done' || s === 'incomplete') return s;
       const r = state && state.remoteStatus;
+      if (r === 'incomplete') return 'incomplete';
       if (r === 'complete') return 'done';
       const analyzed = Number(state.analyzedCount || 0);
       const dispatched = Number(state.dispatchedCount || 0);
@@ -539,7 +561,6 @@
       return ({
         uploading:     'Uploading',
         uploaded:      'Uploaded',
-        upload_paused: 'Paused',
         cancelled:     'Cancelled',
         failed:        'Failed',
         incomplete:    'Incomplete',
@@ -555,6 +576,51 @@
         failed:          'Failed',
         incomplete:      'Incomplete',
       })[phase] || phase;
+    }
+
+    // ── Live bottleneck read-out ─────────────────────────────────────────────
+    //
+    // Mirrors the pre-flight regime chip in the analyze dialog, but derived from
+    // live counts instead of a model, so the user can see whether the number
+    // they were quoted is playing out. The signal is the un-analyzed backlog:
+    // the worker only spawns another Modal container once the backlog reaches
+    // SCALE_THRESHOLD, so a persistently large backlog means compute is
+    // saturated, while a backlog near zero during an active upload means the
+    // workers are idling on bytes.
+    //
+    // Unlike the analyze dialog's estimate — which uses the thresholds the
+    // Worker serves in the upload-test `pipeline` block — these stay local
+    // constants on purpose: a live job may have had no speed test in this
+    // session, so there's no served descriptor to read. They only pick which
+    // of three LABELS to show, never a number, so drift shifts a boundary
+    // slightly rather than producing a wrong estimate. Still worth keeping
+    // roughly in step with the worker's src/lib/constants.ts.
+    const _CC_SCALE_THRESHOLD = 200;     // backlog at which another container spawns
+    const _CC_DISPATCH_THRESHOLD = 100;  // backlog before the first dispatch
+
+    function _ccBottleneck(state, uploadPhase, analysisPhase) {
+      // Only meaningful while both halves are genuinely in flight.
+      if (analysisPhase !== 'analyzing') return null;
+      const uploaded = Number(state.uploadedCount || 0);
+      const analyzed = Number(state.analyzedCount || 0);
+      const backlog = Math.max(0, uploaded - analyzed);
+      if (uploadPhase !== 'uploading') {
+        // Bytes are all in; from here the only thing left is compute.
+        return { key: 'compute', label: 'Compute-limited',
+                 tip: 'All images are uploaded — the remaining time is analysis.' };
+      }
+      if (backlog >= _CC_SCALE_THRESHOLD) {
+        return { key: 'compute', label: 'Compute-limited',
+                 tip: `${backlog} uploaded images are waiting to be analyzed — `
+                    + 'Cloud Compute is the bottleneck.' };
+      }
+      if (backlog < _CC_DISPATCH_THRESHOLD) {
+        return { key: 'upload', label: 'Upload-limited',
+                 tip: 'Analysis is keeping up with your upload — the job is '
+                    + 'bounded by how fast images reach the cloud.' };
+      }
+      return { key: 'balanced', label: 'Balanced',
+               tip: 'Upload and analysis are advancing at roughly the same rate.' };
     }
 
     // ── §3: terminal-reason → friendly explanation ───────────────────────
@@ -749,13 +815,14 @@
       // from the worker (results_status='results_retrieved'). retrieved ≤
       // analyzed ≤ uploaded ≤ total by construction on the worker side.
       const rawRetrieved = Number(state.retrievedCount || 0);
-      // Numerators are also clamped to the displayed total so the text never
-      // shows e.g. "182/181 uploaded".
-      const analyzed = total > 0 ? Math.min(rawAnalyzed, total) : rawAnalyzed;
-      const uploaded = total > 0 ? Math.min(rawUploaded, total) : rawUploaded;
-      const retrieved = total > 0 ? Math.min(rawRetrieved, total) : rawRetrieved;
+      // Trust the server counts directly — no numerator clamp. The bar WIDTH
+      // is still pixel-clamped below; that's pure render safety, not billing math.
+      const analyzed = rawAnalyzed;
+      const uploaded = rawUploaded;
+      const retrieved = rawRetrieved;
       const uploadPhase = _ccUploadPhase(state);
       const analysisPhase = _ccAnalysisPhase(state);
+      const bottleneck = _ccBottleneck(state, uploadPhase, analysisPhase);
       const uploadPct = total > 0 ? Math.min(100, Math.round((uploaded / total) * 100)) : 0;
       const analysisPct = total > 0 ? Math.min(100, Math.round((analyzed / total) * 100)) : 0;
       const retrievedPct = total > 0 ? Math.min(100, Math.round((retrieved / total) * 100)) : 0;
@@ -786,21 +853,23 @@
       // stops once a job is done), so suppress the badge for them.
       const updatedAt = Number(state.remoteUpdatedAtMs || 0);
       const ageMs = updatedAt > 0 ? (Date.now() - updatedAt) : Infinity;
-      const isTerminal = ['done', 'failed', 'cancelled', 'incomplete'].includes(state.status);
+      // Server-authoritative: the Worker tells us `terminal` directly (true for
+      // complete/cancelled/failed/incomplete — and 'incomplete' is now genuinely
+      // terminal). Fall back to the local status for the brief window after a
+      // local cancel before the next poll lands. No count math.
+      const isTerminal = !!state.terminal
+        || ['done', 'failed', 'cancelled', 'incomplete'].includes(state.status);
       const isStale = !isTerminal && ageMs > _CC_STALE_THRESHOLD_MS;
       const failureCount = Number(state.remoteFailureCount || 0);
       const staleHint = isStale
         ? `<span class="cloud-sync-badge" title="Last successful sync ${updatedAt > 0 ? Math.round(ageMs/1000)+'s ago' : 'never'}${failureCount > 0 ? ' — ' + failureCount + ' failed attempt(s)' : ''}">syncing…</span>`
         : '';
 
-      // Per-row controls:
-      //  - Pause/Resume only meaningful while uploads are active. Once the
-      //    last image is on the wire there's nothing to pause; the analysis
-      //    half is server-side and can't be paused from the desktop.
-      //  - Cancel disabled in terminal states.
-      const pauseDisabled = uploadPhase !== 'uploading';
-      const resumeDisabled = uploadPhase !== 'upload_paused';
-      const cancelDisabled = ['done', 'failed', 'cancelled', 'incomplete'].includes(state.status);
+      // Per-row controls. Cancel is disabled exactly when the job is terminal
+      // (server `terminal` flag, robust to count skew). Pause was removed.
+      const cancelDisabled = isTerminal;
+      // Load: only offer when the folder isn't already open in the browser.
+      const showLoad = !!state.rootPath && !_ccIsFolderLoaded(state.rootPath);
 
       return `
         <div class="queue-item cloud-queue-item" data-job-id="${escapeHtml(state.jobId)}">
@@ -810,17 +879,8 @@
               ${staleHint}
             </div>
             <div class="cloud-queue-item-controls">
-              <button data-cc-action="pause" data-job-id="${escapeHtml(state.jobId)}" ${pauseDisabled ? 'disabled' : ''}>
-                ⏸ Pause
-              </button>
-              <button data-cc-action="resume" data-job-id="${escapeHtml(state.jobId)}" ${resumeDisabled ? 'disabled' : ''}>
-                ▶ Resume
-              </button>
-              ${!isTerminal ? `<button data-cc-action="retrieve" data-job-id="${escapeHtml(state.jobId)}" title="Restart auto-downloading result packs as they finish">
-                ⤓ Retrieve Results
-              </button>` : ''}
-              ${state.rootPath ? `<button data-cc-action="load" data-job-id="${escapeHtml(state.jobId)}" data-folder-path="${escapeHtml(state.rootPath)}" title="Open this folder to browse results">
-                📂 Load
+              ${showLoad ? `<button class="cc-load-btn" data-cc-action="load" data-job-id="${escapeHtml(state.jobId)}" data-folder-path="${escapeHtml(state.rootPath)}" title="Open this folder to browse results">
+                + 📂 Load
               </button>` : ''}
               <button data-cc-action="cancel" data-job-id="${escapeHtml(state.jobId)}" ${cancelDisabled ? 'disabled' : ''}>
                 ⏹ Cancel
@@ -830,6 +890,7 @@
           <div class="cloud-phase-row">
             <span class="cloud-phase-pill upload ${uploadPhase}">↑ ${_ccUploadPhaseLabel(uploadPhase)}</span>
             <span class="cloud-phase-pill analysis ${analysisPhase}">⚙ ${_ccAnalysisPhaseLabel(analysisPhase)}</span>
+            ${bottleneck ? `<span class="cloud-bottleneck-pill ${bottleneck.key}" title="${escapeHtml(bottleneck.tip)}">${escapeHtml(bottleneck.label)}</span>` : ''}
           </div>
           <div class="cloud-bar-block">
             <div class="cloud-bar-label">${uploaded} / ${total} uploaded${anchor}</div>
@@ -903,10 +964,13 @@
       } catch { return; }
       const jobs = (listRes && listRes.jobs) || [];
       const pending = _ccPendingSubmits.slice(); // snapshot for this render
-      // Panel is visible when there's anything to show — accepted jobs OR
-      // pending queue entries. Hiding when only pending exists would lose
-      // the "your 5 folders are queued" affordance.
-      if (jobs.length === 0 && pending.length === 0) {
+      // Jobs the user dismissed via the header close (X) are filtered out.
+      const visibleJobs = jobs.filter(j => !_ccPanelHiddenJobIds.has(j.jobId));
+      // Panel is visible when there's anything to show — visible (non-dismissed)
+      // jobs OR pending queue entries. Using visibleJobs (not jobs) means the
+      // panel actually closes once the user dismisses all finished jobs, instead
+      // of lingering as an empty shell (the old "Clear done" left it open).
+      if (visibleJobs.length === 0 && pending.length === 0) {
         panel.classList.add('hidden');
         body.innerHTML = '';
         _ccPrevJobSnapshot = new Map();
@@ -924,9 +988,17 @@
       if (toggle) toggle.classList.toggle('open', _cloudQueuePanelExpanded);
       body.classList.toggle('hidden', !_cloudQueuePanelExpanded);
       if (controls) controls.classList.toggle('hidden', !_cloudQueuePanelExpanded);
+      // Header close (X): only when every visible job is terminal and nothing is
+      // pending — i.e. no uploads/analysis in flight. Lets the user dismiss the
+      // finished panel; otherwise it stays open.
+      const cloudCloseBtn = document.getElementById('cloudQueuePanelCloseBtn');
+      if (cloudCloseBtn) {
+        const anyActive = pending.length > 0
+          || visibleJobs.some(j => !_CC_TERMINAL_STATUSES.has(j.status));
+        cloudCloseBtn.classList.toggle('hidden', !(visibleJobs.length > 0 && !anyActive));
+      }
       // Active jobs first, pending ghost rows below. Pending shows the user
       // exactly what's still ahead in their queue.
-      const visibleJobs = jobs.filter(j => !_ccPanelHiddenJobIds.has(j.jobId));
       body.innerHTML =
         visibleJobs.map(_ccRenderItem).join('') +
         pending.map(_ccRenderPendingItem).join('');
@@ -943,22 +1015,26 @@
       let shouldRetryQueue = false;
       for (const j of jobs) {
         const prev = _ccPrevJobSnapshot.get(j.jobId);
-        if (!prev) continue;
-        const becameUploadComplete = !prev.uploadComplete && !!j.uploadComplete;
-        const becameTerminal = !_CC_TERMINAL_STATUSES.has(prev.status)
-          && _CC_TERMINAL_STATUSES.has(j.status);
-        if (becameUploadComplete || becameTerminal) { shouldRetryQueue = true; break; }
-        if (becameTerminal && (j.status === 'done' || j.status === 'incomplete')) {
+        if (prev) {
+          const becameUploadComplete = !prev.uploadComplete && !!j.uploadComplete;
+          const becameTerminal = !_CC_TERMINAL_STATUSES.has(prev.status)
+            && _CC_TERMINAL_STATUSES.has(j.status);
+          // NB: don't break here — earlier this short-circuited the loop before
+          // the recents bump below, so cloud-analyzed folders never registered.
+          if (becameUploadComplete || becameTerminal) shouldRetryQueue = true;
+        }
+        // Register a finished cloud job's folder into the "recents" chips so it's
+        // one click to re-add — independent of the transition diff above, so a
+        // job that's already done when first observed (restart / late panel
+        // mount) still lands. Once per folder per session.
+        if (j.status === 'done' || j.status === 'incomplete') {
           const fp = (j.rootPath || '').replace(/\\/g, '/');
-          if (fp && !_ccLastDoneFolderPaths.has(fp) && typeof persistFolderRecentsBump === 'function') {
+          if (fp && !_ccRecentsBumped.has(fp) && typeof persistFolderRecentsBump === 'function') {
+            _ccRecentsBumped.add(fp);
             persistFolderRecentsBump(j.rootPath);
           }
         }
       }
-      _ccLastDoneFolderPaths = new Set(
-        jobs.filter(j => j.status === 'done' || j.status === 'incomplete')
-          .map(j => (j.rootPath || '').replace(/\\/g, '/')),
-      );
       _ccPrevJobSnapshot = new Map(jobs.map(j => [j.jobId, {
         uploadComplete: !!j.uploadComplete,
         status: j.status,
@@ -972,7 +1048,7 @@
       const norm = p => (p || '').replace(/\\/g, '/');
       const ccInProg = new Set();
       for (const j of jobs) {
-        if (!_CC_TERMINAL_STATUSES.has(j.status) && j.folderPath) ccInProg.add(norm(j.folderPath));
+        if (!_CC_TERMINAL_STATUSES.has(j.status) && j.rootPath) ccInProg.add(norm(j.rootPath));
       }
       for (const p of pending) {
         if (p.path) ccInProg.add(norm(p.path));
@@ -1106,7 +1182,7 @@
       });
     }
 
-    // Click delegation for per-item pause/resume/cancel buttons.
+    // Click delegation for per-item cancel/load buttons.
     document.addEventListener('click', async (ev) => {
       const t = ev.target;
       if (!t || !(t instanceof HTMLElement)) return;
@@ -1130,32 +1206,11 @@
         return;
       }
       if (!window.pywebview?.api) return;
-      // Retrieve Results: (re)start the continuous download-as-packs-arrive
-      // loop. Idempotent on the backend, so a double-click is harmless.
-      if (action === 'retrieve') {
-        if (!window.pywebview.api.cloud_compute_retrieve_results) return;
-        t.disabled = true;
-        try {
-          const r = await window.pywebview.api.cloud_compute_retrieve_results(jobId);
-          if (r && r.ok) {
-            showToast(r.alreadyRunning ? 'Already retrieving results…' : 'Retrieving results…', 2800);
-            _ccStartPolling();
-            _ccRenderPanel();
-          } else if (r && r.reason === 'folder_unavailable') {
-            showToast(_CC_FOLDER_UNAVAILABLE_MSG, 6000);
-          } else {
-            showToast(`Retrieve failed: ${r?.error || 'unknown'}`, 5000);
-          }
-        } catch (e) {
-          showToast(`Retrieve failed: ${e?.message || e}`, 5000);
-        } finally {
-          t.disabled = false;
-        }
-        return;
-      }
+      // NB: the live pill streams results automatically while a job is present,
+      // so there's no per-pill "Retrieve Results" control. Re-registering an
+      // older/in-progress job into the pill is done from the account panel's
+      // history rows (history-retrieve), which call cloud_compute_retrieve_results.
       const fnName = ({
-        pause: 'cloud_compute_pause_job',
-        resume: 'cloud_compute_resume_job',
         cancel: 'cloud_compute_cancel_job',
       })[action];
       if (!fnName || !window.pywebview.api[fnName]) return;
@@ -1200,43 +1255,34 @@
       }
     }
 
-    // Panel-level controls (one-time wiring): Clear done removes terminal jobs
-    // from the persistent ledger; Pause All / Cancel All apply to every active
-    // job in the panel. The buttons themselves live in visualizer.html.
+    // Panel-level controls (one-time wiring): the header close (X) dismisses all
+    // terminal jobs from the panel; Cancel All applies to every active job in the
+    // panel. The buttons themselves live in visualizer.html.
     let _ccPanelControlsWired = false;
     function _ccWirePanelControls() {
       if (_ccPanelControlsWired) return;
       _ccPanelControlsWired = true;
-      const clearBtn = document.getElementById('cloudQueueClearBtn');
-      const pauseBtn = document.getElementById('cloudQueuePauseBtn');
+      const closeBtn = document.getElementById('cloudQueuePanelCloseBtn');
       const cancelBtn = document.getElementById('cloudQueueCancelBtn');
-      if (clearBtn) {
-        clearBtn.addEventListener('click', async () => {
-          clearBtn.disabled = true;
+      if (closeBtn) {
+        // Header close (X) — replaces "Clear done". Only visible (toggled in
+        // _ccRenderPanel) once every job is terminal, so dismiss them all and
+        // hide the panel. stopPropagation keeps the header collapse from firing.
+        closeBtn.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
           try {
             let jobs = [];
             if (window.pywebview?.api?.cloud_compute_list_jobs) {
               const r = await window.pywebview.api.cloud_compute_list_jobs();
               jobs = (r && r.jobs) || [];
             }
-            let n = 0;
             for (const j of jobs) {
-              if (_CC_TERMINAL_STATUSES.has(j.status)) {
-                _ccPanelHiddenJobIds.add(j.jobId);
-                n++;
-              }
+              if (_CC_TERMINAL_STATUSES.has(j.status)) _ccPanelHiddenJobIds.add(j.jobId);
             }
-            showToast(
-              n > 0
-                ? `Hidden ${n} finished job(s) from the panel`
-                : 'No finished jobs to hide',
-              2500,
-            );
+            document.getElementById('cloudQueuePanel')?.classList.add('hidden');
             _ccRenderPanel();
           } catch (e) {
-            showToast(`Clear done failed: ${e?.message || e}`, 5000);
-          } finally {
-            clearBtn.disabled = false;
+            showToast(`Close failed: ${e?.message || e}`, 5000);
           }
         });
       }
@@ -1249,21 +1295,6 @@
             .map(j => j.jobId);
         } catch { return []; }
       };
-      if (pauseBtn) {
-        pauseBtn.addEventListener('click', async () => {
-          if (!window.pywebview?.api?.cloud_compute_pause_job) return;
-          pauseBtn.disabled = true;
-          try {
-            const ids = await _activeJobIds();
-            if (ids.length === 0) { showToast('No active jobs to pause', 2500); return; }
-            await Promise.all(ids.map(id => window.pywebview.api.cloud_compute_pause_job(id).catch(() => null)));
-            showToast(`Paused ${ids.length} job(s)`, 2500);
-            _ccRenderPanel();
-          } finally {
-            pauseBtn.disabled = false;
-          }
-        });
-      }
       if (cancelBtn) {
         cancelBtn.addEventListener('click', async () => {
           if (!window.pywebview?.api?.cloud_compute_cancel_job) return;
@@ -1293,6 +1324,11 @@
     // so the fastest path is: open panel → see what to download → click.
 
     const _CC_MYACCOUNT_URL = 'https://myaccount.projectkestrel.org';
+    // Account-deletion page (App Store Guideline 5.1.1(v)). Deletion is
+    // initiated here in-app and completed on the dedicated deletion page, which
+    // has its own typed confirmation, so there is no risk of accidental
+    // deletion from the button alone.
+    const _CC_ACCOUNT_DELETE_URL = 'https://myaccount.projectkestrel.org/delete/';
     let _ccAccountRefreshTimer = null;
 
     function _ccAccountDlg() { return document.getElementById('cloudAccountDlg'); }
@@ -1351,6 +1387,9 @@
       const total = Number(j.imageCount || 0);
       const retrieved = Number(j.retrievedCount || 0);
       const isTerminal = ['done', 'failed', 'cancelled', 'incomplete'].includes(j.status);
+      // Nothing left to pull back — suppress the Retrieve-Results affordance on
+      // a non-terminal row once every result pack has already been retrieved.
+      const allRetrieved = total > 0 && retrieved >= total;
       // Reuse §3's mapping. Build a state-shaped object from the history entry.
       const explanation = _ccTerminalExplanation({
         status: j.status,
@@ -1377,9 +1416,9 @@
       // Status caption.
       let caption;
       if (j.status === 'done') {
-        caption = `Complete · ${downloadedCount} pack(s) downloaded`;
+        caption = `Complete · ${downloadedCount} result${downloadedCount === 1 ? '' : 's'} downloaded`;
       } else if (hasPending) {
-        caption = `${unmerged.length} pack(s) ready to download`;
+        caption = `${unmerged.length} result${unmerged.length === 1 ? '' : 's'} ready to download`;
       } else if (folderMissing && (hasPending || packsOnServer)) {
         caption = 'Results available — folder not found';
       } else if (folderMissing) {
@@ -1402,7 +1441,7 @@
         const pct = Math.min(100, Math.round((done / activeDl.total) * 100));
         downloadProgressHtml = `
           <div class="cloud-account-dl-progress">
-            <div class="cloud-account-dl-progress-label">Downloading &amp; installing packs… ${done} / ${activeDl.total}</div>
+            <div class="cloud-account-dl-progress-label">Downloading &amp; installing results… ${done} / ${activeDl.total}</div>
             <div class="queue-item-progress">
               <div class="queue-item-progress-fill retrieved" style="width:${pct}%"></div>
             </div>
@@ -1414,11 +1453,16 @@
         : '';
 
       const downloadDisabled = !(j.folderAvailable === true && hasPending);
+      // Only surface Download when there is actually something to pull: pending
+      // packs to merge, or a missing folder hiding salvageable packs (paired
+      // with Locate). A fully-retrieved job has nothing to download, so the
+      // button vanishes rather than greying out.
+      const showDownload = hasPending || (folderMissing && packsOnServer);
       const downloadBtn = `<button type="button" class="cloud-account-dl-btn" `
         + `data-cc-action="history-download" data-job-id="${escapeHtml(j.jobId)}" `
         + `data-pending-packs="${unmerged.length}" `
         + `${downloadDisabled ? 'disabled' : ''} `
-        + `title="${folderMissing ? 'Locate the folder first' : 'Download &amp; merge the pending result pack(s)'}">`
+        + `title="${folderMissing ? 'Locate the folder first' : 'Download &amp; install the pending result(s)'}">`
         + `⬇ Download</button>`;
       const locateBtn = folderMissing
         ? `<button type="button" class="cloud-account-locate-btn" `
@@ -1431,15 +1475,16 @@
       const retrieveBtn = `<button type="button" class="cloud-account-dl-btn" `
         + `data-cc-action="history-retrieve" data-job-id="${escapeHtml(j.jobId)}" `
         + `${folderMissing ? 'disabled' : ''} `
-        + `title="${folderMissing ? 'Locate the folder first' : 'Auto-download result packs as they finish'}">`
+        + `title="${folderMissing ? 'Locate the folder first' : 'Auto-download results as they finish'}">`
         + `⤓ Retrieve Results</button>`;
       // Load: browse this folder's results in the gallery (works for completed
-      // jobs too, which only ever appear here — never as a live pill).
-      const loadBtn = (j.folderAvailable === true && j.folderPath)
+      // jobs too, which only ever appear here — never as a live pill). Hidden
+      // once the folder is already open in the browser.
+      const loadBtn = (j.folderAvailable === true && j.folderPath && !_ccIsFolderLoaded(j.folderPath))
         ? `<button type="button" class="cloud-account-load-btn" `
           + `data-cc-action="history-load" data-job-id="${escapeHtml(j.jobId)}" `
           + `data-folder-path="${escapeHtml(j.folderPath)}" `
-          + `title="Open this folder to browse results">📂 Load</button>`
+          + `title="Open this folder to browse results">+ 📂 Load</button>`
         : '';
 
       const additionalInfo = _ccRenderAdditionalInfo({
@@ -1458,7 +1503,7 @@
               <span class="cloud-account-row-caption">${caption}</span>
             </div>
             <div class="cloud-account-row-actions">
-              ${isTerminal ? downloadBtn : retrieveBtn}
+              ${isTerminal ? (showDownload ? downloadBtn : '') : (allRetrieved ? '' : retrieveBtn)}
               ${loadBtn}
               ${locateBtn}
             </div>
@@ -1493,47 +1538,161 @@
         }
       } catch { if (nameEl) nameEl.textContent = 'Signed in'; }
 
-      // Tier + concurrency from entitlements; usage counts from /api/usage.
-      let tier = null, maxConcurrent = null;
+      // Cloud Compute plan + usage. Driven entirely by /v1/me/entitlements
+      // (cloud_compute_get_entitlements) — the same payload MyAccount's Cloud
+      // Compute card renders. This call is NOT cached on the backend, so it's
+      // always fresh per identity (the old path read a 5-min-cached /api/usage
+      // that lingered across account switches and showed the prior user's
+      // numbers). currentUsage carries periodStart/imageCount/imagesReserved;
+      // creditBalance + effectiveRemaining ride at the top level.
+      await _ccRenderEntitlementsCard();
+    }
+
+    function _ccFmtN(x) { return (Number(x) || 0).toLocaleString(); }
+
+    async function _ccRenderEntitlementsCard() {
+      const tierEl   = document.getElementById('cloudAccountTier');
+      const periodEl = document.getElementById('cloudAccountPeriod');
+      const holdEl   = document.getElementById('cloudAccountHold');
+      const concEl   = document.getElementById('cloudAccountUsageConcurrent');
+      const analyzedEl = document.getElementById('ccStatAnalyzed');
+      const remainingEl = document.getElementById('ccStatRemaining');
+      const creditsEl = document.getElementById('ccStatCredits');
+      const quotaBar = document.getElementById('ccQuotaBar');
+
+      let ent = null;
       try {
         if (window.pywebview?.api?.cloud_compute_get_entitlements) {
           const r = await window.pywebview.api.cloud_compute_get_entitlements();
-          if (r && r.ok) {
-            tier = r.tier || (r.limits && r.limits.tier) || null;
-            maxConcurrent = (r.limits && (r.limits.maxConcurrentJobs ?? r.limits.max_concurrent_jobs)) ?? null;
-          }
+          if (r && r.ok) ent = r;
         }
       } catch {}
-      if (tierEl) tierEl.textContent = tier ? `Plan: ${String(tier).charAt(0).toUpperCase()}${String(tier).slice(1)}` : '';
 
-      const imagesEl = document.getElementById('cloudAccountUsageImages');
-      const concEl = document.getElementById('cloudAccountUsageConcurrent');
-      if (concEl) {
-        concEl.textContent = (maxConcurrent != null)
-          ? `Concurrent job limit: ${maxConcurrent}`
-          : '';
+      const limits = (ent && ent.limits) || null;
+      const usage = (ent && ent.currentUsage) || null;
+
+      // Plan tier.
+      const tier = ent && ent.tier ? String(ent.tier) : null;
+      if (tierEl) tierEl.textContent = tier
+        ? `Plan: ${tier.charAt(0).toUpperCase()}${tier.slice(1)}`
+        : '';
+
+      // Billing period — "start – renewal" from currentUsage.periodStart.
+      if (periodEl) periodEl.textContent = _ccBillingPeriodLabel(usage && usage.periodStart);
+
+      // Account-hold banner.
+      if (holdEl) holdEl.hidden = !(ent && ent.suspended);
+
+      // Concurrent-job limit.
+      const maxConcurrent = limits
+        ? (limits.maxConcurrentJobs ?? limits.max_concurrent_jobs ?? null)
+        : null;
+      if (concEl) concEl.textContent = (maxConcurrent != null)
+        ? `Concurrent job limit: ${maxConcurrent}` : '';
+
+      // Headline stats — verbatim server fields (no client cap/credit math).
+      if (analyzedEl) analyzedEl.textContent = usage ? _ccFmtN(Number(usage.imageCount) || 0) : '—';
+      if (remainingEl) {
+        // effectiveRemaining is the worker's pre-computed headroom (subscription
+        // + credits). When absent, show '—' rather than recomputing it client-side.
+        if (ent && typeof ent.effectiveRemaining === 'number') {
+          remainingEl.textContent = _ccFmtN(ent.effectiveRemaining);
+        } else {
+          remainingEl.textContent = '—';
+        }
       }
-      if (imagesEl) {
-        imagesEl.textContent = 'Loading usage…';
-        try {
-          if (window.pywebview?.api?.cloud_compute_get_usage) {
-            const u = await window.pywebview.api.cloud_compute_get_usage();
-            if (u && u.ok && u.usage) {
-              const usage = u.usage;
-              const analyzed = usage.totalImagesAnalyzed ?? usage.imagesAnalyzed ?? null;
-              const remaining = usage.remainingImages;
-              const parts = [];
-              if (analyzed != null) parts.push(`${analyzed} image(s) analyzed this period`);
-              if (remaining != null) parts.push(`${remaining} remaining`);
-              imagesEl.textContent = parts.length ? parts.join(' · ') : 'Usage metering not configured yet.';
-            } else {
-              imagesEl.textContent = 'Usage unavailable.';
-            }
+      if (creditsEl) {
+        creditsEl.textContent = (ent && typeof ent.creditBalance === 'number')
+          ? _ccFmtN(ent.creditBalance) : '—';
+      }
+
+      // ── Usage bars — rendered STRAIGHT from the worker-computed `ent.bars`.
+      // The worker already did all cap/credit spend-order math; the client only
+      // turns numbers into pixel widths. No cap/used/reserved extraction, no
+      // remaining = cap - used - reserved, no sub-1.2% visibility clamp here.
+      const bars = (ent && ent.bars) || null;
+      const creditsBar = document.getElementById('ccCreditsBar');
+
+      // Render one bar: a solid `billed` segment + a hatched `reserved` segment
+      // over `total`. Legend carries the precise counts. Pixel-width clamp only.
+      const _renderBar = (barEl, fillId, fillResId, usedLabelId, capLabelId,
+                          billed, reserved, total, capLabel, disabled) => {
+        if (!barEl) return;
+        const fill = document.getElementById(fillId);
+        const fillRes = document.getElementById(fillResId);
+        const billedPct = total > 0 ? Math.max(0, Math.min(100, (billed / total) * 100)) : 0;
+        const reservedPct = total > 0 ? Math.max(0, Math.min(100 - billedPct, (reserved / total) * 100)) : 0;
+        if (fill) fill.style.width = billedPct.toFixed(2) + '%';
+        if (fillRes) fillRes.style.width = reservedPct.toFixed(2) + '%';
+        const usedEl = document.getElementById(usedLabelId);
+        const capEl = document.getElementById(capLabelId);
+        if (usedEl) {
+          usedEl.textContent = reserved > 0
+            ? `${_ccFmtN(billed)} used · ${_ccFmtN(reserved)} in-progress`
+            : `${_ccFmtN(billed)} used`;
+        }
+        if (capEl) capEl.textContent = capLabel;
+        barEl.classList.toggle('account-storage-bar--disabled', !!disabled);
+        barEl.hidden = false;
+      };
+
+      if (!bars) {
+        // Older worker without `bars` — hide the bars; do NOT resurrect client math.
+        if (quotaBar) quotaBar.hidden = true;
+        if (creditsBar) creditsBar.hidden = true;
+      } else {
+        // Monthly bar: billed + reserved + remaining === cap. Greyed when the
+        // subscription is inactive (no monthly allotment).
+        const m = bars.monthly || {};
+        const subActive = !!(bars.subscription && bars.subscription.active);
+        const mCap = Number(m.cap) || 0;
+        _renderBar(quotaBar, 'ccQuotaFill', 'ccQuotaFillReserved',
+          'ccQuotaUsed', 'ccQuotaCap',
+          Number(m.billed) || 0, Number(m.reserved) || 0, mCap,
+          subActive ? `${_ccFmtN(mCap)} monthly quota` : 'No active subscription',
+          !subActive);
+
+        // Credits bar: billed + reserved is this period's draw; remaining is
+        // what's left of balance. Rendered over balance.
+        const c = bars.credits || {};
+        const cBalance = Number(c.balance) || 0;
+        if (creditsBar) {
+          if (cBalance > 0 || (Number(c.billed) || 0) > 0 || (Number(c.reserved) || 0) > 0) {
+            _renderBar(creditsBar, 'ccCreditsFill', 'ccCreditsFillReserved',
+              'ccCreditsUsed', 'ccCreditsCap',
+              Number(c.billed) || 0, Number(c.reserved) || 0, cBalance,
+              `${_ccFmtN(cBalance)} credits`, false);
           } else {
-            imagesEl.textContent = 'Usage unavailable.';
+            creditsBar.hidden = true;
           }
-        } catch { imagesEl.textContent = 'Usage unavailable.'; }
+        }
       }
+    }
+
+    // Render a billing period as "start – renewal" (start + 1 month). Mirrors
+    // MyAccount's billingPeriodLabel. Falls back to '' when start is unknown.
+    function _ccBillingPeriodLabel(periodStart) {
+      if (!periodStart) return '';
+      try {
+        // currentUsage.periodStart from /v1/me/entitlements is epoch SECONDS, so
+        // it must be ×1000 for the JS Date (which wants ms) — otherwise a 2026
+        // value reads as Jan 1970. Be liberal: scale up only if it looks like
+        // seconds (~1.7e9) vs ms (~1.7e12); accept an ISO string too.
+        let startMs;
+        if (typeof periodStart === 'number') {
+          startMs = periodStart < 1e12 ? periodStart * 1000 : periodStart;
+        } else {
+          startMs = Date.parse(periodStart);
+        }
+        const start = new Date(startMs);
+        if (isNaN(start.getTime())) return '';
+        // The period is a UTC calendar month; step the renewal and format in UTC
+        // so a midnight-UTC start doesn't render as the prior day locally.
+        const end = new Date(start);
+        end.setUTCMonth(end.getUTCMonth() + 1);
+        const fmt = (d) => d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+        return `Billing period: ${fmt(start)} – ${fmt(end)}`;
+      } catch { return ''; }
     }
 
     async function _ccLoadPerchAccountSection() {
@@ -1677,6 +1836,44 @@
           try { window.pywebview.api.open_url(_CC_MYACCOUNT_URL); } catch {}
         }
       });
+      // Sign out of the Perch/Cloud session from within the app. Python clears
+      // the keychain + revokes the refresh token, then fires window.onAuthSignOut
+      // (auth.js) which resets the account button and closes this panel.
+      document.getElementById('cloudAccountSignOutBtn')?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        if (!window.pywebview?.api?.sign_out) {
+          showToast('Sign out unavailable in this build.', 4000);
+          return;
+        }
+        btn.disabled = true;
+        try {
+          const r = await window.pywebview.api.sign_out();
+          if (r && r.success) {
+            showToast('Signed out.', 3000);
+            closeCloudAccountPanel();
+          } else {
+            showToast(`Sign out failed: ${r?.error || 'unknown error'}`, 5000);
+            btn.disabled = false;
+          }
+        } catch (err) {
+          showToast(`Sign out failed: ${err?.message || err}`, 5000);
+          btn.disabled = false;
+        }
+      });
+      // Account deletion (App Store Guideline 5.1.1(v)). Initiated in-app;
+      // completed on the account page, which has its own typed confirmation.
+      document.getElementById('cloudAccountDeleteBtn')?.addEventListener('click', () => {
+        if (window.pywebview?.api?.open_url) {
+          try {
+            window.pywebview.api.open_url(_CC_ACCOUNT_DELETE_URL);
+            showToast('Opening account deletion in your browser. Follow the steps there to permanently delete your Project Kestrel account and all associated data.', 9000);
+          } catch {
+            showToast('Could not open the deletion page. Visit myaccount.projectkestrel.org to delete your account.', 6000);
+          }
+        } else {
+          showToast('Account deletion is available at myaccount.projectkestrel.org.', 6000);
+        }
+      });
       // Delegated per-row actions (download / locate).
       dlg.addEventListener('click', async (e) => {
         const t = e.target;
@@ -1717,8 +1914,13 @@
             const r = await window.pywebview.api.cloud_compute_retrieve_results(jobId);
             if (r && r.ok) {
               showToast(r.alreadyRunning ? 'Already retrieving results…' : 'Retrieving results…', 3000);
+              // Surface the job in the live cloud pill — that's where it now
+              // streams results until done. Expand the pill and close the
+              // account panel so the user sees it picking up.
+              _cloudQueuePanelExpanded = true;
               _ccStartPolling();
-              await _ccRefreshAccountHistory();
+              _ccRenderPanel();
+              closeCloudAccountPanel();
             } else if (r && r.reason === 'folder_unavailable') {
               showToast(_CC_FOLDER_UNAVAILABLE_MSG, 6000);
               await _ccRefreshAccountHistory();

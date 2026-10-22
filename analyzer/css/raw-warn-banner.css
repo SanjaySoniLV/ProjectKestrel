@@ -1,0 +1,119 @@
+/* ── Unsupported-RAW Warning Banner ─────────────────────────────────
+   Same top-of-window treatment as the legal consent banner
+   (css/legal-banner.css), in a warning red instead of the legal blue.
+   Shown when a loaded folder contains RAW files whose sensor data
+   LibRaw could not decompress, so the pipeline analysed the embedded
+   JPEG preview instead. Dismissible per-session via the × button, or
+   permanently via "Don't Show Again".                                */
+.raw-warn-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  background: #a82323;
+  color: #fff;
+  padding: 10px 44px 10px 20px;
+  z-index: 100000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+}
+
+.raw-warn-banner.hidden {
+  display: none;
+}
+
+/* When the legal banner is also visible it owns the top strip; stack this
+   one directly beneath it so neither is covered. The offset is measured
+   from the legal banner at render time (it wraps to two lines on narrow
+   windows) and written to --raw-warn-offset by refreshRawWarnBanner(). */
+.raw-warn-banner.stacked {
+  top: var(--raw-warn-offset, 40px);
+}
+
+.raw-warn-msg {
+  max-width: 760px;
+  line-height: 1.4;
+}
+
+.raw-warn-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.raw-warn-banner a,
+.raw-warn-link {
+  color: #fff;
+  text-decoration: underline;
+  font-weight: 700;
+}
+
+.raw-warn-link {
+  padding: 4px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 6px;
+  text-decoration: none;
+  font-size: 12px;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.raw-warn-link:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: #fff;
+}
+
+.raw-warn-btn {
+  background: #fff;
+  color: #a82323;
+  border: none;
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-weight: 700;
+  cursor: pointer;
+  font-size: 12px;
+  transition: opacity 0.2s;
+}
+
+.raw-warn-btn:hover {
+  opacity: 0.9;
+}
+
+/* Dismiss (×) — pinned to the right edge, vertically centred. */
+.raw-warn-close {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  transform: translateY(-50%);
+  background: transparent;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  width: 24px;
+  height: 24px;
+  line-height: 1;
+  font-size: 18px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+
+.raw-warn-close:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.raw-warn-close:focus-visible,
+.raw-warn-btn:focus-visible,
+.raw-warn-link:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}

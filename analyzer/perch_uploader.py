@@ -79,7 +79,14 @@ def _join_under_session(session_root: Path, rel: str) -> Path:
         raise ValueError("Empty path")
     candidate = (session_root / rel).resolve()
     root = session_root.resolve()
-    if not str(candidate).startswith(str(root)):
+    try:
+        common = os.path.commonpath(
+            [os.path.normcase(str(root)), os.path.normcase(str(candidate))]
+        )
+    except ValueError:
+        # Different drives (Windows) have no common prefix.
+        raise ValueError(f"Path escapes session root: {rel}") from None
+    if common != os.path.normcase(str(root)):
         raise ValueError(f"Path escapes session root: {rel}")
     return candidate
 

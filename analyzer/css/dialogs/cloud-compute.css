@@ -17,7 +17,7 @@
   min-height: 88px;
   padding: 10px 12px;
   border: 1px solid var(--border, #2a2a3a);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: #1c1c28;
   cursor: pointer;
   transition: border-color 120ms, background-color 120ms;
@@ -92,7 +92,7 @@
   background: #2a3550;
   color: var(--brand, #6b9eff);
   border: 1px solid #3a4a6a;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 
@@ -117,7 +117,7 @@
   align-items: center;
   justify-content: center;
   background: rgba(28, 28, 40, 0.92);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   color: var(--fg, #eee);
   font-size: 12px;
   font-weight: 500;
@@ -174,9 +174,9 @@
 }
 .cloud-queue-item-controls button[data-cc-action="retrieve"]:hover:not(:disabled) { background: #2d456a; }
 .cloud-queue-item-controls button[data-cc-action="load"] {
-  border-color: #3d7e57; background: #1e3a2b; color: #bfe9cf;
+  border-color: #3d5a7e; background: #243650; color: #cfe0ff;
 }
-.cloud-queue-item-controls button[data-cc-action="load"]:hover:not(:disabled) { background: #265038; }
+.cloud-queue-item-controls button[data-cc-action="load"]:hover:not(:disabled) { background: #2d456a; }
 
 .cloud-queue-item-controls button {
   font-size: 11px;
@@ -184,7 +184,7 @@
   background: #2a2a3a;
   color: var(--fg, #eee);
   border: 1px solid #3a3a4a;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 
@@ -213,7 +213,7 @@
   text-transform: uppercase;
   letter-spacing: 0.5px;
   padding: 1px 7px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   background: #2a2a3a;
   color: var(--muted, #888);
 }
@@ -270,7 +270,7 @@
   color: var(--muted, #aaa);
   background: #2a2a3a;
   padding: 1px 7px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   margin-left: auto;
   font-style: italic;
 }
@@ -289,7 +289,7 @@
   line-height: 1.45;
   margin-top: 4px;
   padding: 6px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   border-left: 3px solid var(--muted, #888);
   background: #20202c;
   color: var(--muted, #aaa);
@@ -343,7 +343,7 @@
 .cc-info-body {
   margin-top: 4px;
   padding: 6px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: #181822;
   display: flex;
   flex-direction: column;
@@ -385,7 +385,7 @@
   flex: 0 0 auto;
   font-size: 10px;
   padding: 1px 7px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border, #344);
   background: #20202c;
   color: var(--muted, #9ab);
@@ -454,7 +454,7 @@ dialog.kdlg.cloud-account-dlg {
   font-size: 16px;
   cursor: pointer;
   padding: 4px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   line-height: 1;
 }
 .cloud-account-close:hover { color: var(--fg, #fff); background: #2a2a3a; }
@@ -465,7 +465,7 @@ dialog.kdlg.cloud-account-dlg {
   gap: 12px;
   padding: 10px 14px;
   border: 1px solid var(--border, #2a2a3a);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: #181822;
 }
 .cloud-account-avatar {
@@ -491,6 +491,43 @@ dialog.kdlg.cloud-account-dlg {
 .cloud-account-name { font-size: 14px; font-weight: 600; color: var(--fg, #e8f0f8); }
 .cloud-account-meta { font-size: 12px; color: var(--muted, #8aa); word-break: break-all; }
 .cloud-account-identity-bar .primary { font-size: 12px; padding: 6px 12px; flex: 0 0 auto; }
+.cloud-account-signout {
+  font-size: 12px;
+  padding: 6px 12px;
+  flex: 0 0 auto;
+  background: transparent;
+  border: 1px solid var(--border, #2a2a3a);
+  color: var(--muted, #99a);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.cloud-account-signout:hover:not(:disabled) {
+  color: var(--fg, #fff);
+  border-color: #e0533b;
+  background: rgba(224, 83, 59, 0.12);
+}
+.cloud-account-signout:disabled { opacity: 0.5; cursor: default; }
+/* Account deletion (App Store Guideline 5.1.1(v)): kept discoverable in the
+   account controls but visually muted so it doesn't compete with Sign out. */
+.cloud-account-delete {
+  font-size: 12px;
+  padding: 6px 12px;
+  flex: 0 0 auto;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted, #99a);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.cloud-account-delete:hover:not(:disabled) {
+  color: #e0533b;
+  border-color: #e0533b;
+  background: rgba(224, 83, 59, 0.12);
+  text-decoration: none;
+}
+.cloud-account-delete:disabled { opacity: 0.5; cursor: default; }
 
 .account-columns {
   display: grid;
@@ -521,7 +558,7 @@ dialog.kdlg.cloud-account-dlg {
 .account-usage-card {
   padding: 10px 12px;
   border: 1px solid var(--border, #2a2a3a);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: #1c1c28;
   display: flex;
   flex-direction: column;
@@ -537,12 +574,54 @@ dialog.kdlg.cloud-account-dlg {
 .account-usage-tier { font-size: 11px; color: #9bb8ff; }
 .account-usage-line { font-size: 12px; color: var(--fg, #cdd6e4); }
 .account-usage-line.muted { color: var(--muted, #8aa); }
+.account-usage-foot { font-size: 10.5px; margin-top: 2px; line-height: 1.4; }
+.account-usage-hold {
+  font-size: 11px;
+  color: #ffc88a;
+  background: #2a2418;
+  border: 1px solid #4a3a1f;
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  margin: 2px 0;
+}
 
-.account-storage-bar { margin-top: 4px; }
+/* Headline stat trio — Analyzed / Remaining / Credits. Mirrors MyAccount's
+   Cloud Compute "Plan & usage" stat grid. */
+.account-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin: 6px 0 2px;
+}
+.account-stat {
+  border: 1px solid var(--border, #2a2a3a);
+  border-radius: var(--radius-sm);
+  background: #16161f;
+  padding: 6px 4px;
+  text-align: center;
+  min-width: 0;
+}
+.account-stat-value {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--fg, #e8f0f8);
+  line-height: 1.2;
+}
+.account-stat-label {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted, #889);
+  margin-top: 1px;
+}
+
+.account-storage-bar { margin-top: 10px; }
+.account-storage-bar-heading { font-size: 12px; font-weight: 600; color: var(--text, #dfe7ef); margin-bottom: 3px; }
 .account-storage-bar-meta { font-size: 11px; color: var(--muted, #9ab); margin-bottom: 3px; }
+.account-quota-meta { display: flex; justify-content: space-between; gap: 8px; }
 .account-storage-bar-track {
   height: 6px;
-  border-radius: 3px;
+  border-radius: var(--radius-pill);
   background: #252530;
   overflow: hidden;
   display: flex;
@@ -555,7 +634,23 @@ dialog.kdlg.cloud-account-dlg {
 .account-storage-bar-fill-reserved {
   height: 100%;
   background: #3a5a86;
+  /* In-flight reservations: hatched so they read as "pending", not spent. */
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0.18) 0,
+    rgba(255, 255, 255, 0.18) 2px,
+    transparent 2px,
+    transparent 5px
+  );
   transition: width 0.2s ease;
+}
+
+/* Unsubscribed / no monthly allotment: greyed & non-interactive look. */
+.account-storage-bar--disabled { opacity: 0.5; }
+.account-storage-bar--disabled .account-storage-bar-fill,
+.account-storage-bar--disabled .account-storage-bar-fill-reserved {
+  background: #4a4a55;
+  background-image: none;
 }
 
 .account-history-header {
@@ -588,7 +683,7 @@ dialog.kdlg.cloud-account-dlg {
 
 .cloud-account-row {
   border: 1px solid var(--border, #2a2a3a);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: #1c1c28;
   padding: 10px 12px;
   display: flex;
@@ -652,7 +747,7 @@ dialog.kdlg.cloud-account-dlg {
 .cloud-account-load-btn {
   font-size: 12px;
   padding: 5px 12px;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border, #344);
   background: #20202c;
   color: var(--fg, #cde);
@@ -662,8 +757,8 @@ dialog.kdlg.cloud-account-dlg {
 .cloud-account-dl-btn:hover:not(:disabled) { background: #2d456a; }
 .cloud-account-dl-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .cloud-account-locate-btn:hover { border-color: #d4a948; color: #ffd98a; }
-.cloud-account-load-btn { border-color: #3d7e57; background: #1e3a2b; color: #bfe9cf; }
-.cloud-account-load-btn:hover { background: #265038; border-color: #4d9a6a; }
+.cloud-account-load-btn { border-color: #3d5a7e; background: #243650; color: #cfe0ff; }
+.cloud-account-load-btn:hover { background: #2d456a; border-color: #4d6a9a; }
 
 .perch-account-list {
   display: flex;
@@ -682,7 +777,7 @@ dialog.kdlg.cloud-account-dlg {
   gap: 10px;
   padding: 8px 10px;
   border: 1px solid var(--border, #2a2a3a);
-  border-radius: 5px;
+  border-radius: var(--radius-md);
   background: #1c1c28;
   font-size: 12px;
 }
@@ -703,8 +798,122 @@ dialog.kdlg.cloud-account-dlg {
 .perch-account-row-state {
   font-size: 10px;
   padding: 1px 6px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   background: #243650;
   color: #9bb8ff;
 }
 .perch-account-row-state.complete { background: #1e3a2a; color: #7ec89a; }
+
+/* ── Sign-in chooser (macOS App Store build) ─────────────────────────────────
+   Shown only on the 'appstore' channel, where native Sign in with Apple is
+   available. Presents SIWA alongside the web (Google/email) option per
+   Guideline 4.8.
+
+   The selector must be `dialog.kdlg.signin-chooser-dlg` (specificity 0,0,2,1):
+   the base `dialog.kdlg` rule in kdlg.css strips all sizing to `width:auto;
+   max-width:none; height:auto; max-height:none`, expecting each dialog to
+   re-apply a size via a `.kdlg--*` modifier. This chooser carries no size
+   modifier, so a plain `.signin-chooser-dlg` (0,0,1,0) LOSES to `dialog.kdlg`
+   and the modal renders unconstrained (full-viewport). Winning the cascade
+   here — and pinning both axes — keeps it a compact centered card. */
+dialog.kdlg.signin-chooser-dlg {
+  width: min(92vw, 380px);
+  max-width: min(92vw, 380px);
+  height: fit-content;
+  max-height: 92vh;
+}
+.signin-chooser-body {
+  position: relative;
+  padding: 24px 24px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.signin-chooser-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+}
+.signin-chooser-title {
+  margin: 0;
+  font-size: 18px;
+  color: var(--fg, #eee);
+  text-align: center;
+}
+.signin-chooser-sub {
+  margin: 0 0 6px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--muted, #99a);
+  text-align: center;
+}
+/* Apple's Human Interface Guidelines: black button (white in light contexts),
+   Apple logo + "Sign in with Apple", modest corner radius, full width. The
+   logo glyph (U+F8FF) renders as the Apple mark in WebKit on Apple platforms —
+   and this button only ever appears on the macOS App Store build. */
+.signin-apple-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 16px;
+  background: #000;
+  color: #fff;
+  border: 1px solid #000;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 500;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  cursor: pointer;
+}
+.signin-apple-btn:hover { background: #1a1a1a; }
+.signin-apple-btn:active { background: #262626; }
+.signin-apple-logo::before {
+  content: "\f8ff";           /* Apple logo glyph (WebKit/Apple platforms) */
+  font-size: 17px;
+  line-height: 1;
+  position: relative;
+  top: -1px;
+}
+.signin-web-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 16px;
+  background: var(--panel, #1a1a24);
+  color: var(--fg, #eee);
+  border: 1px solid var(--border, #2a2a3a);
+  border-radius: 8px;
+  font-size: 15px;
+  cursor: pointer;
+}
+.signin-web-btn:hover { border-color: var(--brand, #6b9eff); }
+.signin-chooser-fineprint {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted, #778);
+  text-align: center;
+}
+
+/* Live bottleneck read-out — sits alongside the two phase pills and names
+   which half of the pipeline is currently the constraint. Deliberately
+   lower-contrast than the phase pills: it's context, not status. */
+.cloud-bottleneck-pill {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 1px 7px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted, #888);
+  cursor: help;
+}
+.cloud-bottleneck-pill.upload   { color: #9bb8ff; border-color: #35406040; }
+.cloud-bottleneck-pill.compute  { color: #ffc060; border-color: #4a3a2040; }
+.cloud-bottleneck-pill.balanced { color: #6bcf6b; border-color: #24401f40; }

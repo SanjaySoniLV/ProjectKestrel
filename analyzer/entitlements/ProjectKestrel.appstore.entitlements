@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  App Store (sandboxed) entitlements for Project Kestrel.
+
+  Used ONLY by the Mac App Store build variant (ProjectKestrel-macos-appstore.spec /
+  build-macos-appstore.yml). The direct-download Developer ID build (build-macos.yml)
+  is intentionally NOT sandboxed and does not use this file.
+
+  Rationale per key:
+    com.apple.application-identifier    TeamID.BundleID. REQUIRED for the App Store. A
+                                        headless codesign step (passing an entitlements
+                                        file) does NOT auto-inject this from the
+                                        provisioning profile the way Xcode would. Omit it
+                                        and the upload is flagged 90886 ("signature is
+                                        missing an application identifier") and Apple drops
+                                        the build during processing, so it never appears in
+                                        App Store Connect.
+    com.apple.developer.team-identifier TeamID. Standard companion; matches the value the
+                                        provisioning profile carries.
+    app-sandbox                         Required for App Store. Turns on the sandbox.
+    files.user-selected.read-write      The whole app model is "point at a photo folder";
+                                        we read originals and write .kestrel/, .xmp sidecars,
+                                        crops/exports inside the user-granted folder.
+    files.bookmarks.app-scope           Persist access to chosen folders across launches via
+                                        security-scoped bookmarks (see mac_sandbox.py).
+    network.client                      Outbound HTTPS: auth/clerk, cloud-compute, telemetry.
+    network.server                      REQUIRED, and load-bearing: the app's entire UI is
+                                        served by a loopback HTTP server. visualizer.py binds
+                                        a ThreadingHTTPServer on 127.0.0.1 and the WKWebView
+                                        window loads http://127.0.0.1:<port>/ — App Sandbox
+                                        blocks bind()/listen() without this key even on
+                                        loopback, so removing it launches to a blank window.
+                                        The surface is static-file GET only (bundled HTML/JS/
+                                        CSS/images); every control route was permanently
+                                        removed (LEGACY_HTTP_API_ENABLED = False) and all
+                                        privileged work goes over the pywebview bridge.
+                                        NOT for OAuth: the App Store build signs in via native
+                                        Sign in with Apple / ASWebAuthenticationSession and
+                                        never binds the loopback callback listener that
+                                        oauth_client.py uses on Windows and Linux.
+                                        Apple's automated pre-review scan flags this key as
+                                        "no matching functionality" because the bind() lives
+                                        inside CPython's _socket extension, driven by bytecode
+                                        in the frozen PYZ archive — static analysis cannot see
+                                        it. That is a false positive; the justification is
+                                        kept in App Review Information so it rides along with
+                                        every submission.
+    developer.applesignin               Native "Sign in with Apple" (ASAuthorizationController),
+                                        required by Guideline 4 so the Apple button completes in
+                                        the native system sheet, not a web redirect. The App ID
+                                        must have the "Sign in with Apple" capability enabled and
+                                        the provisioning profile regenerated to authorize this
+                                        entitlement, or signing/upload fails. Value ["Default"]
+                                        uses the primary App ID as the Apple grouping.
+
+  Deliberately NOT included:
+    cs.allow-jit / allow-unsigned-executable-memory: inference is 100% ONNX Runtime (AOT),
+      no TensorFlow/PyTorch/JIT. WebKit's JS JIT runs in Apple's own entitled XPC process.
+    cs.disable-library-validation: App Store forbids it; every bundled dylib is signed with
+      the same Team ID at packaging time instead.
+    keychain-access-groups: the profile authorizes it, but Kestrel uses security-scoped
+      bookmarks, not the keychain, so we don't declare it.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.application-identifier</key>
+    <string>8LX8Q5FT45.org.projectkestrel.desktop</string>
+    <key>com.apple.developer.team-identifier</key>
+    <string>8LX8Q5FT45</string>
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+    <key>com.apple.security.files.bookmarks.app-scope</key>
+    <true/>
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.network.server</key>
+    <true/>
+    <key>com.apple.developer.applesignin</key>
+    <array>
+        <string>Default</string>
+    </array>
+</dict>
+</plist>

@@ -27,10 +27,70 @@ Committed CSV/JSON files are literal outputs from each tag run (no hand-synthesi
 | Willow-Ptarmigan-F1 | 2026-03-19 | dedup → `v_Willow-Ptarmigan_kestrel_database.csv` | no | Header matched Willow-Ptarmigan |
 | Kentucky-Warbler | 2026-04-02 | `v_Kentucky-Warbler_kestrel_database.csv` | yes | Added crops/exposure pipeline columns |
 | Gambels-Quail | 2026-04-23 | dedup → `v_Kentucky-Warbler_kestrel_database.csv` | no | Header matched Kentucky-Warbler |
+| *(through Dusky-Grouse)* | 2026-09-01 | dedup → `v_Kentucky-Warbler_kestrel_database.csv` | no | Every release up to and including `Dusky-Grouse` shipped the Kentucky-Warbler header (27 cols). That fixture therefore represents the schema of essentially every already-analysed folder on users' disks. |
+| *(untagged working tree)* | 2026-09-01 | `v_file-size_kestrel_database.csv` | yes | Added `file_size`. **Not captured from a release tag** — see below. |
+| *(untagged, exp/pipeline-v3)* | 2026-10-22 | `v_pipeline-v3_kestrel_database.csv` | yes | Analysis pipeline 3.0.0: added `quality_siglip`, `quality_legacy`; `quality` is now the effective score. **Not captured from a release tag** — see below. |
+
+## Schema versioning
+
+`kestrel_metadata.json` now carries `schema_version` (`database.DATABASE_SCHEMA_VERSION`), numbering
+the CSV schema independently of the app version. Bump it whenever `BASE_COLUMNS` changes shape or
+meaning, and capture a fixture here in the same pass.
+
+| `schema_version` | Covers | Newest fixture |
+|---|---|---|
+| *(absent)* / 1 | everything through `Dusky-Grouse` | `v_Kentucky-Warbler_*` |
+| 2 | adds `file_size` | `v_file-size_*` |
+| 3 | pipeline 3.0.0: adds `quality_siglip` + `quality_legacy`; `quality` = effective score | `v_pipeline-v3_*` |
+
+Absent means "1 or older". It is stamped on every analysis run, not just at folder creation, so a
+folder written by an older build records the new schema as soon as a newer build touches it — but
+folders never re-analysed will carry no `schema_version` indefinitely, and readers must handle that.
+
+## The `file_size` fixture (untagged)
+
+`v_file-size_*` is the one fixture here **not** captured from a release tag. It was generated from
+the working tree at the commit that introduced `file_size`, using the same procedure as every other
+fixture (`analyzer/cli.py --no-gpu` over the 4 CR3s in `test_sets/set_a_fresh/`), so it is still a
+literal pipeline output rather than hand-synthesis. Rename it to `v_<Tag>_*` when the change ships
+under a release tag.
+
+It exists so the *next* schema change has a baseline to migrate from. Until then the interesting
+fixture is `v_Kentucky-Warbler_*`, which is the schema real users' folders are actually in.
+
+`file_size` is half of a row's identity — a row corresponds to a photo by `(filename, file_size)`,
+not by filename alone. Every fixture above it stores no size, and **a missing or blank `file_size`
+means UNKNOWN, never 0**. `ensure_columns` backfills it as `""`, and `database.parse_file_size`
+maps every "we don't know" spelling (absent, blank, `NaN`, `'nan'`, negative) to `None`. Consumers
+must fall back to filename-only matching on `None`. Treating a legacy blank as `0` would make every
+historical row mismatch its own file on disk, which would re-analyse entire libraries and report
+every photo as changed.
+
+Covered by `compat/test_database_migration.py::test_file_size_present_but_unknown_after_load` and
+by `unit/test_folder_diff.py::TestRealLegacyDatabases`, which selects its fixtures by reading each
+header for `file_size` rather than by filename — so adding a newer-schema fixture to this directory
+does not silently invalidate the legacy-path tests.
+
+## The `pipeline-v3` fixture (untagged, schema 3)
+
+`v_pipeline-v3_*` was generated on `exp/pipeline-v3` with the same procedure
+(`analyzer/cli.py --no-gpu` over the 4 CR3s in `test_sets/set_a_fresh/`, CPU), so it is a literal
+pipeline output. Rename it to `v_<Tag>_*` when pipeline 3.0 ships under a release tag.
+
+Schema 3 changes the *meaning* of `quality` without breaking any reader: it is the effective score,
+copied from whichever of the two new raw columns the `quality_model` setting selects (`siglip`,
+the default, or `legacy`); per-crop copies of all three live in `crops_json`. Metadata gains
+`pipeline_major: 3`, `models{}` and `quality_model`. When an older folder is loaded,
+`ensure_columns` sets `quality_legacy = quality` (before 3.0 the only scorer *was* the legacy CNN)
+and `quality_siglip = -1` (not scored), so nothing about an old folder's ratings changes until it
+is upgraded (`kestrel_analyzer/upgrade_v3.py`). Covered by
+`compat/test_database_migration.py::{test_schema3_quality_columns_after_load,
+test_quality_switch_leaves_pre_v3_folders_alone, TestSchema3Fixture}` and
+`unit/test_upgrade_v3.py`.
 
 ## Schema Differences From Current
 
-Current `BASE_COLUMNS` count: 26.
+Current `BASE_COLUMNS` count: 29 (schema 3).
 
 ### `v_alpha-2026_02_04_kestrel_database.csv` (19 columns)
 - Includes legacy inline user column: `rating`
@@ -45,8 +105,14 @@ Current `BASE_COLUMNS` count: 26.
 - Still missing: `crops_json`, `exposure_meter_scale`, `exposure_pipeline`, `exposure_subject_stops`, `primary_crop_index`
 
 ### `v_Kentucky-Warbler_kestrel_database.csv` (27 columns)
-- Includes all current `BASE_COLUMNS`
+- Missing current column: `file_size`
 - Extra historical column not in current base schema: `orientation`
+- The schema of every release through `Dusky-Grouse`, so it is the realistic legacy case
+
+### `v_file-size_kestrel_database.csv` (28 columns)
+- Missing current columns: `quality_siglip`, `quality_legacy` (schema 3)
+- Extra historical column not in current base schema: `orientation`
+- Adds `file_size` compared with Kentucky-Warbler
 
 ## Failed Tags
 
@@ -57,3 +123,7 @@ All fetched tags produced a database fixture (no skipped/failed tags in final ca
 `analyzer/tests/compat/test_database_migration.py` parametrizes over
 `v_*_kestrel_database.csv` fixtures and verifies current migration logic can load and
 upgrade every retained historical schema.
+
+### `v_pipeline-v3_kestrel_database.csv` (30 columns)
+- Includes all current `BASE_COLUMNS` (schema 3)
+- Extra historical column not in current base schema: `orientation`

@@ -1,4 +1,4 @@
-"""Integration tests for MegaDetector (via SpeciesNetSAMHQWrapper).
+"""Integration tests for MegaDetector (via DetectorSAMHQWrapper, formerly SpeciesNetSAMHQWrapper).
 
 Parametrized over every detector in ``DETECTOR_ONNX_PATHS`` (currently
 ``mdv5a`` and ``mdv1000-cedar``). Each test runs once per detector whose
@@ -27,7 +27,7 @@ _ALL_DETECTORS = list(DETECTOR_ONNX_PATHS.keys())
 
 @pytest.fixture(scope="module", params=_ALL_DETECTORS)
 def detector_wrapper(request):
-    """Module-scoped wrapper with detector + classifier loaded once per detector model.
+    """Module-scoped wrapper with the detector loaded once per detector model.
 
     Parametrized over every detector defined in ``DETECTOR_ONNX_PATHS`` — each
     test runs once per detector. Skips cleanly if the weights for the current
@@ -51,9 +51,6 @@ class TestMegaDetectorLoading:
 
     def test_detector_loads(self, detector_wrapper):
         assert detector_wrapper.detector is not None
-
-    def test_classifier_loads(self, detector_wrapper):
-        assert detector_wrapper.classifier is not None
 
     def test_detector_has_predict_method(self, detector_wrapper):
         assert callable(getattr(detector_wrapper.detector, "predict", None))

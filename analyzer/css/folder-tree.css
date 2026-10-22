@@ -96,12 +96,36 @@
 .folder-recents-row.hidden {
   display: none;
 }
+
+/* Sidebar recents: stacked "Recents" header + chip strip, divided from the
+   folder tree below. Scoped to the sidebar row so the analyze-dialog recents
+   (shared .folder-recents-row) keep their inline layout. */
+#folderRecentsRow {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 8px 8px 10px;
+  margin: 0 0 2px;
+  border-bottom: 1px solid var(--card-border, #222634);
+}
+.folder-recents-header {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted, #8a9099);
+}
+.folder-recents-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
 .folder-recents-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px 9px;
-  font-size: 11px;
+  gap: 3px;
+  padding: 2px 8px;
+  font-size: 10.5px;
   background: #14202f;
   border: 1px solid #25394e;
   border-radius: 999px;
@@ -266,14 +290,14 @@
    signal. Italic is reserved for outdated + in-progress (subtle visual cue).
    Bold is preserved for the future so when something IS bold, it actually pops. */
 .tree-node-row.has-kestrel:not(.analyzed-full):not(.analyzed-partial):not(.analyzed-none) .tree-label {
-  color: var(--ok);
+  color: var(--text);
 }
 .tree-node-row.has-kestrel:not(.analyzed-full):not(.analyzed-partial):not(.analyzed-none):hover .tree-label {
   color: #c8dcf5;
 }
 
 .tree-node-row.analyzed-full .tree-label {
-  color: var(--ok);
+  color: var(--text);
 }
 .tree-node-row.analyzed-partial .tree-label {
   color: #b36bff;
@@ -325,6 +349,21 @@
   line-height: 1;
   vertical-align: middle;
   opacity: 0.85;
+}
+
+/* Drift indicator — this folder's photos and its .kestrel data no longer match.
+   Sits on the right edge with the other status glyphs (perch feather,
+   in-progress hourglass). Amber rather than red: drift is a "look at this",
+   not an error, and every fix behind it is user-confirmed. */
+.tree-repair-warn {
+  font-size: 11px;
+  margin-left: 1px;
+  margin-right: 3px;
+  display: inline-block;
+  line-height: 1;
+  vertical-align: middle;
+  color: #e8b339;
+  cursor: help;
 }
 
 /* Recents chip row: primary chip + dismiss control */

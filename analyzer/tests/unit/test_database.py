@@ -62,28 +62,24 @@ class TestDatabaseSave:
         )
 
     def test_save_database_preserves_culled_from_disk(self, temp_kestrel_dir, sample_database):
-        """save_database should read culled/culled_origin from on-disk version before overwriting."""
-        # Create initial CSV with culled data
+        """Pipeline BASE_COLUMNS save must keep on-disk culled / culled_origin."""
         sample_database.loc[0] = [None] * len(BASE_COLUMNS)
         sample_database.loc[0, 'filename'] = 'IMG_001.CR3'
-        sample_database.loc[0, 'culled'] = True
-        sample_database.loc[0, 'culled_origin'] = 'manual'
+        sample_database.loc[0, 'species'] = 'aves'
+        sample_database['culled'] = 1
+        sample_database['culled_origin'] = 'manual'
 
         csv_path = temp_kestrel_dir / "kestrel_database.csv"
         sample_database.to_csv(csv_path, index=False)
 
-        # Create a modified version (without culled info)
-        modified = sample_database.copy()
-        modified.loc[0, 'culled'] = False
-        modified.loc[0, 'culled_origin'] = None
+        pipeline = sample_database.drop(columns=['culled', 'culled_origin'])
+        save_database(pipeline, str(csv_path))
 
-        # Save the modified version (which should read culled from disk and preserve it)
-        save_database(modified, str(csv_path))
-
-        # Reload and verify culled data was preserved
         reloaded = pd.read_csv(csv_path)
-        # Note: The actual behavior depends on the implementation of save_database
-        # This test documents the expected behavior
+        assert int(reloaded.loc[0, 'culled']) == 1
+        assert reloaded.loc[0, 'culled_origin'] == 'manual'
+        assert reloaded.loc[0, 'filename'] == 'IMG_001.CR3'
+        assert reloaded.loc[0, 'species'] == 'aves'
 
 
 class TestScenedata:

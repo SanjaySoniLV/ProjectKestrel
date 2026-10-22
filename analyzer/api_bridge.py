@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import webbrowser
 
@@ -48,10 +49,75 @@ except ImportError:
     except ImportError:
         _launch_editor = None
 
+# macOS App Sandbox helpers. Import-safe everywhere (no-ops off-mac / off-sandbox);
+# used only by the Mac App Store build to route folder access through powerbox +
+# security-scoped bookmarks and to open files/Finder via NSWorkspace.
+try:
+    import mac_sandbox as _mac_sandbox
+except ImportError:
+    try:
+        from analyzer import mac_sandbox as _mac_sandbox
+    except ImportError:
+        _mac_sandbox = None
+
+try:
+    from kestrel_analyzer.database import write_json_atomic, write_text_atomic
+except ImportError:
+    try:
+        from analyzer.kestrel_analyzer.database import write_json_atomic, write_text_atomic
+    except ImportError:
+        def write_json_atomic(*_a, **_k):
+            raise RuntimeError(
+                "kestrel_analyzer.database.write_json_atomic is not importable"
+            )
+
+        def write_text_atomic(*_a, **_k):
+            raise RuntimeError(
+                "kestrel_analyzer.database.write_text_atomic is not importable"
+            )
+
+# Distribution channel ('direct' website build vs 'appstore' sandboxed build),
+# baked at build time. Import-safe everywhere; used by the frontend to branch
+# What's New / cloud-compute CTAs on channel without cutting a new release.
+try:
+    import dist_channel as _dist_channel
+except ImportError:
+    try:
+        from analyzer import dist_channel as _dist_channel
+    except ImportError:
+        _dist_channel = None
+
+# Support-page URLs. /support-me carries the donate option; /support is the same
+# page with no payment path at all. Which one the app opens is decided by
+# get_support_url() — see the note there on why this is storefront-scoped.
+SUPPORT_URL_FULL = 'https://projectkestrel.org/support-me'
+SUPPORT_URL_NO_PAYMENT = 'https://projectkestrel.org/support'
+
+
+def _load_storefront():
+    """Return the ``mac_storefront`` module if StoreKit storefront lookup is
+    usable on this build, else ``None``. Never raises."""
+    if sys.platform != 'darwin':
+        return None
+    try:
+        import mac_storefront  # type: ignore
+    except ImportError:  # pragma: no cover - package-style import path
+        try:
+            from analyzer import mac_storefront  # type: ignore
+        except Exception:
+            return None
+    except Exception:
+        return None
+    try:
+        return mac_storefront if mac_storefront.is_available() else None
+    except Exception:
+        return None
+
 from kestrel_analyzer.config import (
     JPEG_EXTENSIONS as _JPEG_EXTENSIONS,
     RAW_EXTENSIONS as _RAW_EXTENSIONS,
 )
+from kestrel_analyzer.database import copy_file_atomic
 
 # Telemetry — failsafe import (never blocks startup)
 try:
@@ -231,6 +297,24 @@ def _auth_jwt_seconds_until_exp(token: str) -> float | None:
     return float(exp) - time.time()
 
 
+def _auth_jwt_sub_unverified(token: str) -> str | None:
+    """Return JWT `sub` (the stable Clerk user id) from the payload without
+    verifying the signature. Used as an offline owner id to tag cloud jobs so
+    history can be filtered to the account that submitted them — works even
+    when the network is down or the job's folder is unavailable."""
+    t = str(token).strip()
+    parts = t.split(".")
+    if len(parts) < 2:
+        return None
+    try:
+        seg = parts[1] + "=" * (-len(parts[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(seg))
+        sub = payload.get("sub")
+        return str(sub) if sub else None
+    except Exception:  # pragma: no cover
+        return None
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 
 # Metadata writing utilities
@@ -327,6 +411,93 @@ _CULLING_PRIMARY_IMAGE_EXTENSIONS = set(
     _normalize_extensions([*(_RAW_EXTENSIONS or []), *(_JPEG_EXTENSIONS or [])])
 )
 
+_REJECT_DEST_EXISTS_REASON = 'a file with this name already exists in the reject folder'
+_SHOOT_DEST_EXISTS_REASON = 'a file with this name already exists in the shoot folder'
+
+
+def _unlink_src_or_rollback(src: str, dst: str) -> None:
+    """Unlink ``src`` after ``dst`` was created; drop ``dst`` if that unlink fails.
+
+    The no-overwrite guard treats an existing ``dst`` as a permanent conflict.
+    If we created ``dst`` (hard link or exclusive copy) and then fail to remove
+    ``src``, the caller reports failure while ``dst`` still exists — a retry
+    for the same name is then refused forever. Rolling back ``dst`` restores
+    the pre-move state so a later attempt can succeed.
+    """
+    try:
+        os.unlink(src)
+    except OSError:
+        try:
+            os.unlink(dst)
+        except OSError:
+            pass
+        raise
+
+
+def _move_no_overwrite(src: str, dst: str) -> None:
+    """Move ``src`` to ``dst`` without replacing an existing destination.
+
+    ``os.rename`` / ``shutil.move`` overwrite on POSIX. Prefer a same-filesystem
+    hard link (``os.link`` raises ``FileExistsError`` if ``dst`` already exists)
+    then unlink the source. When linking is unsupported (cross-device, some
+    Windows setups), copy via ``O_CREAT|O_EXCL`` then unlink the source.
+    Never falls through to ``shutil.move``. If unlinking ``src`` fails after
+    ``dst`` exists, ``dst`` is removed so a retry is not blocked.
+
+    Both paths preserve the source's mtime and mode. The hard link gets that for
+    free — it is the same inode — but the copy fallback would otherwise stamp the
+    destination with the time of the move and default permission bits. That
+    fallback is not an exotic branch here: ``os.link`` fails cross-device and on
+    exFAT/FAT32, which is how camera cards and most portable drives are
+    formatted, so it is the *common* path for a reject folder on another volume.
+    Culling 200 files would then land 200 files all dated today, silently
+    destroying date-sort in the reject folder. ``copystat`` is best-effort — it
+    can legitimately fail on SMB/NFS and on exFAT targets, and a lost timestamp
+    must never fail a move that has otherwise succeeded.
+    """
+    src = os.fspath(src)
+    dst = os.fspath(dst)
+    parent = os.path.dirname(dst)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    try:
+        os.link(src, dst)
+    except FileExistsError:
+        raise
+    except OSError:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, 'O_BINARY'):
+            flags |= os.O_BINARY
+        fd = os.open(dst, flags)
+        try:
+            with os.fdopen(fd, 'wb') as dest_fh:
+                fd = -1
+                with open(src, 'rb') as src_fh:
+                    shutil.copyfileobj(src_fh, dest_fh)
+                dest_fh.flush()
+                os.fsync(dest_fh.fileno())
+        except Exception:
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            try:
+                os.unlink(dst)
+            except OSError:
+                pass
+            raise
+        # Carry mtime/mode across, as the hard-link path does implicitly. Same
+        # best-effort handling as ``database.copy_file_atomic``: the bytes are
+        # already durable, so a metadata failure must not fail the move.
+        try:
+            shutil.copystat(src, dst)
+        except OSError:
+            pass
+        _unlink_src_or_rollback(src, dst)
+        return
+    _unlink_src_or_rollback(src, dst)
+
 
 class Api:
     """JavaScript API exposed to webview for native file/folder operations."""
@@ -360,7 +531,7 @@ class Api:
         self._perch_usage_cache: dict | None = None
         self._perch_usage_cache_at: float = 0.0
         # Async cloud-compute job state (job_id -> {progress, cancel_event,
-        # pause_event, thread, result}). Cloud-compute reuses the Perch JWT
+        # thread, result}). Cloud-compute reuses the Perch JWT
         # (same Clerk identity) — see _check_auth_token() and
         # analyzer/cloud_compute_client.py.
         self._cc_jobs: dict = {}
@@ -386,6 +557,38 @@ class Api:
         # the analyze dialog doesn't hit the Worker on every keystroke.
         self._cc_usage_cache: dict | None = None
         self._cc_usage_cache_at: float = 0.0
+
+        # macOS App Sandbox: re-acquire access to every previously-chosen photo
+        # folder via its stored security-scoped bookmark, held for the whole
+        # session. No-op on every other build (Windows/Linux/Developer-ID mac).
+        if _mac_sandbox is not None:
+            try:
+                n = _mac_sandbox.activate_all_bookmarks()
+                if n:
+                    info(f'[sandbox] Re-activated {n} folder bookmark(s) for this session.')
+            except Exception as e:
+                warn(f'[sandbox] bookmark activation failed: {e}')
+
+        # (StoreKit priming used to run here: the storefront decided the
+        # Support-link destination, and SKPaymentQueue.storefront stays nil
+        # until an observer is attached, so we warmed it at launch to avoid a
+        # fail-closed on the first click. get_support_url no longer consults the
+        # storefront — see its docstring — so the App Store build now opens no
+        # StoreKit connection at all. Restore this alongside the gate if that
+        # ever changes; mac_storefront.prime() is still there.)
+
+    def _invalidate_account_caches(self) -> None:
+        """Drop every identity-scoped cache (Perch account, Perch usage, and
+        Cloud Compute usage) so a sign-out / account-switch / token rotation
+        can't surface the previous user's numbers. The CC usage cache in
+        particular was previously left untouched on sign-out, so the account
+        panel kept showing the prior account's "images analyzed this period"."""
+        self._perch_account_cache = None
+        self._perch_account_cache_at = 0.0
+        self._perch_usage_cache = None
+        self._perch_usage_cache_at = 0.0
+        self._cc_usage_cache = None
+        self._cc_usage_cache_at = 0.0
 
     def notify_dirty(self, is_dirty: bool) -> dict:
         """Called from JS whenever the dirty flag changes."""
@@ -478,9 +681,35 @@ class Api:
         if not path or not root:
             return False
         try:
-            path_real = os.path.realpath(path)
             root_real = os.path.realpath(root)
-            common = os.path.commonpath([path_real, root_real])
+            # On Windows, ``os.path.realpath`` of a non-existent path under a
+            # mapped network drive returns the drive-letter form (``Y:\...``),
+            # while ``realpath`` of an existing UNC root returns the canonical
+            # UNC form (``\\?\UNC\server\share\...``). Comparing those two
+            # spellings mistakenly rejects valid reads — e.g. ``read_image_file``
+            # asking for ``Y:\folder\.kestrel\export\foo.jpg`` (a file the user
+            # has not yet exported) when the analyzed root is the UNC share.
+            # Walk up ``path`` to the deepest existing ancestor, resolve that,
+            # then re-append the non-existent tail so the comparison happens on
+            # spellings that agree.
+            candidate = path
+            tail_parts: list[str] = []
+            while not os.path.exists(candidate):
+                parent = os.path.dirname(candidate)
+                if not parent or parent == candidate:
+                    break
+                tail_parts.append(os.path.basename(candidate))
+                candidate = parent
+            ancestor_real = os.path.realpath(candidate)
+            path_real = (
+                os.path.join(ancestor_real, *reversed(tail_parts))
+                if tail_parts
+                else ancestor_real
+            )
+            try:
+                common = os.path.commonpath([path_real, root_real])
+            except ValueError:
+                return False
             return common == root_real
         except Exception:
             return False
@@ -753,12 +982,51 @@ class Api:
         save_persisted_settings(settings)
         return {'success': True}
     
+    @staticmethod
+    def _pywebview_folder_dialog(allow_multiple: bool):
+        """Open pywebview's native folder picker; return list[str] of paths.
+
+        On macOS this routes through NSOpenPanel/powerbox, which is the only
+        sandbox-legal folder picker (osascript needs Apple Events, tkinter is
+        unavailable). Used by the sandboxed App Store build, and as the
+        Windows/Linux multi-select picker. Returns [] on cancel/unavailable.
+        """
+        import webview
+        wins = getattr(webview, 'windows', None)
+        if not wins:
+            return []
+        win = wins[0]
+        dialog_kind = None
+        file_dialog = getattr(webview, 'FileDialog', None)
+        if file_dialog is not None and hasattr(file_dialog, 'FOLDER'):
+            dialog_kind = file_dialog.FOLDER
+        elif hasattr(webview, 'FOLDER_DIALOG'):
+            dialog_kind = webview.FOLDER_DIALOG
+        if dialog_kind is None:
+            return []
+        result = win.create_file_dialog(dialog_kind, allow_multiple=allow_multiple)
+        if not result:
+            return []
+        return [str(p) for p in result if p]
+
     def choose_directory(self):
         """Open native folder picker dialog.
         Returns: absolute path to selected folder, or None if cancelled.
         """
         try:
-            if sys.platform == 'darwin':
+            sandboxed = (
+                sys.platform == 'darwin'
+                and _mac_sandbox is not None
+                and _mac_sandbox.is_sandboxed()
+            )
+            if sandboxed:
+                # Sandbox: powerbox folder panel + persist a security-scoped
+                # bookmark so the grant survives across launches.
+                paths = self._pywebview_folder_dialog(allow_multiple=False)
+                folder = paths[0] if paths else ''
+                if folder:
+                    _mac_sandbox.remember_folder(folder)
+            elif sys.platform == 'darwin':
                 script = 'POSIX path of (choose folder with prompt "Select folder containing analyzed photos")'
                 result = subprocess.run(
                     ['osascript', '-e', script],
@@ -799,6 +1067,22 @@ class Api:
         - Linux: pywebview's GTK/Qt backend; same fallback as Windows.
         """
         try:
+            if (
+                sys.platform == 'darwin'
+                and _mac_sandbox is not None
+                and _mac_sandbox.is_sandboxed()
+            ):
+                # Sandbox: powerbox multi-folder panel + persist a
+                # security-scoped bookmark per chosen folder.
+                paths = self._pywebview_folder_dialog(allow_multiple=True)
+                if not paths:
+                    info('[API] choose_directories -> cancelled')
+                    return []
+                for p in paths:
+                    _mac_sandbox.remember_folder(p)
+                info(f'[API] choose_directories (sandbox) -> {len(paths)} path(s)')
+                return paths
+
             if sys.platform == 'darwin':
                 # AppleScript returns one alias per line when "with multiple
                 # selections allowed" is used. POSIX path of {…} converts each
@@ -880,7 +1164,15 @@ class Api:
                     # Fallback for Windows if startfile is somehow missing (e.g. specialized python builds)
                     subprocess.run(['explorer', root_real], check=False)
             elif sys.platform == 'darwin':
-                subprocess.run(['open', root_real], check=False)
+                # Sandbox can't Popen /usr/bin/open; route through NSWorkspace.
+                if (
+                    _mac_sandbox is not None
+                    and _mac_sandbox.is_sandboxed()
+                    and _mac_sandbox.open_default(root_real)
+                ):
+                    pass
+                else:
+                    subprocess.run(['open', root_real], check=False)
             else:
                 subprocess.run(['xdg-open', root_real], check=False)
             return {'success': True, 'path': root_real}
@@ -893,6 +1185,35 @@ class Api:
         Returns: absolute path to selected file, or None if cancelled.
         """
         try:
+            if (
+                sys.platform == 'darwin'
+                and _mac_sandbox is not None
+                and _mac_sandbox.is_sandboxed()
+            ):
+                # Sandbox: powerbox open panel (NSOpenPanel treats .app bundles
+                # as selectable files). Persist a security-scoped bookmark so we
+                # can re-open files with this editor on later launches.
+                import webview
+                wins = getattr(webview, 'windows', None)
+                if not wins:
+                    return None
+                win = wins[0]
+                file_dialog = getattr(webview, 'FileDialog', None)
+                open_kind = (
+                    file_dialog.OPEN if (file_dialog is not None and hasattr(file_dialog, 'OPEN'))
+                    else getattr(webview, 'OPEN_DIALOG', None)
+                )
+                if open_kind is None:
+                    return None
+                result = win.create_file_dialog(
+                    open_kind,
+                    allow_multiple=False,
+                    file_types=('Applications (*.app)', 'All files (*.*)'),
+                )
+                chosen = (str(result[0]) if result else '') or ''
+                if chosen:
+                    _mac_sandbox.remember_folder(chosen)
+                return chosen or None
             if sys.platform == 'darwin':
                 import subprocess as _sp
                 script = 'POSIX path of (choose file of type {"app","APPL"} with prompt "Select an application")'
@@ -954,8 +1275,26 @@ class Api:
                     'data': ''
                 }
             
-            with open(csv_path, 'r', encoding='utf-8') as f:
-                data = f.read()
+            # Pipeline 3.0.0: make ``quality`` reflect the quality_model setting
+            # (rewritten from the stored per-scorer scores; never while the
+            # folder is being analysed or upgraded -- that writer applies the
+            # setting itself). See kestrel_analyzer/quality_model.py.
+            self._maybe_apply_quality_model(parent_folder, kestrel_dir)
+
+            # The analysis pipeline saves this CSV after every processed image
+            # while this auto-refresh read runs, and on Windows the two collide
+            # transiently even though the save is atomic. read_database_text
+            # retries through that; a bare open() surfaces it to the user as a
+            # spurious "permission denied". See kestrel_analyzer.database.
+            try:
+                try:
+                    from kestrel_analyzer.database import read_database_text
+                except ImportError:  # package-style import path
+                    from analyzer.kestrel_analyzer.database import read_database_text  # type: ignore[no-redef]
+                data = read_database_text(csv_path)
+            except ImportError:
+                with open(csv_path, 'r', encoding='utf-8') as f:
+                    data = f.read()
 
             self._track_cache_root(parent_folder)
             
@@ -975,6 +1314,21 @@ class Api:
                 'path': '',
                 'data': ''
             }
+
+    def _maybe_apply_quality_model(self, root_real: str, kestrel_dir: str) -> None:
+        try:
+            try:
+                from kestrel_analyzer import quality_model as _qm
+            except ImportError:
+                from analyzer.kestrel_analyzer import quality_model as _qm  # type: ignore[no-redef]
+            model = _qm.resolve((load_persisted_settings() or {}).get('quality_model'))
+            if not _qm.needs_apply(kestrel_dir, model):
+                return
+            if _queue_manager.has_running_writer(root_real) or self._running_upgrade_job(kestrel_dir):
+                return
+            _qm.apply_quality_model(kestrel_dir, model)
+        except Exception as e:
+            warn(f'[API] quality_model apply skipped for {kestrel_dir!r}: {e}')
 
     def read_kestrel_metadata(self, folder_path: str):
         """Read kestrel_metadata.json from a folder's .kestrel directory."""
@@ -997,15 +1351,31 @@ class Api:
             return {'success': False, 'error': str(e)}
 
     def clear_kestrel_data(self, folder_path: str):
-        """Delete the contents of the .kestrel folder within the given folder."""
+        """Delete the .kestrel folder in ``folder_path``.
+
+        Refuses while a queue item for that root is ``running`` so analysis
+        cannot write into a directory that is being deleted.
+        """
         try:
-            _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+            root_real, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
                 folder_path,
                 context='clear_kestrel_data',
                 require_root_exists=True,
             )
             if err:
                 return {'success': False, 'error': err}
+
+            if _queue_manager.has_running_writer(root_real):
+                warn(
+                    f'[API] clear_kestrel_data refused: analysis running for {root_real}'
+                )
+                return {
+                    'success': False,
+                    'error': (
+                        'Cannot clear .kestrel while analysis is running '
+                        'for this folder'
+                    ),
+                }
 
             if not os.path.isdir(kestrel_dir):
                 return {'success': True, 'message': 'No .kestrel folder found'}
@@ -1065,44 +1435,27 @@ class Api:
         return payload
 
     def get_species_family_map(self):
-        """Return a {species_display_name: family_display_name} mapping for the
-        bird species classifier's North American taxonomy.
+        """Return a {species_display_name: family_display_name} mapping for
+        every species in the bundled IOC world catalog (~11,250 rows).
 
-        Joins ``labels_scispecies.csv`` (Species → Scientific Family) with
-        ``scispecies_dispname.csv`` (Scientific Family → Display Name) and
-        caches the result on the bridge instance. Used by the frontend to
-        auto-link species/family chips and populate species autocomplete.
+        The species classifier (BioCLIP) can name any of these, so the
+        frontend's species→family auto-link must cover all of them, not just
+        the legacy CNN's 498 North-American labels. Family names are the
+        catalog's ``family_common`` display names ("Thrush sp."), the same
+        strings the classifier writes to the ``family`` column. Cached on the
+        bridge instance.
         """
         cached = getattr(self, '_species_family_map_cache', None)
         if cached is not None:
             return cached
         try:
-            import csv
-            try:
-                from kestrel_analyzer.config import MODELS_DIR as _models_dir
-            except ImportError:
-                from analyzer.kestrel_analyzer.config import MODELS_DIR as _models_dir
-            base = str(_models_dir)
-            species_to_scifam: dict[str, str] = {}
-            with open(os.path.join(base, 'labels_scispecies.csv'), 'r', encoding='utf-8-sig', newline='') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    sp = (row.get('Species') or '').strip()
-                    fam = (row.get('Scientific Family') or '').strip()
-                    if sp and fam:
-                        species_to_scifam[sp] = fam
-            scifam_to_display: dict[str, str] = {}
-            with open(os.path.join(base, 'scispecies_dispname.csv'), 'r', encoding='utf-8-sig', newline='') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    sci = (row.get('Scientific Family') or '').strip()
-                    disp = (row.get('Display Name') or '').strip()
-                    if sci and disp:
-                        scifam_to_display[sci] = disp
+            cat = self._get_bird_catalog()
+            if cat is None:
+                raise RuntimeError('catalog unavailable')
             mapping: dict[str, str] = {}
-            for sp, sci in species_to_scifam.items():
-                disp = scifam_to_display.get(sci, sci)
-                mapping[sp] = disp
+            for rec in cat.records:
+                if rec.canonical_common_name and rec.family_common:
+                    mapping[rec.canonical_common_name] = rec.family_common
             result = {'success': True, 'map': mapping}
         except Exception as e:
             error(f'[API] get_species_family_map error: {e}')
@@ -1135,6 +1488,31 @@ class Api:
         self._bird_catalog_cache = cached
         return cached
 
+    def _sanitize_species_regions(self, value):
+        """Per-folder species geofence from the frontend → list or ``None``.
+
+        ``None`` (or nothing valid) means "use the ``bird_regions`` setting";
+        the worker resolves that just before the folder runs.
+        """
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            return None
+        vals = [v.strip() for v in value if isinstance(v, str) and v.strip()]
+        if not vals:
+            return None
+        try:
+            try:
+                from kestrel_analyzer.bird_catalog import ALLOWED_REGION_CODES, GLOBAL_REGION
+            except ImportError:
+                from analyzer.kestrel_analyzer.bird_catalog import ALLOWED_REGION_CODES, GLOBAL_REGION
+        except Exception:
+            return None
+        if any(v.lower() == GLOBAL_REGION for v in vals):
+            return [GLOBAL_REGION]
+        picked = [c for c in ALLOWED_REGION_CODES if c in set(vals)]
+        return picked or None
+
     def get_bird_catalog_meta(self):
         """Return UI metadata: region labels + default selection + catalog size.
 
@@ -1159,6 +1537,11 @@ class Api:
                 ],
                 'default_regions': list(DEFAULT_REGION_SELECTION),
                 'total_species': len(cat) if cat is not None else 0,
+                # Species per region (geofence size shown in the analyze
+                # dialog's region picker). Worldwide species count everywhere.
+                'region_counts': {
+                    code: len(cat.filter([code])) for code in ALLOWED_REGION_CODES
+                } if cat is not None else {},
             }
         except Exception as e:
             error(f'[API] get_bird_catalog_meta error: {e}')
@@ -1264,26 +1647,41 @@ class Api:
             return {'success': False, 'error': str(e), 'map': {}}
 
     def fetch_remote_version(self):
-        """Fetch version.json from projectkestrel.org to bypass CORS in JS."""
+        """Fetch the release manifest from projectkestrel.org to bypass CORS in JS.
+
+        Prefers ``version_v2.json`` — ``{schema, releases:[{version,
+        effective_date, ...}]}`` — which lets the client compare numeric
+        versions and defer the in-app prompt until a scheduled date. Falls back
+        to the v1 ``version.json`` array if v2 is unreachable; the JS side
+        accepts either shape.
+        """
         try:
             import urllib.request
             import urllib.error
             import json
             import ssl
             import certifi
-            
-            url = "https://projectkestrel.org/version.json"
+
             ctx = ssl.create_default_context(cafile=certifi.where())
-            
-            req = urllib.request.Request(
-                url,
-                headers={'User-Agent': 'ProjectKestrel/1.0'},
-                method='GET'
-            )
-            
-            with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
-                data = json.loads(resp.read().decode('utf-8'))
-                return {'success': True, 'data': data}
+            last_err = None
+
+            for url in ("https://projectkestrel.org/version_v2.json",
+                        "https://projectkestrel.org/version.json"):
+                req = urllib.request.Request(
+                    url,
+                    headers={'User-Agent': 'ProjectKestrel/1.0'},
+                    method='GET'
+                )
+                try:
+                    with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+                        data = json.loads(resp.read().decode('utf-8'))
+                        return {'success': True, 'data': data}
+                except Exception as e:
+                    # v2 is absent on an older/rolled-back site; try v1 before
+                    # reporting failure.
+                    last_err = e
+
+            raise last_err if last_err else RuntimeError('no version manifest')
         except Exception as e:
             error(f'[API] fetch_remote_version error: {e}')
             return {'success': False, 'error': str(e)}
@@ -1297,6 +1695,63 @@ class Api:
             return {'success': True, 'platform': 'windows'}
         else:
             return {'success': True, 'platform': 'linux'}
+
+    def get_dist_channel(self):
+        """Return this build's distribution channel.
+
+        ``'direct'``  -> website download (notarized DMG / Windows installer / Store).
+        ``'appstore'``-> the sandboxed Mac App Store build.
+
+        The frontend uses this to branch What's New copy and cloud-compute CTAs
+        (e.g. App-Store-safe language) without needing a new release. Independent
+        of sandbox detection — see dist_channel.py. Defaults to 'direct' if the
+        helper is unavailable for any reason.
+        """
+        try:
+            if _dist_channel is not None:
+                return {'success': True, 'channel': _dist_channel.get_channel()}
+        except Exception:
+            pass
+        return {'success': True, 'channel': 'direct'}
+
+    def get_support_url(self):
+        """Return the URL the "Support Project Kestrel" CTAs should open.
+
+        ``/support-me`` includes the donate option; ``/support`` is the same page
+        with no payment path at all. ``donate`` reports which one you got.
+
+        The App Store build **always** gets ``/support``, unconditionally.
+
+        This used to be storefront-gated: Apple's anti-steering rule is
+        storefront-scoped rather than geographic, and the US storefront is
+        carved out of it (Guideline 3.1.1(a), and the 3.1.3 preamble), so the
+        build asked StoreKit whether it was entitled to show the donate link and
+        did so only for US-storefront customers. That gate was correct on the
+        text of the rule and was rejected twice in review anyway — the second
+        rejection screenshotted the Support button itself as the offending
+        link, without engaging with the storefront logic. Arguing it further
+        costs review cycles we care about more than we care about the donate
+        link in this one build, so the App Store build no longer links to a
+        payment path at all.
+
+        ``mac_storefront`` stays in the tree — it is correct, tested, and the
+        gate can be restored by consulting it here again if Apple's enforcement
+        ever matches its own guideline text. Nothing else calls it now.
+
+        Non-App-Store builds (DMG, Windows) are unaffected and keep ``/support-me``.
+        """
+        channel = 'direct'
+        try:
+            if _dist_channel is not None:
+                channel = _dist_channel.get_channel()
+        except Exception:
+            pass
+
+        if channel != 'appstore':
+            return {'success': True, 'url': SUPPORT_URL_FULL, 'donate': True}
+
+        print('[API] support_url: channel=appstore -> /support (no payment path)', flush=True)
+        return {'success': True, 'url': SUPPORT_URL_NO_PAYMENT, 'donate': False}
 
     def is_windows_store_app(self):
         """Check if running as a Windows Store app."""
@@ -1534,8 +1989,9 @@ class Api:
             csv_path = os.path.join(kestrel_dir, 'kestrel_database.csv')
             if not os.path.exists(csv_path):
                 return {'success': False, 'error': f'CSV not found: {csv_path}'}
-            with open(csv_path, 'w', encoding='utf-8-sig', newline='') as f:
-                f.write(csv_content)
+            # Atomic write: the analysis pipeline / auto-refresh may read this
+            # same file, and a crash mid-write must not truncate the database.
+            write_text_atomic(csv_path, csv_content, encoding='utf-8-sig')
             return {'success': True, 'path': csv_path}
         except Exception as e:
             error(f'[API] write_kestrel_csv({folder_path!r}) error: {e}')
@@ -1567,13 +2023,13 @@ class Api:
 
             try:
                 from kestrel_analyzer.ratings import (
-                    get_profile_thresholds,
                     quality_to_rating,
+                    resolve_thresholds,
                 )
             except ImportError:
                 from analyzer.kestrel_analyzer.ratings import (
-                    get_profile_thresholds,
                     quality_to_rating,
+                    resolve_thresholds,
                 )
 
             folder_path, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
@@ -1591,7 +2047,7 @@ class Api:
 
             settings = load_persisted_settings()
             profile = settings.get('rating_profile', 'balanced')
-            thresholds = get_profile_thresholds(profile)
+            thresholds = resolve_thresholds(profile, settings.get('rating_thresholds_custom'))
 
             df = pd.read_csv(csv_path)
             if df.empty:
@@ -1683,12 +2139,280 @@ class Api:
             if not isinstance(scenedata, dict):
                 return {'success': False, 'error': 'scenedata must be a dict', 'path': ''}
 
-            with open(scenedata_path, 'w', encoding='utf-8') as f:
-                json.dump(scenedata, f, indent=2)
+            # Atomic write: scenedata holds the user's ratings/tags/cull
+            # decisions; a crash mid-write must not truncate the existing file.
+            # Stream via json.dump so large payloads don't peak on json.dumps.
+            write_json_atomic(scenedata_path, scenedata, indent=2)
             return {'success': True, 'path': scenedata_path, 'error': ''}
         except Exception as e:
             error(f'[API] write_kestrel_scenedata({folder_path!r}) error: {e}')
             return {'success': False, 'error': str(e), 'path': ''}
+
+    # ─── Smart search (SigLIP 2) + pipeline-3 folder upgrade ────────────
+    #
+    # Read-only queries over a folder's SigLIP crop + whole-frame index, plus
+    # a background job (poll ``get_smart_search_index_progress``) that
+    # upgrades an already-analysed folder to pipeline 3 from its stored
+    # crops/exports (species re-ID, SigLIP quality, search embeddings). Every
+    # method validates the folder through ``_resolve_folder_root_and_kestrel``.
+    # The upgrade is local-only by construction: it reads ``.kestrel/`` JPEGs
+    # and never touches the Cloud Compute client.
+
+    @staticmethod
+    def _smart_search_modules():
+        try:
+            from kestrel_analyzer import smart_search as _ss
+            from kestrel_analyzer.ml import siglip as _sg
+        except ImportError:  # package-style import path
+            from analyzer.kestrel_analyzer import smart_search as _ss  # type: ignore[no-redef]
+            from analyzer.kestrel_analyzer.ml import siglip as _sg  # type: ignore[no-redef]
+        return _ss, _sg
+
+    @staticmethod
+    def _upgrade_module():
+        try:
+            from kestrel_analyzer import upgrade_v3 as _up
+        except ImportError:  # package-style import path
+            from analyzer.kestrel_analyzer import upgrade_v3 as _up  # type: ignore[no-redef]
+        return _up
+
+    def _smart_jobs(self):
+        import threading as _t
+        if getattr(self, '_smart_index_lock', None) is None:
+            self._smart_index_lock = _t.Lock()
+            self._smart_index_jobs = {}
+        return self._smart_index_lock, self._smart_index_jobs
+
+    def _running_upgrade_job(self, kestrel_dir: str):
+        lock, jobs = self._smart_jobs()
+        with lock:
+            return next((jid for jid, j in jobs.items()
+                         if j.get('kestrel_dir') == kestrel_dir and not j['progress'].get('done')), None)
+
+    def smart_search_status(self, folder_path: str) -> dict:
+        """Smart-search coverage + pipeline-3 upgrade eligibility for a folder.
+
+        Returns ``{success, available, indexed_images, indexable_images,
+        frame_indexed_images, frame_indexable_images, needs_index,
+        indexing_job, upgrade: {status, reason, version, pipeline_major,
+        rows, missing}}``; ``available`` is False when the SigLIP model files
+        are missing from this build. ``upgrade.status`` is one of
+        ``current`` / ``upgradable`` / ``reanalyze`` / ``not_analyzed``.
+        """
+        try:
+            _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path, context='smart_search_status', require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            _ss, _sg = self._smart_search_modules()
+            cov = _ss.coverage(kestrel_dir)
+            elig = self._upgrade_module().eligibility(kestrel_dir)
+            return {
+                'success': True,
+                'available': _sg.assets_available(),
+                'needs_index': (cov['indexed_images'] < cov['indexable_images']
+                                or cov['frame_indexed_images'] < cov['frame_indexable_images']),
+                'indexing_job': self._running_upgrade_job(kestrel_dir),
+                'upgrade': elig,
+                **cov,
+            }
+        except Exception as e:
+            error(f'[API] smart_search_status({folder_path!r}) error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def smart_search(self, folder_path: str, query: str, limit: int = 48, options=None) -> dict:
+        """Rank a folder's scenes for a smart-search query.
+
+        The query is parsed into species/family filters (``chips``) and a
+        free-text remainder scored with SigLIP 2 (crop + whole-frame
+        embeddings). ``options`` may carry ``{"disabled_terms": [...]}``:
+        query phrases the user removed as chips (kept as plain text).
+
+        Returns ``{success, query, semantic_query, chips, mode, scenes,
+        images, indexed_images, indexable_images, frame_indexed_images,
+        frame_indexable_images, needs_index}``.
+        """
+        try:
+            _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path, context='smart_search', require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            if not isinstance(query, str):
+                return {'success': False, 'error': 'query must be a string'}
+            disabled = []
+            if isinstance(options, dict):
+                raw = options.get('disabled_terms') or []
+                if isinstance(raw, list):
+                    disabled = [str(t)[:100] for t in raw[:20] if isinstance(t, str)]
+            _ss, _sg = self._smart_search_modules()
+            if not _sg.assets_available():
+                return {'success': False, 'error': 'smart_search_unavailable'}
+            res = _ss.search_folder(kestrel_dir, query, limit=limit, disabled_terms=disabled)
+            return {'success': True, **res}
+        except Exception as e:
+            error(f'[API] smart_search({folder_path!r}) error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def upgrade_folder_v3(self, folder_path: str) -> dict:
+        """Start upgrading an analysed folder to pipeline 3 (local only).
+
+        Returns ``{success, job_id}``; poll ``get_smart_search_index_progress``.
+        Refused while the folder is being analysed (both would write the same
+        files) and for folders that need a re-analysis; a job already running
+        for the folder is returned as is.
+        """
+        try:
+            root_real, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path, context='upgrade_folder_v3', require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            if not os.path.isdir(kestrel_dir):
+                return {'success': False, 'error': 'Folder has not been analyzed'}
+            _ss, _sg = self._smart_search_modules()
+            if not _sg.image_assets_available():
+                return {'success': False, 'error': 'smart_search_unavailable'}
+            if _queue_manager.has_running_writer(root_real):
+                return {'success': False, 'error': 'analysis_running'}
+            _up = self._upgrade_module()
+            elig = _up.eligibility(kestrel_dir)
+            if elig.get('status') == 'reanalyze':
+                return {'success': False, 'error': 'reanalyze_required', 'reason': elig.get('reason', '')}
+            import threading as _t
+            import uuid as _uuid
+            lock, jobs = self._smart_jobs()
+            with lock:
+                for jid, j in jobs.items():
+                    if j.get('kestrel_dir') == kestrel_dir and not j['progress'].get('done'):
+                        return {'success': True, 'job_id': jid, 'already_running': True}
+                job_id = _uuid.uuid4().hex
+                cancel = _t.Event()
+                jobs[job_id] = {
+                    'kestrel_dir': kestrel_dir,
+                    'cancel_event': cancel,
+                    # Shown as a row in the analysis-queue panel (get_queue_status).
+                    # 'path' echoes the folder string the UI passed (it keys the
+                    # folder tree); 'root' is the validated real path.
+                    'path': str(folder_path),
+                    'root': root_real,
+                    'started_at': time.time(),
+                    'dismissed': False,
+                    'progress': {'done': False, 'current': 0, 'total': 0, 'phase': 'starting'},
+                }
+                finished = [k for k, v in jobs.items() if v['progress'].get('done')]
+                for k in finished[:-8]:
+                    jobs.pop(k, None)
+                # A new run replaces this folder's finished row in the queue panel.
+                for k in [k for k in finished if jobs.get(k, {}).get('kestrel_dir') == kestrel_dir]:
+                    jobs.pop(k, None)
+
+            def _set(**kw):
+                with lock:
+                    jobs[job_id]['progress'].update(kw)
+
+            def _runner():
+                try:
+                    _set(phase='loading_model')
+                    # GPU follows the queue's current choice (the Analyze dialog's
+                    # "Use GPU", default on); CPU-only builds fall back to CPU.
+                    use_gpu = bool(getattr(_queue_manager, '_use_gpu', True))
+                    # Borrow the queue's pipeline: one ORT session per model per
+                    # process, on the shared ProviderCoordinator (GPU when on).
+                    pipeline = _queue_manager.shared_pipeline(use_gpu)
+                    pipeline.load_models(max_bird_crops=getattr(_queue_manager, '_max_bird_crops', 10))
+                    _set(phase='upgrading')
+                    try:
+                        from kestrel_analyzer.logging_utils import get_log_path
+                    except ImportError:
+                        from analyzer.kestrel_analyzer.logging_utils import get_log_path  # type: ignore
+                    stats = _up.upgrade_folder(
+                        kestrel_dir,
+                        pipeline,
+                        progress_cb=lambda done, total, fn: _set(current=int(done), total=int(total)),
+                        cancel_event=cancel,
+                        should_stop=lambda: _queue_manager.has_running_writer(root_real),
+                        log_path=get_log_path(root_real),
+                    )
+                    _set(phase='stopped' if stats.get('stopped') else 'canceled' if stats.get('canceled') else 'complete',
+                         stats=stats)
+                except Exception as e:
+                    error(f'[API] upgrade_folder_v3({folder_path!r}) failed: {e}')
+                    _set(phase='error', error=str(e))
+                finally:
+                    _set(done=True, finished_at=time.time())
+
+            _t.Thread(target=_runner, name=f'UpgradeV3-{job_id[:8]}', daemon=True).start()
+            return {'success': True, 'job_id': job_id}
+        except Exception as e:
+            error(f'[API] upgrade_folder_v3({folder_path!r}) error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def smart_search_index_folder(self, folder_path: str) -> dict:
+        """Pre-3.0 name of :meth:`upgrade_folder_v3` (indexing IS the upgrade now)."""
+        return self.upgrade_folder_v3(folder_path)
+
+    def get_smart_search_index_progress(self, job_id: str) -> dict:
+        lock, jobs = self._smart_jobs()
+        with lock:
+            job = jobs.get(str(job_id))
+            if job is None:
+                return {'success': False, 'error': 'not_found'}
+            return {'success': True, 'progress': dict(job['progress'])}
+
+    # Upgrade-job phase -> queue-panel row status (mirrors the analysis rows).
+    _UPGRADE_ROW_STATUS = {'complete': 'done', 'canceled': 'cancelled', 'stopped': 'stopped', 'error': 'error'}
+
+    def _upgrade_jobs_status(self) -> list:
+        """Pipeline-3 upgrade jobs as analysis-queue panel rows.
+
+        Running jobs, plus finished ones the user has not dismissed with the
+        panel's close button (``clear_queue_done``). Each row is ``{job_id,
+        kind: 'upgrade', path, name, status, phase, current, total, error,
+        started_at, finished_at}``; ``status`` is ``running`` while the job is
+        alive, then ``done`` / ``cancelled`` / ``stopped`` / ``error``.
+        """
+        lock, jobs = self._smart_jobs()
+        out = []
+        with lock:
+            for jid, j in jobs.items():
+                pr = j.get('progress') or {}
+                if j.get('dismissed') and pr.get('done'):
+                    continue
+                path = j.get('path') or j.get('root') or os.path.dirname(j.get('kestrel_dir') or '')
+                phase = str(pr.get('phase') or '')
+                status = self._UPGRADE_ROW_STATUS.get(phase, 'error') if pr.get('done') else 'running'
+                out.append({
+                    'job_id': jid,
+                    'kind': 'upgrade',
+                    'path': path,
+                    'name': os.path.basename(os.path.normpath(path)) or path,
+                    'status': status,
+                    'phase': phase,
+                    'current': int(pr.get('current') or 0),
+                    'total': int(pr.get('total') or 0),
+                    'error': str(pr.get('error') or ''),
+                    'started_at': j.get('started_at'),
+                    'finished_at': pr.get('finished_at'),
+                })
+        return out
+
+    def _dismiss_finished_upgrade_jobs(self) -> None:
+        lock, jobs = self._smart_jobs()
+        with lock:
+            for j in jobs.values():
+                if (j.get('progress') or {}).get('done'):
+                    j['dismissed'] = True
+
+    def cancel_smart_search_index(self, job_id: str) -> dict:
+        lock, jobs = self._smart_jobs()
+        with lock:
+            job = jobs.get(str(job_id))
+        if job is None:
+            return {'success': False, 'error': 'not_found'}
+        job['cancel_event'].set()
+        return {'success': True}
 
     def open_folder(self, path: str):
         """Open a folder in the system file browser (pywebview desktop mode)."""
@@ -1702,7 +2426,15 @@ class Api:
             if p == 'Windows':
                 subprocess.Popen(['explorer', os.path.normpath(path)])
             elif p == 'Darwin':
-                subprocess.Popen(['open', path])
+                # Sandbox can't Popen /usr/bin/open; route through NSWorkspace.
+                if (
+                    _mac_sandbox is not None
+                    and _mac_sandbox.is_sandboxed()
+                    and _mac_sandbox.open_default(path)
+                ):
+                    pass
+                else:
+                    subprocess.Popen(['open', path])
             else:
                 subprocess.Popen(['xdg-open', path])
             return {'success': True}
@@ -1735,7 +2467,14 @@ class Api:
             if editor_name not in _ALLOWED_EDITORS:
                 editor_name = 'system'
 
-            _launch_editor(target, editor_name)
+            # Under the App Sandbox, hold security-scoped access to the folder
+            # while LaunchServices hands the file to the editor (no-op off
+            # sandbox; editor_launch itself routes through NSWorkspace there).
+            if _mac_sandbox is not None and _mac_sandbox.is_sandboxed():
+                with _mac_sandbox.access_for(resolved_root):
+                    _launch_editor(target, editor_name)
+            else:
+                _launch_editor(target, editor_name)
             return {'success': True, 'path': target}
         except Exception as e:
             error(f'[API] open_in_editor error: {e}')
@@ -1753,6 +2492,19 @@ class Api:
             if not _is_safe_external_url(url):
                 warn(f'[security] open_url refused unsafe URL: {url!r}')
                 return {'success': False, 'error': 'URL scheme not allowed'}
+            # In the macOS App Sandbox, webbrowser.open() shells out to
+            # /usr/bin/open, which the sandbox blocks — external links would
+            # silently do nothing. Route through NSWorkspace (LaunchServices
+            # brokers it, no entitlement needed). Fall back to webbrowser only
+            # if that path is unavailable.
+            if (
+                sys.platform == 'darwin'
+                and _mac_sandbox is not None
+                and _mac_sandbox.is_sandboxed()
+            ):
+                if _mac_sandbox.open_external_url(url):
+                    return {'success': True}
+                warn('[API] open_url: NSWorkspace open failed; trying webbrowser')
             webbrowser.open(url)
             return {'success': True}
         except Exception as e:
@@ -1850,6 +2602,46 @@ class Api:
             error(f'[API] get_settings error: {e}')
             return {'success': False, 'error': str(e), 'settings': {}}
 
+    def get_rating_thresholds(self):
+        """Return the active rating profile's quality-score cutoffs for each star.
+
+        The frontend needs these to draw star positions on a quality-score
+        number line (Culling Assistant) and to convert a manual star rating
+        back into the quality band it represents. Served from
+        ``kestrel_analyzer.ratings`` so the table has exactly one definition.
+
+        Returns:
+            {
+              'success': bool,
+              'profile': str,                # active rating_profile setting
+              'thresholds': {'five': float, 'four': float, 'three': float, 'two': float},
+              'profiles': {name: thresholds, ...},   # every built-in profile
+              'error': str,
+            }
+        """
+        try:
+            try:
+                from kestrel_analyzer.ratings import RATING_PROFILES, resolve_thresholds
+            except ImportError:
+                from analyzer.kestrel_analyzer.ratings import (  # type: ignore
+                    RATING_PROFILES,
+                    resolve_thresholds,
+                )
+
+            settings = load_persisted_settings()
+            profile = str(settings.get('rating_profile', 'balanced') or 'balanced').lower()
+            thresholds = resolve_thresholds(profile, settings.get('rating_thresholds_custom'))
+            return {
+                'success': True,
+                'profile': profile,
+                'thresholds': dict(thresholds),
+                'profiles': {k: dict(v) for k, v in RATING_PROFILES.items()},
+                'error': '',
+            }
+        except Exception as e:
+            error(f'[API] get_rating_thresholds error: {e}')
+            return {'success': False, 'error': str(e), 'profile': '', 'thresholds': {}, 'profiles': {}}
+
     def save_settings_data(self, settings_dict):
         """Persist settings from JavaScript (wraps save_persisted_settings)."""
         try:
@@ -1889,6 +2681,80 @@ class Api:
     # ------------------------------------------------------------------ #
     #  Sample Sets API                                                     #
     # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _sample_sets_temp_root() -> str:
+        """Return the temp root that holds this session's sample-set mirrors.
+
+        Lives under the OS temp dir so it is writable on every install layout
+        — including read-only bundles (MSIX / ``Program Files\\WindowsApps``,
+        macOS Gatekeeper App Translocation) — and is the natural home for
+        transient data that is regenerated each session.
+        """
+        return os.path.join(tempfile.gettempdir(), 'ProjectKestrel', 'sample_sets')
+
+    @classmethod
+    def cleanup_sample_set_mirrors(cls) -> None:
+        """Best-effort removal of the temp sample-set mirror tree.
+
+        Called on clean shutdown. Non-critical: each launch wipes and rebuilds
+        the mirror before use (see :meth:`_mirror_sample_set_to_temp`), so a
+        crash that skips this leaves only stale data the next session
+        overwrites anyway.
+        """
+        try:
+            root = cls._sample_sets_temp_root()
+            if os.path.isdir(root):
+                shutil.rmtree(root, ignore_errors=True)
+        except Exception:
+            pass
+
+    @classmethod
+    def _mirror_sample_set_to_temp(cls, bundled_path: str, debug_info: list) -> str | None:
+        """Mirror a bundled sample set into a writable per-session temp dir.
+
+        Runs on **every** platform, by default. Two reasons:
+
+        * The bundled tree may be read-only (MSIX / ``WindowsApps``, macOS App
+          Translocation), where writing back to
+          ``<set>/.kestrel/kestrel_database.csv`` raises ``PermissionError``
+          (errno 13) or ``OSError`` EROFS (errno 30). A writable mirror sidesteps
+          both without special-casing the errno.
+        * Even on writable installs, a fresh per-session mirror gives the
+          tutorial a predictable clean slate each run and auto-refreshes if the
+          bundled set ever changes.
+
+        The prior mirror is wiped first (wipe-on-load) so edits from an earlier
+        tutorial session never leak into a new one. Returns the mirror path, or
+        ``None`` if mirroring failed — the caller then falls back to the bundled
+        path with an in-place restore.
+        """
+        try:
+            set_name = os.path.basename(os.path.normpath(bundled_path))
+            mirror_root = cls._sample_sets_temp_root()
+            mirror = os.path.join(mirror_root, set_name)
+            # Wipe-on-load: always start from a clean copy of the bundle.
+            if os.path.isdir(mirror):
+                shutil.rmtree(mirror, ignore_errors=True)
+            os.makedirs(mirror_root, exist_ok=True)
+            # dirs_exist_ok=True keeps the refresh robust even if the wipe above
+            # could not fully remove a locked file from a prior session.
+            shutil.copytree(bundled_path, mirror, dirs_exist_ok=True)
+            debug_info.append(f'[mirror] copied {bundled_path} -> {mirror}')
+            # Reset the live DB from the readonly source inside the mirror so the
+            # sample state is pristine for this session.
+            mirror_readonly = os.path.join(mirror, '.kestrel', 'kestrel_database_readonly.csv')
+            mirror_db = os.path.join(mirror, '.kestrel', 'kestrel_database.csv')
+            if os.path.isfile(mirror_readonly):
+                try:
+                    shutil.copy2(mirror_readonly, mirror_db)
+                    debug_info.append(f'[mirror] restored sample DB at mirror: {mirror_db}')
+                except OSError as e:
+                    debug_info.append(f'[mirror] mirror DB restore failed: {e}')
+            return mirror
+        except Exception as e:
+            debug_info.append(f'[mirror] failed to mirror {bundled_path}: {e}')
+            return None
 
     def get_sample_sets_paths(self):
         """Return absolute paths to bundled sample bird-photo sets.
@@ -1974,6 +2840,13 @@ class Api:
             debug_info.append(f'[dev-file] {file_candidate}: exists={file_exists}')
             if file_exists and file_candidate not in candidates:
                 candidates.append(file_candidate)
+
+            module_candidate = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sample_sets')
+            module_candidate = os.path.normpath(module_candidate)
+            module_exists = os.path.isdir(module_candidate)
+            debug_info.append(f'[dev-module] {module_candidate}: exists={module_exists}')
+            if module_exists and module_candidate not in candidates:
+                candidates.append(module_candidate)
             
             if not candidates and sys.platform.startswith('win'):
                 debug_info.append('[fallback] Starting Program Files search...')
@@ -2031,24 +2904,39 @@ class Api:
                 kestrel_dir = os.path.join(full, '.kestrel')
                 kestrel_exists = os.path.isdir(kestrel_dir)
                 debug_info.append(f'[api]   Item "{name}": is_dir={is_dir}, has .kestrel={kestrel_exists}')
-                
+
                 if is_dir and kestrel_exists:
                     readonly_src = os.path.join(kestrel_dir, 'kestrel_database_readonly.csv')
-                    db_dst       = os.path.join(kestrel_dir, 'kestrel_database.csv')
                     readonly_exists = os.path.isfile(readonly_src)
                     debug_info.append(f'[api]     readonly_src: {readonly_src} exists={readonly_exists}')
-                    
-                    if readonly_exists:
-                        try:
-                            shutil.copy2(readonly_src, db_dst)
-                            debug_info.append(f'[api]     Restored sample DB: {db_dst}')
-                        except Exception as e:
-                            debug_info.append(f'[api]     Failed to restore DB: {e}')
+
+                    # Default path (all platforms): mirror the bundled set into a
+                    # writable per-session temp dir and hand the UI that copy. The
+                    # mirror resets its own live DB from the readonly source, so it
+                    # is a clean-slate sample set for this run.
+                    mirror = self._mirror_sample_set_to_temp(full, debug_info)
+                    if mirror is not None:
+                        paths.append(mirror)
+                        debug_info.append(f'[api]     Added mirror path: {mirror}')
                     else:
-                        debug_info.append(f'[api]     No readonly DB found at {readonly_src}')
-                    
-                    paths.append(full)
-                    debug_info.append(f'[api]     Added path: {full}')
+                        # Fallback: temp mirror unavailable. Use the bundled set
+                        # directly and reset its DB in place, as before. Any
+                        # residual OSError (e.g. a read-only bundle) is left to
+                        # surface in the trace for future triage rather than
+                        # silently swallowed.
+                        db_dst = os.path.join(kestrel_dir, 'kestrel_database.csv')
+                        if readonly_exists:
+                            try:
+                                shutil.copy2(readonly_src, db_dst)
+                                debug_info.append(f'[api]     Restored sample DB in place: {db_dst}')
+                            except OSError as e:
+                                debug_info.append(
+                                    f'[api]     In-place DB restore failed (mirror unavailable): {e}'
+                                )
+                        else:
+                            debug_info.append(f'[api]     No readonly DB found at {readonly_src}')
+                        paths.append(full)
+                        debug_info.append(f'[api]     Added bundled path: {full}')
             
             # Success path: one-line summary at INFO. Full trace only at DEBUG.
             for line in debug_info:
@@ -2088,6 +2976,10 @@ class Api:
             no deletion) if it's still fully analyzed with no errors. Used
             so a user's accidental check on an already-done folder is a
             no-op rather than destructive.
+          - ``species_regions``: the bird-species geofence for that folder —
+            a list of ``bird_catalog.ALLOWED_REGION_CODES``, or ``["global"]``
+            for every IOC world species. Omitted/invalid = the user's
+            ``bird_regions`` setting.
         """
         try:
             if isinstance(paths, str):
@@ -2151,6 +3043,7 @@ class Api:
                         validated_per_item_options[real] = {
                             'delete_kestrel_on_start': bool(opts.get('delete_kestrel_on_start')),
                             'skip_if_already_done': bool(opts.get('skip_if_already_done')),
+                            'species_regions': self._sanitize_species_regions(opts.get('species_regions')),
                         }
 
             sett = load_persisted_settings()
@@ -2214,11 +3107,26 @@ class Api:
         return _queue_manager.cancel()
 
     def get_queue_status(self):
-        """Return the current state of the analysis queue."""
-        return _queue_manager.get_status()
+        """Return the current state of the analysis queue.
+
+        ``upgrades`` lists pipeline-3 folder upgrades (running and recently
+        finished, see :meth:`_upgrade_jobs_status`) so the queue panel shows
+        them next to the analysis items, also after a page reload.
+        """
+        status = _queue_manager.get_status()
+        try:
+            status['upgrades'] = self._upgrade_jobs_status()
+        except Exception as e:
+            error(f'[API] get_queue_status upgrades error: {e}')
+            status['upgrades'] = []
+        return status
 
     def clear_queue_done(self):
-        """Remove finished/errored/cancelled items from the queue list."""
+        """Remove finished/errored/cancelled items (and finished upgrades) from the queue list."""
+        try:
+            self._dismiss_finished_upgrade_jobs()
+        except Exception as e:
+            error(f'[API] clear_queue_done upgrades error: {e}')
         return _queue_manager.clear_done()
 
     def remove_queue_item(self, path: str):
@@ -2256,9 +3164,24 @@ class Api:
             settings = load_persisted_settings()
             queue_state = _queue_manager.get_persisted_recovery_state()
             unclean_utc = str(settings.get('last_unclean_shutdown_utc', '') or '').strip()
-            exit_reason = str(settings.get('last_exit_reason', '') or '').strip().lower()
+            raw_reason = str(settings.get('last_exit_reason', '') or '').strip().lower()
+            exit_reason = raw_reason
+            coerced = False
             if exit_reason not in ('clean', 'os_shutdown', 'crash', 'unknown'):
                 exit_reason = 'unknown' if unclean_utc else 'clean'
+                coerced = True
+            # The frontend shows the recovery dialog when unclean_shutdown is
+            # true and exit_reason is 'crash'/'unknown'/''. Log what we hand
+            # it so a crash-report log tail records the decision inputs, not
+            # just the outcome. See visualizer._log_shutdown_state.
+            will_prompt = bool(unclean_utc) and exit_reason in ('crash', 'unknown')
+            info(
+                f'[shutdown] recovery_status: raw_last_exit_reason={raw_reason!r} '
+                f'resolved={exit_reason} coerced={coerced} '
+                f'unclean_utc={unclean_utc or "none"} will_prompt={will_prompt} '
+                f'session_started={str(settings.get("app_session_started_utc", "") or "none")} '
+                f'last_closed={str(settings.get("last_session_closed_utc", "") or "none")}'
+            )
             return {
                 'success': True,
                 'unclean_shutdown': bool(unclean_utc),
@@ -2267,6 +3190,7 @@ class Api:
                 'queue_recovery': queue_state,
             }
         except Exception as e:
+            error(f'[shutdown] recovery_status: failed to read recovery state: {e}')
             return {'success': False, 'error': str(e)}
 
     # Phase 3: restore_analysis_queue removed — feature replaced by the
@@ -2276,12 +3200,18 @@ class Api:
         """Clear persisted unclean-shutdown flag and optionally queue recovery snapshot."""
         try:
             settings = load_persisted_settings()
+            had_flag = str(settings.get('last_unclean_shutdown_utc', '') or '').strip()
             settings.pop('last_unclean_shutdown_utc', None)
             if bool(clear_queue_state):
                 settings.pop('queue_recovery_state', None)
             save_persisted_settings(settings)
+            info(
+                f'[shutdown] recovery_cleared: unclean_utc={had_flag or "none"} '
+                f'queue_state_cleared={bool(clear_queue_state)}'
+            )
             return {'success': True}
         except Exception as e:
+            error(f'[shutdown] recovery_cleared: failed: {e}')
             return {'success': False, 'error': str(e)}
 
     def send_recovery_crash_report(self):
@@ -2322,6 +3252,8 @@ class Api:
     _oauth_lock = None              # lazy-init threading.Lock in _get_oauth_lock
     _oauth_in_flight = False
     _oauth_status = "idle"
+    _oauth_cancel_event = None      # threading.Event for the active flow
+    _oauth_thread = None            # the active oauth-flow worker thread
 
     def open_culling_window(self, root_path: str):
         """Open a new pywebview window for the Culling Assistant."""
@@ -2398,6 +3330,10 @@ class Api:
         """
         if _oauth is None:
             return bundle  # OAuth module unavailable — nothing we can do
+        # Native Apple bundles carry a Clerk session JWT, refreshed by re-minting
+        # from the durable __client credential — not the OAuth refresh grant.
+        if bundle.get("kind") == getattr(_oauth, "CLERK_SESSION_BUNDLE_KIND", "clerk_session"):
+            return self._refresh_clerk_session(bundle)
         try:
             expires_at = float(bundle.get("expires_at") or 0)
         except (TypeError, ValueError):
@@ -2430,10 +3366,7 @@ class Api:
                 # invalid_grant => refresh token revoked / aged out / rotated past.
                 if resp.get("error") == "invalid_grant":
                     self._clear_keychain_auth()
-                    self._perch_account_cache = None
-                    self._perch_account_cache_at = 0.0
-                    self._perch_usage_cache = None
-                    self._perch_usage_cache_at = 0.0
+                    self._invalidate_account_caches()
                     return None
                 # Network / 5xx — keep old bundle, downstream will surface stale.
                 return current or bundle
@@ -2446,10 +3379,59 @@ class Api:
                 return current or bundle
             _keyring_save(new_bundle)
             # Caches were keyed on the now-rotated access token.
-            self._perch_account_cache = None
-            self._perch_account_cache_at = 0.0
-            self._perch_usage_cache = None
-            self._perch_usage_cache_at = 0.0
+            self._invalidate_account_caches()
+            return new_bundle
+        finally:
+            lock.release()
+
+    def _refresh_clerk_session(self, bundle: dict) -> dict | None:
+        """Re-mint the Clerk session JWT for a ``clerk_session`` (native Apple)
+        bundle when it's within the re-mint buffer of expiry.
+
+        Session JWTs live ~60s; we mint a fresh one from the durable ``__client``
+        credential on demand. Returns the (possibly updated) bundle, or the
+        unchanged bundle on a transient failure — ``get_auth_token``'s staleness
+        floor surfaces signed-out once the token has actually expired. Mirrors
+        the locking/double-check pattern of ``_refresh_if_needed``.
+        """
+        buffer = getattr(_oauth, "CLERK_SESSION_REMINT_BUFFER_SEC", 15)
+        try:
+            expires_at = float(bundle.get("expires_at") or 0)
+        except (TypeError, ValueError):
+            expires_at = 0.0
+        if expires_at - time.time() >= buffer:
+            return bundle
+        client = bundle.get("clerk_client") or ""
+        sid = bundle.get("clerk_session_id") or ""
+        if not client or not sid:
+            return bundle
+
+        lock = self._get_oauth_lock()
+        if not lock.acquire(timeout=10.0):
+            return bundle
+        try:
+            # Another caller may have re-minted while we waited for the lock.
+            current = _keyring_load() or {}
+            if (current.get("access_token")
+                    and current.get("access_token") != bundle.get("access_token")):
+                try:
+                    if float(current.get("expires_at") or 0) - time.time() >= buffer:
+                        return current
+                except (TypeError, ValueError):
+                    pass
+            minted = _oauth.remint_session_token(client, sid)
+            if not minted:
+                # Transient (network) or the session ended. Keep the old bundle;
+                # the staleness floor will surface signed-out once it expires.
+                return current or bundle
+            # Clerk rotates the native-mode client token on every Frontend-API
+            # response, so persist the token the mint came back with rather than
+            # the one we sent — otherwise the next re-mint presents a superseded
+            # credential and the user is silently signed out.
+            token, client = minted
+            new_bundle = _oauth.build_session_bundle(token, client, sid)
+            _keyring_save(new_bundle)
+            self._invalidate_account_caches()
             return new_bundle
         finally:
             lock.release()
@@ -2472,7 +3454,11 @@ class Api:
             if not access_token:
                 return {"success": True, "token": None}
             ttl = _auth_jwt_seconds_until_exp(str(access_token))
-            if ttl is None or ttl < 60:
+            # Clerk session JWTs (native Apple) are ~60s and re-minted on demand,
+            # so a fresh one legitimately has < 60s left — use a small floor for
+            # that kind. OAuth access tokens keep the original 60s staleness floor.
+            floor = 5 if bundle.get("kind") == "clerk_session" else 60
+            if ttl is None or ttl < floor:
                 # Token is past its useful life and refresh didn't (or couldn't)
                 # extend it — surface signed-out so the UI prompts re-auth.
                 return {"success": True, "token": None}
@@ -2834,6 +3820,21 @@ class Api:
             from analyzer import cloud_jobs_store as cjs  # type: ignore[no-redef]
             return cjs
 
+    def _cc_owner_id(self) -> str:
+        """Stable id of the currently signed-in account (JWT `sub`), or "" when
+        signed out / undecodable. Used to tag cloud jobs at submit and to filter
+        job history so switching accounts never surfaces another user's jobs.
+        Read straight off the stored access token — no network call — so it
+        works offline and regardless of folder availability."""
+        try:
+            bundle = self._load_token_bundle()
+            token = (bundle or {}).get("access_token") if bundle else None
+            if not token:
+                return ""
+            return _auth_jwt_sub_unverified(str(token)) or ""
+        except Exception:
+            return ""
+
     def _cc_fresh_token(self) -> str | None:
         """Token provider handed to CloudComputeClient. Called by the client on
         a 401 to obtain a FRESH JWT and retry — so a session that expires
@@ -3055,21 +4056,24 @@ class Api:
         """
         from pathlib import Path as _Path
         folder = _Path(folder)
-        # Match the local pipeline / folder_inspector RAW-priority rule: if the
-        # folder has any RAWs we ONLY analyze RAWs (their JPEG sidecars are
-        # ignored). Only when there are zero RAWs do we fall back to JPEGs.
-        # Without this, cloud jobs upload both RAW and JPG, doubling bandwidth
-        # and producing duplicate scene rows on merge. See folder_inspector.py
-        # `list_images_in_folder` — keep the two filters in sync.
+        # Discover analyzable images via the SAME code path the local pipeline
+        # uses — folder_inspector.list_images_in_folder → select_camera_images —
+        # so a cloud job analyzes exactly the files local analysis would. That
+        # shared helper applies RAW-priority correctly: a JPEG is dropped only
+        # when a same-stem RAW exists (an in-camera sidecar); an ORPHAN JPEG (a
+        # lone JPG-only frame in an otherwise-RAW shoot) is KEPT, and hidden /
+        # AppleDouble files are filtered. This function previously re-implemented
+        # its own `raws if raws else jpegs` filter, which dropped orphan JPEGs and
+        # silently truncated such folders by one image vs. local (off-by-one). Do
+        # NOT fork the discovery rule again — share folder_inspector.
+        import importlib
         try:
-            from kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS
-        except ImportError:
-            from analyzer.kestrel_analyzer.config import RAW_EXTENSIONS, JPEG_EXTENSIONS  # type: ignore[no-redef]
-        raw_set = {ext.lower() for ext in RAW_EXTENSIONS}
-        jpeg_set = {ext.lower() for ext in JPEG_EXTENSIONS}
-        candidates = [p for p in folder.iterdir() if p.is_file()]
-        raws = sorted(p for p in candidates if p.suffix.lower() in raw_set)
-        all_files = raws if raws else sorted(p for p in candidates if p.suffix.lower() in jpeg_set)
+            _inspector = importlib.import_module('analyzer.folder_inspector')
+        except Exception:
+            _inspector = importlib.import_module('folder_inspector')
+        # Returns sorted image NAMES; map back to Paths in this folder. Order is
+        # lexical, matching the canonical processing order submit_job re-asserts.
+        all_files = [folder / name for name in _inspector.list_images_in_folder(str(folder))]
         if not all_files:
             return [], None, frozenset(), 0, 0
 
@@ -3234,6 +4238,13 @@ class Api:
         "retrievedCount": 0,
         "activeContainerCount": 0,
         "terminalReason": None,
+        # Server-authoritative status booleans (the desktop renders buttons off
+        # these instead of inferring from status + counts). Defaults match a
+        # freshly-submitted job (non-terminal, cancellable, accepting uploads).
+        "terminal": False,
+        "cancellable": True,
+        "resultsAvailable": False,
+        "acceptingUploads": True,
     }
 
     def _cc_apply_remote_snapshot(self, job_id: str, remote: dict) -> None:
@@ -3248,6 +4259,8 @@ class Api:
             "uploadedCount", "analyzedCount", "dispatchedCount", "pendingCount",
             "downloadedCount", "pack_count", "retrievedCount",
             "stopRequested", "uploadComplete",
+            # Server-authoritative status booleans (camelCase on the wire).
+            "terminal", "cancellable", "resultsAvailable", "acceptingUploads",
         ):
             if key in remote and remote[key] is not None:
                 snapshot[key] = remote[key]
@@ -3366,11 +4379,9 @@ class Api:
                     else:
                         remote = client.get_status(job_id)
                         self._cc_apply_remote_snapshot(job_id, remote)
-                        # W1: pause is purely client-side now — the local
-                        # pause_event is the sole source of truth and only the
-                        # user toggles it. There is no server auto-pause to
-                        # clear, so the poller no longer reacts to any remote
-                        # resume signal.
+                        # Client-side pause was removed — the only client-driven
+                        # job control left is cancel. The poller just refreshes
+                        # the remote snapshot.
                 except Exception as e:
                     self._cc_record_remote_failure(job_id, str(e))
                     # Log every 5th consecutive failure so the journal doesn't
@@ -3537,10 +4548,6 @@ class Api:
 
         import threading as _t
         cancel_event = _t.Event()
-        # pause_event is "set" when uploads are running; cleared to pause.
-        # Starts set so the upload thread does not block out of the gate.
-        pause_event = _t.Event()
-        pause_event.set()
 
         def _on_progress(payload: dict) -> None:
             with self._ensure_cc_lock():
@@ -3584,7 +4591,6 @@ class Api:
                     on_progress=_on_progress,
                     on_pack_merged=_on_pack_merged,
                     cancel_event=cancel_event,
-                    pause_event=pause_event,
                     protected_filenames=set(anchor_filenames) if anchor_filenames else None,
                     overwrite_errors=_retry_errored,
                     # Pass the pre-submitted job ID and presigned URLs so
@@ -3664,9 +4670,11 @@ class Api:
             except Exception:
                 pass
 
+        owner_id = self._cc_owner_id()
         with self._ensure_cc_lock():
             self._cc_jobs[job_id] = {
                 "jobId": job_id,
+                "ownerId": owner_id,
                 "rootPath": str(root),
                 "imageCount": len(files),
                 "newImageCount": len(files) - len(anchor_filenames),
@@ -3677,7 +4685,6 @@ class Api:
                 "status": "uploading",
                 "progress": {"event": "submitted"},
                 "cancel_event": cancel_event,
-                "pause_event": pause_event,
                 "presignedUrls": submit.get("presignedUrls", []),  # for completeness
                 # Cached remote-counters snapshot. The background poller
                 # refreshes this; JS reads it via cloud_compute_list_jobs.
@@ -3693,6 +4700,7 @@ class Api:
             store = self._cc_jobs_store()
             store.upsert_job({
                 "jobId": job_id,
+                "ownerId": owner_id,
                 "folderPath": str(root),
                 "createdAtUtc": store.utc_now_iso(),
                 "status": "uploading",
@@ -3767,6 +4775,12 @@ class Api:
             # maxConcurrentJobs>=2).
             "uploadComplete": bool(remote.get("uploadComplete", False)),
             "remoteStatus": remote.get("remoteStatus"),
+            # Server-authoritative status booleans — the JS layer renders buttons
+            # straight off these (no status/count inference). See _CC_REMOTE_DEFAULTS.
+            "terminal": bool(remote.get("terminal", False)),
+            "cancellable": bool(remote.get("cancellable", True)),
+            "resultsAvailable": bool(remote.get("resultsAvailable", False)),
+            "acceptingUploads": bool(remote.get("acceptingUploads", True)),
             # Staleness signals for the UI: updatedAtMs is wall-clock of last
             # successful poll (0 means "never"); failureCount is consecutive
             # failures since the last success; lastError is the most recent
@@ -3799,10 +4813,19 @@ class Api:
         """Return rich descriptors (with cached remote counters) for every job
         submitted this session. JS renders the cloud queue panel from this
         single bridge call — no per-job follow-up needed."""
+        # Filter to the current account so an in-session account switch (sign
+        # out → sign in without restart) doesn't show the previous user's live
+        # jobs. When the owner can't be resolved (signed out, or an undecodable
+        # token) we fall back to showing all rather than hiding the user's own
+        # in-flight jobs; un-owned (legacy) in-memory states are always shown.
+        owner = self._cc_owner_id()
         with self._ensure_cc_lock():
             jobs = [
                 self._cc_serialise_job(jid, state)
                 for jid, state in self._cc_jobs.items()
+                if (not owner)
+                or (not (state.get("ownerId") or ""))
+                or (state.get("ownerId") == owner)
             ]
         return {"ok": True, "jobs": jobs}
 
@@ -3902,84 +4925,68 @@ class Api:
         """
         return {"ok": True, "removed": []}
 
-    def cloud_compute_pause_job(self, job_id: str) -> dict:
-        """Pause uploads for a job. W1: pause is now PURELY CLIENT-SIDE — we
-        clear the local ``pause_event`` (which blocks the upload pool in
-        ``run_full_job._upload_and_notify``) and stop PUT+notify. The Worker
-        has no pause concept; analysis naturally drains the already-uploaded
-        backlog and then idles. The job stays ``processing`` server-side while
-        paused — the ``upload_paused`` status here is LOCAL-ONLY, used to drive
-        the UI. Idempotent."""
-        with self._ensure_cc_lock():
-            state = self._cc_jobs.get(job_id)
-            if state is None:
-                return {"ok": False, "error": "unknown jobId"}
-            pause_ev = state.get("pause_event")
-        if pause_ev is not None:
-            pause_ev.clear()
-        with self._ensure_cc_lock():
-            if job_id in self._cc_jobs:
-                self._cc_jobs[job_id]["status"] = "upload_paused"
-        try:
-            self._cc_jobs_store().update_job(job_id, status="upload_paused")
-        except Exception:
-            # Store write failed — revert in-memory state so local + persisted agree.
-            if pause_ev is not None:
-                pause_ev.set()
-            with self._ensure_cc_lock():
-                if job_id in self._cc_jobs:
-                    self._cc_jobs[job_id]["status"] = "uploading"
-        return {"ok": True, "uploadPauseRequested": True}
-
-    def cloud_compute_resume_job(self, job_id: str) -> dict:
-        """Inverse of pause_job. Sets the local ``pause_event`` so the upload
-        pool un-blocks. Purely client-side (W1). Idempotent."""
-        with self._ensure_cc_lock():
-            state = self._cc_jobs.get(job_id)
-            if state is None:
-                return {"ok": False, "error": "unknown jobId"}
-            pause_ev = state.get("pause_event")
-        if pause_ev is not None:
-            pause_ev.set()
-        with self._ensure_cc_lock():
-            if job_id in self._cc_jobs:
-                self._cc_jobs[job_id]["status"] = "uploading"
-        try:
-            self._cc_jobs_store().update_job(job_id, status="uploading")
-        except Exception:
-            # Store write failed — revert in-memory state so local + persisted agree.
-            if pause_ev is not None:
-                pause_ev.clear()
-            with self._ensure_cc_lock():
-                if job_id in self._cc_jobs:
-                    self._cc_jobs[job_id]["status"] = "upload_paused"
-        return {"ok": True, "uploadPauseRequested": False}
-
     def cloud_compute_cancel_job(self, job_id: str) -> dict:
-        """Terminal cancel. Tells the Worker to stop the job (Modal exits on
-        next pending-images poll, staging objects are async-deleted) AND
-        signals the local upload/poll thread to exit. Marks the job
-        ``cancelled`` in the persistent ledger.
+        """Terminal cancel. Tells the Worker to stop the job, then — ONLY if the
+        remote cancel actually LANDED — signals the local upload/poll thread to
+        exit and marks the job ``cancelled`` in the persistent ledger.
+
+        If the remote cancel can't be confirmed (network down / expired session),
+        we DO NOT touch local state: the job is still running server-side, so a
+        false local ``cancelled`` would desync the desktop. We return
+        ``{ok:False, transient:True}`` so the UI keeps Cancel live to retry. A
+        404 means the job is already gone server-side → safe to finalize.
         """
         with self._ensure_cc_lock():
             state = self._cc_jobs.get(job_id)
             if state is None:
                 return {"ok": False, "error": "unknown jobId"}
             cancel_ev = state.get("cancel_event")
-            pause_ev = state.get("pause_event")
-        # Remote cancel first. If the desktop dies right after, the Worker
-        # has already started staging-cleanup so we don't leak storage.
-        client, _err = self._cc_make_client()
-        remote_err: str | None = None
-        if client is not None:
-            try:
-                client.cancel_job_remote(job_id)
-            except Exception as e:
-                remote_err = str(e)
-        # Local cleanup: release any pause so the upload thread can see the
-        # cancel and exit, then set cancel_event.
-        if pause_ev is not None:
-            pause_ev.set()
+
+        _transient = (
+            "Couldn't reach the server — the job is still running. Try again."
+        )
+
+        ccc = self._cc_import()
+        client, client_err = self._cc_make_client()
+        if client is None:
+            # No client (e.g. signed out / token gone) — we never reached the
+            # server, so the job may still be running. Transient.
+            return {
+                "ok": False, "transient": True, "error": _transient,
+                "remoteError": (client_err or {}).get("error") or "no client",
+            }
+
+        landed = False
+        try:
+            client.cancel_job_remote(job_id)
+            landed = True  # 200 — the Worker accepted the cancel (idempotent).
+        except ccc.CloudComputeAuthError as e:
+            # 401 after refresh failed — session expired. Transient.
+            return {"ok": False, "transient": True, "error": _transient, "remoteError": str(e)}
+        except ccc.CloudComputeNetworkError as e:
+            # Transport-level failure (status 0). Transient.
+            return {"ok": False, "transient": True, "error": _transient, "remoteError": str(e)}
+        except ccc.CloudComputeError as e:
+            # Other non-2xx. 404 = job already gone server-side → nothing left
+            # running, safe to finalize. Anything else = server refused.
+            if getattr(e, "status", None) == 404:
+                landed = True
+            else:
+                return {
+                    "ok": False,
+                    "error": f"Server refused the cancel ({getattr(e, 'status', '?')}); job not cancelled.",
+                    "remoteError": str(e),
+                }
+        except Exception as e:
+            # Unknown error talking to the server — be conservative, treat as transient.
+            return {"ok": False, "transient": True, "error": _transient, "remoteError": str(e)}
+
+        if not landed:
+            return {"ok": False, "transient": True, "error": _transient}
+
+        # Remote cancel landed (200) or the job is already gone (404): finalize
+        # locally. Signal the upload/poll thread to exit (the upload worker checks
+        # _check_cancel(); there is no pause to release anymore), then mark cancelled.
         if cancel_ev is not None:
             cancel_ev.set()
         with self._ensure_cc_lock():
@@ -3989,7 +4996,43 @@ class Api:
             self._cc_jobs_store().update_job(job_id, status="cancelled")
         except Exception:
             pass
-        return {"ok": True, "remoteError": remote_err}
+        return {"ok": True}
+
+    def stop_cloud_uploads_for_shutdown(self) -> int:
+        """Signal every in-flight cloud-compute job's ``cancel_event`` so its
+        upload worker pool stops pulling queued files. Called from the app's
+        shutdown path (``visualizer.main``'s finally block).
+
+        LOCAL-ONLY — we deliberately do NOT tell the Worker to cancel. The job
+        keeps running server-side and its result packs resume downloading on the
+        next launch. The sole purpose is to release the upload
+        ``ThreadPoolExecutor``: its ``atexit`` handler joins mid-flight worker
+        threads on interpreter shutdown, so without this the pool keeps
+        uploading every remaining image (and the process hangs) long after the
+        window has closed and the static server has stopped.
+
+        Idempotent and failsafe. Returns the number of jobs signalled.
+        """
+        signalled = 0
+        try:
+            with self._ensure_cc_lock():
+                events = [
+                    state.get("cancel_event")
+                    for state in self._cc_jobs.values()
+                    if state is not None
+                ]
+        except Exception:
+            return 0
+        for ev in events:
+            if ev is None:
+                continue
+            try:
+                if not ev.is_set():
+                    ev.set()
+                    signalled += 1
+            except Exception:
+                pass
+        return signalled
 
     def cloud_compute_upload_test(
         self,
@@ -3999,9 +5042,15 @@ class Api:
         """Run a real-image upload-throughput probe against the staging bucket.
 
         Returns ``{ok, mbps, samples_uploaded, total_bytes, elapsed_ms,
-        errors}``. Errors surface as ``{ok: False, error}``; the Worker's
-        ``file_too_large`` rejection is propagated verbatim so the dialog can
-        explain the 200 MB cap.
+        errors, pipeline}``. Errors surface as ``{ok: False, error}``; the
+        Worker's ``file_too_large`` rejection is propagated verbatim so the
+        dialog can explain the 200 MB cap.
+
+        ``pipeline`` carries the Worker's own dispatch/scale-out constants
+        (thresholds, container cap, spawn cooldown, cold start, per-container
+        throughput) so the analyze dialog's job-time estimate models the
+        deployed pipeline rather than a hardcoded copy that goes stale when a
+        threshold moves. ``None`` against an older Worker.
         """
         root_real, err = self._validate_root_dir(
             folder_path, context="cloud_compute_upload_test", require_exists=True
@@ -4057,7 +5106,14 @@ class Api:
         """
         try:
             store = self._cc_jobs_store()
-            jobs = store.load_jobs()
+            # Filter to the signed-in account (claims legacy un-owned rows). A
+            # signed-out caller resolves to "" → no jobs, so history never leaks
+            # the previous account's jobs after a sign-out / account switch.
+            owner_id = self._cc_owner_id()
+            if owner_id:
+                jobs = store.jobs_for_owner(owner_id)
+            else:
+                jobs = []
         except Exception as e:
             return {"ok": False, "error": f"store load failed: {e}", "jobs": []}
 
@@ -4247,6 +5303,9 @@ class Api:
             if job_id not in self._cc_jobs:
                 self._cc_jobs[job_id] = {
                     "jobId": job_id,
+                    # Carry the owner so a resumed job in the live pill is scoped
+                    # to the current account (matches the submit path).
+                    "ownerId": target.get("ownerId") or self._cc_owner_id(),
                     "rootPath": str(folder),
                     "imageCount": int(target.get("imageCount") or 0),
                     "newImageCount": int(target.get("imageCount") or 0),
@@ -4257,7 +5316,6 @@ class Api:
                     "status": str(target.get("status") or "downloading"),
                     "progress": {"event": "resume"},
                     "cancel_event": None,
-                    "pause_event": None,
                     "remote": dict(self._CC_REMOTE_DEFAULTS),
                 }
         # Start the live remote poller; safe to call again if already running.
@@ -4416,21 +5474,64 @@ class Api:
                     "packName": None, "error": str(e),
                 })
             return None
-        available_pack_names = [
-            str(meta.get("filename") or "") for meta in files
-            if str(meta.get("filename") or "").endswith(".zip")
-        ]
-        # Stale-R2 cleanup: any pack still in R2 that we've already merged is
-        # dead weight (probably from a pre-folder-state job, or a prior
-        # delete-packs call that lost network). Tell the Worker to drop it so
-        # the next list_results stops returning them.
+        # Sanitize Worker-supplied pack names to trusted basenames before any of
+        # them is joined to pack_dir. A traversal name (e.g. ../../evil.zip) must
+        # never reach the dest.exists()/merge or download_pack paths below — a
+        # malicious/compromised Worker could otherwise read or write arbitrary
+        # files. _safe_pack_filename rejects separators/parent-refs/drive-colon.
+        # The sanitizer is a pure utility of the cloud_compute_client module
+        # (not part of the injected behavior tests fake), so fall back to the
+        # real module when ``ccc`` is a partial test double.
+        safe_name_fn = getattr(ccc, "_safe_pack_filename", None) or \
+            self._cc_import()._safe_pack_filename
+        available_pack_names = []
+        for meta in files:
+            raw = str(meta.get("filename") or "")
+            if not raw.endswith(".zip"):
+                continue
+            safe = safe_name_fn(raw)
+            if safe is None:
+                with self._ensure_cc_lock():
+                    self._cc_pack_events.append({
+                        "jobId": job_id, "folderPath": str(folder),
+                        "packName": None,
+                        "error": f"Rejected unsafe pack filename: {raw!r}",
+                    })
+                continue
+            available_pack_names.append(safe)
+        # Stale-R2 reconciliation: a pack still in R2 that we've ALREADY merged
+        # locally means its server-side results_retrieved flip never landed —
+        # e.g. a download GET whose (best-effort) flip was lost when the app was
+        # closed mid-download. Do NOT just delete it: the Worker's delete-packs
+        # path clears still-`results_available` rows to the terminal,
+        # non-billable `results_nuked` state, so the user is never billed for
+        # results they actually received and merged. Instead RE-DOWNLOAD it — the
+        # GET re-fires the Worker's `results_available → results_retrieved` flip
+        # (restoring billing), and the idempotent re-merge (last-wins by filename)
+        # guarantees every asset/row made it into the folder. Only THEN does
+        # _cc_finalize_pack_merge delete it, safely, now that the rows are
+        # retrieved. A pack already gone from R2 won't appear in
+        # available_pack_names, so there is nothing left to reconcile.
         stale = [n for n in available_pack_names if n in already]
         if stale and client is not None:
-            try:
-                client.delete_packs(job_id, stale)
-                available_pack_names = [n for n in available_pack_names if n not in already]
-            except Exception as e:
-                warn(f"[cloud-compute] {job_id}: stale-R2 cleanup ({len(stale)} packs) failed: {e}")
+            for fname in stale:
+                dest = pack_dir / fname
+                try:
+                    client.download_pack(job_id, fname, dest)
+                    ccc.merge_pack_into_kestrel(
+                        dest, folder,
+                        protected_filenames=set(anchor_filenames) if anchor_filenames else None,
+                        overwrite_errors=retry_errored,
+                    )
+                except Exception as e:
+                    with self._ensure_cc_lock():
+                        self._cc_pack_events.append({
+                            "jobId": job_id, "folderPath": str(folder),
+                            "packName": fname, "error": str(e),
+                        })
+                    continue
+                self._cc_finalize_pack_merge(folder, job_id, fname, dest, client)
+            available_pack_names = [n for n in available_pack_names if n not in already]
         for fname in available_pack_names:
             if fname in already:
                 continue
@@ -4778,13 +5879,19 @@ class Api:
         return {"success": True}
 
     def open_perch_url(self, url: str) -> dict:
-        """Open an arbitrary URL in the user's default browser."""
+        """Open a Perch gallery URL in the user's default browser.
+
+        Gated by ``_is_safe_external_url`` (same allowlist as ``open_url`` /
+        FINDING-01). A prefix check of ``http://`` / ``https://`` still lets
+        ``http://\\\\attacker\\share`` and CRLF-injected URLs through (S1-05).
+        """
         try:
-            if not isinstance(url, str) or not url.strip():
-                return {"success": False, "error": "missing url"}
-            u = url.strip()
-            if not (u.startswith("http://") or u.startswith("https://")):
+            if not _is_safe_external_url(url):
+                warn(f'[security] open_perch_url refused unsafe URL: {url!r}')
+                if not isinstance(url, str) or not url.strip():
+                    return {"success": False, "error": "missing url"}
                 return {"success": False, "error": "invalid url scheme"}
+            u = url.strip()
             webbrowser.open(u, new=2, autoraise=True)
             return {"success": True}
         except Exception as e:
@@ -4868,6 +5975,73 @@ class Api:
             return {"present": True, "link": data}
         except Exception as e:
             return {"present": False, "error": str(e)}
+
+    def relink_perch(self, folder_path: str, perch_id: str) -> dict:
+        """Re-associate a local folder with an EXISTING perch by writing
+        `.kestrel/perch_link.json` — no re-upload.
+
+        For folders that were shared previously but lost their local link (the
+        `.kestrel` folder was deleted, the folder was moved/copied to another
+        machine, etc.). Confirms the perch exists and is owned by the caller via
+        GET /v1/perches/{id} (through get_perch_status), then persists a link
+        payload shaped like the post-upload one so the linked view + "On Perch"
+        button light up exactly as a fresh upload would.
+
+        Returns {"success": True, "link": <payload>} or {"success": False,
+        "error": ...} (error mirrors get_perch_status: not_found / unauthorized /
+        forbidden / no_auth / unreachable …)."""
+        root_real, err = self._validate_root_dir(
+            folder_path, context="relink_perch", require_exists=True
+        )
+        if err:
+            return {"success": False, "error": err}
+        pid = str(perch_id or "").strip()
+        if not pid:
+            return {"success": False, "error": "missing_perch_id"}
+
+        status = self.get_perch_status(pid)
+        if not status.get("ok"):
+            return {"success": False, "error": status.get("error") or "lookup_failed"}
+        st = status.get("status") or {}
+
+        from pathlib import Path as _P
+        import json as _json
+        import time as _time
+
+        created = st.get("createdAt")
+        uploaded_ms = (
+            int(float(created) * 1000)
+            if isinstance(created, (int, float)) and created
+            else int(_time.time() * 1000)
+        )
+        payload = {
+            "version": 1,
+            "perch_id": pid,
+            "perch_url": str(st.get("publicUrl") or ""),
+            "title": str(st.get("title") or _P(str(root_real)).name or ""),
+            "uploaded_at_ms": uploaded_ms,
+            # scene_count isn't exposed by the perch detail endpoint; left 0.
+            # The linked view tolerates 0 (it shows asset/image counts).
+            "scene_count": 0,
+            "asset_count": int(st.get("assetCount") or 0),
+            "image_count": int(st.get("imageCount") or 0),
+            "skip_rejected_used": False,
+            "state_hash_at_upload": self._hash_kestrel_state(str(root_real)),
+            # Marker so a later reader can tell this link was reconstructed
+            # rather than written by a fresh upload (e.g. to soften a tag-sync
+            # state-hash mismatch warning, which is expected after a re-link).
+            "relinked": True,
+        }
+        link_path = self._perch_link_path(str(root_real))
+        try:
+            link_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = link_path.with_suffix(".json.tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                _json.dump(payload, f, indent=2)
+            os.replace(tmp, link_path)
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        return {"success": True, "link": payload}
 
     def delete_perch_link(self, folder_path: str) -> dict:
         """Delete .kestrel/perch_link.json (local only; does not touch Worker)."""
@@ -5373,52 +6547,150 @@ class Api:
         Returns immediately. On success the worker thread persists the OAuth
         bundle to the keychain and calls ``window.onAuthSignIn(token)``; on
         failure it calls ``window.onAuthSignInFailed({error, description})``.
-        Refuses to start a second concurrent flow.
+        Refuses to start a second concurrent flow. This is the loopback (Win/Linux)
+        / ASWebAuthenticationSession (macOS) transport used for Google + email.
+        """
+        return self._begin_sign_in(None)
+
+    def start_apple_native_sign_in(self):
+        """Start native "Sign in with Apple" (ASAuthorizationController).
+
+        macOS App Store build only. Same success/failure contract as
+        ``start_oauth_sign_in`` — persists the same OAuth token bundle and calls
+        ``window.onAuthSignIn`` / ``window.onAuthSignInFailed`` — but the
+        credential is captured in Apple's native system sheet (Guideline 4),
+        then bridged to a Clerk session and the standard OAuth token bundle.
         """
         if _oauth is None:
             return {"success": False, "error": "oauth_module_unavailable"}
         try:
+            apple = _oauth._load_apple_signin()
+        except Exception:
+            apple = None
+        if apple is None:
+            return {"success": False, "error": "apple_unavailable"}
+        return self._begin_sign_in(self._apple_flow)
+
+    def _apple_flow(self, cancel_event):
+        """Worker flow-callable: native Apple credential → Clerk → token bundle.
+
+        Returns the same ``{"ok": bool, "bundle"|"error": ...}`` contract as
+        ``oauth_client.run_authorization_flow`` so ``_oauth_worker`` handles it
+        identically.
+        """
+        apple = _oauth._load_apple_signin()
+        if apple is None:
+            return {
+                "ok": False,
+                "error": "apple_unavailable",
+                "error_description": "Native Sign in with Apple is unavailable on this build.",
+            }
+        return _oauth.run_apple_native_flow(
+            apple,
+            progress_cb=self._oauth_progress_cb,
+            url_validator=_is_safe_external_url,
+            cancel_event=cancel_event,
+        )
+
+    def _begin_sign_in(self, flow_fn=None):
+        """Shared launcher for the sign-in transports.
+
+        ``flow_fn`` is ``None`` for the standard OAuth/loopback/ASWeb flow, or a
+        ``(cancel_event) -> result`` callable (native Apple). Refuses to start a
+        second concurrent flow; a stale in-flight flow is cancelled and reaped so
+        this click can start fresh.
+        """
+        if _oauth is None:
+            return {"success": False, "error": "oauth_module_unavailable"}
+        try:
+            import threading as _t
             lock = self._get_oauth_lock()
-            if not lock.acquire(blocking=False):
+            if not lock.acquire(timeout=5.0):
                 return {"success": False, "error": "flow_in_progress"}
             try:
-                if self._oauth_in_flight:
-                    return {"success": False, "error": "flow_in_progress"}
-                self._oauth_in_flight = True
-                self._oauth_status = "starting"
+                # An in-flight flow here almost always means a previous attempt
+                # was abandoned (the user closed the browser tab without
+                # finishing). Rather than dead-ending until the 5-minute
+                # callback timeout (or an app restart), cancel the stale flow
+                # and reclaim the slot so this click can start fresh.
+                prior_cancel = self._oauth_cancel_event if self._oauth_in_flight else None
+                prior_thread = self._oauth_thread if self._oauth_in_flight else None
             finally:
                 lock.release()
 
-            import threading as _t
-            thread = _t.Thread(
-                target=self._oauth_worker, name="oauth-flow", daemon=True
-            )
+            # Tear down the stale flow OUTSIDE the lock — joining can take a
+            # moment while its loopback callback server unwinds and frees the
+            # port we are about to rebind.
+            if prior_cancel is not None:
+                prior_cancel.set()
+            if prior_thread is not None and prior_thread.is_alive():
+                prior_thread.join(timeout=8.0)
+                if prior_thread.is_alive():
+                    # Couldn't reclaim the port in time — report rather than
+                    # corrupt state by starting a second flow on the same port.
+                    return {"success": False, "error": "flow_in_progress"}
+
+            if not lock.acquire(timeout=5.0):
+                return {"success": False, "error": "flow_in_progress"}
+            try:
+                # The reaped worker's finally clears these; clear defensively in
+                # case it lost the timed join above.
+                cancel_event = _t.Event()
+                self._oauth_cancel_event = cancel_event
+                self._oauth_in_flight = True
+                self._oauth_status = "starting"
+                thread = _t.Thread(
+                    target=self._oauth_worker, args=(cancel_event,),
+                    kwargs={"flow_fn": flow_fn},
+                    name="oauth-flow", daemon=True,
+                )
+                self._oauth_thread = thread
+            finally:
+                lock.release()
+
             thread.start()
             return {"success": True, "started": True}
         except Exception as e:
             self._oauth_in_flight = False
             self._oauth_status = "idle"
-            print(f"[API] start_oauth_sign_in() -> Error: {e}", flush=True)
+            self._oauth_cancel_event = None
+            self._oauth_thread = None
+            print(f"[API] _begin_sign_in() -> Error: {e}", flush=True)
             return {"success": False, "error": str(e)}
 
     def _oauth_progress_cb(self, label: str) -> None:
         self._oauth_status = str(label)
 
-    def _oauth_worker(self) -> None:
-        """Background thread that drives ``oauth_client.run_authorization_flow``.
+    def _oauth_worker(self, cancel_event=None, flow_fn=None) -> None:
+        """Background thread that drives a sign-in flow to completion.
 
-        Persists the result on success and notifies JS either way. Always
-        clears ``_oauth_in_flight`` in ``finally`` so a botched flow doesn't
-        permanently block re-attempts.
+        ``flow_fn`` is ``None`` for the standard OAuth transport
+        (``oauth_client.run_authorization_flow``) or a ``(cancel_event) -> result``
+        callable (native Apple). Either way the result is the same
+        ``{"ok": ...}`` contract. Persists the result on success and notifies JS
+        either way. Always clears ``_oauth_in_flight`` in ``finally`` so a botched
+        flow doesn't permanently block re-attempts. ``cancel_event`` lets a newer
+        sign-in attempt supersede this one (the user closed the OAuth tab and
+        clicked "Sign In" again).
         """
         try:
-            result = _oauth.run_authorization_flow(
-                progress_cb=self._oauth_progress_cb,
-                url_validator=_is_safe_external_url,
-            )
+            if flow_fn is not None:
+                result = flow_fn(cancel_event)
+            else:
+                result = _oauth.run_authorization_flow(
+                    progress_cb=self._oauth_progress_cb,
+                    url_validator=_is_safe_external_url,
+                    cancel_event=cancel_event,
+                )
             if not result.get("ok"):
                 err = str(result.get("error") or "unknown")
                 desc = str(result.get("error_description") or "")
+                # A cancelled flow was superseded by a newer attempt (or a
+                # deliberate abort) — stay quiet so we don't flash a spurious
+                # failure over the fresh flow the user just started.
+                if err == "cancelled":
+                    print("[API] OAuth flow cancelled (superseded).", flush=True)
+                    return
                 print(f"[API] OAuth flow failed: {err} ({desc})", flush=True)
                 self._notify_js_sign_in_failed(err, desc)
                 return
@@ -5426,10 +6698,7 @@ class Api:
             bundle = result["bundle"]
             _keyring_save(bundle)
             # Caches were keyed on the previous (now-stale) identity.
-            self._perch_account_cache = None
-            self._perch_account_cache_at = 0.0
-            self._perch_usage_cache = None
-            self._perch_usage_cache_at = 0.0
+            self._invalidate_account_caches()
             self._notify_js_sign_in(bundle.get("access_token") or "")
         except Exception as e:
             print(f"[API] _oauth_worker() -> Error: {e}", flush=True)
@@ -5438,8 +6707,23 @@ class Api:
             except Exception:
                 pass
         finally:
-            self._oauth_in_flight = False
-            self._oauth_status = "idle"
+            # Only clear shared flow state if THIS worker is still the active
+            # one. A superseded worker must not stomp the flag/event/thread of
+            # the newer flow that replaced it.
+            try:
+                lock = self._get_oauth_lock()
+            except Exception:
+                lock = None
+            acquired = lock.acquire(timeout=5.0) if lock is not None else False
+            try:
+                if cancel_event is None or self._oauth_cancel_event is cancel_event:
+                    self._oauth_in_flight = False
+                    self._oauth_status = "idle"
+                    self._oauth_cancel_event = None
+                    self._oauth_thread = None
+            finally:
+                if acquired:
+                    lock.release()
 
     def _notify_js_sign_in(self, token: str) -> None:
         if self._main_window is None:
@@ -5487,10 +6771,7 @@ class Api:
             bundle = self._load_token_bundle()
             refresh_token = (bundle or {}).get("refresh_token") if bundle else None
             self._clear_keychain_auth()
-            self._perch_account_cache = None
-            self._perch_account_cache_at = 0.0
-            self._perch_usage_cache = None
-            self._perch_usage_cache_at = 0.0
+            self._invalidate_account_caches()
             if refresh_token and _oauth is not None:
                 try:
                     _oauth.revoke_token(str(refresh_token))
@@ -5502,38 +6783,140 @@ class Api:
             print(f"[API] sign_out() -> Error: {e}", flush=True)
             return {"success": False, "error": str(e)}
 
-    def _find_sidecar_file(self, root_path: str, filename: str, ext: str = '.xmp'):
+    class _DirIndex(dict):
+        """Case-folded name -> last on-disk spelling, plus lookup tables.
+
+        Companion lookup still uses last-wins ``self[lower]`` (a string).
+        Main-file resolve uses ``names_set`` / ``folded_counts`` so two files
+        that differ only by case are not collapsed onto whichever listing
+        came last, in O(1) per request. ``names`` is None when listdir failed.
+        """
+
+        def __init__(self, names: list[str] | None):
+            super().__init__()
+            self.names = names
+            self.names_set: set[str] = set()
+            self.folded_counts: dict[str, int] = {}
+            if not names:
+                return
+            for entry in names:
+                key = entry.lower()
+                self[key] = entry
+                self.names_set.add(entry)
+                self.folded_counts[key] = self.folded_counts.get(key, 0) + 1
+
+        def resolve(self, name: str) -> str | None:
+            """Exact spelling, else the unique case-insensitive hit, else None."""
+            if name in self.names_set:
+                return name
+            folded = name.lower()
+            if self.folded_counts.get(folded, 0) == 1:
+                return self[folded]
+            return None
+
+    def _build_dir_index(self, root_path: str) -> dict:
+        """Map lowercased entry name -> real on-disk name for one directory.
+
+        Companion lookup has to be case-insensitive: cameras write
+        ``IMG_2265.JPG`` while ``_culling_companion_extensions`` is normalized
+        to lowercase (``_normalize_extensions`` lowercases unconditionally). A
+        literal ``os.path.exists(base + '.jpg')`` therefore misses the real
+        file on a case-sensitive filesystem, and the JPG silently stays behind
+        when its RAW is rejected. Windows and macOS mask this because their
+        filesystems fold case for us; Linux does not.
+
+        This mirrors the convention `select_camera_images`
+        (kestrel_analyzer/config.py) already applies when it decides a
+        same-stem JPG belongs to a RAW.
+
+        Returns an empty index if the directory is unreadable, so callers
+        degrade to "no companions found" rather than raising.
+        """
+        try:
+            return self._DirIndex(os.listdir(root_path))
+        except OSError:
+            return self._DirIndex(None)
+
+    def _resolve_dir_filename(self, filename: str, dir_index: dict | None,
+                              directory: str) -> str | None:
+        """Return the on-disk spelling of ``filename`` in ``directory``.
+
+        The UI / CSV may hold ``img.cr3`` while the camera wrote ``IMG.CR3``.
+        Companion lookup already goes through ``_build_dir_index``; the main
+        reject/undo path used a case-sensitive join, which fails on
+        case-sensitive filesystems and can rewrite casing on macOS/Windows.
+
+        Exact listing match wins. A unique case-insensitive match is used
+        when the requested spelling is absent. If two files differ only by
+        case and the request is not an exact listing hit, return None rather
+        than moving the last-folded index entry.
+
+        Falls back to ``filename`` when the listing is unavailable but the
+        exact path exists (listdir failed).
+        """
+        name = str(filename or '').strip()
+        if not name:
+            return None
+        index = dir_index if dir_index is not None else self._build_dir_index(directory)
+        if isinstance(index, self._DirIndex) and index.names is not None:
+            return index.resolve(name)
+        try:
+            listing = os.listdir(directory)
+        except OSError:
+            if os.path.exists(os.path.join(directory, name)):
+                return name
+            return index.get(name.lower()) if index else None
+        return self._DirIndex(listing).resolve(name)
+
+    def _find_sidecar_file(self, root_path: str, filename: str, ext: str = '.xmp',
+                           dir_index: dict | None = None):
         """Find sidecar file with given extension for an image file.
-        
+
         Checks multiple naming conventions:
         - filename + ext (e.g., IMG_001.CR3.xmp)
         - name_without_ext + ext (e.g., IMG_001.xmp for IMG_001.CR3)
-        
+
+        Matching is case-insensitive; the returned name is the real on-disk
+        spelling, so callers can join it to a path directly.
+
+        ``dir_index`` is an optional pre-built listing from
+        ``_build_dir_index``. Pass it when resolving many files in one
+        directory to avoid re-listing per file; omit it and one is built here.
+
         Returns the filename (not path) if found, None otherwise.
         Searches in the same directory as the image.
         """
-        # Check primary naming: filename + ext (e.g., IMG_001.CR3.xmp)
-        sidecar_path = os.path.join(root_path, filename + ext)
-        if os.path.exists(sidecar_path):
-            return filename + ext
-        
-        # Check secondary naming: name_without_ext + ext (e.g., IMG_001.xmp)
+        index = self._build_dir_index(root_path) if dir_index is None else dir_index
+
+        # Primary naming: filename + ext (e.g., IMG_001.CR3.xmp)
+        hit = index.get((filename + ext).lower())
+        if hit:
+            return hit
+
+        # Secondary naming: name_without_ext + ext (e.g., IMG_001.xmp)
         if '.' in filename:
             base_name = filename.rsplit('.', 1)[0]
-            alt_sidecar_path = os.path.join(root_path, base_name + ext)
-            if os.path.exists(alt_sidecar_path):
-                return base_name + ext
-        
+            hit = index.get((base_name + ext).lower())
+            if hit:
+                return hit
+
         return None
 
-    def _find_companion_files(self, root_path: str, filename: str) -> list[str]:
-        """Find configured companion files (XMP + JPEG variants) for an image."""
+    def _find_companion_files(self, root_path: str, filename: str,
+                              dir_index: dict | None = None) -> list[str]:
+        """Find configured companion files (XMP + JPEG variants) for an image.
+
+        ``dir_index`` is an optional pre-built listing from
+        ``_build_dir_index``. Without it this lists the directory once per
+        call; batch callers should build the index once and pass it in.
+        """
         companions: list[str] = []
         seen: set[str] = set()
         filename_key = str(filename or '').lower()
+        index = self._build_dir_index(root_path) if dir_index is None else dir_index
 
         for ext in self._culling_companion_extensions:
-            companion = self._find_sidecar_file(root_path, filename, ext)
+            companion = self._find_sidecar_file(root_path, filename, ext, dir_index=index)
             if not companion:
                 continue
             key = companion.lower()
@@ -5544,46 +6927,152 @@ class Api:
 
         return companions
 
-    def _move_file_with_sidecars(self, root_path: str, filename: str, reject_dir: str):
+    def _move_file_with_sidecars(self, root_path: str, filename: str, reject_dir: str,
+                                 dir_index: dict | None = None):
         """Move a file and its configured companion files to reject directory.
-        
-        Returns (success: bool, moved_files: list[str])
+
+        ``dir_index`` is an optional pre-built listing of ``root_path`` shared
+        across a batch. It can go stale as files move out during the batch, but
+        every move below is already guarded by ``os.path.exists``, so a stale
+        entry degrades to a logged warning rather than an error.
+
+        Returns (success: bool, moved_files: list[str], skipped: list[dict]).
+        ``skipped`` holds ``{'filename': str, 'reason': str}`` entries for the
+        main file and/or companions that were NOT moved (conflict, missing, or
+        error), so the caller can report exactly which files stayed behind.
         """
         moved_files = []
+        skipped: list[dict] = []
 
-        # Move main file
-        src = os.path.join(root_path, filename)
-        dst = os.path.join(reject_dir, filename)
+        real_name = self._resolve_dir_filename(filename, dir_index, root_path)
+        if not real_name:
+            return False, moved_files, [{'filename': filename, 'reason': 'source not found'}]
+
+        # Move main file under its real on-disk spelling.
+        src = os.path.join(root_path, real_name)
+        dst = os.path.join(reject_dir, real_name)
         try:
-            if os.path.exists(src):
-                shutil.move(src, dst)
-                moved_files.append(filename)
-            else:
-                return False, moved_files
-        except Exception:
-            return False, moved_files
+            if not os.path.exists(src):
+                return False, moved_files, [{'filename': filename, 'reason': 'source not found'}]
+            if os.path.exists(dst):
+                # Never overwrite a file already in the reject folder.
+                # shutil.move() falls through to os.rename(), which on POSIX
+                # (Linux/macOS) silently replaces the destination -- so a stale
+                # reject with a recurring camera filename (common after an
+                # SD-card reformat, e.g. a second IMG_0001.CR3) would be
+                # destroyed with no warning. Refuse rather than lose data.
+                warn(f'[reject] destination already exists, not overwriting: {dst}')
+                return False, moved_files, [{'filename': filename, 'reason': _REJECT_DEST_EXISTS_REASON}]
+            _move_no_overwrite(src, dst)
+            moved_files.append(real_name)
+        except FileExistsError:
+            # Dest appeared between the exists() check and the exclusive create.
+            warn(f'[reject] destination already exists, not overwriting: {dst}')
+            return False, moved_files, [{'filename': filename, 'reason': _REJECT_DEST_EXISTS_REASON}]
+        except Exception as e:
+            warn(f'[reject] Failed to move {filename}: {e}')
+            return False, moved_files, [{'filename': filename, 'reason': type(e).__name__}]
 
-        companion_files = self._find_companion_files(root_path, filename)
+        companion_files = self._find_companion_files(root_path, real_name, dir_index=dir_index)
         if companion_files:
             for companion in companion_files:
                 companion_src = os.path.join(root_path, companion)
                 companion_dst = os.path.join(reject_dir, companion)
                 try:
-                    if os.path.exists(companion_src):
-                        shutil.move(companion_src, companion_dst)
-                        moved_files.append(companion)
-                    else:
+                    if not os.path.exists(companion_src):
                         warn(f'[reject] companion detected but not found at: {companion_src}')
+                        skipped.append({'filename': companion, 'reason': 'companion not found on disk'})
+                        continue
+                    if os.path.exists(companion_dst):
+                        # Same no-overwrite rule for companions (e.g. IMG_0001.JPG):
+                        # surface the conflict instead of silently leaving it behind.
+                        warn(f'[reject] companion destination already exists, not overwriting: {companion_dst}')
+                        skipped.append({'filename': companion, 'reason': _REJECT_DEST_EXISTS_REASON})
+                        continue
+                    _move_no_overwrite(companion_src, companion_dst)
+                    moved_files.append(companion)
+                except FileExistsError:
+                    warn(f'[reject] companion destination already exists, not overwriting: {companion_dst}')
+                    skipped.append({'filename': companion, 'reason': _REJECT_DEST_EXISTS_REASON})
                 except Exception as e:
-                    # Log warning but don't fail the main move if a companion fails
+                    # Don't fail the (already moved) main file, but surface it.
                     warn(f'[reject] Failed to move {companion}: {e}')
+                    skipped.append({'filename': companion, 'reason': type(e).__name__})
         else:
             debug(f'[reject] No companion sidecars found for: {filename}')
 
-        return True, moved_files
+        return True, moved_files, skipped
+
+    @staticmethod
+    def _requested_mains_outcome(requested_mains, completed_filenames):
+        """Flags for a reject/undo batch keyed on the *requested main* files.
+
+        Companions are not requested; they may appear in ``completed_filenames``
+        and ``skipped`` but they do not affect these flags.
+
+        ``all_done`` is True iff every requested main file is in
+        ``completed_filenames``. ``success`` is False only when the caller
+        asked to process at least one main file and none of those mains
+        actually completed -- so callers that gate only on ``success`` cannot
+        drop UI state for files that never left disk. An empty request is a
+        successful no-op. Partial batches keep ``success`` True and set
+        ``all_done`` False; callers must reconcile via moved_requested /
+        restored_requested (and the back-compat moved_filenames /
+        restored_filenames plus skipped).
+        """
+        # Reconcile case-insensitively. #130 made reject/undo resolve the main
+        # file to its real on-disk spelling, so a request for ``img_0101.cr3``
+        # completes as ``IMG_0101.CR3``. Comparing raw strings would report a
+        # successful batch as a total failure on any case-insensitive volume.
+        completed = {str(fn).casefold() for fn in completed_filenames}
+        wanted = [str(fn).casefold() for fn in requested_mains]
+        all_done = all(fn in completed for fn in wanted)
+        any_done = any(fn in completed for fn in wanted)
+        success = (not requested_mains) or any_done
+        return all_done, success
+
+    @staticmethod
+    def _requested_filename_lists(requested_mains, completed_filenames, skipped):
+        """Split a batch result into requested-main moved/skipped lists.
+
+        Companions may appear in ``completed_filenames`` and ``skipped``; they
+        are omitted from these lists so callers can reconcile UI state without
+        intersecting against the original request.
+        """
+        # Case-insensitive for the same reason as _requested_mains_outcome:
+        # completed_filenames carries the on-disk spelling, the request may not.
+        completed = {str(fn).casefold() for fn in completed_filenames}
+        requested_set = {str(fn).casefold() for fn in requested_mains}
+        completed_requested = [fn for fn in requested_mains if str(fn).casefold() in completed]
+        skipped_requested = [
+            item for item in skipped
+            if str(item.get('filename', '')).casefold() in requested_set
+        ]
+        return completed_requested, skipped_requested
 
     def move_rejects_to_folder(self, root_path: str, filenames):
-        """Move original photo files and sidecars into _KESTREL_Rejects subfolder."""
+        """Move original photo files and sidecars into _KESTREL_Rejects subfolder.
+
+        Return contract (callers must reconcile, not assume every requested
+        file moved just because ``success`` is True):
+
+        - ``success``: False on hard failures (bad root, exception) and when
+          at least one main file was requested but **none** of those mains
+          moved (all conflicts, missing, or invalid names). True for a
+          successful no-op (empty list) and for partial batches.
+        - ``all_moved``: True iff every requested *main* file is in
+          ``moved_filenames``. Invalid names and unmoved mains clear this.
+          Companion skips do not.
+        - ``moved_filenames``: every file that actually moved (requested mains
+          **and** companions). The culling UI intersects this with the request
+          list to recover which mains moved when ``moved_requested`` is absent.
+        - ``moved_requested``: requested main filenames that actually moved
+          (no companions). Prefer this over intersecting ``moved_filenames``.
+        - ``skipped``: mains and companions that did not move (conflict,
+          missing, invalid name, or error).
+        - ``skipped_requested``: ``skipped`` entries whose filename is a
+          requested main (no companions).
+        """
         try:
             root_real, err = self._validate_root_dir(root_path, context='move_rejects_to_folder', require_exists=True)
             if err:
@@ -5596,8 +7085,9 @@ class Api:
                 return {'success': False, 'error': 'Invalid reject folder path'}
 
             os.makedirs(reject_dir, exist_ok=True)
-            moved = []
-            errors = []
+            moved = []             # every file actually moved (main + companions)
+            skipped = []           # [{'filename', 'reason'}] for anything not moved
+            errors = []            # same info as formatted strings (back-compat)
 
             if isinstance(filenames, list):
                 raw_filenames = filenames
@@ -5608,21 +7098,55 @@ class Api:
             else:
                 raw_filenames = []
             sanitized_filenames = []
+            requested_mains = []
             for raw in raw_filenames:
                 clean = self._sanitize_plain_filename(raw, context='move_rejects_to_folder')
                 if clean:
                     sanitized_filenames.append(clean)
+                    requested_mains.append(clean)
                 else:
+                    requested_mains.append(str(raw))
+                    skipped.append({'filename': str(raw), 'reason': 'invalid filename'})
                     errors.append(f'{raw}: invalid filename')
 
+            # One listing for the whole batch: every file here lives in
+            # root_real, so re-listing per file (x6 companion extensions)
+            # would be O(files x dirsize) on a folder that can hold thousands.
+            dir_index = self._build_dir_index(root_real)
             for fn in sanitized_filenames:
-                success, moved_files = self._move_file_with_sidecars(root_real, fn, reject_dir)
-                if success:
+                _success, moved_files, file_skipped = self._move_file_with_sidecars(
+                    root_real, fn, reject_dir, dir_index=dir_index
+                )
+                if moved_files:
                     moved.extend(moved_files)
-                else:
-                    errors.append(f'{fn}: move failed')
-            info(f'[reject] moved {len(moved)} file(s) (including sidecars), errors {len(errors)}')
-            return {'success': True, 'moved': len(moved), 'errors': errors, 'reject_folder': reject_real}
+                # Surface every conflict (main file and/or companions) both as a
+                # structured entry (so callers can reconcile moved vs skipped by
+                # filename) and as a formatted string (backward compatible).
+                for s in file_skipped:
+                    skipped.append(s)
+                    errors.append(f"{s['filename']}: {s['reason']}")
+            info(f'[reject] moved {len(moved)} file(s) (including sidecars), skipped {len(skipped)}')
+            all_moved, success = self._requested_mains_outcome(requested_mains, moved)
+            moved_requested, skipped_requested = self._requested_filename_lists(
+                requested_mains, moved, skipped
+            )
+            result = {
+                'success': success,
+                'all_moved': all_moved,
+                'moved': len(moved),
+                'moved_filenames': moved,
+                'moved_requested': moved_requested,
+                'skipped': skipped,
+                'skipped_requested': skipped_requested,
+                'errors': errors,
+                'reject_folder': reject_real,
+            }
+            if not success:
+                result['error'] = (
+                    'none of the requested files could be moved '
+                    '(name conflicts, missing files, or invalid filenames; see skipped)'
+                )
+            return result
         except Exception as e:
             error(f'[API] move_rejects_to_folder error: {e}')
             return {'success': False, 'error': str(e)}
@@ -5634,12 +7158,19 @@ class Api:
         overwrite_external: bool = False,
         use_auto_labels: bool = False,
         fields=None,
+        embed_jpeg: bool = False,
     ):
         """Write XMP sidecar files for each image, embedding star rating and culling label.
 
         ``fields`` is an optional dict selecting which sections to write
         (``rating``, ``label``, ``species``, ``family``, ``quality``).
         Omitting it writes everything, preserving legacy behaviour.
+
+        ``embed_jpeg`` (default False) additionally embeds the same XMP fields
+        directly into each JPEG original's own XMP segment, in place. This is
+        what makes Kestrel's ratings/labels visible to Adobe Lightroom, which
+        ignores .xmp sidecars for JPEGs. It modifies the original JPEG files
+        (pixel data untouched); non-JPEG files are unaffected.
         """
         if _write_xmp_metadata is None:
             return {'success': False, 'error': 'metadata_writer module not available'}
@@ -5652,45 +7183,86 @@ class Api:
             overwrite_external,
             use_auto_labels,
             fields=fields if isinstance(fields, dict) else None,
+            embed_jpeg=bool(embed_jpeg),
         )
 
-    def _restore_file_with_sidecars(self, reject_dir: str, root_path: str, filename: str):
+    def _restore_file_with_sidecars(self, reject_dir: str, root_path: str, filename: str,
+                                    dir_index: dict | None = None):
         """Restore a file and its configured companion files from reject directory.
 
-        Returns (success: bool, restored_files: list[str])
+        ``dir_index`` is an optional pre-built listing of ``reject_dir`` shared
+        across a batch; see ``_move_file_with_sidecars`` on staleness.
+
+        Returns (success: bool, restored_files: list[str], skipped: list[dict]).
+        ``skipped`` holds ``{'filename': str, 'reason': str}`` entries so the
+        main file and companion conflicts are surfaced to the caller structured,
+        not just logged.
         """
         restored_files = []
+        skipped: list[dict] = []
 
-        # Restore main file
-        src = os.path.join(reject_dir, filename)
-        dst = os.path.join(root_path, filename)
+        real_name = self._resolve_dir_filename(filename, dir_index, reject_dir)
+        if not real_name:
+            return False, restored_files, [{'filename': filename, 'reason': 'not found in rejects'}]
+
+        # Restore main file under its real on-disk spelling.
+        src = os.path.join(reject_dir, real_name)
+        dst = os.path.join(root_path, real_name)
         try:
-            if os.path.exists(src):
-                shutil.move(src, dst)
-                restored_files.append(filename)
-            else:
-                return False, restored_files
-        except Exception:
-            return False, restored_files
+            if not os.path.exists(src):
+                return False, restored_files, [{'filename': filename, 'reason': 'not found in rejects'}]
+            if os.path.exists(dst):
+                # Don't overwrite a file the user re-added to the shoot folder;
+                # shutil.move would silently replace it on POSIX. Refuse instead.
+                warn(f'[reject-undo] destination already exists, not overwriting: {dst}')
+                return False, restored_files, [{'filename': filename, 'reason': _SHOOT_DEST_EXISTS_REASON}]
+            _move_no_overwrite(src, dst)
+            restored_files.append(real_name)
+        except FileExistsError:
+            warn(f'[reject-undo] destination already exists, not overwriting: {dst}')
+            return False, restored_files, [{'filename': filename, 'reason': _SHOOT_DEST_EXISTS_REASON}]
+        except Exception as e:
+            warn(f'[reject-undo] Failed to restore {filename}: {e}')
+            return False, restored_files, [{'filename': filename, 'reason': type(e).__name__}]
 
-        companion_files = self._find_companion_files(reject_dir, filename)
+        companion_files = self._find_companion_files(reject_dir, real_name, dir_index=dir_index)
         if companion_files:
             for companion in companion_files:
                 companion_src = os.path.join(reject_dir, companion)
                 companion_dst = os.path.join(root_path, companion)
                 try:
-                    shutil.move(companion_src, companion_dst)
+                    if not os.path.exists(companion_src):
+                        warn(f'[reject-undo] companion detected but not found at: {companion_src}')
+                        skipped.append({'filename': companion, 'reason': 'companion not found on disk'})
+                        continue
+                    if os.path.exists(companion_dst):
+                        warn(f'[reject-undo] companion destination already exists, not overwriting: {companion_dst}')
+                        skipped.append({'filename': companion, 'reason': _SHOOT_DEST_EXISTS_REASON})
+                        continue
+                    _move_no_overwrite(companion_src, companion_dst)
                     restored_files.append(companion)
+                except FileExistsError:
+                    warn(f'[reject-undo] companion destination already exists, not overwriting: {companion_dst}')
+                    skipped.append({'filename': companion, 'reason': _SHOOT_DEST_EXISTS_REASON})
                 except Exception as e:
-                    # Log warning but don't fail if companion restore fails
                     warn(f'[reject-undo] Failed to restore {companion}: {e}')
+                    skipped.append({'filename': companion, 'reason': type(e).__name__})
         else:
             debug(f'[reject-undo] No companion sidecars found for: {filename}')
 
-        return True, restored_files
+        return True, restored_files, skipped
 
     def undo_reject_move(self, root_path: str, filenames):
-        """Move files and their sidecars back from _KESTREL_Rejects to the root folder."""
+        """Move files and their sidecars back from _KESTREL_Rejects to the root folder.
+
+        Return contract mirrors ``move_rejects_to_folder``: ``success`` is
+        False when requested mains all failed to restore (including an
+        all-invalid-name request); ``all_restored`` is True iff every requested
+        main is in ``restored_filenames``. ``restored_filenames`` includes
+        companions. ``restored_requested`` / ``skipped_requested`` are the
+        requested-main subsets. Callers must reconcile UI state from those
+        lists (or ``restored_filenames`` / ``skipped``).
+        """
         try:
             root_real, err = self._validate_root_dir(root_path, context='undo_reject_move', require_exists=True)
             if err:
@@ -5705,8 +7277,9 @@ class Api:
                 self._log_security_reject('undo_reject_move', 'Reject folder escapes root', root=root_real, reject=reject_real)
                 return {'success': False, 'error': 'Invalid reject folder path'}
 
-            restored = []
-            errors = []
+            restored = []          # every file actually restored (main + companions)
+            skipped = []           # [{'filename', 'reason'}] for anything not restored
+            errors = []            # same info as formatted strings (back-compat)
 
             if isinstance(filenames, list):
                 raw_filenames = filenames
@@ -5717,21 +7290,50 @@ class Api:
             else:
                 raw_filenames = []
             sanitized_filenames = []
+            requested_mains = []
             for raw in raw_filenames:
                 clean = self._sanitize_plain_filename(raw, context='undo_reject_move')
                 if clean:
                     sanitized_filenames.append(clean)
+                    requested_mains.append(clean)
                 else:
+                    requested_mains.append(str(raw))
+                    skipped.append({'filename': str(raw), 'reason': 'invalid filename'})
                     errors.append(f'{raw}: invalid filename')
 
+            # One listing for the whole batch — same reasoning as the reject
+            # path, over the rejects folder instead of the shoot folder.
+            restore_index = self._build_dir_index(reject_dir)
             for fn in sanitized_filenames:
-                success, restored_files = self._restore_file_with_sidecars(reject_dir, root_real, fn)
-                if success:
+                _success, restored_files, file_skipped = self._restore_file_with_sidecars(
+                    reject_dir, root_real, fn, dir_index=restore_index
+                )
+                if restored_files:
                     restored.extend(restored_files)
-                else:
-                    errors.append(f"{fn}: not found in rejects")
-            info(f"[reject-undo] restored {len(restored)} file(s) (including sidecars), errors {len(errors)}")
-            return {"success": True, "restored": len(restored), "errors": errors}
+                for s in file_skipped:
+                    skipped.append(s)
+                    errors.append(f"{s['filename']}: {s['reason']}")
+            info(f"[reject-undo] restored {len(restored)} file(s) (including sidecars), skipped {len(skipped)}")
+            all_restored, success = self._requested_mains_outcome(requested_mains, restored)
+            restored_requested, skipped_requested = self._requested_filename_lists(
+                requested_mains, restored, skipped
+            )
+            result = {
+                "success": success,
+                "all_restored": all_restored,
+                "restored": len(restored),
+                "restored_filenames": restored,
+                "restored_requested": restored_requested,
+                "skipped": skipped,
+                "skipped_requested": skipped_requested,
+                "errors": errors,
+            }
+            if not success:
+                result["error"] = (
+                    "none of the requested files could be restored "
+                    "(name conflicts, missing files, or invalid filenames; see skipped)"
+                )
+            return result
         except Exception as e:
             error(f"[API] undo_reject_move error: {e}")
             return {"success": False, "error": str(e)}
@@ -5780,12 +7382,14 @@ class Api:
 
             reject_filenames = []
             excluded = set()
+            # Read-only scan, so one listing is safe and strictly correct here.
+            scan_index = self._build_dir_index(reject_dir)
             for name in candidates:
                 key = name.lower()
                 if key in excluded:
                     continue
                 reject_filenames.append(name)
-                companions = self._find_companion_files(reject_dir, name)
+                companions = self._find_companion_files(reject_dir, name, dir_index=scan_index)
                 for comp in companions:
                     excluded.add(comp.lower())
 
@@ -5831,14 +7435,27 @@ class Api:
             if not os.path.exists(csv_path):
                 return {"success": False, "error": "kestrel_database.csv not found", "backup_csv": "", "backup_scenedata": ""}
 
+            # Preserve any backup already sitting in the slot before we overwrite
+            # it. There is only one canonical `_old` name per file and Undo
+            # restores from it, so a second reject move would otherwise destroy
+            # the first move's undo point with no warning. Rotate a slot only
+            # when its replacement is actually about to be written: scenedata is
+            # optional, and archiving its `_old` without writing a new one would
+            # leave Undo able to restore the CSV but not the scene data it
+            # belongs to.
+            rotate_pairs = [(csv_backup, 'precull_kestrel_database', '.csv')]
+            if os.path.exists(scenedata_path):
+                rotate_pairs.append((scenedata_backup, 'precull_kestrel_scenedata', '.json'))
+            rotated = self._rotate_existing_backups(kestrel_dir, rotate_pairs)
+
             # Backup CSV
-            shutil.copy2(csv_path, csv_backup)
+            copy_file_atomic(csv_path, csv_backup)
             info(f"[backup] CSV backed up to {csv_backup}")
 
             # Backup scenedata if it exists
             scenedata_backed = False
             if os.path.exists(scenedata_path):
-                shutil.copy2(scenedata_path, scenedata_backup)
+                copy_file_atomic(scenedata_path, scenedata_backup)
                 scenedata_backed = True
                 info(f"[backup] Scenedata backed up to {scenedata_backup}")
 
@@ -5846,11 +7463,76 @@ class Api:
                 "success": True,
                 "backup_csv": csv_backup,
                 "backup_scenedata": scenedata_backup if scenedata_backed else "",
+                "rotated_previous": rotated,
                 "error": ""
             }
         except Exception as e:
             error(f"[API] backup_kestrel_db error: {e}")
             return {"success": False, "error": str(e), "backup_csv": "", "backup_scenedata": ""}
+
+    #: How many timestamped ``OLD_*`` copies to keep per file. Unlike the
+    #: schema-upgrade backups this shares a name with, rotation here happens on
+    #: every reject move, so an actively culled folder would otherwise
+    #: accumulate a full database copy per pass forever.
+    _BACKUP_ARCHIVE_RETENTION = 3
+
+    def _rotate_existing_backups(self, kestrel_dir: str, pairs) -> bool:
+        """Move existing ``*_old`` backups aside under a timestamped name.
+
+        ``pairs`` is a sequence of ``(existing_backup_path, stem, extension)``;
+        only slots whose replacement is about to be written should be passed.
+
+        Returns True if anything was rotated. Best-effort: a failure here must
+        not abort the caller's own backup, because failing to take the new
+        backup is strictly worse than failing to preserve the previous one.
+        """
+        rotated = False
+        try:
+            # Imported locally, as elsewhere in this module — api_bridge has no
+            # module-level datetime import.
+            from datetime import datetime, timezone
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            for existing, stem, ext in pairs:
+                if not os.path.exists(existing):
+                    continue
+                prefix = f"OLD_{stem}_"
+                archived = os.path.join(kestrel_dir, f"{prefix}{timestamp}{ext}")
+                # Two moves inside one second would collide. Suffix rather than
+                # skip: skipping leaves the previous undo point to be
+                # overwritten by the copy2 that follows.
+                if os.path.exists(archived):
+                    for n in range(1, 100):
+                        candidate = os.path.join(kestrel_dir, f"{prefix}{timestamp}_{n}{ext}")
+                        if not os.path.exists(candidate):
+                            archived = candidate
+                            break
+                    else:
+                        continue
+                os.replace(existing, archived)
+                rotated = True
+                info(f"[backup] Previous backup preserved as {os.path.basename(archived)}")
+                self._prune_backup_archives(kestrel_dir, prefix, ext)
+        except Exception as e:
+            warn(f"[backup] Could not rotate previous backup (continuing): {e}")
+        return rotated
+
+    def _prune_backup_archives(self, kestrel_dir: str, prefix: str, ext: str) -> None:
+        """Keep only the newest ``_BACKUP_ARCHIVE_RETENTION`` archived copies."""
+        try:
+            archives = sorted(
+                name for name in os.listdir(kestrel_dir)
+                if name.startswith(prefix) and name.endswith(ext)
+            )
+            # Names are prefix + %Y%m%d_%H%M%S [+ _n] + ext, so lexical order is
+            # chronological and the tail is the newest.
+            for stale in archives[:-self._BACKUP_ARCHIVE_RETENTION]:
+                try:
+                    os.remove(os.path.join(kestrel_dir, stale))
+                    debug(f"[backup] Pruned old archive {stale}")
+                except Exception as e:
+                    warn(f"[backup] Could not prune {stale}: {e}")
+        except Exception as e:
+            warn(f"[backup] Could not prune old archives (continuing): {e}")
 
     def restore_kestrel_db_backup(self, root_path: str):
         """Restore both kestrel_database.csv and kestrel_scenedata.json from backups.
@@ -5881,19 +7563,792 @@ class Api:
             if not os.path.exists(csv_backup):
                 return {"success": False, "error": "kestrel_database_old.csv not found"}
 
+            # Atomic restore: overwrite the live files via temp-file + os.replace
+            # so an interrupted restore can't leave the live database/scenedata
+            # half-written. (This path runs right after a risky reject-and-move.)
+            try:
+                from kestrel_analyzer.database import copy_file_atomic
+            except ImportError:
+                from analyzer.kestrel_analyzer.database import copy_file_atomic  # type: ignore[no-redef]
+
             # Restore CSV
-            shutil.copy2(csv_backup, csv_path)
+            copy_file_atomic(csv_backup, csv_path)
             info(f"[backup] CSV restored from {csv_backup}")
 
             # Restore scenedata if backup exists
             if os.path.exists(scenedata_backup):
-                shutil.copy2(scenedata_backup, scenedata_path)
+                copy_file_atomic(scenedata_backup, scenedata_path)
                 info(f"[backup] Scenedata restored from {scenedata_backup}")
 
             return {"success": True, "error": ""}
         except Exception as e:
             error(f"[API] restore_kestrel_db_backup error: {e}")
             return {"success": False, "error": str(e)}
+
+    # ── Folder drift detection & repair ──────────────────────────────────────
+    #
+    # Kestrel keys a database row to a photo by name and location, both of which
+    # the filesystem lets the user change silently. These methods report that
+    # drift and apply user-confirmed fixes.
+    #
+    # BACKUPS: these deliberately do NOT call ``backup_kestrel_db``. That writes
+    # the single canonical ``kestrel_database_old.csv`` slot, and
+    # ``get_reject_restore_state`` decides whether to offer "Undo Move" purely
+    # by that file's existence while ``restore_kestrel_db_backup`` restores from
+    # it unconditionally. A repair backup in that slot would make the app offer
+    # to undo a culling move and then restore the pre-*repair* state instead of
+    # the pre-*cull* one. Repairs get their own slot.
+
+    _REPAIR_BACKUP_STEM = "prerepair_kestrel_database"
+    _REPAIR_SCENEDATA_BACKUP_STEM = "prerepair_kestrel_scenedata"
+
+    def _backup_before_repair(self, kestrel_dir: str) -> str:
+        """Snapshot the database and scenedata under a repair-only name.
+
+        Returns the backup CSV path, or '' if there was nothing to back up.
+        Raises on failure — a repair must not proceed without its undo point.
+        """
+        from datetime import datetime, timezone
+        try:
+            from kestrel_analyzer.database import copy_file_atomic
+        except ImportError:  # package-style import path
+            from analyzer.kestrel_analyzer.database import copy_file_atomic  # type: ignore[no-redef]
+
+        csv_path = os.path.join(kestrel_dir, 'kestrel_database.csv')
+        if not os.path.isfile(csv_path):
+            return ''
+        timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+        csv_backup = os.path.join(
+            kestrel_dir, f'{self._REPAIR_BACKUP_STEM}_{timestamp}.csv'
+        )
+        copy_file_atomic(csv_path, csv_backup)
+
+        scenedata_path = os.path.join(kestrel_dir, 'kestrel_scenedata.json')
+        if os.path.isfile(scenedata_path):
+            copy_file_atomic(
+                scenedata_path,
+                os.path.join(
+                    kestrel_dir,
+                    f'{self._REPAIR_SCENEDATA_BACKUP_STEM}_{timestamp}.json',
+                ),
+            )
+            self._prune_backup_archives(
+                kestrel_dir, f'{self._REPAIR_SCENEDATA_BACKUP_STEM}_', '.json'
+            )
+        self._prune_backup_archives(
+            kestrel_dir, f'{self._REPAIR_BACKUP_STEM}_', '.csv'
+        )
+        info(f'[repair] Pre-repair backup at {os.path.basename(csv_backup)}')
+        return csv_backup
+
+    def _repair_import(self):
+        """Import folder_diff, tolerating both import styles used in this repo."""
+        try:
+            import folder_diff  # type: ignore
+            return folder_diff
+        except ImportError:
+            from analyzer import folder_diff  # type: ignore
+            return folder_diff
+
+    def compute_folder_diff(self, folder_path: str, scan_subfolders: bool = True):
+        """Report drift between a folder's images and its .kestrel database.
+
+        Read-only. The caller MUST check ``scan_status``: only ``'ok'`` means the
+        listing is authoritative, and no repair may be offered on any other value.
+        """
+        try:
+            root_real, _kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path,
+                context='compute_folder_diff',
+                require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+
+            diff = self._repair_import().compute_folder_diff(
+                root_real, scan_subfolders=bool(scan_subfolders)
+            )
+            return {'success': True, 'diff': diff, 'error': ''}
+        except Exception as e:
+            error(f'[API] compute_folder_diff error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def _load_repair_frame(self, kestrel_dir: str):
+        """Load the database CSV for a repair edit, or raise with a clear reason."""
+        try:
+            from kestrel_analyzer.database import read_database_csv
+        except ImportError:  # package-style import path
+            from analyzer.kestrel_analyzer.database import read_database_csv  # type: ignore[no-redef]
+        csv_path = os.path.join(kestrel_dir, 'kestrel_database.csv')
+        if not os.path.isfile(csv_path):
+            raise FileNotFoundError('kestrel_database.csv not found')
+        return read_database_csv(csv_path), csv_path
+
+    @staticmethod
+    def _write_repair_frame(frame, csv_path: str) -> None:
+        try:
+            from kestrel_analyzer.database import _to_csv_atomic
+        except ImportError:  # package-style import path
+            from analyzer.kestrel_analyzer.database import _to_csv_atomic  # type: ignore[no-redef]
+        _to_csv_atomic(frame, csv_path)
+
+    def _read_scenedata_for_repair(self, kestrel_dir: str) -> dict:
+        path = os.path.join(kestrel_dir, 'kestrel_scenedata.json')
+        if not os.path.isfile(path):
+            return {}
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception as e:
+            warn(f'[repair] Could not read scenedata ({e}); leaving it untouched')
+            return {}
+
+    @staticmethod
+    def _load_repair_fingerprints(root_real: str) -> dict:
+        """Read the XMP fingerprint store, or {} when it is absent/unusable."""
+        try:
+            try:
+                from metadata_writer import _load_xmp_fingerprints
+            except ImportError:  # package-style import path
+                from analyzer.metadata_writer import _load_xmp_fingerprints  # type: ignore[no-redef]
+            return _load_xmp_fingerprints(root_real)
+        except Exception as e:
+            warn(f'[repair] Could not read XMP fingerprints: {e}')
+            return {}
+
+    @staticmethod
+    def _save_repair_fingerprints(root_real: str, fingerprints: dict) -> bool:
+        """Persist the XMP fingerprint store. Returns False if it could not be written."""
+        try:
+            try:
+                from metadata_writer import _save_xmp_fingerprints
+            except ImportError:  # package-style import path
+                from analyzer.metadata_writer import _save_xmp_fingerprints  # type: ignore[no-redef]
+            _save_xmp_fingerprints(root_real, fingerprints)
+            return True
+        except Exception as e:
+            warn(f'[repair] Could not write XMP fingerprints: {e}')
+            return False
+
+    def _write_scenedata_for_repair(self, kestrel_dir: str, scenedata: dict) -> None:
+        if not scenedata:
+            return
+        try:
+            from kestrel_analyzer.database import save_scenedata
+        except ImportError:  # package-style import path
+            from analyzer.kestrel_analyzer.database import save_scenedata  # type: ignore[no-redef]
+        save_scenedata(scenedata, kestrel_dir)
+
+    @staticmethod
+    def _scenedata_drop_filenames(scenedata: dict, names) -> None:
+        """Remove ``names`` from scenedata ratings and scene membership in place.
+
+        A scene emptied by the removal is deleted rather than left behind: every
+        photo in it has gone, so keeping it would leave a memberless scene in the
+        timeline that the user can neither open nor get rid of.
+        """
+        drop = set(names)
+        ratings = scenedata.get('image_ratings')
+        if isinstance(ratings, dict):
+            for name in list(ratings.keys()):
+                if name in drop:
+                    del ratings[name]
+        scenes = scenedata.get('scenes')
+        if isinstance(scenes, dict):
+            emptied = []
+            for scene_id, scene in scenes.items():
+                if not isinstance(scene, dict):
+                    continue
+                members = scene.get('image_filenames')
+                if not isinstance(members, list):
+                    continue
+                remaining = [n for n in members if n not in drop]
+                scene['image_filenames'] = remaining
+                # Only scenes this call emptied — a scene that was already
+                # memberless is someone else's to reason about.
+                if members and not remaining:
+                    emptied.append(scene_id)
+            for scene_id in emptied:
+                del scenes[scene_id]
+
+    @staticmethod
+    def _scenedata_rename_filenames(scenedata: dict, mapping: dict) -> None:
+        """Apply ``{old: new}`` to scenedata ratings and scene membership in place."""
+        ratings = scenedata.get('image_ratings')
+        if isinstance(ratings, dict):
+            for old, new in mapping.items():
+                if old in ratings:
+                    ratings[new] = ratings.pop(old)
+        scenes = scenedata.get('scenes')
+        if isinstance(scenes, dict):
+            for scene in scenes.values():
+                if not isinstance(scene, dict):
+                    continue
+                members = scene.get('image_filenames')
+                if isinstance(members, list):
+                    scene['image_filenames'] = [mapping.get(n, n) for n in members]
+
+    def _repair_row_asset_paths(self, frame, mask) -> list:
+        """Collect the crop/export files referenced by the masked rows.
+
+        ``crop_path`` / ``export_path`` are stored relative to the folder root
+        (``pipeline`` writes them via ``os.path.relpath``), plus every entry in
+        ``crops_json`` for multi-crop rows.
+
+        De-duplicated: a single-crop row's ``crop_path`` and its lone
+        ``crops_json`` entry are the same file, so a naive list names it twice.
+        Callers delete or copy each path in turn, and the second pass over a
+        duplicate either fails with "file not found" or double-counts, so the
+        de-duplication belongs here rather than at each call site.
+        """
+        rels: list = []
+        for col in ('crop_path', 'export_path'):
+            if col not in frame.columns:
+                continue
+            for value in frame.loc[mask, col].values:
+                text = str(value or '').strip()
+                if text and text not in ('N/A', 'nan'):
+                    rels.append(text)
+        if 'crops_json' in frame.columns:
+            for value in frame.loc[mask, 'crops_json'].values:
+                try:
+                    crops = json.loads(str(value or '[]'))
+                except Exception:
+                    continue
+                if not isinstance(crops, list):
+                    continue
+                for crop in crops:
+                    if not isinstance(crop, dict):
+                        continue
+                    text = str(crop.get('crop_path') or '').strip()
+                    if text and text not in ('N/A', 'nan'):
+                        rels.append(text)
+        # Order-preserving de-duplication. Compared case-insensitively because
+        # the same asset can be spelled differently between crop_path and
+        # crops_json, and the filesystems this runs on treat those as one file.
+        seen: set = set()
+        unique: list = []
+        for rel in rels:
+            key = rel.replace('\\', '/').lower()
+            if key not in seen:
+                seen.add(key)
+                unique.append(rel)
+        return unique
+
+    def _repair_asset_target(self, root_real: str, kestrel_dir: str,
+                             rel: str, context: str) -> str:
+        """Resolve a CSV-supplied asset path to a file a repair may delete or write.
+
+        ``crop_path`` / ``export_path`` / ``crops_json`` are read out of
+        ``kestrel_database.csv``, which travels with the photo folder and can
+        therefore be supplied by whoever shared that folder. The root jail
+        proves only that the target stays inside the analyzed folder, which
+        still covers every photo and document the user keeps there -- a
+        crafted CSV naming ``my_originals/IMG_0042.CR3`` would be accepted.
+
+        The pipeline writes crops to ``.kestrel/crop`` and exports to
+        ``.kestrel/export``, always as JPEGs, so require both of those before
+        touching the file. Returns '' when the path is unusable or falls
+        outside those bounds; callers skip it.
+        """
+        _r, target, perr = self._resolve_path_in_root(
+            root_real, rel, context=context, allow_absolute=False
+        )
+        if perr or not target:
+            return ''
+        if not self._is_within_root(target, kestrel_dir):
+            self._log_security_reject(
+                context, 'Asset path outside .kestrel', requested_path=rel
+            )
+            return ''
+        if os.path.splitext(target)[1].lower() not in ('.jpg', '.jpeg'):
+            self._log_security_reject(
+                context, 'Asset path is not a JPEG', requested_path=rel
+            )
+            return ''
+        return target
+
+    @staticmethod
+    def _xmp_fingerprint_keys_for(names) -> set:
+        """Fingerprint-store keys for ``names``.
+
+        The store is keyed by sidecar basename -- ``IMG_0005.CR3`` is recorded
+        under ``IMG_0005.xmp`` -- so filenames have to go through the same
+        transform ``write_xmp_metadata`` uses to build its key.
+        """
+        return {os.path.splitext(str(n))[0] + '.xmp' for n in (names or ())}
+
+    def repair_forget_missing(self, folder_path: str, filenames):
+        """Delete database rows for photos the user confirms are gone.
+
+        Also removes each row's crop/export JPEGs, which is the point — those
+        are the bulk of the ``.kestrel`` footprint, and leaving them behind means
+        the user reclaims nothing.
+        """
+        try:
+            root_real, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path,
+                context='repair_forget_missing',
+                require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+
+            if _queue_manager.has_running_writer(root_real):
+                return {
+                    'success': False,
+                    'error': 'Cannot repair while analysis is running for this folder',
+                }
+
+            names = self._clean_filename_list(filenames, 'repair_forget_missing')
+            if not names:
+                return {'success': True, 'removed': 0, 'freed_files': 0, 'error': ''}
+
+            frame, csv_path = self._load_repair_frame(kestrel_dir)
+            if 'filename' not in frame.columns:
+                return {'success': False, 'error': 'Database has no filename column'}
+
+            mask = frame['filename'].astype(str).isin(names)
+            removed = int(mask.sum())
+            if removed == 0:
+                return {'success': True, 'removed': 0, 'freed_files': 0, 'error': ''}
+
+            self._backup_before_repair(kestrel_dir)
+            asset_rels = self._repair_row_asset_paths(frame, mask)
+            self._write_repair_frame(frame.loc[~mask].copy(), csv_path)
+
+            scenedata = self._read_scenedata_for_repair(kestrel_dir)
+            if scenedata:
+                self._scenedata_drop_filenames(scenedata, names)
+                self._write_scenedata_for_repair(kestrel_dir, scenedata)
+
+            freed = 0
+            for rel in asset_rels:
+                # Route every delete through the asset jail. crop_path comes out
+                # of a CSV that ships with the folder, so staying inside the
+                # root is not enough -- it must be a JPEG under .kestrel, or a
+                # crafted row could name one of the user's own photos.
+                target = self._repair_asset_target(
+                    root_real, kestrel_dir, rel, context='repair_forget_missing'
+                )
+                if not target:
+                    continue
+                try:
+                    if os.path.isfile(target):
+                        os.remove(target)
+                        freed += 1
+                except Exception as e:
+                    warn(f'[repair] Could not remove {rel}: {e}')
+
+            info(f'[repair] Forgot {removed} row(s), removed {freed} asset file(s) in {root_real}')
+            return {'success': True, 'removed': removed, 'freed_files': freed, 'error': ''}
+        except Exception as e:
+            error(f'[API] repair_forget_missing error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def repair_apply_renames(self, folder_path: str, pairs):
+        """Re-key database rows whose files were renamed on disk.
+
+        ``pairs`` is ``[{'from': old, 'to': new}, ...]`` as produced by
+        ``compute_folder_diff``'s ``renamed`` list and confirmed by the user.
+        """
+        try:
+            root_real, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path,
+                context='repair_apply_renames',
+                require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+
+            if _queue_manager.has_running_writer(root_real):
+                return {
+                    'success': False,
+                    'error': 'Cannot repair while analysis is running for this folder',
+                }
+
+            mapping = {}
+            for pair in (pairs or []):
+                if not isinstance(pair, dict):
+                    continue
+                old = self._sanitize_plain_filename(
+                    str(pair.get('from') or ''), context='repair_apply_renames'
+                )
+                new = self._sanitize_plain_filename(
+                    str(pair.get('to') or ''), context='repair_apply_renames'
+                )
+                if old and new and old != new:
+                    mapping[old] = new
+            if not mapping:
+                return {'success': True, 'renamed': 0, 'error': ''}
+
+            frame, csv_path = self._load_repair_frame(kestrel_dir)
+            if 'filename' not in frame.columns:
+                return {'success': False, 'error': 'Database has no filename column'}
+
+            current = frame['filename'].astype(str)
+            # Only rename rows that exist, and never rename onto a name the
+            # database already uses — that would silently merge two photos.
+            existing = set(current.values)
+            applied = {
+                old: new for old, new in mapping.items()
+                if old in existing and new not in existing
+            }
+            if not applied:
+                return {'success': True, 'renamed': 0, 'error': ''}
+
+            self._backup_before_repair(kestrel_dir)
+            frame['filename'] = current.map(lambda n: applied.get(n, n))
+            self._write_repair_frame(frame, csv_path)
+
+            scenedata = self._read_scenedata_for_repair(kestrel_dir)
+            if scenedata:
+                self._scenedata_rename_filenames(scenedata, applied)
+                self._write_scenedata_for_repair(kestrel_dir, scenedata)
+
+            info(f'[repair] Re-keyed {len(applied)} renamed row(s) in {root_real}')
+            return {'success': True, 'renamed': len(applied), 'error': ''}
+        except Exception as e:
+            error(f'[API] repair_apply_renames error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def repair_relocate(self, source_path: str, dest_path: str, filenames=None):
+        """Move analysis data for relocated photos from one folder to another.
+
+        This is a MOVE, not a copy: the premise is that the photos have left the
+        source, so leaving rows behind would recreate the stale-folder problem
+        the repair exists to solve.
+
+        Phase 1 supports an empty destination only. Merging into a folder that
+        already has a ``.kestrel`` would require renumbering ``scene_count`` —
+        a per-folder integer used both as a CSV column and as the key of
+        ``scenedata['scenes']`` — plus a rule for filename collisions between
+        incoming and existing rows. That is refused explicitly rather than
+        attempted silently.
+
+        Pass ``filenames`` to move a subset; omit it to move every row whose
+        file is present at the destination.
+        """
+        # Set before the try so the rollback handler can always read it, even
+        # for a failure that happens long before a destination is staged.
+        created_dest = ''
+        # Every artifact written at the destination, in write order. The
+        # rollback unwinds these individually because ``created_dest`` is set
+        # only when Kestrel created ``.kestrel`` itself: a destination that
+        # already had a bare shell -- a supported state, see the ``dest_db``
+        # comment below -- would otherwise skip cleanup entirely and strand
+        # the destination CSV, wedging every retry behind the
+        # 'already has Kestrel analysis data' refusal with no way out.
+        staged_files: list = []
+        try:
+            src_real, src_kestrel, _, err = self._resolve_folder_root_and_kestrel(
+                source_path,
+                context='repair_relocate',
+                require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+
+            dest_real, err = self._validate_root_dir(
+                dest_path, context='repair_relocate', require_exists=True
+            )
+            if err:
+                return {'success': False, 'error': err}
+
+            if os.path.normcase(dest_real) == os.path.normcase(src_real):
+                return {'success': False, 'error': 'Source and destination are the same folder'}
+            if self._is_within_root(dest_real, src_kestrel):
+                self._log_security_reject(
+                    'repair_relocate', 'Destination inside .kestrel',
+                    source=src_real, dest=dest_real,
+                )
+                return {'success': False, 'error': 'Invalid destination folder'}
+
+            if _queue_manager.has_running_writer(src_real) or _queue_manager.has_running_writer(dest_real):
+                return {
+                    'success': False,
+                    'error': 'Cannot repair while analysis is running for these folders',
+                }
+
+            dest_kestrel = os.path.join(dest_real, '.kestrel')
+            # Test for a real database, not merely for the directory. A bare
+            # `.kestrel/` shell is what a previously failed relocate leaves
+            # behind, and treating that as "already analysed" would refuse the
+            # retry forever while telling the user something untrue about why.
+            dest_db = os.path.join(dest_kestrel, 'kestrel_database.csv')
+            if os.path.isfile(dest_db):
+                return {
+                    'success': False,
+                    'error': (
+                        'That folder already has Kestrel analysis data. Moving data '
+                        'into an already-analyzed folder is not supported yet.'
+                    ),
+                    'reason': 'destination_has_kestrel',
+                }
+
+            # What is actually at the destination, and how big.
+            fdiff = self._repair_import()
+            try:
+                from folder_inspector import scan_folder_images  # type: ignore
+            except ImportError:
+                from analyzer.folder_inspector import scan_folder_images  # type: ignore
+            dest_entries, scan_err = scan_folder_images(dest_real)
+            if scan_err:
+                return {
+                    'success': False,
+                    'error': f'Could not read the destination folder: {scan_err}',
+                }
+            dest_sizes = {name: size for name, size in dest_entries}
+
+            frame, csv_path = self._load_repair_frame(src_kestrel)
+            if 'filename' not in frame.columns:
+                return {'success': False, 'error': 'Database has no filename column'}
+
+            try:
+                from kestrel_analyzer.database import parse_file_size
+            except ImportError:  # package-style import path
+                from analyzer.kestrel_analyzer.database import parse_file_size  # type: ignore[no-redef]
+
+            requested = set(self._clean_filename_list(filenames, 'repair_relocate')) if filenames else None
+            has_size = 'file_size' in frame.columns
+
+            move_names = []
+            for idx, raw_name in enumerate(frame['filename'].astype(str).values):
+                if requested is not None and raw_name not in requested:
+                    continue
+                if raw_name not in dest_sizes:
+                    continue
+                if has_size:
+                    stored = parse_file_size(frame['file_size'].values[idx])
+                    disk = dest_sizes[raw_name]
+                    # Unknown on either side falls back to name-only matching,
+                    # the same rule the diff uses for legacy rows.
+                    if stored is not None and disk >= 0 and stored != disk:
+                        continue
+                move_names.append(raw_name)
+
+            if not move_names:
+                return {
+                    'success': True, 'moved': 0, 'assets_moved': 0,
+                    'matched': 0, 'error': '',
+                }
+
+            move_set = set(move_names)
+            mask = frame['filename'].astype(str).isin(move_set)
+            asset_rels = self._repair_row_asset_paths(frame, mask)
+
+            self._backup_before_repair(src_kestrel)
+
+            # The whole relocate is staged at the destination first and only
+            # committed to the source at step 5. Anything that raises before
+            # that point unwinds to the handler below, which removes the
+            # destination we built, leaving the source exactly as it was.
+            #
+            # This ordering is why assets are COPIED here and the source copies
+            # deleted afterwards: a move would make the asset step itself the
+            # commit, so a later failure would strand the source with rows whose
+            # crops had already left -- the broken-thumbnail state this repair
+            # exists to remove.
+            created_dest = dest_kestrel if not os.path.isdir(dest_kestrel) else ''
+            os.makedirs(dest_kestrel, exist_ok=True)
+
+            # 1. Write the moved rows as the destination's database.
+            moving = frame.loc[mask].copy()
+            dest_csv = os.path.join(dest_kestrel, 'kestrel_database.csv')
+            self._write_repair_frame(moving, dest_csv)
+            staged_files.append(dest_csv)
+
+            # 2. Split scenedata. Only the destination's copy is written now;
+            #    the source's is rewritten at the commit point.
+            src_scenedata = self._read_scenedata_for_repair(src_kestrel)
+            if src_scenedata:
+                dest_scenedata = self._split_scenedata_for_move(src_scenedata, move_set)
+                self._write_scenedata_for_repair(dest_kestrel, dest_scenedata)
+                staged_files.append(
+                    os.path.join(dest_kestrel, 'kestrel_scenedata.json')
+                )
+
+            # 2b. Carry the moved photos' XMP fingerprints to the destination.
+            #     Without them the destination has no record of the sidecars
+            #     Kestrel wrote, so ``_safe_to_overwrite_xmp`` takes its legacy
+            #     'no fingerprint recorded' branch and silently overwrites a
+            #     sidecar the user edited in Lightroom -- precisely the
+            #     protection this release added. Written here rather than at
+            #     the commit so a failure still unwinds with everything else;
+            #     the source's copy is pruned at step 5.
+            moved_fp_keys = self._xmp_fingerprint_keys_for(move_set)
+            src_fingerprints = self._load_repair_fingerprints(src_real)
+            carried_fp = {k: v for k, v in src_fingerprints.items()
+                          if k in moved_fp_keys}
+            if carried_fp:
+                if self._save_repair_fingerprints(dest_real, carried_fp):
+                    staged_files.append(
+                        os.path.join(dest_kestrel, 'xmp_fingerprints.json')
+                    )
+
+            # 3. Copy the crop/export JPEGs. Without these the destination's rows
+            #    render as broken thumbnails — the CSV alone looks correct but the
+            #    folder is visibly wrong. Failures raise rather than warn: a
+            #    destination missing its assets is not a successful relocate, and
+            #    unwinding here still leaves the source whole.
+            copied_pairs = []
+            for rel in asset_rels:
+                # Both ends go through the asset jail: the source CSV is
+                # untrusted, so an unchecked rel would name both the file to
+                # read from the source and an arbitrary existing file to
+                # overwrite at the destination.
+                src_asset = self._repair_asset_target(
+                    src_real, src_kestrel, rel, context='repair_relocate'
+                )
+                if not src_asset or not os.path.isfile(src_asset):
+                    continue
+                dest_asset = self._repair_asset_target(
+                    dest_real, dest_kestrel, rel, context='repair_relocate'
+                )
+                if not dest_asset:
+                    continue
+                os.makedirs(os.path.dirname(dest_asset), exist_ok=True)
+                shutil.copy2(src_asset, dest_asset)
+                staged_files.append(dest_asset)
+                copied_pairs.append(src_asset)
+
+            # 4. Give the destination an audit trail of its own.
+            try:
+                from kestrel_analyzer.config import VERSION as _KVERSION
+            except ImportError:
+                _KVERSION = self.get_app_version().get('version', '')
+            try:
+                meta_path = os.path.join(dest_kestrel, 'kestrel_metadata.json')
+                if not os.path.exists(meta_path):
+                    staged_files.append(meta_path)
+                    from datetime import datetime, timezone
+                    write_json_atomic(meta_path, {
+                        'version': _KVERSION,
+                        'analyzer': 'repair-relocate',
+                        'created_utc': datetime.now(timezone.utc)
+                            .replace(tzinfo=None).isoformat() + 'Z',
+                        'database_file': 'kestrel_database.csv',
+                        'relocated_from': src_real,
+                    })
+            except Exception as e:
+                warn(f'[repair] Could not write destination metadata: {e}')
+
+            # 5. COMMIT. The destination is complete; drop the rows from the
+            #    source. Past this line the relocate has happened and failures
+            #    must no longer unwind the destination.
+            if src_scenedata:
+                self._scenedata_drop_filenames(src_scenedata, move_set)
+                self._write_scenedata_for_repair(src_kestrel, src_scenedata)
+            if carried_fp:
+                remaining_fp = {k: v for k, v in src_fingerprints.items()
+                                if k not in moved_fp_keys}
+                self._save_repair_fingerprints(src_real, remaining_fp)
+            self._write_repair_frame(frame.loc[~mask].copy(), csv_path)
+            created_dest = ''
+            staged_files = []
+
+            # 6. Reclaim the source copies. Best-effort by design: the relocate
+            #    is already committed, and a leftover JPEG no row references is
+            #    wasted space, not damage.
+            for src_asset in copied_pairs:
+                try:
+                    os.remove(src_asset)
+                except Exception as e:
+                    warn(f'[repair] Could not remove relocated source asset: {e}')
+
+            # Reports what reached the destination, not what was reclaimed from
+            # the source — a failed cleanup does not make the relocate smaller.
+            assets_moved = len(copied_pairs)
+            info(
+                f'[repair] Relocated {len(move_names)} row(s) and {assets_moved} '
+                f'asset file(s) from {src_real} to {dest_real}'
+            )
+            return {
+                'success': True,
+                'moved': len(move_names),
+                'assets_moved': assets_moved,
+                'matched': len(move_names),
+                'dest': dest_real,
+                'error': '',
+            }
+        except Exception as e:
+            error(f'[API] repair_relocate error: {e}')
+            # Unwind everything staged at the destination. ``staged_files`` is
+            # cleared at the commit point, so this only ever fires while the
+            # source is still intact — it can never delete a destination the
+            # source has already been trimmed against.
+            #
+            # The per-file unwind is what makes this correct when the
+            # destination already had a ``.kestrel``: ``created_dest`` is empty
+            # then, and removing only the directory Kestrel made would leave
+            # the staged CSV behind and refuse every retry.
+            for staged in reversed(staged_files):
+                try:
+                    os.remove(staged)
+                except OSError:
+                    pass
+            if created_dest and os.path.isdir(created_dest):
+                shutil.rmtree(created_dest, ignore_errors=True)
+            # Report only a rollback that actually happened. ``rmtree`` runs
+            # with ignore_errors, so an unconditional success line would make
+            # a failed cleanup indistinguishable from a clean one in the log.
+            leftover = created_dest and os.path.exists(created_dest)
+            if leftover:
+                warn(f'[repair] Could not fully roll back {created_dest}')
+            else:
+                info(f'[repair] Rolled back partial destination at {dest_real}')
+            return {'success': False, 'error': str(e)}
+
+    @staticmethod
+    def _split_scenedata_for_move(scenedata: dict, move_set: set) -> dict:
+        """Build the destination's scenedata from the moved photos' entries.
+
+        Scene ids are carried over unchanged, which is safe only because the
+        destination is required to be empty — there is nothing to collide with.
+        """
+        out = {
+            'version': str(scenedata.get('version') or '2.0'),
+            'image_ratings': {},
+            'scenes': {},
+        }
+        ratings = scenedata.get('image_ratings')
+        if isinstance(ratings, dict):
+            for name, value in ratings.items():
+                if name in move_set:
+                    out['image_ratings'][name] = value
+        scenes = scenedata.get('scenes')
+        if isinstance(scenes, dict):
+            for scene_id, scene in scenes.items():
+                if not isinstance(scene, dict):
+                    continue
+                members = scene.get('image_filenames')
+                if not isinstance(members, list):
+                    continue
+                moved_members = [n for n in members if n in move_set]
+                if not moved_members:
+                    continue
+                carried = dict(scene)
+                carried['image_filenames'] = moved_members
+                out['scenes'][str(scene_id)] = carried
+        return out
+
+    def _clean_filename_list(self, filenames, context: str) -> list:
+        """Sanitize a JS-supplied filename list to bare basenames."""
+        if isinstance(filenames, (list, tuple, set)):
+            raw = list(filenames)
+        elif filenames:
+            raw = [filenames]
+        else:
+            return []
+        out = []
+        seen = set()
+        for item in raw:
+            name = self._sanitize_plain_filename(str(item or ''), context=context)
+            if name and name not in seen:
+                seen.add(name)
+                out.append(name)
+        return out
 
     def open_reject_folder(self, root_path: str):
         """Open the _KESTREL_Rejects folder in the system file browser."""
@@ -6025,6 +8480,17 @@ class Api:
             base = os.path.splitext(os.path.basename(filename))[0]
             cache_name = f'{base}_{cache_token}_preview.jpg'
             cache_path = os.path.join(cache_dir, cache_name)
+            # The embedded-JPEG fallback gets its OWN cache slot (same token, so
+            # it invalidates on the same inputs). Both paths return a JPEG, so
+            # the bytes are interchangeable — what is NOT interchangeable is the
+            # claim the response makes about them. A fallback preview is a fixed
+            # in-camera render with no exposure shift applied; if a cache hit
+            # can't tell the two apart it drops the `fallback` flag, and
+            # scene-zoom.js re-labels the image "RAW (+X.XX EV)" — telling the
+            # user an EV correction was applied that never was, and can't be.
+            # Splitting the filename is what makes the flag survive a cache hit.
+            embedded_cache_name = f'{base}_{cache_token}_preview_embedded.jpg'
+            embedded_cache_path = os.path.join(cache_dir, embedded_cache_name)
 
             debug_meta = {
                 'filename': filename,
@@ -6045,24 +8511,40 @@ class Api:
                 'cache_token': cache_token,
             }
 
-            if use_cache and os.path.exists(cache_path):
+            hit_path = None
+            hit_was_embedded = False
+            if use_cache:
+                if os.path.exists(cache_path):
+                    hit_path = cache_path
+                elif os.path.exists(embedded_cache_path):
+                    hit_path = embedded_cache_path
+                    hit_was_embedded = True
+            if hit_path:
                 debug(
                     f'[raw-preview] cache hit for {filename} '
-                    f'(exp={exp_correction:+.3f}, mode={render_mode})'
+                    f'(exp={exp_correction:+.3f}, mode={render_mode}'
+                    f'{", embedded fallback" if hit_was_embedded else ""})'
                 )
-                with open(cache_path, 'rb') as f:
+                with open(hit_path, 'rb') as f:
                     cache_bytes = f.read()
-                cache_stat = os.stat(cache_path)
+                cache_stat = os.stat(hit_path)
                 debug_meta.update({
                     'cache_hit': True,
                     'cache_file_bytes': int(len(cache_bytes)),
                     'cache_file_mtime_ns': int(cache_stat.st_mtime_ns),
-                    'storage_preview_path': cache_path,
+                    'storage_preview_path': hit_path,
                 })
+                if hit_was_embedded:
+                    debug_meta['fallback'] = 'embedded_jpeg_preview'
                 if debug_logging_enabled:
                     debug(f'[raw-preview] debug: {json.dumps(debug_meta, sort_keys=True)}')
                 b64 = base64.b64encode(cache_bytes).decode('ascii')
-                return {'success': True, 'data': b64, 'mime': 'image/jpeg', 'debug': debug_meta}
+                response = {'success': True, 'data': b64, 'mime': 'image/jpeg', 'debug': debug_meta}
+                if hit_was_embedded:
+                    # Same flag the fresh-decode path sets, so scene-zoom.js
+                    # labels a cached fallback identically to a fresh one.
+                    response['fallback'] = 'embedded_jpeg_preview'
+                return response
 
             import rawpy
             from PIL import Image
@@ -6071,50 +8553,92 @@ class Api:
                 f'[raw-preview] Processing RAW file {filename} '
                 f'(exp={exp_correction:+.3f}, mode={render_mode}, cache={use_cache})'
             )
-            with rawpy.imread(full_path) as raw:
-                try:
-                    sizes = raw.sizes
-                    raw_sizes = {
-                        'width': int(getattr(sizes, 'width', 0) or 0),
-                        'height': int(getattr(sizes, 'height', 0) or 0),
-                        'raw_width': int(getattr(sizes, 'raw_width', 0) or 0),
-                        'raw_height': int(getattr(sizes, 'raw_height', 0) or 0),
-                        'iwidth': int(getattr(sizes, 'iwidth', 0) or 0),
-                        'iheight': int(getattr(sizes, 'iheight', 0) or 0),
-                        'flip': int(getattr(sizes, 'flip', 0) or 0),
-                    }
-                except Exception:
-                    raw_sizes = {}
+            rgb = None
+            raw_sizes = {}
+            used_embedded_fallback = False
+            embedded_fallback_reason = None
+            embedded_jpeg_bytes = None
+            embedded_jpeg_dims = None
+            try:
+                with rawpy.imread(full_path) as raw:
+                    try:
+                        sizes = raw.sizes
+                        raw_sizes = {
+                            'width': int(getattr(sizes, 'width', 0) or 0),
+                            'height': int(getattr(sizes, 'height', 0) or 0),
+                            'raw_width': int(getattr(sizes, 'raw_width', 0) or 0),
+                            'raw_height': int(getattr(sizes, 'raw_height', 0) or 0),
+                            'iwidth': int(getattr(sizes, 'iwidth', 0) or 0),
+                            'iheight': int(getattr(sizes, 'iheight', 0) or 0),
+                            'flip': int(getattr(sizes, 'flip', 0) or 0),
+                        }
+                    except Exception:
+                        raw_sizes = {}
 
-                linear_scale = float(max(0.25, min(8.0, 2.0 ** exp_correction)))
-                if use_no_auto_bright:
-                    rgb = raw.postprocess(
-                        no_auto_bright=True,
-                        exp_shift=linear_scale,
-                        exp_preserve_highlights=_preserve_highlights_for_stops(exp_correction),
-                    )
-                else:
-                    if exp_correction != 0.0:
+                    linear_scale = float(max(0.25, min(8.0, 2.0 ** exp_correction)))
+                    if use_no_auto_bright:
                         rgb = raw.postprocess(
+                            no_auto_bright=True,
                             exp_shift=linear_scale,
                             exp_preserve_highlights=_preserve_highlights_for_stops(exp_correction),
                         )
                     else:
-                        rgb = raw.postprocess()
+                        if exp_correction != 0.0:
+                            rgb = raw.postprocess(
+                                exp_shift=linear_scale,
+                                exp_preserve_highlights=_preserve_highlights_for_stops(exp_correction),
+                            )
+                        else:
+                            rgb = raw.postprocess()
+            except rawpy.LibRawFileUnsupportedError as raw_err:
+                # LibRaw parsed the container but couldn't decompress the
+                # sensor data. Most common trigger: Nikon Z8 / Z9 High-
+                # Efficiency (HE / HE*) NEFs, which use intoPIX's
+                # proprietary TicoRAW codec that neither LibRaw nor rawpy
+                # can decode. The full-resolution embedded JPEG preview
+                # is still extractable and matches the sensor pixel
+                # count to within crop margins — good enough to serve as
+                # the RAW zoom instead of falling all the way back to
+                # the low-resolution thumbnail stub on the JS side.
+                # Exposure correction is not available on this path
+                # (the embedded JPEG is a fixed in-camera render).
+                embedded_jpeg_bytes, embedded_jpeg_dims = (
+                    self._extract_full_res_embedded_jpeg(full_path)
+                )
+                if embedded_jpeg_bytes is None:
+                    # No embedded preview either — propagate the original
+                    # LibRaw error to the outer handler for logging.
+                    raise
+                used_embedded_fallback = True
+                embedded_fallback_reason = str(raw_err)
+                debug(
+                    f'[raw-preview] RAW decode unsupported for {filename}; '
+                    f'served embedded {embedded_jpeg_dims[0]}x{embedded_jpeg_dims[1]} '
+                    f'JPEG preview instead ({raw_err})'
+                )
 
-            img = Image.fromarray(rgb)
+            if used_embedded_fallback:
+                jpg_bytes = embedded_jpeg_bytes
+                img_width, img_height = embedded_jpeg_dims
+            else:
+                img = Image.fromarray(rgb)
+                buf = BytesIO()
+                img.save(buf, format='JPEG', quality=90, subsampling=0, optimize=False, progressive=False)
+                jpg_bytes = buf.getvalue()
+                img_width, img_height = img.width, img.height
 
-            buf = BytesIO()
-            img.save(buf, format='JPEG', quality=90, subsampling=0, optimize=False, progressive=False)
-            jpg_bytes = buf.getvalue()
+            # Route the fallback to its own cache slot so the next hit can still
+            # report it as an embedded preview rather than an EV-corrected RAW.
+            write_cache_path = embedded_cache_path if used_embedded_fallback else cache_path
+            write_cache_name = embedded_cache_name if used_embedded_fallback else cache_name
             wrote_cache = False
             if use_cache:
                 os.makedirs(cache_dir, exist_ok=True)
-                with open(cache_path, 'wb') as f:
+                with open(write_cache_path, 'wb') as f:
                     f.write(jpg_bytes)
                 wrote_cache = True
 
-            storage_preview_path = cache_path
+            storage_preview_path = write_cache_path
             if not wrote_cache:
                 # Even when cache is disabled, persist one debug copy for inspection.
                 os.makedirs(cache_dir, exist_ok=True)
@@ -6129,22 +8653,84 @@ class Api:
                 'cache_written': bool(wrote_cache),
                 'storage_preview_path': storage_preview_path,
                 'raw_sizes': raw_sizes,
-                'postprocess_rgb_shape': list(rgb.shape) if hasattr(rgb, 'shape') else [],
-                'postprocess_rgb_dtype': str(getattr(rgb, 'dtype', '')),
                 'jpeg_bytes': int(len(jpg_bytes)),
                 'jpeg_kb': round(len(jpg_bytes) / 1024.0, 2),
-                'jpeg_dimensions': {'width': int(img.width), 'height': int(img.height)},
+                'jpeg_dimensions': {'width': int(img_width), 'height': int(img_height)},
             })
+            if used_embedded_fallback:
+                debug_meta['fallback'] = 'embedded_jpeg_preview'
+                debug_meta['fallback_reason'] = embedded_fallback_reason
+            else:
+                debug_meta['postprocess_rgb_shape'] = list(rgb.shape) if hasattr(rgb, 'shape') else []
+                debug_meta['postprocess_rgb_dtype'] = str(getattr(rgb, 'dtype', ''))
             if debug_logging_enabled:
                 debug(f'[raw-preview] debug: {json.dumps(debug_meta, sort_keys=True)}')
-            if use_cache:
-                debug(f'[raw-preview] Done, {len(jpg_bytes)//1024}KB JPEG ({img.width}x{img.height}), cached as {cache_name}')
+            if used_embedded_fallback:
+                debug(
+                    f'[raw-preview] Done (embedded fallback), '
+                    f'{len(jpg_bytes)//1024}KB JPEG ({img_width}x{img_height})'
+                    + (f', cached as {write_cache_name}' if wrote_cache else ', cache disabled')
+                )
+            elif use_cache:
+                debug(f'[raw-preview] Done, {len(jpg_bytes)//1024}KB JPEG ({img_width}x{img_height}), cached as {write_cache_name}')
             else:
-                debug(f'[raw-preview] Done, {len(jpg_bytes)//1024}KB JPEG ({img.width}x{img.height}), cache disabled')
-            return {'success': True, 'data': b64, 'mime': 'image/jpeg', 'debug': debug_meta}
+                debug(f'[raw-preview] Done, {len(jpg_bytes)//1024}KB JPEG ({img_width}x{img_height}), cache disabled')
+            response = {'success': True, 'data': b64, 'mime': 'image/jpeg', 'debug': debug_meta}
+            if used_embedded_fallback:
+                response['fallback'] = 'embedded_jpeg_preview'
+                response['fallback_reason'] = embedded_fallback_reason
+            return response
         except Exception as e:
             error(f'[API] read_raw_full error: {e} (filename={filename}, root_path={root_path_real if "root_path_real" in locals() else root_path})')
             return {'success': False, 'error': str(e)}
+
+    def _extract_full_res_embedded_jpeg(self, full_path: str):
+        """Reopen a RAW container and pull out the largest embedded JPEG
+        preview as (bytes, (width, height)), or (None, None) if none is
+        recoverable. A fresh rawpy.imread handle is required because a
+        prior failed postprocess() leaves the previous handle in an
+        out-of-order state.
+
+        Applies the JPEG's own EXIF Orientation tag so the returned
+        bytes are already upright. When the JPEG needs no rotation (the
+        common Z8 case for a landscape shot), the original in-camera
+        JPEG bytes are returned untouched to preserve full quality —
+        Pillow only re-encodes when it also has to rotate.
+
+        Used by read_raw_full() as the fallback path when LibRaw can
+        parse the container but not decode the sensor data (Nikon Z8/Z9
+        HE / HE* NEFs, the most common real-world trigger).
+        """
+        import rawpy
+        from io import BytesIO
+        from PIL import Image, ImageOps
+        try:
+            with rawpy.imread(full_path) as raw:
+                thumb = raw.extract_thumb()
+        except (rawpy.LibRawNoThumbnailError,
+                rawpy.LibRawUnsupportedThumbnailError,
+                rawpy.LibRawFileUnsupportedError,
+                rawpy.LibRawIOError):
+            return None, None
+        except Exception:
+            return None, None
+        if thumb is None or not getattr(thumb, 'data', None):
+            return None, None
+        if thumb.format != rawpy.ThumbFormat.JPEG:
+            return None, None
+        try:
+            with Image.open(BytesIO(thumb.data)) as prev_img:
+                exif_orient = prev_img.getexif().get(0x0112, 1)
+                if exif_orient in (None, 1):
+                    return thumb.data, (int(prev_img.width), int(prev_img.height))
+                oriented = ImageOps.exif_transpose(prev_img)
+                if oriented.mode != 'RGB':
+                    oriented = oriented.convert('RGB')
+                obuf = BytesIO()
+                oriented.save(obuf, format='JPEG', quality=95, subsampling=0)
+                return obuf.getvalue(), (int(oriented.width), int(oriented.height))
+        except Exception:
+            return None, None
 
     def cleanup_culling_cache(self, root_path: str):
         """Remove the .kestrel/culling_TMP folder to free up space."""
@@ -6163,7 +8749,11 @@ class Api:
                 return {'success': False, 'error': 'Invalid cache path'}
 
             if os.path.exists(cache_dir):
-                shutil.rmtree(cache_dir)
+                # ignore_errors=True: on macOS the Finder / Spotlight can prune
+                # AppleDouble ``._<name>`` sidecar files between rmtree's scandir
+                # and unlink, causing ENOENT for entries we listed a moment ago;
+                # matches the pattern used by every other cache rmtree in this file.
+                shutil.rmtree(cache_dir, ignore_errors=True)
                 info(f'[cache] cleanup_culling_cache: removed {cache_dir}')
                 return {'success': True}
             return {'success': True}

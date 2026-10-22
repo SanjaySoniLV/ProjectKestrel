@@ -126,10 +126,75 @@
         try { window.KestrelNotifications.onAuthState(signedIn); } catch (_) {}
       }
 
+      // Distribution channel gates the sign-in UI: only the macOS App Store
+      // build ('appstore') has the native Sign in with Apple transport, so only
+      // it shows the chooser (Apple + web). Cached; prewarmed below.
+      let _distChannel = null;
+      async function _ensureDistChannel() {
+        if (_distChannel !== null) return _distChannel;
+        try {
+          if (window.pywebview?.api?.get_dist_channel) {
+            const r = await window.pywebview.api.get_dist_channel();
+            _distChannel = (r && r.channel) || 'direct';
+          } else {
+            _distChannel = 'direct';
+          }
+        } catch (_) { _distChannel = 'direct'; }
+        return _distChannel;
+      }
+
+      function _startWebSignIn() {
+        // OAuth + PKCE: on Win/Linux Python opens the system browser + a loopback
+        // callback server; on macOS it uses ASWebAuthenticationSession. Either
+        // way it notifies us via window.onAuthSignIn(...). Covers Google + email.
+        if (hasPywebviewApi && window.pywebview?.api?.start_oauth_sign_in) {
+          try {
+            window.pywebview.api.start_oauth_sign_in();
+            if (typeof showToast === 'function') {
+              showToast('Sign-in in progress — complete sign-in in the window that opens, then return here.', 8000);
+            }
+          } catch (e) {
+            console.warn('start_oauth_sign_in failed:', e);
+          }
+        } else if (typeof showToast === 'function') {
+          showToast('Sign-in unavailable in this environment.', 5000);
+        }
+      }
+
+      function _startAppleSignIn() {
+        // Native Sign in with Apple (ASAuthorizationController). App Store build
+        // only; notifies via the same window.onAuthSignIn(...) callback.
+        if (window.pywebview?.api?.start_apple_native_sign_in) {
+          try {
+            window.pywebview.api.start_apple_native_sign_in();
+            if (typeof showToast === 'function') {
+              showToast('Continue in the Apple sign-in window…', 8000);
+            }
+          } catch (e) {
+            console.warn('start_apple_native_sign_in failed:', e);
+          }
+        }
+      }
+
+      async function openSignInUI() {
+        let channel = 'direct';
+        try { channel = await _ensureDistChannel(); } catch (_) {}
+        // Guideline 4.8: present Sign in with Apple alongside the third-party
+        // (Google) option. Only the App Store build can do native Apple, so only
+        // it gets the chooser; every other build goes straight to the web flow.
+        if (channel === 'appstore' && window.pywebview?.api?.start_apple_native_sign_in) {
+          const dlg = document.getElementById('signInChooserDlg');
+          if (dlg) {
+            try { dlg.showModal(); return; } catch (_) { /* fall through */ }
+          }
+        }
+        _startWebSignIn();
+      }
+
       accountBtn.addEventListener('click', () => {
         // §4a: when signed in, the account button opens the Account & Cloud
         // Compute panel instead of re-triggering sign-in. Signed-out (incl.
-        // session-expired) keeps the OAuth sign-in flow.
+        // session-expired) opens the sign-in UI.
         if (accountBtn.classList.contains('signed-in')) {
           if (typeof window.openCloudAccountPanel === 'function') {
             window.openCloudAccountPanel();
@@ -138,25 +203,30 @@
           }
           return;
         }
-        // OAuth + PKCE: Python opens the system browser, runs a loopback
-        // callback server on 127.0.0.1:53682, exchanges the code for a token
-        // pair, and notifies us via window.onAuthSignIn(...).
-        if (hasPywebviewApi && window.pywebview?.api?.start_oauth_sign_in) {
-          try {
-            window.pywebview.api.start_oauth_sign_in();
-            if (typeof showToast === 'function') {
-              showToast('Sign-in in progress — complete sign-in in your browser, then return here.', 8000);
-            }
-          } catch (e) {
-            console.warn('start_oauth_sign_in failed:', e);
-          }
-        } else {
-          // No bridge available — desktop app should always have it; surface this.
-          if (typeof showToast === 'function') {
-            showToast('Sign-in unavailable in this environment.', 5000);
-          }
-        }
+        openSignInUI();
       });
+
+      // Wire the sign-in chooser (present only in the App Store build markup,
+      // but harmless to wire when absent).
+      const _siDlg = document.getElementById('signInChooserDlg');
+      const _siApple = document.getElementById('signInAppleBtn');
+      const _siWeb = document.getElementById('signInWebBtn');
+      const _siClose = document.getElementById('signInChooserClose');
+      if (_siApple) _siApple.addEventListener('click', () => {
+        try { _siDlg?.close(); } catch (_) {}
+        _startAppleSignIn();
+      });
+      if (_siWeb) _siWeb.addEventListener('click', () => {
+        try { _siDlg?.close(); } catch (_) {}
+        _startWebSignIn();
+      });
+      if (_siClose) _siClose.addEventListener('click', () => {
+        try { _siDlg?.close(); } catch (_) {}
+      });
+
+      // Prewarm the channel so the first sign-in click doesn't wait on a bridge
+      // round-trip before deciding which UI to show.
+      _ensureDistChannel();
     }
 
     // Called by Python after a successful OAuth sign-in or refresh that
@@ -200,10 +270,23 @@
       let msg;
       switch (err) {
         case 'timeout':         msg = 'Sign-in timed out. Click Sign In to try again.'; break;
-        case 'port_in_use':     msg = 'Port 53682 is in use. Close the conflicting app and try again.'; break;
+        case 'port_in_use':     msg = 'The local sign-in ports are all in use. Close other apps and try again.'; break;
+        case 'no_loopback_port': msg = 'Could not open a local sign-in port. If you run a VPN, firewall, or virtualization software (Hyper-V/WSL/Docker), restarting your PC usually clears this — then sign in again.'; break;
         case 'state_mismatch':  msg = 'Sign-in failed (state mismatch). Click Sign In to try again.'; break;
         case 'flow_in_progress': msg = 'Sign-in is already in progress. Complete it in your browser.'; break;
         case 'browser_open_failed': msg = 'Could not open your browser. Sign in manually at myaccount.projectkestrel.org and try again.'; break;
+        // Native Sign in with Apple (App Store build).
+        case 'apple_unavailable': msg = 'Sign in with Apple isn’t available on this build. Use Continue with Google or email.'; break;
+        case 'apple_present_failed':
+        case 'apple_auth_error':
+        case 'apple_no_identity_token': msg = 'Apple sign-in didn’t complete. Please try again.'; break;
+        case 'apple_signin_rejected': msg = 'Apple sign-in couldn’t be verified. Try again, or use Continue with Google or email.'; break;
+        case 'apple_signup_rejected':
+        case 'apple_signin_incomplete':
+        case 'apple_signup_incomplete': msg = 'Apple sign-in couldn’t finish setting up your account. Try again, or use Continue with Google or email.'; break;
+        case 'apple_no_session_id':
+        case 'apple_no_session_token':
+        case 'apple_no_client_token': msg = 'Couldn’t finish signing in after Apple. Please try again.'; break;
         default:                msg = `Sign-in failed: ${err}${desc ? ' — ' + desc : ''}`;
       }
       if (typeof showToast === 'function') showToast(msg, 8000);
@@ -323,6 +406,83 @@
       }
     }
 
+    // Parse a dotted version string ("6.2.0.0") into a comparable array.
+    // Returns null for anything unparseable so callers can fall back.
+    function parseVersionNumber(raw) {
+      if (typeof raw !== 'string' && typeof raw !== 'number') return null;
+      const parts = String(raw).trim().split('.');
+      if (!parts.length || parts.some(p => !/^\d+$/.test(p))) return null;
+      return parts.map(Number);
+    }
+
+    // Compare two parsed version arrays of possibly different length.
+    // Returns >0 if a is newer, <0 if b is newer, 0 if equal.
+    function compareVersionNumbers(a, b) {
+      const len = Math.max(a.length, b.length);
+      for (let i = 0; i < len; i++) {
+        const diff = (a[i] || 0) - (b[i] || 0);
+        if (diff !== 0) return diff;
+      }
+      return 0;
+    }
+
+    // This build's numeric version, from the bundled VERSION_NUMBER.txt.
+    // Cached after the first read; null when the file is missing (older
+    // builds, or a source checkout that has not been packaged).
+    let _appVersionNumber;
+    async function getLocalVersionNumber() {
+      if (_appVersionNumber !== undefined) return _appVersionNumber;
+      _appVersionNumber = null;
+      try {
+        const resp = await fetch('VERSION_NUMBER.txt', { cache: 'no-store' });
+        if (resp.ok) _appVersionNumber = parseVersionNumber(await resp.text());
+      } catch (e) { /* offline or not bundled - stay null */ }
+      return _appVersionNumber;
+    }
+
+    // Pick the newest release a client should be told about right now.
+    //
+    // Two gates, both of which the old name-equality check lacked:
+    //   1. effective_date - a release can go live on GitHub and the stores
+    //      while the in-app prompt is scheduled for later, so the Microsoft
+    //      Store and App Store reviews have time to land and every channel
+    //      points at the same version when users start being nudged.
+    //   2. numeric version - only prompt for something strictly newer than
+    //      what is installed. A dev build carrying a higher number than
+    //      anything published stops being nagged on every launch.
+    //
+    // Falls back to the old codename comparison when this build has no
+    // VERSION_NUMBER.txt, so older clients reading a v2 manifest still work.
+    function selectApplicableRelease(releases, localNumber, localName, now) {
+      const normalize = s => String(s || '')
+        .replace(/^v\(/ig, '').replace(/\)$/g, '').trim();
+      const localNorm = normalize(localName);
+
+      for (const rel of releases) {
+        if (!rel || !rel.name) continue;
+
+        // Gate 1: not yet effective for in-app prompting.
+        const effective = rel.effective_date || rel.date;
+        if (effective) {
+          const when = Date.parse(`${effective}T00:00:00Z`);
+          if (!Number.isNaN(when) && now < when) continue;
+        }
+
+        // Gate 2: strictly newer than what is installed.
+        const remoteNumber = parseVersionNumber(rel.version);
+        if (localNumber && remoteNumber) {
+          if (compareVersionNumbers(remoteNumber, localNumber) <= 0) return null;
+        } else if (normalize(rel.name) === localNorm) {
+          // No numbers to compare on one side; the codename match means this
+          // is the installed build, so there is nothing newer to offer.
+          return null;
+        }
+
+        return rel;
+      }
+      return null;
+    }
+
     // Check remote version from JSON endpoint
     async function checkRemoteVersion() {
       try {
@@ -345,31 +505,43 @@
           } catch (e) { /* ignore */ }
         }
         
-        let versionList;
+        // Prefer the v2 manifest (numeric versions + effective dates); the
+        // bridge fetch bypasses CORS, the direct fetch is the fallback. The
+        // v1 version.json stays published for builds that predate v2.
+        let manifest;
         if (window.pywebview?.api?.fetch_remote_version) {
           const res = await window.pywebview.api.fetch_remote_version();
           if (res && res.success && res.data) {
-            versionList = res.data;
+            manifest = res.data;
           }
         }
-        
-        if (!versionList) {
-          const resp = await fetch('https://projectkestrel.org/version.json', { cache: 'no-store' });
-          if (!resp.ok) return;
-          versionList = await resp.json();
+
+        if (!manifest) {
+          for (const url of ['https://projectkestrel.org/version_v2.json',
+                             'https://projectkestrel.org/version.json']) {
+            try {
+              const resp = await fetch(url, { cache: 'no-store' });
+              if (!resp.ok) continue;
+              manifest = await resp.json();
+              break;
+            } catch (e) { /* try the next URL */ }
+          }
         }
-        
-        if (!Array.isArray(versionList) || versionList.length === 0) return;
-        
-        const latestVersion = versionList[0]; // first entry is latest
-        
-        // Compare versions: check if latest name differs from current
-        if (!latestVersion.name) return;
-        const normalizedLocal = (currentVer || '').replace(/^v\(/ig, '').replace(/\)$/g, '').trim();
-        const normalizedRemote = latestVersion.name.replace(/^v\(/ig, '').replace(/\)$/g, '').trim();
-        
-        if (normalizedRemote === normalizedLocal) return;
-        
+        if (!manifest) return;
+
+        // v2 is {schema, releases:[...]}; v1 is a bare array. Accept both so a
+        // rollback of the website does not break the client.
+        const versionList = Array.isArray(manifest)
+          ? manifest
+          : (Array.isArray(manifest.releases) ? manifest.releases : null);
+        if (!versionList || versionList.length === 0) return;
+
+        const localNumber = await getLocalVersionNumber();
+        const latestVersion = selectApplicableRelease(
+          versionList, localNumber, currentVer, Date.now()
+        );
+        if (!latestVersion) return;
+
         // Show update notification
         showVersionUpdateNotification(latestVersion);
       } catch (e) {

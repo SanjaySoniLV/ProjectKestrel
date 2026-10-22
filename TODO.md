@@ -36,6 +36,63 @@ TODO:
 PRE-LAUNCH:
 - Update website, version.json, and internal "What's New" to reflect latest release notes.
 
+REVIEW FOLLOW-UPS (ultrareview of PRs #149 / #150, 2026-09-01):
+The two defects that review found are fixed; these are the remaining low-severity
+items, left for follow-up commits rather than folded into the fix so the reviewed
+diff stayed honest. None of them changes behaviour today. Ordered by value.
+
+* `flush()` sits inside the `try/except OSError` that legitimately swallows `fsync()`
+  failures, in BOTH `metadata_writer._write_text_atomic` and
+  `cloud_compute_client._write_file_atomic`. `database.py:552-563` already has the
+  correct split, with a comment explaining why: an ENOSPC/EIO mid-flush can leave a
+  partial temp file that `os.replace` then promotes over a good destination. Hoist
+  `f.flush()` above the `try` in both, and port
+  `test_flush_error_does_not_replace_existing` from `test_database_atomic_save.py`.
+  While in `cloud_compute_client._write_file_atomic`, also mirror the
+  `try/except BaseException` around `os.fdopen(tmp_fd, ...)` that `database.py:605-609`
+  has — without it a raising `fdopen` leaks the fd, and on Windows that keeps the
+  `.tmp` locked and blocks the cleanup `os.remove`.
+
+* `repair_relocate`'s destination `kestrel_metadata.json` omits `schema_version`
+  (api_bridge.py, step 4). The other two writers of that file stamp it
+  (`database.load_database`, `pipeline.py` on every run). A relocate out of a v2
+  source therefore produces a v2 CSV beside metadata that reads as "1 or older" per
+  `fixtures/legacy_databases/SCHEMA_NOTES.md`. One line:
+  `'schema_version': DATABASE_SCHEMA_VERSION`.
+
+* `pipeline.process_folder`'s scandir loop wraps `_entry.is_file()` and
+  `_entry.stat()` in one `try/except OSError`, so an `is_file()` failure records the
+  entry with size -1 instead of skipping it. `folder_inspector.scan_folder_images`
+  splits the two deliberately, and its docstring promises the two listers "can never
+  disagree about which files count". A broken symlink with a camera extension is
+  currently analysed by one and skipped by the other, producing a bogus `Error` row
+  plus a false drift badge. Mirror the two-try pattern.
+
+* `repair.js` `_repairAfterAction` calls `refreshRepairState([root])` after awaiting
+  `_repairReload()`, whose `loadMultipleFolders` tail already fires
+  `refreshRepairState(loadedRoots)`. The version counter suppresses the duplicate's
+  DOM write but cannot abort the bridge call it already dispatched, so every repair
+  costs an extra scandir + CSV read at the moment the user is watching the badge
+  clear. Drop the trailing call.
+
+* `repair.js` comment above `choose_directory()` says it returns a list; it returns a
+  string or None (`choose_directories`, plural, is the list one). The
+  `Array.isArray(picked) ? picked[0] : picked` fallback is therefore dead. Behaviour
+  is correct either way — fix the comment, optionally drop the branch.
+
+* `repair_relocate` assigns `fdiff = self._repair_import()` and never reads it; the
+  next line imports `scan_folder_images` directly, which is what it actually uses.
+  Delete the line.
+
+* `api_bridge.py:63-77`'s three-tier import fallback for `write_json_atomic` /
+  `write_text_atomic` is unreachable: line 116 imports `kestrel_analyzer.config` and
+  line 120 imports `kestrel_analyzer.database` bare, so in the only scenario the
+  RuntimeError stubs guard, module load has already failed. The nested inline
+  `copy_file_atomic` fallback in `restore_kestrel_db_backup` is dead for the same
+  reason. Either collapse to a bare import (matches every other `kestrel_analyzer`
+  import in the file) or extend the fallback to cover those two imports so the stubs
+  are reachable.
+
 
 
 

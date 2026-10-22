@@ -193,6 +193,43 @@
 }
 .adlg-radio-inline input[type="radio"] { accent-color: #2b6ec8; }
 
+/* Question-and-answer settings blocks. Each block is one question about the
+   shoot with its answers directly beneath, so the column reads as a short
+   interview rather than a list of model parameters. */
+.adlg-question {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 0 0;
+  border-top: 1px solid #2a3445;
+}
+.adlg-question:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+.adlg-question-text {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #e1e5ec;
+  line-height: 1.35;
+}
+/* Answers sit side by side, and wrap to one per row when the dialog is too
+   narrow to keep both labels on a single line. */
+.adlg-answer-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+@media (max-width: 1100px) {
+  .adlg-answer-pair { grid-template-columns: 1fr; }
+}
+.adlg-answer-pair .adlg-radio-row-horiz { align-items: center; }
+.adlg-question-help {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
 /* "More options" collapsible — flat list of less-critical settings. */
 .analyze-dlg-more-options {
   border: 1px solid #2a3040;
@@ -794,6 +831,32 @@
   transform: rotate(180deg);
 }
 
+/* Header close (X) — replaces "Clear done". Shown only when every queue item
+   is terminal (see renderQueuePanel / _ccRenderPanel). Sits next to the
+   collapse toggle; its click is stopPropagation'd so it doesn't also collapse
+   the panel. */
+.queue-panel-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  margin: -2px 0;
+  font-size: 15px;
+  line-height: 1;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.queue-panel-close:hover {
+  background: #3a1d1d;
+  color: #ff6b6b;
+}
+
 .queue-panel-body {
   padding: 8px;
   max-height: 340px;
@@ -854,18 +917,20 @@
   white-space: nowrap;
 }
 
+/* Blue to match the cloud panel's "+ 📂 Load" (.cloud-account-load-btn) and the
+   pill's pause/cancel controls — the green here was an inconsistent outlier. */
 .queue-item-load-btn {
   font-size: 11px;
   padding: 2px 8px;
   border-radius: 4px;
-  border: 1px solid #3d7e57;
-  background: #1e3a2b;
-  color: #bfe9cf;
+  border: 1px solid #3d5a7e;
+  background: #243650;
+  color: #cfe0ff;
   cursor: pointer;
   flex-shrink: 0;
   white-space: nowrap;
 }
-.queue-item-load-btn:hover { background: #265038; border-color: #4d9a6a; }
+.queue-item-load-btn:hover { background: #2d456a; border-color: #4d6a9a; }
 
 .queue-item-status.pending {
   background: #0f2310;
@@ -895,6 +960,41 @@
   background: #1d2230;
   color: #8a9099;
 }
+
+/* Pipeline-3 upgrade rows (status.upgrades) — violet like the ✨ smart-search
+   toggle, so an upgrade reads as distinct from an analysis row. */
+.queue-item-status.upgrade.running {
+  background: #2a2140;
+  color: #d4c6ff;
+  border: 1px solid #6a4fb3;
+}
+.queue-item--upgrade .queue-item-progress-fill { background: #8a6fe0; }
+.queue-item-progress.indeterminate .queue-item-progress-fill {
+  width: 30%;
+  animation: queue-progress-indeterminate 1.2s ease-in-out infinite;
+}
+@keyframes queue-progress-indeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(340%); }
+}
+.queue-item-cancel-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid #5e2a2a;
+  background: #2a1414;
+  color: #f0b4b4;
+  cursor: pointer;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.queue-item-cancel-btn:hover:not(:disabled) { background: #3a1d1d; border-color: #8a3a3a; color: #ffd0d0; }
+.queue-item-cancel-btn:disabled { opacity: .6; cursor: default; }
+/* Row containers inside .queue-panel-body: keep the body's flex gap. */
+.queue-analysis-rows, .queue-upgrade-rows { display: contents; }
+.queue-item-cancel-btn.hidden, .queue-item-progress.hidden { display: none; }
+/* Pause / Cancel / Live drive the analysis queue only. */
+.queue-panel.queue-panel--upgrades-only .queue-panel-controls { display: none; }
 
 .queue-item-progress {
   height: 4px;
@@ -1094,4 +1194,56 @@
 .est-time-uncertain--cloud:hover {
   color: #cfe2ff;
   border-color: #7eb8e0;
+}
+
+/* Pre-flight bottleneck chip under the cloud est. time stat. Tells the user
+   whether the quoted number is bounded by their connection or by Cloud
+   Compute, so a slow estimate points at something actionable. */
+.adlg-cloud-regime {
+  display: block;
+  margin-top: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--muted, #8a93a5);
+  cursor: help;
+}
+.adlg-cloud-regime--upload   { color: #7eb8e0; }
+.adlg-cloud-regime--compute  { color: #e0b070; }
+.adlg-cloud-regime--balanced { color: #7fc98a; }
+
+/* Species geofence picker under "Should Kestrel identify the bird species?".
+   Hidden (via .hidden on the block) when species identification is off. */
+.adlg-species-region {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #2a3445;
+}
+.adlg-species-region-custom {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px 12px;
+  padding: 6px 8px;
+  border: 1px solid #2a3040;
+  border-radius: 6px;
+  background: #0a0d12;
+}
+.adlg-species-region-custom.hidden { display: none; }
+.adlg-species-region-custom label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: #cbd6e4;
+  cursor: pointer;
+  min-width: 0;
+}
+.adlg-species-region-custom label span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

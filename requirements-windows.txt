@@ -25,7 +25,12 @@ rawpy==0.27.0
 pandas==2.2.2
 
 # Utilities
-PyExifTool==0.5.6
+# XMP metadata: pyexiv2 wraps the exiv2 C++ library (bundled in its wheels for
+# Windows/macOS/Linux — no external binary to install). Used to embed XMP
+# ratings/labels directly into JPEG originals in place, without recompressing
+# pixel data, so Adobe Lightroom (which ignores .xmp sidecars for JPEGs) can
+# read them. GPLv3, compatible with Kestrel's AGPLv3.
+pyexiv2==2.15.5
 requests==2.34.2
 pywebview==6.2.1
 keyring
@@ -36,7 +41,7 @@ msvc-runtime==14.44.35112
 
 # EXIF reading
 exifread
-pillow==12.2.0
+pillow==12.3.0
 
-# speciesnet removed: ensemble logic is inlined in kestrel_analyzer/ml/_speciesnet_ensemble.py
+# speciesnet removed: pipeline 3.0 no longer uses the SpeciesNet classifier/ensemble (BioCLIP 2 routes and gates detections)
 # (Apache 2.0, adapted from google/cameratrapai). This eliminates the torch/optree dependency.

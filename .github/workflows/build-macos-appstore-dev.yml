@@ -1,0 +1,363 @@
+name: Build macOS App Store Dev (sandbox test)
+
+# Validation harness for the sandboxed App Store build variant.
+#
+# It builds the App Store PyInstaller spec and, when the existing Developer ID
+# signing secrets are present, SIGNS the .app with those + our App Store
+# entitlements. That is enough to get a *real, enforced App Sandbox* at runtime
+# (the sandbox is triggered by the com.apple.security.app-sandbox entitlement,
+# NOT by the certificate type) — so we can actually exercise sandbox behavior
+# in CI rather than only proving the bundle packages. Notarization is skipped
+# (not needed to test the sandbox; the prod notarize flow is a separate matter).
+#
+# The signed-sandbox probes are diagnostic (continue-on-error, heavily logged):
+# a sandboxed process can only read its container + powerbox-granted files, so
+# these reveal exactly which file-access paths break under enforcement. The
+# unsigned onedir --validate + UI probe remain the always-green gate.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ mac-app-store ]
+
+jobs:
+  build-macos-appstore-dev:
+    runs-on: macos-latest
+    env:
+      KESTREL_SPEC: ProjectKestrel-macos-appstore.spec
+      KESTREL_APPSTORE_VERSION: "1.0"
+      KESTREL_APPSTORE_BUILD: "1"
+      KESTREL_BUNDLE_ID: org.projectkestrel.desktop
+      # arm64-only (native on the runner). universal2 is NOT feasible by flag:
+      # PyInstaller needs every native lib fat, but PIL/_avif.so, onnxruntime,
+      # opencv, rawpy ship arch-specific wheels (probed 2026-06-30, run #4).
+      # Apple Silicon only — a valid App Store target; Intel support is a
+      # separate fat-wheels effort. Leave empty for native.
+      KESTREL_TARGET_ARCH: ""
+      APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      ENTITLEMENTS: analyzer/entitlements/ProjectKestrel.appstore.entitlements
+      APP_BUNDLE: analyzer/dist/Project Kestrel.app
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Create venv and install dependencies
+        shell: bash
+        run: |
+          python -m venv .venv2
+          source .venv2/bin/activate
+          python -m pip install --upgrade pip
+          pip install -r requirements-macos.txt
+          pip install pyinstaller pytest
+
+      - name: Generate .icns from logo.png
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="assets/logo.png"
+          if [ ! -f "$SRC" ]; then echo "::warning::$SRC missing; skipping icon"; exit 0; fi
+          ICONSET="${RUNNER_TEMP}/Kestrel.iconset"
+          rm -rf "$ICONSET"; mkdir -p "$ICONSET"
+          for sz in 16 32 128 256 512; do
+            sips -z $sz $sz "$SRC" --out "$ICONSET/icon_${sz}x${sz}.png" >/dev/null
+            dbl=$((sz*2))
+            sips -z $dbl $dbl "$SRC" --out "$ICONSET/icon_${sz}x${sz}@2x.png" >/dev/null
+          done
+          iconutil -c icns "$ICONSET" -o assets/logo.icns
+          echo "Built assets/logo.icns ($(du -h assets/logo.icns | cut -f1))"
+
+      - name: Run pytest (skip ui marker) — exercises mac_sandbox on real PyObjC
+        id: pretest
+        continue-on-error: true
+        shell: bash
+        run: |
+          source .venv2/bin/activate
+          python -m pytest analyzer/tests/ -m "not ui" -q --tb=short
+
+      - name: Warn if pre-build pytest failed
+        if: ${{ always() && steps.pretest.outcome == 'failure' }}
+        shell: bash
+        run: echo "::warning::Pre-build pytest failed on App Store dev build; continuing to PyInstaller."
+
+      - name: Forced-sandbox import smoke (source)
+        shell: bash
+        run: |
+          set -euo pipefail
+          source .venv2/bin/activate
+          cd analyzer
+          KESTREL_FORCE_SANDBOX=1 python -c "
+          import mac_sandbox as m
+          assert m.is_sandboxed() is True, 'force-sandbox env not honoured'
+          assert m.have_pyobjc() is True, 'PyObjC (Foundation/AppKit) failed to load on macOS'
+          m.create_bookmark('/tmp')
+          m.activate_all_bookmarks()
+          print('forced-sandbox import smoke OK')
+          "
+
+      - name: Run App Store headless build (sandboxed spec)
+        shell: bash
+        run: |
+          chmod +x packaging/build_app_headless.sh
+          ./packaging/build_app_headless.sh
+
+      - name: Verify binary architectures
+        shell: bash
+        run: |
+          # No `set -e`: a `find|head` SIGPIPE under pipefail must not abort the
+          # listing (this is informational — arm64-only is the intended default).
+          set -u
+          BIN="$APP_BUNDLE/Contents/MacOS/ProjectKestrel"
+          echo "=== main binary archs ==="
+          lipo -archs "$BIN" || file "$BIN" || true
+          echo "=== sample of bundled native libs ==="
+          find "$APP_BUNDLE" -type f \( -name "*.dylib" -o -name "*.so" \) > "${RUNNER_TEMP}/libs.txt" 2>/dev/null || true
+          n=0
+          while IFS= read -r f; do
+            [ "$n" -ge 8 ] && break
+            printf '%-60s ' "$(basename "$f")"; lipo -archs "$f" 2>/dev/null || echo "(thin?)"
+            n=$((n+1))
+          done < "${RUNNER_TEMP}/libs.txt"
+          ARCHS=$(lipo -archs "$BIN" 2>/dev/null || echo "")
+          echo "main binary archs: $ARCHS"
+          if echo "$ARCHS" | grep -q x86_64 && echo "$ARCHS" | grep -q arm64; then
+            echo "universal2 (x86_64 + arm64) confirmed"
+          else
+            echo "arm64-only build (Apple Silicon) — intended default"
+          fi
+
+      - name: Inspect built Info.plist (App Store keys baked correctly?)
+        shell: bash
+        run: |
+          set -euo pipefail
+          PLIST="$APP_BUNDLE/Contents/Info.plist"
+          echo "=== $PLIST ==="
+          plutil -p "$PLIST"
+          get() { /usr/libexec/PlistBuddy -c "Print :$1" "$PLIST" 2>/dev/null || echo "<missing>"; }
+          BID=$(get CFBundleIdentifier); VER=$(get CFBundleShortVersionString)
+          BLD=$(get CFBundleVersion); CAT=$(get LSApplicationCategoryType)
+          ENC=$(get ITSAppUsesNonExemptEncryption); MIN=$(get LSMinimumSystemVersion)
+          echo "id=$BID short=$VER build=$BLD category=$CAT enc=$ENC min=$MIN"
+          fail=0
+          [ "$BID" = "org.projectkestrel.desktop" ] || { echo "::error::bundle id wrong: $BID"; fail=1; }
+          echo "$VER" | grep -Eq '^[0-9]+(\.[0-9]+)*$' || { echo "::error::CFBundleShortVersionString not numeric: $VER"; fail=1; }
+          echo "$BLD" | grep -Eq '^[0-9]+(\.[0-9]+)*$' || { echo "::error::CFBundleVersion not numeric: $BLD"; fail=1; }
+          [ "$CAT" = "public.app-category.photography" ] || { echo "::error::category wrong: $CAT"; fail=1; }
+          [ "$fail" = "0" ] || exit 1
+          echo "Info.plist App Store keys OK"
+
+      # ---------------------------------------------------------------------
+      # SIGN the .app (Developer ID cert + App Store sandbox entitlements).
+      # Gated on the cert secret; when absent, the run stays unsigned and the
+      # sandbox-runtime probes below self-skip.
+      # ---------------------------------------------------------------------
+      - name: Sign sandboxed .app (Developer ID + sandbox entitlements)
+        id: sign
+        if: ${{ env.APPLE_CERTIFICATE_P12 != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          IDENTITY="Developer ID Application: Sanjay Soni (${APPLE_TEAM_ID})"
+
+          echo "$APPLE_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "ci_pw" "$RUNNER_TEMP/build.keychain"
+          security default-keychain -s "$RUNNER_TEMP/build.keychain"
+          security unlock-keychain -p "ci_pw" "$RUNNER_TEMP/build.keychain"
+          security set-keychain-settings -lut 21600 "$RUNNER_TEMP/build.keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$RUNNER_TEMP/build.keychain" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "ci_pw" "$RUNNER_TEMP/build.keychain" >/dev/null
+          rm -f "$RUNNER_TEMP/cert.p12"
+          echo "Signing identities:"; security find-identity -v -p codesigning "$RUNNER_TEMP/build.keychain"
+
+          # Inside-out: nested dylibs/.so and executables WITHOUT entitlements
+          # (only the main executable carries the sandbox entitlement).
+          find "$APP_BUNDLE" -type f \( -name "*.so" -o -name "*.dylib" \) -print0 \
+            | while IFS= read -r -d '' f; do
+                codesign --force --options runtime --sign "$IDENTITY" "$f"
+              done
+          find "$APP_BUNDLE/Contents/MacOS" -type f -print0 \
+            | while IFS= read -r -d '' f; do
+                codesign --force --options runtime --sign "$IDENTITY" "$f"
+              done
+
+          # Main bundle WITH the App Store sandbox entitlements.
+          codesign --force --options runtime --entitlements "$ENTITLEMENTS" \
+            --sign "$IDENTITY" "$APP_BUNDLE"
+
+          echo "=== verify ==="
+          codesign --verify --strict --verbose=2 "$APP_BUNDLE"
+          echo "=== embedded entitlements ==="
+          codesign -d --entitlements :- "$APP_BUNDLE" 2>/dev/null || codesign -d --entitlements - "$APP_BUNDLE"
+
+          # Assert the sandbox entitlement actually made it into the signature.
+          if codesign -d --entitlements :- "$APP_BUNDLE" 2>/dev/null | grep -q "com.apple.security.app-sandbox"; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            echo "App is signed AND sandbox entitlement is embedded."
+          else
+            echo "::error::sandbox entitlement missing from signature"; exit 1
+          fi
+
+      - name: Note if signing skipped (no cert secret)
+        if: ${{ env.APPLE_CERTIFICATE_P12 == '' }}
+        shell: bash
+        run: echo "::notice::APPLE_CERTIFICATE_P12 not set — staying unsigned; sandbox-runtime probes will self-skip."
+
+      # ---------------------------------------------------------------------
+      # SANDBOX RUNTIME DIAGNOSTICS (signed only). All continue-on-error — the
+      # point is to LEARN the runtime behavior, not to gate the build.
+      # ---------------------------------------------------------------------
+      - name: Sandbox probe — is the sandbox enforced? (external path should be DENIED)
+        id: sb_enforced
+        if: ${{ steps.sign.outputs.signed == 'true' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          BIN="$APP_BUNDLE/Contents/MacOS/ProjectKestrel"
+          echo "Running signed binary --validate against EXTERNAL test_imgs (outside any container)."
+          echo "Under an enforced sandbox this should be DENIED (file-read errors / ok=false)."
+          OUT="${RUNNER_TEMP}/ext-validate.json"; rm -f "$OUT"
+          "$BIN" --cli --validate --no-gpu --validate-images test_imgs --validate-output "$OUT" 2>&1 | tail -40
+          echo "--- exit=$? ---"
+          echo "=== container dir after run (proves sandbox engaged if present) ==="
+          ls -la "$HOME/Library/Containers/" 2>/dev/null | grep -i kestrel || echo "(no kestrel container)"
+          CDIR="$HOME/Library/Containers/org.projectkestrel.desktop"
+          if [ -d "$CDIR" ]; then
+            echo "CONTAINER EXISTS: $CDIR  -> sandbox is engaging"
+            find "$CDIR/Data" -maxdepth 2 -type d 2>/dev/null | head -20
+          else
+            echo "::warning::No container created — direct-exec may not be sandboxing; real test needs a Mac launching the .app."
+          fi
+          if [ -f "$OUT" ]; then
+            ok=$(python3 -c "import json;print(json.load(open('$OUT')).get('ok'))" 2>/dev/null)
+            echo "external validate ok=$ok (false/denied is the EXPECTED sandbox outcome)"
+          fi
+
+      - name: Sandbox probe — pipeline WORKS inside the container (granted path should SUCCEED)
+        id: sb_container
+        if: ${{ steps.sign.outputs.signed == 'true' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          BIN="$APP_BUNDLE/Contents/MacOS/ProjectKestrel"
+          CDATA="$HOME/Library/Containers/org.projectkestrel.desktop/Data"
+          mkdir -p "$CDATA/test_imgs"
+          # Copy first 2 test images into the container (a path the sandbox allows).
+          n=0
+          for img in $(find test_imgs -maxdepth 1 -type f | sort | head -n 2); do
+            cp "$img" "$CDATA/test_imgs/"; n=$((n+1))
+          done
+          echo "Copied $n image(s) into container: $CDATA/test_imgs"
+          OUT="$CDATA/cont-validate.json"; rm -f "$OUT"
+          echo "Running signed binary --validate against the IN-CONTAINER path…"
+          "$BIN" --cli --validate --no-gpu --validate-images "$CDATA/test_imgs" --validate-output "$OUT" 2>&1 | tail -40
+          echo "--- exit=$? ---"
+          if [ -f "$OUT" ]; then
+            cat "$OUT"
+            ok=$(python3 -c "import json;print(json.load(open('$OUT')).get('ok'))" 2>/dev/null)
+            echo "in-container validate ok=$ok (true means the pipeline runs fine UNDER the sandbox)"
+          else
+            echo "::warning::no in-container validate output produced"
+          fi
+
+      # ---------------------------------------------------------------------
+      # Always-green gate: unsigned onedir --validate + UI probe (proves the
+      # build + UI are sound regardless of the sandbox diagnostics above).
+      # ---------------------------------------------------------------------
+      - name: Run --validate against frozen onedir binary (unsigned baseline)
+        id: validate
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          VALIDATE_OUTPUT="${RUNNER_TEMP}/validate-result.json"; rm -f "$VALIDATE_OUTPUT"
+          analyzer/dist/ProjectKestrel/ProjectKestrel \
+            --cli --validate --no-gpu --validate-images test_imgs --validate-output "$VALIDATE_OUTPUT"
+          [ -f "$VALIDATE_OUTPUT" ] || { echo "no result JSON"; exit 1; }
+          echo "=== validate-result.json ==="; cat "$VALIDATE_OUTPUT"; cp "$VALIDATE_OUTPUT" validate-result.json
+          ok=$(python3 -c "import json;print(str(json.load(open('$VALIDATE_OUTPUT')).get('ok')).lower())")
+          [ "$ok" = "true" ] || { echo "Validation failed (ok=$ok)"; exit 1; }
+
+      - name: Warn if frozen --validate failed
+        if: ${{ always() && steps.validate.outcome == 'failure' }}
+        shell: bash
+        run: echo "::warning::Frozen App Store --validate failed; continuing to publish artifacts."
+
+      - name: UI probe (visualizer.html) against frozen onedir binary
+        id: ui_probe
+        continue-on-error: true
+        timeout-minutes: 4
+        shell: bash
+        run: |
+          set +e
+          BIN="analyzer/dist/ProjectKestrel/ProjectKestrel"
+          PAT="dist/ProjectKestrel/ProjectKestrel"
+          OUT="${RUNNER_TEMP}/ui-probe-result.json"; rm -f "$OUT"
+          ELOG="${RUNNER_TEMP}/ui-probe.err"
+          "$BIN" --api-probe --probe-target visualizer \
+            --probe-output "$OUT" --probe-timeout 90 --port 8799 >"$ELOG" 2>&1 &
+          start=$SECONDS
+          while [ $((SECONDS-start)) -lt 110 ]; do
+            [ -f "$OUT" ] && { echo "result JSON appeared at t=$((SECONDS-start))s"; break; }
+            pgrep -f "$PAT" >/dev/null || { echo "probe exited at t=$((SECONDS-start))s before writing JSON"; break; }
+            sleep 1
+          done
+          pkill -9 -f "$PAT" 2>/dev/null
+          echo "=== probe stderr tail(15, non-GET) ==="; grep -vE 'GET /' "$ELOG" 2>/dev/null | tail -15
+          [ -f "$OUT" ] || { echo "UI probe did not produce a result JSON"; exit 1; }
+          cat "$OUT"; cp "$OUT" ui-probe-result.json
+          ok=$(python3 -c "import json;print(str(json.load(open('$OUT')).get('ok')).lower())" 2>/dev/null)
+          echo "ok=$ok"
+          [ "$ok" = "true" ] || { echo "UI probe failed (ok=$ok)"; exit 1; }
+          echo "App Store UI probe PASSED"
+
+      - name: Warn if UI probe failed
+        if: ${{ always() && steps.ui_probe.outcome == 'failure' }}
+        shell: bash
+        run: echo "::warning::Frozen App Store UI probe failed; visualizer.html did not see window.pywebview.api."
+
+      - name: Collect .app
+        shell: bash
+        run: |
+          set -e
+          mkdir -p artifact
+          APP_PATH=$(find analyzer/dist -maxdepth 2 -name "*.app" | head -n 1 || true)
+          if [ -z "$APP_PATH" ]; then echo "No .app found to upload"; exit 1; fi
+          echo "Found .app: $APP_PATH"
+          cp -a "$APP_PATH" artifact/
+
+      - name: Upload App Store dev .app
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-appstore-dev-app
+          path: artifact/
+
+      - name: Upload validate-result.json
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-appstore-dev-validate-result
+          path: validate-result.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload ui-probe-result.json
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-appstore-dev-ui-probe-result
+          path: ui-probe-result.json
+          if-no-files-found: warn
+          retention-days: 14

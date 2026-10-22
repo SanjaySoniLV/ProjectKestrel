@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-__all__ = ["BirdSpeciesClassifier", "QualityClassifier", "SpeciesNetSAMHQWrapper"]
+__all__ = ["BioClipSpeciesClassifier", "QualityClassifier", "SpeciesNetSAMHQWrapper"]
 
 # Platform-aware GPU execution provider for ONNX Runtime.
 # macOS: CoreMLExecutionProvider (Apple Neural Engine / GPU via Core ML)
@@ -76,10 +76,10 @@ def is_gpu_active(active_providers: list[str]) -> bool:
 
 
 def __getattr__(name: str) -> Any:
-    if name == "BirdSpeciesClassifier":
-        from .bird_species import BirdSpeciesClassifier
+    if name == "BioClipSpeciesClassifier":
+        from .bioclip_species import BioClipSpeciesClassifier
 
-        return BirdSpeciesClassifier
+        return BioClipSpeciesClassifier
     if name == "QualityClassifier":
         from .quality import QualityClassifier
 

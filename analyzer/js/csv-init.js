@@ -92,13 +92,30 @@
     if (zoomInBtn) zoomInBtn.addEventListener('click', () => { uiZoom = Math.min(1.4, uiZoom + 0.1); applyZoom(); });
     if (zoomOutBtn) zoomOutBtn.addEventListener('click', () => { uiZoom = Math.max(0.7, uiZoom - 0.1); applyZoom(); });
 
-    // Initialize toolbar toggle for scene-level manual-reviewed filter
-    (function initScenesManualFilter() {
-      const t = document.getElementById('filterScenesManualRated');
+    // Initialize the scene-level review-state filter (all / reviewed / unreviewed).
+    (function initSceneReviewStateFilter() {
+      const t = document.getElementById('filterSceneReviewState');
       if (!t) return;
-      try { t.checked = !!getSetting('onlyManualRatedScenes', false); } catch { }
+      const VALID = ['all', 'reviewed', 'unreviewed'];
+      try {
+        let mode = getSetting('sceneReviewFilter', null);
+        // Migrate the superseded boolean. This used to be a single
+        // "Only manually reviewed scenes" checkbox; an existing install that
+        // had it ticked should land on 'reviewed' rather than silently
+        // reverting to showing everything.
+        if (!VALID.includes(mode)) {
+          mode = getSetting('onlyManualRatedScenes', false) ? 'reviewed' : 'all';
+        }
+        t.value = mode;
+      } catch { t.value = 'all'; }
       t.addEventListener('change', () => {
-        const s = loadSettings(); s.onlyManualRatedScenes = !!t.checked; saveSettings(s);
+        const mode = VALID.includes(t.value) ? t.value : 'all';
+        const s = loadSettings();
+        s.sceneReviewFilter = mode;
+        // Keep the legacy key consistent so an older build reading these
+        // settings still behaves sensibly.
+        s.onlyManualRatedScenes = (mode === 'reviewed');
+        saveSettings(s);
         renderScenes();
       });
     })();
@@ -271,10 +288,13 @@
     // If a queue was running before this page loaded (e.g. page refresh), re-attach the polling
     (async () => {
       try {
+        // The bridge is injected after load; without this wait the re-attach
+        // silently missed a running queue / upgrade on a page reload.
+        if (typeof waitForPywebview === 'function') await waitForPywebview();
         const status = await apiGetQueueStatus();
-        if (status && (status.items || []).length > 0) {
+        if (status && ((status.items || []).length > 0 || (status.upgrades || []).length > 0)) {
           renderQueuePanel(status);
-          if (status.running) startPollingQueue();
+          if (status.running || (status.upgrades || []).some(u => u.status === 'running')) startPollingQueue();
         }
       } catch (_) { }
       try {
@@ -308,6 +328,7 @@
           rows = [];
           header = [];
           if (typeof renderScenes === 'function') renderScenes();
+          hideRawWarnBanner();
         } catch (e) { console.warn('[clear] renderScenes error', e); }
         setStatus('Idle');
       });
@@ -390,6 +411,13 @@
         return;
       }
       row.innerHTML = '';
+      // "Recents" header + a divider (CSS) separating the chips from the tree.
+      const header = document.createElement('div');
+      header.className = 'folder-recents-header';
+      header.textContent = 'Recents';
+      row.appendChild(header);
+      const chips = document.createElement('div');
+      chips.className = 'folder-recents-chips';
       for (const path of available) {
         const wrap = buildFolderRecentsChip(
           path,
@@ -411,8 +439,9 @@
           },
           (p) => { if (typeof persistFolderRecentsRemove === 'function') persistFolderRecentsRemove(p); },
         );
-        row.appendChild(wrap);
+        chips.appendChild(wrap);
       }
+      row.appendChild(chips);
       row.classList.remove('hidden');
       updateEmptyHintCopy();
     }

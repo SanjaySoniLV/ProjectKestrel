@@ -1,64 +1,101 @@
 # Project Kestrel 🦅
 
-Project Kestrel uses machine learning to organize your bird photo collection. By grouping similar photos together, ranking them by sharpness, and tagging them by bird species, Kestrel turns your photography into a searchable, quality-sorted, and interactive library.
+Project Kestrel uses machine learning to organize your bird photo collection. It groups your bursts into scenes, ranks them by sharpness, and tags them by species — turning a chaotic card of thousands into a searchable, quality-sorted library. Then it helps you cull the blurry bulk, and share the outing as a story.
 
-![Python](https://img.shields.io/badge/python-3.12+-blue.svg)
+![Python](https://img.shields.io/badge/python-3.11-blue.svg)
 ![License](https://img.shields.io/badge/license-AGPLv3-green.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-lightgrey.svg)
 
-[Visit Projectkestrel.org](https://projectkestrel.org) | [Donate](https://www.paypal.com/donate/?hosted_button_id=CXH4FE5AKZD3A)
+[Visit projectkestrel.org](https://projectkestrel.org) | [Download](https://projectkestrel.org/download) | [Perch](https://projectkestrel.org/perch) | [Cloud Compute](https://projectkestrel.org/cloud) | [Donate](https://donate.stripe.com/aFa28kbrLeb45mFgFE1ZS00)
+
+![Project Kestrel library view](readme_imgs/library.png)
 
 ## At a Glance
 
 * ✅ **Sort by sharpness** to skip hours of tedious manual culling.
 * ✅ **Instantly search** all your photography work by bird species or family.
 * ✅ **Double-click** on any photo to open in your favorite editor.
-* ✅ **100% Local**: All processing is done locally on your device.
+* ✅ **Share your outing** as an interactive timeline with [Perch](https://projectkestrel.org/perch).
+* ✅ **Local-first**: the desktop app is fully functional with no account, no internet, and no cloud — and it always will be.
 
 ## Get Started
 
-For the best experience, download the latest version for your platform from [ProjectKestrel.org](https://projectkestrel.org/download) or the [GitHub Releases page](https://github.com/SanjaySoniLV/ProjectKestrel/releases).
+| Platform | Where |
+|---|---|
+| **Windows** | [Microsoft Store](https://apps.microsoft.com/detail/9NQR2WFFNP5J) (auto-updates) or the [installer](https://projectkestrel.org/download?platform=windows) |
+| **macOS** | [Download the DMG](https://projectkestrel.org/download?platform=macos) — Apple Silicon only. Intel Mac users should check [projectkestrel.org/download](https://projectkestrel.org/download) to see if an official Intel build is available; otherwise see [Building on Intel (x86_64) Macs](DEVELOPMENT.md#building-on-intel-x86_64-macs) to build from source |
+| **Linux** | Run from source — see [Running from Source](#-running-from-source) |
 
-Project Kestrel is now a single, unified application for analyzing and exploring your photos.
+All builds are also on the [GitHub Releases page](https://github.com/SanjaySoniLV/ProjectKestrel/releases). Releases are named after birds; the current one is **v(Rock Wren)**. See the [changelog](https://projectkestrel.org/notes/?cat=changelog) for what's new, or the [guides](https://projectkestrel.org/notes/?cat=guides) if you're just getting started.
 
-## Tutorial: 5 Steps to Better Culling
+## Tutorial: 6 Steps to Better Culling
 
-### Step 1: Install & Open
-Download and install Kestrel, then launch the application to get started.
-![Install Kestrel](readme_imgs/kestrel-open.png)
+### Step 1: Analyze your folders
+Point Kestrel at the folders holding your RAW or JPEG photos. It reads every frame — grouping bursts into scenes, finding the bird, scoring sharpness, and tagging the species.
 
-### Step 2: Analyze Folders
-Select the folders containing your RAW or JPEG photos. Kestrel will scan them, detecting birds and estimating image quality.
-![Analyze Folders](readme_imgs/live-analysis.png)
+### Step 2: Explore your library
+Your outing comes back as a quality-sorted timeline: scenes grouped by time, each ranked sharpest-first, every bird labelled with its species and a confidence score.
+![Explore your library](readme_imgs/library.png)
 
-### Step 3: Explore Results
-Browse your collection! Photos are automatically grouped by "scene" (bursts) and organized from sharpest to blurriest.
-![Explore Results](readme_imgs/kestrel-overview.png)
+### Step 3: Review the scene
+Kestrel shows a close-up of the bird alongside the full frame. Because the scene is already sorted by sharpness, you're deciding on pose, light, and artistic preference — not pixel-peeping.
+![Scene view](readme_imgs/scene-view.png)
 
-### Step 4: Rapid Culling
-Use the Culling Assistant to quickly split photos into "Accept" and "Reject" groups.
+### Step 4: Cull the bulk
+The Culling Assistant splits your photos into Accept and Reject piles from simple rules — a minimum quality bar, and how many frames to keep per scene. Adjust, review the rejects, click Done.
+
+**Kestrel moves. It never deletes.** Rejected photos go to a `Kestrel Rejects` folder. Archive them or delete them yourself, whenever you're ready, on your own terms.
 ![Culling Assistant](readme_imgs/culling-assistant.png)
 
-### Step 5: Search & Discover
-Search through thousands of photos by species or family to instantly rediscover shots from any outing.
-![Search](readme_imgs/kestrel-search.png)
+### Step 5: Search by species
+Search your whole library by *what* you photographed, not *when*. Across every folder, every outing, every year of shooting.
+![Species search](readme_imgs/species-search.png)
+
+### Step 6: Share it with Perch
+Publish your outing as an interactive timeline anyone can explore — see [Perch](#perch) below.
+![Share with Perch](readme_imgs/perch-upload.png)
 
 ---
 
 ## Features
 
 - **Automatic Bird Detection**: Kestrel finds exactly where the bird is in your photo and focuses its analysis there.
-- **Family & Species Search**: Classifies birds so you can filter your library by species or family keywords.
+- **Family & Species Search**: Classifies birds so you can filter your library by species or family keywords. Automatic identification covers the world's ~11,250 bird species (IOC list), narrowed to the region(s) you pick for each analysis; you can also manually tag any bird on Earth from the same bundled catalog, searchable by common name, four-letter banding code, or scientific name.
 - **Objective Quality Ranking**: Only considers sharpness, motion blur, and noise, letting you keep full artistic control.
 - **Intelligent Scene Grouping**: Bursts are grouped automatically so you can compare similar frames side-by-side.
+- **Editor Sync**: Kestrel writes XMP sidecar files natively supported by almost all photo editors — your ratings show up as stars in Lightroom, Darktable, Capture One, and more.
 - **RAW File Support**: Processes CR2, CR3, NEF, ARW, DNG, and other RAW formats using the `rawpy` library.
+
+> On species accuracy: family-level search is fairly reliable and a good primary tool for narrowing your library. Species-level results are useful for narrowing searches, but treat them as a starting point, not a definitive ID.
+
+## Perch
+
+[Perch](https://projectkestrel.org/perch) is a sharing platform built on Project Kestrel that lets you tell the *story* of a birding outing.
+
+Most photo sharing means picking one shot and posting it. But an outing is a whole story — dozens of scenes, common and rare, across a single morning. Perch lets you share the entire experience: an interactive, personalized timeline that anyone can explore. Friends can like their favorites and leave comments. There's no feed to scroll, nothing deciding what you see, and no pressure to perform.
+
+![A published Perch](readme_imgs/perch.png)
+
+Perch uploads **only the lightweight thumbnails, never your originals**. You choose who sees a Perch — private, unlisted, specific people, or fully public — and you can change your mind at any time. Free for everyone, 3 GB (~15,000 photos) per account, no ads.
+
+Live at [perch.projectkestrel.org](https://perch.projectkestrel.org).
+
+## Cloud Compute
+
+Project Kestrel is free and runs entirely on your own machine — always. But when you've got a huge backlog or a slow laptop, [Cloud Compute](https://projectkestrel.org/cloud) sends your photos to fast GPUs running the exact same pipeline, then sends the results right back. Up to **5–10× faster**, and completely optional.
+
+A 2,000-photo backlog takes roughly 2.5 hours on a laptop, or about 15 minutes on Cloud Compute. Your upload is split across up to three parallel GPUs and merged back, identical to a local run.
+
+**Your photos are deleted the moment they're analyzed.** Results are deleted on download, or after 30 days. All that's kept is job records — counts and timestamps for billing.
+
+Every new account gets 2,500 images free, no card required. Cloud Compute is 100% optional — and it's the only thing funding Project Kestrel. The app itself stays free and open source for everyone, forever. Find it in the Analyze Folders dialog, or read more at [projectkestrel.org/cloud](https://projectkestrel.org/cloud).
 
 ## 🚀 Running from Source
 
 If you are on Linux or prefer to run from source code, follow these steps:
 
 ### Prerequisites
-- Python 3.12+
+- Python 3.11
 - Git (for cloning)
 
 ### Installation
@@ -69,46 +106,51 @@ git clone https://github.com/SanjaySoniLV/ProjectKestrel.git
 cd ProjectKestrel
 ```
 
-2. Install dependencies:
+2. Install dependencies for your platform:
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-windows.txt   # Windows (DirectML)
+pip install -r requirements-macos.txt     # macOS (CoreML / Apple Silicon)
+pip install -r requirements.txt           # generic / Linux from source
 ```
 
 ### Usage
 
-Launch the unified application:
+Launch the application:
 ```bash
 python analyzer/visualizer.py
 ```
-*(Note: In the unified version, the visualizer serves as the main entry point for both analysis and browsing.)*
+
+Or run the analyzer headless on a folder:
+```bash
+python analyzer/cli.py "/path/to/photos" --gpu
+```
 
 Security baseline:
-- Project Kestrel runs in desktop mode via pywebview.
-- Browser-only fallback mode is no longer supported.
-- The app is intended to run fully offline once dependencies are installed.
-
-Features of the visualizer:
-- **Scene View**: Browse grouped similar images
-- **Species Search**: Filter by bird species keywords
-- **Quality Sorting**: Images automatically sorted by quality score
-- **Detailed View**: Examine individual images with metadata
-- **External Tools**: Open original files or simply double-click to launch Darktable
+- Project Kestrel runs in desktop mode via pywebview; the UI talks to Python over the `window.pywebview.api` bridge.
+- Browser-only fallback mode is no longer supported, and the legacy HTTP control API is permanently disabled by design.
+- Analysis runs fully offline. Sign-in, Perch, and Cloud Compute are the only features that use the network, and all three are optional.
 
 ## How It Works
 
+Kestrel runs a four-stage pipeline that builds objective data about every frame.
+
 ### 1. Wildlife detection and segmentation
-- Uses Google's [SpeciesNet](https://github.com/google/cameratrapai) ensemble (MegaDetector + species classifier) for animal bounding boxes and taxonomy, and [SAM-HQ](https://github.com/SysCV/sam-hq) (ViT-B) for high-quality masks.
-- Detects animals, routes birds vs other wildlife, and segments subjects so quality is assessed on wildlife pixels, not background.
+- [MegaDetector](https://github.com/agentmorris/MegaDetector) proposes animal bounding boxes and [SAM-HQ](https://github.com/SysCV/sam-hq) (ViT-Tiny, via ONNX) segments each one, so quality is assessed on wildlife pixels, not background — a busy or cluttered background never sways the score.
+- Each subject crop is embedded once with [BioCLIP 2](https://huggingface.co/imageomics/bioclip-2); that one embedding drops MegaDetector false positives (branches, bark, posts, …) with a zero-shot animal-vs-background test, and routes the subject to *bird* or *other wildlife* (1,150+ non-bird species).
 
 ### 2. Species Classification
-- A custom machine learning model was trained for bird species identification for North American birds.
-- Improvements to classification are planned.
+- Bird species are identified zero-shot with [BioCLIP 2](https://huggingface.co/imageomics/bioclip-2) (MIT licence; an int8 ONNX export of its image tower runs on-device) against precomputed text embeddings for every IOC world bird species.
+- Each analysis is geofenced to the region(s) you choose (default: your *Settings → Species & Region* list), so scores are probabilities over the birds that actually occur there.
 
 ### 3. Quality Assessment
-- A custom machine learning model was trained to analyze the quality of the images.
-- Factors in noise, motion blur, out-of-focus images, and other artifacts into one score.
+- Quality is an **objective focus/sharpness score** of the bird crop — not a judgement of whether the photo is "good".
+- The default scorer (analysis pipeline 3.0) is a zero-shot [SigLIP 2](https://huggingface.co/timm/ViT-B-16-SigLIP2) sharpness test ("sharp, in-focus" vs "blurry, out-of-focus"), calibrated onto Kestrel's familiar 0–1 scale. The previous custom quality model still runs alongside it for this major version; both scores are stored and you can switch in *Settings → Quality scorer* instantly, without re-analysing.
 - Only evaluates image regions corresponding to the bird, NOT any branches, backgrounds, or other regions.
 - Quality scores are used to rank images within a scene by sharpness.
+
+### Smart search
+- Describe the moment — "bird in flight", "perched on a wire", "two birds", "blurry" — or name a bird with it — "heron in a marsh", "dove pair". Bird species, families and wildlife in the query are detected (typos and plurals are fine) and become filter chips; the rest is matched against SigLIP 2 embeddings of every bird crop *and* every whole frame.
+- Folders analysed with an older version can be upgraded in place (*Folder Actions → Upgrade to Analysis Pipeline 3.0*) from the crops Kestrel already saved — no re-analysis, and your ratings, culls and tags are never touched.
 
 ### 4. Scene Grouping
 - A custom image similarity algorithm was developed to identify images that belong to the same scene.
@@ -124,17 +166,22 @@ ProjectKestrel/
 │   ├── queue_manager.py      # Sequential folder-analysis queue
 │   ├── settings_utils.py     # settings.json I/O with schema validation
 │   ├── cli.py                # Headless CLI entry
-│   ├── visualizer.html       # UI markup
-│   ├── visualizer.js         # UI logic (vanilla JS)
-│   ├── visualizer.css        # UI styles
+│   ├── visualizer.html       # UI markup (all dialogs live here)
+│   ├── js/                   # UI logic — vanilla JS modules, no framework
+│   ├── css/                  # Split stylesheets (base, layout, grid, dialogs/…)
 │   ├── culling.html          # Culling Assistant window
 │   ├── metadata_writer.py    # XMP sidecar writer
 │   ├── editor_launch.py      # Open photos in external editors
-│   ├── models/               # AI model files (ONNX + SpeciesNet)
+│   ├── cloud_compute_client.py  # Cloud Compute (optional)
+│   ├── perch_uploader.py     # Perch publishing (optional)
+│   ├── auth_client.py        # Sign-in (optional)
+│   ├── models/               # AI model files (ONNX: MegaDetector, SAM-HQ, BioCLIP 2, SigLIP 2, quality)
 │   ├── kestrel_analyzer/     # Core analysis pipeline (no UI dependencies)
-│   └── tests/                # pytest + unittest test suites
+│   └── tests/                # pytest suites (~350 tests)
 ├── packaging/                # PyInstaller specs + installer build scripts
+├── tools/                    # Build + asset tooling (bird catalog, screenshots)
 ├── utils/                    # Developer utility scripts
+├── release-notes/            # Per-release notes, named by bird
 ├── test_imgs/                # Tiny smoke-test images for CI
 └── README.md
 ```
@@ -169,11 +216,16 @@ Kestrel's quality scoring model is trained on RAW images, and may not work as we
 ## 🔧 Configuration
 
 ### GPU Acceleration
-GPU is currently NOT supported in the distributed versions of Project Kestrel. GPU may be supported in a future date, but for now, the only option to use GPU is to run Kestrel from source. This will contribute marginal improvements to analysis times, but requires a capable system, and is extremely unstable/not formally supported at this time. To do this, when running the analyzer, you'll be prompted to choose between:
-- **GPU Mode**: Uses DirectML on Windows (faster, requires compatible GPU and Windows OS)
-- **CPU Mode**: Uses CPU execution provider (slightly, but works on all systems)
+GPU acceleration is supported out of the box in the distributed builds, and every model runs on it. Kestrel uses ONNX Runtime with a platform-appropriate execution provider:
 
-> NOTE: Not all models are run on the GPU, and GPU acceleration is in Beta development and may be unstable. If you run into errors or instability, please use CPU mode.
+- **macOS**: CoreML (Apple GPU / Neural Engine)
+- **Windows**: DirectML (any DirectX 12 GPU — AMD, Intel, or NVIDIA)
+
+Kestrel falls back to the CPU execution provider automatically when no compatible GPU is available, so it works on any machine. GPU is on by default; if you hit trouble, untick **Use GPU** in the Analyze Folders dialog, or pass `--no-gpu` on the CLI.
+
+If you're running from source, install the right requirements file for your platform — `requirements-windows.txt` pulls `onnxruntime-directml`, while `requirements-macos.txt` uses the stock `onnxruntime`, which ships CoreML on macOS. The generic `requirements.txt` is CPU-only.
+
+> Even with a GPU, a big backlog takes a while on a laptop. [Cloud Compute](#cloud-compute) runs the same pipeline on dedicated GPUs if you want it faster.
 
 ### Output Structure
 Processed images are organized in a `.kestrel` folder within your photo directory:
@@ -192,7 +244,7 @@ The `.kestrel` folder will require an additional 1MB of disk space for every ~10
 
 Contributions are welcome! Please feel free to submit pull requests, report bugs, or suggest features.
 
-Donations are welcome. Please donate via [PayPal/Card](https://www.paypal.com/donate/?hosted_button_id=CXH4FE5AKZD3A)
+Project Kestrel is a one-person project — built over years of weekends because I wanted these tools for my own bird photography. The app is free and open source, and always will be; my only sources of income are your donations and your subscriptions to Cloud Compute. There are [many ways to support it](https://projectkestrel.org/support-me), and money is only one of them — but if you'd like to, you can [donate via card](https://donate.stripe.com/aFa28kbrLeb45mFgFE1ZS00).
 
 ## ❓ Contact Me
 Direct questions or comments to [support@projectkestrel.org](mailto:support@projectkestrel.org)
@@ -216,6 +268,23 @@ The canonical Terms of Service and Privacy Policy live on the marketing site and
 
 - **rawpy** library for robust RAW image file format handling
 - **pyinstaller project** for robust python packaging and distribution solutions.
+- **[BioCLIP 2](https://huggingface.co/imageomics/bioclip-2)** (Imageomics Institute, MIT licence) —
+  the bird species classifier. Gu, J., Stevens, S., Campolongo, E., Thompson, M., Zhang, N., Wu, J.,
+  Kopanev, A., Mai, Z., White, A., Balhoff, J., Dahdul, W., Rubenstein, D., Lapp, H., Berger-Wolf, T.,
+  Chao, W.-L., & Su, Y. (2025). "BioCLIP 2: Emergent Properties from Scaling Hierarchical Contrastive
+  Learning." *Advances in Neural Information Processing Systems 38*, 102778–102811. Model:
+  doi:[10.57967/hf/5765](https://doi.org/10.57967/hf/5765). Trained on TreeOfLife-200M (iNaturalist,
+  GBIF, EOL, BIOSCAN — various CC licences). Kestrel bundles an int8 ONNX conversion of it; see
+  [`analyzer/models/bioclip/NOTICES.md`](analyzer/models/bioclip/NOTICES.md) for the licence text and
+  BibTeX.
+- **[SigLIP 2](https://huggingface.co/timm/ViT-B-16-SigLIP2)** (Google, ViT-B/16, Apache-2.0),
+  loaded via **[open_clip](https://github.com/mlfoundations/open_clip)** for the conversion — smart
+  search and the default zero-shot sharpness score. Tschannen, M., et al. (2025). "SigLIP 2:
+  Multilingual Vision-Language Encoders with Improved Semantic Understanding, Localization, and Dense
+  Features." arXiv:2502.14786. Kestrel bundles an int8 image tower, an fp16-weight text tower, a pruned
+  int8 token table and the tokenizer; see [`analyzer/models/siglip/NOTICES.md`](analyzer/models/siglip/NOTICES.md).
+- **[MegaDetector](https://github.com/agentmorris/MegaDetector)** (MIT licence) — animal detection,
+  and **[SAM-HQ](https://github.com/SysCV/sam-hq)** (Apache-2.0) — segmentation masks.
 
 ### Bundled bird-catalog data
 

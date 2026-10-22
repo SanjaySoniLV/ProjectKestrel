@@ -29,6 +29,13 @@ import urllib.request
 from urllib.parse import quote
 from typing import Any
 
+# certifi-backed TLS context — bare urlopen() fails CERTIFICATE_VERIFY_FAILED
+# in a frozen macOS .app. See net_tls. Dual import for root-vs-package sys.path.
+try:
+    from net_tls import ssl_context as _ssl_context
+except ImportError:  # pragma: no cover - package-style import path
+    from analyzer.net_tls import ssl_context as _ssl_context
+
 
 _DEFAULT_AUTH_API_BASE = "https://auth.projectkestrel.org"
 
@@ -96,7 +103,7 @@ class AuthClient:
             headers["Content-Type"] = "application/json"
         req = urllib.request.Request(url, data=data, method=method, headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout, context=_ssl_context()) as resp:
                 raw = resp.read()
                 if not raw:
                     return {}

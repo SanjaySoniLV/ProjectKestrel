@@ -24,7 +24,9 @@
   <link rel="stylesheet" href="css/folder-tree.css" />
   <link rel="stylesheet" href="css/welcome.css" />
   <link rel="stylesheet" href="css/timeline.css" />
+  <link rel="stylesheet" href="css/smart-search.css" />
   <link rel="stylesheet" href="css/legal-banner.css" />
+  <link rel="stylesheet" href="css/raw-warn-banner.css" />
   <link rel="stylesheet" href="css/dialogs/base.css" />
   <link rel="stylesheet" href="css/dialogs/kdlg.css" />
   <link rel="stylesheet" href="css/dialogs/scene.css" />
@@ -51,6 +53,16 @@
         rel="noopener" class="legal-notice-link">View Privacy Policy</a>
       <button id="legalAgreeBtn" class="legal-notice-btn">Agree &amp; Dismiss</button>
     </div>
+  </div>
+  <div id="rawWarnNotice" class="raw-warn-banner hidden" role="alert">
+    <span id="rawWarnMsg" class="raw-warn-msg"></span>
+    <div class="raw-warn-actions">
+      <a id="rawWarnLearnMore" href="https://www.projectkestrel.org/notes/nikon-unsupported-raws"
+        target="_blank" rel="noopener" class="raw-warn-link">Learn More</a>
+      <button id="rawWarnDontShowBtn" class="raw-warn-btn">Don&rsquo;t Show Again</button>
+    </div>
+    <button id="rawWarnCloseBtn" class="raw-warn-close" type="button"
+      aria-label="Dismiss this warning">&times;</button>
   </div>
   <div class="app-body">
   <header>
@@ -142,10 +154,10 @@
       <!-- Segmented footer strip: Settings | Feedback | Tutorial | Donate.
            Zoom moved to the bottom status bar. -->
       <div class="sidebar-footer segmented-strip" aria-label="Controls">
-        <button id="openSettings" class="segmented-strip-item" title="Open Kestrel settings" aria-label="Settings">⚙</button>
+        <button id="openSettings" class="segmented-strip-item" title="Open Kestrel settings" aria-label="Settings">⚙ Settings</button>
         <button id="openFeedback" class="segmented-strip-item" title="Send feedback, report a bug, or share a suggestion">Feedback</button>
         <button id="helpBtnMain" class="segmented-strip-item" title="Start guided tutorial">Tutorial</button>
-        <button id="donateBtnMain" class="segmented-strip-item donate-item" title="Support Project Kestrel — Donate via PayPal">💛 Donate</button>
+        <button id="donateBtnMain" class="segmented-strip-item donate-item" title="Support Project Kestrel">💛 Support</button>
       </div>
     </div>
   </header>
@@ -156,6 +168,8 @@
       <!-- Sticky top filter/sort bar — sits above the timeline, hidden when welcome panel is shown -->
       <div id="timelineFilterBar" class="timeline-filter-bar hidden" role="region" aria-label="Filter and sort options">
         <input id="search" type="search" placeholder="🔍 Search by species or family" class="tfb-search" />
+        <button id="smartSearchToggle" type="button" class="tfb-smart-toggle" aria-pressed="false"
+          title="Smart search: describe what is happening (&quot;bird in flight&quot;, &quot;perched on a wire&quot;, &quot;two birds&quot;, &quot;blurry&quot;) and/or name a bird (&quot;heron in a marsh&quot;, &quot;dove pair&quot;). Bird names, families and wildlife in your query are detected and become filter chips you can remove.">✨ Smart search</button>
         <label class="tfb-field" title="Minimum confidence threshold for species classification">
           <span class="tfb-label">Confidence</span>
           <input id="speciesConf" type="number" min="0" max="1" step="0.05" value="0.75" class="tfb-conf" />
@@ -172,9 +186,13 @@
         <div class="tfb-more-wrap">
           <button id="tfbMoreBtn" type="button" class="tfb-more-btn" aria-haspopup="true" aria-expanded="false" title="More filter and grouping options">⚙ More ▾</button>
           <div id="tfbMorePopover" class="tfb-more-popover hidden" role="menu" aria-label="Additional options">
-            <label class="tfb-popover-row" title="Only show scenes you've manually reviewed: user star ratings, user accept/reject culling decisions, reviewed scene tags, or renamed scene names.">
-              <input id="filterScenesManualRated" type="checkbox" />
-              <span>Only manually reviewed scenes</span>
+            <label class="tfb-popover-row" title="Filter by review state. A scene counts as reviewed once you have given it any user star rating, any accept/reject culling decision, reviewed scene tags, or a scene name. Unreviewed scenes are the ones that still need work.">
+              <span>Review state</span>
+              <select id="filterSceneReviewState">
+                <option value="all">All scenes</option>
+                <option value="reviewed">Reviewed only</option>
+                <option value="unreviewed">Unreviewed only</option>
+              </select>
             </label>
             <label class="tfb-popover-row">
               <input id="includeSecondarySpecies" type="checkbox" />
@@ -198,6 +216,13 @@
             </label>
           </div>
         </div>
+        <div id="smartSearchBar" class="smart-search-bar hidden" role="status" aria-live="polite">
+          <span id="smartSearchSpinner" class="smart-search-spinner hidden" aria-hidden="true"></span>
+          <span id="smartSearchChips" class="smart-search-chips hidden" aria-label="Filters detected in your query"></span>
+          <span id="smartSearchHint" class="smart-search-hint"></span>
+          <button id="smartSearchIndexBtn" type="button" class="smart-search-btn hidden">Upgrade folder</button>
+          <button id="smartSearchClear" type="button" class="smart-search-btn smart-search-clear hidden" title="Clear the smart search">✕ Clear</button>
+        </div>
       </div>
       <div id="compat" class="wrap hidden">
         <div class="notice">
@@ -210,10 +235,13 @@
 
       <!-- Welcome / Quick-Start panel — visible only when no folder is loaded -->
       <div id="welcomePanel">
-        <img src="logo.png" alt="Kestrel Logo" style="height:150px; margin-bottom:8px; opacity:0.9;">
-        <h2>Welcome to Kestrel</h2>
-        <p class="welcome-subtitle">What would you like to do?</p>
-        <button class="welcome-action-btn" style="display:block; margin:12px auto 20px; width:100%; max-width:300px; font-size:14px; padding:10px 16px;" onclick="openTutorialChooser()">📖 Start Tutorial</button>
+        <div class="welcome-hero">
+          <img src="logo.png" alt="Kestrel Logo" class="welcome-hero-logo" style="height:150px; opacity:0.9;">
+          <div class="welcome-hero-text">
+            <h2>Welcome to Project Kestrel</h2>
+            <button class="welcome-action-btn" style="margin:0; font-size:14px; padding:10px 16px;" onclick="openTutorialChooser()">📖 Start Tutorial</button>
+          </div>
+        </div>
 
         <!-- "What's New" banner (populated + gated by JS via last_seen_whats_new_version setting) -->
         <div id="welcomeWhatsNew" class="welcome-whats-new hidden" role="region" aria-label="What's new in this update"></div>
@@ -237,9 +265,7 @@
         </div>
 
         <div class="welcome-footer">
-          Need help? Visit <a id="welcomeTutorialLink" href="https://projectkestrel.org/tutorial" target="_blank"
-            rel="noopener noreferrer">projectkestrel.org/tutorial</a> for a video walk-through or look for the in-app <b>Tutorial</b> buttons.
-          <div style="margin-top:12px; font-size:11px; opacity:0.8;">
+          <div style="font-size:11px; opacity:0.8;">
             By using Project Kestrel, you agree to the <a href="https://projectkestrel.org/terms-of-use"
               target="_blank">Terms of Use</a> and <a href="https://projectkestrel.org/privacy-policy"
               target="_blank">Privacy Policy</a>.
@@ -259,6 +285,10 @@
       <div class="queue-panel-header" id="queuePanelHeader" title="Click to expand / collapse">
         <span class="queue-panel-title">🔬 Analysis Queue</span>
         <span class="queue-panel-badge" id="queuePanelBadge">Idle</span>
+        <!-- Close (X): only appears once every item is in a terminal state
+             (done/error/cancelled) — i.e. nothing is analyzing. Replaces the
+             old "Clear done" button. -->
+        <button class="queue-panel-close hidden" id="queuePanelCloseBtn" type="button" title="Close — all items finished">×</button>
         <span class="queue-panel-toggle open" id="queuePanelToggle">▲</span>
       </div>
       <div class="queue-panel-body" id="queuePanelBody"></div>
@@ -266,7 +296,6 @@
       <div class="queue-panel-controls" id="queuePanelControls">
         <button id="queuePauseBtn" title="Pause / resume analysis">⏸ Pause</button>
         <button id="queueCancelBtn" title="Cancel all pending items">⏹ Cancel</button>
-        <button id="queueClearBtn" title="Remove finished items from list">🗑 Clear done</button>
         <button id="queueLiveBtn" title="See live analysis details">👁 Live</button>
       </div>
     </div>
@@ -281,13 +310,15 @@
       <div class="queue-panel-header" id="cloudQueuePanelHeader" title="Click to expand / collapse">
         <span class="queue-panel-title">☁ Cloud Analysis</span>
         <span class="queue-panel-badge" id="cloudQueuePanelBadge">Idle</span>
+        <!-- Close (X): only appears once every job is in a terminal state
+             (done/failed/cancelled/incomplete) — i.e. nothing is uploading or
+             analyzing. Replaces the old "Clear done" button. -->
+        <button class="queue-panel-close hidden" id="cloudQueuePanelCloseBtn" type="button" title="Close — all jobs finished">×</button>
         <span class="queue-panel-toggle open" id="cloudQueuePanelToggle">▲</span>
       </div>
       <div class="queue-panel-body" id="cloudQueuePanelBody"></div>
       <div class="queue-panel-controls" id="cloudQueuePanelControls">
-        <button id="cloudQueuePauseBtn" title="Pause cloud uploads. Modal keeps analyzing whatever has already uploaded.">⏸ Pause</button>
         <button id="cloudQueueCancelBtn" title="Cancel cloud analysis (stops Modal and deletes staged files).">⏹ Cancel</button>
-        <button id="cloudQueueClearBtn" title="Hide finished jobs from this panel (does not delete job history)">🗑 Clear done</button>
       </div>
     </div>
 
@@ -354,9 +385,9 @@
         <span><kbd>Enter</kbd> Promote active crop</span>
         <span><kbd>Tab</kbd> Next scene</span>
         <span><kbd>Shift</kbd>+<kbd>Tab</kbd> or <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Tab</kbd> Previous scene</span>
-        <span><kbd>Z</kbd> Accept</span>
-        <span><kbd>X</kbd> Reset</span>
-        <span><kbd>C</kbd> Reject</span>
+        <span><kbd>Z</kbd> or <kbd>7</kbd> Accept</span>
+        <span><kbd>X</kbd> or <kbd>8</kbd> Reset</span>
+        <span><kbd>C</kbd> or <kbd>9</kbd> Reject</span>
         <span><kbd>1</kbd>–<kbd>5</kbd> Rate</span>
         <span><kbd>Space</kbd> Open in editor</span>
         <span><kbd>M1</kbd> RAW Zoom (Scroll to zoom in/out)</span>
@@ -382,10 +413,19 @@
                 <span>Copy</span>
               </button>
             </div>
-            <label class="scene-zoom-bar" id="sceneZoomWrap" title="RAW Zoom — click and hold on the full image to zoom">
-              <span class="muted" style="font-size:11px">RAW Zoom</span>
-              <input type="range" id="sceneZoomSlider" min="2" max="12" value="5" step="0.5" style="width:90px">
-            </label>
+            <div class="scene-zoom-bar" id="sceneZoomWrap">
+              <label class="scene-zoom-ctrl" title="RAW Zoom — click and hold on the full image to zoom">
+                <span class="muted scene-zoom-ctrl-label">RAW Zoom</span>
+                <input type="range" id="sceneZoomSlider" min="2" max="12" value="5" step="0.5">
+              </label>
+              <div class="scene-zoom-spacer"></div>
+              <label class="scene-zoom-ctrl" title="Exposure-compensation strength applied to the preview (export thumbnail + RAW zoom). 0% turns preview correction off (original export); 100% applies the full auto correction so the bird roughly matches the bird-crop thumbnail. Does not change the baked bird-crop thumbnail.">
+                <span class="muted scene-zoom-ctrl-label">Exp Comp (<span id="sceneExpStrengthEv">+0.00</span>EV)</span>
+                <input type="range" id="sceneExpStrengthSlider" min="0" max="100" value="70" step="5">
+                <span class="scene-zoom-ctrl-val" id="sceneExpStrengthVal">70%</span>
+              </label>
+              <button type="button" class="scene-zoom-stat" id="sceneOverexposedToggle" aria-pressed="false" title="Percentage of the uncorrected full image with clipped (blown-out) highlights — measured before exposure compensation. Click to toggle the highlight clipping mask on the preview.">— clipped</button>
+            </div>
           </div>
           <div
             class="scene-preview-divider"
@@ -411,9 +451,9 @@
           <div class="scene-info-stars" id="sceneInfoStars"></div>
           <div class="scene-info-quality" id="sceneInfoQuality">—</div>
           <div class="scene-cull-toggle" id="sceneCullToggle">
-            <button class="cull-btn accept" data-cull="accept" title="Accept (Z)">✓ Accept</button>
-            <button class="cull-btn unrated" data-cull="none" title="Reset (X)">Undecided</button>
-            <button class="cull-btn reject" data-cull="reject" title="Reject (C)">✗ Reject</button>
+            <button class="cull-btn accept" data-cull="accept" title="Accept (Z or 7)">✓ Accept</button>
+            <button class="cull-btn unrated" data-cull="none" title="Reset (X or 8)">Undecided</button>
+            <button class="cull-btn reject" data-cull="reject" title="Reject (C or 9)">✗ Reject</button>
           </div>
           <div class="scene-info-meta" id="sceneInfoMeta">
             <span class="scene-info-meta-text" id="sceneInfoMetaText">—</span>
@@ -680,6 +720,11 @@
             </div>
           </div>
 
+          <div class="perch-relink-prompt">
+            Already shared this folder to Perch?
+            <button type="button" class="perch-link-btn" id="perchRelinkOpenBtn">Re-link this Perch</button>
+          </div>
+
           <!-- Hidden compat shells: existing _perchUpdateDialogTotals targets these
                by ID. Kept invisible so the timeline summary stays the visible totals. -->
           <span id="perchStatScenes" hidden></span>
@@ -694,6 +739,23 @@
       <button type="button" id="perchUploadCancelBtn">Cancel</button>
       <button type="button" id="perchUploadSignInBtn" class="perch-cta hidden">Sign in to Perch</button>
       <button type="button" id="perchUploadSubmitBtn" class="perch-cta hidden" disabled>📤 Upload</button>
+    </div>
+  </dialog>
+
+  <!-- Re-link picker: pick an existing perch to associate with this folder
+       (writes perch_link.json locally, no re-upload). Opened from the share
+       dialog's "Re-link this Perch" prompt. -->
+  <dialog id="perchRelinkDlg" class="perch-relink-dlg">
+    <div class="perch-relink-head">
+      <h3 class="perch-relink-title">Re-link an existing Perch</h3>
+      <button type="button" id="perchRelinkClose" class="perch-relink-close" aria-label="Close">✕</button>
+    </div>
+    <p class="perch-relink-subtitle">
+      Pick the perch this folder was already shared as. This restores the local
+      link without re-uploading any photos.
+    </p>
+    <div class="perch-relink-list" id="perchRelinkList">
+      <div class="perch-relink-empty">Loading your perches…</div>
     </div>
   </dialog>
 
@@ -721,6 +783,15 @@
   <dialog id="settingsDlg" class="kdlg kdlg--md kdlg--tall kdlg--flex">
     <div class="settings-body">
       <h3 style="margin:0">Settings</h3>
+      <!-- Analysis options (species identification, non-bird wildlife detection,
+           detection confidence, GPU) live in the Analyze dialog's "Review
+           settings" column, not here — they are chosen per analysis run. Users
+           reasonably look for them in Settings first, so point the way. -->
+      <div class="muted" style="font-size:12px;margin:6px 0 0">
+        Looking for analysis options — species identification, non-bird wildlife
+        detection, detection confidence, or GPU use? Those are chosen per run in
+        the <b>Analyze</b> dialog, under &ldquo;Review settings&rdquo;.
+      </div>
 
       <h4 style="margin:12px 0 8px;padding-top:8px;border-top:1px solid #1d2230;color:#a0a8b8;font-size:13px;text-transform:uppercase;letter-spacing:0.5px">UI &amp; Editor</h4>
 
@@ -776,8 +847,10 @@
       </div>
       <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">
         Selects which biogeographic regions to include in the species
-        autocomplete (Ctrl+Shift+R). Multiple regions show their union.
-        Species outside the selected regions are hidden from the combobox.
+        autocomplete (Ctrl+Shift+R), and the default list of species Kestrel
+        identifies from when you analyze a folder (you can override it per
+        analysis). Multiple regions show their union. Species outside the
+        selected regions are hidden from the combobox.
       </div>
 
       <div class="row">
@@ -803,11 +876,31 @@
           <option value="balanced" selected>Balanced &mdash; recommended for most photographers</option>
           <option value="lenient">Lenient</option>
           <option value="very_lenient">Very Lenient &mdash; most rewarding; lowest bar for 4&ndash;5 stars</option>
+          <option value="custom">Custom &mdash; set your own thresholds</option>
         </select>
       </div>
       <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Controls how quality scores are
         converted to star ratings. Each profile uses fixed quality-score thresholds — stricter profiles require
         a higher score to earn 4 or 5 stars. Changes take effect immediately for loaded folders.</div>
+
+      <!-- Custom thresholds editor. Only shown when the Custom profile is
+           selected; the same 0.00–1.00 number line the Culling Assistant
+           draws, except here the star markers are the draggable part. -->
+      <div class="rating-custom-editor hidden" id="ratingCustomEditor">
+        <div class="rating-custom-track" id="ratingCustomTrack" role="group"
+             aria-label="Custom star rating thresholds">
+          <div class="rating-custom-bands" id="ratingCustomBands" aria-hidden="true"></div>
+          <div class="rating-custom-handles" id="ratingCustomHandles"></div>
+        </div>
+        <div class="rating-custom-axis" aria-hidden="true">
+          <span>0.00</span><span>0.25</span><span>0.50</span><span>0.75</span><span>1.00</span>
+        </div>
+        <div class="rating-custom-readout" id="ratingCustomReadout"></div>
+        <div class="rating-custom-actions">
+          <button type="button" class="btn" id="ratingCustomReset">Reset to Balanced</button>
+          <span class="muted" style="font-size:11.5px">Drag a star to move the score it needs. Arrow keys nudge by 0.01.</span>
+        </div>
+      </div>
 
 
       <h4 style="margin:12px 0 8px;padding-top:8px;border-top:1px solid #1d2230;color:#a0a8b8;font-size:13px;text-transform:uppercase;letter-spacing:0.5px">Data &amp; Preview</h4>
@@ -823,22 +916,13 @@
         in .kestrel/culling_TMP for faster subsequent loads. Disable to save disk space (previews will be generated fresh each time).</div>
 
       <div class="row">
-        <label for="rawExposureCorrectionDisabled" style="flex:1">Disable RAW Exposure Correction</label>
-        <label class="inline" style="gap:6px">
-          <input type="checkbox" id="rawExposureCorrectionDisabled" />
-          <span class="muted">Disable</span>
+        <label for="settingsExpStrengthSlider" style="flex:1">Preview exposure compensation</label>
+        <label class="inline" style="gap:8px">
+          <input type="range" id="settingsExpStrengthSlider" min="0" max="100" value="70" step="5" style="width:130px">
+          <span class="muted" id="settingsExpStrengthVal" style="min-width:34px;text-align:right;font-variant-numeric:tabular-nums">70%</span>
         </label>
       </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">By default, Kestrel applies a calculated exposure boost to RAW previews to match the processed JPEG. Enable this to view the RAW data without correction.</div>
-
-      <div class="row">
-        <label for="settingsExposureCorrectedThumbs" style="flex:1">Exposure-corrected thumbnails</label>
-        <label class="inline" style="gap:6px">
-          <input type="checkbox" id="settingsExposureCorrectedThumbs" checked />
-          <span class="muted">Enable</span>
-        </label>
-      </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Display only: approximate subject EV on full-frame thumbnails (grid &amp; scene dialog) with CSS. On by default; turn off for a neutral export preview. Does not affect analysis.</div>
+      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Display only: how strongly Kestrel's calculated exposure boost is applied to preview imagery (grid &amp; scene-dialog export thumbnails and the RAW zoom). 0% shows the uncorrected export; 100% matches the processed bird crop. The same slider is in the scene viewer. Does not affect analysis or the baked crop.</div>
 
       <div class="row">
         <label for="settingsAutoSave" style="flex:1">Auto-Save Changes</label>
@@ -848,6 +932,34 @@
         </label>
       </div>
       <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Automatically save ratings, tags, and scene changes. When disabled, you'll see a Save/Revert workflow.</div>
+
+      <div class="row">
+        <label for="settingsQualityModel" style="flex:1">Quality scorer</label>
+        <select id="settingsQualityModel">
+          <option value="siglip">SigLIP 2 sharpness (default)</option>
+          <option value="legacy">Legacy quality model</option>
+        </select>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Both scores are computed during analysis (pipeline 3.0) and stored, so switching is instant &mdash; no re-analysis. Both judge focus/sharpness only, not whether a photo is "good". The SigLIP score is the new default; the legacy model is kept for this major version for comparison. Folders analysed before 3.0 only have the legacy score until upgraded.</div>
+
+      <div class="row">
+        <label for="settingsSmartSearch" style="flex:1">Smart search: index whole frames</label>
+        <label class="inline" style="gap:6px">
+          <input type="checkbox" id="settingsSmartSearch" checked />
+          <span class="muted">Enable</span>
+        </label>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Bird crops are always indexed for smart search. This also indexes each photo's whole frame so scene queries work ("bird on a wire", "two birds", "wide landscape"). Adds one SigLIP pass per photo (~0.1&ndash;0.2 s on CPU).</div>
+
+      <div class="row">
+        <label for="settingsTowerDevice" style="flex:1">BioCLIP device (advanced)</label>
+        <select id="settingsTowerDevice">
+          <option value="auto">Auto</option>
+          <option value="cpu">CPU</option>
+          <option value="gpu">GPU</option>
+        </select>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Where the species and search models run when GPU analysis is on. Auto: GPU on Windows (DirectML), CPU on macOS (their int8 layers don't run on Core ML and would bounce between devices). Applies to the next analysis.</div>
 
       <h4 style="margin:12px 0 8px;padding-top:8px;border-top:1px solid #1d2230;color:#a0a8b8;font-size:13px;text-transform:uppercase;letter-spacing:0.5px">Analytics &amp; Privacy</h4>
 
@@ -929,6 +1041,23 @@
     </div>
   </dialog>
 
+  <!-- Repair dialog — surfaced when a folder's images and its .kestrel database
+       have drifted apart (files moved, renamed, or deleted outside Kestrel).
+       Body is built by js/repair.js; every destructive action is an explicit
+       user assertion, and NONE are offered unless the folder listing was read
+       successfully (diff.scan_status === 'ok'). -->
+  <dialog id="repairDlg" class="kdlg kdlg--md kdlg--flex" aria-labelledby="repairDlgTitle">
+    <div class="settings">
+      <h3 style="margin:0" id="repairDlgTitle">Repair Kestrel Data</h3>
+      <div id="repairDlgFolder" class="muted" style="font-size:12px;word-break:break-all">—</div>
+      <div id="repairDlgBody" style="max-height:52vh;overflow:auto"></div>
+      <div class="footer" style="gap:8px">
+        <button id="repairDlgDismiss" title="Stop showing this folder's warning until the next time Kestrel starts">Dismiss for now</button>
+        <button id="repairDlgClose">Close</button>
+      </div>
+    </div>
+  </dialog>
+
   <!-- Analyze Folders dialog (Phase 3: 3-column layout).
        Col 1: Queue Builder — + Add Folders, recents chips, dialog-local tree, Clear.
        Col 2: Settings — critical tier always visible + collapsed "More options".
@@ -980,53 +1109,76 @@
         <!-- ═══ Column 2: Review Settings ═══ -->
         <div class="analyze-dlg-col analyze-dlg-col-settings">
           <div class="analyze-dlg-col-title">⚙ Review settings</div>
+          <!-- Phrased as questions about the shoot rather than as model
+               settings: the user knows what they photographed, not which
+               classifier that implies. Each answer pair mirrors to the hidden
+               input below it, which is what the Start handler in
+               event-wiring.js reads — the read path is unchanged. -->
           <div class="analyze-dlg-settings-critical">
-            <!-- Wildlife detection model — horizontal radio pair for compactness. -->
-            <div class="adlg-radio-group">
-              <div class="adlg-radio-label">Wildlife detection model</div>
-              <div class="adlg-radio-horiz">
+
+            <div class="adlg-question">
+              <div class="adlg-question-text">What subjects does this shoot contain?</div>
+              <div class="adlg-answer-pair" role="radiogroup" aria-label="Subjects in this shoot">
                 <label class="adlg-radio-row adlg-radio-row-horiz">
-                  <input type="radio" name="adlgWildlifeModelMode" id="adlgWildlifeModelModeAccurate" value="accurate" checked />
+                  <input type="radio" name="adlgSubjectScope" id="adlgSubjectScopeBirds" value="birds" checked />
                   <div class="adlg-radio-text">
-                    <span class="adlg-radio-name">Accurate</span>
-                    <span class="adlg-radio-hint muted">Larger model with stronger recall. Slower but catches more subjects, especially distant or partially-obscured birds.</span>
+                    <span class="adlg-radio-name">Birds only</span>
                   </div>
                 </label>
                 <label class="adlg-radio-row adlg-radio-row-horiz">
-                  <input type="radio" name="adlgWildlifeModelMode" id="adlgWildlifeModelModeFast" value="fast" />
+                  <input type="radio" name="adlgSubjectScope" id="adlgSubjectScopeWildlife" value="wildlife" />
                   <div class="adlg-radio-text">
-                    <span class="adlg-radio-name">Fast</span>
-                    <span class="adlg-radio-hint muted">Smaller model — significantly faster but may miss some detections. Good for quick first passes.</span>
+                    <span class="adlg-radio-name">Birds and other wildlife</span>
                   </div>
                 </label>
               </div>
-              <!-- Legacy <select> kept hidden so settings hydrate logic that reads/writes
-                   #adlgWildlifeModelMode keeps working; the radios mirror to it. -->
-              <select id="adlgWildlifeModelMode" class="hidden" aria-hidden="true">
-                <option value="fast">Fast</option>
-                <option value="accurate" selected>Accurate</option>
-              </select>
+              <div class="adlg-question-help muted">Including other wildlife names 1,200+ non-bird species — squirrels, deer, bears and more. This has a small impact on total processing time.</div>
             </div>
-            <label class="adlg-toggle-row">
-              <input id="analyzeSpeciesDetection" type="checkbox" checked />
-              <div class="adlg-toggle-text">
-                <span class="adlg-toggle-label">Identify bird species &amp; family</span>
-                <span class="adlg-toggle-hint muted">Runs the bird species classifier on each cropped bird. Optimized for North American species — disable if shooting elsewhere. Detection &amp; quality scoring are unaffected.</span>
+            <input id="analyzeWildlife" type="checkbox" class="hidden" aria-hidden="true" tabindex="-1" />
+
+            <div class="adlg-question">
+              <div class="adlg-question-text">Should Kestrel identify the bird species?</div>
+              <div class="adlg-answer-pair" role="radiogroup" aria-label="Bird species identification">
+                <label class="adlg-radio-row adlg-radio-row-horiz">
+                  <input type="radio" name="adlgSpeciesScope" id="adlgSpeciesScopeYes" value="yes" checked />
+                  <div class="adlg-radio-text">
+                    <span class="adlg-radio-name">Yes, identify species</span>
+                  </div>
+                </label>
+                <label class="adlg-radio-row adlg-radio-row-horiz">
+                  <input type="radio" name="adlgSpeciesScope" id="adlgSpeciesScopeNo" value="no" />
+                  <div class="adlg-radio-text">
+                    <span class="adlg-radio-name">No, skip species identification</span>
+                  </div>
+                </label>
               </div>
-            </label>
-            <div class="adlg-setting-row">
-              <label for="adlgMaxBirdCrops">Maximum subjects per image</label>
-              <input id="adlgMaxBirdCrops" type="number" min="1" max="20" step="1" value="10"
-                style="width:80px" />
+              <div class="adlg-question-help muted">Kestrel names each bird with BioCLIP&nbsp;2, choosing from the world's ~11,000 bird species narrowed to the region below. Skipping it makes analysis faster; finding your subjects and scoring their quality work exactly the same either way.</div>
+              <!-- Species geofence for the folders being queued. Sent per item
+                   as per_item_options[path].species_regions; analyze-dialog.js
+                   populates the options from get_bird_catalog_meta. -->
+              <div id="adlgSpeciesRegionBlock" class="adlg-species-region">
+                <div class="adlg-setting-row" style="flex-wrap:wrap;gap:6px">
+                  <label for="adlgSpeciesRegionMode" style="flex:1 1 140px;min-width:0">Where were these photos taken?</label>
+                  <select id="adlgSpeciesRegionMode" style="flex:1 1 180px;min-width:0;max-width:100%">
+                    <option value="default" selected>My default regions</option>
+                    <option value="global">Global — all world birds</option>
+                  </select>
+                </div>
+                <div id="adlgSpeciesRegionCustom" class="adlg-species-region-custom hidden" role="group" aria-label="Species regions"></div>
+                <div id="adlgSpeciesRegionHint" class="adlg-hint muted">A narrower region list makes identification more accurate. Change your default regions in Settings → Species &amp; Region.</div>
+              </div>
             </div>
-            <div class="adlg-hint muted">Each additional subject increases processing time. Lower this to cap the number of subjects processed per image.</div>
-            <label class="adlg-toggle-row">
-              <input id="analyzeWildlife" type="checkbox" />
-              <div class="adlg-toggle-text">
-                <span class="adlg-toggle-label">Detect non-bird wildlife <span class="adlg-tag">experimental</span></span>
-                <span class="adlg-toggle-hint muted">Detects 1,200+ non-bird species (squirrels, deer, bears, etc.) using SpeciesNet. Adds noticeable processing time per image.</span>
+            <input id="analyzeSpeciesDetection" type="checkbox" class="hidden" aria-hidden="true" tabindex="-1" checked />
+
+            <div class="adlg-question">
+              <div class="adlg-question-text">How many subjects should Kestrel analyze in each image?</div>
+              <div class="adlg-setting-row">
+                <label for="adlgMaxBirdCrops">At most</label>
+                <input id="adlgMaxBirdCrops" type="number" min="1" max="20" step="1" value="10"
+                  style="width:80px" />
               </div>
-            </label>
+              <div class="adlg-question-help muted">Every extra subject adds processing time. Lower this for flock shots where you only care about the closest few birds.</div>
+            </div>
           </div>
 
           <!-- "More options" expanded by default. Subheadings group settings
@@ -1064,13 +1216,25 @@
               </div>
 
               <div class="adlg-subgroup">
-                <div class="adlg-subgroup-title">Wildlife detection</div>
+                <div class="adlg-subgroup-title">Finding subjects</div>
+                <!-- Was a prominent Fast/Accurate radio pair in the critical
+                     block. Accurate is right for essentially every shoot, so it
+                     is now the default and lives down here instead of asking
+                     every user to make the call up front. -->
+                <div class="adlg-setting-row">
+                  <label for="adlgWildlifeModelMode">Detection model</label>
+                  <select id="adlgWildlifeModelMode" style="flex:1;max-width:200px">
+                    <option value="accurate" selected>Accurate (recommended)</option>
+                    <option value="fast">Fast</option>
+                  </select>
+                </div>
+                <div class="adlg-hint muted">Accurate is the right choice for almost every shoot. Fast uses a smaller model that finishes sooner but misses distant and partly-hidden birds.</div>
                 <div class="adlg-setting-row">
                   <label for="adlgDetectionThreshold">Detection confidence</label>
                   <input id="adlgDetectionThreshold" type="number" min="0.1" max="0.99" step="0.05" value="0.15"
                     style="width:80px" />
                 </div>
-                <div class="adlg-hint muted">Minimum MegaDetector animal confidence (0.10–0.99). Lower values find more subjects.</div>
+                <div class="adlg-hint muted">How sure Kestrel must be that it found an animal before analyzing it (0.10–0.99). Lower values find more subjects.</div>
                 <!-- Live warning when the user picks a value much above the
                      recommended baseline. Wildlife detection models are quite
                      accurate, so high thresholds tend to miss real subjects. -->
@@ -1200,6 +1364,25 @@
     </div>
   </dialog>
 
+  <!-- Sign-in chooser. Presented by auth.js ONLY on the macOS App Store build
+       ('appstore' channel), where native Sign in with Apple is available. Per
+       Guideline 4.8, Sign in with Apple is offered alongside the third-party
+       (Google) / email option. Every other build skips this and goes straight to
+       the web/loopback sign-in. -->
+  <dialog id="signInChooserDlg" class="kdlg signin-chooser-dlg" aria-labelledby="signInChooserTitle">
+    <div class="signin-chooser-body">
+      <button id="signInChooserClose" class="cloud-account-close signin-chooser-close" title="Close" aria-label="Close">✕</button>
+      <h3 id="signInChooserTitle" class="signin-chooser-title">Sign in to Project Kestrel</h3>
+      <p class="signin-chooser-sub">Use Cloud Compute, Perch, and sync your account across devices.</p>
+      <button id="signInAppleBtn" class="signin-apple-btn" type="button">
+        <span class="signin-apple-logo" aria-hidden="true"></span>
+        <span class="signin-apple-text">Sign in with Apple</span>
+      </button>
+      <button id="signInWebBtn" class="signin-web-btn" type="button">Continue with Google or email</button>
+      <p class="signin-chooser-fineprint">Apple sign-in opens the system panel. Google &amp; email open a secure in-app sign-in sheet.</p>
+    </div>
+  </dialog>
+
   <!-- Account panel (signed-in). Two columns: Cloud Compute (left) and Perch
        (right), each with usage then history — mirrors myaccount.projectkestrel.org.
        Rendered by cloud-compute.js. -->
@@ -1217,16 +1400,61 @@
           <div class="cloud-account-meta" id="cloudAccountMeta">—</div>
         </div>
         <button id="cloudAccountManageBtn" class="primary" type="button">Manage my account ↗</button>
+        <button id="cloudAccountSignOutBtn" class="cloud-account-signout" type="button">Sign out</button>
+        <button id="cloudAccountDeleteBtn" class="cloud-account-delete" type="button" title="Permanently delete your Project Kestrel account and data">Delete account</button>
       </div>
 
       <div class="account-columns">
         <section class="account-col account-col--cc" aria-labelledby="accountCcHeading">
           <h4 class="account-col-title" id="accountCcHeading">Cloud Compute</h4>
           <div class="account-usage-card">
-            <div class="account-usage-card-title">Usage</div>
+            <div class="account-usage-card-title">Plan &amp; usage</div>
             <div class="account-usage-tier" id="cloudAccountTier"></div>
-            <div class="account-usage-line" id="cloudAccountUsageImages">Loading usage…</div>
+            <div class="account-usage-line muted" id="cloudAccountPeriod"></div>
+            <div class="account-usage-hold" id="cloudAccountHold" hidden>
+              Account on hold — new analysis is paused.
+            </div>
+            <div class="account-stat-grid">
+              <div class="account-stat">
+                <div class="account-stat-value" id="ccStatAnalyzed">&mdash;</div>
+                <div class="account-stat-label">Analyzed this period</div>
+              </div>
+              <div class="account-stat">
+                <div class="account-stat-value" id="ccStatRemaining">&mdash;</div>
+                <div class="account-stat-label">Remaining</div>
+              </div>
+              <div class="account-stat">
+                <div class="account-stat-value" id="ccStatCredits">&mdash;</div>
+                <div class="account-stat-label">Credits</div>
+              </div>
+            </div>
+            <div class="account-storage-bar" id="ccQuotaBar" hidden>
+              <div class="account-storage-bar-heading">Monthly Plan</div>
+              <div class="account-storage-bar-meta account-quota-meta">
+                <span id="ccQuotaUsed">0 used</span>
+                <span id="ccQuotaCap"></span>
+              </div>
+              <div class="account-storage-bar-track">
+                <div class="account-storage-bar-fill" id="ccQuotaFill"></div>
+                <div class="account-storage-bar-fill-reserved" id="ccQuotaFillReserved"></div>
+              </div>
+            </div>
+            <div class="account-storage-bar" id="ccCreditsBar" hidden>
+              <div class="account-storage-bar-heading">Credits</div>
+              <div class="account-storage-bar-meta account-quota-meta">
+                <span id="ccCreditsUsed">0 used</span>
+                <span id="ccCreditsCap"></span>
+              </div>
+              <div class="account-storage-bar-track">
+                <div class="account-storage-bar-fill" id="ccCreditsFill"></div>
+                <div class="account-storage-bar-fill-reserved" id="ccCreditsFillReserved"></div>
+              </div>
+            </div>
             <div class="account-usage-line muted" id="cloudAccountUsageConcurrent"></div>
+            <div class="account-usage-line muted account-usage-foot">
+              Subscription quota resets each period; credits are a one-time stock
+              that doesn’t reset.
+            </div>
           </div>
           <div class="account-history-header">
             <span class="account-history-title">Job history</span>
@@ -1430,7 +1658,7 @@
       <p>Thank you for using Project Kestrel! I’m a solo student developer and birder who built Kestrel because I love taking wildlife photos — but not sorting through them. If Kestrel has been useful to you, please consider supporting its development, or share your thoughts and feedback!</p>
       <p style="font-size:12px;color:#607080;">Project Kestrel is free &amp; open-source. Every <a href="https://github.com/SanjaySoniLV/ProjectKestrel" target="_blank">contribution</a> helps keep it growing.</p>
       <div class="donate-dlg-btns">
-        <button class="donate-main-btn" id="donateDlgGoBtn">💛 Donate via PayPal</button>
+        <button class="donate-main-btn" id="donateDlgGoBtn">💛 Support Project Kestrel</button>
         <button class="primary" id="donateDlgFeedbackBtn" style="font-size:13px;padding:13px 20px;height:auto;">💬 Send Feedback</button>
       </div>
       <button id="donateDlgClose" class="donate-dlg-close-btn">Close</button>
@@ -1474,7 +1702,10 @@
   <script src="js/folder-tree.js"></script>
   <script src="js/analyze-dialog.js"></script>
   <script src="js/queue.js"></script>
+  <script src="js/raw-warn.js"></script>
+  <script src="js/repair.js"></script>
   <script src="js/multi-folder.js"></script>
+  <script src="js/smart-search.js"></script>
   <script src="js/csv-init.js"></script>
   <script src="js/event-wiring.js"></script>
   <script src="js/perch.js"></script>
@@ -1508,6 +1739,7 @@
         ['perch.js',           '_perchOpenDialog'],
         ['cloud-compute.js',   '_ccSubmitSelectedFolders'],
         ['culling.js',         'openCullingAssistant'],
+        ['repair.js',          'openRepairDialog'],
         ['tutorial.js',        'startMainTutorial'],
         ['welcome.js',         'WELCOME_TIPS']
       ];

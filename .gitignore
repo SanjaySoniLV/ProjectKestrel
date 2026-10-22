@@ -1,5 +1,11 @@
 __pycache__
 test_imgs/.kestrel/
+# Every local virtualenv, however it is named. The specific entries below
+# predate this and are now redundant, but harmless -- they are kept so a grep
+# for a particular venv name still finds something. .venv312/ (the documented
+# Windows dev env) was missed by the one-at-a-time list and sat untracked but
+# NOT ignored, one `git add -A` away from committing a multi-GB tree.
+.venv*/
 .venv/
 .venv-speciesnet/
 .venv2/
@@ -10,6 +16,8 @@ release/
 .venv-macos/
 analyzer/build/
 analyzer/dist/
+# Build artifact written by the PyInstaller specs (baked distribution channel).
+analyzer/dist_channel.txt
 cloudflare-workers/
 cloudflare-workers_secret/
 query_analytics/

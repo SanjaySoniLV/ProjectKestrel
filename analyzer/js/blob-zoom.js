@@ -41,8 +41,62 @@
     }
 
 
-    // Blob URL cache per path
-    const blobUrlCache = new Map();
+    // Blob URL cache per path.
+    //
+    // createObjectURL keeps the underlying image bytes alive until
+    // revokeObjectURL is called, so a plain Map would leak: entries were never
+    // revoked on eviction, and clear() (called on folder change from
+    // multi-folder.js / scene-dialog.js / queue.js) dropped the map entries but
+    // left the blobs allocated. Over a long session browsing many images this
+    // grows unbounded. This Map subclass keeps the same has()/get()/set()/clear()
+    // API used across the app, but additionally:
+    //   - bounds the cache to the most-recently-used BLOB_URL_CACHE_MAX entries
+    //     (get() bumps recency; set() evicts the oldest beyond the cap), and
+    //   - revokes the blob: URL of every entry it drops (on eviction and clear).
+    // The cap is generous enough to cover everything on screen at once, and
+    // evicted entries are by definition not currently displayed, so revoking
+    // them is safe (an already-loaded <img> keeps rendering after revoke).
+    const BLOB_URL_CACHE_MAX = 512;
+
+    function _revokeBlobUrl(url) {
+      if (typeof url === 'string' && url.startsWith('blob:')) {
+        try { URL.revokeObjectURL(url); } catch (_) { /* already revoked */ }
+      }
+    }
+
+    class BlobUrlCache extends Map {
+      get(key) {
+        if (!super.has(key)) return undefined;
+        // Refresh recency: re-insert so this key becomes most-recently-used.
+        const val = super.get(key);
+        super.delete(key);
+        super.set(key, val);
+        return val;
+      }
+      set(key, val) {
+        // Callers must not overwrite an existing key with a *different* URL:
+        // getBlobUrlForPath de-duplicates concurrent loads so the same key is
+        // never re-created (see there). We therefore never revoke here — the
+        // stored URL may already be handed to an <img> that is still loading,
+        // and revoking it early would break that load. Re-inserting only bumps
+        // recency for the LRU order.
+        if (super.has(key)) super.delete(key);
+        super.set(key, val);
+        // Evict least-recently-used entries beyond the cap, freeing their blobs.
+        while (super.size > BLOB_URL_CACHE_MAX) {
+          const oldestKey = super.keys().next().value;
+          _revokeBlobUrl(super.get(oldestKey));
+          super.delete(oldestKey);
+        }
+        return this;
+      }
+      clear() {
+        for (const url of super.values()) _revokeBlobUrl(url);
+        super.clear();
+      }
+    }
+
+    const blobUrlCache = new BlobUrlCache();
 
     /** Convert a base64 string to a Blob Object URL.  Unlike data: URIs, blob:
      *  URLs are decoded asynchronously by the browser's image-decode thread,
@@ -71,6 +125,14 @@
         try {
           const result = await window.pywebview.api.read_image_file(rel, effectiveRoot);
           if (result && result.success && result.data) {
+            // De-duplicate concurrent loads: another request for the same image
+            // may have populated the cache while we awaited the IPC read. If so,
+            // reuse the existing URL rather than creating (and later having to
+            // revoke) a second one — that avoids revoking a URL a caller might
+            // already be using. The has()->createObjectURL()->set() sequence
+            // below runs without an await in between, so it is atomic on the JS
+            // event loop and cannot create a duplicate entry.
+            if (blobUrlCache.has(cacheKey)) return blobUrlCache.get(cacheKey);
             // Use a blob: URL instead of a data: URL so the browser can decode
             // the image asynchronously on its decode thread rather than blocking
             // the main thread with synchronous base64 + JPEG/PNG parsing.

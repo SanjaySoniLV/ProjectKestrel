@@ -54,7 +54,11 @@
     }
 
     function _serializeCropRecords(crops) {
+      // Spread first so fields this UI does not know about (pipeline 3.0.0's
+      // quality_siglip / quality_legacy / animal_score / subject, ...) survive a
+      // round trip through the UI instead of being silently dropped.
       return (Array.isArray(crops) ? crops : []).map((crop, idx) => ({
+        ...(crop && typeof crop === 'object' ? crop : {}),
         crop_index: _intOr(crop?.crop_index, idx),
         crop_path: String(crop?.crop_path || ''),
         detection_index: _intOr(crop?.detection_index, -1),
@@ -96,6 +100,7 @@
         const cropPath = String(src.crop_path || fallbackPath || '').trim();
         if (!cropPath && i > 0) continue;
         normalized.push({
+          ...src,
           crop_index: _intOr(src.crop_index, i),
           crop_path: cropPath,
           detection_index: _intOr(src.detection_index, -1),
@@ -199,6 +204,9 @@
       row.family = crop.family || row.family || 'Unknown';
       row.family_confidence = _numberOr(crop.family_confidence, _numberOr(row.family_confidence, 0));
       row.quality = _numberOr(crop.quality, _numberOr(row.quality, -1));
+      // Pipeline 3.0.0 keeps both scorers' raw outputs next to the effective one.
+      if ('quality_siglip' in crop) row.quality_siglip = _numberOr(crop.quality_siglip, -1);
+      if ('quality_legacy' in crop) row.quality_legacy = _numberOr(crop.quality_legacy, -1);
       row.exposure_correction = _numberOr(crop.exposure_correction, _numberOr(row.exposure_correction, 0));
       row.exposure_pipeline = getRowExposurePipelineMode(crop);
       row.exposure_subject_stops = _numberOr(crop.exposure_subject_stops, _numberOr(row.exposure_subject_stops, 0));
@@ -349,12 +357,52 @@
       };
     }
 
-    function _collectCurrentlyVisibleSceneTags(sceneId) {
+    // The species-confidence threshold and secondary-species toggle currently
+    // in effect. Scene tags are derived with these so anything we compute
+    // matches what the grid and the scene dialog are showing right now.
+    function _currentSceneTagSettings() {
       const thresholdEl = el('#speciesConf');
       const confThreshold = thresholdEl ? (parseFloat(thresholdEl.value) || 0) : 0;
       const includeSecondaryCheckbox = document.getElementById('includeSecondarySpecies');
       const includeSecondary = includeSecondaryCheckbox ? includeSecondaryCheckbox.checked : !!getSetting('includeSecondarySpecies', false);
+      return { confThreshold, includeSecondary };
+    }
+
+    function _collectCurrentlyVisibleSceneTags(sceneId) {
+      const { confThreshold, includeSecondary } = _currentSceneTagSettings();
       return _computeSceneTagsFromRows(getSceneRows(sceneId), confThreshold, includeSecondary, true);
+    }
+
+    // Reconcile a finalized scene's stored tags after some of its images have
+    // been moved out (scene split).
+    //
+    // A finalized scene renders `user_tags` verbatim rather than the tags
+    // computed from its rows — see `aggregateScenes` in scenes.js and
+    // `collectSceneSpecies` in scene-dialog.js — so shrinking the scene does
+    // not on its own drop labels that only the departing images justified.
+    //
+    // Only labels we can positively attribute to the departing images are
+    // removed: a label survives if any remaining image still supports it, and
+    // a label no image ever supported (one the user typed in by hand) is left
+    // alone. Returns true when something changed.
+    function _pruneFinalizedSceneTagsAfterRemoval(sceneEntry, remainingRows, removedRows) {
+      const tags = sceneEntry && sceneEntry.user_tags;
+      if (!tags || tags.finalized !== true) return false;
+      const { confThreshold, includeSecondary } = _currentSceneTagSettings();
+      const kept = _computeSceneTagsFromRows(remainingRows || [], confThreshold, includeSecondary, true);
+      const gone = _computeSceneTagsFromRows(removedRows || [], confThreshold, includeSecondary, true);
+      let changed = false;
+      for (const key of ['species', 'families']) {
+        const stillSupported = new Set(kept[key] || []);
+        const departed = new Set(gone[key] || []);
+        const before = Array.isArray(tags[key]) ? tags[key] : [];
+        const after = before.filter(name => stillSupported.has(name) || !departed.has(name));
+        if (after.length !== before.length) {
+          tags[key] = after;
+          changed = true;
+        }
+      }
+      return changed;
     }
 
     function _normalizeScenedataForSave(rp, groupRows) {

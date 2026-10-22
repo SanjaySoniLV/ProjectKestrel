@@ -353,6 +353,9 @@
       for (const root of _getAllRoots()) {
         container.appendChild(buildTreeNode(root, _treeFlatOrder));
       }
+      // Rows were just rebuilt, so re-apply the drift badges from the last
+      // diff. Cheap DOM pass, no rescan.
+      try { if (typeof syncRepairIndicators === 'function') syncRepairIndicators(); } catch (_) { }
       // Note: counts are only populated for the Analyze dialog tree.
     }
 
@@ -424,7 +427,8 @@
 
       const norm = p => (p || '').replace(/\\/g, '/');
       const normPath = norm(node.path);
-      const isInProgress = _inProgressFolderPaths.has(normPath)
+      const isUpgrading = (typeof _upgradeInProgressPaths !== 'undefined' && _upgradeInProgressPaths.has(normPath));
+      const isInProgress = _inProgressFolderPaths.has(normPath) || isUpgrading
         || (window._ccInProgressFolderPaths && window._ccInProgressFolderPaths.has(normPath));
 
       const effectiveHasKestrel = subtreeHasKestrel(node) || isInProgress; // Show checkbox for in-progress too
@@ -432,7 +436,7 @@
       row.className = 'tree-node-row ' + (effectiveHasKestrel ? 'has-kestrel' : 'no-kestrel') + (outdated ? ' version-outdated' : '') + (isInProgress ? ' in-progress' : '');
       if (node.path === treeActivePath) row.classList.add('active');
       // Path is always visible on hover; in-progress / outdated states append context.
-      if (isInProgress) row.title = `Currently analyzing…\n${node.path}`;
+      if (isInProgress) row.title = `${isUpgrading && !_inProgressFolderPaths.has(normPath) ? 'Upgrading to pipeline 3…' : 'Currently analyzing…'}\n${node.path}`;
       else if (outdated) row.title = `Analyzed on Kestrel v${node.kestrel_version} (current: v${_appVersion})\n${node.path}`;
       else row.title = node.path;
 
@@ -482,7 +486,8 @@
       if (inProgressHourglass) {
         inProgressHourglass.className = 'tree-in-progress-hourglass';
         inProgressHourglass.textContent = '⏳';
-        inProgressHourglass.title = 'Analysis in progress';
+        inProgressHourglass.title = isUpgrading && !_inProgressFolderPaths.has(normPath)
+          ? 'Upgrading to pipeline 3' : 'Analysis in progress';
       }
 
       // Label
@@ -524,10 +529,12 @@
 
       row.appendChild(arrow);
       row.appendChild(icon);
-      if (perchFeather) row.appendChild(perchFeather);
-      if (inProgressHourglass) row.appendChild(inProgressHourglass);
       row.appendChild(label);
       row.appendChild(countSpan);
+      // Status emojis sit on the right edge, adjacent to the checkbox, so they
+      // don't crowd the folder name on the left.
+      if (perchFeather) row.appendChild(perchFeather);
+      if (inProgressHourglass) row.appendChild(inProgressHourglass);
       row.appendChild(cbCol);
       wrap.appendChild(row);
 

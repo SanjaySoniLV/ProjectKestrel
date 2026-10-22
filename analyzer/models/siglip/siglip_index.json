@@ -1,0 +1,18 @@
+{
+ "model": "open_clip ViT-B-16-SigLIP2 / webli",
+ "image_size": 224,
+ "image_mean": [
+  0.5,
+  0.5,
+  0.5
+ ],
+ "image_std": [
+  0.5,
+  0.5,
+  0.5
+ ],
+ "context_length": 64,
+ "logit_scale": 112.66889953613281,
+ "logit_bias": -16.771724700927734,
+ "token_table_rows": 110809
+}

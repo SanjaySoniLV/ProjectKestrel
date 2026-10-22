@@ -58,6 +58,11 @@
         const checkedNorms = Array.from(analyzeDlgCheckedPaths);
         if (checkedNorms.length === 0) return;
         const retryErrored = document.getElementById('adlgRetryErrored')?.checked ?? true;
+        // Species geofence for every folder queued by this Start (per-item so
+        // a later Start with a different region doesn't change these).
+        const speciesOn = document.getElementById('analyzeSpeciesDetection')?.checked ?? true;
+        const speciesRegions = (speciesOn && typeof getAnalyzeDlgSpeciesRegions === 'function')
+          ? getAnalyzeDlgSpeciesRegions() : null;
 
         // Compute per-item options and classify each folder.
         const perItemOptions = {};
@@ -90,6 +95,7 @@
           }
           // Errored-only folders (partial + errored > 0) don't need wipe;
           // the pipeline's retry_errored logic handles them in-place.
+          if (speciesRegions) opts.species_regions = speciesRegions;
           perItemOptions[norm] = opts;
         }
 
@@ -305,6 +311,9 @@
             // UI-driven settings writes include the persisted legal flags.
             await hydrateSettingsFromServer();
             document.getElementById('legalNotice').classList.add('hidden');
+            // The RAW warning stacks beneath the legal banner; with that gone
+            // it should move back up to the top strip.
+            try { refreshRawWarnBanner(); } catch (_) { }
             showToast('Terms accepted. Welcome to Project Kestrel!', 4000);
           }
         } catch (e) {
@@ -393,14 +402,19 @@
       });
     }
 
-    // Clear done button
-    const queueClearBtn = document.getElementById('queueClearBtn');
-    if (queueClearBtn) {
-      queueClearBtn.addEventListener('click', async () => {
+    // Header close (X) — replaces "Clear done". Only visible (toggled in
+    // renderQueuePanel) when every item is terminal, so clearing removes them
+    // all and dismisses the panel. stopPropagation keeps the header's
+    // collapse-toggle from also firing.
+    const queuePanelCloseBtn = document.getElementById('queuePanelCloseBtn');
+    if (queuePanelCloseBtn) {
+      queuePanelCloseBtn.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
         try {
           await apiQueueControl('clear');
           const status = await apiGetQueueStatus();
-          if (!(status.items || []).some(i => i.status === 'pending' || i.status === 'running')) {
+          if (!(status.items || []).some(i => i.status === 'pending' || i.status === 'running')
+              && !(status.upgrades || []).some(u => u.status === 'running')) {
             document.getElementById('queuePanel')?.classList.add('hidden');
             stopPollingQueue();
           } else {
