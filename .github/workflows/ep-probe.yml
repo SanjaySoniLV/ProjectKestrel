@@ -1,0 +1,157 @@
+name: GPU EP probe (CoreML / DirectML)
+
+# Where do the analyzer's ONNX models actually run on each platform's GPU
+# execution provider? tools/ep_probe.py builds a session per model x weight
+# variant x provider config, records ORT's node placement (CoreML / DirectML vs
+# CPU), runs a few inferences and compares the output with the CPU result.
+#
+# GitHub's macOS arm64 runners have CoreML (no real GPU access is guaranteed, so
+# timings are indicative only; placement and correctness are what this is for).
+# Windows runners run DirectML on a basic/WARP adapter -- same caveat.
+#
+# LFS bandwidth is metered (see tests.yml). Only the models the probe needs are
+# pulled, into one cross-OS cache, so both jobs and later runs share a single
+# download. The detector (~565 MB) is opt-in.
+#
+# The optional `full_suite` job runs `pytest -m "not ui"` on macOS against the
+# same branch (needs every model, ~1.5 GB of LFS on a cold cache).
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_detector:
+        description: "Also probe MegaDetector (pulls ~565 MB more LFS on a cold cache)"
+        type: boolean
+        default: false
+      full_suite:
+        description: "Also run pytest -m 'not ui' on macOS (pulls all models)"
+        type: boolean
+        default: false
+  push:
+    branches: [ exp/pipeline-v3 ]
+    paths:
+      - tools/ep_probe.py
+      - .github/workflows/ep-probe.yml
+
+concurrency:
+  group: ep-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PROBE_MODELS: >-
+    analyzer/models/bioclip/bioclip2_image_int8.onnx,analyzer/models/siglip/siglip2_b16_image_int8.onnx,analyzer/models/siglip/siglip2_b16_text_fp16w.onnx,analyzer/models/quality.onnx,analyzer/models/speciesnet/sam_hq_vit_tiny_encoder.onnx
+  DETECTOR_MODELS: analyzer/models/speciesnet/mdv5a.onnx,analyzer/models/speciesnet/mdv5a.onnx.data
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            ort_pkg: onnxruntime
+            ort_ver: "1.23.2"      # the app's pin (requirements-macos.txt)
+          - os: macos-14
+            ort_pkg: onnxruntime
+            ort_ver: latest
+          - os: windows-latest
+            ort_pkg: onnxruntime-directml
+            ort_ver: "1.24.4"      # the app's pin (requirements-windows.txt)
+          - os: windows-latest
+            ort_pkg: onnxruntime-directml
+            ort_ver: latest
+    runs-on: ${{ matrix.os }}
+    name: probe ${{ matrix.os }} ${{ matrix.ort_pkg }} ${{ matrix.ort_ver }}
+    steps:
+      - uses: actions/checkout@v4   # no LFS: pulled selectively below
+
+      - name: Pick models
+        id: pick
+        shell: bash
+        run: |
+          inc="$PROBE_MODELS"
+          if [ "${{ inputs.include_detector }}" = "true" ]; then inc="$inc,$DETECTOR_MODELS"; fi
+          echo "include=$inc" >> "$GITHUB_OUTPUT"
+          echo "key=$(echo "$inc" | tr ',' '\n' | xargs cat | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore LFS cache (shared across OSes)
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: lfs-probe-${{ steps.pick.outputs.key }}
+          enableCrossOsArchive: true
+
+      - name: Pull only the probed models
+        shell: bash
+        run: git lfs pull --include="${{ steps.pick.outputs.include }}"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if [ "${{ matrix.ort_ver }}" = "latest" ]; then pip install "${{ matrix.ort_pkg }}"; else pip install "${{ matrix.ort_pkg }}==${{ matrix.ort_ver }}"; fi
+          pip install numpy onnx
+          python -c "import onnxruntime as o; print(o.__version__, o.get_available_providers())"
+
+      - name: Probe
+        shell: bash
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python tools/ep_probe.py --out "ep_probe_${{ runner.os }}_${{ matrix.ort_ver }}.json"
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          python - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import glob, json
+          for f in glob.glob("ep_probe_*.json"):
+              r = json.load(open(f))
+              print(f"### {r['platform']} — onnxruntime {r['onnxruntime']}\n")
+              print("| model | variant/config | nodes per EP | cos vs CPU | median ms | error |")
+              print("|---|---|---|---|---|---|")
+              for kind, res in r["results"].items():
+                  if "error" in res and len(res) == 1:
+                      print(f"| {kind} | — | — | — | — | {res['error']} |"); continue
+                  for key, v in res.items():
+                      nodes = ", ".join(f"{k.replace('ExecutionProvider','')}={n}" for k, n in (v.get('nodes') or {}).items())
+                      print(f"| {kind} | {key} | {nodes} | {v.get('cos_vs_cpu','')} | {v.get('median_ms','')} | {v.get('error','')[:120]} |")
+              print()
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ep-probe-${{ runner.os }}-${{ matrix.ort_ver }}
+          path: ep_probe_*.json
+
+  full_suite:
+    # workflow_dispatch only appears once this file is on the default branch, so on
+    # exp/pipeline-v3 the push trigger runs it too.
+    if: github.event_name == 'push' || inputs.full_suite
+    runs-on: macos-14
+    name: pytest -m "not ui" (macOS)
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore LFS cache
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: lfs-full-${{ hashFiles('analyzer/models/**') }}
+          enableCrossOsArchive: true
+      - run: git lfs pull
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-macos.txt
+          pip install pytest
+      - name: pytest -m "not ui"
+        run: python -m pytest analyzer/tests -m "not ui" -q --tb=short

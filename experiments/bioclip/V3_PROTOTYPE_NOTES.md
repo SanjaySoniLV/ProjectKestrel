@@ -289,3 +289,15 @@ speed (CPU has no fast fp16/DQ path); it is only a sanity check.
 - Try first: **CoreML** `sf16` (MLProgram; sf32 as reference; BioCLIP 608 MB vs 309 MB
   shipped), **DirectML** `sdyn` (same int8 bytes, only the plumbing removed), then `sf16`
   if the int8 MatMulInteger kernels are slow on the GPU.
+
+### Shipped change (2026-10-22): static batch-1 towers
+
+The shipped `bioclip2_image_int8.onnx` and `siglip2_b16_image_int8.onnx` are now the `sdyn`
+variant: the same int8 weights with a fixed `[1,3,224,224]` input and the shape subgraph
+constant-folded away (BioCLIP: Shape 196→0, Unsqueeze 555→0, Concat 243→1; SigLIP: all gone).
+Sanjay's DirectML log showed those shape nodes, not the int8 ops, were what put 847 (BioCLIP) /
+164 (SigLIP) nodes on the CPU with a MemcpyFromHost per transformer block. Embedding quality vs
+fp32 is unchanged (0.993 BioCLIP, 0.993 SigLIP) and CPU speed is the same; the app always runs
+one image per call, so the fixed batch is safe. Quality calibration knots were refitted on the new
+SigLIP file (99.6% of reference crops keep their star). CoreML still needs a float variant
+(`sf16` is the first candidate; see the CI probe `.github/workflows/ep-probe.yml`).
