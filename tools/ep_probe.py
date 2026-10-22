@@ -63,8 +63,8 @@ MODELS = {
     "detector_mdv5a": ("analyzer/models/speciesnet/mdv5a.onnx", False),
     "sam_encoder": ("analyzer/models/speciesnet/sam_hq_vit_tiny_encoder.onnx", False),
     "quality_legacy": ("analyzer/models/quality.onnx", False),
-    "bioclip_image": ("analyzer/models/bioclip/bioclip2_image_int8.onnx", True),
     "siglip_image": ("analyzer/models/siglip/siglip2_b16_image_int8.onnx", True),
+    "bioclip_image": ("analyzer/models/bioclip/bioclip2_image_int8.onnx", True),
     "siglip_text": ("analyzer/models/siglip/siglip2_b16_text_fp16w.onnx", False),
 }
 
@@ -569,14 +569,59 @@ def probe_one(path, providers, runs, ref=None):
     return res, out
 
 
+def _worker(a):
+    """One probe in a child process, so a hung EP compile can be timed out by the parent."""
+    cfgs = dict(provider_configs()[0])
+    ref = np.load(a.ref) if a.ref and os.path.exists(a.ref) else None
+    r = probe_one(a.worker, cfgs[a.cfg], a.runs, ref)
+    if isinstance(r, tuple):
+        r, out = r
+        if a.save_ref:
+            np.save(a.save_ref, out)
+    json.dump(r, open(a.result, "w"))
+
+
+def _probe_isolated(path, cname, runs, ref_path, save_ref, timeout):
+    import subprocess
+    res_path = tempfile.mktemp(suffix=".json")
+    cmd = [sys.executable, os.path.abspath(__file__), "--worker", path, "--cfg", cname, "--runs", str(runs),
+           "--result", res_path]
+    if ref_path:
+        cmd += ["--ref", ref_path]
+    if save_ref:
+        cmd += ["--save-ref", save_ref]
+    t0 = time.perf_counter()
+    try:
+        p = subprocess.run(cmd, timeout=timeout, capture_output=True, text=True, errors="replace")
+    except subprocess.TimeoutExpired:
+        return {"error": f"timeout after {timeout}s (session build or inference hung)"}
+    if not os.path.exists(res_path):
+        tail = (p.stderr or "")[-400:].replace("\n", " | ")
+        return {"error": f"worker exited {p.returncode} after {time.perf_counter() - t0:.0f}s: {tail}"}
+    r = json.load(open(res_path))
+    os.remove(res_path)
+    return r
+
+
 def main():
     import onnxruntime as ort
     ap = argparse.ArgumentParser()
+    ap.add_argument("--worker", help=argparse.SUPPRESS)
+    ap.add_argument("--cfg", help=argparse.SUPPRESS)
+    ap.add_argument("--ref", help=argparse.SUPPRESS)
+    ap.add_argument("--save-ref", help=argparse.SUPPRESS)
+    ap.add_argument("--result", help=argparse.SUPPRESS)
+    ap.add_argument("--timeout", type=int, default=600, help="seconds per (model, variant, config) probe")
     ap.add_argument("--out", default="ep_probe.json")
-    ap.add_argument("--variants", default="sdyn,sf16,sf32,swdq")
+    # The shipped towers are already static batch-1 (== sdyn), so the default probes the
+    # float candidates for CoreML next to them. swdq is not a CoreML candidate (no
+    # DequantizeLinear in MLProgram); add it explicitly if wanted.
+    ap.add_argument("--variants", default="sf16,sf32")
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--only", default="", help="comma list of model kinds")
     a = ap.parse_args()
+    if a.worker:
+        return _worker(a)
     cfgs, avail = provider_configs()
     report = {"platform": platform.platform(), "machine": platform.machine(), "python": sys.version.split()[0],
               "onnxruntime": ort.__version__, "available_providers": avail, "results": {}}
@@ -600,19 +645,20 @@ def main():
                         report.setdefault("variant_info", {})[f"{kind}:{v}"] = info
                     except Exception as e:  # noqa: BLE001
                         report.setdefault("variant_info", {})[f"{kind}:{v}"] = {"error": f"{type(e).__name__}: {e}"}
-        ref = None
+        ref_path = os.path.join(tmp, f"{kind}_ref.npy")
         rk = report["results"].setdefault(kind, {})
         for vname, vpath in variants.items():
-            for cname, provs in cfgs:
+            for cname, _provs in cfgs:
                 key = f"{vname}/{cname}"
-                r = probe_one(vpath, provs, a.runs, ref)
-                if isinstance(r, tuple):
-                    r, out = r
-                    if ref is None and cname == "cpu":
-                        ref = out  # the shipped file on CPU is the reference for every variant
-                        r["cos_vs_cpu"] = 1.0
+                first = not os.path.exists(ref_path)
+                # the shipped file on CPU (probed first) is the reference for every variant
+                r = _probe_isolated(vpath, cname, a.runs, None if first else ref_path,
+                                    ref_path if first and cname == "cpu" else None, a.timeout)
+                if first and cname == "cpu" and "error" not in r:
+                    r["cos_vs_cpu"] = 1.0
                 rk[key] = r
                 print(f"{kind:16s} {key:28s} {json.dumps(r)}", flush=True)
+                json.dump(report, open(a.out, "w"), indent=1)  # partial results survive a job timeout
         for v in variants.values():
             if v != src:
                 try:

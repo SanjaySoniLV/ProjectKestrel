@@ -59,6 +59,7 @@ jobs:
           # the filter criteria" (run 39778820229). Probe DirectML on real hardware:
           #   python tools/ep_probe.py --out ep_probe_dml.json
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
     name: probe ${{ matrix.os }} ${{ matrix.ort_pkg }} ${{ matrix.ort_ver }}
     steps:
       - uses: actions/checkout@v4   # no LFS: pulled selectively below
@@ -98,7 +99,7 @@ jobs:
         shell: bash
         env:
           PYTHONIOENCODING: utf-8
-        run: python tools/ep_probe.py --out "ep_probe_${{ runner.os }}_${{ matrix.ort_ver }}.json"
+        run: python tools/ep_probe.py --timeout 900 --out "ep_probe_${{ runner.os }}_${{ matrix.ort_ver }}.json"
 
       - name: Summary
         if: always()
