@@ -11,7 +11,7 @@ commits `a2e349a`, `841f6e8`). Written 2026-10-22 for local testing on Windows a
 decode ─► MegaDetector (animal boxes ≥ detection threshold, box dedupe, ≤ 2×max_bird_crops)
        ─► SAM-HQ masks ─► square exposure-corrected crop (unchanged)
        ─► BioCLIP 2 image embedding of the crop (ONE run per box)
-            ├─ false-positive gate  ml/animal_gate.py      keep iff P(animal) ≥ threshold_for(det. threshold)
+            ├─ false-positive gate  ml/animal_gate.py      linear probe on the embedding, keep iff P(animal) ≥ 0.12
             ├─ bird vs wildlife     BioClipSpeciesClassifier.route   (softmax over geofenced birds ∪ 1,153 wildlife labels)
             └─ bird species/family  BioClipSpeciesClassifier.classify_embedding (unchanged head)
        ─► per-class cap (max_bird_crops birds + max_bird_crops wildlife), birds first
@@ -104,13 +104,14 @@ decode ─► MegaDetector (animal boxes ≥ detection threshold, box dedupe, �
 
 ## Decisions I made (conservative where the brief left room)
 
-1. **Gate default** = zero-shot prompt softmax (16 animal prompts vs 26 background prompts, BioCLIP
-   logit scale), keep iff `P(animal) ≥ detection threshold` (SpeciesNet parity). Swap = edit
-   `GATE_METHOD` / `threshold_for()` in `ml/animal_gate.py` (or add a `METHODS` entry). The parent's
-   experiment result had not arrived when this was written. Sanity check on 90 crops of the parent's
-   blank set: positives median 0.94 (100% kept @0.25), MegaDetector "hard" boxes median 0.92,
-   random background boxes median 0.14 (43% kept @0.25, 23% @0.5) — the threshold mapping is the
-   obvious knob to tune.
+1. **Gate** (updated by the parent session after exp 4, commit `d70d535`) = `linear_probe`: a
+   768-weight logistic head on the BioCLIP embedding (`models/bioclip/gate_probe.json`), keep iff
+   `P(animal) ≥ 0.12`, its leave-one-perch-out 99%-recall point. On 7 perches it separates animals
+   from 114 judged real MegaDetector false positives at AUC 0.97 (zero-shot prompts 0.62) and
+   rejects ~47% of them and ~88% of background clutter. The threshold is fixed (not tied to the
+   detection threshold, which still filters MegaDetector confidence). `prompt_softmax` stays
+   available via `GATE_METHOD`. Each crop's `animal_score` is logged in `crops_json` — check it on
+   real runs before release.
 2. **Wildlife family stays "N/A"** in the CSV (keeps families out of scene tags exactly as before);
    the BioCLIP wildlife family is stored per crop. Flip in `pipeline.process_subject_items` if
    wildlife families should become tags.
@@ -173,7 +174,8 @@ Reading it:
 
 ## Known gaps
 
-* **Gate method/threshold not final** — waiting for the parent's FP experiment (see decision 1).
+* **Gate threshold** set from 114 real false positives (exp 4) on box-square crops with fp32
+  embeddings; re-check on real v3 runs (`animal_score` in `crops_json`).
 * **Cloud Compute parity** out of scope: the Modal pipeline still produces 2.x packs. Merging them
   works (tested by `integration/test_pack_merge.py`); merged rows have no SigLIP score/embeddings
   and the pack's metadata replaces `pipeline_major`, so the folder shows "Upgrade" again — run it.
@@ -182,9 +184,9 @@ Reading it:
 * Upgrade progress is shown in the smart-search bar (visible during an upgrade even with smart
   search off) — no dedicated progress dialog. The UI could save stale rows if the user edits the
   folder *during* an upgrade; the grid reloads when the upgrade finishes.
-* SigLIP quality calibration knots were built on fp32 embeddings; the int8 tower moves the score a
-  little (e.g. 0.65 vs 0.70 on one crop, cos 0.995). Rebuild the calibration from int8 embeddings if
-  the distribution looks shifted.
+* SigLIP quality calibration knots were refitted on the int8 tower (all 10,461 reference crops):
+  the fp32 knots would have moved 5% of images by one star.
+* **Decode prefetch memory** (the ~12 GB): pre-existing on `main`, not changed here; see Benchmark.
 * GPU placement and speed on DirectML/CoreML are untested here (no GPU) — the defaults are educated
   guesses; please check the placement log.
 * `window.confirm` for the upgrade confirmation; no styled dialog yet.
