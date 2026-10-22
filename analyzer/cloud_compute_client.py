@@ -21,6 +21,7 @@ import json
 import os
 import shutil
 import socket
+import sys
 import tempfile
 import threading
 import time
@@ -82,6 +83,8 @@ ANALYSIS_SETTINGS_ALLOWLIST: tuple[str, ...] = (
     "thumbnail_max_width",
     "thumbnail_jpeg_compression",
     "retry_errored",
+    # Pipeline 3: comma-joined bird_catalog region codes (or "global").
+    "species_regions",
 )
 
 
@@ -1168,6 +1171,11 @@ def merge_pack_into_kestrel(
                 return True
         return False
 
+    # Pipeline-3 provenance of the folder BEFORE this pack lands (see
+    # _stamp_pipeline_major below).
+    prior_major = _read_pipeline_major(target_kestrel)
+    prior_had_rows = _csv_has_rows(target_kestrel / "kestrel_database.csv")
+
     with tempfile.TemporaryDirectory(prefix="kestrel-cc-pack-") as tmp:
         tmp_path = Path(tmp)
         with zipfile.ZipFile(pack_path, "r") as zf:
@@ -1212,6 +1220,11 @@ def merge_pack_into_kestrel(
                     continue
                 shutil.copy2(entry, dst_path)
 
+        # Pipeline 3: per-folder embedding sidecars (BioCLIP species head +
+        # SigLIP smart search). Each pack carries only the rows of its own
+        # images; local rows are authoritative, like crops/exports above.
+        _merge_pack_embeddings(src_kestrel, target_kestrel, protected)
+
         # CSV merge — last-write-wins on filename column, EXCEPT protected
         # filenames where the existing row (if any) is preserved.
         src_csv = src_kestrel / "kestrel_database.csv"
@@ -1255,6 +1268,123 @@ def merge_pack_into_kestrel(
         src_metadata = src_kestrel / "kestrel_metadata.json"
         if src_metadata.is_file():
             shutil.copy2(src_metadata, target_kestrel / "kestrel_metadata.json")
+        _stamp_pipeline_major(
+            target_kestrel,
+            pack_is_v3=_csv_has_column(src_csv, "quality_siglip"),
+            prior_major=prior_major,
+            prior_had_rows=prior_had_rows,
+        )
+
+
+def _read_pipeline_major(kestrel_dir: Path) -> int:
+    try:
+        with (kestrel_dir / "kestrel_metadata.json").open("r", encoding="utf-8") as f:
+            return int(json.load(f).get("pipeline_major") or 0)
+    except Exception:
+        return 0
+
+
+def _csv_header(path: Path) -> list[str]:
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as f:
+            return next(csv.reader(f), [])
+    except Exception:
+        return []
+
+
+def _csv_has_column(path: Path, column: str) -> bool:
+    return column in _csv_header(path)
+
+
+def _csv_has_rows(path: Path) -> bool:
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.reader(f)
+            next(reader, None)
+            return next(reader, None) is not None
+    except Exception:
+        return False
+
+
+def _stamp_pipeline_major(
+    target_kestrel: Path, *, pack_is_v3: bool, prior_major: int, prior_had_rows: bool
+) -> None:
+    """Set ``pipeline_major`` in the merged folder's metadata.
+
+    The pack's metadata replaced the local one above, but Modal exits on the
+    caught-up path before the pipeline's post-analysis step that stamps
+    ``pipeline_major``, and a pack only describes its own images. So decide
+    from the folder as a whole: it is pipeline 3 when the pack is (its CSV has
+    ``quality_siglip``) and every row that was there before was too (prior
+    stamp >= 3, or no rows yet). A pre-3 pack landing in a pipeline-3 folder
+    drops the stamp, so the folder is offered the local upgrade again.
+    """
+    try:
+        from kestrel_analyzer.config import PIPELINE_MAJOR
+    except ImportError:  # pragma: no cover - package-relative layout
+        from analyzer.kestrel_analyzer.config import PIPELINE_MAJOR  # type: ignore[no-redef]
+
+    meta_path = target_kestrel / "kestrel_metadata.json"
+    try:
+        with meta_path.open("r", encoding="utf-8") as f:
+            meta = json.load(f)
+    except Exception:
+        meta = {}
+    if pack_is_v3 and (prior_major >= PIPELINE_MAJOR or not prior_had_rows):
+        major = PIPELINE_MAJOR
+    elif not prior_had_rows:
+        major = int(meta.get("pipeline_major") or 0)
+    else:
+        major = 0  # mixed folder: some rows predate pipeline 3
+    if int(meta.get("pipeline_major") or 0) == major and "pipeline_major" in meta:
+        return
+    meta["pipeline_major"] = major
+    try:
+        _write_file_atomic(meta_path, lambda f: json.dump(meta, f, indent=2))
+    except Exception as e:
+        print(f"[cloud-compute] could not stamp pipeline_major in {meta_path}: {e}", file=sys.stderr)
+
+
+def _merge_pack_embeddings(src_kestrel: Path, target_kestrel: Path, protected: set[str]) -> None:
+    """Copy a pack's embedding rows into the local sidecars (best-effort).
+
+    Every slot in the pack (the primary BioCLIP store and each ``embeddings/<slot>/``)
+    is appended to the matching local slot via ``EmbeddingStore.put``. A filename
+    the local slot already has, or a protected one, is skipped: local rows win.
+    """
+    try:
+        from kestrel_analyzer import embedding_store as es
+    except ImportError:
+        try:
+            from analyzer.kestrel_analyzer import embedding_store as es  # type: ignore[no-redef]
+        except ImportError:
+            return
+    src_root = src_kestrel / es.EMBEDDINGS_DIRNAME
+    if not (src_root / es.INDEX_FILENAME).is_file() and not src_root.is_dir():
+        return
+    slots: list[Optional[str]] = []
+    if (src_root / es.INDEX_FILENAME).is_file():
+        slots.append(None)
+    for sub in sorted(src_root.iterdir()) if src_root.is_dir() else []:
+        if sub.is_dir() and (sub / es.INDEX_FILENAME).is_file():
+            slots.append(sub.name)
+    for slot in slots:
+        try:
+            keys, matrix, header = es.load_embeddings(str(src_kestrel), slot)
+            if header is None or not keys:
+                continue
+            store = es.EmbeddingStore(
+                str(target_kestrel), header.get("model", ""), int(header.get("dim", es.DEFAULT_DIM)), slot=slot
+            )
+            by_file: dict[str, dict[int, Any]] = {}
+            for (fn, crop), vec in zip(keys, matrix):
+                by_file.setdefault(fn, {})[crop] = vec
+            for fn, vecs in by_file.items():
+                if fn in protected or store.has(fn):
+                    continue
+                store.put(fn, vecs)
+        except Exception as e:
+            print(f"[cloud-compute] embedding merge failed for slot {slot!r}: {e}", file=sys.stderr)
 
 
 def _write_file_atomic(
