@@ -25,6 +25,8 @@ MODELS = {
     "bioclip-2.5": "hf-hub:imageomics/bioclip-2.5-vith14",
     # General-purpose CLIP (OpenAI weights, MIT) for the semantic-search / quality probes.
     "clip-b16": "ViT-B-16:openai",
+    # SigLIP 2 ViT-B/16 (Google, Apache-2.0): licence-clean alternative for search + quality.
+    "siglip2-b16": "ViT-B-16-SigLIP2:webli",
 }
 
 
