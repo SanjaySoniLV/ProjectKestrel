@@ -139,6 +139,12 @@ def parse_placement(log_text: str) -> Dict[str, int]:
     return out
 
 
+def _decode_ort_log(raw: bytes) -> str:
+    """ORT writes its log to fd 2 as UTF-16LE on Windows; every character we parse is ASCII,
+    so decoding as UTF-8 and dropping the NULs handles both encodings (and a mix of them)."""
+    return raw.decode("utf-8", errors="replace").replace("\x00", "")
+
+
 def _is_ort_log_line(line: str) -> bool:
     return ":onnxruntime:" in line and ("[V:" in line or "[I:" in line)
 
@@ -189,7 +195,7 @@ def build_session(model_path: str, providers: List[str], kind: str = "",
                     pass
                 try:
                     tmp.seek(0)
-                    captured = tmp.read().decode("utf-8", errors="replace")
+                    captured = _decode_ort_log(tmp.read())
                 except Exception:
                     captured = ""
             if tmp is not None:

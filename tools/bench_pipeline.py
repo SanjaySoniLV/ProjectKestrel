@@ -36,7 +36,10 @@ import functools
 import json
 import os
 import platform
-import resource
+try:
+    import resource
+except ImportError:     # Windows
+    resource = None
 import shutil
 import sys
 import tempfile
@@ -81,6 +84,24 @@ def _wrap(owner, name, stage, classify=None):
 
 
 def _rss_mb() -> float:
+    if resource is None:    # Windows: peak working set
+        import ctypes
+        from ctypes import wintypes
+
+        class _PMC(ctypes.Structure):
+            _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
+                        ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
+                        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                        ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
+        pmc = _PMC()
+        pmc.cb = ctypes.sizeof(pmc)
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        psapi = ctypes.WinDLL("psapi")
+        psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(_PMC), wintypes.DWORD]
+        psapi.GetProcessMemoryInfo(k32.GetCurrentProcess(), ctypes.byref(pmc), pmc.cb)
+        return pmc.PeakWorkingSetSize / (1024.0 * 1024.0)
     r = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     return r / 1024.0 if sys.platform != "darwin" else r / (1024.0 * 1024.0)
 

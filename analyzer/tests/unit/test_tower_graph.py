@@ -147,3 +147,10 @@ def test_siglip_tower_is_pinned_to_cpu_even_on_gpu(monkeypatch):
     assert coord.providers_for("siglip_image") == ["CPUExecutionProvider"]
     assert coord.providers_for("bird_species") == ["DmlExecutionProvider", "CPUExecutionProvider"]
     assert "siglip_image" in prov.CPU_PINNED_KINDS and "bird_species" not in prov.CPU_PINNED_KINDS
+
+
+def test_placement_parses_utf16_ort_log():
+    # ORT logs to fd 2 as UTF-16LE on Windows; the captured bytes must still parse.
+    line = "[V:onnxruntime:, session_state.cc:1310] All nodes placed on [DmlExecutionProvider]. Number of nodes: 1"
+    assert P.parse_placement(P._decode_ort_log(line.encode("utf-16-le"))) == {"DmlExecutionProvider": 1}
+    assert P.parse_placement(P._decode_ort_log(line.encode("utf-8"))) == {"DmlExecutionProvider": 1}
