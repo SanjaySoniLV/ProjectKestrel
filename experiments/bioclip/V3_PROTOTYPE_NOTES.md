@@ -230,3 +230,62 @@ pytest analyzer/tests -m "not ui"          # full lane: 1,780+ tests (≈6 min o
    `python tools/bench_pipeline.py <folder> --gpu --repo ../pk-main --json old.json`,
    `python tools/bench_pipeline.py <folder> --gpu --json new.json`,
    `python tools/bench_pipeline.py --compare old.json new.json`.
+
+## GPU-friendly tower variants
+
+`tools/ep_probe.py --variants ...` builds rewritten copies of the two int8 image towers
+(`make_variant`, needs `onnx`; nothing ships). Findings from the CPU tests (20 real crops,
+app preprocessing, one image per run, ORT 1.23.2, 4 cores; variants were built with ORT 1.31
+and also load and run on 1.23.2):
+
+| model | variant | MB | cos vs dyn (mean/min) | cos vs fp32 torch (mean/min) | CPU ms |
+|---|---|---|---|---|---|
+| BioCLIP | dyn (shipped) | 309 | 1 | 0.9933 / 0.974 | 169 |
+| BioCLIP | sdyn (static, int8) | 308 | 0.998 / 0.990 | 0.9932 / 0.972 | 166 |
+| BioCLIP | wdq / swdq | 309 / 308 | 0.9946 / 0.974 | 0.9985 / 0.994 | 719 / 786 |
+| BioCLIP | f32 / sf32 | 1217 / 1216 | 0.9946 / 0.974 | 0.9985 / 0.994 | 497 / 661 |
+| BioCLIP | sf16 | 608 | 0.9946 / 0.974 | 0.9985 / 0.994 | 587 |
+| BioCLIP | f16 (dynamic batch) | 609 | segfaults in ORT at ENABLE_ALL (fine at BASIC) | | |
+| SigLIP | dyn (shipped) | 97 | 1 | 0.9927 / 0.983 | 50 |
+| SigLIP | sdyn | 103 | 0.9957 / 0.988 | 0.9933 / 0.986 | 44 |
+| SigLIP | wdq / swdq | 97 / 103 | 0.9929 / 0.983 | 0.9996 / 0.999 | 412 / 406 |
+| SigLIP | f32 / sf32 | 372 / 369 | 0.9929 / 0.983 | 0.9996 / 0.999 | 139 / 121 |
+| SigLIP | f16 / sf16 | 186 / 185 | 0.9929 / 0.983 | 0.9996 / 0.999 | 131 / 169 |
+
+All variants pass `onnx.checker` and load under ORT 1.23.2. CPU latency is irrelevant to GPU
+speed (CPU has no fast fp16/DQ path); it is only a sanity check.
+
+- **The shipped dyn graphs are the noisy ones.** Dropping activation quantisation (wdq/f32/f16)
+  moves the embedding *closer* to the fp32 torch model (0.9985 / 0.9996 vs 0.993), so cos vs
+  dyn of 0.993-0.995 is dyn's own error, not the rewrite's (wdq vs f32 on ORT 1.23.2: 0.9999999).
+  fp16 compute costs nothing measurable (sf16 = sf32 to 4 digits; CPU emulation, so confirm on
+  a real GPU).
+- **Dynamic batch is the DirectML problem, not the int8 ops.** The 847 / 164 CPU nodes are the
+  Shape -> Gather -> Unsqueeze -> Concat (+ Sqrt/Div/Where/Mod) plumbing for the attention scale
+  and Reshape targets. Fixing batch=1 and constant-folding with ORT *basic* optimisation
+  removes it (BioCLIP: Shape 196 -> 0, Unsqueeze 555 -> 0, Concat 243 -> 1, Mod 24 -> 0;
+  SigLIP: Shape 42 -> 0, Unsqueeze 54 -> 0, Concat 29 -> 0). The app always runs N=1
+  (`bioclip_species.py`, `siglip.py`), so a static graph is safe; N>1 would be rejected.
+- **ORT bug found:** on a static graph ORT's load-time MatMulAddFusion names every shape
+  initializer `gemm_input_shape`, so two different K make session creation fail ("Initializer
+  with same name exists", ORT 1.23.2 and 1.31). `_fuse_matmul_add` does the same Reshape ->
+  Gemm -> Reshape fusion up front with unique names. (A static *wdq/f32/f16* graph without
+  this fails to load; static int8 is unaffected.)
+- **Op support (ORT 1.23-1.24 docs / OperatorKernels).** CoreML MLProgram has no Gather,
+  DequantizeLinear, DynamicQuantizeLinear, MatMulInteger, Where, Equal, Expand, ConstantOfShape
+  or Mod; the NeuralNetwork format additionally lacks Erf, LayerNormalization, ReduceMean and
+  Unsqueeze and needs a constant B for every MatMul (attention QK^T and AV are not), so use
+  MLProgram. The static f32/f16 graphs use only Conv, Reshape, Transpose, Add, Mul, Div,
+  LayerNormalization, Gemm (const B and C), MatMul, Softmax, Erf, Split, Squeeze, Slice (+ Cast
+  in f16), all in the MLProgram list; the q/k/v and attention-pool Gathers (scalar index) are
+  rewritten as Slice + Squeeze (`_gather_to_slice`). Not verifiable without a Mac:
+  LayerNormalization/Softmax constraints and fp16 tensors in the CoreML EP -- that is what the
+  ep-probe CI run is for. DirectML (OperatorKernels, DmlExecutionProvider) lists every op in
+  all variants incl. DynamicQuantizeLinear, MatMulInteger, DequantizeLinear (int8/uint8,
+  float16 scale), LayerNormalization, Erf, Gather, Where, Mod, in fp32 and fp16.
+- **wdq is not a CoreML candidate:** DequantizeLinear survives ORT's optimiser (52/97 DQ nodes
+  stay) and CoreML has no op for it, so each weight would be dequantised on the CPU and
+  copied to the GPU per call.
+- Try first: **CoreML** `sf16` (MLProgram; sf32 as reference; BioCLIP 608 MB vs 309 MB
+  shipped), **DirectML** `sdyn` (same int8 bytes, only the plumbing removed), then `sf16`
+  if the int8 MatMulInteger kernels are slow on the GPU.
