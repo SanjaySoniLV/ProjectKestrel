@@ -211,6 +211,10 @@
         if (cullOrigin === 'verified') card.classList.add('verified-cull');
         if (cullOrigin === 'auto') card.classList.add('auto-cull');
         if (idx === currentImageIndex) card.classList.add('active');
+        // Smart search: highlight the photos of this scene that matched.
+        if (typeof smartSearchImageScore === 'function' && smartSearchImageScore(r) !== undefined) {
+          card.classList.add('smart-match');
+        }
 
         // Thumbnail
         const th = document.createElement('div');

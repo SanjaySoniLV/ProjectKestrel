@@ -106,7 +106,7 @@ def parse_args(argv: Sequence[str] | None = None):
         "--wildlife",
         dest="wildlife_enabled",
         action="store_true",
-        help="Enable non-bird wildlife detection (SpeciesNet, experimental).",
+        help="Enable non-bird wildlife detection (BioCLIP routing, experimental).",
     )
     parser.add_argument(
         "--no-wildlife",
@@ -126,8 +126,28 @@ def parse_args(argv: Sequence[str] | None = None):
         action="store_false",
         default=None,
         help=(
-            "Skip the experimental smart-search CLIP embedding of each crop "
-            "(~50-100 ms per crop on CPU). Default: the smart_search_enabled setting (on)."
+            "Skip the SigLIP whole-frame embedding used by smart search (crops are "
+            "always embedded: that embedding is also the default quality score). "
+            "Default: the smart_search_enabled setting (on)."
+        ),
+    )
+    parser.add_argument(
+        "--quality-model",
+        choices=("siglip", "legacy"),
+        default=None,
+        help=(
+            "Which stored quality score becomes the effective `quality` column: "
+            "'siglip' (SigLIP 2 sharpness, default) or 'legacy' (pre-3.0 quality CNN). "
+            "Both are always computed. Default: the quality_model setting."
+        ),
+    )
+    parser.add_argument(
+        "--upgrade-v3",
+        action="store_true",
+        help=(
+            "Upgrade an already-analysed folder to pipeline 3.0 from its stored crops and "
+            "export JPEGs (no RAW decode): species re-ID, SigLIP quality, smart-search "
+            "index. Never changes culling decisions, ratings or edited tags."
         ),
     )
     parser.add_argument(
@@ -337,6 +357,25 @@ def main(argv: Sequence[str] | None = None):
             detector_name=detector_name,
         )
 
+        if args.upgrade_v3:
+            from kestrel_analyzer import upgrade_v3
+            kestrel_dir = os.path.join(args.folder, ".kestrel")
+            elig = upgrade_v3.eligibility(kestrel_dir)
+            print(f"Pipeline-3 upgrade: {elig['status']} -- {elig['reason']}", flush=True)
+            if elig["status"] in ("current", "not_analyzed", "reanalyze"):
+                sys.exit(0 if elig["status"] == "current" else 3)
+            pipeline.load_models(max_bird_crops=max_bird_crops)
+            stats = upgrade_v3.upgrade_folder(
+                kestrel_dir,
+                pipeline,
+                progress_cb=lambda done, total, fn: print(f"\rUpgraded {done}/{total}", end="", flush=True),
+                log_path=log_path,
+                quality_model=args.quality_model,
+            )
+            print()
+            print(f"Upgrade result: {stats}", flush=True)
+            sys.exit(0 if stats.get("failed", 0) == 0 else 1)
+
         def on_status(msg):
             print(msg)
 
@@ -386,6 +425,7 @@ def main(argv: Sequence[str] | None = None):
                 if args.species_regions else None
             ),
             smart_search_enabled=args.smart_search_enabled,
+            quality_model=args.quality_model,
         )
         print()
     except Exception as e:

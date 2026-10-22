@@ -277,6 +277,22 @@ class QueueManager:
                 for it in self._items
             )
 
+    def shared_pipeline(self, use_gpu: bool):
+        """The manager-lifetime ``AnalysisPipeline`` (created on demand).
+
+        Local jobs that need the analysis models outside the queue -- the
+        pipeline-3 folder upgrade -- borrow it so the process keeps exactly
+        one ONNX session per model (and one ProviderCoordinator) instead of
+        loading a second BioCLIP / SigLIP next to the queue's.
+        """
+        with self._lock:
+            if self._pipeline is None:
+                cls = _get_pipeline_class()
+                if cls is None:
+                    raise RuntimeError(f"Pipeline unavailable: {_pipeline_import_error}")
+                self._pipeline = cls(use_gpu=bool(use_gpu), detector_name=self._detector_name)
+            return self._pipeline
+
     def get_status(self) -> dict:
         with self._lock:
             return {

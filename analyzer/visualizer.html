@@ -169,7 +169,7 @@
       <div id="timelineFilterBar" class="timeline-filter-bar hidden" role="region" aria-label="Filter and sort options">
         <input id="search" type="search" placeholder="🔍 Search by species or family" class="tfb-search" />
         <button id="smartSearchToggle" type="button" class="tfb-smart-toggle" aria-pressed="false"
-          title="Smart search (experimental): describe what is happening instead of naming a species, e.g. &quot;in flight&quot;, &quot;eating&quot;, &quot;two birds&quot;, &quot;blurry&quot;, &quot;hidden in branches&quot;.">✨ Smart search <span class="tfb-smart-exp">(experimental)</span></button>
+          title="Smart search: describe what is happening (&quot;bird in flight&quot;, &quot;perched on a wire&quot;, &quot;two birds&quot;, &quot;blurry&quot;) and/or name a bird (&quot;heron in a marsh&quot;, &quot;dove pair&quot;). Bird names, families and wildlife in your query are detected and become filter chips you can remove.">✨ Smart search</button>
         <label class="tfb-field" title="Minimum confidence threshold for species classification">
           <span class="tfb-label">Confidence</span>
           <input id="speciesConf" type="number" min="0" max="1" step="0.05" value="0.75" class="tfb-conf" />
@@ -218,8 +218,9 @@
         </div>
         <div id="smartSearchBar" class="smart-search-bar hidden" role="status" aria-live="polite">
           <span id="smartSearchSpinner" class="smart-search-spinner hidden" aria-hidden="true"></span>
+          <span id="smartSearchChips" class="smart-search-chips hidden" aria-label="Filters detected in your query"></span>
           <span id="smartSearchHint" class="smart-search-hint"></span>
-          <button id="smartSearchIndexBtn" type="button" class="smart-search-btn hidden">Index this folder</button>
+          <button id="smartSearchIndexBtn" type="button" class="smart-search-btn hidden">Upgrade folder for smart search</button>
           <button id="smartSearchClear" type="button" class="smart-search-btn smart-search-clear hidden" title="Clear the smart search">✕ Clear</button>
         </div>
       </div>
@@ -933,13 +934,32 @@
       <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Automatically save ratings, tags, and scene changes. When disabled, you'll see a Save/Revert workflow.</div>
 
       <div class="row">
-        <label for="settingsSmartSearch" style="flex:1">Smart search index (experimental)</label>
+        <label for="settingsQualityModel" style="flex:1">Quality scorer</label>
+        <select id="settingsQualityModel">
+          <option value="siglip">SigLIP 2 sharpness (default)</option>
+          <option value="legacy">Legacy quality model</option>
+        </select>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Both scores are computed during analysis (pipeline 3.0) and stored, so switching is instant &mdash; no re-analysis. Both judge focus/sharpness only, not whether a photo is "good". The SigLIP score is the new default; the legacy model is kept for this major version for comparison. Folders analysed before 3.0 only have the legacy score until upgraded.</div>
+
+      <div class="row">
+        <label for="settingsSmartSearch" style="flex:1">Smart search: index whole frames</label>
         <label class="inline" style="gap:6px">
           <input type="checkbox" id="settingsSmartSearch" checked />
           <span class="muted">Enable</span>
         </label>
       </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Indexes each bird crop during analysis so you can search by what's happening ("in flight", "eating"). Adds roughly 0.05–0.2 s per crop on CPU.</div>
+      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Bird crops are always indexed for smart search. This also indexes each photo's whole frame so scene queries work ("bird on a wire", "two birds", "wide landscape"). Adds one SigLIP pass per photo (~0.1&ndash;0.2 s on CPU).</div>
+
+      <div class="row">
+        <label for="settingsTowerDevice" style="flex:1">BioCLIP / SigLIP device (advanced)</label>
+        <select id="settingsTowerDevice">
+          <option value="auto">Auto</option>
+          <option value="cpu">CPU</option>
+          <option value="gpu">GPU</option>
+        </select>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Where the species and search models run when GPU analysis is on. Auto: GPU on Windows (DirectML), CPU on macOS (their int8 layers don't run on Core ML and would bounce between devices). Applies to the next analysis.</div>
 
       <h4 style="margin:12px 0 8px;padding-top:8px;border-top:1px solid #1d2230;color:#a0a8b8;font-size:13px;text-transform:uppercase;letter-spacing:0.5px">Analytics &amp; Privacy</h4>
 

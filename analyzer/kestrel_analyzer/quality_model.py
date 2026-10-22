@@ -11,8 +11,8 @@ effective score*, so every existing reader -- ratings, culling assistant,
 scene grid, XMP export, Perch uploader -- works unchanged. The
 ``quality_model`` setting picks which stored score is effective; switching is
 free because nothing is re-analysed: :func:`apply_quality_model` rewrites the
-``quality`` column (and each crop's ``quality``/``rating`` plus the primary
-crop) from the stored scores.
+``quality`` column and each crop's ``quality``/``rating`` from the stored
+scores (the primary crop itself is never re-pointed: it may be a manual pick).
 
 When to rewrite: lazily, when a folder's CSV is read by the app
 (``Api.read_kestrel_csv``) and its ``kestrel_metadata.json`` records a
@@ -108,34 +108,26 @@ def needs_apply(kestrel_dir: str, model: str) -> bool:
     return "quality_siglip" in header
 
 
-def _rewrite_crops(crops_json, model: str, thresholds):
+def _rewrite_crops(crops_json, model: str, thresholds) -> str:
+    """Per-crop ``quality``/``rating`` from each crop's stored scorer outputs."""
     from .ratings import quality_to_rating
     try:
         crops = json.loads(crops_json) if isinstance(crops_json, str) and crops_json else []
     except ValueError:
-        return crops_json, None
+        return crops_json
     if not isinstance(crops, list) or not crops:
-        return crops_json, None
+        return crops_json
+    changed = False
     for c in crops:
         if not isinstance(c, dict):
             continue
-        if "quality_siglip" not in c and "quality_legacy" not in c:
+        if _num(c.get("quality_siglip")) is None and _num(c.get("quality_legacy")) is None:
             continue
         q = effective(c.get("quality_siglip"), c.get("quality_legacy"), model)
         c["quality"] = q
         c["rating"] = int(quality_to_rating(q, thresholds)) if q >= 0 else 0
-    best = None
-    for i, c in enumerate(crops):
-        if not isinstance(c, dict):
-            continue
-        try:
-            is_subject = int(c.get("detection_index", -1)) >= 0
-            q = float(c.get("quality", -1))
-        except (TypeError, ValueError):
-            continue
-        if is_subject and (best is None or q > float(crops[best].get("quality", -1))):
-            best = i
-    return json.dumps(crops), best
+        changed = True
+    return json.dumps(crops) if changed else crops_json
 
 
 def apply_quality_model(kestrel_dir: str, model: str, thresholds=None, log_path: Optional[str] = None) -> bool:
@@ -168,36 +160,20 @@ def apply_quality_model(kestrel_dir: str, model: str, thresholds=None, log_path:
                                             sett.get("rating_thresholds_custom"))
         except Exception:
             thresholds = None
-    legacy_col = df["quality_legacy"] if "quality_legacy" in df.columns else [None] * len(df)
+    # The primary crop is NOT re-pointed: the user may have promoted a crop by
+    # hand (the CSV does not record that), so only the scores change. The
+    # row's effective quality follows its own stored scorer columns.
+    legacy_col = df["quality_legacy"].tolist() if "quality_legacy" in df.columns else [None] * len(df)
+    old_q = df["quality"].tolist() if "quality" in df.columns else [-1.0] * len(df)
     new_q = []
-    for i, (qs, ql) in enumerate(zip(df["quality_siglip"].tolist(), list(legacy_col))):
+    for qs, ql, qo in zip(df["quality_siglip"].tolist(), legacy_col, old_q):
         if _num(qs) is None and _num(ql) is None:
-            new_q.append(df["quality"].iloc[i] if "quality" in df.columns else -1.0)
+            new_q.append(qo)
         else:
             new_q.append(effective(qs, ql, model))
     df["quality"] = new_q
     if "crops_json" in df.columns:
-        crops_out, prim_out = [], []
-        for i, cj in enumerate(df["crops_json"].tolist()):
-            new_cj, best = _rewrite_crops(cj, model, thresholds)
-            crops_out.append(new_cj)
-            prim_out.append(best)
-        df["crops_json"] = crops_out
-        # Re-point the primary crop (the pipeline's rule: best quality) and
-        # mirror its per-crop fields onto the row, as analysis would have.
-        for i, best in enumerate(prim_out):
-            if best is None:
-                continue
-            try:
-                c = json.loads(crops_out[i])[best]
-            except Exception:
-                continue
-            df.at[df.index[i], "primary_crop_index"] = int(best)
-            for col in ("species", "species_confidence", "family", "family_confidence", "quality",
-                        "exposure_correction", "exposure_pipeline", "exposure_subject_stops",
-                        "exposure_meter_scale", "crop_path", "quality_siglip", "quality_legacy"):
-                if col in c and col in df.columns:
-                    df.at[df.index[i], col] = c[col]
+        df["crops_json"] = [_rewrite_crops(cj, model, thresholds) for cj in df["crops_json"].tolist()]
     save_database(df, db_path)
     meta_path = os.path.join(kestrel_dir, METADATA_FILENAME)
     try:

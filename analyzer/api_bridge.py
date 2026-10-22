@@ -1275,6 +1275,12 @@ class Api:
                     'data': ''
                 }
             
+            # Pipeline 3.0.0: make ``quality`` reflect the quality_model setting
+            # (rewritten from the stored per-scorer scores; never while the
+            # folder is being analysed or upgraded -- that writer applies the
+            # setting itself). See kestrel_analyzer/quality_model.py.
+            self._maybe_apply_quality_model(parent_folder, kestrel_dir)
+
             # The analysis pipeline saves this CSV after every processed image
             # while this auto-refresh read runs, and on Windows the two collide
             # transiently even though the save is atomic. read_database_text
@@ -1308,6 +1314,21 @@ class Api:
                 'path': '',
                 'data': ''
             }
+
+    def _maybe_apply_quality_model(self, root_real: str, kestrel_dir: str) -> None:
+        try:
+            try:
+                from kestrel_analyzer import quality_model as _qm
+            except ImportError:
+                from analyzer.kestrel_analyzer import quality_model as _qm  # type: ignore[no-redef]
+            model = _qm.resolve((load_persisted_settings() or {}).get('quality_model'))
+            if not _qm.needs_apply(kestrel_dir, model):
+                return
+            if _queue_manager.has_running_writer(root_real) or self._running_upgrade_job(kestrel_dir):
+                return
+            _qm.apply_quality_model(kestrel_dir, model)
+        except Exception as e:
+            warn(f'[API] quality_model apply skipped for {kestrel_dir!r}: {e}')
 
     def read_kestrel_metadata(self, folder_path: str):
         """Read kestrel_metadata.json from a folder's .kestrel directory."""
@@ -2127,22 +2148,33 @@ class Api:
             error(f'[API] write_kestrel_scenedata({folder_path!r}) error: {e}')
             return {'success': False, 'error': str(e), 'path': ''}
 
-    # ─── Smart search (experimental free-text CLIP search) ──────────────
+    # ─── Smart search (SigLIP 2) + pipeline-3 folder upgrade ────────────
     #
-    # Read-only queries over a folder's CLIP crop index, plus a background
-    # backfill job (poll ``get_smart_search_index_progress``) that indexes
-    # crops of folders analysed before smart search existed. Every method
-    # validates the folder through ``_resolve_folder_root_and_kestrel``.
+    # Read-only queries over a folder's SigLIP crop + whole-frame index, plus
+    # a background job (poll ``get_smart_search_index_progress``) that
+    # upgrades an already-analysed folder to pipeline 3 from its stored
+    # crops/exports (species re-ID, SigLIP quality, search embeddings). Every
+    # method validates the folder through ``_resolve_folder_root_and_kestrel``.
+    # The upgrade is local-only by construction: it reads ``.kestrel/`` JPEGs
+    # and never touches the Cloud Compute client.
 
     @staticmethod
     def _smart_search_modules():
         try:
             from kestrel_analyzer import smart_search as _ss
-            from kestrel_analyzer.ml import clip_search as _cs
+            from kestrel_analyzer.ml import siglip as _sg
         except ImportError:  # package-style import path
             from analyzer.kestrel_analyzer import smart_search as _ss  # type: ignore[no-redef]
-            from analyzer.kestrel_analyzer.ml import clip_search as _cs  # type: ignore[no-redef]
-        return _ss, _cs
+            from analyzer.kestrel_analyzer.ml import siglip as _sg  # type: ignore[no-redef]
+        return _ss, _sg
+
+    @staticmethod
+    def _upgrade_module():
+        try:
+            from kestrel_analyzer import upgrade_v3 as _up
+        except ImportError:  # package-style import path
+            from analyzer.kestrel_analyzer import upgrade_v3 as _up  # type: ignore[no-redef]
+        return _up
 
     def _smart_jobs(self):
         import threading as _t
@@ -2151,12 +2183,21 @@ class Api:
             self._smart_index_jobs = {}
         return self._smart_index_lock, self._smart_index_jobs
 
-    def smart_search_status(self, folder_path: str) -> dict:
-        """How much of a folder the smart-search index covers.
+    def _running_upgrade_job(self, kestrel_dir: str):
+        lock, jobs = self._smart_jobs()
+        with lock:
+            return next((jid for jid, j in jobs.items()
+                         if j.get('kestrel_dir') == kestrel_dir and not j['progress'].get('done')), None)
 
-        Returns ``{success, indexed_images, indexable_images, needs_index,
-        available, indexing_job}``; ``available`` is False when the CLIP
-        model files are missing from this build.
+    def smart_search_status(self, folder_path: str) -> dict:
+        """Smart-search coverage + pipeline-3 upgrade eligibility for a folder.
+
+        Returns ``{success, available, indexed_images, indexable_images,
+        frame_indexed_images, frame_indexable_images, needs_index,
+        indexing_job, upgrade: {status, reason, version, pipeline_major,
+        rows, missing}}``; ``available`` is False when the SigLIP model files
+        are missing from this build. ``upgrade.status`` is one of
+        ``current`` / ``upgradable`` / ``reanalyze`` / ``not_analyzed``.
         """
         try:
             _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
@@ -2164,31 +2205,33 @@ class Api:
             )
             if err:
                 return {'success': False, 'error': err}
-            _ss, _cs = self._smart_search_modules()
+            _ss, _sg = self._smart_search_modules()
             cov = _ss.coverage(kestrel_dir)
-            lock, jobs = self._smart_jobs()
-            with lock:
-                job = next((jid for jid, j in jobs.items()
-                            if j.get('kestrel_dir') == kestrel_dir and not j['progress'].get('done')), None)
+            elig = self._upgrade_module().eligibility(kestrel_dir)
             return {
                 'success': True,
-                'available': _cs.assets_available(),
-                'needs_index': cov['indexed_images'] < cov['indexable_images'],
-                'indexing_job': job,
+                'available': _sg.assets_available(),
+                'needs_index': (cov['indexed_images'] < cov['indexable_images']
+                                or cov['frame_indexed_images'] < cov['frame_indexable_images']),
+                'indexing_job': self._running_upgrade_job(kestrel_dir),
+                'upgrade': elig,
                 **cov,
             }
         except Exception as e:
             error(f'[API] smart_search_status({folder_path!r}) error: {e}')
             return {'success': False, 'error': str(e)}
 
-    def smart_search(self, folder_path: str, query: str, limit: int = 48) -> dict:
-        """Rank a folder's scenes for a free-text query (experimental).
+    def smart_search(self, folder_path: str, query: str, limit: int = 48, options=None) -> dict:
+        """Rank a folder's scenes for a smart-search query.
 
-        Returns ``{success, query, scenes: [{scene_id, score, best_filename,
-        best_crop}], images: [{filename, scene_id, score, crop_index}],
-        indexed_images, indexable_images, needs_index}``. ``scenes`` are best
-        first; ``images`` covers the returned scenes. When the folder has no
-        CLIP embeddings yet, ``scenes`` is empty and ``needs_index`` is True.
+        The query is parsed into species/family filters (``chips``) and a
+        free-text remainder scored with SigLIP 2 (crop + whole-frame
+        embeddings). ``options`` may carry ``{"disabled_terms": [...]}``:
+        query phrases the user removed as chips (kept as plain text).
+
+        Returns ``{success, query, semantic_query, chips, mode, scenes,
+        images, indexed_images, indexable_images, frame_indexed_images,
+        frame_indexable_images, needs_index}``.
         """
         try:
             _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
@@ -2198,35 +2241,45 @@ class Api:
                 return {'success': False, 'error': err}
             if not isinstance(query, str):
                 return {'success': False, 'error': 'query must be a string'}
-            _ss, _cs = self._smart_search_modules()
-            if not _cs.assets_available():
+            disabled = []
+            if isinstance(options, dict):
+                raw = options.get('disabled_terms') or []
+                if isinstance(raw, list):
+                    disabled = [str(t)[:100] for t in raw[:20] if isinstance(t, str)]
+            _ss, _sg = self._smart_search_modules()
+            if not _sg.assets_available():
                 return {'success': False, 'error': 'smart_search_unavailable'}
-            res = _ss.search_folder(kestrel_dir, query, limit=limit)
+            res = _ss.search_folder(kestrel_dir, query, limit=limit, disabled_terms=disabled)
             return {'success': True, **res}
         except Exception as e:
             error(f'[API] smart_search({folder_path!r}) error: {e}')
             return {'success': False, 'error': str(e)}
 
-    def smart_search_index_folder(self, folder_path: str) -> dict:
-        """Start indexing a folder's existing crops for smart search.
+    def upgrade_folder_v3(self, folder_path: str) -> dict:
+        """Start upgrading an analysed folder to pipeline 3 (local only).
 
         Returns ``{success, job_id}``; poll ``get_smart_search_index_progress``.
-        Refused while the folder is being analysed (both would append to the
-        same index); a job already running for the folder is returned as is.
+        Refused while the folder is being analysed (both would write the same
+        files) and for folders that need a re-analysis; a job already running
+        for the folder is returned as is.
         """
         try:
             root_real, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
-                folder_path, context='smart_search_index_folder', require_root_exists=True,
+                folder_path, context='upgrade_folder_v3', require_root_exists=True,
             )
             if err:
                 return {'success': False, 'error': err}
             if not os.path.isdir(kestrel_dir):
                 return {'success': False, 'error': 'Folder has not been analyzed'}
-            _ss, _cs = self._smart_search_modules()
-            if not _cs.assets_available():
+            _ss, _sg = self._smart_search_modules()
+            if not _sg.image_assets_available():
                 return {'success': False, 'error': 'smart_search_unavailable'}
             if _queue_manager.has_running_writer(root_real):
                 return {'success': False, 'error': 'analysis_running'}
+            _up = self._upgrade_module()
+            elig = _up.eligibility(kestrel_dir)
+            if elig.get('status') == 'reanalyze':
+                return {'success': False, 'error': 'reanalyze_required', 'reason': elig.get('reason', '')}
             import threading as _t
             import uuid as _uuid
             lock, jobs = self._smart_jobs()
@@ -2241,7 +2294,6 @@ class Api:
                     'cancel_event': cancel,
                     'progress': {'done': False, 'current': 0, 'total': 0, 'phase': 'starting'},
                 }
-                # Keep only the most recent finished jobs.
                 finished = [k for k, v in jobs.items() if v['progress'].get('done')]
                 for k in finished[:-8]:
                     jobs.pop(k, None)
@@ -2251,37 +2303,45 @@ class Api:
                     jobs[job_id]['progress'].update(kw)
 
             def _runner():
-                embedder = None
                 try:
-                    from kestrel_analyzer.ml.provider_coordinator import ProviderCoordinator
                     _set(phase='loading_model')
-                    # CPU only: the backfill can run next to an analysis of
-                    # another folder, which owns the GPU provider.
-                    embedder = _cs.ClipImageEmbedder(
-                        _cs.default_assets_dir(), ProviderCoordinator(user_gpu_enabled=False),
-                    )
-                    _set(phase='indexing')
-                    stats = _ss.index_folder(
+                    # GPU follows the queue's current choice (the Analyze dialog's
+                    # "Use GPU", default on); CPU-only builds fall back to CPU.
+                    use_gpu = bool(getattr(_queue_manager, '_use_gpu', True))
+                    # Borrow the queue's pipeline: one ORT session per model per
+                    # process, on the shared ProviderCoordinator (GPU when on).
+                    pipeline = _queue_manager.shared_pipeline(use_gpu)
+                    pipeline.load_models(max_bird_crops=getattr(_queue_manager, '_max_bird_crops', 10))
+                    _set(phase='upgrading')
+                    try:
+                        from kestrel_analyzer.logging_utils import get_log_path
+                    except ImportError:
+                        from analyzer.kestrel_analyzer.logging_utils import get_log_path  # type: ignore
+                    stats = _up.upgrade_folder(
                         kestrel_dir,
-                        embedder,
+                        pipeline,
                         progress_cb=lambda done, total, fn: _set(current=int(done), total=int(total)),
                         cancel_event=cancel,
                         should_stop=lambda: _queue_manager.has_running_writer(root_real),
+                        log_path=get_log_path(root_real),
                     )
                     _set(phase='stopped' if stats.get('stopped') else 'canceled' if stats.get('canceled') else 'complete',
                          stats=stats)
                 except Exception as e:
-                    error(f'[API] smart_search_index_folder({folder_path!r}) failed: {e}')
+                    error(f'[API] upgrade_folder_v3({folder_path!r}) failed: {e}')
                     _set(phase='error', error=str(e))
                 finally:
-                    embedder = None
                     _set(done=True)
 
-            _t.Thread(target=_runner, name=f'SmartSearchIndex-{job_id[:8]}', daemon=True).start()
+            _t.Thread(target=_runner, name=f'UpgradeV3-{job_id[:8]}', daemon=True).start()
             return {'success': True, 'job_id': job_id}
         except Exception as e:
-            error(f'[API] smart_search_index_folder({folder_path!r}) error: {e}')
+            error(f'[API] upgrade_folder_v3({folder_path!r}) error: {e}')
             return {'success': False, 'error': str(e)}
+
+    def smart_search_index_folder(self, folder_path: str) -> dict:
+        """Pre-3.0 name of :meth:`upgrade_folder_v3` (indexing IS the upgrade now)."""
+        return self.upgrade_folder_v3(folder_path)
 
     def get_smart_search_index_progress(self, job_id: str) -> dict:
         lock, jobs = self._smart_jobs()

@@ -89,6 +89,11 @@ def _write_jpeg(path: str, bgr: np.ndarray, params) -> bool:
 
 
 class AnalysisPipeline:
+    # Class-level defaults so instances built with ``__new__`` (tests) work.
+    siglip_img = None
+    siglip_quality = None
+    animal_gate = None
+
     def __init__(self, use_gpu: bool, detector_name: str = DEFAULT_DETECTOR_NAME):
         self.use_gpu = use_gpu
         self.detector_name = str(detector_name)
@@ -106,8 +111,14 @@ class AnalysisPipeline:
         # Per-stage wall time (seconds) + call counts for tools/bench_pipeline.py.
         self.stage_times: Dict[str, float] = {}
         self.stage_counts: Dict[str, int] = {}
+        # load_models() can be reached from the queue worker and from the
+        # v3-upgrade job (which borrows this pipeline); serialise it so the
+        # models are built once.
+        self._load_lock = threading.RLock()
 
     def _timing_add(self, stage: str, t0: float) -> None:
+        if "stage_times" not in self.__dict__:
+            self.stage_times, self.stage_counts = {}, {}
         self.stage_times[stage] = self.stage_times.get(stage, 0.0) + (time.perf_counter() - t0)
         self.stage_counts[stage] = self.stage_counts.get(stage, 0) + 1
 
@@ -523,6 +534,17 @@ class AnalysisPipeline:
             pass
 
     def load_models(
+        self,
+        status_cb: Optional[Callable[[str], None]] = None,
+        max_bird_crops: int = 5,
+    ) -> None:
+        lock = getattr(self, "_load_lock", None)
+        if lock is None:
+            lock = self._load_lock = threading.RLock()
+        with lock:
+            self._load_models_locked(status_cb, max_bird_crops)
+
+    def _load_models_locked(
         self,
         status_cb: Optional[Callable[[str], None]] = None,
         max_bird_crops: int = 5,
