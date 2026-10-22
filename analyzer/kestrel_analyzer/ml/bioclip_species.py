@@ -8,8 +8,12 @@ forward pass plus a single matrix product.
 
 Assets live in ``models/bioclip/``:
 
-* ``bioclip2_image_int8.onnx`` -- input ``image`` float32 [N,3,224,224]
-  (CLIP-normalised), output ``emb`` float32 [N,768] (not normalised).
+* ``bioclip2_image_int8.onnx`` -- input ``image`` float32 [1,3,224,224]
+  (CLIP-normalised), output ``emb`` float32 [1,768] (not normalised). CPU graph.
+* ``bioclip2_image_wdq16.onnx`` -- the same tower for DirectML (fp16 compute,
+  DequantizeLinear on the int8 weights, folded at load); same I/O.
+* ``bioclip2_image.data`` -- the int8 weights both graphs reference (external
+  data, stored once). See ``ml/providers.py`` / ``tools/build_gpu_towers.py``.
 * ``species_text_emb.npy``     -- float16 [S,768], rows L2-normalised.
 * ``species_index.json``       -- ``scientific_names`` (row order of the
   ``.npy``, keyed on ``birds_global.csv``'s ``scientific_name``) and
@@ -41,6 +45,8 @@ from .provider_coordinator import ProviderCoordinator
 from .resilient_session import ResilientOnnxSession
 
 IMAGE_MODEL_FILENAME = "bioclip2_image_int8.onnx"
+GPU_IMAGE_MODEL_FILENAME = "bioclip2_image_wdq16.onnx"
+IMAGE_DATA_FILENAME = "bioclip2_image.data"
 TEXT_EMB_FILENAME = "species_text_emb.npy"
 INDEX_FILENAME = "species_index.json"
 WILDLIFE_TEXT_EMB_FILENAME = "wildlife_text_emb.npy"
@@ -155,7 +161,8 @@ class BioClipSpeciesClassifier:
         fam_idx = {f: i for i, f in enumerate(self.family_display_names)}
         self._species_family_idx = np.array([fam_idx[f] for f in fam], dtype=np.int64)
 
-        self.session = ResilientOnnxSession("bird_species", base / IMAGE_MODEL_FILENAME, coord)
+        self.session = ResilientOnnxSession("bird_species", base / IMAGE_MODEL_FILENAME, coord,
+                                            gpu_model_path=base / GPU_IMAGE_MODEL_FILENAME)
         self.providers_used = list(self.session.get_providers())
         self._input_name = self.session.get_inputs()[0].name
         debug(

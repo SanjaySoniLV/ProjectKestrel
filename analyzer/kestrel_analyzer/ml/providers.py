@@ -18,15 +18,30 @@ Two jobs:
    ``KESTREL_ORT_PLACEMENT_DIAG=0``.
 
 2. **Transformer-tower device policy.** BioCLIP 2 and SigLIP 2 image towers
-   are dynamically quantised int8 graphs (DynamicQuantizeLinear +
-   MatMulInteger). CoreML has no kernels for those ops, so on macOS a GPU
-   session splits the graph into many CoreML/CPU partitions and copies
-   activations back and forth on every layer -- usually slower than plain
-   CPU. DirectML implements both ops. Default ``auto`` therefore pins the
-   towers to CPU on macOS/CoreML and lets them use the GPU on Windows/DirectML
-   (the detector and SAM-HQ are unaffected and always follow the GPU
-   setting). Override with the ``KESTREL_TOWER_DEVICE`` environment variable
-   or the ``tower_device`` setting: ``auto`` | ``cpu`` | ``gpu``.
+   ship as two graphs over ONE shared external-data file of int8 weights
+   (``tools/build_gpu_towers.py``):
+
+   * ``*_int8.onnx`` -- dynamically quantised int8 (DynamicQuantizeLinear +
+     MatMulInteger). Fast on CPU (BioCLIP ~125 ms), terrible on DirectML
+     (13 s per crop: DML's integer kernels) and split into many CPU/CoreML
+     partitions on CoreML (no kernels for those ops).
+   * ``*_wdq16.onnx`` -- the same int8 weights behind DequantizeLinear with
+     fp16 scales, the rest of the graph fp16 (fp32 I/O). Loaded with
+     ``session.disable_quant_qdq=1`` ORT folds the DequantizeLinear nodes into
+     fp16 weights at session creation: BioCLIP 52 ms / SigLIP 10 ms on an Arc
+     140V. Slow on CPU (~800 ms), and CoreML places almost none of an fp16
+     graph (macOS CI probe), so it is a DirectML-only graph.
+
+   ``tower_graph`` picks the GPU graph when the session's providers include an
+   EP in ``GPU_GRAPH_EPS`` (DirectML), else the int8 graph; ResilientOnnxSession
+   falls back to the int8 graph on CPU if the GPU session cannot be built.
+   Default ``auto`` therefore runs the towers on the GPU on Windows/DirectML and
+   pins them to CPU on macOS/CoreML (the detector and SAM-HQ are unaffected and
+   always follow the GPU setting). Override with the ``KESTREL_TOWER_DEVICE``
+   environment variable or the ``tower_device`` setting: ``auto`` | ``cpu`` |
+   ``gpu``. ``gpu`` on CoreML still means the int8 graph on CoreML (split);
+   a CoreML-friendly tower (fp32-folded wdq graph + ModelCacheDirectory) is a
+   follow-up that needs real Apple hardware.
 """
 
 from __future__ import annotations
@@ -36,10 +51,18 @@ import re
 import sys
 import tempfile
 import threading
-from typing import Dict, List, Optional
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 TOWER_KINDS = frozenset({"bird_species", "siglip_image"})
 TOWER_DEVICES = ("auto", "cpu", "gpu")
+
+# EPs that get the fp16 "wdq16" tower graph instead of the dynamic-int8 one.
+GPU_GRAPH_EPS = frozenset({"DmlExecutionProvider"})
+# Lets ORT constant-fold the wdq16 graph's DequantizeLinear nodes at load
+# (without it they run on every call: BioCLIP 242 ms instead of 52 ms on DML).
+GPU_GRAPH_SESSION_CONFIG = {"session.disable_quant_qdq": "1"}
+_MIN_GRAPH_BYTES = 100_000  # LFS pointer stubs are ~130 bytes
 
 _PLACED_RE = re.compile(r"placed on \[(\w+)\]\. Number of nodes: (\d+)")
 
@@ -76,6 +99,32 @@ def tower_use_gpu(gpu_ep: str, device: Optional[str] = None) -> bool:
     return gpu_ep != "CoreMLExecutionProvider"
 
 
+def _ep_name(p) -> str:
+    return str(p[0]) if isinstance(p, (tuple, list)) else str(p)
+
+
+def _usable(path) -> bool:
+    try:
+        return path is not None and Path(path).is_file() and Path(path).stat().st_size > _MIN_GRAPH_BYTES
+    except OSError:
+        return False
+
+
+def tower_graph(providers: list, cpu_path, gpu_path) -> Tuple[str, list, Dict[str, str]]:
+    """``(model_path, providers, session_config)`` for a transformer-tower session.
+
+    A provider list containing a ``GPU_GRAPH_EPS`` EP gets the GPU graph plus
+    ``GPU_GRAPH_SESSION_CONFIG``; if that graph is missing (e.g. an LFS stub)
+    the tower runs the int8 graph on CPU rather than the int8 graph on DirectML
+    (13 s per crop). Every other list (CPU, CoreML) gets the int8 graph unchanged.
+    """
+    if any(_ep_name(p) in GPU_GRAPH_EPS for p in providers):
+        if _usable(gpu_path):
+            return str(gpu_path), list(providers), dict(GPU_GRAPH_SESSION_CONFIG)
+        return str(cpu_path), ["CPUExecutionProvider"], {}
+    return str(cpu_path), list(providers), {}
+
+
 def parse_placement(log_text: str) -> Dict[str, int]:
     out: Dict[str, int] = {}
     for ep, n in _PLACED_RE.findall(log_text or ""):
@@ -87,14 +136,18 @@ def _is_ort_log_line(line: str) -> bool:
     return ":onnxruntime:" in line and ("[V:" in line or "[I:" in line)
 
 
-def build_session(model_path: str, providers: List[str], kind: str = ""):
+def build_session(model_path: str, providers: List[str], kind: str = "",
+                  config: Optional[Dict[str, str]] = None):
     """``ort.InferenceSession`` + placement record. Falls back to a plain build
-    whenever the stderr capture cannot be set up (no fd 2, frozen GUI app...)."""
+    whenever the stderr capture cannot be set up (no fd 2, frozen GUI app...).
+    ``config`` = session config entries (``SessionOptions.add_session_config_entry``)."""
     import onnxruntime as ort
 
-    if not _diag_enabled():
-        return ort.InferenceSession(model_path, providers=providers)
     so = ort.SessionOptions()
+    for k, v in (config or {}).items():
+        so.add_session_config_entry(str(k), str(v))
+    if not _diag_enabled():
+        return ort.InferenceSession(model_path, sess_options=so, providers=providers)
     so.log_severity_level = 0
     so.log_verbosity_level = 0
     captured = ""
@@ -157,6 +210,8 @@ def build_session(model_path: str, providers: List[str], kind: str = ""):
         "actual": actual,
         "nodes": parse_placement(captured),
     }
+    if config:
+        record["config"] = dict(config)
     with _lock:
         _records.append(record)
         del _records[:-64]
@@ -164,8 +219,9 @@ def build_session(model_path: str, providers: List[str], kind: str = ""):
         from ..logging_utils import debug
         nodes = ", ".join(f"{k.replace('ExecutionProvider', '')}={v}" for k, v in record["nodes"].items()) or "n/a"
         debug(
-            f"[providers] {record['kind'] or record['model']}: requested={record['requested']} "
-            f"actual={record['actual']} nodes: {nodes}"
+            f"[providers] {record['kind'] or record['model']} ({record['model']}): "
+            f"requested={record['requested']} actual={record['actual']} nodes: {nodes}"
+            + (f" config={record['config']}" if config else "")
         )
     except Exception:
         pass

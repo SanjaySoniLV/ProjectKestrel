@@ -35,7 +35,7 @@ class _StubInput:
 class _StubSession:
     """Stands in for ResilientOnnxSession; returns ``self.out`` per batch row."""
 
-    def __init__(self, kind, path, coord):
+    def __init__(self, kind, path, coord, gpu_model_path=None):
         self.kind, self.path, self.coord = kind, path, coord
         self.out = None
         self.last_batch = None

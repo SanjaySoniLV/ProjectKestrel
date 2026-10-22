@@ -16,10 +16,14 @@ and ``T(neg)`` are precomputed into ``quality_prompt_emb.npy`` by
 
 Assets (``models/siglip/``):
 
-* ``siglip2_b16_image_int8.onnx`` -- ``image`` float32 [N,3,224,224] (RGB,
-  bicubic squash to 224x224, ``(x/255-0.5)/0.5``) -> ``emb`` [N,768].
+* ``siglip2_b16_image_int8.onnx`` -- ``image`` float32 [1,3,224,224] (RGB,
+  bicubic squash to 224x224, ``(x/255-0.5)/0.5``) -> ``emb`` [1,768]. CPU graph.
   Dynamically quantised: run ONE image per call (one activation scale is
   shared across a batch, so batching would couple the images).
+* ``siglip2_b16_image_wdq16.onnx`` -- the same tower for DirectML (fp16 compute,
+  DequantizeLinear on the int8 weights, folded at load); same I/O.
+* ``siglip2_b16_image.data`` -- the int8 weights both image graphs reference
+  (external data, stored once). See ``ml/providers.py``.
 * ``siglip2_b16_text_fp16w.onnx`` -- text tower minus its token table:
   ``x`` float32 [N,64,768] gathered token embeddings -> ``emb`` [N,768].
 * ``siglip2_token_emb_int8.npz`` -- pruned token table, ``q`` int8 + per-row
@@ -49,6 +53,8 @@ SEARCH_PROMPT = "a photo of {}."
 MAX_QUERY_CHARS = 200
 
 IMAGE_MODEL_FILENAME = "siglip2_b16_image_int8.onnx"
+GPU_IMAGE_MODEL_FILENAME = "siglip2_b16_image_wdq16.onnx"
+IMAGE_DATA_FILENAME = "siglip2_b16_image.data"
 TEXT_MODEL_FILENAME = "siglip2_b16_text_fp16w.onnx"
 TOKEN_TABLE_FILENAME = "siglip2_token_emb_int8.npz"
 TOKENIZER_FILENAME = "siglip2_tokenizer.json.gz"
@@ -87,13 +93,13 @@ def _big_file(p: Path) -> bool:
 
 def image_assets_available(assets_dir: Optional[Path] = None) -> bool:
     d = Path(assets_dir) if assets_dir else default_assets_dir()
-    return _big_file(d / IMAGE_MODEL_FILENAME)
+    return _big_file(d / IMAGE_MODEL_FILENAME) and _big_file(d / IMAGE_DATA_FILENAME)
 
 
 def assets_available(assets_dir: Optional[Path] = None) -> bool:
     """Image tower AND text side present (needed for search)."""
     d = Path(assets_dir) if assets_dir else default_assets_dir()
-    return all(_big_file(d / n) for n in (IMAGE_MODEL_FILENAME, TEXT_MODEL_FILENAME,
+    return all(_big_file(d / n) for n in (IMAGE_MODEL_FILENAME, IMAGE_DATA_FILENAME, TEXT_MODEL_FILENAME,
                                           TOKEN_TABLE_FILENAME, TOKENIZER_FILENAME))
 
 
@@ -123,7 +129,8 @@ class SiglipImageEmbedder:
         from .resilient_session import ResilientOnnxSession
 
         self.assets_dir = Path(assets_dir) if assets_dir else default_assets_dir()
-        self.session = ResilientOnnxSession(kind, self.assets_dir / IMAGE_MODEL_FILENAME, coord)
+        self.session = ResilientOnnxSession(kind, self.assets_dir / IMAGE_MODEL_FILENAME, coord,
+                                            gpu_model_path=self.assets_dir / GPU_IMAGE_MODEL_FILENAME)
         self._input_name = self.session.get_inputs()[0].name
         self.providers_used = list(self.session.get_providers())
 

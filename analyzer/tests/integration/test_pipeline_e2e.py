@@ -42,6 +42,8 @@ pytestmark = [pytest.mark.integration, pytest.mark.e2e]
 _REQUIRED_MODELS = [
     DETECTOR_ONNX_PATHS[DEFAULT_DETECTOR_NAME],
     SIGLIP_MODELS_DIR / "siglip2_b16_image_int8.onnx",
+    SIGLIP_MODELS_DIR / "siglip2_b16_image.data",
+    Path(BIOCLIP_IMAGE_MODEL_PATH).with_name("bioclip2_image.data"),
     Path(SAM_ENC_ONNX_PATH),
     Path(SAM_DEC_ONNX_PATH),
     Path(BIOCLIP_IMAGE_MODEL_PATH),
