@@ -2060,6 +2060,9 @@ class AnalysisPipeline:
                         "event": "analysis_complete",
                         "folder": folder,
                         "total_files": len(database),
+                        # Every session built this run, incl. the lazily-built
+                        # detector/SAM ones: requested vs actual EPs + nodes per EP.
+                        "placement": provider_diag.placement_summary(),
                     },
                 )
                 if status_cb:

@@ -30,5 +30,5 @@ pyinstaller==6.20.0
 exifread
 pillow==12.3.0
 
-# speciesnet removed: ensemble logic is inlined in kestrel_analyzer/ml/_speciesnet_ensemble.py
+# speciesnet removed: pipeline 3.0 no longer uses the SpeciesNet classifier/ensemble (BioCLIP 2 routes and gates detections)
 # (Apache 2.0, adapted from google/cameratrapai). This eliminates the torch/optree dependency.

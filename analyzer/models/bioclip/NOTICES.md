@@ -8,6 +8,8 @@ wholesale, so this notice ships alongside the weights).
 | `bioclip2_image_int8.onnx` | BioCLIP 2 (ViT-L/14) image tower, exported to ONNX and dynamically quantised (int8 MatMuls). Input `image` float32 [N,3,224,224], CLIP-normalised; output `emb` [N,768], not normalised. Used by `kestrel_analyzer/ml/bioclip_species.py`. |
 | `species_text_emb.npy` | float16 [11251,768], L2-normalised BioCLIP 2 text embedding of `"a photo of {common name}."` for every species in `../birds/birds_global.csv`. |
 | `species_index.json` | Row order of the `.npy` (IOC scientific names), prompt, model id and `logit_scale`. |
+| `wildlife_text_emb.npy` + `wildlife_index.json` | float16 [1153,768] BioCLIP 2 text embeddings of non-bird animals (`"a photo of {common name}."`; labels from SpeciesNet v4.0.1a's label list (Apache-2.0) plus a few coarse invertebrate/herp groups) and their taxonomy, for bird-vs-wildlife routing in pipeline 3.0. |
+| `gate_text_emb.npy` + `gate_index.json` | BioCLIP 2 text embeddings of generic animal prompts followed by background prompts (grass, bark, posts, sky, …): the zero-shot false-positive gate (`kestrel_analyzer/ml/animal_gate.py`). Built by `export_app_assets.py --gate`. |
 
 The ONNX / int8 files and the text embeddings are a conversion of the original BioCLIP 2
 weights made by `experiments/bioclip/export_app_assets.py` (open_clip → `torch.onnx.export` →

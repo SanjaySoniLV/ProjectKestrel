@@ -39,7 +39,10 @@ analyzer/
 │   ├── pipeline.py        #   AnalysisPipeline.process_folder()
 │   ├── database.py        #   kestrel_database.csv I/O + scenedata migration
 │   ├── validation.py      #   build validator (--validate)
-│   └── ml/                #   species/bird detection, segmentation, quality-scoring models
+│   ├── smart_search.py, query_parser.py, upgrade_v3.py, quality_model.py
+│   │                      #   smart search, pipeline-3 folder upgrade, quality scorer choice
+│   └── ml/                #   MegaDetector+SAM-HQ, BioCLIP 2 (species, gate, routing),
+│                          #   SigLIP 2 (search + default quality), legacy quality CNN
 ├── ProjectKestrel*.spec   # PyInstaller build specs (Windows/macOS)
 └── tests/                 # pytest suite (unit/integration/e2e/compat/ui) + security tests
 packaging/                 # PyInstaller specs + Windows/macOS installer build scripts
@@ -48,7 +51,12 @@ packaging/                 # PyInstaller specs + Windows/macOS installer build s
 The durable output of an analysis run lives alongside the user's photos in a `.kestrel/` folder
 (`kestrel_database.csv`, `kestrel_scenedata.json`, `kestrel_metadata.json`, plus `crop/` and
 `export/` image folders). This is a shared, versioned schema — changing it has ripple effects across
-the browse UI and both optional hosted add-ons, so treat schema changes carefully.
+the browse UI and both optional hosted add-ons, so treat schema changes carefully. Since analysis
+pipeline 3.0 (`config.PIPELINE_MAJOR`, CSV `schema_version` 3) the CSV's
+`quality` column is the *effective* score selected from `quality_siglip` /
+`quality_legacy`, and `.kestrel/embeddings/` holds the BioCLIP and SigLIP
+embeddings smart search uses. The app scores objective photo characteristics
+only (focus/sharpness), never "is this a good photo".
 
 ## Setting up and running
 

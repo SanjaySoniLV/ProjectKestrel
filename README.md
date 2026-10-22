@@ -135,18 +135,22 @@ Security baseline:
 Kestrel runs a four-stage pipeline that builds objective data about every frame.
 
 ### 1. Wildlife detection and segmentation
-- Uses Google's [SpeciesNet](https://github.com/google/cameratrapai) ensemble (MegaDetector + species classifier) for animal bounding boxes, bird-vs-wildlife routing and non-bird wildlife labels, and [SAM-HQ](https://github.com/SysCV/sam-hq) (ViT-Tiny, via ONNX) for high-quality masks. Bird species are identified by [BioCLIP 2](https://huggingface.co/imageomics/bioclip-2) (see below).
-- Detects animals, routes birds vs other wildlife, and segments subjects so quality is assessed on wildlife pixels, not background — a busy or cluttered background never sways the score.
+- [MegaDetector](https://github.com/agentmorris/MegaDetector) proposes animal bounding boxes and [SAM-HQ](https://github.com/SysCV/sam-hq) (ViT-Tiny, via ONNX) segments each one, so quality is assessed on wildlife pixels, not background — a busy or cluttered background never sways the score.
+- Each subject crop is embedded once with [BioCLIP 2](https://huggingface.co/imageomics/bioclip-2); that one embedding drops MegaDetector false positives (branches, bark, posts, …) with a zero-shot animal-vs-background test, and routes the subject to *bird* or *other wildlife* (1,150+ non-bird species).
 
 ### 2. Species Classification
 - Bird species are identified zero-shot with [BioCLIP 2](https://huggingface.co/imageomics/bioclip-2) (MIT licence; an int8 ONNX export of its image tower runs on-device) against precomputed text embeddings for every IOC world bird species.
 - Each analysis is geofenced to the region(s) you choose (default: your *Settings → Species & Region* list), so scores are probabilities over the birds that actually occur there.
 
 ### 3. Quality Assessment
-- A custom machine learning model was trained to analyze the quality of the images.
-- Factors in noise, motion blur, out-of-focus images, and other artifacts into one score.
+- Quality is an **objective focus/sharpness score** of the bird crop — not a judgement of whether the photo is "good".
+- The default scorer (analysis pipeline 3.0) is a zero-shot [SigLIP 2](https://huggingface.co/timm/ViT-B-16-SigLIP2) sharpness test ("sharp, in-focus" vs "blurry, out-of-focus"), calibrated onto Kestrel's familiar 0–1 scale. The previous custom quality model still runs alongside it for this major version; both scores are stored and you can switch in *Settings → Quality scorer* instantly, without re-analysing.
 - Only evaluates image regions corresponding to the bird, NOT any branches, backgrounds, or other regions.
 - Quality scores are used to rank images within a scene by sharpness.
+
+### Smart search
+- Describe the moment — "bird in flight", "perched on a wire", "two birds", "blurry" — or name a bird with it — "heron in a marsh", "dove pair". Bird species, families and wildlife in the query are detected (typos and plurals are fine) and become filter chips; the rest is matched against SigLIP 2 embeddings of every bird crop *and* every whole frame.
+- Folders analysed with an older version can be upgraded in place (*Folder Actions → Upgrade to Analysis Pipeline 3.0*) from the crops Kestrel already saved — no re-analysis, and your ratings, culls and tags are never touched.
 
 ### 4. Scene Grouping
 - A custom image similarity algorithm was developed to identify images that belong to the same scene.
@@ -171,7 +175,7 @@ ProjectKestrel/
 │   ├── cloud_compute_client.py  # Cloud Compute (optional)
 │   ├── perch_uploader.py     # Perch publishing (optional)
 │   ├── auth_client.py        # Sign-in (optional)
-│   ├── models/               # AI model files (ONNX: SpeciesNet, SAM-HQ, BioCLIP 2, quality)
+│   ├── models/               # AI model files (ONNX: MegaDetector, SAM-HQ, BioCLIP 2, SigLIP 2, quality)
 │   ├── kestrel_analyzer/     # Core analysis pipeline (no UI dependencies)
 │   └── tests/                # pytest suites (~350 tests)
 ├── packaging/                # PyInstaller specs + installer build scripts
@@ -273,11 +277,14 @@ The canonical Terms of Service and Privacy Policy live on the marketing site and
   GBIF, EOL, BIOSCAN — various CC licences). Kestrel bundles an int8 ONNX conversion of it; see
   [`analyzer/models/bioclip/NOTICES.md`](analyzer/models/bioclip/NOTICES.md) for the licence text and
   BibTeX.
-- **[OpenAI CLIP](https://github.com/openai/CLIP)** (ViT-B/16, MIT licence), loaded via
-  **[open_clip](https://github.com/mlfoundations/open_clip)** — the experimental free-text smart
-  search. Radford, A., et al. (2021). "Learning Transferable Visual Models From Natural Language
-  Supervision." *ICML*. Kestrel bundles ONNX conversions of the image (int8) and text (fp16) towers
-  plus the CLIP BPE vocabulary; see [`analyzer/models/clip/NOTICES.md`](analyzer/models/clip/NOTICES.md).
+- **[SigLIP 2](https://huggingface.co/timm/ViT-B-16-SigLIP2)** (Google, ViT-B/16, Apache-2.0),
+  loaded via **[open_clip](https://github.com/mlfoundations/open_clip)** for the conversion — smart
+  search and the default zero-shot sharpness score. Tschannen, M., et al. (2025). "SigLIP 2:
+  Multilingual Vision-Language Encoders with Improved Semantic Understanding, Localization, and Dense
+  Features." arXiv:2502.14786. Kestrel bundles an int8 image tower, an fp16-weight text tower, a pruned
+  int8 token table and the tokenizer; see [`analyzer/models/siglip/NOTICES.md`](analyzer/models/siglip/NOTICES.md).
+- **[MegaDetector](https://github.com/agentmorris/MegaDetector)** (MIT licence) — animal detection,
+  and **[SAM-HQ](https://github.com/SysCV/sam-hq)** (Apache-2.0) — segmentation masks.
 
 ### Bundled bird-catalog data
 

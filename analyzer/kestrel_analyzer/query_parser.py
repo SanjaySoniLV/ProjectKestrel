@@ -281,11 +281,19 @@ def parse_query(
         return (present, in_region, not fuzzy, t.kind != "wildlife", t.model_species)
 
     used = [False] * len(tokens)
-    matches: List[Match] = []
     n_tok = len(tokens)
+    # Words of an un-chipped phrase stay plain text: no match may touch them.
+    blocked = [False] * n_tok
+    for dk in disabled:
+        dw = dk.split()
+        for i in range(0, n_tok - len(dw) + 1):
+            if keys[i:i + len(dw)] == dw:
+                for j in range(i, i + len(dw)):
+                    blocked[j] = True
+    matches: List[Match] = []
     for n in range(min(MAX_NGRAM, n_tok), 0, -1):
         for i in range(0, n_tok - n + 1):
-            if any(used[i:i + n]) or not all(keys[i:i + n]):
+            if any(used[i:i + n]) or any(blocked[i:i + n]) or not all(keys[i:i + n]):
                 continue
             k = " ".join(keys[i:i + n])
             if not k or k in disabled:
@@ -310,7 +318,7 @@ def parse_query(
             if words:
                 last_word.setdefault(singular(words[-1]), []).append(label)
         for i, k in enumerate(keys):
-            if used[i] or not k or k in STOPWORDS or k in disabled or len(k) < 3 or " " in k:
+            if used[i] or blocked[i] or not k or k in STOPWORDS or len(k) < 3 or " " in k:
                 continue
             labels = last_word.get(k)
             if labels:
