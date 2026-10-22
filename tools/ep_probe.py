@@ -27,7 +27,9 @@ adds rewritten copies of those two files, built here from the shipped weights:
   f32   the same weights fully dequantised to float32 initializers (4x larger)
   f16   f32 converted to half precision: fp16 weights and compute, float32 graph
         inputs/outputs, LayerNorm / Softmax / Div / Sqrt / Erf kept in float32
-  s*    swdq / sf32 / sf16: the same with the static-batch transform first. Static graphs
+  wdq16 wdq with float16 scales / dequantised weights / matmuls (needs opset 19); same
+        size as the shipped int8 file.
+  s*    swdq / swdq16 / sf32 / sf16: the same with the static-batch transform first. Static graphs
         also get MatMul+Add fused into Reshape -> Gemm -> Reshape (ORT's own load-time
         fusion crashes on these graphs) and the scalar-index Gathers of the q/k/v unpack
         turned into Slice + Squeeze (MLProgram has no Gather). Static graphs take N=1 only,
@@ -56,7 +58,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "analyzer"))
 os.environ.setdefault("KESTREL_ORT_PLACEMENT_DIAG", "1")
 
-VARIANT_NAMES = ("wdq", "f32", "f16", "sdyn", "swdq", "sf32", "sf16")
+VARIANT_NAMES = ("wdq", "f32", "f16", "wdq16", "sdyn", "swdq", "sf32", "sf16", "swdq16")
 
 MODELS = {
     # kind: (relative path, int8-dynamic tower?)
@@ -106,6 +108,8 @@ def _rewrite(src: str, dst: str, mode: str) -> dict:
            on disk; the SigLIP Cast(fp16)->float scale nodes stay intact.
       f32  W = (Wq - Wz) * Ws precomputed as float32 initializers; every Cast of an
            fp16 initializer and every float Constant is folded into a float32 initializer.
+      wdq16  wdq with the scales, the dequantised weight and the matmuls in float16 (int8
+           bytes on disk, same file size as the shipped graph); opset raised to 19.
       f16  the f32 graph converted to half precision (see ``_to_f16``): fp16 weights and
            compute, float32 graph inputs/outputs (boundary Casts), LayerNorm / Softmax /
            ReduceMean / Div / Sqrt / Erf kept in float32.
@@ -113,7 +117,7 @@ def _rewrite(src: str, dst: str, mode: str) -> dict:
     import onnx
     from onnx import helper, numpy_helper
 
-    if mode not in ("wdq", "f32", "f16"):
+    if mode not in ("wdq", "f32", "f16", "wdq16"):
         raise ValueError(mode)
     m = onnx.load(src)
     g = m.graph
@@ -168,7 +172,7 @@ def _rewrite(src: str, dst: str, mode: str) -> dict:
             continue        # not a [K,N] weight with per-output-channel scales
         y = mul.output[0]
         wname = wq + "__deq"
-        if mode == "wdq":
+        if mode in ("wdq", "wdq16"):
             # zero-point dtype is the weight's own (int8 or uint8) because it is the original
             # initializer; per-channel scales/zero-points are [N] -> axis 1 of the [K,N] weight.
             dq_in = [wq, ws] + ([wz] if wz else [])
@@ -198,18 +202,23 @@ def _rewrite(src: str, dst: str, mode: str) -> dict:
     del g.node[:]
     g.node.extend(nodes_out)
 
-    if mode in ("f32", "f16"):
+    if mode in ("f32", "f16", "wdq16"):
         _fold_constants(m)
     fused = _fuse_matmul_add(m)
     # (only for static-batch graphs: in a dynamic one the Gathers are Shape plumbing)
     static_in = all(d.HasField("dim_value") for i in g.input for d in i.type.tensor_type.shape.dim)
     sliced = _gather_to_slice(m) if static_in else 0
-    if mode == "f16":
+    if mode in ("f16", "wdq16"):
         _to_f16(m)
     _dce(m)
     for op in m.opset_import:
         if op.domain in ("", "ai.onnx") and op.version < 13:
             op.version = 13     # DequantizeLinear with axis needs opset >= 13
+        if mode == "wdq16" and op.domain in ("", "ai.onnx") and op.version < 19:
+            op.version = 19     # DequantizeLinear with a float16 scale needs opset >= 19
+            for n in g.node:    # opset 18: an equal Split must say how many outputs it has
+                if n.op_type == "Split" and len(n.input) < 2 and not any(a.name == "num_outputs" for a in n.attribute):
+                    n.attribute.append(helper.make_attribute("num_outputs", len(n.output)))
     onnx.checker.check_model(m, full_check=False)
     onnx.save(m, dst)
     return {"rewritten_matmuls": n_rewritten, "gemm_fused": fused, "gather_to_slice": sliced, "bytes": os.path.getsize(dst)}
@@ -495,7 +504,7 @@ def _op_counts(m) -> dict:
 
 
 def make_variant(src: str, dst: str, name: str) -> dict:
-    """name = [s]{wdq|f32|f16|dyn}; the 's' prefix applies the static-batch transform first
+    """name = [s]{wdq|wdq16|f32|f16|dyn}; the 's' prefix applies the static-batch transform first
     (so 'sdyn' is the shipped int8 graph made static, 'swdq' / 'sf16' add the GPU rewrites)."""
     static = name.startswith("s")
     mode = name[1:] if static else name
