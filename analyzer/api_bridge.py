@@ -1275,6 +1275,12 @@ class Api:
                     'data': ''
                 }
             
+            # Pipeline 3.0.0: make ``quality`` reflect the quality_model setting
+            # (rewritten from the stored per-scorer scores; never while the
+            # folder is being analysed or upgraded -- that writer applies the
+            # setting itself). See kestrel_analyzer/quality_model.py.
+            self._maybe_apply_quality_model(parent_folder, kestrel_dir)
+
             # The analysis pipeline saves this CSV after every processed image
             # while this auto-refresh read runs, and on Windows the two collide
             # transiently even though the save is atomic. read_database_text
@@ -1308,6 +1314,21 @@ class Api:
                 'path': '',
                 'data': ''
             }
+
+    def _maybe_apply_quality_model(self, root_real: str, kestrel_dir: str) -> None:
+        try:
+            try:
+                from kestrel_analyzer import quality_model as _qm
+            except ImportError:
+                from analyzer.kestrel_analyzer import quality_model as _qm  # type: ignore[no-redef]
+            model = _qm.resolve((load_persisted_settings() or {}).get('quality_model'))
+            if not _qm.needs_apply(kestrel_dir, model):
+                return
+            if _queue_manager.has_running_writer(root_real) or self._running_upgrade_job(kestrel_dir):
+                return
+            _qm.apply_quality_model(kestrel_dir, model)
+        except Exception as e:
+            warn(f'[API] quality_model apply skipped for {kestrel_dir!r}: {e}')
 
     def read_kestrel_metadata(self, folder_path: str):
         """Read kestrel_metadata.json from a folder's .kestrel directory."""
@@ -1414,44 +1435,27 @@ class Api:
         return payload
 
     def get_species_family_map(self):
-        """Return a {species_display_name: family_display_name} mapping for the
-        bird species classifier's North American taxonomy.
+        """Return a {species_display_name: family_display_name} mapping for
+        every species in the bundled IOC world catalog (~11,250 rows).
 
-        Joins ``labels_scispecies.csv`` (Species → Scientific Family) with
-        ``scispecies_dispname.csv`` (Scientific Family → Display Name) and
-        caches the result on the bridge instance. Used by the frontend to
-        auto-link species/family chips and populate species autocomplete.
+        The species classifier (BioCLIP) can name any of these, so the
+        frontend's species→family auto-link must cover all of them, not just
+        the legacy CNN's 498 North-American labels. Family names are the
+        catalog's ``family_common`` display names ("Thrush sp."), the same
+        strings the classifier writes to the ``family`` column. Cached on the
+        bridge instance.
         """
         cached = getattr(self, '_species_family_map_cache', None)
         if cached is not None:
             return cached
         try:
-            import csv
-            try:
-                from kestrel_analyzer.config import MODELS_DIR as _models_dir
-            except ImportError:
-                from analyzer.kestrel_analyzer.config import MODELS_DIR as _models_dir
-            base = str(_models_dir)
-            species_to_scifam: dict[str, str] = {}
-            with open(os.path.join(base, 'labels_scispecies.csv'), 'r', encoding='utf-8-sig', newline='') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    sp = (row.get('Species') or '').strip()
-                    fam = (row.get('Scientific Family') or '').strip()
-                    if sp and fam:
-                        species_to_scifam[sp] = fam
-            scifam_to_display: dict[str, str] = {}
-            with open(os.path.join(base, 'scispecies_dispname.csv'), 'r', encoding='utf-8-sig', newline='') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    sci = (row.get('Scientific Family') or '').strip()
-                    disp = (row.get('Display Name') or '').strip()
-                    if sci and disp:
-                        scifam_to_display[sci] = disp
+            cat = self._get_bird_catalog()
+            if cat is None:
+                raise RuntimeError('catalog unavailable')
             mapping: dict[str, str] = {}
-            for sp, sci in species_to_scifam.items():
-                disp = scifam_to_display.get(sci, sci)
-                mapping[sp] = disp
+            for rec in cat.records:
+                if rec.canonical_common_name and rec.family_common:
+                    mapping[rec.canonical_common_name] = rec.family_common
             result = {'success': True, 'map': mapping}
         except Exception as e:
             error(f'[API] get_species_family_map error: {e}')
@@ -1484,6 +1488,31 @@ class Api:
         self._bird_catalog_cache = cached
         return cached
 
+    def _sanitize_species_regions(self, value):
+        """Per-folder species geofence from the frontend → list or ``None``.
+
+        ``None`` (or nothing valid) means "use the ``bird_regions`` setting";
+        the worker resolves that just before the folder runs.
+        """
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            return None
+        vals = [v.strip() for v in value if isinstance(v, str) and v.strip()]
+        if not vals:
+            return None
+        try:
+            try:
+                from kestrel_analyzer.bird_catalog import ALLOWED_REGION_CODES, GLOBAL_REGION
+            except ImportError:
+                from analyzer.kestrel_analyzer.bird_catalog import ALLOWED_REGION_CODES, GLOBAL_REGION
+        except Exception:
+            return None
+        if any(v.lower() == GLOBAL_REGION for v in vals):
+            return [GLOBAL_REGION]
+        picked = [c for c in ALLOWED_REGION_CODES if c in set(vals)]
+        return picked or None
+
     def get_bird_catalog_meta(self):
         """Return UI metadata: region labels + default selection + catalog size.
 
@@ -1508,6 +1537,11 @@ class Api:
                 ],
                 'default_regions': list(DEFAULT_REGION_SELECTION),
                 'total_species': len(cat) if cat is not None else 0,
+                # Species per region (geofence size shown in the analyze
+                # dialog's region picker). Worldwide species count everywhere.
+                'region_counts': {
+                    code: len(cat.filter([code])) for code in ALLOWED_REGION_CODES
+                } if cat is not None else {},
             }
         except Exception as e:
             error(f'[API] get_bird_catalog_meta error: {e}')
@@ -2114,6 +2148,272 @@ class Api:
             error(f'[API] write_kestrel_scenedata({folder_path!r}) error: {e}')
             return {'success': False, 'error': str(e), 'path': ''}
 
+    # ─── Smart search (SigLIP 2) + pipeline-3 folder upgrade ────────────
+    #
+    # Read-only queries over a folder's SigLIP crop + whole-frame index, plus
+    # a background job (poll ``get_smart_search_index_progress``) that
+    # upgrades an already-analysed folder to pipeline 3 from its stored
+    # crops/exports (species re-ID, SigLIP quality, search embeddings). Every
+    # method validates the folder through ``_resolve_folder_root_and_kestrel``.
+    # The upgrade is local-only by construction: it reads ``.kestrel/`` JPEGs
+    # and never touches the Cloud Compute client.
+
+    @staticmethod
+    def _smart_search_modules():
+        try:
+            from kestrel_analyzer import smart_search as _ss
+            from kestrel_analyzer.ml import siglip as _sg
+        except ImportError:  # package-style import path
+            from analyzer.kestrel_analyzer import smart_search as _ss  # type: ignore[no-redef]
+            from analyzer.kestrel_analyzer.ml import siglip as _sg  # type: ignore[no-redef]
+        return _ss, _sg
+
+    @staticmethod
+    def _upgrade_module():
+        try:
+            from kestrel_analyzer import upgrade_v3 as _up
+        except ImportError:  # package-style import path
+            from analyzer.kestrel_analyzer import upgrade_v3 as _up  # type: ignore[no-redef]
+        return _up
+
+    def _smart_jobs(self):
+        import threading as _t
+        if getattr(self, '_smart_index_lock', None) is None:
+            self._smart_index_lock = _t.Lock()
+            self._smart_index_jobs = {}
+        return self._smart_index_lock, self._smart_index_jobs
+
+    def _running_upgrade_job(self, kestrel_dir: str):
+        lock, jobs = self._smart_jobs()
+        with lock:
+            return next((jid for jid, j in jobs.items()
+                         if j.get('kestrel_dir') == kestrel_dir and not j['progress'].get('done')), None)
+
+    def smart_search_status(self, folder_path: str) -> dict:
+        """Smart-search coverage + pipeline-3 upgrade eligibility for a folder.
+
+        Returns ``{success, available, indexed_images, indexable_images,
+        frame_indexed_images, frame_indexable_images, needs_index,
+        indexing_job, upgrade: {status, reason, version, pipeline_major,
+        rows, missing}}``; ``available`` is False when the SigLIP model files
+        are missing from this build. ``upgrade.status`` is one of
+        ``current`` / ``upgradable`` / ``reanalyze`` / ``not_analyzed``.
+        """
+        try:
+            _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path, context='smart_search_status', require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            _ss, _sg = self._smart_search_modules()
+            cov = _ss.coverage(kestrel_dir)
+            elig = self._upgrade_module().eligibility(kestrel_dir)
+            return {
+                'success': True,
+                'available': _sg.assets_available(),
+                'needs_index': (cov['indexed_images'] < cov['indexable_images']
+                                or cov['frame_indexed_images'] < cov['frame_indexable_images']),
+                'indexing_job': self._running_upgrade_job(kestrel_dir),
+                'upgrade': elig,
+                **cov,
+            }
+        except Exception as e:
+            error(f'[API] smart_search_status({folder_path!r}) error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def smart_search(self, folder_path: str, query: str, limit: int = 48, options=None) -> dict:
+        """Rank a folder's scenes for a smart-search query.
+
+        The query is parsed into species/family filters (``chips``) and a
+        free-text remainder scored with SigLIP 2 (crop + whole-frame
+        embeddings). ``options`` may carry ``{"disabled_terms": [...]}``:
+        query phrases the user removed as chips (kept as plain text).
+
+        Returns ``{success, query, semantic_query, chips, mode, scenes,
+        images, indexed_images, indexable_images, frame_indexed_images,
+        frame_indexable_images, needs_index}``.
+        """
+        try:
+            _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path, context='smart_search', require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            if not isinstance(query, str):
+                return {'success': False, 'error': 'query must be a string'}
+            disabled = []
+            if isinstance(options, dict):
+                raw = options.get('disabled_terms') or []
+                if isinstance(raw, list):
+                    disabled = [str(t)[:100] for t in raw[:20] if isinstance(t, str)]
+            _ss, _sg = self._smart_search_modules()
+            if not _sg.assets_available():
+                return {'success': False, 'error': 'smart_search_unavailable'}
+            res = _ss.search_folder(kestrel_dir, query, limit=limit, disabled_terms=disabled)
+            return {'success': True, **res}
+        except Exception as e:
+            error(f'[API] smart_search({folder_path!r}) error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def upgrade_folder_v3(self, folder_path: str) -> dict:
+        """Start upgrading an analysed folder to pipeline 3 (local only).
+
+        Returns ``{success, job_id}``; poll ``get_smart_search_index_progress``.
+        Refused while the folder is being analysed (both would write the same
+        files) and for folders that need a re-analysis; a job already running
+        for the folder is returned as is.
+        """
+        try:
+            root_real, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path, context='upgrade_folder_v3', require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            if not os.path.isdir(kestrel_dir):
+                return {'success': False, 'error': 'Folder has not been analyzed'}
+            _ss, _sg = self._smart_search_modules()
+            if not _sg.image_assets_available():
+                return {'success': False, 'error': 'smart_search_unavailable'}
+            if _queue_manager.has_running_writer(root_real):
+                return {'success': False, 'error': 'analysis_running'}
+            _up = self._upgrade_module()
+            elig = _up.eligibility(kestrel_dir)
+            if elig.get('status') == 'reanalyze':
+                return {'success': False, 'error': 'reanalyze_required', 'reason': elig.get('reason', '')}
+            import threading as _t
+            import uuid as _uuid
+            lock, jobs = self._smart_jobs()
+            with lock:
+                for jid, j in jobs.items():
+                    if j.get('kestrel_dir') == kestrel_dir and not j['progress'].get('done'):
+                        return {'success': True, 'job_id': jid, 'already_running': True}
+                job_id = _uuid.uuid4().hex
+                cancel = _t.Event()
+                jobs[job_id] = {
+                    'kestrel_dir': kestrel_dir,
+                    'cancel_event': cancel,
+                    # Shown as a row in the analysis-queue panel (get_queue_status).
+                    # 'path' echoes the folder string the UI passed (it keys the
+                    # folder tree); 'root' is the validated real path.
+                    'path': str(folder_path),
+                    'root': root_real,
+                    'started_at': time.time(),
+                    'dismissed': False,
+                    'progress': {'done': False, 'current': 0, 'total': 0, 'phase': 'starting'},
+                }
+                finished = [k for k, v in jobs.items() if v['progress'].get('done')]
+                for k in finished[:-8]:
+                    jobs.pop(k, None)
+                # A new run replaces this folder's finished row in the queue panel.
+                for k in [k for k in finished if jobs.get(k, {}).get('kestrel_dir') == kestrel_dir]:
+                    jobs.pop(k, None)
+
+            def _set(**kw):
+                with lock:
+                    jobs[job_id]['progress'].update(kw)
+
+            def _runner():
+                try:
+                    _set(phase='loading_model')
+                    # GPU follows the queue's current choice (the Analyze dialog's
+                    # "Use GPU", default on); CPU-only builds fall back to CPU.
+                    use_gpu = bool(getattr(_queue_manager, '_use_gpu', True))
+                    # Borrow the queue's pipeline: one ORT session per model per
+                    # process, on the shared ProviderCoordinator (GPU when on).
+                    pipeline = _queue_manager.shared_pipeline(use_gpu)
+                    pipeline.load_models(max_bird_crops=getattr(_queue_manager, '_max_bird_crops', 10))
+                    _set(phase='upgrading')
+                    try:
+                        from kestrel_analyzer.logging_utils import get_log_path
+                    except ImportError:
+                        from analyzer.kestrel_analyzer.logging_utils import get_log_path  # type: ignore
+                    stats = _up.upgrade_folder(
+                        kestrel_dir,
+                        pipeline,
+                        progress_cb=lambda done, total, fn: _set(current=int(done), total=int(total)),
+                        cancel_event=cancel,
+                        should_stop=lambda: _queue_manager.has_running_writer(root_real),
+                        log_path=get_log_path(root_real),
+                    )
+                    _set(phase='stopped' if stats.get('stopped') else 'canceled' if stats.get('canceled') else 'complete',
+                         stats=stats)
+                except Exception as e:
+                    error(f'[API] upgrade_folder_v3({folder_path!r}) failed: {e}')
+                    _set(phase='error', error=str(e))
+                finally:
+                    _set(done=True, finished_at=time.time())
+
+            _t.Thread(target=_runner, name=f'UpgradeV3-{job_id[:8]}', daemon=True).start()
+            return {'success': True, 'job_id': job_id}
+        except Exception as e:
+            error(f'[API] upgrade_folder_v3({folder_path!r}) error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def smart_search_index_folder(self, folder_path: str) -> dict:
+        """Pre-3.0 name of :meth:`upgrade_folder_v3` (indexing IS the upgrade now)."""
+        return self.upgrade_folder_v3(folder_path)
+
+    def get_smart_search_index_progress(self, job_id: str) -> dict:
+        lock, jobs = self._smart_jobs()
+        with lock:
+            job = jobs.get(str(job_id))
+            if job is None:
+                return {'success': False, 'error': 'not_found'}
+            return {'success': True, 'progress': dict(job['progress'])}
+
+    # Upgrade-job phase -> queue-panel row status (mirrors the analysis rows).
+    _UPGRADE_ROW_STATUS = {'complete': 'done', 'canceled': 'cancelled', 'stopped': 'stopped', 'error': 'error'}
+
+    def _upgrade_jobs_status(self) -> list:
+        """Pipeline-3 upgrade jobs as analysis-queue panel rows.
+
+        Running jobs, plus finished ones the user has not dismissed with the
+        panel's close button (``clear_queue_done``). Each row is ``{job_id,
+        kind: 'upgrade', path, name, status, phase, current, total, error,
+        started_at, finished_at}``; ``status`` is ``running`` while the job is
+        alive, then ``done`` / ``cancelled`` / ``stopped`` / ``error``.
+        """
+        lock, jobs = self._smart_jobs()
+        out = []
+        with lock:
+            for jid, j in jobs.items():
+                pr = j.get('progress') or {}
+                if j.get('dismissed') and pr.get('done'):
+                    continue
+                path = j.get('path') or j.get('root') or os.path.dirname(j.get('kestrel_dir') or '')
+                phase = str(pr.get('phase') or '')
+                status = self._UPGRADE_ROW_STATUS.get(phase, 'error') if pr.get('done') else 'running'
+                out.append({
+                    'job_id': jid,
+                    'kind': 'upgrade',
+                    'path': path,
+                    'name': os.path.basename(os.path.normpath(path)) or path,
+                    'status': status,
+                    'phase': phase,
+                    'current': int(pr.get('current') or 0),
+                    'total': int(pr.get('total') or 0),
+                    'error': str(pr.get('error') or ''),
+                    'started_at': j.get('started_at'),
+                    'finished_at': pr.get('finished_at'),
+                })
+        return out
+
+    def _dismiss_finished_upgrade_jobs(self) -> None:
+        lock, jobs = self._smart_jobs()
+        with lock:
+            for j in jobs.values():
+                if (j.get('progress') or {}).get('done'):
+                    j['dismissed'] = True
+
+    def cancel_smart_search_index(self, job_id: str) -> dict:
+        lock, jobs = self._smart_jobs()
+        with lock:
+            job = jobs.get(str(job_id))
+        if job is None:
+            return {'success': False, 'error': 'not_found'}
+        job['cancel_event'].set()
+        return {'success': True}
+
     def open_folder(self, path: str):
         """Open a folder in the system file browser (pywebview desktop mode)."""
         try:
@@ -2676,6 +2976,10 @@ class Api:
             no deletion) if it's still fully analyzed with no errors. Used
             so a user's accidental check on an already-done folder is a
             no-op rather than destructive.
+          - ``species_regions``: the bird-species geofence for that folder —
+            a list of ``bird_catalog.ALLOWED_REGION_CODES``, or ``["global"]``
+            for every IOC world species. Omitted/invalid = the user's
+            ``bird_regions`` setting.
         """
         try:
             if isinstance(paths, str):
@@ -2739,6 +3043,7 @@ class Api:
                         validated_per_item_options[real] = {
                             'delete_kestrel_on_start': bool(opts.get('delete_kestrel_on_start')),
                             'skip_if_already_done': bool(opts.get('skip_if_already_done')),
+                            'species_regions': self._sanitize_species_regions(opts.get('species_regions')),
                         }
 
             sett = load_persisted_settings()
@@ -2802,11 +3107,26 @@ class Api:
         return _queue_manager.cancel()
 
     def get_queue_status(self):
-        """Return the current state of the analysis queue."""
-        return _queue_manager.get_status()
+        """Return the current state of the analysis queue.
+
+        ``upgrades`` lists pipeline-3 folder upgrades (running and recently
+        finished, see :meth:`_upgrade_jobs_status`) so the queue panel shows
+        them next to the analysis items, also after a page reload.
+        """
+        status = _queue_manager.get_status()
+        try:
+            status['upgrades'] = self._upgrade_jobs_status()
+        except Exception as e:
+            error(f'[API] get_queue_status upgrades error: {e}')
+            status['upgrades'] = []
+        return status
 
     def clear_queue_done(self):
-        """Remove finished/errored/cancelled items from the queue list."""
+        """Remove finished/errored/cancelled items (and finished upgrades) from the queue list."""
+        try:
+            self._dismiss_finished_upgrade_jobs()
+        except Exception as e:
+            error(f'[API] clear_queue_done upgrades error: {e}')
         return _queue_manager.clear_done()
 
     def remove_queue_item(self, path: str):

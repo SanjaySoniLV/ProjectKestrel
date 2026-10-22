@@ -36,6 +36,8 @@
           run: () => showFolderOptionsDialog(folderPath) },
         { icon: '📝', label: 'Write Photo Metadata',
           run: () => writeMetadataForFolder(folderPath) },
+        { icon: '✨', label: 'Upgrade to Analysis Pipeline 3.0…',
+          run: () => upgradeFolderToV3(folderPath) },
         { divider: true },
         { icon: '🗑', label: 'Clear Kestrel Analysis Data', danger: true,
           run: () => {
@@ -64,6 +66,34 @@
       return menu;
     }
 
+    /** Folder action: upgrade an analysed folder to pipeline 3.0 from its stored
+     *  crops (species re-ID, SigLIP quality, smart-search index). Local only. */
+    async function upgradeFolderToV3(folderPath) {
+      const api = window.pywebview?.api;
+      if (!api?.smart_search_status) return;
+      let st = null;
+      try { st = await api.smart_search_status(folderPath); } catch (_) { st = null; }
+      const up = st?.upgrade || {};
+      const name = (folderPath || '').split(/[\\/]/).filter(Boolean).pop() || folderPath;
+      if (up.status === 'current') {
+        showToast(`${name} is already on analysis pipeline 3.0.`, 4000);
+        return;
+      }
+      if (up.status === 'reanalyze' || up.status === 'not_analyzed') {
+        showToast(`${name}: ${up.reason || 're-analyse this folder to use pipeline 3.0.'}`, 7000);
+        return;
+      }
+      const ok = window.confirm(
+        `Upgrade “${name}” to analysis pipeline 3.0?\n\n` +
+        'Kestrel re-reads the bird crops and preview images it already saved (no RAW decoding) to ' +
+        'update species IDs, add the new SigLIP sharpness score and build the smart-search index. ' +
+        'Your culling decisions, star ratings and edited tags are not changed, and the database is ' +
+        'backed up first. Runs on this computer only (uses the GPU when enabled).'
+      );
+      if (!ok) return;
+      if (typeof smartSearchUpgradeFolder === 'function') await smartSearchUpgradeFolder(folderPath);
+    }
+
     async function renderScenes() {
       const myVer = ++_renderScenesVersion;
       const minC = parseFloat(el('#speciesConf').value) || 0;
@@ -71,8 +101,10 @@
       const sortBy = el('#sortBy').value;
       const reviewStateFilter = document.getElementById('filterSceneReviewState')?.value
         || getSetting('sceneReviewFilter', 'all');
-      const groupByFolder = document.getElementById('groupByFolder')?.checked ?? getSetting('groupByFolder', true);
-      const groupByTime = document.getElementById('groupByTime')?.checked ?? getSetting('groupByTime', true);
+      // Smart-search results are shown flat, in score order (no folder/time grouping).
+      const _smartActive = typeof smartSearchIsActive === 'function' && smartSearchIsActive();
+      const groupByFolder = !_smartActive && (document.getElementById('groupByFolder')?.checked ?? getSetting('groupByFolder', true));
+      const groupByTime = !_smartActive && (document.getElementById('groupByTime')?.checked ?? getSetting('groupByTime', true));
       const showBirdThumbs = document.getElementById('showBirdThumbs')?.checked ?? getSetting('showBirdThumbs', false);
       // Widen each card's grid track when bird-crop thumbs are shown, so the
       // main thumb keeps its "no-crop" height and the crop slots into the
@@ -280,6 +312,22 @@
           s.representative?.__rootPath
         ));
         th.appendChild(img);
+        if (_smartActive && s.smartRank) {
+          th.classList.add('has-smart-rank');
+          const rank = document.createElement('span');
+          rank.className = 'smart-search-rank';
+          rank.textContent = `#${s.smartRank}`;
+          rank.title = `Smart search rank ${s.smartRank} (score ${Number(s.smartScore).toFixed(3)})`;
+          th.appendChild(rank);
+          const nImgs = (s.images || []).length;
+          if (nImgs > 1 && s.smartMatchCount) {
+            const m = document.createElement('span');
+            m.className = 'smart-search-matches';
+            m.textContent = `${s.smartMatchCount}/${nImgs}`;
+            m.title = `${s.smartMatchCount} of ${nImgs} photos in this scene match; the card shows the best match`;
+            th.appendChild(m);
+          }
+        }
         if (showBirdThumbs && s.representative?.crop_path && s.representative?.export_path) {
           const row = document.createElement('div');
           row.className = 'thumb-row';

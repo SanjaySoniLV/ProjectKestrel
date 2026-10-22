@@ -288,10 +288,13 @@
     // If a queue was running before this page loaded (e.g. page refresh), re-attach the polling
     (async () => {
       try {
+        // The bridge is injected after load; without this wait the re-attach
+        // silently missed a running queue / upgrade on a page reload.
+        if (typeof waitForPywebview === 'function') await waitForPywebview();
         const status = await apiGetQueueStatus();
-        if (status && (status.items || []).length > 0) {
+        if (status && ((status.items || []).length > 0 || (status.upgrades || []).length > 0)) {
           renderQueuePanel(status);
-          if (status.running) startPollingQueue();
+          if (status.running || (status.upgrades || []).some(u => u.status === 'running')) startPollingQueue();
         }
       } catch (_) { }
       try {

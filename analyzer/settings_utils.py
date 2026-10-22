@@ -62,6 +62,11 @@ _ALLOWED_RATING_PROFILES = {
 }
 _ALLOWED_EXPOSURE_QUALITY = {'lenient', 'balanced', 'aggressive'}
 _ALLOWED_WILDLIFE_MODEL_MODES = {'fast', 'accurate'}
+# Pipeline 3.0.0: which stored quality score is "the" quality (see
+# kestrel_analyzer/quality_model.py), and where the int8 BioCLIP / SigLIP
+# image towers run (kestrel_analyzer/ml/providers.py).
+_ALLOWED_QUALITY_MODELS = {'siglip', 'legacy'}
+_ALLOWED_TOWER_DEVICES = {'auto', 'cpu', 'gpu'}
 _ALLOWED_QUEUE_DETECTOR_NAMES = {'mdv5a', 'mdv1000-cedar'}
 # Biogeographic region codes for the species combobox. Sourced from the
 # ``bird_catalog`` module so the data layer owns the vocabulary and we only
@@ -511,6 +516,14 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     # pass them as runtime parameters.
     _set_bool('wildlife_enabled', default=False)
     _set_bool('species_detection_enabled', default=True)
+    # Smart search: also embed each image's downscaled whole frame with SigLIP
+    # at analysis time (one extra tower run per photo) for context queries.
+    # The per-crop SigLIP embedding always runs (it is the default quality).
+    _set_bool('smart_search_enabled', default=True)
+    if 'quality_model' in data:
+        out['quality_model'] = _coerce_enum(data.get('quality_model'), _ALLOWED_QUALITY_MODELS, default='siglip')
+    if 'tower_device' in data:
+        out['tower_device'] = _coerce_enum(data.get('tower_device'), _ALLOWED_TOWER_DEVICES, default='auto')
     # ONNX provider resilience (auto GPU↔CPU fallback). Advanced/triage knobs;
     # not exposed in the UI. ``gpu_resilience_enabled=False`` reverts to the
     # pre-resilience behavior (single GPU session, no recovery).

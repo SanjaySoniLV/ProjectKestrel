@@ -1,0 +1,165 @@
+/* Experimental smart search: toggle next to #search and the results strip
+   under the filter bar. See js/smart-search.js. */
+
+.tfb-smart-toggle {
+  height: 30px;
+  font-size: 12px;
+  padding: 0 12px;
+  background: #0e1117;
+  border: 1px solid #2a3040;
+  white-space: nowrap;
+}
+
+.tfb-smart-toggle .tfb-smart-exp {
+  color: #7d869a;
+  font-size: 11px;
+}
+
+.tfb-smart-toggle[aria-pressed="true"] {
+  background: #2a2140;
+  border-color: #6a4fb3;
+  color: #e7dcff;
+}
+
+.tfb-smart-toggle[aria-pressed="true"] .tfb-smart-exp {
+  color: #b9a7e8;
+}
+
+#search.tfb-search--smart {
+  border-color: #6a4fb3;
+  box-shadow: 0 0 0 1px rgba(106, 79, 179, 0.35);
+}
+
+.smart-search-bar {
+  flex: 1 0 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 24px;
+  font-size: 12px;
+  color: #b9c0d0;
+}
+
+.smart-search-bar.hidden {
+  display: none;
+}
+
+.smart-search-hint {
+  flex: 0 1 auto;
+}
+
+.smart-search-hint .smart-search-exp {
+  color: #9a86d6;
+}
+
+.smart-search-btn {
+  height: 24px;
+  font-size: 12px;
+  padding: 0 10px;
+  background: #0e1117;
+  border: 1px solid #2a3040;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.smart-search-btn.hidden,
+.smart-search-spinner.hidden {
+  display: none;
+}
+
+.smart-search-btn:not(.smart-search-clear) {
+  background: #2a2140;
+  border-color: #6a4fb3;
+}
+
+.smart-search-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #3a3f52;
+  border-top-color: #b9a7e8;
+  border-radius: 50%;
+  animation: smart-search-spin 0.8s linear infinite;
+}
+
+@keyframes smart-search-spin {
+  to { transform: rotate(360deg); }
+}
+
+.thumb.has-smart-rank {
+  position: relative;
+}
+
+.thumb .smart-search-rank {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 2;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 11px;
+  background: rgba(42, 33, 64, 0.88);
+  color: #e7dcff;
+  pointer-events: none;
+}
+
+/* Pipeline 3.0: detected-species chips, examples, match highlights. */
+.smart-search-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.smart-search-chips.hidden { display: none; }
+.smart-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 4px 1px 8px;
+  border-radius: 10px;
+  border: 1px solid #3a4a3a;
+  background: #1c2a1f;
+  color: #cfe9d2;
+  font-size: 12px;
+  line-height: 18px;
+}
+.smart-chip--legend { padding: 0 7px; font-size: 11px; }
+.smart-chip--species { background: #1c2a1f; border-color: #3f7a4a; color: #cfe9d2; }
+.smart-chip--family  { background: #1b2433; border-color: #3f5f8f; color: #cfdcf2; }
+.smart-chip--wildlife{ background: #2e2418; border-color: #8f6a3a; color: #f2dfc4; }
+.smart-chip--group   { background: #2a2140; border-color: #6a4fb3; color: #e7dcff; }
+.smart-chip-none { color: #e0a070; font-size: 11px; }
+.smart-chip-x {
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 4px;
+  opacity: 0.75;
+}
+.smart-chip-x:hover { opacity: 1; }
+.smart-search-example {
+  color: #c9b8ff;
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+.smart-search-example:hover { color: #ffffff; }
+.smart-search-muted { color: #8a93a6; }
+.thumb .smart-search-matches {
+  z-index: 2;
+  pointer-events: none;
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: rgba(42, 33, 64, 0.85);
+  color: #e7dcff;
+  font-size: 11px;
+  line-height: 18px;
+}
+.filmstrip-card.smart-match .filmstrip-thumb,
+.smart-match > .filmstrip-thumb {
+  outline: 2px solid #9a7cf0;
+  outline-offset: -2px;
+}

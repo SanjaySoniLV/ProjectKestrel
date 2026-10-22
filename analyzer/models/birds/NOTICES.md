@@ -24,4 +24,7 @@ publicly documented license.
 * Hand-curated AOS-to-IOC name overrides for model species whose
   preferred English name differs between authorities (see
   ``tools/build_bird_catalog.py``, ``AOS_TO_IOC_OVERRIDES``).
+* Region codes add ``NA`` for every legacy model species and a short
+  curated list of well-established introductions on top of IOC's
+  native breeding ranges (``INTRODUCED_RANGES``).
 * Family display names (``family_common``) preserve the existing ``analyzer/models/scispecies_dispname.csv`` mapping where present and fall back to IOC's *Family (English)* otherwise.

@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
 from . import gpu_providers
+from .providers import CPU_PINNED_KINDS, TOWER_KINDS, tower_use_gpu
 
 if TYPE_CHECKING:
     from .resilient_session import ResilientOnnxSession
@@ -143,7 +144,7 @@ class ProviderCoordinator:
         # All ResilientOnnxSession instances built against this coord. The
         # coordinator walks this list to recreate sessions on demote/promote,
         # so that ALL pipeline sessions (wrapper detector/classifier/SAM AND
-        # the separately-owned BirdSpeciesClassifier / QualityClassifier) move
+        # the separately-owned BioClipSpeciesClassifier / QualityClassifier) move
         # together. If only some sessions migrate, the dead-provider sessions
         # error every subsequent image and the run looks "stuck on error".
         self._sessions: list["ResilientOnnxSession"] = []
@@ -193,12 +194,24 @@ class ProviderCoordinator:
     def providers_for(self, kind: str) -> list[str]:
         """Return the ONNX providers list for a fresh session of the given kind.
 
-        ``kind`` is a free-form string ("detector"/"classifier"/"sam_enc"/"sam_dec");
-        currently all kinds use the same provider list, but the parameter is kept
-        so we can per-kind tune later without changing call sites.
+        ``kind`` is a free-form string ("detector"/"sam_enc"/"sam_dec"/"quality"/
+        "bird_species"/"siglip_image"). Every kind follows the coordinator's
+        GPU/CPU state, except the transformer towers (``TOWER_KINDS``), which
+        also honour the tower device policy, and ``CPU_PINNED_KINDS`` (the SigLIP
+        quality tower), which always run on CPU.
         """
-        _ = kind
+        if kind in CPU_PINNED_KINDS:
+            # Consistency over speed (see providers.CPU_PINNED_KINDS): the SigLIP
+            # quality score must not depend on the machine's GPU.
+            return ["CPUExecutionProvider"]
         if self._state is ProviderState.GPU:
+            # The int8 transformer towers (BioCLIP / SigLIP) follow their own
+            # device policy: on CoreML they would split into many CPU/ANE
+            # partitions, so ``auto`` keeps them on CPU there (ml/providers.py).
+            if kind in TOWER_KINDS:
+                from . import GPU_EP
+                if not tower_use_gpu(GPU_EP):
+                    return ["CPUExecutionProvider"]
             return gpu_providers()
         return ["CPUExecutionProvider"]
 

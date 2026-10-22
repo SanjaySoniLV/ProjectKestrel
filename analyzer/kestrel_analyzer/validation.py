@@ -172,36 +172,27 @@ def _check_model_loading(ctx: _Ctx) -> tuple[bool, str]:
     """All 3 ONNX model wrappers instantiate without raising."""
     try:
         from kestrel_analyzer.ml.speciesnet_sam_hq import SpeciesNetSAMHQWrapper
-        from kestrel_analyzer.ml.bird_species import BirdSpeciesClassifier
+        from kestrel_analyzer.ml.bioclip_species import BioClipSpeciesClassifier
         from kestrel_analyzer.ml.quality import QualityClassifier
         from kestrel_analyzer.config import (
-            MODELS_DIR,
+            BIOCLIP_MODELS_DIR,
             QUALITY_NORMALIZATION_DATA_PATH,
             QUALITYCLASSIFIER_PATH,
-            SPECIESCLASSIFIER_LABELS,
-            SPECIESCLASSIFIER_PATH,
         )
     except ImportError:
         from analyzer.kestrel_analyzer.ml.speciesnet_sam_hq import SpeciesNetSAMHQWrapper  # type: ignore
-        from analyzer.kestrel_analyzer.ml.bird_species import BirdSpeciesClassifier  # type: ignore
+        from analyzer.kestrel_analyzer.ml.bioclip_species import BioClipSpeciesClassifier  # type: ignore
         from analyzer.kestrel_analyzer.ml.quality import QualityClassifier  # type: ignore
         from analyzer.kestrel_analyzer.config import (  # type: ignore
-            MODELS_DIR,
+            BIOCLIP_MODELS_DIR,
             QUALITY_NORMALIZATION_DATA_PATH,
             QUALITYCLASSIFIER_PATH,
-            SPECIESCLASSIFIER_LABELS,
-            SPECIESCLASSIFIER_PATH,
         )
     wrapper = SpeciesNetSAMHQWrapper(use_gpu=False)
     wrapper.ensure_loaded()
     # Reuse the same provider coordinator so we don't double-register sessions.
     coord = wrapper.coord
-    BirdSpeciesClassifier(
-        str(SPECIESCLASSIFIER_PATH),
-        str(SPECIESCLASSIFIER_LABELS),
-        coord,
-        models_dir=str(MODELS_DIR),
-    )
+    BioClipSpeciesClassifier(str(BIOCLIP_MODELS_DIR), coord)
     QualityClassifier(
         str(QUALITYCLASSIFIER_PATH),
         normalization_data_path=str(QUALITY_NORMALIZATION_DATA_PATH)

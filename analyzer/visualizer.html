@@ -24,6 +24,7 @@
   <link rel="stylesheet" href="css/folder-tree.css" />
   <link rel="stylesheet" href="css/welcome.css" />
   <link rel="stylesheet" href="css/timeline.css" />
+  <link rel="stylesheet" href="css/smart-search.css" />
   <link rel="stylesheet" href="css/legal-banner.css" />
   <link rel="stylesheet" href="css/raw-warn-banner.css" />
   <link rel="stylesheet" href="css/dialogs/base.css" />
@@ -167,6 +168,8 @@
       <!-- Sticky top filter/sort bar — sits above the timeline, hidden when welcome panel is shown -->
       <div id="timelineFilterBar" class="timeline-filter-bar hidden" role="region" aria-label="Filter and sort options">
         <input id="search" type="search" placeholder="🔍 Search by species or family" class="tfb-search" />
+        <button id="smartSearchToggle" type="button" class="tfb-smart-toggle" aria-pressed="false"
+          title="Smart search: describe what is happening (&quot;bird in flight&quot;, &quot;perched on a wire&quot;, &quot;two birds&quot;, &quot;blurry&quot;) and/or name a bird (&quot;heron in a marsh&quot;, &quot;dove pair&quot;). Bird names, families and wildlife in your query are detected and become filter chips you can remove.">✨ Smart search</button>
         <label class="tfb-field" title="Minimum confidence threshold for species classification">
           <span class="tfb-label">Confidence</span>
           <input id="speciesConf" type="number" min="0" max="1" step="0.05" value="0.75" class="tfb-conf" />
@@ -212,6 +215,13 @@
               <span>Show bird thumbnails</span>
             </label>
           </div>
+        </div>
+        <div id="smartSearchBar" class="smart-search-bar hidden" role="status" aria-live="polite">
+          <span id="smartSearchSpinner" class="smart-search-spinner hidden" aria-hidden="true"></span>
+          <span id="smartSearchChips" class="smart-search-chips hidden" aria-label="Filters detected in your query"></span>
+          <span id="smartSearchHint" class="smart-search-hint"></span>
+          <button id="smartSearchIndexBtn" type="button" class="smart-search-btn hidden">Upgrade folder</button>
+          <button id="smartSearchClear" type="button" class="smart-search-btn smart-search-clear hidden" title="Clear the smart search">✕ Clear</button>
         </div>
       </div>
       <div id="compat" class="wrap hidden">
@@ -837,8 +847,10 @@
       </div>
       <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">
         Selects which biogeographic regions to include in the species
-        autocomplete (Ctrl+Shift+R). Multiple regions show their union.
-        Species outside the selected regions are hidden from the combobox.
+        autocomplete (Ctrl+Shift+R), and the default list of species Kestrel
+        identifies from when you analyze a folder (you can override it per
+        analysis). Multiple regions show their union. Species outside the
+        selected regions are hidden from the combobox.
       </div>
 
       <div class="row">
@@ -920,6 +932,34 @@
         </label>
       </div>
       <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Automatically save ratings, tags, and scene changes. When disabled, you'll see a Save/Revert workflow.</div>
+
+      <div class="row">
+        <label for="settingsQualityModel" style="flex:1">Quality scorer</label>
+        <select id="settingsQualityModel">
+          <option value="siglip">SigLIP 2 sharpness (default)</option>
+          <option value="legacy">Legacy quality model</option>
+        </select>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Both scores are computed during analysis (pipeline 3.0) and stored, so switching is instant &mdash; no re-analysis. Both judge focus/sharpness only, not whether a photo is "good". The SigLIP score is the new default; the legacy model is kept for this major version for comparison. Folders analysed before 3.0 only have the legacy score until upgraded.</div>
+
+      <div class="row">
+        <label for="settingsSmartSearch" style="flex:1">Smart search: index whole frames</label>
+        <label class="inline" style="gap:6px">
+          <input type="checkbox" id="settingsSmartSearch" checked />
+          <span class="muted">Enable</span>
+        </label>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Bird crops are always indexed for smart search. This also indexes each photo's whole frame so scene queries work ("bird on a wire", "two birds", "wide landscape"). Adds one SigLIP pass per photo (~0.1&ndash;0.2 s on CPU).</div>
+
+      <div class="row">
+        <label for="settingsTowerDevice" style="flex:1">BioCLIP device (advanced)</label>
+        <select id="settingsTowerDevice">
+          <option value="auto">Auto</option>
+          <option value="cpu">CPU</option>
+          <option value="gpu">GPU</option>
+        </select>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Where the species and search models run when GPU analysis is on. Auto: GPU on Windows (DirectML), CPU on macOS (their int8 layers don't run on Core ML and would bounce between devices). Applies to the next analysis.</div>
 
       <h4 style="margin:12px 0 8px;padding-top:8px;border-top:1px solid #1d2230;color:#a0a8b8;font-size:13px;text-transform:uppercase;letter-spacing:0.5px">Analytics &amp; Privacy</h4>
 
@@ -1097,7 +1137,7 @@
             <input id="analyzeWildlife" type="checkbox" class="hidden" aria-hidden="true" tabindex="-1" />
 
             <div class="adlg-question">
-              <div class="adlg-question-text">Does this shoot contain North American birds?</div>
+              <div class="adlg-question-text">Should Kestrel identify the bird species?</div>
               <div class="adlg-answer-pair" role="radiogroup" aria-label="Bird species identification">
                 <label class="adlg-radio-row adlg-radio-row-horiz">
                   <input type="radio" name="adlgSpeciesScope" id="adlgSpeciesScopeYes" value="yes" checked />
@@ -1112,7 +1152,21 @@
                   </div>
                 </label>
               </div>
-              <div class="adlg-question-help muted">Kestrel's bird species classifier only recognizes North American birds. Skipping it makes analysis faster; finding your subjects and scoring their quality work exactly the same either way.</div>
+              <div class="adlg-question-help muted">Kestrel names each bird with BioCLIP&nbsp;2, choosing from the world's ~11,000 bird species narrowed to the region below. Skipping it makes analysis faster; finding your subjects and scoring their quality work exactly the same either way.</div>
+              <!-- Species geofence for the folders being queued. Sent per item
+                   as per_item_options[path].species_regions; analyze-dialog.js
+                   populates the options from get_bird_catalog_meta. -->
+              <div id="adlgSpeciesRegionBlock" class="adlg-species-region">
+                <div class="adlg-setting-row" style="flex-wrap:wrap;gap:6px">
+                  <label for="adlgSpeciesRegionMode" style="flex:1 1 140px;min-width:0">Where were these photos taken?</label>
+                  <select id="adlgSpeciesRegionMode" style="flex:1 1 180px;min-width:0;max-width:100%">
+                    <option value="default" selected>My default regions</option>
+                    <option value="global">Global — all world birds</option>
+                  </select>
+                </div>
+                <div id="adlgSpeciesRegionCustom" class="adlg-species-region-custom hidden" role="group" aria-label="Species regions"></div>
+                <div id="adlgSpeciesRegionHint" class="adlg-hint muted">A narrower region list makes identification more accurate. Change your default regions in Settings → Species &amp; Region.</div>
+              </div>
             </div>
             <input id="analyzeSpeciesDetection" type="checkbox" class="hidden" aria-hidden="true" tabindex="-1" checked />
 
@@ -1651,6 +1705,7 @@
   <script src="js/raw-warn.js"></script>
   <script src="js/repair.js"></script>
   <script src="js/multi-folder.js"></script>
+  <script src="js/smart-search.js"></script>
   <script src="js/csv-init.js"></script>
   <script src="js/event-wiring.js"></script>
   <script src="js/perch.js"></script>
