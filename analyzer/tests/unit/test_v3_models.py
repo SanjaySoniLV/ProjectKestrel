@@ -43,7 +43,7 @@ def gate_dir(tmp_path):
 
 
 def test_gate_scores_animals_high_background_low(gate_dir):
-    g = AnimalGate(gate_dir)
+    g = AnimalGate(gate_dir, method="prompt_softmax")
     assert g.animal_score(_unit(0)) > 0.99            # bird-like crop
     assert g.animal_score(_unit(3)) < 0.01            # bark
     mixed = g.animal_score(_unit(0, 3))               # equidistant: split
@@ -51,12 +51,12 @@ def test_gate_scores_animals_high_background_low(gate_dir):
 
 
 def test_gate_threshold_mirrors_speciesnet_rule(gate_dir):
-    g = AnimalGate(gate_dir)
+    g = AnimalGate(gate_dir, method="prompt_softmax")
     # SpeciesNet dropped a box when pred_score < detector threshold: same here.
-    assert animal_gate.threshold_for(0.25) == 0.25
+    assert animal_gate.threshold_for(0.25, "prompt_softmax") == 0.25
     assert g.keep_score(0.25, 0.25) and not g.keep_score(0.2499, 0.25)
     assert g.keep(_unit(1), 0.5) and not g.keep(_unit(4), 0.1)
-    assert animal_gate.threshold_for("junk") == 0.25
+    assert animal_gate.threshold_for("junk", "prompt_softmax") == 0.25
 
 
 def test_gate_method_is_pluggable(gate_dir, monkeypatch):
@@ -69,7 +69,31 @@ def test_gate_method_is_pluggable(gate_dir, monkeypatch):
 def test_gate_rejects_mismatched_assets(gate_dir):
     (gate_dir / "gate_index.json").write_text(json.dumps({"animal": ["a"], "background": ["b"]}))
     with pytest.raises(ValueError):
+        AnimalGate(gate_dir, method="prompt_softmax")
+
+
+def test_linear_probe_gate(gate_dir):
+    w = np.zeros(_unit(0).shape[0], dtype=np.float32)
+    w[0], w[3] = 8.0, -8.0  # "bird" direction up, "bark" direction down
+    (gate_dir / "gate_probe.json").write_text(json.dumps({"w": w.tolist(), "b": 0.0, "keep_threshold": 0.12}))
+    g = AnimalGate(gate_dir)  # linear_probe is the default method
+    assert g.method == "linear_probe"
+    assert g.animal_score(_unit(0)) > 0.99 and g.animal_score(_unit(3)) < 0.01
+    # the probe's operating point is fixed; the detection threshold doesn't move it
+    assert animal_gate.threshold_for(0.6) == animal_gate.PROBE_KEEP_THRESHOLD
+    assert g.keep(_unit(0), 0.9) and not g.keep(_unit(3), 0.01)
+
+
+def test_linear_probe_needs_its_asset(gate_dir):
+    with pytest.raises(FileNotFoundError):
         AnimalGate(gate_dir)
+
+
+def test_shipped_gate_probe_matches_module_constant():
+    from kestrel_analyzer.config import BIOCLIP_MODELS_DIR
+    pj = json.loads((Path(BIOCLIP_MODELS_DIR) / "gate_probe.json").read_text())
+    assert pj["keep_threshold"] == animal_gate.PROBE_KEEP_THRESHOLD
+    assert len(pj["w"]) == 768
 
 
 # ------------------------------------------------------------------ routing

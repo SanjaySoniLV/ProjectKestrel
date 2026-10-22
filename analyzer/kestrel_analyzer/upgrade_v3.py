@@ -279,7 +279,7 @@ def upgrade_folder(
                 if models.animal_gate is not None:
                     score = float(models.animal_gate.animal_score(emb))
                     c["animal_score"] = round(score, 4)
-                    flagged = score < threshold_for(det_threshold)
+                    flagged = score < threshold_for(det_threshold, getattr(models.animal_gate, "method", None))
                     c["gate_flagged"] = bool(flagged)
                     stats["flagged"] += int(flagged)
                 route = clf.route(emb)

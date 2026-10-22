@@ -12,9 +12,18 @@ Swapping the method or the threshold mapping is deliberately a one-line change:
 * ``GATE_METHOD`` names an entry of ``METHODS`` (each ``fn(gate, emb) -> float``
   in [0, 1]);
 * ``threshold_for(detection_threshold)`` maps the user's detection threshold to
-  the gate's keep threshold. The default mirrors SpeciesNet's gate exactly: a
-  box was dropped when ``pred_score < detector_threshold``, so it is kept here
-  iff ``animal_score >= detection_threshold``.
+  the gate's keep threshold.
+
+The shipped method is ``linear_probe``: a logistic regression on the BioCLIP
+embedding (``models/bioclip/gate_probe.json``), trained on boxes Kestrel kept plus
+judged MegaDetector proposals (animal vs not) and random background squares from
+7 perches (experiments/bioclip/exp_blank.py). Leave-one-perch-out it separates
+animals from real MegaDetector false positives at AUC 0.97 (zero-shot prompts:
+0.62), and its fixed keep threshold (0.12, the 99%-recall point) rejects about
+half of real false positives and ~88% of background. Because it is calibrated on
+its own, the threshold does not follow the user's detection threshold — that
+still filters MegaDetector's confidence, as before. ``prompt_softmax`` (zero-shot,
+SpeciesNet-parity threshold) stays available for comparison.
 
 During a v3 *upgrade* of an already-analysed folder the gate only flags crops
 (``gate_flagged`` in ``crops_json``); it never deletes a detection.
@@ -29,6 +38,9 @@ from typing import Callable, Dict, Optional
 import numpy as np
 
 GATE_TEXT_EMB_FILENAME = "gate_text_emb.npy"
+GATE_PROBE_FILENAME = "gate_probe.json"
+# Mirrors gate_probe.json's keep_threshold (the leave-one-perch-out 99%-recall point).
+PROBE_KEEP_THRESHOLD = 0.12
 GATE_INDEX_FILENAME = "gate_index.json"
 
 
@@ -42,16 +54,28 @@ def _prompt_softmax(gate: "AnimalGate", emb: np.ndarray) -> float:
     return float(p[: gate.n_animal].sum())
 
 
+def _linear_probe(gate: "AnimalGate", emb: np.ndarray) -> float:
+    """P(animal) from the logistic probe on the L2-normalised embedding."""
+    e = np.asarray(emb, dtype=np.float32)
+    e = e / max(float(np.linalg.norm(e)), 1e-12)
+    z = float(gate.probe_w @ e + gate.probe_b)
+    return float(1.0 / (1.0 + np.exp(-z)))
+
+
 METHODS: Dict[str, Callable[["AnimalGate", np.ndarray], float]] = {
     "prompt_softmax": _prompt_softmax,
+    "linear_probe": _linear_probe,
 }
 
 # ── the two knobs ────────────────────────────────────────────────────────────
-GATE_METHOD = "prompt_softmax"
+GATE_METHOD = "linear_probe"
 
 
-def threshold_for(detection_threshold: float) -> float:
-    """Gate keep-threshold for a user detection threshold (SpeciesNet parity)."""
+def threshold_for(detection_threshold: float, method: Optional[str] = None) -> float:
+    """Gate keep-threshold. The probe has its own fixed operating point; the
+    zero-shot method mirrors SpeciesNet's gate (drop when score < detection threshold)."""
+    if (method or GATE_METHOD) == "linear_probe":
+        return PROBE_KEEP_THRESHOLD
     try:
         t = float(detection_threshold)
     except (TypeError, ValueError):
@@ -82,6 +106,16 @@ class AnimalGate:
         text /= np.maximum(np.linalg.norm(text, axis=1, keepdims=True), 1e-12)
         self.text_emb = text
         self.method = method or GATE_METHOD
+        self.probe_w = None
+        self.probe_b = 0.0
+        probe = d / GATE_PROBE_FILENAME
+        if probe.is_file():
+            with open(probe, encoding="utf-8") as f:
+                pj = json.load(f)
+            self.probe_w = np.asarray(pj["w"], dtype=np.float32)
+            self.probe_b = float(pj["b"])
+        elif self.method == "linear_probe":
+            raise FileNotFoundError(f"{probe} missing (needed by the linear_probe gate)")
         if self.method not in METHODS:
             raise ValueError(f"unknown gate method {self.method!r}")
         self._fn = METHODS[self.method]
@@ -90,7 +124,7 @@ class AnimalGate:
         return float(self._fn(self, emb))
 
     def keep_score(self, score: float, detection_threshold: float) -> bool:
-        return float(score) >= threshold_for(detection_threshold)
+        return float(score) >= threshold_for(detection_threshold, self.method)
 
     def keep(self, emb: np.ndarray, detection_threshold: float) -> bool:
         return self.keep_score(self.animal_score(emb), detection_threshold)
