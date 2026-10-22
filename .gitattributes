@@ -7,3 +7,4 @@
 analyzer/models/bioclip/*.npy filter=lfs diff=lfs merge=lfs -text
 analyzer/models/bioclip/*.txt.gz filter=lfs diff=lfs merge=lfs -text
 analyzer/models/clip/*.txt.gz filter=lfs diff=lfs merge=lfs -text
+analyzer/models/siglip/*.json.gz filter=lfs diff=lfs merge=lfs -text
