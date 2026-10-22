@@ -301,3 +301,89 @@ fp32 is unchanged (0.993 BioCLIP, 0.993 SigLIP) and CPU speed is the same; the a
 one image per call, so the fixed batch is safe. Quality calibration knots were refitted on the new
 SigLIP file (99.6% of reference crops keep their star). CoreML still needs a float variant
 (`sf16` is the first candidate; see the CI probe `.github/workflows/ep-probe.yml`).
+
+### Shipped change (2026-10-22): one set of int8 weights, a CPU graph and a DirectML graph
+
+Measured on DirectML (Arc 140V, ORT-DML 1.24.4, maintainer): the int8 BioCLIP graph is fully
+placed on DML but takes 13.3 s per crop (DML's MatMulInteger kernels); `swdq16` -- the same int8
+weights behind DequantizeLinear with fp16 scales, the rest fp16 with fp32 I/O -- loaded with
+`session.disable_quant_qdq=1` lets ORT constant-fold every DequantizeLinear into an fp16 weight at
+load: **BioCLIP 52 ms, SigLIP 10 ms** (sf16: 36 / 9 ms; without the config entry 242 / 33 ms),
+fully on DML, +0.5-0.9 s load. On CPU swdq16 is slow (BioCLIP 750-900 ms), so the CPU keeps
+the int8 graph. `tools/build_gpu_towers.py` builds the layout from the towers in place
+(idempotent; `--verify` checks it):
+
+| file | MB | what |
+|---|---|---|
+| `bioclip/bioclip2_image_int8.onnx` | 5.1 | CPU graph, node-for-node the previous file (DynamicQuantizeLinear + MatMulInteger); fp32 biases/LayerNorm inline |
+| `bioclip/bioclip2_image_wdq16.onnx` | 3.0 | DirectML graph (opset 19); fp16 scales/biases inline |
+| `bioclip/bioclip2_image.data` | 303.2 | int8 weights + zero points + fp32 scales, referenced by **both** graphs (same offsets) |
+| `siglip/siglip2_b16_image_int8.onnx` | 13.1 | CPU graph |
+| `siglip/siglip2_b16_image_wdq16.onnx` | 6.9 | DirectML graph (Split nodes use `num_outputs`) |
+| `siglip/siglip2_b16_image.data` | 89.5 | shared int8 weights |
+
+Total 311.3 MB vs 307.9 MB (BioCLIP) and 109.5 vs 102.6 MB (SigLIP) before: +10 MB for both GPU
+graphs, instead of +~400 MB for separate files. The 10 MB are the fp16 copies of the float
+(non-int8) parameters; pointing the GPU graph at the fp32 ones in the `.data` through Cast
+nodes would drop that to ~0 if it ever matters. ORT resolves the same `.data` from both `.onnx`
+files (checked on ORT 1.23.2 and 1.31, CPU EP): the new CPU graph's output is **bit-identical**
+to the previous single file, both pass `onnx.checker`, and the folded GPU session (optimised
+model at BASIC level) has 0 DequantizeLinear left (97 / 51 before).
+
+Loader (`ml/providers.py` `tower_graph`, `ml/resilient_session.py`): a tower session whose
+provider list contains `DmlExecutionProvider` gets `*_wdq16.onnx` + the config entry; every other
+list (CPU, CoreML) gets `*_int8.onnx`. A GPU build that throws, or a missing/LFS-stub GPU graph,
+falls back to the int8 graph **on CPU** (never the int8 graph on DML). A coordinator demotion
+rebuilds on CPU, i.e. with the int8 graph. The placement record carries `config` when the entry
+is set. Tower device policy is unchanged: `auto` = GPU on DirectML (now the fast graph), CPU on
+CoreML.
+
+**CoreML stays on the int8 CPU graph.** The macOS CI probe (ORT 1.23.2, virtualised runner, so
+placement is meaningful and timings are not): fp16 graphs are mostly *not* placed on CoreML
+(SigLIP sf16 MLProgram 54 CoreML / 579 CPU nodes, BioCLIP sf16 122 / 1240); only the fp32 graph
+went fully onto CoreML (SigLIP sf32 MLProgram: one partition) but compiling took ~230 s for
+SigLIP and >15 min (timeout) for BioCLIP; int8 dyn splits (52/103, 122/291). So the wdq16 graph is
+DirectML-only and `KESTREL_TOWER_DEVICE=gpu` on macOS still means the int8 graph on CoreML.
+Follow-up for real Apple hardware: an fp32-folded graph (swdq + `disable_quant_qdq`, i.e. float32
+DequantizeLinear output) with the CoreML EP option `ModelCacheDirectory` so the compile is paid
+once.
+
+Real-crop accuracy (CPU EP, ORT 1.23.2; the wdq16 graph run on CPU with the config entry, which
+approximates DML's fp16 numerics; app preprocessing; fp32 = open_clip torch on the same
+preprocessed tensors; crops from `ysh3fvdfme` + `s2jnsi0xj8`):
+
+| | n | int8 vs fp32 cos (mean/min) | wdq16 vs fp32 | wdq16 vs int8 |
+|---|---|---|---|---|
+| BioCLIP | 40 | 0.9919 / 0.970 | **0.9988 / 0.996** | 0.9938 / 0.974 |
+| SigLIP | 300 | 0.9927 / 0.932 | **0.9996 / 0.998** | 0.9931 / 0.933 |
+
+- BioCLIP species top-1 (`classify_embedding`, global label space): int8 == wdq16 on 39/40;
+  int8 == fp32 37/40, wdq16 == fp32 38/40; mean |Δ top-1 prob| int8 vs wdq16 0.047.
+- SigLIP quality (`SiglipQualityScorer`, balanced profile): int8 vs wdq16 mean |Δq| **0.028**
+  (max 0.21), **36/300 = 12 %** star changes, all by one star; int8 vs fp32 is the same size
+  (0.026, 37/300). The raw score has no systematic shift (wdq16 − int8: mean +0.0009, sd 0.0024,
+  against a population sd of 0.023; star histograms 58/125/51/40/26 vs 56/124/52/43/25), so this
+  is per-crop noise of the int8 graph's dynamic activation quantisation, not a calibration
+  offset: refitting the knots on wdq16 would not make the two devices agree. Above the 0.01
+  bar, so it is a product decision rather than a refit: a folder analysed on a DirectML
+  machine and on a CPU-only one will differ by a star on ~1 crop in 8 (the DML one is closer to
+  fp32). Options: accept it; run CPU SigLIP through a float graph too (sf32 121 ms / swdq 406 ms
+  per crop on CPU vs 44 ms for int8) so both devices compute ~fp32 and refit the
+  knots once on that; or keep SigLIP on CPU int8 even on DML (10 ms vs 44 ms is small next to
+  BioCLIP's 13 s → 52 ms). Not changed here.
+
+How to verify on DirectML (Windows, real GPU):
+
+```powershell
+python tools/build_gpu_towers.py --out-dir $env:TEMP\towers --verify   # should be byte-identical to the shipped files
+# Analyse a folder with GPU on. The models_loaded placement records (and the [providers]
+# debug lines) must show bird_species / siglip_image with model bioclip2_image_wdq16.onnx /
+# siglip2_b16_image_wdq16.onnx, actual=[Dml..., CPU...], config session.disable_quant_qdq=1,
+# and (nearly) all nodes on Dml.
+python tools/ep_probe.py --only bioclip_image,siglip_image --variants sf16   # reference numbers
+```
+
+Still to confirm on DML: the shared-data GPU graph is still ~52 ms / 10 ms per crop and loads in
+<1 s extra; GPU memory (the folded fp16 weights are ~600 MB for BioCLIP + ~180 MB for SigLIP on
+the device, plus ORT keeps the mmapped int8 `.data`); and that a DML device-lost demotion
+rebuilds the towers on CPU with the int8 graph.
