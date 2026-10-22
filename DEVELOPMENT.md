@@ -85,10 +85,11 @@ Re-pin `numpy==2.1.3` afterward if pip upgrades it — TensorFlow expects
 ### 2. Required model files
 
 All under `analyzer/models/`:
-- `bioclip/` (`bioclip2_image_int8.onnx`, `species_text_emb.npy`, `species_index.json`,
+- `bioclip/` (`bioclip2_image_int8.onnx` CPU graph + `bioclip2_image_wdq16.onnx` DirectML graph,
+  both reading the int8 weights in `bioclip2_image.data`; `species_text_emb.npy`, `species_index.json`,
   `wildlife_text_emb.npy` + `wildlife_index.json` (bird/wildlife routing),
   `gate_text_emb.npy` + `gate_index.json` (false-positive gate))
-- `siglip/` (SigLIP 2 image + text towers, pruned token table, tokenizer, quality calibration,
+- `siglip/` (SigLIP 2 image tower as CPU + DirectML graphs over one `siglip2_b16_image.data`, text tower, pruned token table, tokenizer, quality calibration,
   precomputed quality-prompt embeddings)
 - `birds/birds_global.csv`
 - `quality.onnx`, `quality_normalization_data.csv` (legacy quality CNN)

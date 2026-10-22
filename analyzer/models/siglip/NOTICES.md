@@ -6,7 +6,9 @@ smart search and its default zero-shot sharpness score (`kestrel_analyzer/ml/sig
 
 | File | What it is |
 |---|---|
-| `siglip2_b16_image_int8.onnx` | SigLIP 2 ViT-B/16 image tower, ONNX, dynamic int8 MatMuls (one outlier layer left float), fp16-stored weights. Input `image` float32 [N,3,224,224] (RGB, bicubic squash to 224, `(x/255-0.5)/0.5`); output `emb` [N,768]. Run one image per call. |
+| `siglip2_b16_image_int8.onnx` | SigLIP 2 ViT-B/16 image tower, ONNX, dynamic int8 MatMuls (one outlier layer left float), fp16-stored weights. Input `image` float32 [1,3,224,224] (RGB, bicubic squash to 224, `(x/255-0.5)/0.5`); output `emb` [1,768]. CPU graph; its int8 weights are in `siglip2_b16_image.data`. |
+| `siglip2_b16_image_wdq16.onnx` | The same image tower for DirectML: DequantizeLinear (fp16 scales) on the int8 weights + fp16 compute, float32 I/O. Built by `tools/build_gpu_towers.py`. |
+| `siglip2_b16_image.data` | ONNX external data shared by both image graphs (int8 weights, zero points, float32 scales), stored once. |
 | `siglip2_b16_text_fp16w.onnx` | The text tower without its token-embedding table: input `x` float32 [N,64,768] (gathered token embeddings), output `emb` [N,768]. fp16-stored weights, fp32 compute. |
 | `siglip2_token_emb_int8.npz` | The token-embedding table pruned to the ids in the tokenizer's `subset` (110,809 rows), int8 + per-row scale. |
 | `siglip2_tokenizer.json.gz` | The SigLIP 2 text tokenizer (Gemma BPE: 256000 pieces, ~580k merges) re-encoded for `kestrel_analyzer/ml/siglip_tokenizer.py`, plus the subset ids. |

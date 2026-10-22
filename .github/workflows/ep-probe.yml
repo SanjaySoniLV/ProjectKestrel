@@ -39,7 +39,7 @@ concurrency:
 
 env:
   PROBE_MODELS: >-
-    analyzer/models/bioclip/bioclip2_image_int8.onnx,analyzer/models/siglip/siglip2_b16_image_int8.onnx,analyzer/models/siglip/siglip2_b16_text_fp16w.onnx,analyzer/models/quality.onnx,analyzer/models/speciesnet/sam_hq_vit_tiny_encoder.onnx
+    analyzer/models/bioclip/bioclip2_image_int8.onnx,analyzer/models/bioclip/bioclip2_image.data,analyzer/models/siglip/siglip2_b16_image_int8.onnx,analyzer/models/siglip/siglip2_b16_image.data,analyzer/models/siglip/siglip2_b16_text_fp16w.onnx,analyzer/models/quality.onnx,analyzer/models/speciesnet/sam_hq_vit_tiny_encoder.onnx
   DETECTOR_MODELS: analyzer/models/speciesnet/mdv5a.onnx,analyzer/models/speciesnet/mdv5a.onnx.data
 
 jobs:
@@ -76,7 +76,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .git/lfs
-          key: lfs-probe-${{ inputs.include_detector && 'det-' || '' }}${{ hashFiles('analyzer/models/bioclip/*.onnx', 'analyzer/models/siglip/*.onnx', 'analyzer/models/quality.onnx', 'analyzer/models/speciesnet/sam_hq_vit_tiny_encoder.onnx') }}
+          key: lfs-probe-${{ inputs.include_detector && 'det-' || '' }}${{ hashFiles('analyzer/models/bioclip/*.onnx', 'analyzer/models/bioclip/*.data', 'analyzer/models/siglip/*.onnx', 'analyzer/models/siglip/*.data', 'analyzer/models/quality.onnx', 'analyzer/models/speciesnet/sam_hq_vit_tiny_encoder.onnx') }}
           enableCrossOsArchive: true
 
       - name: Pull only the probed models
