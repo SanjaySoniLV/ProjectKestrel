@@ -220,7 +220,7 @@
           <span id="smartSearchSpinner" class="smart-search-spinner hidden" aria-hidden="true"></span>
           <span id="smartSearchChips" class="smart-search-chips hidden" aria-label="Filters detected in your query"></span>
           <span id="smartSearchHint" class="smart-search-hint"></span>
-          <button id="smartSearchIndexBtn" type="button" class="smart-search-btn hidden">Upgrade folder for smart search</button>
+          <button id="smartSearchIndexBtn" type="button" class="smart-search-btn hidden">Upgrade folder</button>
           <button id="smartSearchClear" type="button" class="smart-search-btn smart-search-clear hidden" title="Clear the smart search">✕ Clear</button>
         </div>
       </div>
@@ -1157,9 +1157,9 @@
                    as per_item_options[path].species_regions; analyze-dialog.js
                    populates the options from get_bird_catalog_meta. -->
               <div id="adlgSpeciesRegionBlock" class="adlg-species-region">
-                <div class="adlg-setting-row">
-                  <label for="adlgSpeciesRegionMode">Where were these photos taken?</label>
-                  <select id="adlgSpeciesRegionMode" style="flex:1;max-width:260px">
+                <div class="adlg-setting-row" style="flex-wrap:wrap;gap:6px">
+                  <label for="adlgSpeciesRegionMode" style="flex:1 1 140px;min-width:0">Where were these photos taken?</label>
+                  <select id="adlgSpeciesRegionMode" style="flex:1 1 180px;min-width:0;max-width:100%">
                     <option value="default" selected>My default regions</option>
                     <option value="global">Global — all world birds</option>
                   </select>

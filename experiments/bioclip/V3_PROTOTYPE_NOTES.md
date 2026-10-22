@@ -207,7 +207,7 @@ pytest analyzer/tests -m "not ui"          # full lane: 1,780+ tests (≈6 min o
    `"pipeline_major": 3`, the CSV has `quality_siglip` / `quality_legacy`, and
    `.kestrel/embeddings/siglip2-b16{,-frame}/` exist.
 2. **Upgrade an existing 2.x folder** — open it, *Folder Actions → Upgrade to Analysis Pipeline
-   3.0…* (or turn on ✨ Smart search and click *Upgrade folder for smart search*). CLI:
+   3.0…* (or turn on ✨ Smart search and click *Upgrade folder*). CLI:
    `python analyzer/cli.py "D:\photos\old" --upgrade-v3 --gpu`. Verify culls / star ratings / scene
    names / edited tags are unchanged, `OLD_kestrel_database_pre-v3_*.csv` exists, species may change
    only in scenes you never edited. A 1.x folder should say "re-analyse".

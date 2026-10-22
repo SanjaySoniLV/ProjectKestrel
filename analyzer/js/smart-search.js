@@ -9,7 +9,7 @@
     // points each card at its best-matching image.
     const SMART_SEARCH_LIMIT = 48;
     const SMART_SEARCH_DEBOUNCE_MS = 400;
-    const SMART_SEARCH_PLACEHOLDER = '✨ Describe the moment or name a bird: "bird in flight", "heron in a marsh", "dove pair", "blurry"';
+    const SMART_SEARCH_PLACEHOLDER = '✨ e.g. "heron in a marsh", "dove pair", "bird in flight"';
     const SMART_SEARCH_EXAMPLES = ['bird in flight', 'dove pair', 'heron in a marsh', 'perched on a wire', 'two birds', 'blurry'];
     const SMART_CHIP_KIND_LABEL = {
       species: 'species', family: 'family', wildlife: 'wildlife', group: 'species group',
@@ -156,7 +156,7 @@
       const upgradable = _smart.needsIndex.filter(n => n.upgrade !== 'reanalyze');
       idxBtn?.classList.toggle('hidden', !!_smart.indexing || _smart.unavailable || upgradable.length === 0);
       if (idxBtn) {
-        idxBtn.textContent = upgradable.length > 1 ? `Upgrade ${upgradable.length} folders` : 'Upgrade folder for smart search';
+        idxBtn.textContent = upgradable.length > 1 ? `Upgrade ${upgradable.length} folders` : 'Upgrade folder';
         idxBtn.title = 'Upgrade to analysis pipeline 3.0 using the crops Kestrel already saved: new species IDs, the SigLIP quality score and the smart-search index. No re-analysis, never changes your ratings, culls or tags. Runs on this computer only.';
       }
 
@@ -170,8 +170,23 @@
       };
       if (_smart.unavailable) { add('Smart search is not available in this build (model files missing).'); return; }
       if (_smart.indexing) {
-        const { current, total, root } = _smart.indexing;
-        add(`Upgrading ${_smartFolderName(root)} to pipeline 3… ${current}/${total || '?'}`);
+        const { current, total, root, jobId } = _smart.indexing;
+        add(`Upgrading ${_smartFolderName(root)} to pipeline 3… ${current}/${total || '?'} `);
+        if (jobId && !_smart.cancelUpgrade) {
+          const c = add('Cancel', 'smart-search-example');
+          c.tabIndex = 0;
+          c.setAttribute('role', 'button');
+          c.title = 'Stop the upgrade. Progress so far is kept; running it again resumes where it stopped.';
+          const stop = () => {
+            _smart.cancelUpgrade = true;
+            try { window.pywebview?.api?.cancel_smart_search_index(jobId); } catch (_) {}
+            _smartUpdateUi();
+          };
+          c.addEventListener('click', stop);
+          c.addEventListener('keydown', (e) => { if (e.key === 'Enter') stop(); });
+        } else if (_smart.cancelUpgrade) {
+          add('(stopping…)', 'smart-search-muted');
+        }
         return;
       }
       if (_smart.error) { add(`Smart search failed: ${_smart.error}`); return; }
@@ -192,7 +207,6 @@
           add(label, `smart-chip smart-chip--${kind} smart-chip--legend`);
           add(' ');
         }
-        if (_smart.needsIndex.length || _smart.reanalyze.length) add(' · ', null);
       }
       const totalIndexed = _smart.needsIndex.reduce((a, n) => a + (n.indexed || 0), 0);
       const nothingIndexed = q && _smart.scores && _smart.scores.size === 0 && _smart.needsIndex.length > 0 && totalIndexed === 0;
@@ -313,7 +327,9 @@
       if (!start_fn || _smart.indexing) return;
       const targets = _smart.needsIndex.filter(n => n.upgrade !== 'reanalyze').map(n => n.root);
       let upgradedAny = false;
+      _smart.cancelUpgrade = false;
       for (const rp of targets) {
+        if (_smart.cancelUpgrade) break;
         _smart.indexing = { current: 0, total: 0, root: rp };
         _smartUpdateUi();
         let start;
@@ -333,17 +349,19 @@
           let p;
           try { p = (await api.get_smart_search_index_progress(start.job_id))?.progress; } catch (_) { p = null; }
           if (!p) break;
-          _smart.indexing = { current: p.current || 0, total: p.total || 0, root: rp };
+          _smart.indexing = { current: p.current || 0, total: p.total || 0, root: rp, jobId: start.job_id };
           _smartUpdateUi();
           if (p.done) {
             if (p.phase === 'error') showToast(`Upgrade failed: ${p.error || 'unknown error'}`, 6000);
             else if (p.phase === 'stopped') showToast('Upgrade paused because analysis started. Try again when it finishes.', 6000);
+            else if (p.phase === 'canceled') { showToast(`Upgrade of ${_smartFolderName(rp)} stopped — run it again to resume.`, 5000); upgradedAny = true; }
             else if (p.phase === 'complete') upgradedAny = true;
             break;
           }
         }
       }
       _smart.indexing = null;
+      _smart.cancelUpgrade = false;
       _smart.needsIndex = [];
       _smartUpdateUi();
       // The upgrade rewrote species / quality columns: reload what is open so

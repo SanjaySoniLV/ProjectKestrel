@@ -58,6 +58,8 @@
   padding: 0 10px;
   background: #0e1117;
   border: 1px solid #2a3040;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .smart-search-btn.hidden,
