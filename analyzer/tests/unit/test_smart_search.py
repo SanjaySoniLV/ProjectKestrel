@@ -310,6 +310,79 @@ def test_bridge_search_and_upgrade(api, folder):
     assert api.cancel_smart_search_index("nope")["success"] is False
 
 
+def _upgrade_rows(api):
+    return api.get_queue_status()["upgrades"]
+
+
+def test_queue_status_reports_finished_upgrade_until_dismissed(api, folder):
+    st = api.get_queue_status()
+    assert st["upgrades"] == [] and "items" in st and "running" in st  # analysis keys unchanged
+    job = api.upgrade_folder_v3(str(folder))
+    _wait(api, job["job_id"])
+    (row,) = _upgrade_rows(api)
+    assert row["job_id"] == job["job_id"] and row["kind"] == "upgrade"
+    assert row["path"] == str(folder) and row["name"] == folder.name
+    assert row["status"] == "done" and row["phase"] == "complete"
+    assert row["current"] == row["total"] == 4 and row["error"] == ""
+    assert row["finished_at"] >= row["started_at"]
+    json.dumps(api.get_queue_status())  # the bridge payload must stay JSON-serialisable
+    assert api.clear_queue_done()["success"]
+    assert _upgrade_rows(api) == []
+
+
+def _blocking_upgrade(monkeypatch, result_on_cancel):
+    """upgrade_folder that reports 1/3 then waits for the cancel event."""
+    import threading
+
+    started = threading.Event()
+
+    def fake(kestrel_dir, pipeline, progress_cb=None, cancel_event=None, should_stop=None, log_path=None):
+        progress_cb(1, 3, "A.CR3")
+        started.set()
+        assert cancel_event.wait(5)
+        return dict(result_on_cancel)
+
+    monkeypatch.setattr(upgrade_v3, "upgrade_folder", fake)
+    return started
+
+
+def test_queue_status_running_upgrade_and_cancel(api, folder, monkeypatch):
+    started = _blocking_upgrade(monkeypatch, {"canceled": True})
+    job = api.upgrade_folder_v3(str(folder))
+    assert started.wait(5)
+    (row,) = _upgrade_rows(api)
+    assert row["status"] == "running" and row["phase"] == "upgrading"
+    assert (row["current"], row["total"]) == (1, 3) and row["finished_at"] is None
+    assert api.clear_queue_done()["success"]
+    assert [r["job_id"] for r in _upgrade_rows(api)] == [job["job_id"]]  # running rows are not dismissed
+    assert api.cancel_smart_search_index(job["job_id"]) == {"success": True}
+    assert _wait(api, job["job_id"])["phase"] == "canceled"
+    (row,) = _upgrade_rows(api)
+    assert row["status"] == "cancelled" and row["current"] == 1
+
+
+def test_queue_status_upgrade_failure_and_pause(api, folder, tmp_path, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(upgrade_v3, "upgrade_folder", boom)
+    job = api.upgrade_folder_v3(str(folder))
+    _wait(api, job["job_id"])
+    (row,) = _upgrade_rows(api)
+    assert row["status"] == "error" and "disk full" in row["error"]
+
+    monkeypatch.setattr(upgrade_v3, "upgrade_folder", lambda *a, **k: {"stopped": True})
+    job2 = api.upgrade_folder_v3(str(folder))
+    _wait(api, job2["job_id"])
+    (row,) = _upgrade_rows(api)  # a new run replaces the folder's finished row
+    assert row["job_id"] == job2["job_id"] and row["status"] == "stopped"
+
+
+def test_queue_status_survives_a_broken_job_registry(api, monkeypatch):
+    monkeypatch.setattr(api_bridge.Api, "_upgrade_jobs_status", lambda self: 1 / 0)
+    assert api.get_queue_status()["upgrades"] == []
+
+
 def test_bridge_old_index_name_starts_the_upgrade(api, folder):
     job = api.smart_search_index_folder(str(folder))
     assert job["success"]

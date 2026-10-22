@@ -29,7 +29,8 @@
       mode: '',
       unavailable: false,
       error: '',
-      indexing: null,     // {current, total, root} while an upgrade runs
+      indexing: false,    // true while _smartIndexMissing() is starting/awaiting upgrades
+                          // (their progress is shown in the analysis-queue panel)
       defaultPlaceholder: '',
     };
 
@@ -130,6 +131,23 @@
       }
     }
 
+    /** Display names of the active filter chips, OR-joined ("Roseate Spoonbill or Snowy Egret"). */
+    function _smartChipNames() {
+      const names = [];
+      for (const c of _smart.chips) {
+        const n = c.kind === 'group' ? (c.text || c.label) : (c.label || c.text);
+        if (n && !names.includes(n)) names.push(n);
+      }
+      if (names.length <= 1) return names[0] || '';
+      return names.slice(0, -1).join(', ') + ' or ' + names[names.length - 1];
+    }
+
+    /** True while any pipeline-3 upgrade runs (reported by the queue panel's poll). */
+    function _smartUpgradeRunning() {
+      if (_smart.indexing) return true;
+      try { return (window.queueUpgradeRunningPaths?.().size || 0) > 0; } catch (_) { return false; }
+    }
+
     function _smartUpdateUi() {
       const bar = el('#smartSearchBar');
       const hint = el('#smartSearchHint');
@@ -146,15 +164,14 @@
       }
       _smartRenderChips();
       const q = (input?.value || '').trim();
-      // Visible while smart search is on, and during an upgrade started from
-      // the Folder Actions menu (so its progress is never invisible).
-      const show = _smart.on || !!_smart.indexing;
-      bar.classList.toggle('hidden', !show);
-      if (!show) return;
-      spin?.classList.toggle('hidden', !(_smart.pending || _smart.indexing));
+      // Upgrade progress lives in the analysis-queue panel, not here.
+      bar.classList.toggle('hidden', !_smart.on);
+      if (!_smart.on) return;
+      spin?.classList.toggle('hidden', !_smart.pending);
       clearBtn?.classList.toggle('hidden', !q);
       const upgradable = _smart.needsIndex.filter(n => n.upgrade !== 'reanalyze');
-      idxBtn?.classList.toggle('hidden', !!_smart.indexing || _smart.unavailable || upgradable.length === 0);
+      const upgrading = _smartUpgradeRunning();
+      idxBtn?.classList.toggle('hidden', upgrading || _smart.unavailable || upgradable.length === 0);
       if (idxBtn) {
         idxBtn.textContent = upgradable.length > 1 ? `Upgrade ${upgradable.length} folders` : 'Upgrade folder';
         idxBtn.title = 'Upgrade to analysis pipeline 3.0 using the crops Kestrel already saved: new species IDs, the SigLIP quality score and the smart-search index. No re-analysis, never changes your ratings, culls or tags. Runs on this computer only.';
@@ -169,26 +186,6 @@
         return span;
       };
       if (_smart.unavailable) { add('Smart search is not available in this build (model files missing).'); return; }
-      if (_smart.indexing) {
-        const { current, total, root, jobId } = _smart.indexing;
-        add(`Upgrading ${_smartFolderName(root)} to pipeline 3… ${current}/${total || '?'} `);
-        if (jobId && !_smart.cancelUpgrade) {
-          const c = add('Cancel', 'smart-search-example');
-          c.tabIndex = 0;
-          c.setAttribute('role', 'button');
-          c.title = 'Stop the upgrade. Progress so far is kept; running it again resumes where it stopped.';
-          const stop = () => {
-            _smart.cancelUpgrade = true;
-            try { window.pywebview?.api?.cancel_smart_search_index(jobId); } catch (_) {}
-            _smartUpdateUi();
-          };
-          c.addEventListener('click', stop);
-          c.addEventListener('keydown', (e) => { if (e.key === 'Enter') stop(); });
-        } else if (_smart.cancelUpgrade) {
-          add('(stopping…)', 'smart-search-muted');
-        }
-        return;
-      }
       if (_smart.error) { add(`Smart search failed: ${_smart.error}`); return; }
       if (!q) {
         // Empty state: what you can type.
@@ -216,14 +213,19 @@
       }
       if (_smart.pending && !_smart.scores) { add('Searching…'); return; }
       if (q) {
-        add(`${_smart.matchCount} scene${_smart.matchCount === 1 ? '' : 's'}`);
-        if (_smart.mode === 'filter') add(' · filtered by the detected bird, sorted by quality');
-        else if (_smart.semantic && _smart.chips.length) add(` · “${_smart.semantic}” within the detected bird`);
-        else if (_smart.semantic) add(` for “${_smart.semantic}”`);
+        const scenes = `${_smart.matchCount} scene${_smart.matchCount === 1 ? '' : 's'}`;
+        const filters = _smartChipNames();
+        if (_smart.mode === 'filter' && filters) add(`${scenes} of ${filters}, sorted by quality`);
+        else if (_smart.semantic && filters) add(`${scenes} for “${_smart.semantic}”, filtered to ${filters}`);
+        else if (_smart.semantic) add(`${scenes} for “${_smart.semantic}”`);
+        else add(scenes);
       }
       if (_smart.needsIndex.length) {
         const missing = _smart.needsIndex.reduce((a, n) => a + Math.max(0, (n.total || 0) - (n.indexed || 0)), 0);
-        if (missing > 0) add(` · ${missing} photo${missing === 1 ? '' : 's'} need the pipeline 3 upgrade`);
+        if (missing > 0) {
+          add(` · ${missing} photo${missing === 1 ? '' : 's'} need the pipeline 3 upgrade`);
+          if (upgrading) add(' (upgrading — see the analysis queue)', 'smart-search-muted');
+        }
       }
       if (_smart.reanalyze.length) {
         const r = _smart.reanalyze[0];
@@ -326,56 +328,65 @@
       const start_fn = api?.upgrade_folder_v3 || api?.smart_search_index_folder;
       if (!start_fn || _smart.indexing) return;
       const targets = _smart.needsIndex.filter(n => n.upgrade !== 'reanalyze').map(n => n.root);
-      let upgradedAny = false;
-      let canceledAny = false;
-      _smart.cancelUpgrade = false;
-      for (const rp of targets) {
-        if (_smart.cancelUpgrade) break;
-        _smart.indexing = { current: 0, total: 0, root: rp };
-        _smartUpdateUi();
-        let start;
-        try { start = await start_fn.call(api, rp); } catch (e) { start = { success: false, error: String(e) }; }
-        if (!start?.success) {
-          _smart.indexing = null;
-          const why = start?.error === 'analysis_running'
-            ? 'this folder is being analyzed; upgrade it once analysis finishes.'
-            : start?.error === 'reanalyze_required'
-              ? (start.reason || 're-analyse this folder to use smart search.')
-              : String(start?.error || 'unknown error');
-          showToast(`Couldn’t upgrade ${_smartFolderName(rp)}: ${why}`, 6000);
-          continue;
-        }
-        for (;;) {
-          await new Promise(r => setTimeout(r, 500));
-          let p;
-          try { p = (await api.get_smart_search_index_progress(start.job_id))?.progress; } catch (_) { p = null; }
-          if (!p) break;
-          _smart.indexing = { current: p.current || 0, total: p.total || 0, root: rp, jobId: start.job_id };
-          _smartUpdateUi();
-          if (p.done) {
-            if (p.phase === 'error') showToast(`Upgrade failed: ${p.error || 'unknown error'}`, 6000);
-            else if (p.phase === 'stopped') showToast('Upgrade paused because analysis started. Try again when it finishes.', 6000);
-            else if (p.phase === 'canceled') { showToast(`Upgrade of ${_smartFolderName(rp)} stopped — run it again to resume.`, 5000); upgradedAny = true; canceledAny = true; }
-            else if (p.phase === 'complete') upgradedAny = true;
-            break;
-          }
-        }
-      }
-      _smart.indexing = null;
-      _smart.cancelUpgrade = false;
-      _smart.needsIndex = [];
+      _smart.indexing = true;
       _smartUpdateUi();
+      try {
+        // One folder at a time. Progress, Cancel, the folder-tree hourglass and
+        // the end-of-job toast + reload are the analysis-queue panel's job
+        // (queue.js renders get_queue_status().upgrades and calls
+        // smartSearchOnUpgradeFinished); this loop only sequences the folders.
+        for (const rp of targets) {
+          let start;
+          try { start = await start_fn.call(api, rp); } catch (e) { start = { success: false, error: String(e) }; }
+          if (!start?.success) {
+            const why = start?.error === 'analysis_running'
+              ? 'this folder is being analyzed; upgrade it once analysis finishes.'
+              : start?.error === 'reanalyze_required'
+                ? (start.reason || 're-analyse this folder to use smart search.')
+                : String(start?.error || 'unknown error');
+            showToast(`Couldn’t upgrade ${_smartFolderName(rp)}: ${why}`, 6000);
+            continue;
+          }
+          if (typeof window.queueTrackUpgradeJob === 'function') window.queueTrackUpgradeJob(start.job_id);
+          let p = null;
+          for (;;) {
+            await new Promise(r => setTimeout(r, 500));
+            try { p = (await api.get_smart_search_index_progress(start.job_id))?.progress; } catch (_) { p = null; }
+            if (!p || p.done) break;
+          }
+          // Cancel on one row stops the rest of a multi-folder run too.
+          if (p && (p.phase === 'canceled' || p.phase === 'stopped')) break;
+        }
+      } finally {
+        _smart.indexing = false;
+        _smart.needsIndex = [];
+        _smartUpdateUi();
+      }
+      await _smartRun();
+    }
+
+    let _smartReloadChain = Promise.resolve();
+
+    /** Called by queue.js once per upgrade job when it leaves 'running'. */
+    function smartSearchOnUpgradeFinished(u) {
+      const name = u?.name || _smartFolderName(u?.path || '');
+      if (u.status === 'error') showToast(`Upgrade of ${name} failed: ${u.error || 'unknown error'}`, 6000);
+      else if (u.status === 'stopped') showToast(`Upgrade of ${name} paused because analysis started. Try again when it finishes.`, 6000);
+      else if (u.status === 'cancelled') showToast(`Upgrade of ${name} stopped — run it again to resume.`, 5000);
+      else if (u.status === 'done') showToast(`Upgraded ${name} to pipeline 3.0 — species, quality and smart search are up to date.`, 5000);
+      if (u.status !== 'done' && u.status !== 'cancelled') { _smartUpdateUi(); return; }
       // The upgrade rewrote species / quality columns: reload what is open so
       // the grid shows them (and so a later save cannot write the old values back).
-      if (upgradedAny) {
+      _smartReloadChain = _smartReloadChain.then(async () => {
         try {
           if (dirty && typeof saveCsv === 'function') await saveCsv();
           if (typeof reloadCurrentFolders === 'function') await reloadCurrentFolders();
         } catch (e) { console.warn('[smart-search] reload after upgrade failed', e); }
-        if (!canceledAny) showToast('Upgraded to pipeline 3.0 — species, quality and smart search are up to date.', 5000);
-      }
-      await _smartRun();
+        if (!_smart.indexing) await _smartRun();
+      });
     }
+    window.smartSearchOnUpgradeFinished = smartSearchOnUpgradeFinished;
+    window.smartSearchOnUpgradesChanged = () => { try { _smartUpdateUi(); } catch (_) { } };
 
     /** Folder action (sidebar / menus): upgrade one folder to pipeline 3. */
     async function smartSearchUpgradeFolder(rp) {

@@ -413,7 +413,8 @@
         try {
           await apiQueueControl('clear');
           const status = await apiGetQueueStatus();
-          if (!(status.items || []).some(i => i.status === 'pending' || i.status === 'running')) {
+          if (!(status.items || []).some(i => i.status === 'pending' || i.status === 'running')
+              && !(status.upgrades || []).some(u => u.status === 'running')) {
             document.getElementById('queuePanel')?.classList.add('hidden');
             stopPollingQueue();
           } else {

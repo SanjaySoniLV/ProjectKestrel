@@ -181,9 +181,11 @@ Reading it:
   and the pack's metadata replaces `pipeline_major`, so the folder shows "Upgrade" again — run it.
 * CPU/GPU overlap between the CPU towers and GPU detector was not attempted (the pipeline is
   single-threaded per image apart from decode prefetch).
-* Upgrade progress is shown in the smart-search bar (visible during an upgrade even with smart
-  search off) — no dedicated progress dialog. The UI could save stale rows if the user edits the
-  folder *during* an upgrade; the grid reloads when the upgrade finishes.
+* Upgrades show as rows in the analysis-queue panel (`get_queue_status().upgrades`, from the
+  bridge's upgrade-job registry, so they survive a page reload): progress, per-row Cancel, the
+  folder-tree ⏳, done / stopped / paused / failed end states; the panel's × dismisses finished
+  ones. The UI could save stale rows if the user edits the folder *during* an upgrade; the grid
+  reloads when the upgrade finishes.
 * SigLIP quality calibration knots were refitted on the int8 tower (all 10,461 reference crops):
   the fp32 knots would have moved 5% of images by one star.
 * **Decode prefetch memory** (the ~12 GB): pre-existing on `main`, not changed here; see Benchmark.

@@ -2292,10 +2292,20 @@ class Api:
                 jobs[job_id] = {
                     'kestrel_dir': kestrel_dir,
                     'cancel_event': cancel,
+                    # Shown as a row in the analysis-queue panel (get_queue_status).
+                    # 'path' echoes the folder string the UI passed (it keys the
+                    # folder tree); 'root' is the validated real path.
+                    'path': str(folder_path),
+                    'root': root_real,
+                    'started_at': time.time(),
+                    'dismissed': False,
                     'progress': {'done': False, 'current': 0, 'total': 0, 'phase': 'starting'},
                 }
                 finished = [k for k, v in jobs.items() if v['progress'].get('done')]
                 for k in finished[:-8]:
+                    jobs.pop(k, None)
+                # A new run replaces this folder's finished row in the queue panel.
+                for k in [k for k in finished if jobs.get(k, {}).get('kestrel_dir') == kestrel_dir]:
                     jobs.pop(k, None)
 
             def _set(**kw):
@@ -2331,7 +2341,7 @@ class Api:
                     error(f'[API] upgrade_folder_v3({folder_path!r}) failed: {e}')
                     _set(phase='error', error=str(e))
                 finally:
-                    _set(done=True)
+                    _set(done=True, finished_at=time.time())
 
             _t.Thread(target=_runner, name=f'UpgradeV3-{job_id[:8]}', daemon=True).start()
             return {'success': True, 'job_id': job_id}
@@ -2350,6 +2360,50 @@ class Api:
             if job is None:
                 return {'success': False, 'error': 'not_found'}
             return {'success': True, 'progress': dict(job['progress'])}
+
+    # Upgrade-job phase -> queue-panel row status (mirrors the analysis rows).
+    _UPGRADE_ROW_STATUS = {'complete': 'done', 'canceled': 'cancelled', 'stopped': 'stopped', 'error': 'error'}
+
+    def _upgrade_jobs_status(self) -> list:
+        """Pipeline-3 upgrade jobs as analysis-queue panel rows.
+
+        Running jobs, plus finished ones the user has not dismissed with the
+        panel's close button (``clear_queue_done``). Each row is ``{job_id,
+        kind: 'upgrade', path, name, status, phase, current, total, error,
+        started_at, finished_at}``; ``status`` is ``running`` while the job is
+        alive, then ``done`` / ``cancelled`` / ``stopped`` / ``error``.
+        """
+        lock, jobs = self._smart_jobs()
+        out = []
+        with lock:
+            for jid, j in jobs.items():
+                pr = j.get('progress') or {}
+                if j.get('dismissed') and pr.get('done'):
+                    continue
+                path = j.get('path') or j.get('root') or os.path.dirname(j.get('kestrel_dir') or '')
+                phase = str(pr.get('phase') or '')
+                status = self._UPGRADE_ROW_STATUS.get(phase, 'error') if pr.get('done') else 'running'
+                out.append({
+                    'job_id': jid,
+                    'kind': 'upgrade',
+                    'path': path,
+                    'name': os.path.basename(os.path.normpath(path)) or path,
+                    'status': status,
+                    'phase': phase,
+                    'current': int(pr.get('current') or 0),
+                    'total': int(pr.get('total') or 0),
+                    'error': str(pr.get('error') or ''),
+                    'started_at': j.get('started_at'),
+                    'finished_at': pr.get('finished_at'),
+                })
+        return out
+
+    def _dismiss_finished_upgrade_jobs(self) -> None:
+        lock, jobs = self._smart_jobs()
+        with lock:
+            for j in jobs.values():
+                if (j.get('progress') or {}).get('done'):
+                    j['dismissed'] = True
 
     def cancel_smart_search_index(self, job_id: str) -> dict:
         lock, jobs = self._smart_jobs()
@@ -3053,11 +3107,26 @@ class Api:
         return _queue_manager.cancel()
 
     def get_queue_status(self):
-        """Return the current state of the analysis queue."""
-        return _queue_manager.get_status()
+        """Return the current state of the analysis queue.
+
+        ``upgrades`` lists pipeline-3 folder upgrades (running and recently
+        finished, see :meth:`_upgrade_jobs_status`) so the queue panel shows
+        them next to the analysis items, also after a page reload.
+        """
+        status = _queue_manager.get_status()
+        try:
+            status['upgrades'] = self._upgrade_jobs_status()
+        except Exception as e:
+            error(f'[API] get_queue_status upgrades error: {e}')
+            status['upgrades'] = []
+        return status
 
     def clear_queue_done(self):
-        """Remove finished/errored/cancelled items from the queue list."""
+        """Remove finished/errored/cancelled items (and finished upgrades) from the queue list."""
+        try:
+            self._dismiss_finished_upgrade_jobs()
+        except Exception as e:
+            error(f'[API] clear_queue_done upgrades error: {e}')
         return _queue_manager.clear_done()
 
     def remove_queue_item(self, path: str):
