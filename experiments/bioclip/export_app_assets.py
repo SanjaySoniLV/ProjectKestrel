@@ -27,6 +27,8 @@ With --siglip, SigLIP 2 ViT-B/16 (Apache-2.0), the v3 search + zero-shot quality
   siglip2_token_emb_int8.npz   pruned token table (rows = siglip_tokenizer subset), int8 + per-row scale
   siglip_index.json            preprocessing + logit scale/bias
   (siglip2_tokenizer.json.gz comes from export_siglip_tokenizer.py)
+With --gate, the v3 false-positive gate (BioCLIP text embeddings, ml/animal_gate.py), into models/bioclip/:
+  gate_text_emb.npy + gate_index.json   animal prompts followed by background prompts
 With --search, also (BioCLIP text tower; superseded by --clip for search):
   bioclip2_text_int8.onnx      text tower, input "tokens" [N,77] int64, output
                                "emb" [N,768] (not normalised); free-text search
@@ -170,6 +172,36 @@ def export_wildlife(out):
     print("wildlife labels ->", len(rows))
 
 
+# Zero-shot false-positive gate for the v3 pipeline (replaces SpeciesNet's blank/confidence
+# gate): BioCLIP text embeddings of generic "there is an animal" prompts vs the things
+# MegaDetector mistakes for animals. Read by analyzer/kestrel_analyzer/ml/animal_gate.py.
+GATE_ANIMAL = [
+    "a bird", "a small bird perched on a branch", "a bird in flight", "a waterbird", "a bird of prey",
+    "a shorebird", "an owl", "a mammal", "a small mammal", "a squirrel", "a deer", "an animal",
+    "a reptile", "an amphibian", "an insect", "a butterfly",
+]
+GATE_BACKGROUND = [
+    "grass", "branches", "leaves", "tree bark", "reeds", "water", "mud", "sand", "rocks", "the sky",
+    "clouds", "a wooden post", "a fence", "a power line", "a sign", "snow", "a log", "a tree stump",
+    "a blurry background", "an empty scene", "a shadow", "a pine cone", "a dead leaf", "a flower",
+    "a building", "a bare tree",
+]
+
+
+def export_gate(out):
+    model, _, _ = open_clip.create_model_and_transforms(HUB)
+    model.eval()
+    tok = open_clip.get_tokenizer(HUB)
+    prompts = [PROMPT.format(p) for p in GATE_ANIMAL + GATE_BACKGROUND]
+    with torch.inference_mode():
+        emb = torch.nn.functional.normalize(encode_text_trimmed(model, tok(prompts)), dim=-1).numpy()
+    np.save(os.path.join(out, "gate_text_emb.npy"), emb.astype(np.float16))
+    json.dump({"model": HUB, "prompt": PROMPT, "logit_scale": float(model.logit_scale.exp()),
+               "animal": GATE_ANIMAL, "background": GATE_BACKGROUND},
+              open(os.path.join(out, "gate_index.json"), "w"), indent=1)
+    print("gate prompts ->", len(prompts))
+
+
 class SiglipTextBody(torch.nn.Module):
     """SigLIP 2 text tower minus its 256k-row token table: input "x" = gathered token
     embeddings [N,64,768] (the app looks them up from the pruned int8 table), output "emb"
@@ -233,6 +265,7 @@ def main():
     ap.add_argument("--clip", action="store_true", help="ONLY export the general CLIP ViT-B/16 towers for search")
     ap.add_argument("--wildlife", action="store_true", help="ONLY export BioCLIP text embeddings for non-bird wildlife")
     ap.add_argument("--siglip", action="store_true", help="ONLY export the SigLIP 2 ViT-B/16 towers + pruned token table")
+    ap.add_argument("--gate", action="store_true", help="ONLY export the BioCLIP animal-vs-background gate prompts")
     a = ap.parse_args()
     out = os.path.abspath(a.out)
     os.makedirs(out, exist_ok=True)
@@ -242,6 +275,9 @@ def main():
         return
     if a.wildlife:
         export_wildlife(out)
+        return
+    if a.gate:
+        export_gate(out)
         return
     if a.siglip:
         export_siglip(out, os.path.join(HERE, "..", "..", "analyzer", "models", "siglip", "siglip2_tokenizer.json.gz"))

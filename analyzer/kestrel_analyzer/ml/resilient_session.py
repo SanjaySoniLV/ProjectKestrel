@@ -49,10 +49,12 @@ class ResilientOnnxSession:
         coord._register_session(self)
 
     def _build(self) -> None:
-        import onnxruntime as ort  # imported lazily so test environments without ORT can import this module
+        from .providers import build_session  # lazy: ORT-free test environments import this module
 
         providers = self._coord.providers_for(self._kind)
-        self._session = ort.InferenceSession(str(self._path), providers=providers)
+        # build_session records requested/actual providers + per-EP node
+        # placement for the analysis log (see ml/providers.py).
+        self._session = build_session(str(self._path), providers, kind=self._kind)
 
     def _rebuild(self) -> None:
         """Drop the current session and build a new one using the coordinator's

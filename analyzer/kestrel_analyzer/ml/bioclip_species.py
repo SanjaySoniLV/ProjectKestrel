@@ -20,6 +20,12 @@ softmax runs over the allowed species only, so scores are real probabilities
 over the folder's regional list. Family scores are the summed probability of
 the allowed species in each display family (``family_common`` in the catalog,
 e.g. "Hawk/Eagle/Kite sp.").
+
+Pipeline 3.0.0 also routes every detection between "bird" and "wildlife" from
+the same embedding (``route``): one softmax over the folder's allowed bird
+species plus ``wildlife_text_emb.npy`` (BioCLIP text embeddings of non-bird
+animals, SpeciesNet's label list, prompt ``"a photo of {common name}."``);
+bird iff the summed bird probability beats the summed wildlife probability.
 """
 
 from __future__ import annotations
@@ -37,6 +43,8 @@ from .resilient_session import ResilientOnnxSession
 IMAGE_MODEL_FILENAME = "bioclip2_image_int8.onnx"
 TEXT_EMB_FILENAME = "species_text_emb.npy"
 INDEX_FILENAME = "species_index.json"
+WILDLIFE_TEXT_EMB_FILENAME = "wildlife_text_emb.npy"
+WILDLIFE_INDEX_FILENAME = "wildlife_index.json"
 
 # open_clip's OPENAI_DATASET_MEAN / _STD (BioCLIP 2's eval transform uses them).
 CLIP_MEAN = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)
@@ -91,6 +99,19 @@ def preprocess(image: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(x.transpose(2, 0, 1), dtype=np.float32)
 
 
+def format_display_name(name: str) -> str:
+    """Word-level capitalisation for wildlife common names (``cane toad`` -> ``Cane Toad``,
+    ``white-tailed deer`` -> ``White-Tailed Deer``), as the SpeciesNet path displayed them."""
+    def cap(seg: str) -> str:
+        return seg[:1].upper() + seg[1:].lower() if seg else seg
+
+    def tok(t: str) -> str:
+        return "-".join(cap(p) for p in t.split("-")) if "-" in t else cap(t)
+
+    s = str(name or "").strip()
+    return " ".join(tok(t) for t in s.split())
+
+
 class BioClipSpeciesClassifier:
     """BioCLIP 2 zero-shot classifier over the (geofenced) IOC world bird list."""
 
@@ -140,6 +161,21 @@ class BioClipSpeciesClassifier:
         debug(
             f"[BioClipSpeciesClassifier] {len(sci_names)} species, providers: {self.providers_used}"
         )
+
+        # Non-bird wildlife label space for bird-vs-wildlife routing (v3).
+        self.wildlife_labels: list[dict] = []
+        self.wildlife_emb = np.zeros((0, text.shape[1]), np.float32)
+        try:
+            w_path = base / WILDLIFE_TEXT_EMB_FILENAME
+            if w_path.is_file():
+                with open(base / WILDLIFE_INDEX_FILENAME, encoding="utf-8") as f:
+                    w_labels = list(json.load(f)["labels"])
+                w = np.load(w_path).astype(np.float32)
+                if w.shape[0] == len(w_labels):
+                    w /= np.maximum(np.linalg.norm(w, axis=1, keepdims=True), 1e-12)
+                    self.wildlife_labels, self.wildlife_emb = w_labels, w
+        except Exception as e:  # routing then treats everything as a bird
+            debug(f"[BioClipSpeciesClassifier] wildlife labels unavailable: {e}")
 
         self._known_regions = frozenset().union(*(r.regions for r in self._records if r is not None))
         self._mask_cache: dict[Optional[frozenset[str]], np.ndarray] = {}
@@ -227,6 +263,43 @@ class BioClipSpeciesClassifier:
             "top_family_scores": fam_scores[fam_top].astype(float).tolist(),
             "embedding": emb.astype(np.float32),
         }
+
+    def route(self, emb: np.ndarray) -> dict:
+        """Bird vs non-bird wildlife for one normalised embedding.
+
+        Returns ``{"route": "bird"|"wildlife", "bird_prob", "wildlife_prob",
+        "wildlife_label", "wildlife_scientific", "wildlife_family",
+        "wildlife_class", "wildlife_confidence"}``. ``wildlife_label`` is the
+        top non-bird common name title-cased the way the SpeciesNet path
+        displayed it; ``wildlife_confidence`` is its probability within the
+        wildlife set. With no wildlife assets everything routes to "bird".
+        """
+        e = np.asarray(emb, dtype=np.float32)
+        out = {"route": "bird", "bird_prob": 1.0, "wildlife_prob": 0.0, "wildlife_label": None,
+               "wildlife_scientific": "", "wildlife_family": "", "wildlife_class": "",
+               "wildlife_confidence": 0.0}
+        if not len(self.wildlife_labels):
+            return out
+        idx = self._allowed
+        lb = self.logit_scale * (self.text_emb[idx] @ e)
+        lw = self.logit_scale * (self.wildlife_emb @ e)
+        m = max(float(lb.max()), float(lw.max()))
+        pb, pw = np.exp(lb - m), np.exp(lw - m)
+        z = float(pb.sum() + pw.sum())
+        bird_p, wild_p = float(pb.sum()) / z, float(pw.sum()) / z
+        top = int(np.argmax(pw))
+        lab = self.wildlife_labels[top]
+        out.update({
+            "route": "bird" if bird_p > wild_p else "wildlife",
+            "bird_prob": bird_p,
+            "wildlife_prob": wild_p,
+            "wildlife_label": format_display_name(str(lab.get("common_name") or "animal")),
+            "wildlife_scientific": str(lab.get("scientific_name") or ""),
+            "wildlife_family": str(lab.get("family") or ""),
+            "wildlife_class": str(lab.get("class") or ""),
+            "wildlife_confidence": float(pw[top] / max(float(pw.sum()), 1e-30)),
+        })
+        return out
 
     def classify_batch(self, images, top_k: int = 5) -> list[dict]:
         """``classify`` for several crops (one session run per crop; see ``embed``)."""
