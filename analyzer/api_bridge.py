@@ -4137,7 +4137,7 @@ class Api:
             len(analyzed),
         )
 
-    def _cc_analysis_settings_snapshot(self) -> dict | None:
+    def _cc_analysis_settings_snapshot(self, root_real: str | None = None) -> dict | None:
         """Project the user's local advanced-analysis settings into the
         cloud-compute wire format.
 
@@ -4201,6 +4201,21 @@ class Api:
         tjc = cfg.get("thumbnail_jpeg_compression")
         if isinstance(tjc, (int, float)) and not isinstance(tjc, bool) and 0.50 <= float(tjc) <= 1.00:
             candidate["thumbnail_jpeg_compression"] = float(tjc)
+        # Pipeline 3: the bird-species geofence. Without it Modal falls back to
+        # its own default ("NA") and a folder analysed elsewhere gets different
+        # species than the same folder analysed locally. Same precedence as a
+        # local re-run: the folder's recorded regions, else ``bird_regions``.
+        # Sent comma-joined (the wire carries primitives only).
+        regions = None
+        if root_real:
+            try:
+                with open(os.path.join(root_real, ".kestrel", "kestrel_metadata.json"), "r", encoding="utf-8") as f:
+                    regions = (json.load(f) or {}).get("species_regions")
+            except Exception:
+                regions = None
+        regions = self._sanitize_species_regions(regions) or self._sanitize_species_regions(cfg.get("bird_regions"))
+        if regions:
+            candidate["species_regions"] = ",".join(regions)
         return candidate or None
 
     # Default cached remote counters — keeps the JS render code simple by
@@ -4447,7 +4462,7 @@ class Api:
         # already-analyzed file as a scene-merger anchor so the cloud
         # pipeline's previous_image is real, not None. With retry_errored on,
         # also include errored rows + the file before each errored row.
-        analysis_settings = self._cc_analysis_settings_snapshot()
+        analysis_settings = self._cc_analysis_settings_snapshot(root_real)
         _retry_errored = bool((analysis_settings or {}).get("retry_errored"))
         files, anchor_filename, anchor_filenames, total_in_folder, already_analyzed = (
             self._cc_select_upload_files(root, retry_errored=_retry_errored)

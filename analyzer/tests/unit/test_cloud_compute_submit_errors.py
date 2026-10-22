@@ -62,7 +62,7 @@ class TestCloudBusySubmitError:
             "_cc_select_upload_files",
             lambda *args, **kwargs: ([folder / "IMG_0001.CR3"], None, [], 1, 0),
         )
-        monkeypatch.setattr(api, "_cc_analysis_settings_snapshot", lambda: {})
+        monkeypatch.setattr(api, "_cc_analysis_settings_snapshot", lambda *_a: {})
 
         r = api.cloud_compute_submit_job(str(folder))
         assert r["ok"] is False

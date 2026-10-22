@@ -83,6 +83,8 @@ ANALYSIS_SETTINGS_ALLOWLIST: tuple[str, ...] = (
     "thumbnail_max_width",
     "thumbnail_jpeg_compression",
     "retry_errored",
+    # Pipeline 3: comma-joined bird_catalog region codes (or "global").
+    "species_regions",
 )
 
 
