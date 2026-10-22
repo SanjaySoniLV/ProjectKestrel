@@ -154,3 +154,17 @@ def test_placement_parses_utf16_ort_log():
     line = "[V:onnxruntime:, session_state.cc:1310] All nodes placed on [DmlExecutionProvider]. Number of nodes: 1"
     assert P.parse_placement(P._decode_ort_log(line.encode("utf-16-le"))) == {"DmlExecutionProvider": 1}
     assert P.parse_placement(P._decode_ort_log(line.encode("utf-8"))) == {"DmlExecutionProvider": 1}
+
+
+def test_cuda_gets_gpu_graph_on_modal(tmp_path):
+    # Modal patch: the cloud T4 runs the wdq16 tower graph on CUDA EP.
+    from kestrel_analyzer.ml.providers import GPU_GRAPH_SESSION_CONFIG, tower_graph
+
+    cpu = tmp_path / "t_int8.onnx"
+    gpu = tmp_path / "t_wdq16.onnx"
+    cpu.write_bytes(b"x" * 200_000)
+    gpu.write_bytes(b"x" * 200_000)
+    path, provs, cfg = tower_graph(["CUDAExecutionProvider", "CPUExecutionProvider"], cpu, gpu)
+    assert path == str(gpu)
+    assert provs == ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    assert cfg == GPU_GRAPH_SESSION_CONFIG

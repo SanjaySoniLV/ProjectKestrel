@@ -65,7 +65,12 @@ CPU_PINNED_KINDS = frozenset({"siglip_image"})
 TOWER_DEVICES = ("auto", "cpu", "gpu")
 
 # EPs that get the fp16 "wdq16" tower graph instead of the dynamic-int8 one.
-GPU_GRAPH_EPS = frozenset({"DmlExecutionProvider"})
+# Modal patch: CUDA (the cloud T4) too. The int8 graph's DynamicQuantizeLinear /
+# MatMulInteger nodes would split between CUDA and CPU there; the wdq16 graph
+# with GPU_GRAPH_SESSION_CONFIG folds to float weights at load and stays on
+# CUDA. It is also closer to fp32 than int8 (BioCLIP cos 0.9988 vs 0.992 on
+# real crops). A failed GPU session falls back to int8 on CPU (resilient_session).
+GPU_GRAPH_EPS = frozenset({"DmlExecutionProvider", "CUDAExecutionProvider"})
 # Lets ORT constant-fold the wdq16 graph's DequantizeLinear nodes at load
 # (without it they run on every call: BioCLIP 242 ms instead of 52 ms on DML).
 GPU_GRAPH_SESSION_CONFIG = {"session.disable_quant_qdq": "1"}
