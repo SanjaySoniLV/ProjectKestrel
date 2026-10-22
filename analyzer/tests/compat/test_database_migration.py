@@ -150,6 +150,37 @@ class TestLegacyDatabaseMigration:
                 f"{value!r}; legacy sizes must read as unknown."
             )
 
+    def test_schema3_quality_columns_after_load(self, legacy_csv_in_temp_dir):
+        """Schema 3 (pipeline 3.0): every older fixture gains ``quality_legacy``
+        (its old ``quality`` WAS the legacy CNN) and ``quality_siglip`` = -1,
+        and its effective ``quality`` is unchanged."""
+        tmp_path, fixture_path = legacy_csv_in_temp_dir
+        kestrel_dir = tmp_path / ".kestrel"
+        original = pd.read_csv(kestrel_dir / "kestrel_database.csv")
+        db, _ = load_database(str(kestrel_dir), "test_analyzer", None)
+        assert "quality_siglip" in db.columns and "quality_legacy" in db.columns
+        if "quality_siglip" in original.columns:
+            pytest.skip(f"{fixture_path.name} is already schema 3")
+        q_old = pd.to_numeric(original["quality"], errors="coerce").fillna(-1.0).tolist()
+        assert pd.to_numeric(db["quality"], errors="coerce").fillna(-1.0).tolist() == q_old
+        assert pd.to_numeric(db["quality_legacy"], errors="coerce").fillna(-1.0).tolist() == q_old
+        assert all(float(v) == -1.0 for v in db["quality_siglip"])
+
+    def test_quality_switch_leaves_pre_v3_folders_alone(self, legacy_csv_in_temp_dir):
+        """Switching the quality scorer must not rewrite a folder that has no SigLIP scores."""
+        from kestrel_analyzer import quality_model as qm
+
+        tmp_path, fixture_path = legacy_csv_in_temp_dir
+        kestrel_dir = tmp_path / ".kestrel"
+        original = pd.read_csv(kestrel_dir / "kestrel_database.csv")
+        if "quality_siglip" in original.columns:
+            pytest.skip(f"{fixture_path.name} is already schema 3")
+        before = (kestrel_dir / "kestrel_database.csv").read_bytes()
+        for model in ("siglip", "legacy"):
+            assert not qm.needs_apply(str(kestrel_dir), model)
+            assert not qm.apply_quality_model(str(kestrel_dir), model)
+        assert (kestrel_dir / "kestrel_database.csv").read_bytes() == before
+
     def test_rating_migrated_to_scenedata(self, legacy_csv_in_temp_dir):
         """If fixture had inline `rating` column, values appear in scenedata after migration."""
         tmp_path, fixture_path = legacy_csv_in_temp_dir
@@ -185,3 +216,28 @@ class TestCurrentSchemaNoUpgrade:
         df.to_csv(kestrel_dir / "kestrel_database.csv", index=False)
 
         assert _needs_upgrade(df, str(kestrel_dir)) == False
+
+
+class TestSchema3Fixture:
+    """The pipeline-3.0 fixture (``v_pipeline-v3_*``, literal cli.py output)."""
+
+    def test_columns_and_effective_quality(self, tmp_path):
+        src = FIXTURE_DIR / "v_pipeline-v3_kestrel_database.csv"
+        if not src.exists():
+            pytest.skip("schema-3 fixture not captured")
+        kestrel_dir = tmp_path / ".kestrel"
+        kestrel_dir.mkdir()
+        shutil.copy(src, kestrel_dir / "kestrel_database.csv")
+        shutil.copy(FIXTURE_DIR / "v_pipeline-v3_kestrel_metadata.json", kestrel_dir / "kestrel_metadata.json")
+        db, _ = load_database(str(kestrel_dir), "test_analyzer", None)
+        assert [c for c in BASE_COLUMNS if c not in db.columns] == []
+        import json as _json
+        meta = _json.loads((kestrel_dir / "kestrel_metadata.json").read_text())
+        assert meta["schema_version"] == 3 and meta["pipeline_major"] == 3
+        model = meta.get("quality_model", "siglip")
+        col = "quality_siglip" if model == "siglip" else "quality_legacy"
+        assert (db["quality"].astype(float) - db[col].astype(float)).abs().max() < 1e-6
+        for cj in db["crops_json"]:
+            for c in _json.loads(cj):
+                if int(c.get("detection_index", -1)) >= 0:
+                    assert "quality_siglip" in c and "quality_legacy" in c

@@ -1,7 +1,9 @@
-"""Integration tests for the full SpeciesNet + SAM-HQ wrapper (`get_prediction`).
+"""Integration tests for the MegaDetector + SAM-HQ wrapper (`get_prediction`).
 
-Loads the real detector + classifier + SAM-HQ + ensemble and runs end-to-end
-prediction on CR3 fixtures in set_a_fresh/.
+Pipeline 3.0 removed the SpeciesNet classifier: the wrapper proposes and
+segments animal boxes only (pred_class is always "animal", pred_score the
+detector confidence); the BioCLIP gate/routing runs in the pipeline. Runs on
+the CR3 fixtures in set_a_fresh/.
 """
 
 import sys
@@ -17,26 +19,23 @@ from kestrel_analyzer.config import (
     DETECTOR_ONNX_PATHS,
     SAM_DEC_ONNX_PATH,
     SAM_ENC_ONNX_PATH,
-    SPECIESNET_MODEL_DIR,
 )
 from kestrel_analyzer.image_utils import read_image
-from kestrel_analyzer.ml.speciesnet_sam_hq import SpeciesNetSAMHQWrapper
+from kestrel_analyzer.ml.speciesnet_sam_hq import DetectorSAMHQWrapper, SpeciesNetSAMHQWrapper
 
 
 pytestmark = pytest.mark.integration
 
 
 _DETECTOR_PATH = DETECTOR_ONNX_PATHS[DEFAULT_DETECTOR_NAME]
-_SPECIESNET_ONNX = SPECIESNET_MODEL_DIR / "speciesNet_v4.0.1a.onnx"
 
 _skip_no_models = pytest.mark.skipif(
     not (
         _DETECTOR_PATH.is_file()
-        and _SPECIESNET_ONNX.is_file()
         and Path(SAM_ENC_ONNX_PATH).is_file()
         and Path(SAM_DEC_ONNX_PATH).is_file()
     ),
-    reason="One or more SpeciesNet / SAM-HQ ONNX weights are missing",
+    reason="MegaDetector / SAM-HQ ONNX weights are missing",
 )
 
 
@@ -44,12 +43,11 @@ _skip_no_models = pytest.mark.skipif(
 def loaded_wrapper():
     if not (
         _DETECTOR_PATH.is_file()
-        and _SPECIESNET_ONNX.is_file()
         and Path(SAM_ENC_ONNX_PATH).is_file()
         and Path(SAM_DEC_ONNX_PATH).is_file()
     ):
-        pytest.skip("Required SpeciesNet / SAM-HQ weights missing")
-    wrapper = SpeciesNetSAMHQWrapper(
+        pytest.skip("Required MegaDetector / SAM-HQ weights missing")
+    wrapper = DetectorSAMHQWrapper(
         max_bird_crops=5,
         use_gpu=False,
         detector_name=DEFAULT_DETECTOR_NAME,
@@ -80,21 +78,21 @@ def first_cr3_decoded(first_cr3):
 
 
 @_skip_no_models
-class TestSpeciesNetLoading:
+class TestDetectorSamLoading:
     def test_ensure_loaded_succeeds(self, loaded_wrapper):
         assert loaded_wrapper.detector is not None
-        assert loaded_wrapper.classifier is not None
         assert loaded_wrapper.predictor is not None
-        assert loaded_wrapper.ensemble is not None
+        assert not hasattr(loaded_wrapper, "classifier") or loaded_wrapper.classifier is None
 
-    def test_classifier_has_labels(self, loaded_wrapper):
-        labels = loaded_wrapper.classifier._labels
-        assert isinstance(labels, list)
-        assert len(labels) > 100  # SpeciesNet has thousands of labels
+    def test_old_name_is_an_alias(self):
+        assert SpeciesNetSAMHQWrapper is DetectorSAMHQWrapper
+
+    def test_candidate_cap(self, loaded_wrapper):
+        assert loaded_wrapper.candidate_cap == 2 * loaded_wrapper.max_bird_crops
 
 
 @_skip_no_models
-class TestSpeciesNetPrediction:
+class TestDetectorSamPrediction:
     """End-to-end get_prediction() output shape and value-range tests."""
 
     def test_get_prediction_returns_4_tuple(self, loaded_wrapper, first_cr3, first_cr3_decoded):
@@ -120,17 +118,16 @@ class TestSpeciesNetPrediction:
             # masks is a stacked numpy array when non-empty
             assert hasattr(masks, "shape") and masks.shape[0] == len(pred_class)
 
-    def test_pred_classes_valid(self, loaded_wrapper, first_cr3, first_cr3_decoded):
-        _, _, pred_class, _ = loaded_wrapper.get_prediction(
+    def test_pred_classes_are_animal_proposals(self, loaded_wrapper, first_cr3, first_cr3_decoded):
+        _, _, pred_class, pred_score = loaded_wrapper.get_prediction(
             first_cr3_decoded,
             first_cr3,
             wildlife_enabled=True,
             threshold=0.25,
         )
-        for cls in pred_class:
-            # After routing, only "bird" or a wildlife species label remains
-            assert isinstance(cls, str)
-            assert cls != ""
+        assert pred_class, "expected the bird in the fixture to be detected"
+        assert set(pred_class) == {"animal"}
+        assert all(float(s) >= 0.25 for s in pred_score)
 
     def test_pred_scores_in_unit_range(self, loaded_wrapper, first_cr3, first_cr3_decoded):
         _, _, _, pred_score = loaded_wrapper.get_prediction(
@@ -161,13 +158,8 @@ class TestSpeciesNetPrediction:
         assert len(pred_boxes) == 0
         assert len(pred_score) == 0
 
-    def test_wildlife_disabled_excludes_non_bird(self, loaded_wrapper, first_cr3, first_cr3_decoded):
-        _, _, pred_class, _ = loaded_wrapper.get_prediction(
-            first_cr3_decoded,
-            first_cr3,
-            wildlife_enabled=False,
-            threshold=0.25,
-        )
-        # With wildlife disabled, only "bird" labels survive routing
-        for cls in pred_class:
-            assert cls == "bird", f"Got non-bird '{cls}' with wildlife_enabled=False"
+    def test_wildlife_flag_does_not_filter_proposals(self, loaded_wrapper, first_cr3, first_cr3_decoded):
+        """Routing moved to the pipeline (BioCLIP): the wrapper output must not depend on it."""
+        a = loaded_wrapper.get_prediction(first_cr3_decoded, first_cr3, wildlife_enabled=False, threshold=0.25)
+        b = loaded_wrapper.get_prediction(first_cr3_decoded, first_cr3, wildlife_enabled=True, threshold=0.25)
+        assert len(a[2]) == len(b[2])

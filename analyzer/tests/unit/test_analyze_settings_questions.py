@@ -33,7 +33,7 @@ ANSWER_ALTERNATES = ("adlgSubjectScopeBirds", "adlgSpeciesScopeNo")
 
 QUESTIONS = (
     "What subjects does this shoot contain?",
-    "Does this shoot contain North American birds?",
+    "Should Kestrel identify the bird species?",
 )
 
 # The Start handler in event-wiring.js reads these; they must survive the
@@ -55,19 +55,22 @@ class TestQuestionMarkup(unittest.TestCase):
             with self.subTest(question=q):
                 self.assertIn(q, self.html)
 
-    def test_species_help_text_states_the_north_american_limit(self):
-        self.assertIn("only recognizes North American birds", self.html)
+    def test_species_help_text_describes_the_world_list_and_region(self):
+        # The NA-only CNN is gone: BioCLIP 2 names birds worldwide, geofenced by region.
+        self.assertNotIn("only recognizes North American birds", self.html)
+        self.assertIn("BioCLIP&nbsp;2", self.html)
+        self.assertIn("narrowed to the region below", self.html)
 
     def test_wildlife_help_does_not_claim_a_per_image_cost(self):
         """wildlife_enabled is a post-classification routing gate, not a model switch.
 
-        In speciesnet_sam_hq._get_prediction_inner the classifier and ensemble
-        run over every MegaDetector animal box *before*
-        route_with_classifier_tiebreak(wildlife_enabled=...) decides whether to
-        keep the result. Turning it off skips no inference — it only discards
-        non-bird predictions, so the extra cost is the SAM mask decode and crop
-        work for detections that would otherwise have been dropped, and it is
-        zero on a shoot with no non-bird animals. Claiming a flat per-image
+        Since pipeline 3.0 every MegaDetector animal box is segmented and
+        embedded with BioCLIP *before* the bird/wildlife routing
+        (``BioClipSpeciesClassifier.route``) decides whether a wildlife crop is
+        kept. Turning it off skips no detector/SAM/BioCLIP inference -- it only
+        discards non-bird crops, so the extra cost is the SigLIP + quality work
+        on wildlife crops that would otherwise have been dropped, and it is zero
+        on a shoot with no non-bird animals. Claiming a flat per-image
         cost tells users to disable it for a speedup they will not get.
         """
         help_texts = re.findall(r'<div class="adlg-question-help muted">(.*?)</div>', self.html, re.S)
