@@ -54,12 +54,10 @@ jobs:
           - os: macos-14
             ort_pkg: onnxruntime
             ort_ver: latest
-          - os: windows-latest
-            ort_pkg: onnxruntime-directml
-            ort_ver: "1.24.4"      # the app's pin (requirements-windows.txt)
-          - os: windows-latest
-            ort_pkg: onnxruntime-directml
-            ort_ver: latest
+          # Windows is deliberately absent: GitHub's hosted Windows runners have no
+          # D3D12 adapter, so DirectML fails with "No devices detected that match
+          # the filter criteria" (run 39778820229). Probe DirectML on real hardware:
+          #   python tools/ep_probe.py --out ep_probe_dml.json
     runs-on: ${{ matrix.os }}
     name: probe ${{ matrix.os }} ${{ matrix.ort_pkg }} ${{ matrix.ort_ver }}
     steps:
@@ -72,13 +70,12 @@ jobs:
           inc="$PROBE_MODELS"
           if [ "${{ inputs.include_detector }}" = "true" ]; then inc="$inc,$DETECTOR_MODELS"; fi
           echo "include=$inc" >> "$GITHUB_OUTPUT"
-          echo "key=$(echo "$inc" | tr ',' '\n' | xargs cat | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
 
       - name: Restore LFS cache (shared across OSes)
         uses: actions/cache@v4
         with:
           path: .git/lfs
-          key: lfs-probe-${{ steps.pick.outputs.key }}
+          key: lfs-probe-${{ inputs.include_detector && 'det-' || '' }}${{ hashFiles('analyzer/models/bioclip/*.onnx', 'analyzer/models/siglip/*.onnx', 'analyzer/models/quality.onnx', 'analyzer/models/speciesnet/sam_hq_vit_tiny_encoder.onnx') }}
           enableCrossOsArchive: true
 
       - name: Pull only the probed models
@@ -153,5 +150,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-macos.txt
           pip install pytest
+      # pyexiv2's wheel links Homebrew's inih; vendor it like build-macos.yml does.
+      - name: Vendor pyexiv2 native deps
+        run: bash packaging/vendor_macos_native_deps.sh "$(which python)"
       - name: pytest -m "not ui"
         run: python -m pytest analyzer/tests -m "not ui" -q --tb=short
