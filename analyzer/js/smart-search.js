@@ -9,6 +9,7 @@
     // points each card at its best-matching image. Folders without embeddings
     // show the existing "upgrade folder" prompt in the bar below the filters.
     const SMART_SEARCH_LIMIT = 48;
+    const SMART_SEARCH_EXAMPLES = ['bird in flight', 'dove pair', 'heron in a marsh', 'perched on a wire', 'two birds', 'blurry'];
     const SMART_CHIP_KIND_LABEL = {
       species: 'species', family: 'family', wildlife: 'wildlife', group: 'species group',
     };
@@ -441,4 +442,29 @@
         input.focus();
       });
       el('#smartSearchIndexBtn')?.addEventListener('click', () => { _smartIndexMissing(); });
+
+      // Example queries: shown under the bar while it is focused and empty.
+      const box = el('#smartSearchExamples');
+      if (!box) return;
+      const lead = document.createElement('span');
+      lead.className = 'smart-search-muted';
+      lead.textContent = 'Try:';
+      box.appendChild(lead);
+      for (const ex of SMART_SEARCH_EXAMPLES) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'smart-example-chip';
+        b.textContent = ex;
+        b.addEventListener('mousedown', (e) => e.preventDefault()); // keep focus, avoid blur race
+        b.addEventListener('click', () => {
+          input.value = ex;
+          box.classList.add('hidden');
+          smartSearchOnInput();
+        });
+        box.appendChild(b);
+      }
+      const sync = () => box.classList.toggle('hidden', !(document.activeElement === input && !input.value.trim()));
+      input.addEventListener('focus', sync);
+      input.addEventListener('input', sync);
+      input.addEventListener('blur', () => box.classList.add('hidden'));
     })();

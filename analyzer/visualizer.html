@@ -169,7 +169,10 @@
     <div id="mainZoom">
       <!-- Sticky top filter/sort bar — sits above the timeline, hidden when welcome panel is shown -->
       <div id="timelineFilterBar" class="timeline-filter-bar hidden" role="region" aria-label="Filter and sort options">
-        <input id="search" type="search" placeholder="🔍 Search species, family, or describe a photo" title="Type a species or family to filter the timeline, or describe what is happening (&quot;bird in flight&quot;, &quot;spoonbill wading&quot;) for smart search. Right-click a result for Go to scene in timeline." class="tfb-search" />
+        <span class="tfb-search-wrap">
+          <span class="tfb-smart-badge" aria-hidden="true">&#10024; Smart Search</span>
+          <input id="search" type="search" placeholder="🔍 Search species, family, or describe a photo" title="Type a species or family to filter the timeline, or describe what is happening (&quot;bird in flight&quot;, &quot;spoonbill wading&quot;) for smart search. Right-click a result for Go to scene in timeline." class="tfb-search tfb-search--smart" aria-label="Smart Search: species, family, or describe a photo" />
+        </span>
         <label class="tfb-field" title="Minimum confidence threshold for species classification">
           <span class="tfb-label">Confidence</span>
           <input id="speciesConf" type="number" min="0" max="1" step="0.05" value="0.75" class="tfb-conf" />
@@ -216,6 +219,7 @@
             </label>
           </div>
         </div>
+        <div id="smartSearchExamples" class="smart-search-examples hidden" aria-label="Example smart searches"></div>
         <div id="smartSearchBar" class="smart-search-bar hidden" role="status" aria-live="polite">
           <span id="smartSearchSpinner" class="smart-search-spinner hidden" aria-hidden="true"></span>
           <span id="smartSearchChips" class="smart-search-chips hidden" aria-label="Filters detected in your query"></span>

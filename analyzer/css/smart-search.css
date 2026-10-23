@@ -183,3 +183,53 @@
   color: #cbd2dc;
   font-size: 13px;
 }
+
+/* Always-on "Smart Search" identity for the search box: purple border, badge, example chips. */
+.tfb-search-wrap {
+  flex: 1 1 300px;
+  min-width: 200px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tfb-search-wrap .tfb-search { flex: 1 1 auto; min-width: 0; }
+.tfb-smart-badge {
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 11px;
+  background: #2a2140;
+  border: 1px solid #6a4fb3;
+  color: #e7dcff;
+  font-size: 11px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+#search.tfb-search--smart {
+  border-color: #6a4fb3;
+  box-shadow: 0 0 0 1px rgba(106, 79, 179, 0.35);
+}
+.smart-search-examples {
+  flex: 1 0 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.smart-search-examples.hidden { display: none; }
+.smart-example-chip {
+  height: 22px;
+  padding: 0 10px;
+  border-radius: 11px;
+  background: #2a2140;
+  border: 1px solid #6a4fb3;
+  color: #c9b8ff;
+  font-size: 12px;
+  cursor: pointer;
+}
+.smart-example-chip:hover { color: #fff; background: #3a2d5c; }
+@media (max-width: 900px) {
+  .tfb-smart-badge { padding: 0 6px; font-size: 10px; }
+  .tfb-search-wrap { flex-basis: 100%; }
+}
