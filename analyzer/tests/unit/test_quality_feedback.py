@@ -507,6 +507,34 @@ class TestBridge:
         assert len(entries) == 1 and entries[0]["species"] == ["Roseate Spoonbill"]
         assert str(root) not in Path(log).read_text()
 
+    def test_pre_v3_folder_reports_legacy_scores(self, bridge, tmp_path, server, monkeypatch):
+        # A folder analysed before pipeline 3 has only ``quality`` (= the legacy
+        # CNN); the submission must say so instead of claiming SigLIP / v3.
+        api, store, log, notes = bridge
+        monkeypatch.setenv(qfc.API_BASE_ENV, server.base)
+        root = _make_folder(tmp_path)
+        df = pd.read_csv(root / ".kestrel" / "kestrel_database.csv")
+        df.drop(columns=["quality_siglip", "quality_legacy"]).to_csv(
+            root / ".kestrel" / "kestrel_database.csv", index=False)
+        assert self._submit(api, root)["success"]
+        api._qf_last_thread.join(10)
+        assert notes and notes[0]["ok"]
+        sent = server.last_create
+        assert sent["active_scorer"] == "legacy"
+        assert sent["client"]["pipeline_version"] == 2
+        assert [c["quality_legacy"] for c in sent["crops"]] == [c["quality"] for c in sent["crops"]]
+        assert all(c["quality_siglip"] is None for c in sent["crops"])
+
+    def test_v3_folder_reports_pipeline_major(self, bridge, tmp_path, server, monkeypatch):
+        api, store, log, notes = bridge
+        monkeypatch.setenv(qfc.API_BASE_ENV, server.base)
+        root = _make_folder(tmp_path)
+        (root / ".kestrel" / "kestrel_metadata.json").write_text(json.dumps({"pipeline_major": 3}))
+        assert self._submit(api, root)["success"]
+        api._qf_last_thread.join(10)
+        assert server.last_create["client"]["pipeline_version"] == 3
+        assert server.last_create["active_scorer"] == "siglip"
+
     def test_network_failure_leaves_no_log(self, bridge, tmp_path, monkeypatch):
         api, store, log, notes = bridge
         monkeypatch.setenv(qfc.API_BASE_ENV, "http://127.0.0.1:9")

@@ -2821,8 +2821,20 @@ class Api:
                     continue
                 abs_paths[str(r.get('filename'))] = target
                 usable.append(r)
+            # Rows written before pipeline 3 (or not upgraded yet) have no
+            # per-scorer columns: their ``quality`` IS the legacy CNN score.
+            for r in usable:
+                if not str(r.get('quality_siglip') or '').strip() and not str(r.get('quality_legacy') or '').strip():
+                    r['quality_legacy'] = r.get('quality')
             active = str(settings.get('quality_model') or 'siglip').lower()
             active = active if active in qf.SCORERS else 'siglip'
+            if not any(str(r.get('quality_siglip') or '').strip() for r in usable):
+                active = 'legacy'
+            try:
+                with open(os.path.join(kestrel_dir, 'kestrel_metadata.json'), 'r', encoding='utf-8') as _mf:
+                    folder_major = int((json.load(_mf) or {}).get('pipeline_major') or 2)
+            except Exception:
+                folder_major = 2
             sel = qf.select_feedback_frames(usable, k=qf.MAX_FRAMES, active_scorer=active)
             frames = sel['frames']
             if len(frames) < qf.MIN_FRAMES:
@@ -2867,6 +2879,7 @@ class Api:
                     'species': species,
                     'family': family,
                     'active_scorer': active,
+                    'pipeline_major': folder_major,
                     'created': time.time(),
                 }
             return {
@@ -2947,7 +2960,7 @@ class Api:
                     species=sess['species'],
                     family=sess['family'],
                     app_version=app_version,
-                    pipeline_version=_pipeline_major,
+                    pipeline_version=sess.get('pipeline_major', _pipeline_major),
                     platform=platform,
                 )
                 res = qfc.submit(body, crops)
