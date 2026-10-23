@@ -26,12 +26,15 @@
 .scene-qf-link, .qf-link { color: var(--brand); text-decoration: none; }
 .scene-qf-link:hover, .qf-link:hover { text-decoration: underline; }
 
-/* Sort dialog */
+/* Sort dialog: uses most of the window so focus can be judged. Five crops
+   share the width (~340px each at 1920px); fewer crops get larger cards
+   (capped by the image max-height). Cards wrap below 230px, so a ~1280x720
+   window shows two rows and the body scrolls. */
 dialog.kdlg.qf-dlg {
-  width: min(900px, 96vw);
-  max-width: min(900px, 96vw);
+  width: 92vw;
+  max-width: 92vw;
   height: fit-content;
-  max-height: 92vh;
+  max-height: 85vh;
 }
 .qf-title { margin: 0 0 4px; font-size: 16px; line-height: 1.35; }
 .qf-subtitle { font-size: 13px; margin-bottom: 14px; }
@@ -40,13 +43,16 @@ dialog.kdlg.qf-dlg {
 
 .qf-list {
   display: flex;
-  gap: 10px;
+  gap: 12px;
   justify-content: center;
   flex-wrap: wrap;
 }
 .qf-card {
   position: relative;
-  width: 156px;
+  /* --qf-n (set from JS) equal columns; wraps only below 200px each. */
+  flex: 0 1 calc((100% - (var(--qf-n, 5) - 1) * 12px) / var(--qf-n, 5));
+  min-width: 200px;
+  max-width: 640px;
   padding: 4px;
   background: var(--card);
   border: 1px solid var(--card-border);
@@ -63,6 +69,7 @@ dialog.kdlg.qf-dlg {
   position: absolute;
   top: 8px;
   left: 8px;
+  z-index: 1;
   font-weight: 700;
   font-size: 12px;
   min-width: 20px;
@@ -72,15 +79,44 @@ dialog.kdlg.qf-dlg {
   background: var(--chip);
   color: var(--text);
 }
+.qf-zoom-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  padding: 1px 7px;
+  font-size: 13px;
+  line-height: 1.5;
+  border-radius: var(--radius-pill);
+  background: var(--chip);
+  color: var(--text);
+  border: 1px solid var(--card-border);
+  cursor: zoom-in;
+}
+.qf-zoom-btn:hover { border-color: var(--brand); }
 .qf-crop {
   width: 100%;
   aspect-ratio: 1 / 1;
-  object-fit: cover;
+  max-height: calc(85vh - 230px);
+  object-fit: contain;
   border-radius: var(--radius-sm);
   background: var(--bg);
   display: block;
   pointer-events: none;
 }
+/* Full-dialog inspect view of one crop (click or Esc to close). */
+.qf-zoom {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  background: rgba(0, 0, 0, .88);
+  cursor: zoom-out;
+}
+.qf-zoom img { max-width: 100%; max-height: 100%; object-fit: contain; }
 
 /* Consent step */
 .qf-consent-text { font-size: 13px; margin: 0 0 8px; line-height: 1.45; }

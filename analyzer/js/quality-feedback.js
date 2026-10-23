@@ -134,6 +134,7 @@
 
     function _qfClose(discard) {
       const dlg = document.getElementById('qfDlg');
+      _qfZoomClose();
       if (discard && _qf && !_qf.submitted && _qf.token) {
         try { window.pywebview?.api?.discard_quality_feedback?.(_qf.token); } catch (_) { }
       }
@@ -149,6 +150,26 @@
       img.draggable = false;
       if (f) img.src = f.data_url;
       return img;
+    }
+
+    function _qfZoomClose() {
+      const z = document.getElementById('qfZoom');
+      if (!z) return false;
+      z.remove();
+      return true;
+    }
+
+    // Enlarge one crop over the whole dialog; click or Esc closes it.
+    function _qfZoom(index) {
+      _qfZoomClose();
+      const dlg = document.getElementById('qfDlg');
+      const z = _qfEl('div', 'qf-zoom');
+      z.id = 'qfZoom';
+      const img = _qfImg(index);
+      img.className = '';
+      z.appendChild(img);
+      z.addEventListener('click', _qfZoomClose);
+      dlg.appendChild(z);
     }
 
     function _qfRankingFromItems() {
@@ -172,6 +193,7 @@
       footer.replaceChildren();
 
       const list = _qfEl('div', 'qf-list');
+      list.style.setProperty('--qf-n', String(_qf.items.length));
       list.setAttribute('role', 'list');
       list.setAttribute('aria-label', 'Crops, sharpest first');
       _qf.items.forEach((it, pos) => {
@@ -183,6 +205,14 @@
         card.dataset.pos = String(pos);
         card.appendChild(_qfEl('span', 'qf-rank', String(pos + 1)));
         card.appendChild(_qfImg(it.index));
+        const zoom = _qfEl('button', 'qf-zoom-btn', '🔍');
+        zoom.type = 'button';
+        zoom.title = 'Enlarge to inspect focus';
+        zoom.setAttribute('aria-label', 'Enlarge this crop');
+        zoom.draggable = false;
+        zoom.addEventListener('click', (e) => { e.stopPropagation(); _qfZoom(it.index); });
+        zoom.addEventListener('keydown', (e) => { if (e.key !== 'Escape') e.stopPropagation(); });
+        card.appendChild(zoom);
         // Arrow keys move the focused crop (keyboard fallback for drag).
         card.addEventListener('keydown', (e) => {
           const k = e.key;
@@ -347,7 +377,9 @@
       const dlg = document.getElementById('qfDlg');
       if (!dlg) return;
       dlg.addEventListener('keydown', (e) => { e.stopPropagation(); });
-      dlg.addEventListener('cancel', () => {
+      dlg.addEventListener('cancel', (e) => {
+        // Esc closes the enlarged crop first, not the whole dialog.
+        if (_qfZoomClose()) { e.preventDefault(); return; }
         if (_qf && !_qf.submitted && _qf.token) {
           try { window.pywebview?.api?.discard_quality_feedback?.(_qf.token); } catch (_) { }
         }

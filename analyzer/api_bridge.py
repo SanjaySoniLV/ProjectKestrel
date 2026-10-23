@@ -333,7 +333,7 @@ _QF_MODE_KEY = 'quality_feedback_mode'
 _QF_INSTALL_ID_KEY = 'quality_feedback_install_id'
 _QF_MODES = ('ask', 'always', 'never')
 _QF_MAX_SESSIONS = 8
-_QF_PREVIEW_MAX_SIDE = 512
+_QF_PREVIEW_MAX_SIDE = 1024
 
 _ALLOWED_ROOT = os.environ.get('KESTREL_ALLOWED_ROOT')
 if _ALLOWED_ROOT:
