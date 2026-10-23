@@ -1,7 +1,7 @@
     // ─── Quality feedback ──────────────────────────────────────────────────────
-    // "Did Kestrel sort this burst's sharpness well? 👍 👎" in the scene viewer.
-    // 👎 opens a dialog where the user drags 2–5 bird crops of the burst into
-    // order from sharpest to blurriest; 👍 offers the same dialog as optional.
+    // "Sharpness right? 👍 👎" in the scene viewer. 👎 opens a dialog where the
+    // user drags 2–5 bird crops of the burst into order, sharpest first (no
+    // ties, no extra controls: the ask should take seconds); 👍 offers it too.
     // Kestrel scores focus/sharpness only, so the dialog asks about focus only.
     // Frames are chosen (and shuffled) in Python — kestrel_analyzer/
     // quality_feedback.py — and the dialog never sees Kestrel's scores or order.
@@ -67,29 +67,29 @@
       if (_qfAnswered.has(_qfSceneKey(scene))) {
         const t = document.createElement('span');
         t.className = 'scene-qf-label';
-        t.textContent = 'Thanks for the feedback!';
+        t.textContent = 'Thanks!';
         box.appendChild(t);
         return;
       }
       const label = document.createElement('span');
       label.className = 'scene-qf-label';
-      label.textContent = "Did Kestrel sort this burst's sharpness well?";
+      label.textContent = 'Sharpness right?';
       box.appendChild(label);
-      box.appendChild(_qfButton('👍', 'Yes, the sharpness sort looks right', () => {
+      box.appendChild(_qfButton('👍', 'Yes', () => {
         _qfAnswered.add(_qfSceneKey(scene));
         box.replaceChildren();
         const t = document.createElement('span');
         t.className = 'scene-qf-label';
-        t.textContent = 'Thanks! Want to help more? ';
+        t.textContent = 'Thanks! ';
         const a = document.createElement('a');
         a.href = '#';
         a.className = 'scene-qf-link';
-        a.textContent = 'Sort a few frames';
+        a.textContent = 'Sort a few';
         a.addEventListener('click', (e) => { e.preventDefault(); a.blur(); qfOpenSortDialog(scene, 'up'); });
         t.appendChild(a);
         box.appendChild(t);
       }));
-      box.appendChild(_qfButton('👎', 'No — help Kestrel by sorting a few frames', () => {
+      box.appendChild(_qfButton('👎', 'No — sort a few', () => {
         qfOpenSortDialog(scene, 'down');
       }));
     }
@@ -122,8 +122,7 @@
       _qf = {
         scene, thumbs, token: res.token, mode: res.mode || qfMode(),
         frames: res.frames,                                  // [{index, data_url}] in shown order
-        items: res.frames.map(f => ({ index: f.index, tie: false })),  // current order
-        selected: null,
+        items: res.frames.map(f => ({ index: f.index })),  // current order
         started: performance.now(),
         durationMs: 0,
         ranking: null,
@@ -155,125 +154,48 @@
     }
 
     function _qfRankingFromItems() {
-      const groups = [];
-      for (const it of _qf.items) {
-        if (it.tie && groups.length) groups[groups.length - 1].push(it.index);
-        else groups.push([it.index]);
-      }
-      return groups;
+      return _qf.items.map(it => [it.index]);
     }
 
     function _qfMove(from, to) {
       const items = _qf.items;
       if (from === to || from < 0 || to < 0 || from >= items.length || to >= items.length) return;
-      // Ties are relative to the card above, so clear the ones a move breaks.
-      if (items[from + 1]) items[from + 1].tie = false;
       const [it] = items.splice(from, 1);
-      it.tie = false;
       items.splice(to, 0, it);
-      if (items[to + 1]) items[to + 1].tie = false;
-      if (items[0]) items[0].tie = false;
     }
 
+    // One step, no explanations: drag the crops into order, then Done.
     function _qfRenderSort() {
-      const title = document.getElementById('qfTitle');
-      const sub = document.getElementById('qfSubtitle');
       const body = document.getElementById('qfBody');
       const footer = document.getElementById('qfFooter');
+      document.getElementById('qfTitle').textContent = 'Drag to sort: sharpest first';
+      document.getElementById('qfSubtitle').textContent = 'Focus only.';
       body.replaceChildren();
       footer.replaceChildren();
-      sub.textContent = 'Judge focus only — the sharpest, most in-focus bird first. Pose and composition don’t count.';
-      const skip = _qfEl('button', '', 'Skip');
-      skip.type = 'button';
-      skip.addEventListener('click', () => _qfClose(true));
 
-      if (_qf.items.length === 2) {
-        title.textContent = 'Which is sharper?';
-        const row = _qfEl('div', 'qf-pair');
-        for (const it of _qf.items) {
-          const card = _qfEl('button', 'qf-card qf-card--choice');
-          card.type = 'button';
-          card.title = 'This one is sharper';
-          card.setAttribute('aria-label', 'This one is sharper');
-          card.appendChild(_qfImg(it.index));
-          card.appendChild(_qfEl('span', 'qf-card-cta', 'This one is sharper'));
-          card.addEventListener('click', () => {
-            const other = _qf.items.find(o => o.index !== it.index);
-            _qfFinishSort([[it.index], [other.index]]);
-          });
-          row.appendChild(card);
-        }
-        body.appendChild(row);
-        const tie = _qfEl('button', '', 'Too close to call');
-        tie.type = 'button';
-        tie.addEventListener('click', () => _qfFinishSort([_qf.items.map(i => i.index)]));
-        footer.append(skip, _qfEl('span', 'qf-spacer'), tie);
-        return;
-      }
-
-      title.textContent = 'Help Kestrel learn: drag these into order from sharpest to blurriest';
-      const ends = _qfEl('div', 'qf-ends');
-      ends.append(_qfEl('span', '', '◂ Sharpest'), _qfEl('span', '', 'Blurriest ▸'));
       const list = _qfEl('div', 'qf-list');
       list.setAttribute('role', 'list');
-      list.setAttribute('aria-label', 'Frames, sharpest first');
-      const groups = _qfRankingFromItems();
-      const rankOf = new Map();
-      groups.forEach((g, gi) => g.forEach(ix => rankOf.set(ix, gi + 1)));
-
+      list.setAttribute('aria-label', 'Crops, sharpest first');
       _qf.items.forEach((it, pos) => {
         const card = _qfEl('div', 'qf-card');
         card.setAttribute('role', 'listitem');
+        card.setAttribute('aria-label', `Position ${pos + 1} of ${_qf.items.length}`);
         card.tabIndex = 0;
         card.draggable = true;
         card.dataset.pos = String(pos);
-        if (_qf.selected === pos) card.classList.add('is-selected');
-        if (it.tie) card.classList.add('is-tied');
-        card.setAttribute('aria-label', `Position ${pos + 1} of ${_qf.items.length}${it.tie ? ', tied with the previous frame' : ''}. Arrow keys move it; T ties it with the previous frame.`);
-
-        const head = _qfEl('div', 'qf-card-head');
-        head.appendChild(_qfEl('span', 'qf-rank', it.tie ? `= ${rankOf.get(it.index)}` : String(rankOf.get(it.index))));
-        const moves = _qfEl('span', 'qf-moves');
-        const left = _qfEl('button', 'qf-mini', '◂');
-        left.type = 'button'; left.title = 'Move toward sharpest'; left.setAttribute('aria-label', left.title);
-        left.disabled = pos === 0;
-        left.addEventListener('click', (e) => { e.stopPropagation(); _qfMove(pos, pos - 1); _qf.selected = null; _qfRenderSort(); _qfFocus(pos - 1); });
-        const right = _qfEl('button', 'qf-mini', '▸');
-        right.type = 'button'; right.title = 'Move toward blurriest'; right.setAttribute('aria-label', right.title);
-        right.disabled = pos === _qf.items.length - 1;
-        right.addEventListener('click', (e) => { e.stopPropagation(); _qfMove(pos, pos + 1); _qf.selected = null; _qfRenderSort(); _qfFocus(pos + 1); });
-        moves.append(left, right);
-        head.appendChild(moves);
-        card.appendChild(head);
+        card.appendChild(_qfEl('span', 'qf-rank', String(pos + 1)));
         card.appendChild(_qfImg(it.index));
-
-        if (pos > 0) {
-          const tie = _qfEl('button', 'qf-tie', it.tie ? '= Too close to call' : 'Too close to call');
-          tie.type = 'button';
-          tie.title = 'Tie this frame with the one before it';
-          tie.setAttribute('aria-pressed', it.tie ? 'true' : 'false');
-          tie.addEventListener('click', (e) => { e.stopPropagation(); it.tie = !it.tie; _qfRenderSort(); _qfFocus(pos); });
-          card.appendChild(tie);
-        } else {
-          card.appendChild(_qfEl('div', 'qf-tie-spacer'));
-        }
-
-        // Click to pick up, click another card to place it there.
-        card.addEventListener('click', () => {
-          if (_qf.selected === null) _qf.selected = pos;
-          else if (_qf.selected === pos) _qf.selected = null;
-          else { _qfMove(_qf.selected, pos); _qf.selected = null; }
-          _qfRenderSort();
-          _qfFocus(pos);
-        });
+        // Arrow keys move the focused crop (keyboard fallback for drag).
         card.addEventListener('keydown', (e) => {
           const k = e.key;
-          if (k === 'ArrowLeft' || k === 'ArrowUp') { e.preventDefault(); if (pos > 0) { _qfMove(pos, pos - 1); _qfRenderSort(); _qfFocus(pos - 1); } }
-          else if (k === 'ArrowRight' || k === 'ArrowDown') { e.preventDefault(); if (pos < _qf.items.length - 1) { _qfMove(pos, pos + 1); _qfRenderSort(); _qfFocus(pos + 1); } }
-          else if ((k === 't' || k === 'T') && pos > 0) { e.preventDefault(); it.tie = !it.tie; _qfRenderSort(); _qfFocus(pos); }
-          else if (k === 'Enter' || k === ' ') { e.preventDefault(); card.click(); }
+          const to = (k === 'ArrowLeft' || k === 'ArrowUp') ? pos - 1
+            : (k === 'ArrowRight' || k === 'ArrowDown') ? pos + 1 : null;
+          if (to === null || to < 0 || to >= _qf.items.length) return;
+          e.preventDefault();
+          _qfMove(pos, to);
+          _qfRenderSort();
+          _qfFocus(to);
         });
-        // HTML5 drag and drop.
         card.addEventListener('dragstart', (e) => {
           e.dataTransfer.effectAllowed = 'move';
           try { e.dataTransfer.setData('text/plain', String(pos)); } catch (_) { }
@@ -287,14 +209,15 @@
           const from = parseInt(e.dataTransfer.getData('text/plain'), 10);
           if (!Number.isInteger(from)) return;
           _qfMove(from, pos);
-          _qf.selected = null;
           _qfRenderSort();
         });
         list.appendChild(card);
       });
-      body.append(ends, list);
-      body.appendChild(_qfEl('div', 'qf-hint', 'Drag a frame, or click one and then click where it goes. Arrow keys move the focused frame.'));
+      body.appendChild(list);
 
+      const skip = _qfEl('button', '', 'Skip');
+      skip.type = 'button';
+      skip.addEventListener('click', () => _qfClose(true));
       const done = _qfEl('button', 'primary', 'Done');
       done.type = 'button';
       done.addEventListener('click', () => _qfFinishSort(_qfRankingFromItems()));
@@ -317,36 +240,28 @@
     }
 
     function _qfRenderConsent() {
-      document.getElementById('qfTitle').textContent = 'Share these crops and your ranking to improve Kestrel’s quality sorting?';
+      document.getElementById('qfTitle').textContent = 'Share these crops with Kestrel?';
       document.getElementById('qfSubtitle').textContent = '';
       const body = document.getElementById('qfBody');
       const footer = document.getElementById('qfFooter');
       body.replaceChildren();
       footer.replaceChildren();
-      const p1 = _qfEl('p', 'qf-consent-text',
-        'Sent: the bird crops only (not your full photos, no location or EXIF data), your ranking, Kestrel’s scores, the species, the app version and an anonymous install id.');
-      const p2 = _qfEl('p', 'qf-consent-text muted', 'It isn’t linked to your account, and you can delete it any time from Settings. ');
-      const link = _qfEl('a', 'qf-link', 'Privacy policy');
+      const p = _qfEl('p', 'qf-consent-text muted', 'Just these crops, your order and Kestrel’s scores. Anonymous. ');
+      const link = _qfEl('a', 'qf-link', 'Privacy');
       link.href = QF_PRIVACY_URL;
       link.addEventListener('click', (e) => {
         e.preventDefault();
         try { window.pywebview?.api?.open_url?.(QF_PRIVACY_URL); } catch (_) { }
       });
-      p2.appendChild(link);
-      const thumbs = _qfEl('div', 'qf-consent-thumbs');
-      for (const f of _qf.frames) {
-        const t = _qfImg(f.index);
-        t.className = 'qf-crop qf-crop--thumb';
-        thumbs.appendChild(t);
-      }
+      p.appendChild(link);
       const remember = _qfEl('label', 'inline qf-remember');
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.id = 'qfRemember';
-      remember.append(cb, _qfEl('span', 'muted', ' Remember my choice'));
-      body.append(thumbs, p1, p2, remember);
+      remember.append(cb, _qfEl('span', 'muted', ' Don’t ask again'));
+      body.append(p, remember);
 
-      const notNow = _qfEl('button', '', 'Not now');
+      const notNow = _qfEl('button', '', 'No');
       notNow.type = 'button';
       notNow.addEventListener('click', () => {
         if (cb.checked) _qfSetMode('never');
@@ -433,11 +348,8 @@
           const row = _qfEl('div', 'qf-log-row');
           const when = _qfEl('span', 'qf-log-time', String(en.time || '').replace('T', ' ').replace('Z', ' UTC'));
           const sp = Array.isArray(en.species) && en.species.length ? en.species.join(', ') : 'Unknown species';
-          const what = _qfEl('span', 'qf-log-what', `${sp} — ${en.n || '?'} crops, ${en.thumbs === 'up' ? '👍' : '👎'}`);
-          const rank = Array.isArray(en.ranking)
-            ? en.ranking.map(g => Array.isArray(g) ? g.join(' = ') : String(g)).join(' > ')
-            : '';
-          row.append(when, what, _qfEl('span', 'qf-log-rank muted', rank ? `Ranking (crop #): ${rank}` : ''));
+          const what = _qfEl('span', 'qf-log-what', `${sp} · ${en.n || '?'} crops`);
+          row.append(when, what);
           list.appendChild(row);
         }
       }

@@ -38,15 +38,6 @@ dialog.kdlg.qf-dlg {
 .qf-spacer { flex: 1; }
 .qf-footer { align-items: center; }
 
-.qf-ends {
-  display: flex;
-  justify-content: space-between;
-  font-size: 11px;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: .5px;
-  margin-bottom: 6px;
-}
 .qf-list {
   display: flex;
   gap: 10px;
@@ -54,43 +45,33 @@ dialog.kdlg.qf-dlg {
   flex-wrap: wrap;
 }
 .qf-card {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  position: relative;
   width: 156px;
-  padding: 8px;
+  padding: 4px;
   background: var(--card);
   border: 1px solid var(--card-border);
   border-radius: var(--radius-md);
   cursor: grab;
   user-select: none;
   box-sizing: border-box;
-  color: var(--text);
 }
+.qf-card:active { cursor: grabbing; }
 .qf-card:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
-.qf-card.is-selected { border-color: var(--brand); box-shadow: 0 0 0 1px var(--brand); }
 .qf-card.is-dragging { opacity: .45; }
 .qf-card.is-drop-target { border-color: var(--brand); border-style: dashed; }
-.qf-card.is-tied { border-left: 3px solid var(--warn); }
-.qf-card-head { display: flex; align-items: center; justify-content: space-between; }
 .qf-rank {
+  position: absolute;
+  top: 8px;
+  left: 8px;
   font-weight: 700;
-  font-size: 13px;
-  min-width: 22px;
+  font-size: 12px;
+  min-width: 20px;
   text-align: center;
   padding: 1px 6px;
   border-radius: var(--radius-pill);
   background: var(--chip);
+  color: var(--text);
 }
-.qf-card.is-tied .qf-rank { color: var(--warn); }
-.qf-moves { display: inline-flex; gap: 4px; }
-.qf-mini {
-  padding: 0 7px;
-  font-size: 12px;
-  line-height: 1.6;
-  border-radius: var(--radius-sm);
-}
-.qf-mini:disabled { opacity: .35; cursor: default; }
 .qf-crop {
   width: 100%;
   aspect-ratio: 1 / 1;
@@ -100,28 +81,8 @@ dialog.kdlg.qf-dlg {
   display: block;
   pointer-events: none;
 }
-.qf-tie {
-  font-size: 11px;
-  padding: 3px 6px;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  border: 1px solid var(--card-border);
-  color: var(--muted);
-  cursor: pointer;
-}
-.qf-tie[aria-pressed="true"] { color: var(--warn); border-color: var(--warn); }
-.qf-tie-spacer { height: 22px; }
-.qf-hint { font-size: 12px; color: var(--muted); margin-top: 12px; text-align: center; }
-
-/* Two-frame "Which is sharper?" */
-.qf-pair { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; }
-.qf-card--choice { width: 260px; height: auto; cursor: pointer; align-items: center; font: inherit; }
-.qf-card--choice:hover { border-color: var(--brand); }
-.qf-card-cta { font-size: 12px; color: var(--muted); }
 
 /* Consent step */
-.qf-consent-thumbs { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
-.qf-crop--thumb { width: 72px; }
 .qf-consent-text { font-size: 13px; margin: 0 0 8px; line-height: 1.45; }
 .qf-remember { font-size: 13px; gap: 6px; margin-top: 6px; }
 
@@ -138,4 +99,3 @@ dialog.kdlg.qf-dlg {
   font-size: 13px;
 }
 .qf-log-time { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.qf-log-rank { font-size: 12px; }
