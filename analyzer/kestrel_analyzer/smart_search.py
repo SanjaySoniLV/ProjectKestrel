@@ -274,6 +274,31 @@ def _zscore(values: Dict[str, float]) -> Dict[str, float]:
     return {k: (v - mu) / sd for k, v in values.items()}
 
 
+# Display mapping for the UI's "NN% match". The ranking score is a per-query z-score over the
+# folder's images (see the module docstring), not a probability and not comparable across
+# queries or folders, so we do not pretend it is one. We rescale it linearly and clamp:
+# z <= Z_FLOOR (about as similar as an average photo of the folder) -> 0%, z >= Z_CEIL
+# (a strong outlier; top hits of a real match typically land around 3-5) -> 100%. A linear
+# map keeps the percentages in the same order as the ranking and stable as results are
+# added or removed, unlike a softmax over the current results, which would change every
+# card's value whenever the result set changes. It reads as "how far above this folder's
+# typical photo", not as a calibrated chance that the photo is right.
+MATCH_Z_FLOOR = 0.0
+MATCH_Z_CEIL = 4.0
+
+
+def match_percent(z: float) -> int:
+    """Map an image z-score to a 0-100 integer for display (see ``MATCH_Z_FLOOR``)."""
+    try:
+        z = float(z)
+    except (TypeError, ValueError):
+        return 0
+    if z != z:  # NaN
+        return 0
+    frac = (z - MATCH_Z_FLOOR) / (MATCH_Z_CEIL - MATCH_Z_FLOOR)
+    return int(round(100.0 * min(1.0, max(0.0, frac))))
+
+
 def merge_image_scores(crop_best: Dict[str, float], frame: Dict[str, float]) -> Dict[str, float]:
     """``max(z(frame), z(best crop))`` per image; z over the folder's images per source."""
     zc, zf = _zscore(crop_best), _zscore(frame)
@@ -418,12 +443,18 @@ def search_folder(kestrel_dir: str, query: str, limit: int = DEFAULT_LIMIT, enco
             best_scene[sid] = (s, fn)
     ranked = sorted(best_scene.items(), key=lambda kv: (-kv[1][0], kv[1][1]))[:limit]
     top = {sid for sid, _ in ranked}
+    # ``percent`` only for SigLIP scores (z-scores); filter-only scores are quality values.
+    def pct(s: float) -> Optional[int]:
+        return match_percent(s) if result["mode"].startswith("semantic") else None
+
     result["scenes"] = [
-        {"scene_id": sid, "score": round(s, 5), "best_filename": fn, "best_crop": best_crop.get(fn, 0)}
+        {"scene_id": sid, "score": round(s, 5), "percent": pct(s), "best_filename": fn,
+         "best_crop": best_crop.get(fn, 0)}
         for sid, (s, fn) in ranked
     ]
     result["images"] = sorted(
-        ({"filename": fn, "scene_id": scene_of[fn], "score": round(s, 5), "crop_index": best_crop.get(fn, 0)}
+        ({"filename": fn, "scene_id": scene_of[fn], "score": round(s, 5), "percent": pct(s),
+          "crop_index": best_crop.get(fn, 0)}
          for fn, s in scores.items() if scene_of[fn] in top),
         key=lambda r: (-r["score"], r["filename"]),
     )

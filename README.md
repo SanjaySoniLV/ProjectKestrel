@@ -149,6 +149,7 @@ Kestrel runs a four-stage pipeline that builds objective data about every frame.
 - Quality scores are used to rank images within a scene by sharpness.
 
 ### Smart search
+- One search box does both jobs. A species or family name on its own ("Roseate Spoonbill", "spoonbills") filters the timeline as before; anything more — "spoonbill wading", "bird in flight at sunset" — is a smart search. Results show a "NN% match" score (how far above a typical photo in the folder the match is; a relative strength, not a probability), and right-clicking a result, or its hover button, jumps to that scene in the full timeline.
 - Describe the moment — "bird in flight", "perched on a wire", "two birds", "blurry" — or name a bird with it — "heron in a marsh", "dove pair". Bird species, families and wildlife in the query are detected (typos and plurals are fine) and become filter chips; the rest is matched against SigLIP 2 embeddings of every bird crop *and* every whole frame.
 - Folders analysed with an older version can be upgraded in place (*Folder Actions → Upgrade to Analysis Pipeline 3.0*) from the crops Kestrel already saved — no re-analysis, and your ratings, culls and tags are never touched.
 

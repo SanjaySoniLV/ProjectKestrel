@@ -355,3 +355,41 @@ def semantic_text(parsed: ParsedQuery) -> str:
     if parsed.matches:
         return parsed.query.strip()
     return rem
+
+
+@dataclass(frozen=True)
+class QueryRoute:
+    """How the single search box handles a query (see :func:`classify_query`)."""
+    kind: str                      # "empty" | "filter" | "semantic"
+    labels: Tuple[str, ...] = ()   # filter: the species/family tag values to match
+
+
+def classify_query(
+    query: str,
+    index: Optional[QueryIndex] = None,
+    folder_species: Iterable[str] = (),
+    folder_families: Iterable[str] = (),
+) -> QueryRoute:
+    """Decide whether a search-box query is a plain species/family filter.
+
+    ``"filter"``: after the catalog match (common/scientific names, families,
+    wildlife labels, folder "group" words; plurals and small typos tolerated)
+    every word of the trimmed query is part of a match, apart from filler such
+    as "birds" or a trailing "and". "Spoonbill", "roseate spoonbills" and
+    "spoonbil" qualify. ``labels`` are the tag values to filter by.
+
+    ``"semantic"``: anything with words left over ("spoonbill wading",
+    "bird in flight at sunset") or no catalog match at all. ``"empty"``: blank.
+    """
+    q = " ".join(str(query or "").split())
+    if not q:
+        return QueryRoute("empty")
+    parsed = parse_query(q, index=index, folder_species=folder_species, folder_families=folder_families)
+    if parsed.matches and not parsed.remainder.strip():
+        labels: List[str] = []
+        for m in parsed.matches:
+            for lab in (m.labels or (m.label,)):
+                if lab and lab not in labels:
+                    labels.append(lab)
+        return QueryRoute("filter", tuple(labels))
+    return QueryRoute("semantic")

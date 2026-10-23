@@ -169,9 +169,7 @@
     <div id="mainZoom">
       <!-- Sticky top filter/sort bar — sits above the timeline, hidden when welcome panel is shown -->
       <div id="timelineFilterBar" class="timeline-filter-bar hidden" role="region" aria-label="Filter and sort options">
-        <input id="search" type="search" placeholder="🔍 Search by species or family" class="tfb-search" />
-        <button id="smartSearchToggle" type="button" class="tfb-smart-toggle" aria-pressed="false"
-          title="Smart search: describe what is happening (&quot;bird in flight&quot;, &quot;perched on a wire&quot;, &quot;two birds&quot;, &quot;blurry&quot;) and/or name a bird (&quot;heron in a marsh&quot;, &quot;dove pair&quot;). Bird names, families and wildlife in your query are detected and become filter chips you can remove.">✨ Smart search</button>
+        <input id="search" type="search" placeholder="🔍 Search species, family, or describe a photo" title="Type a species or family to filter the timeline, or describe what is happening (&quot;bird in flight&quot;, &quot;spoonbill wading&quot;) for smart search. Right-click a result for Go to scene in timeline." class="tfb-search" />
         <label class="tfb-field" title="Minimum confidence threshold for species classification">
           <span class="tfb-label">Confidence</span>
           <input id="speciesConf" type="number" min="0" max="1" step="0.05" value="0.75" class="tfb-conf" />

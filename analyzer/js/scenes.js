@@ -111,16 +111,23 @@
       // the bird-catalog cache. The sci-name check is gated on the toggle
       // so the search experience matches the visible UI: if a user can't
       // see Latin names, typing one shouldn't covertly affect results.
-      // Experimental smart search (js/smart-search.js) replaces the text
-      // predicate AND the sort with its own score order while its toggle is
-      // on; until the first reply arrives the scene list stays unfiltered.
+      // Unified search (js/smart-search.js): a query that is not just a
+      // species/family name is a smart search, which replaces the text
+      // predicate AND the sort with its own score order; until the first reply
+      // arrives the scene list stays unfiltered.
+      if (typeof smartSearchRememberTags === 'function') smartSearchRememberTags(list);
       if (typeof smartSearchOwnsQuery === 'function' && smartSearchOwnsQuery()) {
         if (smartSearchIsActive()) return smartSearchApply(list);
         searchTerm = '';
       }
       const q = (searchTerm || '').trim().toLowerCase();
       const sciSearch = !!q && _getShowSciNames();
-      const filtered = q ? list.filter(s => _sceneMatchesQuery(s, q, sciSearch)) : list;
+      // A pure species/family query also matches the canonical tag the classifier
+      // resolved it to ("spoonbills" -> "Roseate Spoonbill", a Latin name, a typo).
+      const extraLabels = q && typeof smartSearchFilterLabels === 'function' ? smartSearchFilterLabels(q) : [];
+      const filtered = q
+        ? list.filter(s => _sceneMatchesQuery(s, q, sciSearch) || extraLabels.some(l => _sceneMatchesQuery(s, l, false)))
+        : list;
 
       // sort
       const sorted = filtered.sort((a, b) => {

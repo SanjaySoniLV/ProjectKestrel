@@ -2678,6 +2678,32 @@ class Api:
             error(f'[API] smart_search_status({folder_path!r}) error: {e}')
             return {'success': False, 'error': str(e)}
 
+    def classify_search_query(self, query: str, folder_species=None, folder_families=None) -> dict:
+        """Route a search-box query: plain species/family filter or smart search.
+
+        Returns ``{success, kind, labels}`` where ``kind`` is ``filter`` (use the
+        species/family timeline filter; ``labels`` are the matching tag values),
+        ``semantic`` (smart search) or ``empty``. ``folder_species`` /
+        ``folder_families`` are the tags in the loaded folders (optional).
+        """
+        try:
+            if not isinstance(query, str):
+                return {'success': False, 'error': 'query must be a string'}
+
+            def _names(v):
+                return [x[:200] for x in v[:5000] if isinstance(x, str)] if isinstance(v, list) else []
+
+            try:
+                from kestrel_analyzer import query_parser as _qp
+            except ImportError:
+                from analyzer.kestrel_analyzer import query_parser as _qp  # type: ignore[no-redef]
+            route = _qp.classify_query(query[:500], folder_species=_names(folder_species),
+                                       folder_families=_names(folder_families))
+            return {'success': True, 'kind': route.kind, 'labels': list(route.labels)}
+        except Exception as e:
+            error(f'[API] classify_search_query error: {e}')
+            return {'success': False, 'error': str(e)}
+
     def smart_search(self, folder_path: str, query: str, limit: int = 48, options=None) -> dict:
         """Rank a folder's scenes for a smart-search query.
 

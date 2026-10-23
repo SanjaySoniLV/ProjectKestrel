@@ -364,7 +364,11 @@
     });
 
     el('#saveCsv').addEventListener('click', saveCsv);
-    el('#search').addEventListener('input', debounce(() => renderScenes(), 250));
+    // The search box is unified: smartSearchOnInput() classifies the query (species/family
+    // filter vs smart search) and renders; plain renderScenes() if smart-search.js is absent.
+    el('#search').addEventListener('input', debounce(() => {
+      if (typeof smartSearchOnInput === 'function') smartSearchOnInput(); else renderScenes();
+    }, 250));
     el('#speciesConf').addEventListener('change', () => renderScenes());
     el('#sortBy').addEventListener('change', () => {
       const s = loadSettings();

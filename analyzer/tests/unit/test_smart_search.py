@@ -198,6 +198,7 @@ def test_species_in_query_filters(folder):
     # "doves" -> family/species chip; filter-only, sorted by quality.
     res = ss.search_folder(kdir, "mourning doves", encoder=StubEncoder())
     assert res["mode"] == "filter"
+    assert all(i["percent"] is None for i in res["images"])   # quality values, not match scores
     assert [c["label"] for c in res["chips"]] == ["Mourning Dove"] and res["chips"][0]["hits"] == 1
     assert [i["filename"] for i in res["images"]] == ["C.CR3"]
     # Filter + semantic remainder: only sparrows, ranked by "green".
@@ -205,6 +206,9 @@ def test_species_in_query_filters(folder):
     assert res["mode"] == "semantic+filter"
     assert {i["filename"] for i in res["images"]} <= {"A.CR3", "B.CR3"}
     assert res["images"][0]["filename"] == "B.CR3"
+    assert all(0 <= i["percent"] <= 100 for i in res["images"] + res["scenes"])
+    pcts = [i["percent"] for i in res["images"]]
+    assert pcts == sorted(pcts, reverse=True)
     # Un-chipping the words turns the filter off.
     res = ss.search_folder(kdir, "mourning doves", encoder=StubEncoder(), disabled_terms=["mourning doves"])
     assert res["chips"] == [] and res["mode"] == "semantic"
@@ -234,6 +238,19 @@ def test_merge_image_scores_zscore():
     # Single-source images just use the one z they have.
     assert out["c"] == pytest.approx(0.0, abs=1e-6)
     assert ss.merge_image_scores({}, {}) == {}
+
+
+def test_match_percent_mapping():
+    assert ss.match_percent(ss.MATCH_Z_FLOOR) == 0
+    assert ss.match_percent(-3.0) == 0                      # below average clamps to 0
+    assert ss.match_percent(ss.MATCH_Z_CEIL) == 100
+    assert ss.match_percent(12.0) == 100                    # clamps to 100
+    assert ss.match_percent(2.0) == 50
+    assert ss.match_percent(float("nan")) == 0
+    assert ss.match_percent("junk") == 0
+    zs = [-1, 0, 0.7, 1.5, 2.5, 3.9, 6]
+    pcts = [ss.match_percent(z) for z in zs]
+    assert pcts == sorted(pcts)                             # monotonic: keeps ranking order
 
 
 def test_empty_query_returns_no_scenes(folder):
@@ -288,6 +305,16 @@ def _wait(api, job_id):
             return p
         time.sleep(0.02)
     return p
+
+
+def test_bridge_classify_search_query(api):
+    r = api.classify_search_query("Roseate Spoonbill")
+    assert r == {"success": True, "kind": "filter", "labels": ["Roseate Spoonbill"]}
+    assert api.classify_search_query("spoonbill wading")["kind"] == "semantic"
+    assert api.classify_search_query("  ")["kind"] == "empty"
+    r = api.classify_search_query("robin", ["American Robin", 5], "nope")
+    assert r["kind"] == "filter" and "American Robin" in r["labels"]
+    assert not api.classify_search_query(None)["success"]
 
 
 def test_bridge_search_and_upgrade(api, folder):
