@@ -227,6 +227,9 @@ class AnalysisPipeline:
     # always have size>0 when iterated, so the change is functionally a no-op
     # on desktop.)
     _POINTER_MAX_WAIT_SEC: float = 2.0
+    # A path that stays ABSENT (not a 0-byte pointer) this long, with no .tmp
+    # download, is genuinely missing and is decoded so the real error surfaces.
+    _POINTER_ABSENT_GRACE_SEC: float = 2.0
     # Extended ceiling when a download IS in progress (a `.tmp` file exists in
     # the same directory). Covers the worst case of slow network streams +
     # retries so we don't falsely error out a legitimately-arriving file. A pointer
@@ -264,12 +267,20 @@ class AnalysisPipeline:
         # If this is a zero-byte pointer file (streaming/batch mode), wait for
         # the download thread to atomically replace it with real image data.
         waited = 0.0
+        absent_for = 0.0
         while True:
             try:
                 size = os.path.getsize(image_path)
+                absent_for = 0.0
             except OSError:
                 size = 0  # Briefly absent during atomic os.replace — retry
+                absent = True
+            else:
+                absent = False
             if size > 0:
+                break
+            # On POSIX os.replace never leaves the destination absent, and pointers are reset to 0 bytes (not deleted) at batch boundaries, so a file that stays missing is genuinely missing.
+            if absent and absent_for >= self._POINTER_ABSENT_GRACE_SEC and not os.path.exists(image_path + ".tmp"):
                 break
             # Is the fetcher actively downloading this file? The downloader
             # writes to "{image_path}.tmp" first, then atomically renames to the
@@ -314,6 +325,8 @@ class AnalysisPipeline:
                 )
             time.sleep(self._POINTER_WAIT_SEC)
             waited += self._POINTER_WAIT_SEC
+            if absent:
+                absent_for += self._POINTER_WAIT_SEC
 
         try:
             # read_image_for_pipeline() raises on failure, and this whole body
