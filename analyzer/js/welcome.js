@@ -9,14 +9,14 @@
     // projectkestrel.org/whats-new.json; that remote-override path was removed —
     // the note now lives entirely in the app.)
     const WHATS_NEW = {
-      version: 'ruddy-turnstone',
-      eyebrow: 'v(Ruddy Turnstone)',
+      version: 'arctic-tern',
+      eyebrow: 'v(Arctic Tern)',
       // The release's namesake bird. `whatsnew-bird.jpg` is a STABLE filename
       // whose contents are replaced each release, so the three PyInstaller
       // specs list it once and never need touching again. Update `heroAlt`
       // with the new bird — it is the only per-release part.
       heroImg: 'whatsnew-bird.jpg',
-      heroAlt: 'Ruddy Turnstone',
+      heroAlt: 'Arctic Tern',
       title: 'What’s New in Project Kestrel',
       subtitle: 'Updates across Project Kestrel, Perch & Cloud Compute',
       cards: [
@@ -24,12 +24,15 @@
           // Desktop app logo — bundled at the static-server root (see .spec datas).
           iconImg: 'logo.png',
           name: 'Project Kestrel',
-          tag: 'New in v(Ruddy Turnstone)',
+          tag: 'New in v(Arctic Tern)',
           bullets: [
-            'If you moved or deleted photos from a folder, Kestrel will notice and finally offer you a path to fix the data. A new <b>Repair</b> dialog offers to reconcile the differences so you don’t need to re-analyze each time.',
-            'The scene grid now <b>shows your decisions</b>: each thumbnail is the best photo you accepted, hovering the image count breaks out accepted, undecided and rejected, and a new filter shows <b>only unreviewed scenes</b>. (this feature came from a user suggestion!)',
-            '<b>7/8/9</b> join Z/X/C for Accept/Undecided/Reject (accessibility improvement, from a user suggestion!)',
-            'Very large round of bug fixes and stability improvements: <b>culling decisions made during analysis are no longer erased</b>, sidecars you edited in Lightroom are no longer overwritten silently, and a crash now records <b>which stage it died in</b>.',
+            'One of the most significant updates to date, v(Arctic Tern) introduces analysis v3.0, with several major improvements.',
+            'Kestrel can now accurately identify bird species worldwide, not just in North America. Accuracy for bird species recognition is significantly improved.',
+            'New <b>Smart Search</b>: find your photos by simply describing what you remember, ex. “herons in a marsh” or “flock of doves in flight”. Works on all folders analyzed with pipeline v3.0. Results show a % match and can jump to the scene in your timeline.',
+            'Improved sharpness scoring: Kestrel should more accurately sort your photos from sharpest to blurriest within a burst.',
+            '<b>Help improve sharpness scoring</b> (optional): sort a burst from sharpest to blurriest and choose whether to share the crops. The sort dialog now has larger thumbnails and a zoom button.',
+            '<b>Regroup Scenes</b>, <b>Cloud Compute on the new pipeline</b>, and many stability and data-safety fixes.',
+            'Important: Folders analyzed on previous versions of Kestrel can be upgraded to v3.0 without requiring full re-analysis.',
           ],
         },
         {
