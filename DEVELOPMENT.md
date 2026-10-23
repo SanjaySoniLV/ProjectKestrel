@@ -287,7 +287,8 @@ caller. All ML model loading is lazy and triggered by
 - `ml/siglip.py` — SigLIP 2 image/text encoders and the calibrated sharpness
   score; `quality_model.py` picks which stored score is "the" quality.
 - `smart_search.py` + `query_parser.py` — smart search (species chips +
-  SigLIP crop/frame scoring); `upgrade_v3.py` — upgrade an analysed folder to
+  SigLIP crop/frame scoring, `match_percent` display score); `query_parser.classify_query`
+  routes the single search box between the species/family filter and smart search; `upgrade_v3.py` — upgrade an analysed folder to
   pipeline 3.0 from its stored crops.
 - `ml/providers.py` — per-session provider / node-placement diagnostics and
   the BioCLIP/SigLIP tower device policy.

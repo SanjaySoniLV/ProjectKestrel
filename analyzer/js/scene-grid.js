@@ -104,6 +104,7 @@
       const reviewStateFilter = document.getElementById('filterSceneReviewState')?.value
         || getSetting('sceneReviewFilter', 'all');
       // Smart-search results are shown flat, in score order (no folder/time grouping).
+      const _searchOn = !!String(search || '').trim();
       const _smartActive = typeof smartSearchIsActive === 'function' && smartSearchIsActive();
       const groupByFolder = !_smartActive && (document.getElementById('groupByFolder')?.checked ?? getSetting('groupByFolder', true));
       const groupByTime = !_smartActive && (document.getElementById('groupByTime')?.checked ?? getSetting('groupByTime', true));
@@ -321,6 +322,14 @@
           rank.textContent = `#${s.smartRank}`;
           rank.title = `Smart search rank ${s.smartRank} (score ${Number(s.smartScore).toFixed(3)})`;
           th.appendChild(rank);
+          if (s.smartPercent != null) {
+            const pct = document.createElement('span');
+            pct.className = 'smart-search-pct';
+            pct.textContent = `${s.smartPercent}% match`;
+            pct.title = 'How far this photo sits above the typical photo in its folder for this search, '
+              + 'scaled to 0-100%. A relative match strength, not a probability.';
+            th.appendChild(pct);
+          }
           const nImgs = (s.images || []).length;
           if (nImgs > 1 && s.smartMatchCount) {
             const m = document.createElement('span');
@@ -329,6 +338,17 @@
             m.title = `${s.smartMatchCount} of ${nImgs} photos in this scene match; the card shows the best match`;
             th.appendChild(m);
           }
+        }
+        if (_searchOn) {
+          // Hover button; the right-click menu (below) does the same.
+          const goBtn = document.createElement('button');
+          goBtn.type = 'button';
+          goBtn.className = 'card-goto-btn';
+          goBtn.textContent = '🕒';
+          goBtn.title = 'Show in timeline';
+          goBtn.setAttribute('aria-label', 'Show in timeline');
+          goBtn.addEventListener('click', (ev) => { ev.stopPropagation(); goToSceneInTimeline(s.id); });
+          th.appendChild(goBtn);
         }
         if (showBirdThumbs && s.representative?.crop_path && s.representative?.export_path) {
           const row = document.createElement('div');
@@ -508,6 +528,14 @@
           _lastSelectedIdx = _visibleSceneOrder.indexOf(sid);
           openSceneDialog(sid);
         });
+        if (_searchOn) {
+          card.addEventListener('contextmenu', (ev) => {
+            ev.preventDefault();
+            _openCardContextMenu(ev.clientX, ev.clientY, [
+              { icon: '🕒', label: 'Go to scene in timeline', run: () => goToSceneInTimeline(s.id) },
+            ]);
+          });
+        }
         return card;
       }
 
@@ -839,6 +867,65 @@
         card.classList.add('focused');
         card.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
+    }
+
+    // Right-click menu on a scene card (search results). One menu at a time; closes on
+    // any outside mousedown, Escape, scroll or window blur. Reuses the Folder Actions styling.
+    let _cardContextMenu = null;
+    function _closeCardContextMenu() {
+      if (_cardContextMenu && _cardContextMenu.parentNode) _cardContextMenu.parentNode.removeChild(_cardContextMenu);
+      _cardContextMenu = null;
+    }
+    document.addEventListener('mousedown', (ev) => {
+      if (_cardContextMenu && !_cardContextMenu.contains(ev.target)) _closeCardContextMenu();
+    });
+    document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') _closeCardContextMenu(); });
+    document.addEventListener('scroll', () => _closeCardContextMenu(), true);
+    window.addEventListener('blur', () => _closeCardContextMenu());
+
+    function _openCardContextMenu(x, y, items) {
+      _closeCardContextMenu();
+      const menu = document.createElement('div');
+      menu.className = 'card-context-menu';
+      for (const it of items) {
+        const row = document.createElement('div');
+        row.className = 'folder-group-actions-item';
+        const icon = document.createElement('i');
+        icon.textContent = it.icon;
+        row.appendChild(icon);
+        row.appendChild(document.createTextNode(' ' + it.label));
+        row.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          _closeCardContextMenu();
+          try { it.run(); } catch (e) { console.error('[card-menu]', it.label, e); }
+        });
+        menu.appendChild(row);
+      }
+      document.body.appendChild(menu);
+      // Keep the menu inside the window.
+      const r = menu.getBoundingClientRect();
+      menu.style.left = Math.max(4, Math.min(x, window.innerWidth - r.width - 4)) + 'px';
+      menu.style.top = Math.max(4, Math.min(y, window.innerHeight - r.height - 4)) + 'px';
+      _cardContextMenu = menu;
+    }
+
+    /** Leave the search / filtered view and show a scene at its place in the full timeline:
+     *  clears the search box, re-renders, expands its folder group if collapsed, then
+     *  scrolls to the card and gives it the keyboard-focus highlight. */
+    async function goToSceneInTimeline(sceneId) {
+      const sid = String(sceneId);
+      const rp = scenes.find(s => String(s.id) === sid)?.representative?.__rootPath || '';
+      if (rp) collapsedFolders.delete(rp);
+      const input = el('#search');
+      if (input) input.value = '';
+      if (typeof smartSearchOnInput === 'function') await smartSearchOnInput(); else await renderScenes();
+      const card = sceneGrid.querySelector(`.card[data-scene-id="${CSS.escape(sid)}"]`);
+      if (!card) {
+        showToast('That scene is hidden by the review-state filter.', 4000);
+        return;
+      }
+      _lastSelectedIdx = _visibleSceneOrder.indexOf(sid);
+      _focusGridCard(sid);
     }
 
     // Clear the focused-card highlight

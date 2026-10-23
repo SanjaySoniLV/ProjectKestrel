@@ -124,3 +124,41 @@ def test_normalisation_helpers():
     assert qp.singular("grass") == "grass"
     assert qp.family_parts("Hawk/Eagle/Kite sp.") == ["Hawk", "Eagle", "Kite", "Hawk/Eagle/Kite"]
     assert qp._lev_within("warbler", "warbelr", 2) and not qp._lev_within("warbler", "sparrow", 2)
+
+
+# ── classify_query: the unified search box routes on this ──────────────────
+
+@pytest.mark.parametrize("q", [
+    "Spoonbill", "roseate spoonbill", "Roseate Spoonbill", "  ROSEATE   spoonbill ",
+    "spoonbills", "roseate spoonbils",          # plural / one typo
+    "Anas platyrhynchos",                        # scientific name
+    "hawks", "heron", "Canada geese", "Spoonbill and Roseate Spoonbill",
+])
+def test_classify_pure_filter(index, q):
+    r = qp.classify_query(q, index=index)
+    assert r.kind == "filter"
+    assert r.labels
+
+
+@pytest.mark.parametrize("q", [
+    "Spoonbill wading", "bird in flight at sunset", "dove pair", "two spoonbills",
+    "heron in a marsh", "blurry", "perched on a wire", "sunset",
+])
+def test_classify_semantic(index, q):
+    assert qp.classify_query(q, index=index).kind == "semantic"
+
+
+@pytest.mark.parametrize("q", ["", "   ", None])
+def test_classify_empty(index, q):
+    assert qp.classify_query(q, index=index).kind == "empty"
+
+
+def test_classify_labels_are_tag_values(index):
+    assert qp.classify_query("roseate spoonbills", index=index).labels == ("Roseate Spoonbill",)
+    assert qp.classify_query("hawks", index=index).labels == ("Hawk/Eagle/Kite sp.",)
+
+
+def test_classify_uses_folder_group_words(index):
+    # "robin" alone is a folder-aware group word only when the folder has one.
+    r = qp.classify_query("robin", index=index, folder_species=["American Robin"])
+    assert r.kind == "filter" and "American Robin" in r.labels

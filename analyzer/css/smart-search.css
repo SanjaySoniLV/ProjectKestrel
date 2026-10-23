@@ -1,34 +1,5 @@
-/* Experimental smart search: toggle next to #search and the results strip
-   under the filter bar. See js/smart-search.js. */
-
-.tfb-smart-toggle {
-  height: 30px;
-  font-size: 12px;
-  padding: 0 12px;
-  background: #0e1117;
-  border: 1px solid #2a3040;
-  white-space: nowrap;
-}
-
-.tfb-smart-toggle .tfb-smart-exp {
-  color: #7d869a;
-  font-size: 11px;
-}
-
-.tfb-smart-toggle[aria-pressed="true"] {
-  background: #2a2140;
-  border-color: #6a4fb3;
-  color: #e7dcff;
-}
-
-.tfb-smart-toggle[aria-pressed="true"] .tfb-smart-exp {
-  color: #b9a7e8;
-}
-
-#search.tfb-search--smart {
-  border-color: #6a4fb3;
-  box-shadow: 0 0 0 1px rgba(106, 79, 179, 0.35);
-}
+/* Unified search: the results strip under the filter bar, match badges and the
+   "show in timeline" affordances on result cards. See js/smart-search.js. */
 
 .smart-search-bar {
   flex: 1 0 100%;
@@ -138,12 +109,6 @@
   opacity: 0.75;
 }
 .smart-chip-x:hover { opacity: 1; }
-.smart-search-example {
-  color: #c9b8ff;
-  cursor: pointer;
-  text-decoration: underline dotted;
-}
-.smart-search-example:hover { color: #ffffff; }
 .smart-search-muted { color: #8a93a6; }
 .thumb .smart-search-matches {
   z-index: 2;
@@ -162,4 +127,59 @@
 .smart-match > .filmstrip-thumb {
   outline: 2px solid #9a7cf0;
   outline-offset: -2px;
+}
+
+/* "87% match" badge, bottom-left of a smart-search result's thumbnail. */
+.thumb .smart-search-pct {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  z-index: 2;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: rgba(42, 33, 64, 0.88);
+  color: #e7dcff;
+  font-size: 11px;
+  line-height: 18px;
+  pointer-events: none;
+}
+
+/* Hover button on a search-result card: clear the search and jump to the scene. */
+.card .card-goto-btn {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  z-index: 3;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  border: 1px solid #3a4a6a;
+  background: rgba(14, 17, 23, 0.9);
+  color: #cbd2dc;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.card:hover .card-goto-btn,
+.card.focused .card-goto-btn,
+.card-goto-btn:focus-visible { opacity: 1; }
+.card .card-goto-btn:hover { background: #2a2140; border-color: #6a4fb3; color: #fff; }
+
+.card-context-menu {
+  position: fixed;
+  z-index: 3000;
+  min-width: 200px;
+  padding: 4px 0;
+  background: #181c26;
+  border: 1px solid #2a3040;
+  border-radius: 4px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  color: #cbd2dc;
+  font-size: 13px;
 }

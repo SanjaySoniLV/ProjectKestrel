@@ -1,24 +1,24 @@
-    // ── Smart search (SigLIP 2, pipeline 3.0) ───────────────────────────────
-    // Free-text search over what is happening in the photos ("bird in flight",
-    // "perched on a wire", "blurry", "two birds") with species detection in the
-    // query: bird species / families / wildlife named in the query ("heron in a
-    // marsh", "dove pair") become removable filter chips, and the rest is scored
-    // with SigLIP against each photo's crop AND whole-frame embeddings. Opt-in
-    // via the ✨ toggle next to the box. aggregateScenes() hands the scene list
-    // to smartSearchApply(), which keeps the matching scenes in score order and
-    // points each card at its best-matching image.
+    // ── Unified search box: species/family filter or smart search (SigLIP 2) ──
+    // One box. classify_search_query (query_parser.classify_query) routes each
+    // query: a query that is only a species / family name ("Roseate Spoonbill",
+    // "spoonbills") keeps the classic timeline filter; anything else ("spoonbill
+    // wading", "bird in flight at sunset") is a smart search over the SigLIP 2
+    // crop AND whole-frame embeddings, with detected bird names shown as
+    // removable filter chips. aggregateScenes() hands the scene list to
+    // smartSearchApply(), which keeps the matching scenes in score order and
+    // points each card at its best-matching image. Folders without embeddings
+    // show the existing "upgrade folder" prompt in the bar below the filters.
     const SMART_SEARCH_LIMIT = 48;
-    const SMART_SEARCH_DEBOUNCE_MS = 400;
-    const SMART_SEARCH_PLACEHOLDER = '✨ e.g. "dove pair", "bird in flight"';
-    const SMART_SEARCH_EXAMPLES = ['bird in flight', 'dove pair', 'heron in a marsh', 'perched on a wire', 'two birds', 'blurry'];
     const SMART_CHIP_KIND_LABEL = {
       species: 'species', family: 'family', wildlife: 'wildlife', group: 'species group',
     };
     const _smart = {
-      on: false,
+      route: { query: '', kind: 'empty', labels: [] }, // how the current query was classified
+      tags: { species: [], families: [] },             // tags in the loaded folders (classifier hint)
       query: '',          // query the current scores belong to
       seq: 0,             // bumps per request so stale replies are dropped
       scores: null,       // Map(rootPath\0filename -> score) or null
+      percents: new Map(),// rootPath\0filename -> 0-100 match percent (semantic results only)
       pending: false,
       matchCount: 0,
       needsIndex: [],     // [{root, indexed, total, upgrade}]
@@ -31,7 +31,6 @@
       error: '',
       indexing: false,    // true while _smartIndexMissing() is starting/awaiting upgrades
                           // (their progress is shown in the analysis-queue panel)
-      defaultPlaceholder: '',
     };
 
     function _smartKey(rp, fn) { return String(rp || '') + '\u0000' + String(fn || ''); }
@@ -45,12 +44,35 @@
       return Array.from(out);
     }
 
-    /** True while the smart-search toggle is on (the #search text is then a smart query). */
-    function smartSearchOwnsQuery() { return _smart.on; }
+    function _smartQueryNow() { return (el('#search')?.value || '').trim(); }
 
-    /** True when smart search owns the #search query (toggle on, non-empty query). */
+    /** True when the current query is a smart (non-filter) query. */
+    function smartSearchOwnsQuery() {
+      const q = _smartQueryNow();
+      return !!q && _smart.route.kind === 'semantic' && _smart.route.query === q;
+    }
+
+    /** True when smart search owns the #search query and has a result set. */
     function smartSearchIsActive() {
-      return _smart.on && !!_smart.scores && !!(el('#search')?.value || '').trim();
+      return smartSearchOwnsQuery() && !!_smart.scores;
+    }
+
+    /** Lower-cased tag values the species/family filter should also match for this query
+     *  (plural / typo / scientific-name forms of a pure filter query), or []. */
+    function smartSearchFilterLabels(q) {
+      const r = _smart.route;
+      if (r.kind !== 'filter' || r.query !== String(q || '').trim()) return [];
+      return r.labels.map(l => String(l).toLowerCase());
+    }
+
+    /** Remember which species / family tags the loaded folders hold (helps classify "robin"). */
+    function smartSearchRememberTags(list) {
+      const sp = new Set(), fa = new Set();
+      for (const s of list) {
+        for (const x of s.species || []) sp.add(x);
+        for (const x of s.families || []) fa.add(x);
+      }
+      _smart.tags = { species: Array.from(sp), families: Array.from(fa) };
     }
 
     /** Score of one image in the current smart search, or undefined (used to highlight matches). */
@@ -65,16 +87,19 @@
       for (const s of list) {
         let best = -Infinity;
         let bestRow = null;
+        let bestKey = '';
         let n = 0;
         for (const r of s.images || []) {
-          const v = _smart.scores.get(_smartKey(r.__rootPath || rootPath || '', r.filename));
+          const k = _smartKey(r.__rootPath || rootPath || '', r.filename);
+          const v = _smart.scores.get(k);
           if (v === undefined) continue;
           n += 1;
-          if (v > best) { best = v; bestRow = r; }
+          if (v > best) { best = v; bestRow = r; bestKey = k; }
         }
         if (best > -Infinity) {
           s.smartScore = best;
           s.smartMatchCount = n;
+          s.smartPercent = _smart.percents.has(bestKey) ? _smart.percents.get(bestKey) : null;
           // Show the best-matching photo on the card, not the scene's usual pick.
           if (bestRow) s.representative = bestRow;
           out.push(s);
@@ -95,7 +120,7 @@
       const box = el('#smartSearchChips');
       if (!box) return;
       box.textContent = '';
-      const show = _smart.on && _smart.chips.length > 0;
+      const show = smartSearchOwnsQuery() && _smart.chips.length > 0;
       box.classList.toggle('hidden', !show);
       if (!show) return;
       for (const c of _smart.chips) {
@@ -154,19 +179,14 @@
       const spin = el('#smartSearchSpinner');
       const idxBtn = el('#smartSearchIndexBtn');
       const clearBtn = el('#smartSearchClear');
-      const toggle = el('#smartSearchToggle');
       const input = el('#search');
       if (!bar || !hint) return;
-      if (toggle) toggle.setAttribute('aria-pressed', _smart.on ? 'true' : 'false');
-      if (input) {
-        input.classList.toggle('tfb-search--smart', _smart.on);
-        input.placeholder = _smart.on ? SMART_SEARCH_PLACEHOLDER : _smart.defaultPlaceholder;
-      }
       _smartRenderChips();
       const q = (input?.value || '').trim();
+      const on = smartSearchOwnsQuery();
       // Upgrade progress lives in the analysis-queue panel, not here.
-      bar.classList.toggle('hidden', !_smart.on);
-      if (!_smart.on) return;
+      bar.classList.toggle('hidden', !on);
+      if (!on) return;
       spin?.classList.toggle('hidden', !_smart.pending);
       clearBtn?.classList.toggle('hidden', !q);
       const upgradable = _smart.needsIndex.filter(n => n.upgrade !== 'reanalyze');
@@ -187,28 +207,10 @@
       };
       if (_smart.unavailable) { add('Smart search is not available in this build (model files missing).'); return; }
       if (_smart.error) { add(`Smart search failed: ${_smart.error}`); return; }
-      if (!q) {
-        // Empty state: what you can type.
-        add('Try: ');
-        SMART_SEARCH_EXAMPLES.forEach((ex, i) => {
-          const a = add(ex, 'smart-search-example');
-          a.setAttribute('role', 'button');
-          a.tabIndex = 0;
-          const go = () => { if (input) { input.value = ex; _smartRun(); } };
-          a.addEventListener('click', go);
-          a.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
-          if (i < SMART_SEARCH_EXAMPLES.length - 1) add(' · ');
-        });
-        add(' — bird names become filter chips: ', 'smart-search-muted');
-        for (const [kind, label] of [['species', 'species'], ['family', 'family'], ['wildlife', 'wildlife']]) {
-          add(label, `smart-chip smart-chip--${kind} smart-chip--legend`);
-          add(' ');
-        }
-      }
       const totalIndexed = _smart.needsIndex.reduce((a, n) => a + (n.indexed || 0), 0);
       const nothingIndexed = q && _smart.scores && _smart.scores.size === 0 && _smart.needsIndex.length > 0 && totalIndexed === 0;
       if (nothingIndexed && !_smart.chips.length) {
-        add('These folders were analysed before pipeline 3.0 and aren’t indexed for smart search yet. Upgrading reads the crops Kestrel already saved — no re-analysis.');
+        add('Describing a scene needs smart search, and these folders aren’t indexed for it yet (they were analysed before pipeline 3.0). Upgrading reads the crops Kestrel already saved — no re-analysis. Species and family names still filter normally.');
         return;
       }
       if (_smart.pending && !_smart.scores) { add('Searching…'); return; }
@@ -257,20 +259,49 @@
       _smart.reanalyze = reanalyze;
     }
 
-    async function _smartRun() {
-      const input = el('#search');
-      const q = (input?.value || '').trim();
+    /** Classify the current query, then show either the filtered timeline or smart-search results.
+     *  Called (debounced) on every edit of the search box. */
+    async function smartSearchOnInput() {
+      const q = _smartQueryNow();
       const my = ++_smart.seq;
-      if (!_smart.on) return;
       if (!q) {
-        Object.assign(_smart, { query: '', scores: null, pending: false, error: '', chips: [], semantic: '', mode: '' });
+        Object.assign(_smart, { route: { query: '', kind: 'empty', labels: [] }, query: '', scores: null,
+          percents: new Map(), pending: false, error: '', chips: [], semantic: '', mode: '',
+          needsIndex: [], reanalyze: [], unavailable: false });
         _smart.disabled.clear();
-        await _smartRefreshStatus();
+        _smartUpdateUi();
+        await renderScenes();
+        return;
+      }
+      const api = window.pywebview?.api;
+      let route = { query: q, kind: 'filter', labels: [] };
+      if (api?.classify_search_query) {
+        let res = null;
+        try { res = await api.classify_search_query(q, _smart.tags.species, _smart.tags.families); } catch (_) { res = null; }
         if (my !== _smart.seq) return;
+        // On any failure fall back to the classic filter: it never needs a model.
+        if (res?.success && (res.kind === 'semantic' || res.kind === 'filter')) {
+          route = { query: q, kind: res.kind, labels: res.labels || [] };
+        }
+      }
+      _smart.route = route;
+      if (route.kind !== 'semantic') {
+        Object.assign(_smart, { scores: null, percents: new Map(), pending: false, error: '', chips: [],
+          semantic: '', mode: '', needsIndex: [], unavailable: false });
+        _smart.disabled.clear();
         _smartUpdateUi();
         renderScenes();
         return;
       }
+      await _smartRun();
+    }
+    window.smartSearchOnInput = smartSearchOnInput;
+
+    async function _smartRun() {
+      const input = el('#search');
+      const q = (input?.value || '').trim();
+      const my = ++_smart.seq;
+      if (!q || !smartSearchOwnsQuery()) return;
       // Forget un-chipped words that are no longer in the query.
       for (const t of Array.from(_smart.disabled)) {
         if (!q.toLowerCase().includes(String(t).toLowerCase())) _smart.disabled.delete(t);
@@ -280,6 +311,7 @@
       _smart.pending = true;
       _smartUpdateUi();
       const scores = new Map();
+      const percents = new Map();
       const needs = [];
       const chipsByKey = new Map();
       let unavailable = false;
@@ -311,11 +343,15 @@
             total: Math.max(res.indexable_images || 0, res.frame_indexable_images || 0),
           });
         }
-        for (const im of res.images || []) scores.set(_smartKey(rp, im.filename), Number(im.score));
+        for (const im of res.images || []) {
+          const k = _smartKey(rp, im.filename);
+          scores.set(k, Number(im.score));
+          if (im.percent != null) percents.set(k, Number(im.percent));
+        }
       }
       if (my !== _smart.seq) return;
       Object.assign(_smart, {
-        pending: false, query: q, scores, needsIndex: needs, unavailable, semantic, mode,
+        pending: false, query: q, scores, percents, needsIndex: needs, unavailable, semantic, mode,
         chips: Array.from(chipsByKey.values()),
         error: scores.size || chipsByKey.size ? '' : err,
       });
@@ -396,32 +432,12 @@
     }
     window.smartSearchUpgradeFolder = smartSearchUpgradeFolder;
 
-    function _smartSetOn(on) {
-      _smart.on = !!on;
-      if (!_smart.on) {
-        _smart.seq++;
-        Object.assign(_smart, { scores: null, query: '', pending: false, needsIndex: [], reanalyze: [], error: '',
-          unavailable: false, chips: [], semantic: '', mode: '' });
-        _smart.disabled.clear();
-        _smartUpdateUi();
-        renderScenes();
-        return;
-      }
-      _smartUpdateUi();
-      el('#search')?.focus();
-      _smartRun();
-    }
-
     (function _wireSmartSearch() {
       const input = el('#search');
-      const toggle = el('#smartSearchToggle');
-      if (!input || !toggle) return;
-      _smart.defaultPlaceholder = input.placeholder;
-      toggle.addEventListener('click', () => _smartSetOn(!_smart.on));
-      input.addEventListener('input', debounce(() => { if (_smart.on) _smartRun(); }, SMART_SEARCH_DEBOUNCE_MS));
+      if (!input) return;
       el('#smartSearchClear')?.addEventListener('click', () => {
         input.value = '';
-        _smartRun();
+        smartSearchOnInput();
         input.focus();
       });
       el('#smartSearchIndexBtn')?.addEventListener('click', () => { _smartIndexMissing(); });
