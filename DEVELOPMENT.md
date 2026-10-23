@@ -119,6 +119,10 @@ Optional environment variables:
 - `KESTREL_ALLOWED_ROOT` — jail bridge calls to this root directory.
 - `KESTREL_ALLOWED_EXTENSIONS` — override the editor-launch extension allowlist
   (comma-separated list, e.g. `.cr3,.jpg`).
+- `KESTREL_QF_API_BASE` — send quality feedback (the scene viewer's "sort these by
+  sharpness" prompt) to this API base instead of `https://perchapi.projectkestrel.org`,
+  e.g. `http://127.0.0.1:8787` for a local `wrangler dev`. Local testing only; there is
+  no settings or UI override. See `analyzer/quality_feedback_client.py`.
 
 ### 4. Output layout
 

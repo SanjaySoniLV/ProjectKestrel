@@ -325,6 +325,13 @@ except ImportError:
 
 HOST = '127.0.0.1'
 
+# Quality feedback (see the "Quality feedback" section of Api).
+_QF_MODE_KEY = 'quality_feedback_mode'
+_QF_INSTALL_ID_KEY = 'quality_feedback_install_id'
+_QF_MODES = ('ask', 'always', 'never')
+_QF_MAX_SESSIONS = 8
+_QF_PREVIEW_MAX_SIDE = 512
+
 _ALLOWED_ROOT = os.environ.get('KESTREL_ALLOWED_ROOT')
 if _ALLOWED_ROOT:
     _ALLOWED_ROOT = os.path.abspath(os.path.expanduser(_ALLOWED_ROOT))
@@ -2597,6 +2604,11 @@ class Api:
             if _telemetry is not None:
                 settings['version'] = _telemetry._read_version()
             save_persisted_settings(settings)
+            # The quality-feedback install id is managed by Python only (see
+            # the Quality feedback section); keep it out of the frontend's
+            # localStorage so a stale settings snapshot can't resurrect a
+            # forgotten id.
+            settings = {k: v for k, v in settings.items() if k != _QF_INSTALL_ID_KEY}
             return {'success': True, 'settings': settings}
         except Exception as e:
             error(f'[API] get_settings error: {e}')
@@ -2652,6 +2664,8 @@ class Api:
             existing = load_persisted_settings()
             if not isinstance(existing, dict):
                 existing = {}
+            # Python-owned keys the frontend must never overwrite.
+            settings_dict = {k: v for k, v in settings_dict.items() if k != _QF_INSTALL_ID_KEY}
             merged = {**existing, **settings_dict}
 
             # Keep cumulative impact counters monotonic so stale UI payloads cannot
@@ -2676,6 +2690,328 @@ class Api:
             return {'success': True}
         except Exception as e:
             error(f'[API] save_settings_data error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    # ------------------------------------------------------------------ #
+    #  Quality feedback                                                    #
+    # ------------------------------------------------------------------ #
+    # The scene viewer asks whether Kestrel sorted a burst's sharpness well
+    # and lets the user sort 2-5 of its bird crops from sharpest to blurriest.
+    # With consent, the crops + ranking + both scorers' scores are shared
+    # (quality_feedback_client.py). Frame selection and the payload live in
+    # kestrel_analyzer/quality_feedback.py. Nothing is uploaded unless the
+    # user agreed (mode "ask" + consent, or mode "always" which only the
+    # user can set); mode "never" refuses outright. No account identity is
+    # sent: the only identifier is a random, resettable install id.
+
+    @staticmethod
+    def _qf_modules():
+        try:
+            from kestrel_analyzer import quality_feedback as qf
+        except ImportError:  # package-style import path
+            from analyzer.kestrel_analyzer import quality_feedback as qf  # type: ignore[no-redef]
+        try:
+            import quality_feedback_client as qfc
+        except ImportError:
+            from analyzer import quality_feedback_client as qfc  # type: ignore[no-redef]
+        return qf, qfc
+
+    @staticmethod
+    def _qf_mode(settings: dict | None = None) -> str:
+        s = settings if isinstance(settings, dict) else (load_persisted_settings() or {})
+        mode = str(s.get(_QF_MODE_KEY) or 'ask').strip().lower()
+        return mode if mode in _QF_MODES else 'ask'
+
+    def _qf_sessions_store(self) -> dict:
+        store = getattr(self, '_qf_sessions', None)
+        if store is None:
+            import threading as _t
+            store = self._qf_sessions = {}
+            self._qf_lock = _t.Lock()
+        return store
+
+    def _qf_get_or_create_install_id(self) -> str:
+        qf, qfc = self._qf_modules()
+        settings = load_persisted_settings() or {}
+        iid = str(settings.get(_QF_INSTALL_ID_KEY) or '')
+        if qf.INSTALL_ID_RE.match(iid):
+            return iid
+        iid = qfc.new_install_id()
+        settings[_QF_INSTALL_ID_KEY] = iid
+        save_persisted_settings(settings)
+        return iid
+
+    @staticmethod
+    def _qf_platform() -> str:
+        if sys.platform.startswith('win'):
+            return 'windows'
+        if sys.platform == 'darwin':
+            return 'macos'
+        return 'linux'
+
+    def get_quality_feedback_mode(self):
+        """``{'success', 'mode'}`` -- ``ask`` (default) | ``always`` | ``never``."""
+        try:
+            return {'success': True, 'mode': self._qf_mode()}
+        except Exception as e:
+            return {'success': False, 'mode': 'ask', 'error': str(e)}
+
+    def set_quality_feedback_mode(self, mode):
+        """Persist the quality-feedback sharing mode (Settings / "Remember my choice")."""
+        try:
+            m = str(mode or '').strip().lower()
+            if m not in _QF_MODES:
+                return {'success': False, 'error': 'invalid_mode'}
+            settings = load_persisted_settings() or {}
+            settings[_QF_MODE_KEY] = m
+            save_persisted_settings(settings)
+            return {'success': True, 'mode': m}
+        except Exception as e:
+            error(f'[API] set_quality_feedback_mode error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def get_quality_feedback_candidates(self, folder_path, scene_id, filenames=None):
+        """Pick 2-5 bird crops of one scene for the sort dialog.
+
+        ``folder_path`` is the analysed folder (root-jailed like every other
+        folder method); the scene's rows are ``filenames`` when given (the
+        frontend's current view of the scene) else the CSV rows whose
+        ``scene_count`` equals ``scene_id``. Returns, in the order the dialog
+        must show them, ``frames: [{index, data_url}]`` plus a ``token`` that
+        :meth:`submit_quality_feedback` takes. Scores and paths stay in Python
+        (the dialog must not show Kestrel's order, and paths are never sent).
+        """
+        try:
+            qf, _ = self._qf_modules()
+            settings = load_persisted_settings() or {}
+            mode = self._qf_mode(settings)
+            if mode == 'never':
+                return {'success': False, 'error': 'feedback_disabled', 'mode': mode}
+            root_real, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path, context='get_quality_feedback_candidates', require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            csv_path = os.path.join(kestrel_dir, 'kestrel_database.csv')
+            if not os.path.isfile(csv_path):
+                return {'success': False, 'error': 'not_analyzed'}
+            try:
+                from kestrel_analyzer.database import read_database_csv, load_scenedata
+            except ImportError:
+                from analyzer.kestrel_analyzer.database import read_database_csv, load_scenedata  # type: ignore[no-redef]
+            df = read_database_csv(csv_path, dtype=str, keep_default_na=False)
+            rows = df.to_dict('records')
+            local_scene = str(scene_id if scene_id is not None else '').split(':')[-1].strip()
+            if isinstance(filenames, (list, tuple)) and filenames:
+                wanted = {str(f) for f in filenames}
+                rows = [r for r in rows if str(r.get('filename')) in wanted]
+            else:
+                rows = [r for r in rows if str(r.get('scene_count', '')).strip() == local_scene]
+            # Only crops that really exist inside this folder.
+            usable = []
+            abs_paths = {}
+            for r in rows:
+                cp = str(r.get('crop_path') or '').strip()
+                if not cp:
+                    continue
+                _, target, perr = self._resolve_path_in_root(
+                    root_real, cp, context='get_quality_feedback_candidates', allow_absolute=True,
+                )
+                if perr or not os.path.isfile(target):
+                    continue
+                abs_paths[str(r.get('filename'))] = target
+                usable.append(r)
+            active = str(settings.get('quality_model') or 'siglip').lower()
+            active = active if active in qf.SCORERS else 'siglip'
+            sel = qf.select_feedback_frames(usable, k=qf.MAX_FRAMES, active_scorer=active)
+            frames = sel['frames']
+            if len(frames) < qf.MIN_FRAMES:
+                return {'success': False, 'error': 'not_enough_frames'}
+
+            # Tags: the user's scene tags when they edited them, else the
+            # pipeline's species/family for the chosen frames.
+            species, family = [], []
+            try:
+                scene = (load_scenedata(kestrel_dir).get('scenes') or {}).get(local_scene) or {}
+                ut = scene.get('user_tags') or {}
+                species = list(ut.get('species') or [])
+                family = list(ut.get('families') or [])
+            except Exception:
+                pass
+            if not species and not family:
+                by_name = {str(r.get('filename')): r for r in usable}
+                for f in frames:
+                    r = by_name.get(f['filename']) or {}
+                    species.append(r.get('species'))
+                    family.append(r.get('family'))
+            species, family = qf.clean_tags(species), qf.clean_tags(family)
+
+            shown = []
+            for idx in sel['shown_order']:
+                f = frames[idx]
+                data = qf.reencode_crop(abs_paths[f['filename']], max_side=_QF_PREVIEW_MAX_SIDE, quality=85)
+                shown.append({
+                    'index': idx,
+                    'data_url': 'data:image/jpeg;base64,' + base64.b64encode(data).decode('ascii'),
+                })
+
+            import secrets as _secrets
+            token = _secrets.token_hex(12)
+            store = self._qf_sessions_store()
+            with self._qf_lock:
+                while len(store) >= _QF_MAX_SESSIONS:
+                    store.pop(next(iter(store)))
+                store[token] = {
+                    'frames': [dict(f, abs_path=abs_paths[f['filename']]) for f in frames],
+                    'shown_order': list(sel['shown_order']),
+                    'species': species,
+                    'family': family,
+                    'active_scorer': active,
+                    'created': time.time(),
+                }
+            return {
+                'success': True,
+                'token': token,
+                'mode': mode,
+                'n': len(frames),
+                'frames': shown,
+                'shown_order': list(sel['shown_order']),
+            }
+        except Exception as e:
+            error(f'[API] get_quality_feedback_candidates error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def discard_quality_feedback(self, token):
+        """Forget a candidate set (the user skipped / closed the dialog)."""
+        try:
+            store = self._qf_sessions_store()
+            with self._qf_lock:
+                store.pop(str(token or ''), None)
+            return {'success': True}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def submit_quality_feedback(self, payload):
+        """Share one sort result. Returns at once; the upload runs on a thread.
+
+        ``payload``: ``{token, ranking: [[idx…]…], thumbs: 'up'|'down',
+        duration_ms, consent: bool}``. ``consent`` must be true unless the
+        mode is ``always``; mode ``never`` refuses. The result is reported to
+        ``window.onQualityFeedbackResult({ok, submission_id?, error?})``.
+        """
+        try:
+            qf, qfc = self._qf_modules()
+            if not isinstance(payload, dict):
+                return {'success': False, 'error': 'invalid_payload'}
+            mode = self._qf_mode()
+            if mode == 'never':
+                return {'success': False, 'error': 'feedback_disabled'}
+            if mode == 'ask' and payload.get('consent') is not True:
+                return {'success': False, 'error': 'consent_required'}
+            store = self._qf_sessions_store()
+            with self._qf_lock:
+                sess = store.pop(str(payload.get('token') or ''), None)
+            if not sess:
+                return {'success': False, 'error': 'unknown_token'}
+            thumbs = payload.get('thumbs')
+            if thumbs not in qf.THUMBS:
+                return {'success': False, 'error': 'invalid_thumbs'}
+            frames = sess['frames']
+            try:
+                ranking = qf.normalize_ranking(payload.get('ranking'), len(frames))
+            except ValueError:
+                return {'success': False, 'error': 'invalid_ranking'}
+            install_id = self._qf_get_or_create_install_id()
+            try:
+                app_version = _telemetry._read_version() if _telemetry is not None else 'unknown'
+            except Exception:
+                app_version = 'unknown'
+            try:
+                from kestrel_analyzer.config import PIPELINE_MAJOR as _pipeline_major
+            except ImportError:
+                from analyzer.kestrel_analyzer.config import PIPELINE_MAJOR as _pipeline_major  # type: ignore[no-redef]
+            duration_ms = payload.get('duration_ms')
+            platform = self._qf_platform()
+
+            def _work():
+                crops = [qf.reencode_crop(f['abs_path']) for f in frames]
+                body = qf.build_submission_payload(
+                    frames=frames,
+                    shown_order=sess['shown_order'],
+                    ranking=ranking,
+                    thumbs=thumbs,
+                    duration_ms=duration_ms,
+                    install_id=install_id,
+                    crop_sizes=[len(c) for c in crops],
+                    active_scorer=sess['active_scorer'],
+                    species=sess['species'],
+                    family=sess['family'],
+                    app_version=app_version,
+                    pipeline_version=_pipeline_major,
+                    platform=platform,
+                )
+                res = qfc.submit(body, crops)
+                qfc.append_log(qfc.log_entry(res['submission_id'], body))
+                return res
+
+            def _done(res, err):
+                if err is None:
+                    out = {'ok': True, 'submission_id': res.get('submission_id')}
+                else:
+                    code = getattr(err, 'code', '') or type(err).__name__
+                    warn(f'[API] quality feedback upload failed: {code}: {err}')
+                    out = {'ok': False, 'error': str(code)}
+                self._qf_last_result = out
+                self._qf_notify(out)
+
+            self._qf_last_result = None
+            self._qf_last_thread = qfc.run_in_background(_work, _done)
+            return {'success': True, 'started': True}
+        except Exception as e:
+            error(f'[API] submit_quality_feedback error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def _qf_notify(self, result: dict) -> None:
+        if self._main_window is None:
+            return
+        try:
+            self._main_window.evaluate_js(
+                'window.onQualityFeedbackResult && window.onQualityFeedbackResult('
+                + json.dumps(result) + ')'
+            )
+        except Exception as e:
+            warn(f'[API] _qf_notify error: {e}')
+
+    def get_quality_feedback_log(self):
+        """The local record of what this install has shared, newest first."""
+        try:
+            _, qfc = self._qf_modules()
+            return {'success': True, 'entries': qfc.read_log()}
+        except Exception as e:
+            error(f'[API] get_quality_feedback_log error: {e}')
+            return {'success': False, 'entries': [], 'error': str(e)}
+
+    def forget_quality_feedback(self):
+        """Ask the server to delete everything shared under this install id,
+        then start a fresh id and clear the local log. If the delete fails the
+        id is kept (a new id would orphan the old submissions for good)."""
+        try:
+            qf, qfc = self._qf_modules()
+            settings = load_persisted_settings() or {}
+            iid = str(settings.get(_QF_INSTALL_ID_KEY) or '')
+            deleted = 0
+            if qf.INSTALL_ID_RE.match(iid):
+                try:
+                    deleted = qfc.forget(iid)
+                except qfc.QualityFeedbackError as e:
+                    return {'success': False, 'error': e.code}
+            settings = load_persisted_settings() or {}
+            settings[_QF_INSTALL_ID_KEY] = qfc.new_install_id()
+            save_persisted_settings(settings)
+            qfc.clear_log()
+            return {'success': True, 'deleted': deleted}
+        except Exception as e:
+            error(f'[API] forget_quality_feedback error: {e}')
             return {'success': False, 'error': str(e)}
 
     # ------------------------------------------------------------------ #

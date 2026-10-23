@@ -6,6 +6,7 @@ import glob
 import json
 import math
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -67,6 +68,11 @@ _ALLOWED_WILDLIFE_MODEL_MODES = {'fast', 'accurate'}
 # image towers run (kestrel_analyzer/ml/providers.py).
 _ALLOWED_QUALITY_MODELS = {'siglip', 'legacy'}
 _ALLOWED_TOWER_DEVICES = {'auto', 'cpu', 'gpu'}
+# Quality feedback (scene viewer "sort these by sharpness" prompt): whether to
+# ask before sharing, always share, or never show the prompt. Default "ask";
+# nothing is ever sent without the user's say-so.
+_ALLOWED_QUALITY_FEEDBACK_MODES = {'ask', 'always', 'never'}
+_QUALITY_FEEDBACK_INSTALL_ID_RE = re.compile(r'^qfi_[0-9a-f]{32}$')
 _ALLOWED_QUEUE_DETECTOR_NAMES = {'mdv5a', 'mdv1000-cedar'}
 # Biogeographic region codes for the species combobox. Sourced from the
 # ``bird_catalog`` module so the data layer owns the vocabulary and we only
@@ -524,6 +530,17 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
         out['quality_model'] = _coerce_enum(data.get('quality_model'), _ALLOWED_QUALITY_MODELS, default='siglip')
     if 'tower_device' in data:
         out['tower_device'] = _coerce_enum(data.get('tower_device'), _ALLOWED_TOWER_DEVICES, default='auto')
+    if 'quality_feedback_mode' in data:
+        out['quality_feedback_mode'] = _coerce_enum(
+            data.get('quality_feedback_mode'), _ALLOWED_QUALITY_FEEDBACK_MODES, default='ask',
+        )
+    if 'quality_feedback_install_id' in data:
+        # Anonymous random id; anything that isn't the exact shape is dropped
+        # (a fresh one is generated on the next share).
+        iid = data.get('quality_feedback_install_id')
+        out['quality_feedback_install_id'] = (
+            iid if isinstance(iid, str) and _QUALITY_FEEDBACK_INSTALL_ID_RE.match(iid) else ''
+        )
     # ONNX provider resilience (auto GPU↔CPU fallback). Advanced/triage knobs;
     # not exposed in the UI. ``gpu_resilience_enabled=False`` reverts to the
     # pre-resilience behavior (single GPU session, no recovery).

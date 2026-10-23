@@ -1642,6 +1642,11 @@
       // ── Filmstrip ──
       renderFilmstrip(scene);
 
+      // ── Quality feedback prompt (js/quality-feedback.js) ──
+      if (typeof qfRenderSceneControl === 'function') {
+        try { qfRenderSceneControl(scene); } catch (e) { console.warn('[quality-feedback]', e); }
+      }
+
       // Wire horizontal scrolling via mouse wheel for filmstrip
       const grid = el('#imageGrid');
       if (grid) {

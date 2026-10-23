@@ -35,6 +35,7 @@
   <link rel="stylesheet" href="css/dialogs/live-analysis.css" />
   <link rel="stylesheet" href="css/dialogs/cloud-compute.css" />
   <link rel="stylesheet" href="css/dialogs/feedback-consent.css" />
+  <link rel="stylesheet" href="css/dialogs/quality-feedback.css" />
   <link rel="stylesheet" href="css/dialogs/donate.css" />
   <link rel="stylesheet" href="css/dialogs/tutorial-chooser.css" />
   <link rel="stylesheet" href="css/tutorial.css" />
@@ -467,6 +468,8 @@
               <span class="scene-info-editor-label" id="sceneInfoEditorLabel">Open</span>
             </button>
           </div>
+          <!-- Quality feedback prompt (js/quality-feedback.js) -->
+          <div class="scene-qf hidden" id="sceneQf" role="group" aria-label="Quality feedback"></div>
         </div>
       </div>
 
@@ -989,6 +992,21 @@
       </div>
       <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Automatically send a report if Kestrel
         crashes, so we can find and fix the problem. No filenames, paths, or images are ever shared.</div>
+
+      <div class="row">
+        <label for="settingsQualityFeedbackMode" style="flex:1">Quality feedback</label>
+        <select id="settingsQualityFeedbackMode">
+          <option value="ask">Always ask</option>
+          <option value="always">Always share</option>
+          <option value="never">Never</option>
+        </select>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">The scene viewer can ask whether
+        Kestrel sorted a burst's sharpness well and let you sort a few frames. Sharing sends those bird crops (not full
+        photos, no location or EXIF), your ranking, Kestrel's scores, the species and an anonymous id that isn't linked
+        to your account. "Never" hides the prompt.
+        <a href="#" class="qf-link" id="settingsQfViewLog">View what I've shared</a> &middot;
+        <a href="#" class="qf-link" id="settingsQfForget">Forget my shared feedback</a></div>
     </div>
     <div class="settings-footer">
       <button id="settingsCancel">Cancel</button>
@@ -1549,6 +1567,27 @@
   </dialog>
 
   <!-- Feedback / Bug Report dialog -->
+  <!-- Quality feedback: sort a burst's crops by sharpness (js/quality-feedback.js) -->
+  <dialog id="qfDlg" class="kdlg kdlg--flex qf-dlg" aria-labelledby="qfTitle">
+    <div class="kdlg-body">
+      <h3 class="qf-title" id="qfTitle">Help Kestrel learn</h3>
+      <div class="qf-subtitle muted" id="qfSubtitle"></div>
+      <div class="qf-body" id="qfBody"></div>
+    </div>
+    <div class="kdlg-footer qf-footer" id="qfFooter"></div>
+  </dialog>
+
+  <dialog id="qfLogDlg" class="kdlg kdlg--md kdlg--flex" aria-labelledby="qfLogTitle">
+    <div class="kdlg-body">
+      <h3 class="qf-title" id="qfLogTitle">Quality feedback you've shared</h3>
+      <div class="qf-subtitle muted">Kept on this computer only. Crop numbers follow Kestrel's own order (1 = what Kestrel scored sharpest).</div>
+      <div class="qf-log-list" id="qfLogList"></div>
+    </div>
+    <div class="kdlg-footer">
+      <button type="button" id="qfLogClose">Close</button>
+    </div>
+  </dialog>
+
   <dialog id="feedbackDlg" class="kdlg kdlg--md kdlg--flex">
     <div class="feedback-dlg">
       <h3>💬 Send Feedback</h3>
@@ -1699,6 +1738,7 @@
   <script src="js/settings.js"></script>
   <script src="js/scene-dialog.js"></script>
   <script src="js/feedback-donate.js"></script>
+  <script src="js/quality-feedback.js"></script>
   <script src="js/folder-tree.js"></script>
   <script src="js/analyze-dialog.js"></script>
   <script src="js/queue.js"></script>
