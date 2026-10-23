@@ -203,7 +203,7 @@ def test_culling_assistant_aggregate_scenes():
         const g = {};
         new Function('window', fs.readFileSync(process.argv[1], 'utf8'))(g);
         const window = g;
-        const html = fs.readFileSync(process.argv[2], 'utf8');
+        const html = fs.readFileSync(process.argv[2], 'utf8').replace(/\r\n/g, '\n');  // CRLF checkouts on Windows
         const src = html.match(/function aggregateScenes\(\)[\s\S]*?\n    }\n/)[0];
         const parseNumber = x => parseFloat(x) || 0;
         const needsRatingAttention = () => false;

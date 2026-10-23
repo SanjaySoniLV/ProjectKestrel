@@ -223,6 +223,10 @@ class TestDecodeFailureReporting:
         hasattr(os, "geteuid") and os.geteuid() == 0,
         reason="root bypasses the permission bits this test relies on",
     )
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="chmod(0o000) does not deny reads on Windows",
+    )
     def test_permission_denied_raises_permission_error(self, tmp_path):
         path = tmp_path / "locked.ARW"
         path.write_bytes(b"\x00" * 4096)
