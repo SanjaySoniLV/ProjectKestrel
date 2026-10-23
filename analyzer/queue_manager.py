@@ -145,7 +145,7 @@ class _QueueItem:
                  'current_filename', 'current_export_path', 'current_status_msg',
                  'current_overlay_rel', 'current_crops_rel', 'current_detections',
                  'current_quality_results', 'current_species_results',
-                 'initial_processed',
+                 'initial_processed', 'warning',
                  # Phase 3 per-item options (set at enqueue time by the analyze
                  # dialog; honored by the worker just-before processing).
                  'delete_kestrel_on_start', 'skip_if_already_done',
@@ -173,6 +173,10 @@ class _QueueItem:
         self.current_quality_results: list = []
         self.current_species_results: list = []
         self.initial_processed: int = 0  # files already done before this session
+        # Persistent, user-facing problem with this folder's run (e.g. results
+        # can't be saved). Unlike current_status_msg it is not overwritten per
+        # image; the pipeline clears it when the problem goes away.
+        self.warning: str = ''
         # Phase 3: per-item flags set by the analyze dialog via enqueue's
         # per_item_options. Default False so legacy callers behave unchanged.
         self.delete_kestrel_on_start: bool = False
@@ -205,6 +209,7 @@ class _QueueItem:
             'current_detections': list(self.current_detections),
             'current_quality_results': list(self.current_quality_results),
             'current_species_results': list(self.current_species_results),
+            'warning': self.warning,
             'species_regions': list(self.species_regions) if self.species_regions else None,
         }
 
@@ -229,6 +234,7 @@ class QueueManager:
         self._species_detection_enabled = True
         self._detection_threshold = 0.25
         self._scene_time_threshold = 1.0
+        self._scene_break_gap_seconds = 0.0
         self._mask_threshold = 0.5
         self._max_bird_crops = 10
         self._parallel_prefetch = 3
@@ -314,6 +320,7 @@ class QueueManager:
         detector_name: str = _DEFAULT_DETECTOR_NAME,
         detection_threshold: float = 0.25,
         scene_time_threshold: float = 1.0,
+        scene_break_gap_seconds: float = 0.0,
         mask_threshold: float = 0.5,
         max_bird_crops: int = 10,
         parallel_prefetch: int = 3,
@@ -386,6 +393,10 @@ class QueueManager:
                 self._species_detection_enabled = bool(species_detection_enabled)
                 self._detection_threshold = float(detection_threshold)
                 self._scene_time_threshold = float(scene_time_threshold)
+                try:
+                    self._scene_break_gap_seconds = max(0.0, float(scene_break_gap_seconds))
+                except (TypeError, ValueError):
+                    self._scene_break_gap_seconds = 0.0
                 self._mask_threshold = float(mask_threshold)
                 self._detector_name = _coerce_detector_name(detector_name)
                 try:
@@ -651,6 +662,15 @@ class QueueManager:
                         _it.processed = processed
                         _it.total = total
 
+                def _on_warning(msg, _it=item):
+                    with self._lock:
+                        _it.warning = str(msg or '')
+                    if msg:
+                        warn(f'[queue:{_it.name}]', msg)
+
+                with self._lock:
+                    item.warning = ''
+
                 def _on_status(msg, _it=item):
                     with self._lock:
                         _it.current_status_msg = msg
@@ -748,12 +768,14 @@ class QueueManager:
                         'on_quality': _on_quality,
                         'on_species': _on_species,
                         'on_error': _on_error,
+                        'on_warning': _on_warning,
                     },
                     analyzer_name='visualizer-queue',
                     wildlife_enabled=self._wildlife_enabled,
                     species_detection_enabled=self._species_detection_enabled,
                     detection_threshold=self._detection_threshold,
                     scene_time_threshold=self._scene_time_threshold,
+                    scene_break_gap_seconds=self._scene_break_gap_seconds,
                     mask_threshold=self._mask_threshold,
                     max_bird_crops=self._max_bird_crops,
                     parallel_prefetch=self._parallel_prefetch,

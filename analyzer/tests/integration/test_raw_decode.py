@@ -5,6 +5,7 @@ Uses fixtures in set_a_fresh/ (CR3), set_b_formats/ (diverse RAW), and set_d_jpe
 
 import pytest
 import numpy as np
+import rawpy
 from pathlib import Path
 import sys
 
@@ -114,14 +115,18 @@ class TestReadImageForPipeline:
         assert rgb.ndim == 3
         assert rgb.shape[2] == 3
 
-    def test_invalid_file_returns_none_none(self, tmp_path):
-        """Invalid RAW → (None, None)."""
+    def test_invalid_file_raises_unsupported(self, tmp_path):
+        """Invalid RAW → raises LibRaw's own "unsupported" error.
+
+        This used to assert ``(None, None)``. The contract changed so that
+        the pipeline can report *why* a decode failed; the invalid-RAW case
+        is still covered, now by the exception it produces.
+        """
         bad_file = tmp_path / "garbage.cr3"
         bad_file.write_bytes(b"\x00" * 1000)
 
-        rgb, raw_obj = read_image_for_pipeline(str(bad_file))
-        assert rgb is None
-        assert raw_obj is None
+        with pytest.raises(rawpy.LibRawFileUnsupportedError):
+            read_image_for_pipeline(str(bad_file))
 
 
 class TestDiverseRAWFormats:

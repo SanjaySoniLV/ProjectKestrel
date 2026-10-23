@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import math
 import os
@@ -210,10 +211,13 @@ def _keyring_save(data: dict) -> None:
     environments.
 
     Fallback file is locked down to owner-read/write (``0o600``) in a
-    ``0o700`` directory. Without that the default umask leaves the file
-    world-readable on POSIX, which on a shared dev / CI box is a direct
-    JWT exfil path (audit Medium-13). On Windows, ``chmod`` is a weak ACL
-    approximation; the keyring path is the secure-by-default option there.
+    ``0o700`` directory. ``open(path, 'w')`` then ``chmod(0o600)`` leaves a
+    window where the JWT is world-readable (default umask, typically 0644).
+    ``write_text_atomic`` writes through ``mkstemp`` (already ``0o600``) and
+    ``os.replace``, so neither that window nor a truncated live file exists.
+    A follow-up ``chmod(0o600)`` still runs after replace for Windows ACLs and
+    any leftover 0644 dest. On Windows, ``chmod`` is a weak ACL approximation;
+    the keyring path is the secure-by-default option there.
     """
     serialized = json.dumps(data)
     fallback_path = _get_auth_fallback_path()
@@ -264,8 +268,7 @@ def _keyring_save(data: dict) -> None:
         os.chmod(directory, 0o700)
     except OSError:
         pass
-    with open(fallback_path, 'w', encoding='utf-8') as f:
-        f.write(serialized)
+    write_text_atomic(fallback_path, serialized)
     try:
         os.chmod(fallback_path, 0o600)
     except OSError:
@@ -411,6 +414,75 @@ _CULLING_PRIMARY_IMAGE_EXTENSIONS = set(
     _normalize_extensions([*(_RAW_EXTENSIONS or []), *(_JPEG_EXTENSIONS or [])])
 )
 
+
+def _sidecar_basename_candidates(filename: str, ext: str) -> list[str]:
+    """Primary (``file.CR3.xmp``) then stem (``file.xmp``) sidecar names."""
+    names = [filename + ext]
+    if '.' in filename:
+        stem = filename.rsplit('.', 1)[0] + ext
+        if stem not in names:
+            names.append(stem)
+    return names
+
+
+def _sidecar_extension_probes(candidate: str, ext: str) -> tuple[str, ...]:
+    """``candidate`` plus the same stem with ``ext`` uppercased.
+
+    Companion extensions are stored lowercase. Cameras and Lightroom write
+    ``.XMP`` / ``.JPG``. On a case-sensitive filesystem
+    ``exists(base + '.xmp')`` misses that file; probe ``.XMP`` too.
+    """
+    probes = [candidate]
+    e = str(ext or '')
+    if e and len(candidate) >= len(e) and candidate.lower().endswith(e.lower()):
+        alt = candidate[:len(candidate) - len(e)] + e.upper()
+        if alt not in probes:
+            probes.append(alt)
+    return tuple(probes)
+
+
+def _sidecar_hits_for_constructed_name(hits: list[str], candidate: str) -> list[str]:
+    """Keep folded listing hits that share ``candidate``'s stem spelling.
+
+    ``_DirIndex.matches`` folds the whole name, so ``img.xmp`` is a hit for
+    ``IMG.xmp``. Companion lookup must not take a stem-case sibling's sidecar
+    when two RAWs differ only by case. Extension case still varies
+    (``.xmp`` / ``.XMP``).
+    """
+    stem, ext = os.path.splitext(candidate)
+    if not ext:
+        return list(hits)
+    want_ext = ext.lower()
+    kept: list[str] = []
+    for hit in hits:
+        hit_stem, hit_ext = os.path.splitext(hit)
+        if hit_stem == stem and hit_ext.lower() == want_ext:
+            kept.append(hit)
+    return kept
+
+
+def _existing_sidecar_names(root_path: str, names: tuple[str, ...]) -> list[str]:
+    """Return probe names that exist, skipping case-folded aliases of one file."""
+    hits: list[str] = []
+    for name in names:
+        path = os.path.join(root_path, name)
+        try:
+            if not os.path.exists(path):
+                continue
+        except OSError:
+            continue
+        duplicate = False
+        for prev in hits:
+            try:
+                if os.path.samefile(path, os.path.join(root_path, prev)):
+                    duplicate = True
+                    break
+            except OSError:
+                continue
+        if not duplicate:
+            hits.append(name)
+    return hits
+
 _REJECT_DEST_EXISTS_REASON = 'a file with this name already exists in the reject folder'
 _SHOOT_DEST_EXISTS_REASON = 'a file with this name already exists in the shoot folder'
 
@@ -521,11 +593,18 @@ class Api:
         # Set externally by visualizer.main() after window/server come up.
         self._main_window = None
         self._culling_window = None
+        self._culling_window_root = None
         self._server_port: int | None = None
         # Async share-with-perch state (job_id -> {progress, cancel_event, thread})
         self._share_jobs: dict = {}
         self._share_jobs_lock = None
         self._active_share_job: str | None = None
+        # Scene-regroup working set. The dialog ships the folder's immutable
+        # analysis columns once on open, then drags sliders against the cached
+        # copy — re-sending thousands of rows per slider tick would make the
+        # live preview unusable. Only one folder is ever held (the dialog is
+        # modal) and it is dropped when the dialog closes.
+        self._regroup_cache: dict | None = None
         self._perch_account_cache: dict | None = None
         self._perch_account_cache_at: float = 0.0
         self._perch_usage_cache: dict | None = None
@@ -1815,25 +1894,30 @@ class Api:
                 return {'success': False, 'error': 'paths must be a list', 'results': {}}
 
             validated_paths = []
-            invalid_paths = []
+            missing_paths = []
             for raw in paths:
                 root_real, err = self._validate_root_dir(raw, context='inspect_folders', require_exists=True)
+                if err == 'Path outside allowed root':
+                    # A path escaping the sandbox taints the whole request:
+                    # refuse all of it, exactly as before.
+                    self._log_security_reject('inspect_folders', 'One or more invalid folder paths', invalid_count=1)
+                    return {
+                        'success': False,
+                        'error': 'Invalid folder path in request',
+                        'invalid_paths': [str(raw)],
+                        'results': {},
+                    }
                 if err:
-                    invalid_paths.append(str(raw))
+                    # Renamed, deleted, or on a card that has been ejected since
+                    # the path was last seen. Benign and routine -- a stale entry
+                    # in recents must not stop the folders that are still there
+                    # from being inspected.
+                    missing_paths.append(str(raw))
                     continue
                 validated_paths.append(root_real)
 
-            if invalid_paths:
-                self._log_security_reject('inspect_folders', 'One or more invalid folder paths', invalid_count=len(invalid_paths))
-                return {
-                    'success': False,
-                    'error': 'Invalid folder path in request',
-                    'invalid_paths': invalid_paths,
-                    'results': {},
-                }
-
             results = inspector.inspect_folders(validated_paths)
-            return {'success': True, 'results': results}
+            return {'success': True, 'results': results, 'missing_paths': missing_paths}
         except Exception as e:
             error(f'[API] inspect_folders error: {e}')
             return {'success': False, 'error': str(e), 'results': {}}
@@ -1975,10 +2059,118 @@ class Api:
             error(f'[API] list_subfolders error: {e}')
             return {'success': False, 'tree': [], 'error': str(e)}
 
-    def write_kestrel_csv(self, folder_path: str, csv_content: str):
-        """Write CSV content back to .kestrel/kestrel_database.csv for the given folder."""
+    @staticmethod
+    def _photo_still_in_folder(root_dir: str, filename) -> bool:
+        """True if ``filename`` names a photo still present directly in ``root_dir``.
+
+        This is what separates the two reasons a save payload can omit a row.
+        An image analysed after the view loaded is still in the folder and must
+        be preserved; an image the Culling Assistant just moved into
+        ``_KESTREL_Rejects`` (or one the user deleted) is gone, and its removal
+        from the payload is the whole point of that save -- ``move_rejects_to_folder``
+        never touches the CSV itself, so this save is the only place the row is
+        dropped. Only bare basenames qualify; anything with a path component
+        is not a real photo row and is not preserved.
+        """
+        name = str(filename or '')
+        if not name or name != os.path.basename(name) or name in ('.', '..'):
+            return False
+        return os.path.isfile(os.path.join(root_dir, name))
+
+    @staticmethod
+    def _parse_csv_text_faithfully(text: str):
+        """Parse CSV text into a DataFrame without coercing any value.
+
+        ``dtype=str`` + ``keep_default_na=False`` keep every cell exactly as it
+        was written, so a row read here and written straight back out is
+        unchanged. Anything looser would rewrite the caller's own rows while
+        merging -- turning ``quality`` into ``0.78000000000000003``, blank
+        cells into ``nan``, and ``culled`` values like ``NA`` into nulls.
+        """
+        import pandas as pd
+        return pd.read_csv(io.StringIO(text), dtype=str, keep_default_na=False)
+
+    def _merge_unknown_csv_rows(self, root_dir: str, csv_path: str, csv_content: str) -> str:
+        """Return ``csv_content`` plus any on-disk row the caller does not know about.
+
+        The UI saves the database by serialising its whole in-memory row set and
+        handing it to ``write_kestrel_csv``, which replaced the file outright. A
+        row the UI had never loaded therefore ceased to exist: analysis appends
+        rows to the CSV after every image, so a user who opened a folder and
+        began culling while it was still analysing was holding a snapshot that
+        stopped at whatever had been analysed when the view loaded. Saving that
+        snapshot deleted every image analysed since -- the tail of the run --
+        from both the database and (via ``write_kestrel_scenedata``) the scene
+        membership. The crops and exports stayed on disk, so the photos were
+        intact but invisible to the app and never got a rating written.
+
+        Rows are unioned on ``filename`` with the caller winning, mirroring the
+        inverse merge ``kestrel_analyzer.database.save_database`` already does
+        when the pipeline preserves the UI's columns. An omitted row is only
+        preserved while its photo is still in the folder
+        (``_photo_still_in_folder``): the Culling Assistant's reject-and-move
+        drops moved files from its payload deliberately, and those files are
+        no longer there. A scene merge keeps every filename (it only changes
+        ``scene_count``), so nothing is resurrected, and the delete/rename
+        repair paths write the CSV through ``_to_csv_atomic`` rather than this
+        method, so they are unaffected.
+
+        Returns ``csv_content`` unchanged when there is nothing to preserve, so
+        the common save path keeps its exact previous bytes.
+        """
         try:
-            _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+            incoming = self._parse_csv_text_faithfully(csv_content)
+        except Exception as exc:
+            # Unparseable payload: this method has no opinion on it. Let the
+            # caller write what it was given, exactly as before.
+            warn(f'[API] write_kestrel_csv: could not parse incoming CSV for merge ({exc}); writing as-is')
+            return csv_content
+        if 'filename' not in incoming.columns:
+            return csv_content
+
+        try:
+            with open(csv_path, 'r', encoding='utf-8-sig') as f:
+                on_disk = self._parse_csv_text_faithfully(f.read())
+        except Exception as exc:
+            # A missing/corrupt/empty existing file is not a reason to fail the
+            # user's save; there is simply nothing to preserve from it.
+            warn(f'[API] write_kestrel_csv: could not read existing CSV for merge ({exc}); writing as-is')
+            return csv_content
+        if on_disk.empty or 'filename' not in on_disk.columns:
+            return csv_content
+
+        known = set(incoming['filename'].astype(str))
+        survivors = on_disk.loc[~on_disk['filename'].astype(str).isin(known)]
+        if not survivors.empty:
+            still_here = survivors['filename'].map(
+                lambda fn: self._photo_still_in_folder(root_dir, fn)
+            )
+            survivors = survivors.loc[still_here]
+        if survivors.empty:
+            return csv_content
+
+        import pandas as pd
+        # Project onto the caller's columns so the file keeps one header. A
+        # column the caller dropped is not carried back in; a column it added
+        # is blank for preserved rows, which is what ensure_columns would do.
+        survivors = survivors.reindex(columns=incoming.columns, fill_value='')
+        merged = pd.concat([incoming, survivors], ignore_index=True)
+        info(
+            f'[API] write_kestrel_csv: preserved {len(survivors)} row(s) absent '
+            f'from the save payload (likely analysed after the view loaded)'
+        )
+        # \r\n matches how both the UI serialiser and pandas' default write
+        # this file, so a merged save is not a whole-file line-ending churn.
+        return merged.to_csv(index=False, lineterminator='\r\n')
+
+    def write_kestrel_csv(self, folder_path: str, csv_content: str):
+        """Write CSV content back to .kestrel/kestrel_database.csv for the given folder.
+
+        Rows already on disk that the payload does not mention are preserved --
+        see ``_merge_unknown_csv_rows`` for why.
+        """
+        try:
+            root_dir, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
                 folder_path,
                 context='write_kestrel_csv',
                 require_root_exists=True,
@@ -1989,6 +2181,7 @@ class Api:
             csv_path = os.path.join(kestrel_dir, 'kestrel_database.csv')
             if not os.path.exists(csv_path):
                 return {'success': False, 'error': f'CSV not found: {csv_path}'}
+            csv_content = self._merge_unknown_csv_rows(root_dir, csv_path, csv_content)
             # Atomic write: the analysis pipeline / auto-refresh may read this
             # same file, and a crash mid-write must not truncate the database.
             write_text_atomic(csv_path, csv_content, encoding='utf-8-sig')
@@ -2019,8 +2212,6 @@ class Api:
             }
         """
         try:
-            import pandas as pd
-
             try:
                 from kestrel_analyzer.ratings import (
                     quality_to_rating,
@@ -2049,7 +2240,20 @@ class Api:
             profile = settings.get('rating_profile', 'balanced')
             thresholds = resolve_thresholds(profile, settings.get('rating_thresholds_custom'))
 
-            df = pd.read_csv(csv_path)
+            # The analysis pipeline saves this CSV after every processed image
+            # while the UI calls this method on every refresh, and on Windows the
+            # two collide even though the save is atomic: CPython opens files
+            # without FILE_SHARE_DELETE, so a reader that lands during the
+            # rename gets PermissionError. read_database_csv retries through
+            # that window; a bare pd.read_csv surfaces it to the user as a
+            # spurious "Permission denied" and the folder shows no ratings. See
+            # kestrel_analyzer.database.retry_on_file_lock.
+            try:
+                from kestrel_analyzer.database import read_database_csv
+            except ImportError:  # package-style import path
+                from analyzer.kestrel_analyzer.database import read_database_csv  # type: ignore[no-redef]
+
+            df = read_database_csv(csv_path)
             if df.empty:
                 return {'success': True, 'normalized_ratings': {}, 'mode_used': profile, 'error': ''}
 
@@ -2077,6 +2281,155 @@ class Api:
         except Exception as e:
             error(f'[API] apply_normalization error: {e}')
             return {'success': False, 'error': str(e), 'normalized_ratings': {}, 'mode_used': ''}
+
+    # ---- Scene regrouping -------------------------------------------------
+    # Regroup replays the pipeline's scene-boundary rules against values the
+    # analysis already wrote to kestrel_database.csv, so a folder can be
+    # re-scened without decoding an image. The frontend owns the in-memory
+    # rows (it may hold unsaved edits, and it is what the user is looking at),
+    # so it ships the immutable analysis columns here rather than having this
+    # side re-read the CSV and risk disagreeing with the screen.
+
+    _REGROUP_MAX_IMAGES = 200000
+
+    def regroup_scenes_prepare(self, folder_path: str, items: list) -> dict:
+        """Cache a folder's analysis columns for the regroup dialog.
+
+        ``items`` is one entry per image with the columns the rules need:
+        filename, capture_time, orientation, feature_similarity,
+        feature_confidence, color_similarity, color_confidence, scene_count.
+
+        Returns {'success', 'image_count', 'scored_pairs', 'unscored_pairs',
+                 'analyzed_group_within', 'analyzed_split_after', 'error'}.
+        The two ``analyzed_*`` values are the settings the folder was last
+        analyzed with, read from kestrel_metadata.json, so the dialog can open
+        on the settings that reproduce the current grouping.
+        """
+        try:
+            from kestrel_analyzer.regroup import count_scored_pairs, sort_items
+
+            root_path, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path,
+                context='regroup_scenes_prepare',
+                require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            if not isinstance(items, list):
+                return {'success': False, 'error': 'items must be a list'}
+            if len(items) > self._REGROUP_MAX_IMAGES:
+                return {'success': False,
+                        'error': f'Folder has too many images to regroup '
+                                 f'({len(items)} > {self._REGROUP_MAX_IMAGES})'}
+
+            cleaned = []
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                name = str(it.get('filename', '') or '')
+                if not name:
+                    continue
+                cleaned.append({
+                    'filename': name,
+                    'capture_time': it.get('capture_time', ''),
+                    'orientation': it.get('orientation', ''),
+                    'feature_similarity': it.get('feature_similarity', -1),
+                    'feature_confidence': it.get('feature_confidence', -1),
+                    'color_similarity': it.get('color_similarity', -1),
+                    'color_confidence': it.get('color_confidence', -1),
+                    'scene_count': it.get('scene_count', ''),
+                })
+            cleaned = sort_items(cleaned)
+            self._regroup_cache = {'root': root_path, 'items': cleaned}
+
+            scored, unscored = count_scored_pairs(cleaned)
+            analyzed = self._read_analyzed_scene_settings(kestrel_dir)
+            return {
+                'success': True,
+                'error': '',
+                'image_count': len(cleaned),
+                'scored_pairs': scored,
+                'unscored_pairs': unscored,
+                'analyzed_group_within': analyzed['group_within'],
+                'analyzed_split_after': analyzed['split_after'],
+            }
+        except Exception as e:
+            error(f'[API] regroup_scenes_prepare({folder_path!r}) error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    @staticmethod
+    def _read_analyzed_scene_settings(kestrel_dir: str) -> dict:
+        """Scene settings from a folder's kestrel_metadata.json.
+
+        Falls back to the pipeline defaults when the folder predates the
+        analysis_settings block or the file is unreadable — the dialog just
+        opens on 1s / off, which is what those older runs used anyway.
+        """
+        out = {'group_within': 1.0, 'split_after': 0.0}
+        try:
+            meta_path = os.path.join(kestrel_dir, 'kestrel_metadata.json')
+            if not os.path.exists(meta_path):
+                return out
+            with open(meta_path, 'r', encoding='utf-8') as f:
+                meta = json.load(f)
+            settings = (meta or {}).get('analysis_settings') or {}
+            for key, wire in (('group_within', 'scene_time_threshold'),
+                              ('split_after', 'scene_break_gap_seconds')):
+                raw = settings.get(wire)
+                if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+                    value = float(raw)
+                    if value == value and value >= 0:
+                        out[key] = value
+        except Exception:
+            pass
+        return out
+
+    def regroup_scenes_preview(self, folder_path: str, options: dict = None,
+                               include_assignment: bool = False) -> dict:
+        """Group the cached folder under ``options`` and describe the result.
+
+        ``include_assignment`` is off for the live preview (the per-image map
+        is the largest part of the payload and the preview never reads it) and
+        on for the apply step, which needs the filename -> scene mapping.
+        """
+        try:
+            from kestrel_analyzer.regroup import plan_regroup
+
+            cache = self._regroup_cache
+            if not cache:
+                return {'success': False, 'error': 'No regroup session — reopen the dialog'}
+
+            root_path, _, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path,
+                context='regroup_scenes_preview',
+                require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            if os.path.normcase(root_path) != os.path.normcase(cache['root']):
+                return {'success': False,
+                        'error': 'Regroup session is for a different folder — reopen the dialog'}
+
+            options = options if isinstance(options, dict) else {}
+            plan = plan_regroup(
+                cache['items'],
+                group_within_seconds=options.get('group_within_seconds', 1.0),
+                split_after_seconds=options.get('split_after_seconds', 0.0),
+                similarity_threshold=options.get('similarity_threshold', 0.5),
+            )
+            if not include_assignment:
+                plan.pop('assignment', None)
+            plan['success'] = True
+            plan['error'] = ''
+            return plan
+        except Exception as e:
+            error(f'[API] regroup_scenes_preview({folder_path!r}) error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def regroup_scenes_release(self) -> dict:
+        """Drop the cached working set when the dialog closes."""
+        self._regroup_cache = None
+        return {'success': True, 'error': ''}
 
     def read_kestrel_scenedata(self, folder_path: str) -> dict:
         """Read kestrel_scenedata.json from a folder's .kestrel directory.
@@ -2113,6 +2466,101 @@ class Api:
             error(f'[API] read_kestrel_scenedata({folder_path!r}) error: {e}')
             return {'success': False, 'data': {}, 'error': str(e)}
 
+    @classmethod
+    def _merge_unknown_scenedata_images(cls, root_dir: str, scenedata_path: str, scenedata: dict) -> dict:
+        """Re-add scene membership for images the incoming payload never mentions.
+
+        The counterpart to ``_merge_unknown_csv_rows``: the UI rebuilds
+        ``scenes`` wholesale from its in-memory rows
+        (``_normalizeScenedataForSave``), so an image analysed after the view
+        loaded was dropped from scene membership and from ``image_ratings`` the
+        moment the user saved -- leaving the photo on disk but absent from the
+        timeline and from any later metadata write.
+
+        Preservation is keyed on "this filename appears nowhere in the incoming
+        payload, and the photo is still in the folder" -- the second half is
+        what lets the Culling Assistant drop the files it just moved into
+        ``_KESTREL_Rejects``. The first half keeps the deliberate reshuffles
+        intact: merging
+        scenes moves filenames between scene ids and deletes the emptied scene,
+        and because the moved filenames are still present, neither the old
+        scene nor its membership comes back.
+
+        Mutates and returns ``scenedata``; returns it untouched when there is
+        nothing on disk to preserve.
+        """
+        try:
+            with open(scenedata_path, 'r', encoding='utf-8') as f:
+                existing = json.load(f)
+        except FileNotFoundError:
+            return scenedata
+        except Exception as exc:
+            warn(f'[API] write_kestrel_scenedata: could not read existing scenedata for merge ({exc}); writing as-is')
+            return scenedata
+        if not isinstance(existing, dict):
+            return scenedata
+        existing_scenes = existing.get('scenes')
+        if not isinstance(existing_scenes, dict):
+            return scenedata
+
+        incoming_scenes = scenedata.get('scenes')
+        if not isinstance(incoming_scenes, dict):
+            incoming_scenes = {}
+            scenedata['scenes'] = incoming_scenes
+
+        known = set()
+        for scene in incoming_scenes.values():
+            if not isinstance(scene, dict):
+                continue
+            for name in scene.get('image_filenames') or []:
+                known.add(str(name))
+
+        preserved = 0
+        for sid, scene in existing_scenes.items():
+            if not isinstance(scene, dict):
+                continue
+            survivors = [
+                str(n) for n in (scene.get('image_filenames') or [])
+                if str(n) and str(n) not in known
+                and cls._photo_still_in_folder(root_dir, n)
+            ]
+            if not survivors:
+                continue
+            target = incoming_scenes.get(str(sid))
+            if not isinstance(target, dict):
+                # The payload dropped this scene entirely because it knew none
+                # of its images. Restore the disk entry (name/status/tags
+                # included) rather than inventing a bare one.
+                target = dict(scene)
+                target['image_filenames'] = []
+                incoming_scenes[str(sid)] = target
+            members = target.get('image_filenames')
+            if not isinstance(members, list):
+                members = []
+                target['image_filenames'] = members
+            for name in survivors:
+                members.append(name)
+                known.add(name)
+            preserved += len(survivors)
+
+        if preserved:
+            existing_ratings = existing.get('image_ratings')
+            if isinstance(existing_ratings, dict):
+                ratings = scenedata.get('image_ratings')
+                if not isinstance(ratings, dict):
+                    ratings = {}
+                    scenedata['image_ratings'] = ratings
+                for name, value in existing_ratings.items():
+                    # Caller wins where it has an opinion; this only fills in
+                    # ratings for images it had never loaded and still exist.
+                    if str(name) not in ratings and cls._photo_still_in_folder(root_dir, name):
+                        ratings[str(name)] = value
+            info(
+                f'[API] write_kestrel_scenedata: preserved {preserved} image(s) '
+                f'absent from the save payload (likely analysed after the view loaded)'
+            )
+        return scenedata
+
     def write_kestrel_scenedata(self, folder_path: str, scenedata: dict) -> dict:
         """Write kestrel_scenedata.json to a folder's .kestrel directory.
 
@@ -2124,7 +2572,7 @@ class Api:
             {'success': bool, 'path': str, 'error': str}
         """
         try:
-            _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+            root_dir, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
                 folder_path,
                 context='write_kestrel_scenedata',
                 require_root_exists=True,
@@ -2138,6 +2586,8 @@ class Api:
             scenedata_path = os.path.join(kestrel_dir, 'kestrel_scenedata.json')
             if not isinstance(scenedata, dict):
                 return {'success': False, 'error': 'scenedata must be a dict', 'path': ''}
+
+            scenedata = self._merge_unknown_scenedata_images(root_dir, scenedata_path, scenedata)
 
             # Atomic write: scenedata holds the user's ratings/tags/cull
             # decisions; a crash mid-write must not truncate the existing file.
@@ -2997,7 +3447,7 @@ class Api:
                 per_item_options = None
 
             validated_paths = []
-            invalid_paths = []
+            skipped_paths = []
             # Map raw->validated so per_item_options keyed by the raw frontend
             # path still resolves to the canonical realpath the worker uses.
             raw_to_validated = {}
@@ -3005,26 +3455,36 @@ class Api:
                 if not raw:
                     continue
                 root_real, err = self._validate_root_dir(raw, context='start_analysis_queue', require_exists=True)
+                if err == 'Path outside allowed root':
+                    # Sandbox escape: refuse the request rather than quietly
+                    # running the acceptable part of it.
+                    self._log_security_reject(
+                        'start_analysis_queue',
+                        'One or more queue paths are invalid',
+                        invalid_count=1,
+                    )
+                    return {
+                        'success': False,
+                        'error': 'Invalid folder path in queue request',
+                        'invalid_paths': [str(raw)],
+                    }
                 if err:
-                    invalid_paths.append(str(raw))
+                    # Gone since it was queued -- renamed, deleted, or on a card
+                    # that has been ejected. Analyse the folders that are still
+                    # there and name the ones that are not, rather than
+                    # cancelling a whole night's queue over one of them.
+                    skipped_paths.append(str(raw))
                     continue
                 if root_real not in validated_paths:
                     validated_paths.append(root_real)
                 raw_to_validated[str(raw)] = root_real
 
-            if invalid_paths:
-                self._log_security_reject(
-                    'start_analysis_queue',
-                    'One or more queue paths are invalid',
-                    invalid_count=len(invalid_paths),
-                )
+            if not validated_paths:
                 return {
                     'success': False,
-                    'error': 'Invalid folder path in queue request',
-                    'invalid_paths': invalid_paths,
+                    'error': 'No valid paths provided',
+                    'skipped_paths': skipped_paths,
                 }
-            if not validated_paths:
-                return {'success': False, 'error': 'No valid paths provided'}
 
             # Re-key per_item_options against the validated paths so the
             # queue manager can look up options by the same path it stores.
@@ -3051,6 +3511,11 @@ class Api:
             detection_threshold = max(0.1, min(0.99, detection_threshold))
             scene_time_threshold = float(sett.get('scene_time_threshold', 1.0))
             scene_time_threshold = max(0.0, scene_time_threshold)
+            try:
+                scene_break_gap_seconds = float(sett.get('scene_break_gap_seconds', 0.0))
+            except (TypeError, ValueError):
+                scene_break_gap_seconds = 0.0
+            scene_break_gap_seconds = max(0.0, min(86400.0, scene_break_gap_seconds))
             detector_name = 'mdv5a'
             mode_raw = str(sett.get('wildlife_model_mode', '') or '').strip().lower()
             if mode_raw == 'accurate':
@@ -3079,17 +3544,21 @@ class Api:
             except (TypeError, ValueError):
                 parallel_prefetch = 3
             parallel_prefetch = max(1, min(5, parallel_prefetch))
-            return _queue_manager.enqueue(validated_paths, use_gpu=bool(use_gpu),
-                                          wildlife_enabled=bool(wildlife_enabled),
-                                          species_detection_enabled=bool(species_detection_enabled),
-                                          detection_threshold=detection_threshold,
-                                          scene_time_threshold=scene_time_threshold,
-                                          mask_threshold=mask_threshold,
-                                          max_bird_crops=max_bird_crops,
-                                          parallel_prefetch=parallel_prefetch,
-                                          detector_name=detector_name,
-                                          retry_errored=bool(retry_errored),
-                                          per_item_options=validated_per_item_options)
+            result = _queue_manager.enqueue(validated_paths, use_gpu=bool(use_gpu),
+                                            wildlife_enabled=bool(wildlife_enabled),
+                                            species_detection_enabled=bool(species_detection_enabled),
+                                            detection_threshold=detection_threshold,
+                                            scene_time_threshold=scene_time_threshold,
+                                            scene_break_gap_seconds=scene_break_gap_seconds,
+                                            mask_threshold=mask_threshold,
+                                            max_bird_crops=max_bird_crops,
+                                            parallel_prefetch=parallel_prefetch,
+                                            detector_name=detector_name,
+                                            retry_errored=bool(retry_errored),
+                                            per_item_options=validated_per_item_options)
+            if isinstance(result, dict) and skipped_paths:
+                result = dict(result, skipped_paths=skipped_paths)
+            return result
         except Exception as e:
             error(f'[API] start_analysis_queue error: {e}')
             return {'success': False, 'error': str(e)}
@@ -3255,8 +3724,43 @@ class Api:
     _oauth_cancel_event = None      # threading.Event for the active flow
     _oauth_thread = None            # the active oauth-flow worker thread
 
+    def _culling_window_is_open(self) -> bool:
+        """True if the Culling Assistant webview is still in ``webview.windows``."""
+        win = getattr(self, '_culling_window', None)
+        if win is None:
+            return False
+        try:
+            import webview as _wv
+            windows = getattr(_wv, 'windows', None) or []
+            return win in windows
+        except Exception:
+            return False
+
+    def _on_culling_window_closed(self):
+        self._culling_window = None
+        self._culling_window_root = None
+
+    def _focus_culling_window(self, win) -> None:
+        restore = getattr(win, 'restore', None)
+        if callable(restore):
+            try:
+                restore()
+            except Exception as e:
+                warn(f'[culling] restore failed: {e}')
+        show = getattr(win, 'show', None)
+        if callable(show):
+            try:
+                show()
+            except Exception as e:
+                warn(f'[culling] show failed: {e}')
+
     def open_culling_window(self, root_path: str):
-        """Open a new pywebview window for the Culling Assistant."""
+        """Open a pywebview window for the Culling Assistant.
+
+        One window only: a later click focuses the existing assistant and,
+        if the folder changed, reloads it. Stacking windows shares ``js_api``
+        and would race cull state and IPC.
+        """
         try:
             if not WEBVIEW_IMPORT_SUCCESS:
                 return {'success': False, 'error': 'pywebview not available'}
@@ -3270,15 +3774,35 @@ class Api:
             port = self._server_port or 8765
             from urllib.parse import quote
             culling_url = f'http://{HOST}:{port}/culling.html?root={quote(root_real, safe="")}'
+            title = f'Culling Assistant \u2014 {folder_name}'
+
+            if self._culling_window_is_open():
+                win = self._culling_window
+                if self._culling_window_root != root_real:
+                    win.load_url(culling_url)
+                    self._culling_window_root = root_real
+                    try:
+                        win.title = title
+                    except Exception as e:
+                        warn(f'[culling] set title failed: {e}')
+                self._focus_culling_window(win)
+                return {'success': True}
 
             win = _wv.create_window(
-                f'Culling Assistant \u2014 {folder_name}',
+                title,
                 culling_url,
                 js_api=self,
                 width=1400,
                 height=900,
             )
             self._culling_window = win
+            self._culling_window_root = root_real
+            closed = getattr(getattr(win, 'events', None), 'closed', None)
+            if closed is not None:
+                try:
+                    closed += self._on_culling_window_closed
+                except TypeError:
+                    warn('[culling] closed-handler subscribe failed')
             return {'success': True}
         except Exception as e:
             error(f'[API] open_culling_window error: {e}')
@@ -6786,33 +7310,42 @@ class Api:
     class _DirIndex(dict):
         """Case-folded name -> last on-disk spelling, plus lookup tables.
 
-        Companion lookup still uses last-wins ``self[lower]`` (a string).
-        Main-file resolve uses ``names_set`` / ``folded_counts`` so two files
+        Main-file resolve uses ``names_set`` / ``folded_names`` so two files
         that differ only by case are not collapsed onto whichever listing
-        came last, in O(1) per request. ``names`` is None when listdir failed.
+        came last, in O(1) per request. Companion lookup uses ``matches()``
+        so every spelling is returned instead of last-wins ``self[lower]``.
+        ``names`` is None when listdir failed.
         """
 
         def __init__(self, names: list[str] | None):
             super().__init__()
             self.names = names
             self.names_set: set[str] = set()
-            self.folded_counts: dict[str, int] = {}
+            self.folded_names: dict[str, list[str]] = {}
             if not names:
                 return
             for entry in names:
                 key = entry.lower()
                 self[key] = entry
                 self.names_set.add(entry)
-                self.folded_counts[key] = self.folded_counts.get(key, 0) + 1
+                bucket = self.folded_names.get(key)
+                if bucket is None:
+                    self.folded_names[key] = [entry]
+                else:
+                    bucket.append(entry)
 
         def resolve(self, name: str) -> str | None:
             """Exact spelling, else the unique case-insensitive hit, else None."""
             if name in self.names_set:
                 return name
-            folded = name.lower()
-            if self.folded_counts.get(folded, 0) == 1:
-                return self[folded]
+            hits = self.folded_names.get(name.lower(), ())
+            if len(hits) == 1:
+                return hits[0]
             return None
+
+        def matches(self, name: str) -> list[str]:
+            """Every on-disk spelling that folds to ``name``. Empty if none."""
+            return list(self.folded_names.get(name.lower(), ()))
 
     def _build_dir_index(self, root_path: str) -> dict:
         """Map lowercased entry name -> real on-disk name for one directory.
@@ -6868,6 +7401,46 @@ class Api:
             return index.get(name.lower()) if index else None
         return self._DirIndex(listing).resolve(name)
 
+    def _lookup_sidecar_names(self, root_path: str, index, candidate: str,
+                              ext: str) -> list[str]:
+        """Resolve ``candidate`` through the dir index, or exists-probe on failure."""
+        if isinstance(index, self._DirIndex):
+            if index.names is not None:
+                return _sidecar_hits_for_constructed_name(
+                    index.matches(candidate), candidate
+                )
+            return _existing_sidecar_names(
+                root_path, _sidecar_extension_probes(candidate, ext)
+            )
+        if index:
+            hit = index.get(candidate.lower())
+            return [hit] if hit else []
+        return _existing_sidecar_names(
+            root_path, _sidecar_extension_probes(candidate, ext)
+        )
+
+    def _find_sidecar_matches(self, root_path: str, filename: str, ext: str = '.xmp',
+                              dir_index: dict | None = None) -> list[str]:
+        """All on-disk sidecar spellings for ``filename`` + ``ext``.
+
+        Uses the directory listing when available. Listing hits keep the
+        constructed stem spelling; only the extension may differ by case.
+        When listdir failed, probes ``exists()`` for the lowercase extension
+        and the uppercased variant (``.xmp`` vs ``.XMP``). Distinct files are
+        all returned; a case-folding filesystem's two names for one inode
+        collapse to one.
+        """
+        index = self._build_dir_index(root_path) if dir_index is None else dir_index
+        found: list[str] = []
+        seen: set[str] = set()
+        for candidate in _sidecar_basename_candidates(filename, ext):
+            for hit in self._lookup_sidecar_names(root_path, index, candidate, ext):
+                if hit in seen:
+                    continue
+                seen.add(hit)
+                found.append(hit)
+        return found
+
     def _find_sidecar_file(self, root_path: str, filename: str, ext: str = '.xmp',
                            dir_index: dict | None = None):
         """Find sidecar file with given extension for an image file.
@@ -6876,8 +7449,11 @@ class Api:
         - filename + ext (e.g., IMG_001.CR3.xmp)
         - name_without_ext + ext (e.g., IMG_001.xmp for IMG_001.CR3)
 
-        Matching is case-insensitive; the returned name is the real on-disk
-        spelling, so callers can join it to a path directly.
+        The constructed stem spelling must match on disk. Extension matching
+        is case-insensitive; the returned name is the real on-disk spelling,
+        so callers can join it to a path directly. Exact constructed spelling
+        wins over an extension-case fold. Ambiguous extension-case variants
+        without an exact hit return None rather than the last listing.
 
         ``dir_index`` is an optional pre-built listing from
         ``_build_dir_index``. Pass it when resolving many files in one
@@ -6886,20 +7462,17 @@ class Api:
         Returns the filename (not path) if found, None otherwise.
         Searches in the same directory as the image.
         """
-        index = self._build_dir_index(root_path) if dir_index is None else dir_index
-
-        # Primary naming: filename + ext (e.g., IMG_001.CR3.xmp)
-        hit = index.get((filename + ext).lower())
-        if hit:
-            return hit
-
-        # Secondary naming: name_without_ext + ext (e.g., IMG_001.xmp)
-        if '.' in filename:
-            base_name = filename.rsplit('.', 1)[0]
-            hit = index.get((base_name + ext).lower())
-            if hit:
-                return hit
-
+        matches = self._find_sidecar_matches(
+            root_path, filename, ext, dir_index=dir_index
+        )
+        if not matches:
+            return None
+        match_set = set(matches)
+        for candidate in _sidecar_basename_candidates(filename, ext):
+            if candidate in match_set:
+                return candidate
+        if len(matches) == 1:
+            return matches[0]
         return None
 
     def _find_companion_files(self, root_path: str, filename: str,
@@ -6909,6 +7482,12 @@ class Api:
         ``dir_index`` is an optional pre-built listing from
         ``_build_dir_index``. Without it this lists the directory once per
         call; batch callers should build the index once and pass it in.
+
+        Every on-disk extension-case variant of a companion is included
+        (``.xmp`` and ``.XMP`` are two files on a case-sensitive filesystem).
+        A sidecar whose stem differs only by case belongs to the other main
+        file and is left behind. The main file itself is skipped even when
+        its spelling differs only by case.
         """
         companions: list[str] = []
         seen: set[str] = set()
@@ -6916,14 +7495,13 @@ class Api:
         index = self._build_dir_index(root_path) if dir_index is None else dir_index
 
         for ext in self._culling_companion_extensions:
-            companion = self._find_sidecar_file(root_path, filename, ext, dir_index=index)
-            if not companion:
-                continue
-            key = companion.lower()
-            if key == filename_key or key in seen:
-                continue
-            seen.add(key)
-            companions.append(companion)
+            for companion in self._find_sidecar_matches(
+                root_path, filename, ext, dir_index=index
+            ):
+                if companion.lower() == filename_key or companion in seen:
+                    continue
+                seen.add(companion)
+                companions.append(companion)
 
         return companions
 

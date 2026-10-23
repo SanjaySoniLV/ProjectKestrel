@@ -21,10 +21,10 @@ Bootstrap reconciliation reads BOTH this file (folder truth) and the legacy
 set used to compute "packs to download". New merges write here; the legacy
 field is left untouched but no longer the dedup driver.
 
-Atomic-write pattern mirrors `settings_utils.py` and `cloud_jobs_store.py`:
-write to tempfile, then `os.replace` over the canonical file. A per-folder
-in-process lock serializes saves because the live job's `_on_pack_merged`
-callback and the resume worker can both write concurrently.
+Atomic-write pattern mirrors `settings_utils.py` / `_to_csv_atomic`:
+write to tempfile, flush+fsync, then `os.replace` over the canonical file.
+A per-folder in-process lock serializes saves because the live job's
+`_on_pack_merged` callback and the resume worker can both write concurrently.
 """
 
 from __future__ import annotations
@@ -44,6 +44,22 @@ SCHEMA_VERSION = 1
 # live `_on_pack_merged` callback and the resume worker for the same folder.
 _LOCKS: dict[str, threading.RLock] = {}
 _LOCKS_GLOBAL = threading.Lock()
+
+
+def _retry_on_file_lock(op, attempts: int = 12, delay: float = 0.02):
+    """Run ``op()``, retrying briefly on Windows' transient file-sharing errors.
+
+    Canonical implementation: ``kestrel_analyzer.database.retry_on_file_lock``.
+    This copy exists so folder-local cloud state does not import pandas via
+    ``database``.
+    """
+    for attempt in range(attempts):
+        try:
+            return op()
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay * (attempt + 1))
 
 
 def _lock_for(folder_abs: str) -> threading.RLock:
@@ -96,7 +112,16 @@ def _write_atomic(folder: Path, data: dict) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, sort_keys=False)
-        os.replace(tmp_path, final_path)
+            # flush() errors (ENOSPC, EIO) must propagate: a partial temp
+            # file must not be os.replace'd over a good destination.
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                # fsync can legitimately fail on some network filesystems;
+                # the replace below still gives readers an all-or-nothing view.
+                pass
+        _retry_on_file_lock(lambda: os.replace(tmp_path, final_path))
     except Exception:
         try:
             os.unlink(tmp_path)

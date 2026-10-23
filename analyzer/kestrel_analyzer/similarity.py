@@ -2,12 +2,15 @@ import cv2
 import numpy as np
 
 
-def compute_similarity_timestamp(path1, path2, threshold_seconds: float = 1.0):
+def compute_capture_time_gap(path1, path2):
     """
-    Return True if two image files were captured within threshold_seconds of each other,
-    False if they were not, or None if timestamps could not be read for either file.
+    Return the absolute capture-time gap between two image files in seconds,
+    or None if the timestamp could not be read for either file.
+
+    Both scene rules keyed on capture time — the "same burst" merge and the
+    long-gap scene break — read the same pair of EXIF timestamps, so they share
+    this one call rather than decoding the headers twice per image.
     """
-    from datetime import timedelta
     try:
         try:
             from .raw_exif import get_capture_time
@@ -15,9 +18,20 @@ def compute_similarity_timestamp(path1, path2, threshold_seconds: float = 1.0):
             from raw_exif import get_capture_time
         t1 = get_capture_time(path1)
         t2 = get_capture_time(path2)
-        return abs(t1 - t2) <= timedelta(seconds=threshold_seconds)
+        return abs((t1 - t2).total_seconds())
     except Exception:
         return None
+
+
+def compute_similarity_timestamp(path1, path2, threshold_seconds: float = 1.0):
+    """
+    Return True if two image files were captured within threshold_seconds of each other,
+    False if they were not, or None if timestamps could not be read for either file.
+    """
+    gap = compute_capture_time_gap(path1, path2)
+    if gap is None:
+        return None
+    return gap <= threshold_seconds
 
 
 def compute_image_similarity_akaze(img1, img2, max_dim=1600):

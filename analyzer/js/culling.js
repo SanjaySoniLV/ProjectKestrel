@@ -405,15 +405,26 @@
         if (detailEl && detail) detailEl.textContent = detail;
       };
 
-      const payload = folderRows.map(r => ({
-        filename: r.filename,
-        rating: getRating(r),
-        culled: getRawCullStatus(r),
-        culled_origin: normalizeCullOrigin(r),
-        species: r.species || '',
-        family: r.family || '',
-        quality: r.quality != null ? r.quality : null,
-      }));
+      // A reviewed scene's corrected species/family replace the model's
+      // per-image prediction, exactly as they already do everywhere the app
+      // displays them. Without this the file got the original prediction
+      // written to its keywords and description while Kestrel showed the
+      // correction. See js/reviewed-tags.js.
+      // Keyed exactly as the display path keys it (js/scenes.js), so the
+      // payload and what the user sees on screen cannot disagree.
+      const sceneTagMap = _scenedata[folderRows[0]?.__rootPath || rootPath]?.scenes || {};
+      const payload = folderRows.map(r => {
+        const tags = window.KestrelReviewedTags.resolveRowTags(sceneTagMap, r);
+        return {
+          filename: r.filename,
+          rating: getRating(r),
+          culled: getRawCullStatus(r),
+          culled_origin: normalizeCullOrigin(r),
+          species: tags.species,
+          family: tags.family,
+          quality: r.quality != null ? r.quality : null,
+        };
+      });
 
       dlg.querySelector('#wmCancel').addEventListener('click', closeAndRemove);
 

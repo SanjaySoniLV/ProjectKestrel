@@ -156,6 +156,42 @@ class TestXmpPathTraversal(_TraversalTestBase):
         expected = os.path.join(self.root, "IMG_0001.xmp")
         self.assertTrue(os.path.exists(expected))
 
+    def test_symlink_image_does_not_write_xmp_outside_root(self) -> None:
+        """S1-07: FINDING-02 jails the filename string, not the sidecar path.
+
+        A bare name that is a symlink to a file outside root still passes
+        the basename jail. Deriving ``base + '.xmp'`` from ``realpath`` of
+        the image then writes the sidecar next to the target.
+        """
+        target = os.path.join(self.outside, "IMG_0001.CR3")
+        with open(target, "wb") as fh:
+            fh.write(b"not-a-raw")
+        link = os.path.join(self.root, "IMG_0001.CR3")
+        try:
+            os.symlink(target, link)
+        except OSError as exc:
+            self.skipTest(f"cannot create symlink: {exc}")
+
+        payload = [{"filename": "IMG_0001.CR3", "rating": 5, "culled": "accept"}]
+        result = write_xmp_metadata(self.root, payload)
+
+        self.assertTrue(result.get("success"))
+        outside_xmp = [
+            p for p in self._files_outside_root() if p.lower().endswith(".xmp")
+        ]
+        self.assertFalse(outside_xmp, f"XMP written outside root: {outside_xmp}")
+        self.assertFalse(
+            os.path.exists(os.path.join(self.outside, "IMG_0001.xmp")),
+            "Sidecar followed the symlink target outside root",
+        )
+        in_root = os.path.join(self.root, "IMG_0001.xmp")
+        self.assertTrue(
+            os.path.exists(in_root),
+            "Sidecar must stay beside the symlink in root",
+        )
+        self.assertFalse(os.path.islink(in_root))
+        self.assertEqual(result.get("written"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
