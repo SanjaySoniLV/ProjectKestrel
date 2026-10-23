@@ -1,5 +1,6 @@
 """Unit tests for api_bridge.py pure helper methods (no webview required)."""
 
+import json
 import pytest
 from pathlib import Path
 import sys
@@ -508,6 +509,21 @@ class TestCCAnalysisSettingsSnapshot:
         out = api._cc_analysis_settings_snapshot()
         # All 5 above are invalid → the snapshot has no entries, returns None.
         assert out is None or out == {}
+
+    def test_species_regions_from_folder_then_setting(self, api, monkeypatch, tmp_path):
+        """Pipeline 3 geofence: the folder's recorded regions win over the
+        bird_regions setting; sent comma-joined in canonical order."""
+        monkeypatch.setattr(api, "get_settings", lambda: {"settings": {"bird_regions": ["SA", "NA"]}})
+        assert api._cc_analysis_settings_snapshot()["species_regions"] == "NA,SA"
+        assert api._cc_analysis_settings_snapshot(str(tmp_path))["species_regions"] == "NA,SA"
+
+        kd = tmp_path / ".kestrel"
+        kd.mkdir()
+        (kd / "kestrel_metadata.json").write_text(json.dumps({"species_regions": ["PAL"]}))
+        assert api._cc_analysis_settings_snapshot(str(tmp_path))["species_regions"] == "PAL"
+
+        (kd / "kestrel_metadata.json").write_text(json.dumps({"species_regions": ["global"]}))
+        assert api._cc_analysis_settings_snapshot(str(tmp_path))["species_regions"] == "global"
 
 
 class TestSampleSetMirror:
