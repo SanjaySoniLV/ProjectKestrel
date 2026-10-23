@@ -1,7 +1,8 @@
     // ─── Quality feedback ──────────────────────────────────────────────────────
-    // "Sharpness right? 👍 👎" in the scene viewer. 👎 opens a dialog where the
-    // user drags 2–5 bird crops of the burst into order, sharpest first (no
-    // ties, no extra controls: the ask should take seconds); 👍 offers it too.
+    // "Did Kestrel sort by sharpness well? 👍 👎" in the scene viewer. 👎 opens
+    // a dialog: consent first (skipped when the user chose "always share"),
+    // then drag 2–5 bird crops into order, sharpest first, then a thank-you.
+    // No ties and few options: giving feedback should take seconds.
     // Kestrel scores focus/sharpness only, so the dialog asks about focus only.
     // Frames are chosen (and shuffled) in Python — kestrel_analyzer/
     // quality_feedback.py — and the dialog never sees Kestrel's scores or order.
@@ -73,23 +74,17 @@
       }
       const label = document.createElement('span');
       label.className = 'scene-qf-label';
-      label.textContent = 'Sharpness right?';
+      label.textContent = 'Did Kestrel sort by sharpness well?';
       box.appendChild(label);
       box.appendChild(_qfButton('👍', 'Yes', () => {
         _qfAnswered.add(_qfSceneKey(scene));
         box.replaceChildren();
         const t = document.createElement('span');
         t.className = 'scene-qf-label';
-        t.textContent = 'Thanks! ';
-        const a = document.createElement('a');
-        a.href = '#';
-        a.className = 'scene-qf-link';
-        a.textContent = 'Sort a few';
-        a.addEventListener('click', (e) => { e.preventDefault(); a.blur(); qfOpenSortDialog(scene, 'up'); });
-        t.appendChild(a);
+        t.textContent = 'Thanks!';
         box.appendChild(t);
       }));
-      box.appendChild(_qfButton('👎', 'No — sort a few', () => {
+      box.appendChild(_qfButton('👎', 'No', () => {
         qfOpenSortDialog(scene, 'down');
       }));
     }
@@ -126,9 +121,12 @@
         started: performance.now(),
         durationMs: 0,
         ranking: null,
+        consent: false,
         submitted: false,
       };
-      _qfRenderSort();
+      // "Always share" skips straight to sorting; otherwise ask first.
+      if (_qf.mode === 'always') _qfRenderSort();
+      else _qfRenderConsent();
       const dlg = document.getElementById('qfDlg');
       if (!dlg.open) dlg.showModal();
       _qf.started = performance.now();
@@ -168,8 +166,8 @@
     function _qfRenderSort() {
       const body = document.getElementById('qfBody');
       const footer = document.getElementById('qfFooter');
-      document.getElementById('qfTitle').textContent = 'Drag to sort: sharpest first';
-      document.getElementById('qfSubtitle').textContent = 'Focus only.';
+      document.getElementById('qfTitle').textContent = 'Sort these thumbnails from sharpest to blurriest';
+      document.getElementById('qfSubtitle').textContent = 'Drag to reorder. Judge focus only, not pose.';
       body.replaceChildren();
       footer.replaceChildren();
 
@@ -215,13 +213,13 @@
       });
       body.appendChild(list);
 
-      const skip = _qfEl('button', '', 'Skip');
-      skip.type = 'button';
-      skip.addEventListener('click', () => _qfClose(true));
-      const done = _qfEl('button', 'primary', 'Done');
+      const cancel = _qfEl('button', '', 'Cancel');
+      cancel.type = 'button';
+      cancel.addEventListener('click', () => _qfClose(true));
+      const done = _qfEl('button', 'primary', 'Submit');
       done.type = 'button';
       done.addEventListener('click', () => _qfFinishSort(_qfRankingFromItems()));
-      footer.append(skip, _qfEl('span', 'qf-spacer'), done);
+      footer.append(cancel, _qfEl('span', 'qf-spacer'), done);
     }
 
     function _qfFocus(pos) {
@@ -233,48 +231,78 @@
       _qf.ranking = ranking;
       _qf.durationMs = Math.max(0, Math.round(performance.now() - _qf.started));
       if (_qf.scene) _qfAnswered.add(_qfSceneKey(_qf.scene));
-      const mode = qfMode();
-      if (mode === 'always') { _qfSubmit(false); return; }
-      if (mode === 'never') { _qfClose(true); return; }
-      _qfRenderConsent();
+      _qfSubmit(_qf.consent);
     }
 
+    function _qfLink(text, url) {
+      const a = _qfEl('a', 'qf-link', text);
+      a.href = url;
+      a.addEventListener('click', (e) => {
+        e.preventDefault();
+        try { window.pywebview?.api?.open_url?.(url); } catch (_) { }
+      });
+      return a;
+    }
+
+    // Asked before sorting, so nobody sorts and then declines.
     function _qfRenderConsent() {
-      document.getElementById('qfTitle').textContent = 'Share these crops with Kestrel?';
+      document.getElementById('qfTitle').textContent = 'Would you like to help improve Kestrel’s quality scores?';
       document.getElementById('qfSubtitle').textContent = '';
       const body = document.getElementById('qfBody');
       const footer = document.getElementById('qfFooter');
       body.replaceChildren();
       footer.replaceChildren();
-      const p = _qfEl('p', 'qf-consent-text muted', 'Just these crops, your order and Kestrel’s scores. Anonymous. ');
-      const link = _qfEl('a', 'qf-link', 'Privacy');
-      link.href = QF_PRIVACY_URL;
-      link.addEventListener('click', (e) => {
-        e.preventDefault();
-        try { window.pywebview?.api?.open_url?.(QF_PRIVACY_URL); } catch (_) { }
-      });
-      p.appendChild(link);
+      body.appendChild(_qfEl('p', 'qf-consent-text',
+        'By sharing a few thumbnails with us, you can help us improve Kestrel’s quality scoring algorithm to rank photos by sharpness more effectively.'));
+      const lists = _qfEl('div', 'qf-consent-lists');
+      const yes = _qfEl('div', 'qf-consent-col');
+      yes.append(_qfEl('div', 'qf-consent-head', 'What’s shared'),
+        _qfEl('div', 'muted', 'A few bird thumbnails, your sort order, Kestrel’s scores, the species, the app version and an anonymous ID.'));
+      const no = _qfEl('div', 'qf-consent-col');
+      no.append(_qfEl('div', 'qf-consent-head', 'What’s never shared'),
+        _qfEl('div', 'muted', 'Your full photos, location or camera data, file names, or anything tied to your account.'));
+      lists.append(yes, no);
+      body.appendChild(lists);
+      const links = _qfEl('p', 'qf-consent-text muted');
+      links.append(_qfLink('Read more', QF_PRIVACY_URL + '#quality-feedback'), document.createTextNode(' · '),
+        _qfLink('Privacy policy', QF_PRIVACY_URL));
       const remember = _qfEl('label', 'inline qf-remember');
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.id = 'qfRemember';
-      remember.append(cb, _qfEl('span', 'muted', ' Don’t ask again'));
-      body.append(p, remember);
+      remember.append(cb, _qfEl('span', 'muted', ' Remember my decision'));
+      body.append(links, remember);
 
-      const notNow = _qfEl('button', '', 'No');
-      notNow.type = 'button';
-      notNow.addEventListener('click', () => {
+      const no_ = _qfEl('button', '', 'No, thanks');
+      no_.type = 'button';
+      no_.addEventListener('click', () => {
         if (cb.checked) _qfSetMode('never');
         _qfClose(true);
       });
-      const share = _qfEl('button', 'primary', 'Share');
-      share.type = 'button';
-      share.addEventListener('click', () => {
+      const next = _qfEl('button', 'primary', 'Next');
+      next.type = 'button';
+      next.addEventListener('click', () => {
         if (cb.checked) _qfSetMode('always');
-        _qfSubmit(true);
+        _qf.consent = true;
+        _qfRenderSort();
+        _qf.started = performance.now();
       });
-      footer.append(notNow, _qfEl('span', 'qf-spacer'), share);
-      try { share.focus(); } catch (_) { }
+      footer.append(no_, _qfEl('span', 'qf-spacer'), next);
+      try { next.focus(); } catch (_) { }
+    }
+
+    function _qfRenderThanks() {
+      document.getElementById('qfTitle').textContent = 'Thank you!';
+      document.getElementById('qfSubtitle').textContent = '';
+      const body = document.getElementById('qfBody');
+      const footer = document.getElementById('qfFooter');
+      body.replaceChildren(_qfEl('p', 'qf-consent-text', 'Your feedback helps Kestrel rank photos by sharpness.'));
+      footer.replaceChildren();
+      const close = _qfEl('button', 'primary', 'Close');
+      close.type = 'button';
+      close.addEventListener('click', () => _qfClose(false));
+      footer.append(_qfEl('span', 'qf-spacer'), close);
+      try { close.focus(); } catch (_) { }
     }
 
     function _qfSetMode(mode) {
@@ -296,7 +324,7 @@
       };
       _qf.submitted = true;
       const scene = _qf.scene;
-      _qfClose(false);
+      _qfRenderThanks();
       if (scene && typeof _currentScene !== 'undefined' && _currentScene && String(_currentScene.id) === String(scene.id)) {
         qfRenderSceneControl(_currentScene);
       }
@@ -309,8 +337,8 @@
     }
 
     window.onQualityFeedbackResult = function (res) {
-      if (res && res.ok) showToast('Thanks — feedback sent', 3000);
-      else showToast('Couldn’t send feedback' + (res?.error ? ` (${res.error})` : '') + ' — nothing was saved.', 5000);
+      // Success is already thanked in the dialog; only failures need a word.
+      if (!(res && res.ok)) showToast('Couldn’t send feedback' + (res?.error ? ` (${res.error})` : '') + ' — nothing was saved.', 5000);
     };
 
     // Keys typed in the sort dialog must not reach the scene viewer's
