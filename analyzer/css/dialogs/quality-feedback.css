@@ -1,0 +1,105 @@
+/* ── Quality feedback (js/quality-feedback.js) ─────────────────────── */
+
+/* Thumbs prompt at the end of the scene viewer's info bar. */
+.scene-qf {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+}
+.scene-qf.hidden { display: none; }
+.scene-qf-label { white-space: nowrap; }
+.scene-qf-btn {
+  background: transparent;
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-sm);
+  padding: 1px 7px;
+  font-size: 13px;
+  line-height: 1.5;
+  cursor: pointer;
+  color: var(--text);
+  transition: border-color .12s ease, background .12s ease;
+}
+.scene-qf-btn:hover { border-color: var(--brand); background: var(--chip); }
+.scene-qf-link, .qf-link { color: var(--brand); text-decoration: none; }
+.scene-qf-link:hover, .qf-link:hover { text-decoration: underline; }
+
+/* Sort dialog */
+dialog.kdlg.qf-dlg {
+  width: min(900px, 96vw);
+  max-width: min(900px, 96vw);
+  height: fit-content;
+  max-height: 92vh;
+}
+.qf-title { margin: 0 0 4px; font-size: 16px; line-height: 1.35; }
+.qf-subtitle { font-size: 13px; margin-bottom: 14px; }
+.qf-spacer { flex: 1; }
+.qf-footer { align-items: center; }
+
+.qf-list {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.qf-card {
+  position: relative;
+  width: 156px;
+  padding: 4px;
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  cursor: grab;
+  user-select: none;
+  box-sizing: border-box;
+}
+.qf-card:active { cursor: grabbing; }
+.qf-card:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.qf-card.is-dragging { opacity: .45; }
+.qf-card.is-drop-target { border-color: var(--brand); border-style: dashed; }
+.qf-rank {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  font-weight: 700;
+  font-size: 12px;
+  min-width: 20px;
+  text-align: center;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--chip);
+  color: var(--text);
+}
+.qf-crop {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  display: block;
+  pointer-events: none;
+}
+
+/* Consent step */
+.qf-consent-text { font-size: 13px; margin: 0 0 8px; line-height: 1.45; }
+.qf-remember { font-size: 13px; gap: 6px; margin-top: 6px; }
+
+/* Shared-log viewer */
+.qf-log-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.qf-log-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  background: var(--card);
+  font-size: 13px;
+}
+.qf-log-time { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.qf-consent-lists { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 4px 0 12px; font-size: 13px; line-height: 1.45; }
+.qf-consent-col { padding: 10px 12px; border: 1px solid var(--card-border); border-radius: var(--radius-md); background: var(--card); }
+.qf-consent-head { font-weight: 600; margin-bottom: 4px; }
+@media (max-width: 560px) { .qf-consent-lists { grid-template-columns: 1fr; } }
