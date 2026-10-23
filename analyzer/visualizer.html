@@ -30,11 +30,13 @@
   <link rel="stylesheet" href="css/dialogs/base.css" />
   <link rel="stylesheet" href="css/dialogs/kdlg.css" />
   <link rel="stylesheet" href="css/dialogs/scene.css" />
+  <link rel="stylesheet" href="css/dialogs/regroup.css" />
   <link rel="stylesheet" href="css/dialogs/settings.css" />
   <link rel="stylesheet" href="css/dialogs/analyze.css" />
   <link rel="stylesheet" href="css/dialogs/live-analysis.css" />
   <link rel="stylesheet" href="css/dialogs/cloud-compute.css" />
   <link rel="stylesheet" href="css/dialogs/feedback-consent.css" />
+  <link rel="stylesheet" href="css/dialogs/quality-feedback.css" />
   <link rel="stylesheet" href="css/dialogs/donate.css" />
   <link rel="stylesheet" href="css/dialogs/tutorial-chooser.css" />
   <link rel="stylesheet" href="css/tutorial.css" />
@@ -467,6 +469,8 @@
               <span class="scene-info-editor-label" id="sceneInfoEditorLabel">Open</span>
             </button>
           </div>
+          <!-- Quality feedback prompt (js/quality-feedback.js) -->
+          <div class="scene-qf hidden" id="sceneQf" role="group" aria-label="Quality feedback"></div>
         </div>
       </div>
 
@@ -989,6 +993,19 @@
       </div>
       <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Automatically send a report if Kestrel
         crashes, so we can find and fix the problem. No filenames, paths, or images are ever shared.</div>
+
+      <div class="row">
+        <label for="settingsQualityFeedbackMode" style="flex:1">Quality feedback</label>
+        <select id="settingsQualityFeedbackMode">
+          <option value="ask">Always ask</option>
+          <option value="always">Always share</option>
+          <option value="never">Never</option>
+        </select>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Sort a few bird crops by sharpness
+        to help improve Kestrel. Anonymous.
+        <a href="#" class="qf-link" id="settingsQfViewLog">View what I've shared</a> &middot;
+        <a href="#" class="qf-link" id="settingsQfForget">Forget my shared feedback</a></div>
     </div>
     <div class="settings-footer">
       <button id="settingsCancel">Cancel</button>
@@ -1038,6 +1055,69 @@
       <div class="footer">
         <button id="infoClose">Close</button>
       </div>
+    </div>
+  </dialog>
+
+  <!-- Regroup Scenes dialog — re-scene an already-analyzed folder from the
+       values the analysis already stored, with a live before/after preview.
+       Body logic in js/scene-regroup.js; the grouping rules themselves live in
+       kestrel_analyzer/regroup.py so they can be tested against the pipeline's
+       own ladder. -->
+  <dialog id="regroupDlg" class="kdlg kdlg--lg kdlg--flex" aria-labelledby="regroupDlgTitle">
+    <div class="kdlg-body regroup-body">
+      <h3 style="margin:0" id="regroupDlgTitle">Regroup Scenes</h3>
+      <div class="muted" style="font-size:12px;word-break:break-all" id="regroupFolderName">—</div>
+      <div class="regroup-intro muted">
+        Rebuilds this folder's scenes from the analysis that already ran &mdash; no photos are
+        re-analyzed and nothing is re-uploaded. Your star ratings and Accept/Reject decisions are
+        kept; scene names and verified tags follow their photos where that is unambiguous.
+      </div>
+
+      <div class="regroup-controls">
+        <div class="regroup-control">
+          <label for="regroupGroupWithin">Group photos taken within (seconds)</label>
+          <input id="regroupGroupWithin" type="number" min="0" max="60" step="0.5" value="1" />
+          <div class="regroup-hint muted">
+            A burst shot inside this window always stays in one scene.
+          </div>
+        </div>
+        <div class="regroup-control">
+          <label for="regroupSplitAfter">Start a new scene after a pause of</label>
+          <div class="regroup-slider-row">
+            <input id="regroupSplitAfter" type="range" min="0" max="3600" step="15" value="0" />
+            <span class="regroup-val" id="regroupSplitAfterVal">off</span>
+          </div>
+          <div class="regroup-hint muted">
+            Splits a long session into separate scenes by elapsed time. 0 turns it off.
+          </div>
+        </div>
+        <div class="regroup-control">
+          <label for="regroupSimilarity">How alike photos must look to share a scene</label>
+          <div class="regroup-slider-row">
+            <input id="regroupSimilarity" type="range" min="0" max="1" step="0.01" value="0.5" />
+            <span class="regroup-val" id="regroupSimilarityVal">0.50</span>
+          </div>
+          <div class="regroup-hint muted" id="regroupSimilarityNote"></div>
+          <div class="regroup-hint muted" id="regroupScoredNote"></div>
+        </div>
+      </div>
+
+      <div class="regroup-summary" id="regroupSummary">—</div>
+
+      <div class="regroup-compare">
+        <div class="regroup-col">
+          <div class="regroup-col-head" id="regroupCurrentHead">Current</div>
+          <div class="regroup-col-list" id="regroupCurrentList"></div>
+        </div>
+        <div class="regroup-col">
+          <div class="regroup-col-head" id="regroupProposedHead">After regrouping</div>
+          <div class="regroup-col-list" id="regroupProposedList"></div>
+        </div>
+      </div>
+    </div>
+    <div class="kdlg-footer">
+      <button type="button" class="btn" id="regroupCancelBtn">Cancel</button>
+      <button type="button" class="btn primary" id="regroupApplyBtn" disabled>Apply Regrouping</button>
     </div>
   </dialog>
 
@@ -1260,6 +1340,12 @@
                     style="width:80px" />
                 </div>
                 <div class="adlg-hint muted">Images captured within this many seconds of each other are treated as the same burst/scene.</div>
+                <div class="adlg-setting-row">
+                  <label for="adlgSceneBreakGap">Start a new scene after a pause of (seconds)</label>
+                  <input id="adlgSceneBreakGap" type="number" min="0" max="86400" step="1" value="0"
+                    style="width:80px" />
+                </div>
+                <div class="adlg-hint muted">Forces a scene break whenever this much time passes between two shots, even if they look alike &mdash; useful when a long session against the same background would otherwise become one huge scene. 0 turns it off.</div>
               </div>
 
               <div class="adlg-subgroup">
@@ -1549,6 +1635,27 @@
   </dialog>
 
   <!-- Feedback / Bug Report dialog -->
+  <!-- Quality feedback: sort a burst's crops by sharpness (js/quality-feedback.js) -->
+  <dialog id="qfDlg" class="kdlg kdlg--flex qf-dlg" aria-labelledby="qfTitle">
+    <div class="kdlg-body">
+      <h3 class="qf-title" id="qfTitle">Help Kestrel learn</h3>
+      <div class="qf-subtitle muted" id="qfSubtitle"></div>
+      <div class="qf-body" id="qfBody"></div>
+    </div>
+    <div class="kdlg-footer qf-footer" id="qfFooter"></div>
+  </dialog>
+
+  <dialog id="qfLogDlg" class="kdlg kdlg--md kdlg--flex" aria-labelledby="qfLogTitle">
+    <div class="kdlg-body">
+      <h3 class="qf-title" id="qfLogTitle">Feedback you've shared</h3>
+      <div class="qf-subtitle muted">Stored on this computer only.</div>
+      <div class="qf-log-list" id="qfLogList"></div>
+    </div>
+    <div class="kdlg-footer">
+      <button type="button" id="qfLogClose">Close</button>
+    </div>
+  </dialog>
+
   <dialog id="feedbackDlg" class="kdlg kdlg--md kdlg--flex">
     <div class="feedback-dlg">
       <h3>💬 Send Feedback</h3>
@@ -1683,6 +1790,7 @@
        then features, then event-wiring/init. Each file is a classic <script> (not type=module)
        so top-level let/const/function declarations are shared across the "Script" lexical
        environment — equivalent to the old single visualizer.js, just split for readability. -->
+  <script src="js/reviewed-tags.js"></script>
   <script src="js/state.js"></script>
   <script src="js/image-loader.js"></script>
   <script src="js/auth.js"></script>
@@ -1694,11 +1802,13 @@
   <script src="js/scenes.js"></script>
   <script src="js/scene-grid.js"></script>
   <script src="js/scene-zoom.js"></script>
+  <script src="js/scene-regroup.js"></script>
   <!-- settings.js MUST load before scene-dialog.js: scene-dialog's IIFE
        (setupScenePreviewDivider) calls getSetting() at parse time. -->
   <script src="js/settings.js"></script>
   <script src="js/scene-dialog.js"></script>
   <script src="js/feedback-donate.js"></script>
+  <script src="js/quality-feedback.js"></script>
   <script src="js/folder-tree.js"></script>
   <script src="js/analyze-dialog.js"></script>
   <script src="js/queue.js"></script>
@@ -1740,6 +1850,7 @@
         ['cloud-compute.js',   '_ccSubmitSelectedFolders'],
         ['culling.js',         'openCullingAssistant'],
         ['repair.js',          'openRepairDialog'],
+        ['scene-regroup.js',   'openRegroupDialog'],
         ['tutorial.js',        'startMainTutorial'],
         ['welcome.js',         'WELCOME_TIPS']
       ];

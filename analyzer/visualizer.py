@@ -174,7 +174,17 @@ class _TeeStream:
 
 
 def _enable_runtime_log_capture() -> str:
-    """Capture process stdout/stderr to a persistent runtime log file."""
+    """Capture process stdout/stderr to a persistent runtime log file.
+
+    The file name carries the pid as well as the start timestamp. The stamp
+    alone has one-second resolution, so two instances launched in the same
+    second (a double-click, or a second copy started while the first is open —
+    a case the recovery-dialog logic explicitly handles) opened the *same*
+    file in append mode and interleaved their output line by line. Crash
+    reports from such a session show every line twice and two different pids
+    reporting the same ``session_start``, which is exactly when the log is
+    needed to tell the two instances apart.
+    """
     global _RUNTIME_LOG_HANDLE
     try:
         try:
@@ -190,7 +200,12 @@ def _enable_runtime_log_capture() -> str:
         runtime_dir = os.path.join(base_log_dir, 'logs')
         os.makedirs(runtime_dir, exist_ok=True)
         ts = datetime.now(timezone.utc).replace(tzinfo=None).strftime('%Y%m%dT%H%M%SZ')
-        runtime_log_path = os.path.join(runtime_dir, f'kestrel_runtime_{ts}.log')
+        # Prefix and suffix are load-bearing: kestrel_telemetry selects the
+        # recent runtime logs for a crash report by them. The timestamp stays
+        # first so the names still sort in start order.
+        runtime_log_path = os.path.join(
+            runtime_dir, f'kestrel_runtime_{ts}_p{os.getpid()}.log'
+        )
 
         _RUNTIME_LOG_HANDLE = open(runtime_log_path, 'a', encoding='utf-8', buffering=1)
         sys.stdout = _TeeStream(sys.stdout, _RUNTIME_LOG_HANDLE)
@@ -320,6 +335,45 @@ def _prior_session_still_running(prev_pid: int, prev_started: str) -> bool:
     return -60 <= age_s <= _CONCURRENT_INSTANCE_MAX_AGE_S
 
 
+# How long after an ambiguous session a recovery prompt is still worth
+# raising. See _prior_session_too_stale_to_prompt.
+_UNCLEAN_PROMPT_MAX_AGE_S = 7 * 24 * 60 * 60
+
+
+def _prior_session_too_stale_to_prompt(prev_started: str) -> bool:
+    """True when an 'unknown' prior session is too old to prompt about.
+
+    The unclean flag is written at launch and only cleared when some later
+    session records a clean exit, so an ambiguous session that is never
+    followed by a clean one keeps prompting on every launch — reports have
+    arrived for sessions 22, 41 and 45 days old.
+
+    A prompt that stale cannot lead anywhere. The user has no memory of a
+    session from six weeks ago to describe, and the runtime logs attached to
+    the report have long since rotated past it, so the report arrives with
+    neither a traceback nor a usable log tail.
+
+    Age separates the two populations cleanly in the reports received so far:
+    every prompt confirmed to follow a real process death was raised on a
+    session the user had relaunched within minutes, while every prompt raised
+    on a session more than a week old turned out to be a false positive
+    (a clean exit whose marker was lost, or a pid recycled onto an unrelated
+    process). A week is well clear of both clusters.
+
+    Applies to 'unknown' only. A prior session classified 'crash' had the
+    top-level handler actually run and write that reason, so it is a real
+    crash however old it is, and the caller keeps flagging it.
+
+    Fails closed: an unparseable timestamp returns False, i.e. the
+    pre-existing behaviour.
+    """
+    started = _parse_session_timestamp(prev_started)
+    if started is None:
+        return False
+    age_s = (datetime.now(timezone.utc).replace(tzinfo=None) - started).total_seconds()
+    return age_s > _UNCLEAN_PROMPT_MAX_AGE_S
+
+
 def _settings_file_hint() -> Optional[str]:
     """Basename + parent of the settings file, for the session-start line.
 
@@ -367,6 +421,40 @@ def _verify_exit_reason_persisted(event: str, expected: str) -> None:
             )
     except Exception as exc:
         warn(f'{_SHUTDOWN_TAG} {event}: verification read failed: {exc}')
+
+
+def _run_native_crash_probe(prev_pid: int, prev_started: str) -> None:
+    """Log what the Windows event log recorded about the prior process's death.
+
+    Native deaths that bypass faulthandler (fail-fast, heap corruption, a hung
+    window ended by the user) leave the runtime log ending with no traceback.
+    The lines logged here land in the current session's runtime log, which the
+    recovery crash report bundles. Never raises.
+    """
+    try:
+        import native_crash_probe
+        lines = native_crash_probe.probe_prior_session(
+            prev_pid, _parse_session_timestamp(prev_started)
+        )
+        for line in lines:
+            _log_shutdown_state(f'native_crash_probe: {line}', prev_pid=prev_pid)
+    except Exception as exc:
+        warn(f'{_SHUTDOWN_TAG} native_crash_probe: failed: {type(exc).__name__}')
+
+
+def _start_native_crash_probe(prev_pid: int, prev_started: str) -> None:
+    """Run the probe off the startup path; ``wevtutil`` can take a second."""
+    if sys.platform != 'win32' or not prev_pid:
+        return
+    try:
+        threading.Thread(
+            target=_run_native_crash_probe,
+            args=(prev_pid, prev_started),
+            name='native-crash-probe',
+            daemon=True,
+        ).start()
+    except Exception:
+        pass
 
 
 def _classify_prior_session(settings: dict) -> str:
@@ -431,6 +519,23 @@ def _mark_session_start() -> None:
                 prev_pid=prev_pid or None,
                 prev_started=prev_started,
             )
+        elif (
+            should_flag
+            and prev_reason == 'unknown'
+            and _prior_session_too_stale_to_prompt(prev_started)
+        ):
+            # Too old to be worth a prompt. Clear any pending flag as well:
+            # it points at a session older still than this one, so leaving it
+            # standing would raise the prompt this branch exists to suppress.
+            had_flag = bool(str(settings.get('last_unclean_shutdown_utc', '') or '').strip())
+            settings.pop('last_unclean_shutdown_utc', None)
+            _log_shutdown_state(
+                'session_start: prior session too stale to prompt, not flagging unclean',
+                reason=prev_reason,
+                prev_started=prev_started,
+                max_age_days=_UNCLEAN_PROMPT_MAX_AGE_S // 86400,
+                cleared_stale_flag=had_flag or None,
+            )
         elif should_flag:
             settings['last_unclean_shutdown_utc'] = prev_started
             _log_shutdown_state(
@@ -438,6 +543,7 @@ def _mark_session_start() -> None:
                 reason=prev_reason,
                 unclean_utc=prev_started,
             )
+            _start_native_crash_probe(prev_pid, prev_started)
         else:
             had_flag = bool(str(settings.get('last_unclean_shutdown_utc', '') or '').strip())
             settings.pop('last_unclean_shutdown_utc', None)
@@ -1136,14 +1242,28 @@ def main():
     try:
         import shutdown_watch
         _watch_installed = shutdown_watch.install(
-            lambda: _mark_session_exit_reason('os_shutdown', source='shutdown_watch')
+            lambda: _mark_session_exit_reason('os_shutdown', source='shutdown_watch'),
+            # macOS-only. ⌘Q / the app menu's Quit / Quit from the Dock all
+            # route through NSApplication.terminate:, which calls exit()
+            # without returning from NSApp.run(). webview.start() therefore
+            # never returns, the _webview_returned gate below stays False, and
+            # the clean-exit write in main()'s finally never runs — so a
+            # perfectly normal quit left app_session_exit_reason at 'unknown'
+            # and the *next* launch raised a false unclean-shutdown prompt.
+            # NSApplicationWillTerminateNotification fires just before that
+            # exit(), which is our only chance to record the quit.
+            on_app_quit=lambda: _mark_session_clean_exit(
+                source='shutdown_watch:app_will_terminate'
+            ),
         )
         # If no listener installed, an OS reboot/logoff cannot be
         # distinguished from a crash and *will* raise a false unclean
-        # shutdown on the next launch. Worth knowing per-platform.
+        # shutdown on the next launch. Worth knowing per-platform, and
+        # which listeners landed tells us whether the ⌘Q fix is live.
         _log_shutdown_state(
             'watch_install',
             installed=bool(_watch_installed),
+            listeners=','.join(shutdown_watch.installed_listeners()) or None,
             platform=sys.platform,
         )
     except Exception as _e:

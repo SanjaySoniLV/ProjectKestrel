@@ -20,10 +20,10 @@ Schema (JSON):
       ]
     }
 
-Atomic-write pattern mirrors ``settings_utils.py``: write to tempfile, then
-``os.replace`` over the canonical file. A single in-process re-entrant lock
-serializes saves because the JS bridge, the per-job background download
-thread, and startup all write concurrently.
+Atomic-write pattern mirrors ``settings_utils.py`` / ``_to_csv_atomic``:
+write to tempfile, flush+fsync, then ``os.replace`` over the canonical file.
+A single in-process re-entrant lock serializes saves because the JS bridge,
+the per-job background download thread, and startup all write concurrently.
 """
 
 from __future__ import annotations
@@ -38,6 +38,21 @@ from typing import Any
 
 CLOUD_JOBS_FILENAME = "cloud_jobs.json"
 _SAVE_LOCK = threading.RLock()
+
+
+def _retry_on_file_lock(op, attempts: int = 12, delay: float = 0.02):
+    """Run ``op()``, retrying briefly on Windows' transient file-sharing errors.
+
+    Canonical implementation: ``kestrel_analyzer.database.retry_on_file_lock``.
+    This copy exists so the job ledger does not import pandas via ``database``.
+    """
+    for attempt in range(attempts):
+        try:
+            return op()
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay * (attempt + 1))
 
 # 'incomplete' = the client disconnected >10min with uploads UNFINISHED. Uploads
 # are halted, but analysis CONTINUES server-side and result packs remain
@@ -167,7 +182,16 @@ def _write_atomic(data: dict) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, sort_keys=False)
-        os.replace(tmp_path, final_path)
+            # flush() errors (ENOSPC, EIO) must propagate: a partial temp
+            # file must not be os.replace'd over a good destination.
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                # fsync can legitimately fail on some network filesystems;
+                # the replace below still gives readers an all-or-nothing view.
+                pass
+        _retry_on_file_lock(lambda: os.replace(tmp_path, final_path))
     except Exception:
         try:
             os.unlink(tmp_path)

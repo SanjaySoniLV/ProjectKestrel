@@ -146,6 +146,62 @@ class TestSoftSave:
         ]
 
 
+class TestRepeatedFailureWarning:
+    """Skipping a save is only safe while a later one lands. When they all fail
+    (antivirus / Controlled Folder Access blocking the rename) the run's results
+    die with the process, so the user must be told while the app is open."""
+
+    def _run(self, p, csv_path, outcomes, monkeypatch):
+        real = pipeline_mod.save_database
+        for ok in outcomes:
+            def save(*a, _ok=ok, **k):
+                if not _ok:
+                    raise PermissionError(13, "Access is denied")
+                return real(*a, **k)
+            monkeypatch.setattr(pipeline_mod, "save_database", save)
+            p._save_database_soft(_frame(), str(csv_path), "save_database")
+
+    def _with_cb(self, tmp_path):
+        p = _stub_pipeline(tmp_path)
+        seen = []
+        p._save_warning_cb = seen.append
+        return p, seen
+
+    def test_warns_once_after_three_consecutive_failures(self, tmp_path, monkeypatch):
+        p, seen = self._with_cb(tmp_path)
+        self._run(p, tmp_path / "db.csv", [False, False], monkeypatch)
+        assert seen == []
+        self._run(p, tmp_path / "db.csv", [False, False, False], monkeypatch)
+        assert len(seen) == 1
+        assert "can't save analysis results" in seen[0]
+        assert "photos are not affected" in seen[0]
+        assert str(tmp_path) not in seen[0]
+
+    def test_a_success_resets_the_streak(self, tmp_path, monkeypatch):
+        p, seen = self._with_cb(tmp_path)
+        self._run(p, tmp_path / "db.csv", [False, False, True, False, False], monkeypatch)
+        assert seen == []
+
+    def test_recovery_clears_the_warning(self, tmp_path, monkeypatch):
+        p, seen = self._with_cb(tmp_path)
+        self._run(p, tmp_path / "db.csv", [False, False, False, True], monkeypatch)
+        assert len(seen) == 2 and seen[0] and seen[1] == ""
+
+    def test_message_names_the_likely_cause(self, monkeypatch):
+        monkeypatch.setattr(pipeline_mod.sys, "platform", "win32")
+        msg = AnalysisPipeline._save_failure_message(PermissionError(13, "denied"))
+        assert "Controlled Folder Access" in msg and "antivirus" in msg
+        full = OSError(28, "No space left on device")
+        assert "drive is full" in AnalysisPipeline._save_failure_message(full)
+
+    def test_no_callback_is_fine(self, tmp_path, monkeypatch):
+        p = _stub_pipeline(tmp_path)  # pre-process_folder state: no callback
+        self._run(p, tmp_path / "db.csv", [False, False, False, True], monkeypatch)
+
+    def test_process_folder_wires_on_warning(self):
+        assert 'self._save_warning_cb = callbacks.get("on_warning")' in _PIPELINE_SRC
+
+
 # ---------------------------------------------------------------------------
 # Which call sites are soft, and which must stay strict
 # ---------------------------------------------------------------------------

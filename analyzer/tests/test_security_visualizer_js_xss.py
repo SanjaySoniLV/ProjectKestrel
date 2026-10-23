@@ -1,9 +1,10 @@
-"""Static regression tests for FINDING-01: stored DOM-XSS via sceneName.
+r"""Static regression tests for FINDING-01: stored DOM-XSS via sceneName.
 
 These tests are deliberately written as source-level lints against
 ``analyzer/js/*.js`` (the split-out frontend modules, previously a single
-``visualizer.js``) so the vulnerable pattern cannot silently re-appear.
-They don't require a JS runtime.
+``visualizer.js``) and ``analyzer/culling.html`` (inline assistant script)
+so the vulnerable pattern cannot silently re-appear. They don't require a
+JS runtime.
 
 What is forbidden
 -----------------
@@ -13,7 +14,8 @@ What is forbidden
 2. ``X.innerHTML = \`...\\${...scene_name...}...\``` — user-controlled scene
    names interpolated into ``.innerHTML`` template literals without an
    explicit escape.  After the fix, the sceneName site must use ``textContent``
-   or explicit DOM construction.
+   or explicit DOM construction. Concatenated template literals on the same
+   assignment are scanned too (``culling.html`` builds scene labels that way).
 
 What remains permitted
 ----------------------
@@ -33,9 +35,13 @@ import os
 import re
 import unittest
 
+import pytest
+
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _ANALYZER_DIR = os.path.dirname(_THIS_DIR)
+
+pytestmark = pytest.mark.unit
 
 
 def _read(path: str) -> str:
@@ -43,25 +49,95 @@ def _read(path: str) -> str:
         return f.read()
 
 
-class TestVisualizerJsXssRegression(unittest.TestCase):
-    JS_DIR = os.path.join(_ANALYZER_DIR, "js")
+_INNERHTML_ASSIGN = re.compile(r"\.innerHTML\s*=\s*")
 
+
+def _collect_sources() -> list[tuple[str, str]]:
+    sources: list[tuple[str, str]] = []
+    js_dir = os.path.join(_ANALYZER_DIR, "js")
+    for path in sorted(glob.glob(os.path.join(js_dir, "*.js"))):
+        sources.append((os.path.join("js", os.path.basename(path)), _read(path)))
+    culling = os.path.join(_ANALYZER_DIR, "culling.html")
+    sources.append(("culling.html", _read(culling)))
+    return sources
+
+
+def _rhs_end(source: str, start: int) -> int:
+    """Index of the statement semicolon, skipping ``;`` inside quotes or templates.
+
+    A naive ``.*?``-to-semicolon cut stops at inline CSS such as
+    ``style="color:red;font-size:11px"`` and would miss a later
+    ``${scene.sceneName}`` on the same assignment.
+    """
+    quote: str | None = None
+    escape = False
+    i = start
+    n = len(source)
+    while i < n:
+        c = source[i]
+        if escape:
+            escape = False
+            i += 1
+            continue
+        if quote is not None:
+            if c == "\\":
+                escape = True
+            elif c == quote:
+                quote = None
+            i += 1
+            continue
+        if c in "'\"`":
+            quote = c
+            i += 1
+            continue
+        if c == ";":
+            return i
+        i += 1
+    return n
+
+
+def _iter_innerhtml_rhs(source: str):
+    for m in _INNERHTML_ASSIGN.finditer(source):
+        start = m.end()
+        end = _rhs_end(source, start)
+        yield m.start(), source[start:end]
+
+
+def _scene_name_innerhtml_offenders(
+    sources: list[tuple[str, str]],
+) -> list[tuple[str, int, str]]:
+    offenders: list[tuple[str, int, str]] = []
+    for name, source in sources:
+        for assign_at, rhs in _iter_innerhtml_rhs(source):
+            if "sceneName" not in rhs and "scene_name" not in rhs:
+                continue
+            for tmpl in re.finditer(r"`([^`]*)`", rhs):
+                body = tmpl.group(1)
+                if "sceneName" not in body and "scene_name" not in body:
+                    continue
+                for expr_match in re.finditer(r"\$\{([^{}]+)\}", body):
+                    expr = expr_match.group(1)
+                    if "sceneName" not in expr and "scene_name" not in expr:
+                        continue
+                    if "decodeEntities" in expr or "escapeHtml" not in expr:
+                        ln, e = _line_info(source, assign_at, expr)
+                        offenders.append((name, ln, e))
+    return offenders
+
+
+class TestVisualizerJsXssRegression(unittest.TestCase):
     def setUp(self) -> None:
-        self.assertTrue(
-            os.path.isdir(self.JS_DIR),
-            f"Missing directory: {self.JS_DIR}",
-        )
-        # Concatenate all js/*.js files (sorted for stable line attribution).
-        # `self.sources` is a list of (filename, content) for per-file reporting,
-        # and `self.source` is the flat concat used by the legacy regex checks.
-        self.sources: list[tuple[str, str]] = []
-        for path in sorted(glob.glob(os.path.join(self.JS_DIR, "*.js"))):
-            self.sources.append((os.path.basename(path), _read(path)))
-        self.assertTrue(
-            self.sources,
-            f"No .js files found under {self.JS_DIR}",
-        )
+        self.sources = _collect_sources()
+        self.assertTrue(self.sources, "No frontend sources found to lint")
         self.source = "\n".join(content for _name, content in self.sources)
+
+    def test_culling_html_is_in_the_scan(self) -> None:
+        names = [name for name, _content in self.sources]
+        self.assertIn("culling.html", names)
+        self.assertTrue(
+            any(name.replace("\\", "/").startswith("js/") for name in names),
+            "js/*.js dropped out of the XSS scan",
+        )
 
     def test_no_decodeEntities_of_escapeHtml(self) -> None:
         """Hard ban on the exact vulnerable pattern.  Any caller that needs
@@ -86,53 +162,46 @@ class TestVisualizerJsXssRegression(unittest.TestCase):
         self.assertFalse(
             hits,
             "Forbidden pattern decodeEntities(escapeHtml(...)) reintroduces XSS.\n"
-            + "\n".join(f"  js/{name}:{ln}: {text.strip()}" for name, ln, text in hits),
+            + "\n".join(f"  {name}:{ln}: {text.strip()}" for name, ln, text in hits),
         )
 
     def test_scene_name_not_interpolated_into_innerHTML(self) -> None:
         """Block the broader class of the bug: any ``.innerHTML`` assignment
-        whose right-hand side is a template literal that references
-        ``sceneName`` (or ``.scene_name``) without going through a safe
-        wrapper.
+        whose right-hand side interpolates ``sceneName`` (or ``.scene_name``)
+        without going through a safe wrapper.
 
         The permitted wrapper is ``escapeHtml(...)`` with no outer
         ``decodeEntities(...)`` — that case is already guarded by
         ``test_no_decodeEntities_of_escapeHtml``.  We flag *any* bare
         ``${...sceneName...}`` / ``${...scene_name...}`` inside an innerHTML
         template literal so we catch future regressions early.
+
+        The RHS is the whole assignment through the next semicolon that is
+        not inside a string or template, so concatenated labels and inline
+        CSS ``;`` on the same assignment are still scanned.
         """
-        # Match one logical statement: ``foo.innerHTML = `...`;`` possibly spanning
-        # up to a few lines.  We capture the template body and scan it.
-        stmt_re = re.compile(
-            r"\.innerHTML\s*=\s*`([^`]*)`",
-            re.DOTALL,
-        )
-        offenders: list[tuple[str, int, str]] = []
-        for name, source in self.sources:
-            for m in stmt_re.finditer(source):
-                body = m.group(1)
-                if "sceneName" not in body and "scene_name" not in body:
-                    continue
-                # Inspect each ${...} expression that references sceneName/scene_name.
-                for expr_match in re.finditer(r"\$\{([^{}]+)\}", body):
-                    expr = expr_match.group(1)
-                    if "sceneName" not in expr and "scene_name" not in expr:
-                        continue
-                    # Permit only escapeHtml(...) with no outer decodeEntities().
-                    if "decodeEntities" in expr:
-                        ln, e = _line_info(source, m.start(), expr)
-                        offenders.append((name, ln, e))
-                        continue
-                    if "escapeHtml" not in expr:
-                        ln, e = _line_info(source, m.start(), expr)
-                        offenders.append((name, ln, e))
+        offenders = _scene_name_innerhtml_offenders(self.sources)
         self.assertFalse(
             offenders,
             "sceneName interpolated into innerHTML without safe escaping:\n"
-            + "\n".join(
-                f"  js/{name}:{ln}: ${{{expr}}}" for name, ln, expr in offenders
-            ),
+            + "\n".join(f"  {name}:{ln}: ${{{expr}}}" for name, ln, expr in offenders),
         )
+
+    def test_innerhtml_scan_does_not_stop_at_semicolon_inside_template(self) -> None:
+        src = (
+            'el.innerHTML = `<span style="color:red;font-size:11px">'
+            "${scene.sceneName}</span>`;\n"
+        )
+        offenders = _scene_name_innerhtml_offenders([("snip.js", src)])
+        self.assertEqual(len(offenders), 1, offenders)
+        self.assertIn("scene.sceneName", offenders[0][2])
+
+    def test_innerhtml_scan_allows_escaped_scene_name_after_css_semicolon(self) -> None:
+        src = (
+            'el.innerHTML = `<span style="color:red;font-size:11px">'
+            "${escapeHtml(scene.sceneName)}</span>`;\n"
+        )
+        self.assertEqual(_scene_name_innerhtml_offenders([("snip.js", src)]), [])
 
     def test_decodeEntities_not_piped_into_innerHTML(self) -> None:
         """``decodeEntities`` is legitimate when feeding ``textContent`` — the
@@ -152,7 +221,7 @@ class TestVisualizerJsXssRegression(unittest.TestCase):
             hits,
             "decodeEntities() output used in an innerHTML assignment "
             "(re-enables the FINDING-01 XSS class):\n"
-            + "\n".join(f"  js/{name}:{ln}: {text}" for name, ln, text in hits),
+            + "\n".join(f"  {name}:{ln}: {text}" for name, ln, text in hits),
         )
 
 

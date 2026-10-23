@@ -15,6 +15,7 @@
   <title>Culling Assistant — Project Kestrel</title>
   <link rel="icon" href="data:," />
   <script src="csv_parser.js"></script>
+  <script src="js/reviewed-tags.js"></script>
   <style>
     :root {
       --bg: #0b0c0f;
@@ -970,6 +971,32 @@
       min-width: 34px;
       font-variant-numeric: tabular-nums;
     }
+    /* Per-scene keep/reject counts are click-to-type: the sliders cover the
+       range most people want, but a photographer shooting 100-frame bursts
+       needs values the track cannot sensibly reach. The dotted underline is
+       the affordance; the value stays plain text until it is clicked. */
+    .auto-cat-panel .slider-val--editable {
+      cursor: text;
+      border-bottom: 1px dashed var(--muted);
+      padding-bottom: 1px;
+    }
+    .auto-cat-panel .slider-val--editable:hover,
+    .auto-cat-panel .slider-val--editable:focus-visible {
+      border-bottom-color: var(--brand);
+      color: var(--brand);
+    }
+    .auto-cat-panel .slider-val-edit {
+      width: 62px;
+      font-size: 13px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: var(--text);
+      background: var(--bg);
+      border: 1px solid var(--brand);
+      border-radius: 3px;
+      padding: 1px 3px;
+    }
+    .auto-cat-panel .slider-val-edit.hidden { display: none; }
     .auto-cat-panel .unrated-group {
       justify-content: flex-end;
     }
@@ -1073,15 +1100,23 @@
         <div class="slider-group">
           <label for="minPerSceneSlider">Min Accepted Per Scene</label>
           <div class="slider-row">
-            <input type="range" id="minPerSceneSlider" min="0" max="5" value="0" step="1" />
-            <span class="slider-val" id="minPerSceneVal">0</span>
+            <input type="range" id="minPerSceneSlider" min="0" max="25" value="0" step="1" />
+            <span class="slider-val slider-val--editable" id="minPerSceneVal"
+                  role="button" tabindex="0"
+                  title="Click to type an exact value">0</span>
+            <input type="number" class="slider-val-edit hidden" id="minPerSceneEdit"
+                   min="0" step="1" aria-label="Min accepted per scene" />
           </div>
         </div>
         <div class="slider-group">
           <label for="maxPerSceneSlider" title="0 = no cap">Max Accepted Per Scene</label>
           <div class="slider-row">
-            <input type="range" id="maxPerSceneSlider" min="0" max="20" value="0" step="1" />
-            <span class="slider-val" id="maxPerSceneVal">∞</span>
+            <input type="range" id="maxPerSceneSlider" min="0" max="100" value="0" step="1" />
+            <span class="slider-val slider-val--editable" id="maxPerSceneVal"
+                  role="button" tabindex="0"
+                  title="Click to type an exact value (0 = no cap)">∞</span>
+            <input type="number" class="slider-val-edit hidden" id="maxPerSceneEdit"
+                   min="0" step="1" aria-label="Max accepted per scene, 0 for no cap" />
           </div>
         </div>
         <div class="slider-group unrated-group">
@@ -1361,7 +1396,46 @@
     let header = [];
     let scenes = [];            // [{id, images[], species, ...}]
     let cullingState = new Map(); // filename -> 'accept' | 'reject'
-    let blobUrlCache = new Map();
+    // Same LRU+revoke contract as blob-zoom.js. This page does not load that
+    // file, so the helper lives here. A plain Map of data:/blob: URLs grew
+    // without bound for every thumb and RAW preview in the culling window.
+    const BLOB_URL_CACHE_MAX = 512;
+    function _revokeBlobUrl(url) {
+      if (typeof url === 'string' && url.startsWith('blob:')) {
+        try { URL.revokeObjectURL(url); } catch (_) { /* already revoked */ }
+      }
+    }
+    function _base64ToBlobUrl(b64, mime) {
+      const bin = atob(b64);
+      const buf = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+      return URL.createObjectURL(new Blob([buf], { type: mime || 'image/jpeg' }));
+    }
+    class BlobUrlCache extends Map {
+      get(key) {
+        if (!super.has(key)) return undefined;
+        const val = super.get(key);
+        super.delete(key);
+        super.set(key, val);
+        return val;
+      }
+      set(key, val) {
+        if (super.has(key)) super.delete(key);
+        super.set(key, val);
+        while (super.size > BLOB_URL_CACHE_MAX) {
+          const oldestKey = super.keys().next().value;
+          _revokeBlobUrl(super.get(oldestKey));
+          super.delete(oldestKey);
+        }
+        return this;
+      }
+      clear() {
+        for (const url of super.values()) _revokeBlobUrl(url);
+        super.clear();
+      }
+    }
+    let blobUrlCache = new BlobUrlCache();
+    let _previewGen = 0;
     let _normalizedRatings = {};   // filename -> auto rating from apply_normalization()
     let _scenedata = { version: '2.0', image_ratings: {}, scenes: {} };
     let _needsLegacyCullOriginUpgrade = false;
@@ -1438,7 +1512,9 @@
       try {
         const res = await window.pywebview.api.read_image_file(relPath, root);
         if (res && res.success && res.data) {
-          const url = `data:${res.mime || 'image/jpeg'};base64,${res.data}`;
+          // Re-check after await: a concurrent load may have filled the cache.
+          if (blobUrlCache.has(key)) return blobUrlCache.get(key);
+          const url = _base64ToBlobUrl(res.data, res.mime || 'image/jpeg');
           blobUrlCache.set(key, url);
           return url;
         }
@@ -1461,7 +1537,11 @@
 
     function lazyLoadImg(img, resolverFn) {
       img._lazyLoader = async () => {
+        // Skip stale loads. renderScene / renderAllScenes replace innerHTML and
+        // detach the old <img> while this loader may still be awaiting IPC.
+        if (!img.isConnected) return;
         const url = await resolverFn();
+        if (!img.isConnected) return;
         if (url) img.src = url;
       };
       _lazyObserver.observe(img);
@@ -1865,13 +1945,27 @@
         const allUnrated = arr.length > 0 && arr.every(r => needsRatingAttention(r));
         const hasAnyUnrated = arr.some(r => needsRatingAttention(r));
         const hasDetections = arr.some(r => r.species && r.species !== 'No Bird' && r.species !== 'Unknown' && r.species !== '');
+        // A reviewed scene shows the user's tags, not the union of every
+        // image's model prediction -- the same rule the main window applies
+        // (js/scenes.js). Without it a corrected scene still listed the
+        // species the user had removed. An empty reviewed list means the user
+        // reviewed it down to none, so it shows none.
+        const sdScene = _scenedata?.scenes?.[sceneId];
+        const reviewedTags = window.KestrelReviewedTags.reviewedTagsForScene(_scenedata?.scenes, sceneId);
+        const species = reviewedTags
+          ? Array.from(new Set((reviewedTags.species || []).map(t => String(t || '').trim()).filter(Boolean))).sort()
+          : Array.from(speciesSet).sort();
         list.push({
           id: sceneId,
           images: arr.slice().sort((a, b) => parseNumber(b.quality) - parseNumber(a.quality)),
           representative: rep,
-          species: Array.from(speciesSet).sort(),
+          species,
+          reviewed: !!reviewedTags,
           maxQuality: maxQ,
-          sceneName: (arr.find(a => (a.scene_name || '').trim().length)?.scene_name || '').trim(),
+          // The scenedata name is what the user typed; the CSV column is the
+          // legacy pre-scenedata location. Same precedence as the main window.
+          sceneName: String(sdScene?.name || '').trim()
+            || (arr.find(a => (a.scene_name || '').trim().length)?.scene_name || '').trim(),
           allUnrated,
           hasAnyUnrated,
           hasDetections,
@@ -1961,11 +2055,86 @@
     function getSliderValues() {
       const rawCutoff = parseFloat(el('#qualityCutoffSlider')?.value ?? '0.60');
       const qualityCutoff = Number.isFinite(rawCutoff) ? Math.max(0, Math.min(1, rawCutoff)) : 0.60;
+      // The slider element is the store of record for both counts. Typed
+      // values raise its `max` first (see setPerSceneValue), so reading
+      // .value here still returns whatever the user asked for.
       const minKeep = parseInt(el('#minPerSceneSlider')?.value  ?? '0', 10);
       const maxRaw  = parseInt(el('#maxPerSceneSlider')?.value  ?? '0', 10);
       const maxKeep = maxRaw === 0 ? Infinity : maxRaw;
       const unratedDefault = (el('#unratedDefaultSelect')?.value === 'accept') ? 'accept' : 'reject';
       return { qualityCutoff, minKeep, maxKeep, unratedDefault };
+    }
+
+    // ---- Click-to-type for the per-scene counts ----
+    // The sliders cover the usual range, but "max accepted per scene" is
+    // meaningless at 20 for someone shooting 100-frame bursts, so the number
+    // itself is editable and accepts any non-negative value. Typing a value
+    // above the track's max grows the track rather than clamping the input.
+    const PER_SCENE_BASE_MAX = { min: 25, max: 100 };
+    // A scene cannot hold more photos than a shoot contains; this is purely a
+    // sanity rail against a typo like 1e9 locking up the re-apply pass.
+    const PER_SCENE_HARD_MAX = 100000;
+    let _editingPerScene = null;
+
+    function setPerSceneValue(which, value) {
+      const slider = el(which === 'min' ? '#minPerSceneSlider' : '#maxPerSceneSlider');
+      if (!slider) return 0;
+      let n = parseInt(value, 10);
+      if (!Number.isFinite(n) || n < 0) n = 0;
+      n = Math.min(PER_SCENE_HARD_MAX, n);
+      // Grow the track so the thumb can actually represent the typed value;
+      // shrink it back to the base span when the value fits again.
+      slider.max = String(Math.max(PER_SCENE_BASE_MAX[which], n));
+      slider.value = String(n);
+      return n;
+    }
+
+    function _openPerSceneEditor(which) {
+      const span = el(which === 'min' ? '#minPerSceneVal' : '#maxPerSceneVal');
+      const input = el(which === 'min' ? '#minPerSceneEdit' : '#maxPerSceneEdit');
+      const slider = el(which === 'min' ? '#minPerSceneSlider' : '#maxPerSceneSlider');
+      if (!span || !input || !slider || _editingPerScene) return;
+      _editingPerScene = which;
+      input.value = String(parseInt(slider.value, 10) || 0);
+      span.classList.add('hidden');
+      input.classList.remove('hidden');
+      input.focus();
+      input.select();
+    }
+
+    function _closePerSceneEditor(which, commit) {
+      const span = el(which === 'min' ? '#minPerSceneVal' : '#maxPerSceneVal');
+      const input = el(which === 'min' ? '#minPerSceneEdit' : '#maxPerSceneEdit');
+      if (!span || !input) return;
+      _editingPerScene = null;
+      if (commit) setPerSceneValue(which, input.value);
+      input.classList.add('hidden');
+      span.classList.remove('hidden');
+      updateSliderLabels();
+      if (commit) saveCullingSettings();
+    }
+
+    function _wirePerSceneEditor(which) {
+      const span = el(which === 'min' ? '#minPerSceneVal' : '#maxPerSceneVal');
+      const input = el(which === 'min' ? '#minPerSceneEdit' : '#maxPerSceneEdit');
+      if (!span || !input) return;
+      span.addEventListener('click', () => _openPerSceneEditor(which));
+      span.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter' || ev.key === ' ') {
+          ev.preventDefault();
+          _openPerSceneEditor(which);
+        }
+      });
+      input.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') { ev.preventDefault(); _closePerSceneEditor(which, true); }
+        else if (ev.key === 'Escape') { ev.preventDefault(); _closePerSceneEditor(which, false); }
+        // Keep arrows and digits inside the field rather than letting the
+        // page's cull shortcuts act on them.
+        ev.stopPropagation();
+      });
+      input.addEventListener('blur', () => {
+        if (_editingPerScene === which) _closePerSceneEditor(which, true);
+      });
     }
 
     let _autoRulesLoaded = false; // set true after first settings load so initial load doesn't flash
@@ -1976,8 +2145,12 @@
       const maxEl = el('#maxPerSceneVal');
       const cutoffText = qualityCutoff.toFixed(2);
       if (qEl)   qEl.textContent   = cutoffText;
-      if (minEl) minEl.textContent = String(minKeep);
-      if (maxEl) maxEl.textContent = maxKeep === Infinity ? '\u221e' : String(maxKeep);
+      // Skip a value that is currently open for typing — writing to it would
+      // fight the user mid-keystroke.
+      if (minEl && _editingPerScene !== 'min') minEl.textContent = String(minKeep);
+      if (maxEl && _editingPerScene !== 'max') {
+        maxEl.textContent = maxKeep === Infinity ? '\u221e' : String(maxKeep);
+      }
 
       // Say which star band the cutoff currently lands in, so the score stays
       // legible to anyone who thinks in stars.
@@ -2248,7 +2421,7 @@
         // Scene label
         const label = document.createElement('div');
         label.className = 'scene-label';
-        const speciesText = scene.species.length ? scene.species.join(', ') : 'Unknown';
+        const speciesText = scene.species.length ? scene.species.join(', ') : (scene.reviewed ? 'No species' : 'Unknown');
         label.innerHTML = `<b>Scene #${escapeHtml(scene.id)}</b>` +
           (scene.sceneName ? ` — ${escapeHtml(scene.sceneName)}` : '') +
           ` <span style="color:var(--muted);font-size:11px">${escapeHtml(speciesText)} · ${scene.images.length} image${scene.images.length === 1 ? '' : 's'}</span>` +
@@ -2388,6 +2561,7 @@
     // ---- Update preview pane ----
     async function updatePreview(row) {
       if (zoomActive) return; // don't interrupt an active zoom session
+      const gen = ++_previewGen;
       previewRow = row;
       const cropState = getRowActiveCropState(row);
       const activeCrop = cropState.activeCrop;
@@ -2402,6 +2576,7 @@
       const exportBox = el('#previewExport');
       exportBox.innerHTML = '<span class="muted">Loading…</span>';
       const exportUrl = await getBlobUrl(row.export_path, rootPath);
+      if (gen !== _previewGen) return;
       if (exportUrl) {
         exportBox.innerHTML = '';
         const img = document.createElement('img');
@@ -2415,6 +2590,7 @@
       const cropBox = el('#previewCrop');
       cropBox.innerHTML = '<span class="muted">Loading…</span>';
       const cropUrl = await getBlobUrl(activeCropPath, rootPath);
+      if (gen !== _previewGen) return;
       if (cropUrl) {
         cropBox.innerHTML = '';
         const img = document.createElement('img');
@@ -2486,11 +2662,15 @@
       if (_scenedata && _scenedata.scenes) {
         const scenesToRemove = [];
         for (const [sceneId, sceneData] of Object.entries(_scenedata.scenes)) {
-          if (sceneData.images && Array.isArray(sceneData.images)) {
+          // Scenedata stores membership in `image_filenames` (see
+          // kestrel_analyzer/database.py). This used to read `images`, which a
+          // scenedata entry never has, so moved rejects were never removed
+          // from their scenes.
+          if (Array.isArray(sceneData.image_filenames)) {
             // Filter out rejected images from this scene
-            sceneData.images = sceneData.images.filter(f => !rejectSet.has(f));
+            sceneData.image_filenames = sceneData.image_filenames.filter(f => !rejectSet.has(f));
             // If scene has no images left, mark for removal
-            if (sceneData.images.length === 0) {
+            if (sceneData.image_filenames.length === 0) {
               scenesToRemove.push(sceneId);
             }
           }
@@ -2717,6 +2897,7 @@
       el('#statusLabel').textContent = 'Processing\u2026';
 
       let anyFailed = false;
+      let xmpFailed = false;
       try {
         // 1. Optional confirm auto-categorizations
         if (doPromoteVerified) {
@@ -2744,21 +2925,29 @@
         // 4. XMP
         if (doXmp) {
           setStep('xmp', 'running');
-          const xmpPayload = rows.map(r => ({
-            filename: r.filename,
-            rating: getRating(r),
-            culled: cullingState.get(r.filename) || r.culled || '',
-            species: r.species || '',
-            family: r.family || '',
-            quality: r.quality != null ? r.quality : null,
-            culled_origin: getCullOrigin(r),
-          }));
+          // A reviewed scene's corrected species/family replace the model's
+          // per-image prediction, as they already do wherever the app displays
+          // them. See js/reviewed-tags.js.
+          const xmpSceneTags = _scenedata?.scenes || {};
+          const xmpPayload = rows.map(r => {
+            const tags = window.KestrelReviewedTags.resolveRowTags(xmpSceneTags, r);
+            return {
+              filename: r.filename,
+              rating: getRating(r),
+              culled: cullingState.get(r.filename) || r.culled || '',
+              species: tags.species,
+              family: tags.family,
+              quality: r.quality != null ? r.quality : null,
+              culled_origin: getCullOrigin(r),
+            };
+          });
 
           // First pass: detect conflicts (existing non-Kestrel XMPs)
           const firstXmpRes = await window.pywebview.api.write_xmp_metadata(rootPath, xmpPayload, false, doAutoLabels, xmpFieldSel, doEmbedJpeg);
           if (!firstXmpRes.success) {
             setStep('xmp', 'failed', firstXmpRes.error || '');
             anyFailed = true;
+            xmpFailed = true;
           } else if (firstXmpRes.skipped_conflicts && firstXmpRes.skipped_conflicts.length > 0) {
             // Pause and ask the user about conflicts
             setStep('xmp', 'pending', `${firstXmpRes.skipped_conflicts.length} conflict${firstXmpRes.skipped_conflicts.length === 1 ? '' : 's'} detected`);
@@ -2773,6 +2962,7 @@
               if (!secondXmpRes.success) {
                 setStep('xmp', 'failed', secondXmpRes.error || '');
                 anyFailed = true;
+                xmpFailed = true;
               } else {
                 setStep('xmp', 'done', `${secondXmpRes.written} file${secondXmpRes.written === 1 ? '' : 's'} written${embedSuffix(secondXmpRes)}`);
               }
@@ -2810,7 +3000,15 @@
           const skipNote = skippedMains.length
             ? `, ${skippedMains.length} skipped`
             : '';
-          setStep('move', 'done', `${movedMains.length} reject${movedMains.length === 1 ? '' : 's'} moved${skipNote}`);
+          // success can be true while all_moved is false (partial batch).
+          // Callers that gate only on success would mark this done; the flag
+          // is what distinguishes a complete move from a name-conflict skip.
+          if (moveRes.all_moved === false) {
+            anyFailed = true;
+            setStep('move', 'failed', `${movedMains.length} reject${movedMains.length === 1 ? '' : 's'} moved${skipNote}`);
+          } else {
+            setStep('move', 'done', `${movedMains.length} reject${movedMains.length === 1 ? '' : 's'} moved${skipNote}`);
+          }
 
           const movedMainSet = new Set(movedMains);
           rows = rows.filter(r => !movedMainSet.has(r.filename));
@@ -2843,8 +3041,9 @@
         el('#dlgProgressIcon').textContent = anyFailed ? '\u26A0\uFE0F' : '\u2705';
         el('#dlgProgressTitle').textContent = anyFailed ? 'Completed with warnings' : 'Complete!';
         const parts = [];
-        if (doXmp && !anyFailed)  parts.push('XMP files written');
-        if (doXmp &&  anyFailed)  parts.push('XMP had errors \u2014 check above');
+        if (doXmp && !xmpFailed)  parts.push('XMP files written');
+        if (doXmp &&  xmpFailed)  parts.push('XMP had errors \u2014 check above');
+        if (doMove && moveRes && moveRes.all_moved === false) parts.push('Some rejects were skipped');
         if (doMove && moveCompleted) parts.push('Undo available via the bottom bar');
         el('#dlgProgressSubtitle').textContent = parts.join(' \u00b7 ');
         el('#dlgProgressActions').style.display = 'flex';
@@ -3056,8 +3255,11 @@
           const sl = el('#qualityCutoffSlider');
           if (sl) sl.value = String(Math.max(0, Math.min(1, cutoff)));
         }
-        if (minPS   >= 0 && minPS   <= 5)  { const sl = el('#minPerSceneSlider');   if (sl) sl.value = minPS; }
-        if (maxPS   >= 0 && maxPS   <= 20) { const sl = el('#maxPerSceneSlider');   if (sl) sl.value = maxPS; }
+        // Any non-negative value is valid now that these are typed as well as
+        // dragged; setPerSceneValue grows the track to fit before assigning,
+        // so a stored 250 survives a reload instead of being silently dropped.
+        if (Number.isFinite(minPS) && minPS >= 0) setPerSceneValue('min', minPS);
+        if (Number.isFinite(maxPS) && maxPS >= 0) setPerSceneValue('max', maxPS);
         const unratedSel = el('#unratedDefaultSelect');
         if (unratedSel) unratedSel.value = unratedDefault === 'accept' ? 'accept' : 'reject';
         updateSliderLabels(true);
@@ -3143,7 +3345,7 @@
     let zoomActive = false;
     let zoomRow = null;
     let previewRow = null;       // row currently shown in the preview pane
-    let rawCache = new Map();    // filename -> base64 data URL
+    let rawCache = new BlobUrlCache(); // cacheKey -> blob URL of a full RAW preview
     let rawLoading = new Set();  // filename currently loading
 
     function getRowExposurePipelineMode(row) {
@@ -3297,8 +3499,11 @@
           meterScale
         );
         if (res && res.success && res.data) {
-          const url = `data:image/jpeg;base64,${res.data}`;
-          rawCache.set(cacheKey, url);
+          let url = rawCache.has(cacheKey) ? rawCache.get(cacheKey) : null;
+          if (!url) {
+            url = _base64ToBlobUrl(res.data, res.mime || 'image/jpeg');
+            rawCache.set(cacheKey, url);
+          }
           // If still zooming on this row, swap to the high-res source
           if (zoomActive && zoomRow === row) {
             const img = el('#previewExport')?.querySelector('img');
@@ -3701,6 +3906,8 @@
       const sl = el('#' + id);
       if (sl) sl.addEventListener('input', () => { updateSliderLabels(); saveCullingSettings(); });
     });
+    _wirePerSceneEditor('min');
+    _wirePerSceneEditor('max');
     const unratedSel = el('#unratedDefaultSelect');
     if (unratedSel) unratedSel.addEventListener('change', () => { updateSliderLabels(); saveCullingSettings(); });
     el('#tutorialNext').addEventListener('click', function() { var step = TUTORIAL_STEPS[_tutStep]; if (step && step.waitFor) return; _tutAdvance(); });

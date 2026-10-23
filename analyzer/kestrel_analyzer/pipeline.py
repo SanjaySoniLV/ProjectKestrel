@@ -1,7 +1,9 @@
 import concurrent.futures
+import errno
 import json
 import os
 import queue
+import sys
 import threading
 import time
 import traceback
@@ -41,7 +43,7 @@ from .exposure_compensation import (
 )
 from .image_utils import decode_embedded_preview, read_image, read_image_for_pipeline
 from .ratings import quality_to_rating, resolve_thresholds
-from .similarity import compute_image_similarity_akaze, compute_similarity_timestamp
+from .similarity import compute_capture_time_gap, compute_image_similarity_akaze
 from .raw_exif import get_capture_time
 from .logging_utils import (
     get_log_path,
@@ -108,6 +110,9 @@ class AnalysisPipeline:
         self.siglip_quality: Optional[siglip.SiglipQualityScorer] = None
         self.animal_gate: Optional[AnimalGate] = None
         self._log_path: Optional[str] = None
+        self._save_failure_streak = 0
+        self._save_warning_cb: Optional[Callable[[str], None]] = None
+        self._save_warning_shown = False
         # Per-stage wall time (seconds) + call counts for tools/bench_pipeline.py.
         self.stage_times: Dict[str, float] = {}
         self.stage_counts: Dict[str, int] = {}
@@ -311,6 +316,11 @@ class AnalysisPipeline:
             waited += self._POINTER_WAIT_SEC
 
         try:
+            # read_image_for_pipeline() raises on failure, and this whole body
+            # runs inside the ``except Exception`` below, so the real cause
+            # (PermissionError, FileNotFoundError, LibRawFileUnsupportedError,
+            # …) lands on result["error"] instead of a generic message. The
+            # check below is a backstop against a future contract regression.
             img, raw_obj = read_image_for_pipeline(image_path)
             if img is None and raw_obj is None:
                 raise RuntimeError("Image read returned None for both img and raw_obj")
@@ -562,6 +572,62 @@ class AnalysisPipeline:
             f"avg_decode_ms={avg_decode:.0f} avg_wait_ms={avg_wait:.0f}"
         )
 
+    # Transient sharing violations are already retried inside save_database for
+    # ~1.3s, so three failed saves in a row is a block, not a blip.
+    _SAVE_WARNING_AFTER_FAILURES = 3
+
+    @staticmethod
+    def _save_failure_message(exc: BaseException) -> str:
+        """User-facing text for repeated failed saves. No paths -- the queue
+        panel already names the folder."""
+        lead = (
+            "Kestrel can't save analysis results to this folder. Results so far "
+            "are kept in memory and will be written if a later save succeeds; if "
+            "Kestrel closes first they will need re-analyzing. Your photos are "
+            "not affected."
+        )
+        if getattr(exc, "errno", None) == errno.ENOSPC:
+            return f"{lead} The drive is full."
+        if isinstance(exc, PermissionError):
+            if sys.platform == "win32":
+                hint = (
+                    "Windows is denying access. Check that antivirus or Windows "
+                    "Security's Controlled Folder Access isn't blocking Kestrel, "
+                    "and that the folder isn't read-only or being synced."
+                )
+            else:
+                hint = "Access was denied. Check the folder's permissions."
+            return f"{lead} {hint}"
+        return f"{lead} ({type(exc).__name__})"
+
+    def _note_save_result(self, exc: Optional[BaseException]) -> None:
+        """Track consecutive soft-save failures and raise/clear the warning."""
+        cb = getattr(self, "_save_warning_cb", None)
+        shown = getattr(self, "_save_warning_shown", False)
+        if exc is None:
+            self._save_failure_streak = 0
+            if shown:
+                self._save_warning_shown = False
+                if cb:
+                    try:
+                        cb("")
+                    except Exception:
+                        pass
+            return
+        self._save_failure_streak = getattr(self, "_save_failure_streak", 0) + 1
+        if shown or self._save_failure_streak < self._SAVE_WARNING_AFTER_FAILURES:
+            return
+        self._save_warning_shown = True
+        _error(
+            f"[pipeline] {self._save_failure_streak} consecutive saves failed; "
+            f"warning the user ({type(exc).__name__})"
+        )
+        if cb:
+            try:
+                cb(self._save_failure_message(exc))
+            except Exception:
+                pass
+
     def _save_database_soft(self, database, db_path: str, stage: str) -> bool:
         """``save_database`` whose failure skips the save instead of ending the run.
 
@@ -583,12 +649,21 @@ class AnalysisPipeline:
         The post-analysis save deliberately does NOT come through here: it is the
         last one, has no successor to cover for it, and must surface.
 
+        A skipped save is only safe while some later save lands. If they keep
+        failing -- antivirus or Controlled Folder Access blocking the rename, a
+        read-only or full drive -- every result in the run is lost when the app
+        closes, and until now the only trace was a log line. After
+        ``_SAVE_WARNING_AFTER_FAILURES`` consecutive failures the queue item gets
+        a persistent warning; the next successful save clears it.
+
         Returns True if the save landed.
         """
         try:
             save_database(database, db_path)
+            self._note_save_result(None)
             return True
         except Exception as exc:
+            self._note_save_result(exc)
             log_exception(
                 self._log_path,
                 exc,
@@ -733,6 +808,7 @@ class AnalysisPipeline:
         species_detection_enabled: bool = True,
         detection_threshold: float = 0.25,
         scene_time_threshold: float = 1.0,
+        scene_break_gap_seconds: float = 0.0,
         mask_threshold: float = 0.5,
         max_bird_crops: int = 5,
         parallel_prefetch: int = 3,
@@ -778,6 +854,9 @@ class AnalysisPipeline:
         # exits caught-up once every prior in-scope image has a terminal outcome.
         # Set on `self` so _decode_image (worker threads) can reach it.
         self._pointer_stall_cb = callbacks.get("on_pointer_stall")
+        self._save_warning_cb = callbacks.get("on_warning")
+        self._save_failure_streak = 0
+        self._save_warning_shown = False
 
         try:
             max_bird_crops = int(max_bird_crops)
@@ -790,6 +869,14 @@ class AnalysisPipeline:
         except (TypeError, ValueError):
             decode_workers = self._DEFAULT_DECODE_WORKERS
         decode_workers = max(1, min(5, decode_workers))
+
+        # 0 (and anything unparseable) disables the long-gap scene break.
+        try:
+            scene_break_gap_seconds = float(scene_break_gap_seconds)
+        except (TypeError, ValueError):
+            scene_break_gap_seconds = 0.0
+        if scene_break_gap_seconds != scene_break_gap_seconds or scene_break_gap_seconds < 0:  # NaN / negative
+            scene_break_gap_seconds = 0.0
 
         rating_thresholds = None
         rating_profile = "balanced"
@@ -1318,11 +1405,10 @@ class AnalysisPipeline:
                                 previous_image_path = None
                                 previous_orientation = None
 
-                        timestamp_similar = None
+                        capture_gap_seconds = None
                         try:
-                            timestamp_similar = compute_similarity_timestamp(
-                                previous_image_path, image_path,
-                                threshold_seconds=scene_time_threshold
+                            capture_gap_seconds = compute_capture_time_gap(
+                                previous_image_path, image_path
                             ) if previous_image_path else None
                         except Exception as e:
                             log_warning(
@@ -1332,6 +1418,23 @@ class AnalysisPipeline:
                                 context={"file": raw_file, "folder": folder},
                             )
 
+                        timestamp_similar = (
+                            None if capture_gap_seconds is None
+                            else capture_gap_seconds <= scene_time_threshold
+                        )
+                        # A long pause between frames is a scene break on its
+                        # own, regardless of how alike the two frames look.
+                        # Without it, AKAZE chains visually-similar frames
+                        # indefinitely: an hour at one pond against one
+                        # background collapses into a single scene of hundreds
+                        # of images. Disabled (0) by default so existing
+                        # folders re-analyze to the same scenes as before.
+                        time_gap_break = (
+                            scene_break_gap_seconds > 0
+                            and capture_gap_seconds is not None
+                            and capture_gap_seconds > scene_break_gap_seconds
+                        )
+
                         orientation_changed = (
                             previous_orientation is not None
                             and current_orientation != "unknown"
@@ -1339,7 +1442,7 @@ class AnalysisPipeline:
                             and current_orientation != previous_orientation
                         )
 
-                        if orientation_changed:
+                        if orientation_changed or time_gap_break:
                             scene_count += 1
                             entry.update(
                                 {
@@ -1617,7 +1720,15 @@ class AnalysisPipeline:
                             }
                         )
                         stage_ctx["stage"] = "save_database"
-                        database = pd.concat([database, pd.DataFrame([entry])], ignore_index=True)
+                        entry_df = pd.DataFrame([entry])
+                        if database.empty:
+                            # pandas deprecates concat with an all-empty frame; keep the
+                            # schema's column order and take the row directly.
+                            database = entry_df.reindex(
+                                columns=database.columns.union(entry_df.columns, sort=False)
+                            )
+                        else:
+                            database = pd.concat([database, entry_df], ignore_index=True)
                         self._save_database_soft(database, db_path, "save_database")
                         if frame_store_effective is not None and frame_emb is not None:
                             frame_store.put(raw_file, {0: frame_emb})
@@ -1943,7 +2054,15 @@ class AnalysisPipeline:
                     )
 
                     stage_ctx["stage"] = "save_database"
-                    database = pd.concat([database, pd.DataFrame([entry])], ignore_index=True)
+                    entry_df = pd.DataFrame([entry])
+                    if database.empty:
+                        # pandas deprecates concat with an all-empty frame; keep the
+                        # schema's column order and take the row directly.
+                        database = entry_df.reindex(
+                            columns=database.columns.union(entry_df.columns, sort=False)
+                        )
+                    else:
+                        database = pd.concat([database, entry_df], ignore_index=True)
                     self._save_database_soft(database, db_path, "save_database")
                     # Never raises: embeddings are a best-effort sidecar.
                     emb_store.put(
@@ -2007,7 +2126,15 @@ class AnalysisPipeline:
                     entry["scene_count"] = scene_count
                     entry["species"] = "Error"
                     entry["similar"] = False
-                    database = pd.concat([database, pd.DataFrame([entry])], ignore_index=True)
+                    entry_df = pd.DataFrame([entry])
+                    if database.empty:
+                        # pandas deprecates concat with an all-empty frame; keep the
+                        # schema's column order and take the row directly.
+                        database = entry_df.reindex(
+                            columns=database.columns.union(entry_df.columns, sort=False)
+                        )
+                    else:
+                        database = pd.concat([database, entry_df], ignore_index=True)
                     # Must not raise: this is already the error path, and an
                     # escaping exception here has no handler left and would end
                     # the run while reporting the wrong cause.
@@ -2099,6 +2226,7 @@ class AnalysisPipeline:
                             "species_detection_enabled": bool(species_detection_enabled),
                             "detection_threshold": float(detection_threshold),
                             "scene_time_threshold": float(scene_time_threshold),
+                            "scene_break_gap_seconds": float(scene_break_gap_seconds),
                             "mask_threshold": float(mask_threshold),
                             "max_bird_crops": int(max_bird_crops),
                             "parallel_prefetch": int(decode_workers),

@@ -124,6 +124,8 @@
       const modelVal = modelRaw === 'accurate' ? 'accurate' : 'fast';
       const detectorName = modelVal === 'accurate' ? 'mdv5a' : 'mdv1000-cedar';
       const stVal = Math.max(0, parseFloat(document.getElementById('adlgSceneTime')?.value) || 1.0);
+      const sbgRaw = parseFloat(document.getElementById('adlgSceneBreakGap')?.value);
+      const sbgVal = Math.max(0, Math.min(86400, Number.isFinite(sbgRaw) ? sbgRaw : 0));
       const ppRaw = parseInt(document.getElementById('adlgParallelPrefetch')?.value, 10);
       const ppVal = Math.max(1, Math.min(5, Number.isFinite(ppRaw) ? ppRaw : 3));
       const twRaw = parseInt(document.getElementById('adlgThumbnailMaxWidth')?.value, 10);
@@ -141,6 +143,7 @@
       adlgSettings.wildlife_model_mode = modelVal;
       adlgSettings.detector_name = detectorName;
       adlgSettings.scene_time_threshold = stVal;
+      adlgSettings.scene_break_gap_seconds = sbgVal;
       adlgSettings.parallel_prefetch = ppVal;
       adlgSettings.thumbnail_max_width = twVal;
       adlgSettings.thumbnail_jpeg_compression = tcVal;
@@ -193,7 +196,15 @@
           startPollingQueue();
           const status = await apiGetQueueStatus();
           renderQueuePanel(status);
-          setStatus(`Analysis queue started — ${result.added || paths.length} folder(s) queued`);
+          const skipped = Array.isArray(result.skipped_paths) ? result.skipped_paths : [];
+          const queued = result.added || (paths.length - skipped.length);
+          if (skipped.length) {
+            // Folders that vanished between being listed and being queued.
+            // Say so; the rest of the queue is running.
+            setStatus(`Analysis queue started — ${queued} folder(s) queued; ${skipped.length} skipped (no longer exist): ${skipped.join(', ')}`);
+          } else {
+            setStatus(`Analysis queue started — ${queued} folder(s) queued`);
+          }
           setTimeout(() => { try { hideLoadingAnalyzer(); } catch (e) { } }, 30000);
         } else {
           hideLoadingAnalyzer();

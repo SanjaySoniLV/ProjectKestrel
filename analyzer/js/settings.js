@@ -342,6 +342,11 @@
       if (smartSearchCb) smartSearchCb.checked = getSetting('smart_search_enabled', true) !== false;
       const qualityModelSel = document.getElementById('settingsQualityModel');
       if (qualityModelSel) qualityModelSel.value = getSetting('quality_model', 'siglip') === 'legacy' ? 'legacy' : 'siglip';
+      const qfModeSel = document.getElementById('settingsQualityFeedbackMode');
+      if (qfModeSel) {
+        const qm = String(getSetting('quality_feedback_mode', 'ask') || 'ask');
+        qfModeSel.value = ['ask', 'always', 'never'].includes(qm) ? qm : 'ask';
+      }
       const towerSel = document.getElementById('settingsTowerDevice');
       if (towerSel) {
         const td = String(getSetting('tower_device', 'auto') || 'auto');
@@ -413,6 +418,8 @@
       const smartSearchEnabled = smartSearchCb2 ? smartSearchCb2.checked : true;
       const qualityModelEl = document.getElementById('settingsQualityModel');
       const qualityModel = qualityModelEl && qualityModelEl.value === 'legacy' ? 'legacy' : 'siglip';
+      const qfModeEl = document.getElementById('settingsQualityFeedbackMode');
+      const qualityFeedbackMode = qfModeEl && ['ask', 'always', 'never'].includes(qfModeEl.value) ? qfModeEl.value : 'ask';
       const towerEl = document.getElementById('settingsTowerDevice');
       const towerDevice = towerEl && ['auto', 'cpu', 'gpu'].includes(towerEl.value) ? towerEl.value : 'auto';
       // Merge into existing settings so keys like machine_id / analytics_consent_shown are preserved
@@ -453,6 +460,7 @@
         smart_search_enabled: smartSearchEnabled,
         quality_model: qualityModel,
         tower_device: towerDevice,
+        quality_feedback_mode: qualityFeedbackMode,
         bird_regions: finalRegions,
         show_scientific_names: showScientificNames,
       };

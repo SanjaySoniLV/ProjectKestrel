@@ -75,9 +75,14 @@ class ResilienceConfig:
 
 
 # Substring matches against str(exc) for known "session is now corpse" errors.
+# DirectML errors carry the DXGI HRESULT in hex plus Windows' description text,
+# never the DXGI_ERROR_* symbol, so each device-lost code needs its hex form:
+# 887A0005 removed, 887A0006 hung, 887A0007 reset.
 _SESSION_DEAD_SIGNATURES: tuple[str, ...] = (
     "GPU device instance has been suspended",
     "887A0005",
+    "887A0006",
+    "887A0007",
     "DXGI_ERROR_DEVICE_REMOVED",
     "DXGI_ERROR_DEVICE_HUNG",
     "DXGI_ERROR_DEVICE_RESET",

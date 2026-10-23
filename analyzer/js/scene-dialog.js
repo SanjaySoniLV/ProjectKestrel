@@ -26,7 +26,8 @@
     function setCullStatus(row, status) {
       ensureRatingColumns();
       row.culled = status || ''; // 'accept', 'reject', or ''
-      row.culled_origin = status ? 'manual' : '';
+      // Empty is explicit Undecided (X / "none"), not "never touched".
+      row.culled_origin = 'manual';
       markDirty(row);
       // The grid thumbnail is chosen from the user's accept/reject decisions
       // (see _pickSceneRepresentative), so the card behind this dialog is now
@@ -1642,6 +1643,11 @@
       // ── Filmstrip ──
       renderFilmstrip(scene);
 
+      // ── Quality feedback prompt (js/quality-feedback.js) ──
+      if (typeof qfRenderSceneControl === 'function') {
+        try { qfRenderSceneControl(scene); } catch (e) { console.warn('[quality-feedback]', e); }
+      }
+
       // Wire horizontal scrolling via mouse wheel for filmstrip
       const grid = el('#imageGrid');
       if (grid) {
@@ -1940,6 +1946,7 @@
         case 'z':
         case 'Z':
         case '7':
+          if (hasSceneModifier) break;
           e.preventDefault();
           if (images[currentImageIndex]) {
             setCullStatus(images[currentImageIndex], 'accept');
@@ -1949,6 +1956,7 @@
         case 'x':
         case 'X':
         case '8':
+          if (hasSceneModifier) break;
           e.preventDefault();
           if (images[currentImageIndex]) {
             setCullStatus(images[currentImageIndex], '');
@@ -1958,6 +1966,7 @@
         case 'c':
         case 'C':
         case '9':
+          if (hasSceneModifier) break;
           e.preventDefault();
           if (images[currentImageIndex]) {
             setCullStatus(images[currentImageIndex], 'reject');

@@ -6,6 +6,7 @@ import glob
 import json
 import math
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -21,6 +22,24 @@ from typing import Any
 # shared ``settings.json.tmp`` name (symptom: WinError 2 "cannot find the
 # file specified" on os.replace when the other thread deleted our tmp).
 _SAVE_LOCK = threading.RLock()
+
+
+def _retry_on_file_lock(op, attempts: int = 12, delay: float = 0.02):
+    """Run ``op()``, retrying briefly on Windows' transient file-sharing errors.
+
+    Canonical implementation: ``kestrel_analyzer.database.retry_on_file_lock``.
+    This copy exists so settings I/O does not import pandas via ``database``.
+    ``os.replace`` of ``settings.json`` fails with ``PermissionError`` while
+    Explorer, Defender, or a previous Kestrel instance holds the file.
+    """
+    for attempt in range(attempts):
+        try:
+            return op()
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay * (attempt + 1))
+
 
 # Prefix/suffix for ``tempfile.mkstemp`` tmp files we emit. The glob
 # ``settings.json.*.tmp`` uniquely identifies orphans left by a crashed save.
@@ -67,6 +86,11 @@ _ALLOWED_WILDLIFE_MODEL_MODES = {'fast', 'accurate'}
 # image towers run (kestrel_analyzer/ml/providers.py).
 _ALLOWED_QUALITY_MODELS = {'siglip', 'legacy'}
 _ALLOWED_TOWER_DEVICES = {'auto', 'cpu', 'gpu'}
+# Quality feedback (scene viewer "sort these by sharpness" prompt): whether to
+# ask before sharing, always share, or never show the prompt. Default "ask";
+# nothing is ever sent without the user's say-so.
+_ALLOWED_QUALITY_FEEDBACK_MODES = {'ask', 'always', 'never'}
+_QUALITY_FEEDBACK_INSTALL_ID_RE = re.compile(r'^qfi_[0-9a-f]{32}$')
 _ALLOWED_QUEUE_DETECTOR_NAMES = {'mdv5a', 'mdv1000-cedar'}
 # Biogeographic region codes for the species combobox. Sourced from the
 # ``bird_catalog`` module so the data layer owns the vocabulary and we only
@@ -497,6 +521,10 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
         )
     _set_float('detection_threshold', default=0.25, min_value=0.1, max_value=0.99, digits=4)
     _set_float('scene_time_threshold', default=1.0, min_value=0.0, max_value=60.0, digits=4)
+    # Long-gap scene break, in seconds. 0 = disabled (the historical behaviour:
+    # scene boundaries come from AKAZE visual similarity alone, which chains
+    # look-alike frames across arbitrarily long pauses). Ceiling is 24h.
+    _set_float('scene_break_gap_seconds', default=0.0, min_value=0.0, max_value=86400.0, digits=4)
     _set_float('mask_threshold', default=0.5, min_value=0.5, max_value=0.95, digits=4)
     _set_int('max_bird_crops', default=10, min_value=1, max_value=20)
     _set_int('parallel_prefetch', default=3, min_value=1, max_value=5)
@@ -524,6 +552,17 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
         out['quality_model'] = _coerce_enum(data.get('quality_model'), _ALLOWED_QUALITY_MODELS, default='siglip')
     if 'tower_device' in data:
         out['tower_device'] = _coerce_enum(data.get('tower_device'), _ALLOWED_TOWER_DEVICES, default='auto')
+    if 'quality_feedback_mode' in data:
+        out['quality_feedback_mode'] = _coerce_enum(
+            data.get('quality_feedback_mode'), _ALLOWED_QUALITY_FEEDBACK_MODES, default='ask',
+        )
+    if 'quality_feedback_install_id' in data:
+        # Anonymous random id; anything that isn't the exact shape is dropped
+        # (a fresh one is generated on the next share).
+        iid = data.get('quality_feedback_install_id')
+        out['quality_feedback_install_id'] = (
+            iid if isinstance(iid, str) and _QUALITY_FEEDBACK_INSTALL_ID_RE.match(iid) else ''
+        )
     # ONNX provider resilience (auto GPU↔CPU fallback). Advanced/triage knobs;
     # not exposed in the UI. ``gpu_resilience_enabled=False`` reverts to the
     # pre-resilience behavior (single GPU session, no recovery).
@@ -942,7 +981,7 @@ def save_persisted_settings(data: dict) -> None:
                 except OSError as exc:
                     warn(f'[settings] could not refresh .bak: {exc}')
 
-            os.replace(tmp, path)
+            _retry_on_file_lock(lambda: os.replace(tmp, path))
         except OSError as exc:
             # Do NOT fall back to a non-atomic direct write — that path is how
             # partial writes corrupt settings.json in the first place. Leave the
