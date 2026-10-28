@@ -28,7 +28,7 @@ pyinstaller==6.20.0
 
 # EXIF reading
 exifread
-pillow==12.3.0
+pillow==13.0.0
 
 # speciesnet removed: pipeline 3.0 no longer uses the SpeciesNet classifier/ensemble (BioCLIP 2 routes and gates detections)
 # (Apache 2.0, adapted from google/cameratrapai). This eliminates the torch/optree dependency.
