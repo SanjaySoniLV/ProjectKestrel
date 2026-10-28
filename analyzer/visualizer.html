@@ -281,6 +281,8 @@
     <div id="selectActionBar" class="select-action-bar hidden">
       <span id="selectActionLabel" class="muted">0 scenes selected</span>
       <button id="selectMergeBtn" class="primary">Merge selected scenes</button>
+      <button id="selectReviewBtn" title="Confirm the tags Kestrel shows on each selected scene and mark them as reviewed">✓ Mark as Reviewed</button>
+      <button id="selectRejectBtn" title="Reject every photo without a decision in the selected scenes (accepted and rejected photos are kept)">⊘ Reject Undecided</button>
       <button id="selectClearBtn">× Clear selection</button>
     </div>
 
@@ -376,6 +378,7 @@
         </div>
         <div class="scene-topbar-right">
           <button class="scene-shortcut-btn" id="sceneShortcutBtn" title="Show keyboard shortcuts">⌨ Show keyboard shortcuts</button>
+          <button id="sceneRejectUndecidedBtn" title="Reject every photo in this scene that has no decision yet (accepted and rejected photos are kept), then accept the keepers with Z">⊘ Reject Undecided</button>
           <button id="splitSceneBtn" title="Split this scene into multiple scenes">✂ Split Scene</button>
           <button id="closeDlg" title="Close (Escape)">✕ Close</button>
         </div>
