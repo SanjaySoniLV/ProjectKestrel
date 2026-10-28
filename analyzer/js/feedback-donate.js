@@ -206,7 +206,10 @@
       }
     }
 
-    const DONATE_THRESHOLDS = [1000, 5000, 10000, 25000, 50000, 100000, 200000];
+    const DONATE_THRESHOLDS = [
+      1000, 5000, 10000, 25000, 50000, 100000, 200000,
+      300000, 400000, 500000, 600000, 700000, 800000, 900000, 1000000,
+    ];
     // A run smaller than this reads oddly as a headline ("just sorted 12
     // photos"), so the prompt falls back to the lifetime-only copy.
     const DONATE_RUN_COPY_MIN_FILES = 50;

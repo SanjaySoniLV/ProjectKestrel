@@ -96,7 +96,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
     small_run: pure.buildDonatePromptCopy(1000, { filesThisRun: 49, scenes: 3 }),
     startup: pure.buildDonatePromptCopy(25000, null),
   };
-  out.milestones = [999, 1000, 4999, 5000, 250000].map((n) => pure.donateMilestoneFor(n));
+  out.milestones = [999, 1000, 4999, 5000, 250000, 300000, 350000, 999999, 1000000, 5000000].map((n) => pure.donateMilestoneFor(n));
   out.runs = {
     whole: pure.donateRunFromQueueItem({ files_this_run: 300, total: 300, scene_total: 40 }),
     resumed: pure.donateRunFromQueueItem({ files_this_run: 100, total: 300, scene_total: 40 }),
@@ -146,6 +146,13 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
   e._showNextDonateMilestone(6000, null, 'startup');
   await flush();
   out.already = { calls: e.calls, shown: e.state.shown };
+
+  // Existing user who saw every pre-300k milestone, now past 300k.
+  e = makeEnv({ shown: [1000, 5000, 10000, 25000, 50000, 100000, 200000] });
+  e._showNextDonateMilestone(310000, null, 'startup');
+  await flush();
+  out.past300k = { calls: e.calls, shown: e.state.shown,
+                   heading: e.els.donateDlgHeading.textContent };
 
   // Top-strip button event shape.
   e = makeEnv({});
@@ -197,7 +204,8 @@ class TestPromptCopy:
         assert c["subline"] == ""
 
     def test_milestone_rounds_down(self, js_results):
-        assert js_results["milestones"] == [0, 1000, 1000, 5000, 200000]
+        assert js_results["milestones"] == [
+            0, 1000, 1000, 5000, 200000, 300000, 300000, 900000, 1000000, 1000000]
 
     def test_scenes_only_for_whole_folder_runs(self, js_results):
         r = js_results["runs"]
@@ -243,6 +251,13 @@ class TestPromptEvents:
         res = js_results["already"]
         assert res["calls"] == []
         assert res["shown"] == [1000, 5000]
+
+    def test_new_300k_milestone_reaches_existing_users(self, js_results):
+        res = js_results["past300k"]
+        assert [c["event"] for c in res["calls"]] == ["donate_prompt_shown"]
+        assert res["calls"][0]["milestone"] == 300000
+        assert res["shown"][-1] == 300000
+        assert res["heading"] == "You’ve organized over 300,000 photos with Kestrel!"
 
     def test_top_strip_button_event(self, js_results):
         assert js_results["button"]["calls"] == [
