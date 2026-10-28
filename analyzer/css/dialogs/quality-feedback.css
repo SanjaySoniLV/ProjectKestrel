@@ -26,20 +26,38 @@
 .scene-qf-link, .qf-link { color: var(--brand); text-decoration: none; }
 .scene-qf-link:hover, .qf-link:hover { text-decoration: underline; }
 
-/* Sort dialog: uses most of the window so focus can be judged. Five crops
-   share the width (~340px each at 1920px); fewer crops get larger cards
-   (capped by the image max-height). Cards wrap below 230px, so a ~1280x720
-   window shows two rows and the body scrolls. */
+/* Dialog sizing follows the step (data-step, set from JS). The consent and
+   thank-you steps are short reading text, so they get a compact card; only
+   the sort step widens to most of the window so focus can be judged. Five
+   crops share the width (~340px each at 1920px); fewer crops get larger
+   cards (capped by the image max-height). Cards wrap below 200px, so a
+   small window shows two rows and the body scrolls. The width eases between
+   steps; the height always hugs the content. */
 dialog.kdlg.qf-dlg {
+  width: min(540px, calc(100vw - 32px));
+  max-width: min(540px, calc(100vw - 32px));
+  height: fit-content;
+  max-height: min(85vh, calc(100vh - 32px));
+  transition: width .18s ease, max-width .18s ease;
+}
+dialog.kdlg.qf-dlg[data-step="thanks"] {
+  width: min(420px, calc(100vw - 32px));
+  max-width: min(420px, calc(100vw - 32px));
+}
+dialog.kdlg.qf-dlg[data-step="sort"] {
   width: 92vw;
   max-width: 92vw;
-  height: fit-content;
-  max-height: 85vh;
 }
-.qf-title { margin: 0 0 4px; font-size: 16px; line-height: 1.35; }
+@media (prefers-reduced-motion: reduce) {
+  dialog.kdlg.qf-dlg { transition: none; }
+}
+dialog.kdlg.qf-dlg .kdlg-body { padding: 20px 22px 18px; }
+.qf-title { margin: 0 0 4px; font-size: 16px; line-height: 1.35; font-weight: 600; }
 .qf-subtitle { font-size: 13px; margin-bottom: 14px; }
+.qf-subtitle:empty { display: none; }
+.qf-dlg .qf-title:has(+ .qf-subtitle:empty) { margin-bottom: 14px; }
 .qf-spacer { flex: 1; }
-.qf-footer { align-items: center; }
+.qf-footer { align-items: center; padding: 12px 22px; }
 
 .qf-list {
   display: flex;
@@ -118,9 +136,11 @@ dialog.kdlg.qf-dlg {
 }
 .qf-zoom img { max-width: 100%; max-height: 100%; object-fit: contain; }
 
-/* Consent step */
-.qf-consent-text { font-size: 13px; margin: 0 0 8px; line-height: 1.45; }
-.qf-remember { font-size: 13px; gap: 6px; margin-top: 6px; }
+/* Consent + thank-you steps */
+.qf-consent-text { font-size: 13px; margin: 0 0 12px; line-height: 1.5; }
+.qf-consent-links { margin-bottom: 10px; }
+.qf-remember { font-size: 13px; gap: 6px; margin: 0; }
+.qf-thanks-text { margin: 0; }
 
 /* Shared-log viewer */
 .qf-log-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
@@ -135,7 +155,7 @@ dialog.kdlg.qf-dlg {
   font-size: 13px;
 }
 .qf-log-time { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.qf-consent-lists { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 4px 0 12px; font-size: 13px; line-height: 1.45; }
+.qf-consent-lists { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 0 0 14px; font-size: 13px; line-height: 1.45; }
 .qf-consent-col { padding: 10px 12px; border: 1px solid var(--card-border); border-radius: var(--radius-md); background: var(--card); }
 .qf-consent-head { font-weight: 600; margin-bottom: 4px; }
-@media (max-width: 560px) { .qf-consent-lists { grid-template-columns: 1fr; } }
+@media (max-width: 480px) { .qf-consent-lists { grid-template-columns: 1fr; } }

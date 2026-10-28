@@ -169,10 +169,24 @@
     <div id="mainZoom">
       <!-- Sticky top filter/sort bar — sits above the timeline, hidden when welcome panel is shown -->
       <div id="timelineFilterBar" class="timeline-filter-bar hidden" role="region" aria-label="Filter and sort options">
-        <span class="tfb-search-wrap">
-          <span class="tfb-smart-badge" aria-hidden="true">&#10024; Smart Search</span>
-          <input id="search" type="search" placeholder="🔍 Search species, family, or describe a photo" title="Type a species or family to filter the timeline, or describe what is happening (&quot;bird in flight&quot;, &quot;spoonbill wading&quot;) for smart search. Right-click a result for Go to scene in timeline." class="tfb-search tfb-search--smart" aria-label="Smart Search: species, family, or describe a photo" />
-        </span>
+        <!-- Smart search bar: ✨ icon, the real <input> under a token overlay that turns
+             detected species / family phrases into pills, and a right-aligned status area
+             ("Try:" examples when empty, result count / upgrade prompt otherwise). -->
+        <div id="smartSearchBox" class="tfb-search-wrap smart-bar">
+          <span class="smart-bar-icon" aria-hidden="true">&#10024;</span>
+          <span class="smart-bar-field">
+            <input id="search" type="search" autocomplete="off" spellcheck="false" placeholder="Search species, family, or describe a photo" title="Type a species or family to filter the timeline, or describe what is happening (&quot;bird in flight&quot;, &quot;spoonbill wading&quot;) for smart search. Right-click a result for Go to scene in timeline." class="tfb-search tfb-search--smart" aria-label="Smart Search: species, family, or describe a photo" />
+            <span id="smartSearchTokens" class="smart-bar-tokens hidden" aria-label="Filters detected in your query"><span class="smart-bar-tokens-inner"></span></span>
+          </span>
+          <span id="smartSearchExamples" class="smart-search-examples hidden" aria-label="Example smart searches"></span>
+          <span id="smartSearchBar" class="smart-search-bar hidden" role="status" aria-live="polite">
+            <span id="smartSearchSpinner" class="smart-search-spinner hidden" aria-hidden="true"></span>
+            <span id="smartSearchHint" class="smart-search-hint"></span>
+            <button id="smartSearchIndexBtn" type="button" class="smart-search-btn hidden">Upgrade folder</button>
+          </span>
+          <button id="smartSearchClear" type="button" class="smart-search-clear hidden" title="Clear the search (Esc)" aria-label="Clear the search">&#x2715;</button>
+          <span id="smartChipTip" class="smart-chip-tip hidden" role="tooltip"></span>
+        </div>
         <label class="tfb-field" title="Minimum confidence threshold for species classification">
           <span class="tfb-label">Confidence</span>
           <input id="speciesConf" type="number" min="0" max="1" step="0.05" value="0.75" class="tfb-conf" />
@@ -218,14 +232,6 @@
               <span>Show bird thumbnails</span>
             </label>
           </div>
-        </div>
-        <div id="smartSearchExamples" class="smart-search-examples hidden" aria-label="Example smart searches"></div>
-        <div id="smartSearchBar" class="smart-search-bar hidden" role="status" aria-live="polite">
-          <span id="smartSearchSpinner" class="smart-search-spinner hidden" aria-hidden="true"></span>
-          <span id="smartSearchChips" class="smart-search-chips hidden" aria-label="Filters detected in your query"></span>
-          <span id="smartSearchHint" class="smart-search-hint"></span>
-          <button id="smartSearchIndexBtn" type="button" class="smart-search-btn hidden">Upgrade folder</button>
-          <button id="smartSearchClear" type="button" class="smart-search-btn smart-search-clear hidden" title="Clear the smart search">✕ Clear</button>
         </div>
       </div>
       <div id="compat" class="wrap hidden">
@@ -281,6 +287,8 @@
     <div id="selectActionBar" class="select-action-bar hidden">
       <span id="selectActionLabel" class="muted">0 scenes selected</span>
       <button id="selectMergeBtn" class="primary">Merge selected scenes</button>
+      <button id="selectReviewBtn" title="Confirm the tags Kestrel shows on each selected scene and mark them as reviewed">✓ Mark as Reviewed</button>
+      <button id="selectRejectBtn" title="Reject every photo without a decision in the selected scenes (accepted and rejected photos are kept)">⊘ Reject Undecided</button>
       <button id="selectClearBtn">× Clear selection</button>
     </div>
 
@@ -376,6 +384,7 @@
         </div>
         <div class="scene-topbar-right">
           <button class="scene-shortcut-btn" id="sceneShortcutBtn" title="Show keyboard shortcuts">⌨ Show keyboard shortcuts</button>
+          <button id="sceneRejectUndecidedBtn" title="Reject every photo in this scene that has no decision yet (accepted and rejected photos are kept), then accept the keepers with Z">⊘ Reject Undecided</button>
           <button id="splitSceneBtn" title="Split this scene into multiple scenes">✂ Split Scene</button>
           <button id="closeDlg" title="Close (Escape)">✕ Close</button>
         </div>
@@ -387,6 +396,8 @@
         <span><kbd>↑</kbd><kbd>↓</kbd> Switch active crop</span>
         <span><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>&larr;</kbd><kbd>&rarr;</kbd> or <kbd>Home</kbd>/<kbd>End</kbd> Jump to start/end</span>
         <span><kbd>Enter</kbd> Promote active crop</span>
+        <span><kbd>F</kbd> or <kbd>Shift</kbd>+Click a bird: focus the scene on that bird (again to undo)</span>
+        <span><kbd>B</kbd> Show/hide bird numbers</span>
         <span><kbd>Tab</kbd> Next scene</span>
         <span><kbd>Shift</kbd>+<kbd>Tab</kbd> or <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Tab</kbd> Previous scene</span>
         <span><kbd>Z</kbd> or <kbd>7</kbd> Accept</span>
@@ -956,6 +967,15 @@
         </label>
       </div>
       <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Bird crops are always indexed for smart search. This also indexes each photo's whole frame so scene queries work ("bird on a wire", "two birds", "wide landscape"). Adds one SigLIP pass per photo (~0.1&ndash;0.2 s on CPU).</div>
+
+      <div class="row">
+        <label for="settingsRawEmbeddedPreview" style="flex:1">Fast RAW analysis: use the camera&rsquo;s embedded JPEG</label>
+        <label class="inline" style="gap:6px">
+          <input type="checkbox" id="settingsRawEmbeddedPreview" />
+          <span class="muted">Enable</span>
+        </label>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Analyses the JPEG preview stored inside each RAW file instead of decoding the sensor data. Much faster per photo; the SigLIP sharpness score is largely unaffected, but exposure/highlight recovery is skipped and quality depends on the preview size your camera writes (some older bodies embed only a small one). RAWs without a usable preview are still decoded. Applies to analyses started after you change it, on this computer only &mdash; Cloud Compute always decodes RAW.</div>
 
       <div class="row">
         <label for="settingsTowerDevice" style="flex:1">BioCLIP device (advanced)</label>
@@ -1809,6 +1829,7 @@
        (setupScenePreviewDivider) calls getSetting() at parse time. -->
   <script src="js/settings.js"></script>
   <script src="js/scene-dialog.js"></script>
+  <script src="js/primary-subject.js"></script>
   <script src="js/feedback-donate.js"></script>
   <script src="js/quality-feedback.js"></script>
   <script src="js/folder-tree.js"></script>

@@ -172,6 +172,13 @@
       dlg.appendChild(z);
     }
 
+    // The dialog's width follows the step (see quality-feedback.css): compact
+    // for consent / thank-you, wide only while sorting.
+    function _qfSetStep(step) {
+      const dlg = document.getElementById('qfDlg');
+      if (dlg) dlg.dataset.step = step;
+    }
+
     function _qfRankingFromItems() {
       return _qf.items.map(it => [it.index]);
     }
@@ -185,6 +192,7 @@
 
     // One step, no explanations: drag the crops into order, then Done.
     function _qfRenderSort() {
+      _qfSetStep('sort');
       const body = document.getElementById('qfBody');
       const footer = document.getElementById('qfFooter');
       document.getElementById('qfTitle').textContent = 'Sort these thumbnails from sharpest to blurriest';
@@ -276,6 +284,7 @@
 
     // Asked before sorting, so nobody sorts and then declines.
     function _qfRenderConsent() {
+      _qfSetStep('consent');
       document.getElementById('qfTitle').textContent = 'Would you like to help improve Kestrel’s quality scores?';
       document.getElementById('qfSubtitle').textContent = '';
       const body = document.getElementById('qfBody');
@@ -293,7 +302,7 @@
         _qfEl('div', 'muted', 'Your full photos, location or camera data, file names, or anything tied to your account.'));
       lists.append(yes, no);
       body.appendChild(lists);
-      const links = _qfEl('p', 'qf-consent-text muted');
+      const links = _qfEl('p', 'qf-consent-text qf-consent-links muted');
       links.append(_qfLink('Read more', QF_PRIVACY_URL + '#quality-feedback'), document.createTextNode(' · '),
         _qfLink('Privacy policy', QF_PRIVACY_URL));
       const remember = _qfEl('label', 'inline qf-remember');
@@ -318,15 +327,19 @@
         _qf.started = performance.now();
       });
       footer.append(no_, _qfEl('span', 'qf-spacer'), next);
+      // Rendered before showModal(), so focus() alone is lost: autofocus makes
+      // the dialog start on Next instead of the first link.
+      next.autofocus = true;
       try { next.focus(); } catch (_) { }
     }
 
     function _qfRenderThanks() {
+      _qfSetStep('thanks');
       document.getElementById('qfTitle').textContent = 'Thank you!';
       document.getElementById('qfSubtitle').textContent = '';
       const body = document.getElementById('qfBody');
       const footer = document.getElementById('qfFooter');
-      body.replaceChildren(_qfEl('p', 'qf-consent-text', 'Your feedback helps Kestrel rank photos by sharpness.'));
+      body.replaceChildren(_qfEl('p', 'qf-consent-text qf-thanks-text', 'Your feedback helps Kestrel rank photos by sharpness.'));
       footer.replaceChildren();
       const close = _qfEl('button', 'primary', 'Close');
       close.type = 'button';

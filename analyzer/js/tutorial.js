@@ -15,7 +15,7 @@
     const _tutWorkflowStep = {
       title: 'Fit Kestrel into your workflow',
       body: '',
-      target: '.write-metadata-btn',
+      target: '.folder-group-actions-trigger',
       position: 'bottom',
       customBody: 'workflowCard',
       highlightAlso: ['.culling-assistant-btn'],
@@ -23,7 +23,7 @@
 
     const _tutTryYourOwnStepBase = {
       title: 'Now try it with your own photos',
-      body: 'You’re ready!<br><br>• Click <b>Analyze Folders…</b> to process a new folder of photos.<br>• Click <b>Open Folder…</b> (or drop into the Folder Tree) to browse photos Kestrel has already analyzed.<br><br><b>Tip:</b> open a parent folder once to load your whole library — then search across every outing, every year.',
+      body: 'You’re ready!<br><br>• Click <b>Analyze Folders…</b> to process a new folder of photos.<br>• Click <b>Load Folders…</b> (or drop into the Folder Tree) to browse photos Kestrel has already analyzed.<br><br><b>Tip:</b> open a parent folder once to load your whole library — then search across every outing, every year.',
       target: '#analyzeQueueBtn',
       position: 'right',
       highlightAlso: ['#pickFolder'],
@@ -59,7 +59,7 @@
       },
       {
         title: 'Search and filter',
-        body: 'Use the <b>Filter &amp; Sort</b> panel to narrow your scenes down:<br><br>• <b>Search</b> by bird species or family — the grid filters instantly.<br>• <b>Sort</b> by Capture Time, Quality, or Image Count.<br>• Toggle <b>Group by folder</b> / <b>capture time</b> to reorganize.<br><br>You can always tweak further in the options below.',
+        body: 'Use the <b>filter bar</b> above the timeline to narrow your scenes down:<br><br>• <b>Search</b> by bird species or family — the grid filters instantly.<br>• <b>Sort</b> by Capture Time, Quality, or Image Count.<br>• Open <b>⚙ More</b> to toggle <b>Group by folder</b> / <b>capture time</b> and more.<br><br>You can always tweak further from there.',
         target: '#timelineFilterBar',
         position: 'bottom',
       },
@@ -143,7 +143,7 @@
       },
       {
         title: 'Filtering options',
-        body: '• <b>Search</b> for any bird species or family — the grid filters instantly as you type.<br>• Don’t see scenes after searching? Lower the <b>Confidence</b> threshold to see more results.<br>• Enable <b>Multi-subject mode</b> if your scenes contain multiple species.<br>• <b>Sort</b> by Capture Time, Quality, Scene ID, or Image Count.<br>• Toggle <b>Group by folder</b> / <b>capture time</b> to reorganize the grid.',
+        body: '• <b>Search</b> for any bird species or family — the grid filters instantly as you type.<br>• Don’t see scenes after searching? Lower the <b>Confidence</b> threshold to see more results.<br>• Open <b>⚙ More</b> and enable <b>Multi-subject mode</b> if your scenes contain multiple species.<br>• <b>Sort</b> by Capture Time, Quality, Scene ID, or Image Count.<br>• Also in <b>⚙ More</b>: toggle <b>Group by folder</b> / <b>capture time</b> to reorganize the grid.',
         target: '#timelineFilterBar',
         position: 'bottom',
       },
@@ -156,15 +156,15 @@
       },
       {
         title: 'Search across your whole library',
-        body: 'Kestrel searches across <b>every loaded folder</b>. Type a species or family to filter the timeline, or describe a photo (<i>“spoonbill wading”</i>, <i>“bird in flight”</i>) to smart-search it. Right-click a result and choose <b>Go to scene in timeline</b> to see it in context.<br><br><b>Tip:</b> open a <b>parent folder</b> once (via <b>Open Folder…</b> or the Folder Tree) and Kestrel loads your entire library at once — then you can search across every outing and every year without re-loading anything.',
-        target: '#search',
-        position: 'right',
+        body: 'Kestrel searches across <b>every loaded folder</b>. Type a species or family to filter the timeline, or describe a photo (<i>“spoonbill wading”</i>, <i>“bird in flight”</i>) to smart-search it. Right-click a result and choose <b>Go to scene in timeline</b> to see it in context.<br><br><b>Tip:</b> open a <b>parent folder</b> once (via <b>Load Folders…</b> or the Folder Tree) and Kestrel loads your entire library at once — then you can search across every outing and every year without re-loading anything.',
+        target: '#smartSearchBox',
+        position: 'bottom',
       },
       _tutWorkflowStep,
       {
         title: 'Write Photo Metadata',
-        body: 'Click <b>Write Photo Metadata</b> to export Kestrel’s star ratings and Accept/Reject decisions into XMP sidecar files alongside your photos. These <code>.xmp</code> files are understood natively by <b>Adobe Lightroom</b>, <b>darktable</b>, <b>Capture One</b>, and other editors.<br><br>⚠️ <b>Write photo metadata <em>before</em> importing into your photo editor</b> — most catalogues ignore new sidecar files once a photo is already imported. If a sidecar was already created by another application, Kestrel will ask before overwriting it.',
-        target: '.write-metadata-btn',
+        body: 'Open the <b>Folder Actions</b> menu on a folder and click <b>Write Photo Metadata</b> to export Kestrel’s star ratings and Accept/Reject decisions into XMP sidecar files alongside your photos. These <code>.xmp</code> files are understood natively by <b>Adobe Lightroom</b>, <b>darktable</b>, <b>Capture One</b>, and other editors.<br><br>⚠️ <b>Write photo metadata <em>before</em> importing into your photo editor</b> — most catalogues ignore new sidecar files once a photo is already imported. If a sidecar was already created by another application, Kestrel will ask before overwriting it.',
+        target: '.folder-group-actions-trigger',
         position: 'bottom',
       },
       {
@@ -175,13 +175,13 @@
       },
       {
         title: 'Options',
-        body: 'Click <b>Settings</b> to choose your preferred <b>photo editor</b> (Lightroom, Darktable, or system default). Opening a photo with <kbd>Space</kbd> will launch it there. You can also tweak several other options — including the experimental <b>wildlife mode</b> that detects non-bird wildlife.',
+        body: 'Click <b>Settings</b> to choose your preferred <b>photo editor</b> (Lightroom, Darktable, or system default). Opening a photo with <kbd>Space</kbd> will launch it there. You can also tweak a few other options here. (Analysis choices — like detecting <b>non-bird wildlife</b> — are made per run in the <b>Analyze Folders</b> dialog, under “Review settings”.)',
         target: '#openSettings',
         position: 'bottom',
       },
       {
         title: 'You’re all set!',
-        body: 'That’s the full tour! Quick recap:<br><br>• <b>Analyze Folders</b> to process new photos<br>• <b>Open Folder</b> to browse analyzed photos<br>• <b>Click scenes</b> to view &amp; rate photos<br>• <b>Culling Assistant</b> for bulk Accept/Reject workflow<br>• <b>Write Photo Metadata</b> to export to Lightroom, darktable, etc.<br><br>⚠️ <b>Remember:</b> Write photo metadata <em>before</em> importing into Lightroom or Capture One for best results!<br><br>Click the <b>📖 Tutorial</b> button anytime to replay this tour. Happy birding!',
+        body: 'That’s the full tour! Quick recap:<br><br>• <b>Analyze Folders</b> to process new photos<br>• <b>Load Folders</b> to browse analyzed photos<br>• <b>Click scenes</b> to view &amp; rate photos<br>• <b>Culling Assistant</b> for bulk Accept/Reject workflow<br>• <b>Write Photo Metadata</b> to export to Lightroom, darktable, etc.<br><br>⚠️ <b>Remember:</b> Write photo metadata <em>before</em> importing into Lightroom or Capture One for best results!<br><br>Click the <b>Tutorial</b> button anytime to replay this tour. Happy birding!',
         target: null,
       },
       {
@@ -353,7 +353,7 @@
             '<div class="tut-wf-caption">Browse your scenes in Kestrel and press <kbd>Space</kbd> on the ones you love — they open straight in your photo editor.</div>' +
           '</div>' +
         '</div>' +
-        '<div class="tut-workflow-hint">We’ve highlighted the two buttons you’ll use most: <b>Write Photo Metadata</b> and <b>Open Culling Assistant</b>.</div>';
+        '<div class="tut-workflow-hint">We’ve highlighted where you’ll find the two tools you’ll use most: <b>Write Photo Metadata</b> (in the <b>Folder Actions</b> menu) and <b>Open Culling Assistant</b>.</div>';
 
       var tabs = bodyEl.querySelectorAll('.tut-wf-tab');
       var panels = bodyEl.querySelectorAll('.tut-wf-panel');

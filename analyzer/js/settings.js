@@ -340,6 +340,8 @@
       if (autoSaveCb) autoSaveCb.checked = getSetting('auto_save_enabled', true);
       const smartSearchCb = document.getElementById('settingsSmartSearch');
       if (smartSearchCb) smartSearchCb.checked = getSetting('smart_search_enabled', true) !== false;
+      const rawPreviewCb = document.getElementById('settingsRawEmbeddedPreview');
+      if (rawPreviewCb) rawPreviewCb.checked = getSetting('raw_use_embedded_preview', false) === true;
       const qualityModelSel = document.getElementById('settingsQualityModel');
       if (qualityModelSel) qualityModelSel.value = getSetting('quality_model', 'siglip') === 'legacy' ? 'legacy' : 'siglip';
       const qfModeSel = document.getElementById('settingsQualityFeedbackMode');
@@ -416,6 +418,8 @@
       const autoSaveEnabled = autoSaveCb ? autoSaveCb.checked : true;
       const smartSearchCb2 = document.getElementById('settingsSmartSearch');
       const smartSearchEnabled = smartSearchCb2 ? smartSearchCb2.checked : true;
+      const rawPreviewCb2 = document.getElementById('settingsRawEmbeddedPreview');
+      const rawUseEmbeddedPreview = rawPreviewCb2 ? rawPreviewCb2.checked : getSetting('raw_use_embedded_preview', false) === true;
       const qualityModelEl = document.getElementById('settingsQualityModel');
       const qualityModel = qualityModelEl && qualityModelEl.value === 'legacy' ? 'legacy' : 'siglip';
       const qfModeEl = document.getElementById('settingsQualityFeedbackMode');
@@ -458,6 +462,7 @@
         raw_preview_cache_enabled: rawPreviewCacheEnabled,
         auto_save_enabled: autoSaveEnabled,
         smart_search_enabled: smartSearchEnabled,
+        raw_use_embedded_preview: rawUseEmbeddedPreview,
         quality_model: qualityModel,
         tower_device: towerDevice,
         quality_feedback_mode: qualityFeedbackMode,

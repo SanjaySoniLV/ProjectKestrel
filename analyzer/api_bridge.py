@@ -1383,6 +1383,7 @@ class Api:
                     data = f.read()
 
             self._track_cache_root(parent_folder)
+            self._refresh_bird_links_async(kestrel_dir)
             
             
             return {
@@ -2739,12 +2740,15 @@ class Api:
             return {'success': False, 'error': str(e)}
 
     def upgrade_folder_v3(self, folder_path: str) -> dict:
-        """Start upgrading an analysed folder to pipeline 3 (local only).
+        """Queue an analysed folder's upgrade to pipeline 3 (local only).
 
-        Returns ``{success, job_id}``; poll ``get_smart_search_index_progress``.
-        Refused while the folder is being analysed (both would write the same
-        files) and for folders that need a re-analysis; a job already running
-        for the folder is returned as is.
+        Returns ``{success, job_id, queued}``; poll
+        ``get_smart_search_index_progress``. Upgrades run one at a time in
+        request order (they share the queue's pipeline), so ``queued`` is True
+        when the job waits behind another upgrade; its phase is ``queued``
+        until it starts. Refused while the folder is being analysed (both
+        would write the same files) and for folders that need a re-analysis;
+        a job already queued or running for the folder is returned as is.
         """
         try:
             root_real, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
@@ -2769,7 +2773,9 @@ class Api:
             with lock:
                 for jid, j in jobs.items():
                     if j.get('kestrel_dir') == kestrel_dir and not j['progress'].get('done'):
-                        return {'success': True, 'job_id': jid, 'already_running': True}
+                        return {'success': True, 'job_id': jid, 'already_running': True,
+                                'queued': j['progress'].get('phase') == 'queued'}
+                queued_behind = any(not j['progress'].get('done') for j in jobs.values())
                 job_id = _uuid.uuid4().hex
                 cancel = _t.Event()
                 jobs[job_id] = {
@@ -2782,7 +2788,7 @@ class Api:
                     'root': root_real,
                     'started_at': time.time(),
                     'dismissed': False,
-                    'progress': {'done': False, 'current': 0, 'total': 0, 'phase': 'starting'},
+                    'progress': {'done': False, 'current': 0, 'total': 0, 'phase': 'queued'},
                 }
                 finished = [k for k, v in jobs.items() if v['progress'].get('done')]
                 for k in finished[:-8]:
@@ -2796,6 +2802,17 @@ class Api:
                     jobs[job_id]['progress'].update(kw)
 
             def _runner():
+                with lock:
+                    job = jobs.get(job_id)
+                    if job is None or job['progress'].get('done'):
+                        return  # cancelled while queued
+                if cancel.is_set():
+                    _set(phase='canceled', done=True, finished_at=time.time())
+                    return
+                if _queue_manager.has_running_writer(root_real):
+                    # Analysis of this folder started while the upgrade waited.
+                    _set(phase='stopped', done=True, finished_at=time.time())
+                    return
                 try:
                     _set(phase='loading_model')
                     # GPU follows the queue's current choice (the Analyze dialog's
@@ -2826,10 +2843,117 @@ class Api:
                 finally:
                     _set(done=True, finished_at=time.time())
 
-            _t.Thread(target=_runner, name=f'UpgradeV3-{job_id[:8]}', daemon=True).start()
-            return {'success': True, 'job_id': job_id}
+            self._enqueue_upgrade(job_id, _runner)
+            return {'success': True, 'job_id': job_id, 'queued': queued_behind}
         except Exception as e:
             error(f'[API] upgrade_folder_v3({folder_path!r}) error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def _enqueue_upgrade(self, job_id: str, runner) -> None:
+        """Run ``runner`` on the single upgrade worker, after earlier jobs.
+
+        Upgrades share the analysis queue's pipeline (one ORT session per
+        model per process), so they must not run concurrently.
+        """
+        import collections as _c
+        import threading as _t
+        lock, _ = self._smart_jobs()
+        with lock:
+            if getattr(self, '_upgrade_pending', None) is None:
+                self._upgrade_pending = _c.deque()
+            self._upgrade_pending.append((job_id, runner))
+            worker = getattr(self, '_upgrade_worker', None)
+            if worker is not None and worker.is_alive():
+                return
+
+            def _drain():
+                while True:
+                    with lock:
+                        if not self._upgrade_pending:
+                            self._upgrade_worker = None
+                            return
+                        _jid, fn = self._upgrade_pending.popleft()
+                    try:
+                        fn()
+                    except Exception as e:  # runner reports its own errors
+                        error(f'[API] upgrade worker: job {_jid[:8]} raised {e}')
+
+            self._upgrade_worker = _t.Thread(target=_drain, name='UpgradeV3-worker', daemon=True)
+            self._upgrade_worker.start()
+
+    def upgrade_folders_v3(self, folder_paths) -> dict:
+        """Queue pipeline-3 upgrades for several folders (run one at a time).
+
+        Returns ``{success, results: [{path, success, job_id?, error?,
+        reason?, queued?}]}`` in the order given. Folders that are already
+        current, need a re-analysis or are being analysed are reported per
+        entry; the rest are queued.
+        """
+        if not isinstance(folder_paths, list):
+            return {'success': False, 'error': 'folder_paths must be a list'}
+        results = []
+        for fp in folder_paths[:500]:
+            if not isinstance(fp, str) or not fp:
+                continue
+            try:
+                _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                    fp, context='upgrade_folders_v3', require_root_exists=True,
+                )
+                if not err and os.path.isdir(kestrel_dir):
+                    st = self._upgrade_module().eligibility(kestrel_dir).get('status')
+                    if st in ('current', 'not_analyzed'):
+                        results.append({'path': fp, 'success': False, 'error': st})
+                        continue
+            except Exception:
+                pass  # upgrade_folder_v3 re-validates and reports the error
+            res = self.upgrade_folder_v3(fp)
+            results.append({'path': fp, **res})
+        return {'success': True, 'results': results}
+
+    @staticmethod
+    def _primary_subject_module():
+        try:
+            from kestrel_analyzer import primary_subject as _ps
+        except ImportError:  # package-style import path
+            from analyzer.kestrel_analyzer import primary_subject as _ps  # type: ignore[no-redef]
+        return _ps
+
+    def _refresh_bird_links_async(self, kestrel_dir: str) -> None:
+        """On folder load: compute bird links for scenes that lack them (pipeline-3.0.0
+        folders, or scenes added since). Never while this app is analysing/upgrading."""
+        try:
+            if self._running_upgrade_job(kestrel_dir) or self.is_analysis_running().get('running'):
+                return
+        except Exception:
+            return
+        _ps = self._primary_subject_module()
+
+        def _run():
+            try:
+                _ps.ensure_links(kestrel_dir)
+            except Exception as e:
+                error(f'[API] bird links refresh failed: {e}')
+        import threading as _t
+        _t.Thread(target=_run, name='bird-links', daemon=True).start()
+
+    def primary_subject_links(self, folder_path: str) -> dict:
+        """Stored bird numbers for a folder (computed first if missing or stale).
+
+        Returns ``{success, scenes: {scene_count: {files, ids: {file: {crop_index: bird}},
+        margins: {file: {crop_index: margin}}}}, min_margin}``. Read-only apart from the
+        ``.kestrel/bird_links.json`` sidecar.
+        """
+        try:
+            _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path, context='primary_subject_links', require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            _ps = self._primary_subject_module()
+            data = _ps.ensure_links(kestrel_dir)
+            return {'success': True, 'scenes': data.get('scenes', {}), 'min_margin': _ps.MIN_MARGIN}
+        except Exception as e:
+            error(f'[API] primary_subject_links error: {e}')
             return {'success': False, 'error': str(e)}
 
     def smart_search_index_folder(self, folder_path: str) -> dict:
@@ -2853,8 +2977,9 @@ class Api:
         Running jobs, plus finished ones the user has not dismissed with the
         panel's close button (``clear_queue_done``). Each row is ``{job_id,
         kind: 'upgrade', path, name, status, phase, current, total, error,
-        started_at, finished_at}``; ``status`` is ``running`` while the job is
-        alive, then ``done`` / ``cancelled`` / ``stopped`` / ``error``.
+        started_at, finished_at}``; ``status`` is ``pending`` while the job
+        waits its turn, ``running`` while it runs, then ``done`` /
+        ``cancelled`` / ``stopped`` / ``error``.
         """
         lock, jobs = self._smart_jobs()
         out = []
@@ -2865,7 +2990,10 @@ class Api:
                     continue
                 path = j.get('path') or j.get('root') or os.path.dirname(j.get('kestrel_dir') or '')
                 phase = str(pr.get('phase') or '')
-                status = self._UPGRADE_ROW_STATUS.get(phase, 'error') if pr.get('done') else 'running'
+                if pr.get('done'):
+                    status = self._UPGRADE_ROW_STATUS.get(phase, 'error')
+                else:
+                    status = 'pending' if phase == 'queued' else 'running'
                 out.append({
                     'job_id': jid,
                     'kind': 'upgrade',
@@ -2895,6 +3023,12 @@ class Api:
         if job is None:
             return {'success': False, 'error': 'not_found'}
         job['cancel_event'].set()
+        with lock:
+            pr = job['progress']
+            if pr.get('phase') == 'queued' and not pr.get('done'):
+                # Never started: settle it now so the panel updates at once
+                # (the worker skips it when its turn comes).
+                pr.update(phase='canceled', done=True, finished_at=time.time())
         return {'success': True}
 
     def open_folder(self, path: str):
@@ -9675,22 +9809,29 @@ class Api:
         try:
             with rawpy.imread(full_path) as raw:
                 thumb = raw.extract_thumb()
+            if thumb is None or not getattr(thumb, 'data', None):
+                return None, None
+            if thumb.format != rawpy.ThumbFormat.JPEG:
+                return None, None
+            jpeg_data = thumb.data
+        except rawpy.LibRawFileUnsupportedError:
+            # Body newer than the bundled LibRaw: imread() itself refuses the
+            # file, so read the preview straight out of the TIFF container.
+            from kestrel_analyzer.image_utils import extract_tiff_container_jpeg
+            jpeg_data = extract_tiff_container_jpeg(full_path)
+            if jpeg_data is None:
+                return None, None
         except (rawpy.LibRawNoThumbnailError,
                 rawpy.LibRawUnsupportedThumbnailError,
-                rawpy.LibRawFileUnsupportedError,
                 rawpy.LibRawIOError):
             return None, None
         except Exception:
             return None, None
-        if thumb is None or not getattr(thumb, 'data', None):
-            return None, None
-        if thumb.format != rawpy.ThumbFormat.JPEG:
-            return None, None
         try:
-            with Image.open(BytesIO(thumb.data)) as prev_img:
+            with Image.open(BytesIO(jpeg_data)) as prev_img:
                 exif_orient = prev_img.getexif().get(0x0112, 1)
                 if exif_orient in (None, 1):
-                    return thumb.data, (int(prev_img.width), int(prev_img.height))
+                    return jpeg_data, (int(prev_img.width), int(prev_img.height))
                 oriented = ImageOps.exif_transpose(prev_img)
                 if oriented.mode != 'RGB':
                     oriented = oriented.convert('RGB')
