@@ -35,7 +35,9 @@ import numpy as np
 
 from . import embedding_store
 
-PARAMS = dict(wp=1.0, wb=0.5, ws=1.0, tau=4.5, motion=True, motion_emb=2.0, alpha=0.5)
+# tau 4.5 -> 2.5 after the full-burst perch (Oct 2026): in dense flocks the subject often has
+# no box in the next frame (crop cap), and a looser "no match" linked it to a lookalike.
+PARAMS = dict(wp=1.0, wb=0.5, ws=1.0, tau=2.5, motion=True, motion_emb=2.0, alpha=0.5)
 MIN_MARGIN = 1.0
 SIGLIP_SLOT = "siglip2-b16"   # kestrel_analyzer.ml.siglip.MODEL_ID; BioCLIP is the primary slot
 NO_MARGIN = 9.0

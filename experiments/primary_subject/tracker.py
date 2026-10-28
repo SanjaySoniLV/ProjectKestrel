@@ -34,7 +34,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-DEFAULT_PARAMS = dict(wp=1.0, wb=0.5, ws=1.0, tau=4.5, motion=True, motion_emb=2.0, alpha=0.5)
+DEFAULT_PARAMS = dict(wp=1.0, wb=0.5, ws=1.0, tau=2.5, motion=True, motion_emb=2.0, alpha=0.5)
 
 
 # --------------------------------------------------------------------------- crops

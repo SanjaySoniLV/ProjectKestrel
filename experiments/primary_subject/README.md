@@ -34,7 +34,7 @@ how the pipeline writes them today).
 2. **Link cost** `= min(pos, 5) + 10 * (0.5 * (1 - cos_BioCLIP) + 1 * (1 - cos_SigLIP))`, where
    `pos` is the motion-compensated centre distance, measured in target-box sizes, plus half the
    log size ratio.
-3. **Assignment**: Hungarian over the cost matrix padded with "no match" at `tau = 4.5`, so
+3. **Assignment**: Hungarian over the cost matrix padded with "no match" at `tau = 2.5` (was 4.5; see below), so
    birds can leave or enter the frame.
 4. **Tracking**: every bird in the first frame is a track with an averaged appearance template
    and its last box. All tracks compete for each new frame's crops together, and a missed
@@ -110,6 +110,45 @@ ranked best today (today's ranking uses the best crop of each frame).
   seed. The averaged template absorbs pose change.
 - **Not solved:** dense flocks of small, identical birds. Humans can't label those reliably
   either. The margin flags them, so the UI should say "not sure" rather than guess.
+
+## Re-evaluation on full, uncull'd bursts (October 2026)
+
+The first data set came from culled uploads, so its bursts were short (3–5 frames) and gaps were
+large. A second upload was not culled: 55 multi-bird bursts, 432 frames, up to 31 frames long,
+including dense skimmer flocks of up to 10 crops per frame. 70 frame pairs were labelled (60 where
+methods disagreed, 25 of them skimmer pairs, plus 10 where they agreed). That gives 512 bird links,
+260 of them with high-confidence labels.
+
+**New ideas tried, each following a bird seeded in the top frame with the whole burst available:**
+
+| Method | All | High-confidence | Skimmers |
+|---|---|---|---|
+| Previous configuration (tau 4.5) | 0.738 | 0.912 | 0.672 |
+| BioCLIP weight 1.0 | 0.752 | 0.919 | 0.695 |
+| Adaptive weights (an embedding counts more when it separates the frame's birds) | 0.732 | 0.915 | 0.667 |
+| Adaptive + BioCLIP 1.0 | 0.746 | 0.919 | 0.695 |
+| Constant-velocity box prediction | 0.738 | 0.912 | 0.672 |
+| Viterbi best path over the whole burst | 0.732 | 0.912 | 0.684 |
+| Viterbi + velocity | 0.725 | 0.904 | 0.701 |
+| **Previous configuration, tau 2.5** | **0.795** | **0.965** | 0.718 |
+| Previous configuration, tau 2.0 | 0.797 | 0.969 | 0.741 |
+| BioCLIP 1.0, tau 3.0 | 0.795 | 0.958 | 0.736 |
+
+**Why tau.** The error breakdown showed what was going wrong. In 98 labelled links the bird has no
+box in the next frame: the pipeline crops at most N birds, so in a dense flock a different subset gets
+boxed each frame. The old tracker linked 81 of those to a lookalike. A stricter "no match" (tau 2.5)
+fixes most of them.
+
+**What didn't help.** Velocity, Viterbi and adaptive weighting changed little. Capture times are only
+second-resolution, and appearance does not separate identical flock birds whichever way it is
+weighted. BioCLIP 1.0 helps on skimmers but costs 1.5 points on the first data set when the bird is
+picked in the last frame.
+
+**Check on the first data set.** tau 2.5 scores 96.8 % from the first frame and 95.6 % from the last,
+against 97.0 % and 95.8 % before, so it is essentially unchanged.
+
+**Confidence.** At tau 2.5 on the new data, links with margin ≥ 1 are 92 % right and "unsure" links
+63 %. In dense flocks only about half the links are "sure", which is the honest answer there.
 
 ## In-app prototype
 
