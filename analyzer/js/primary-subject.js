@@ -81,12 +81,14 @@
       return `${focused ? '🎯 ' : ''}Bird ${b.bird}${unsure}`;
     }
 
-    // Hint under the active box: how to focus the scene on this bird.
+    // Hint under the active box (static markup only, no data): how to focus on this bird.
     function psCropHint(row, idx) {
       const b = _psBirdOf(row, idx);
       if (!b || (_currentScene?.images?.length || 0) < 2) return null;
-      if (_psFocusHere(row) && _ps.focus.key === b.key) return 'F again to undo focus';
-      return 'Shift+Click or press F to focus this scene on this bird';
+      if (_psFocusHere(row) && _ps.focus.key === b.key) {
+        return '<span><kbd>F</kbd></span><span>Undo focus</span>';
+      }
+      return '<span><kbd>Shift+Click</kbd> / <kbd>F</kbd></span><span>Focus scene on this bird</span>';
     }
 
     async function _psRestore(f) {

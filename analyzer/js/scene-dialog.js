@@ -150,7 +150,7 @@
         if (hintText) {
           const hint = document.createElement('div');
           hint.className = 'scene-crop-overlay-hint';
-          hint.textContent = hintText;
+          hint.innerHTML = hintText; // static markup from psCropHint
           boxEl.appendChild(hint);
         }
         layer.appendChild(boxEl);

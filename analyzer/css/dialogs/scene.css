@@ -830,14 +830,29 @@
   position: absolute;
   top: calc(100% + 3px);
   left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   white-space: nowrap;
   font-size: 10px;
   font-weight: 600;
-  padding: 2px 6px;
-  border-radius: 4px;
+  line-height: 1.35;
+  padding: 3px 7px;
+  border-radius: 5px;
   color: #f2c14c;
-  background: rgba(13, 17, 23, 0.88);
+  background: rgba(13, 17, 23, 0.9);
   border: 1px solid rgba(242, 193, 76, 0.45);
+}
+.scene-crop-overlay-hint kbd {
+  display: inline-block;
+  font: 600 9.5px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: #e7e9ee;
+  background: #222a38;
+  border: 1px solid #3a4558;
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  padding: 1px 4px;
+  margin: 0 1px;
 }
 .filmstrip-card .filmstrip-thumb { position: relative; }
 .filmstrip-card .ps-badge {
