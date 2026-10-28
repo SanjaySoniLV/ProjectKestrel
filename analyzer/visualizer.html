@@ -1783,8 +1783,10 @@
   <dialog id="donateDlg" class="kdlg kdlg--sm kdlg--flex">
     <div class="donate-dlg">
       <div class="donate-dlg-icon"><img src="logo.png" alt="Kestrel Logo" /></div>
-      <h3>Kestrel has analyzed over <span id="donateCountDisplay">many</span> photos!</h3>
-      <p>Thank you for using Project Kestrel! I’m a solo student developer and birder who built Kestrel because I love taking wildlife photos — but not sorting through them. If Kestrel has been useful to you, please consider supporting its development, or share your thoughts and feedback!</p>
+      <!-- Heading and subline are filled in by showDonatePrompt() (js/feedback-donate.js). -->
+      <h3 id="donateDlgHeading">You’ve organized over 1,000 photos with Kestrel!</h3>
+      <p id="donateDlgSubline" class="donate-dlg-subline" hidden></p>
+      <p>I’m a student and birder building Kestrel on my own. It stays free, local and open source because the people who find it useful chip in. If it saved you time, please consider supporting me, or tell me what to improve.</p>
       <p style="font-size:12px;color:#607080;">Project Kestrel is free &amp; open-source. Every <a href="https://github.com/SanjaySoniLV/ProjectKestrel" target="_blank">contribution</a> helps keep it growing.</p>
       <div class="donate-dlg-btns">
         <button class="donate-main-btn" id="donateDlgGoBtn">💛 Support Project Kestrel</button>

@@ -6,6 +6,7 @@ for folder analysis, and the _QueueItem dataclass used internally.
 
 from __future__ import annotations
 
+import csv
 import os
 import shutil
 import sys
@@ -72,6 +73,26 @@ def _wipe_kestrel_dir(folder_path: str) -> None:
     kestrel_dir = os.path.join(folder_path, ".kestrel")
     if os.path.isdir(kestrel_dir):
         shutil.rmtree(kestrel_dir)
+
+
+def _count_folder_scenes(folder_path: str) -> int | None:
+    """Number of distinct scenes in ``folder/.kestrel/kestrel_database.csv``.
+
+    Used only for the "Kestrel just sorted N photos into M scenes" line in the
+    donate prompt, so it is failsafe: None when the CSV is missing, has no
+    ``scene_count`` column, or can't be read.
+    """
+    try:
+        db_path = os.path.join(folder_path, ".kestrel", "kestrel_database.csv")
+        with open(db_path, "r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            if not reader.fieldnames or "scene_count" not in reader.fieldnames:
+                return None
+            scenes = {(row.get("scene_count") or "").strip() for row in reader}
+        scenes.discard("")
+        return len(scenes)
+    except Exception:
+        return None
 
 
 def _utc_timestamp() -> str:
@@ -145,7 +166,7 @@ class _QueueItem:
                  'current_filename', 'current_export_path', 'current_status_msg',
                  'current_overlay_rel', 'current_crops_rel', 'current_detections',
                  'current_quality_results', 'current_species_results',
-                 'initial_processed', 'warning',
+                 'initial_processed', 'warning', 'scene_total',
                  # Phase 3 per-item options (set at enqueue time by the analyze
                  # dialog; honored by the worker just-before processing).
                  'delete_kestrel_on_start', 'skip_if_already_done',
@@ -177,6 +198,9 @@ class _QueueItem:
         # can't be saved). Unlike current_status_msg it is not overwritten per
         # image; the pipeline clears it when the problem goes away.
         self.warning: str = ''
+        # Distinct scenes in the folder after a successful run (None until then
+        # or when unknown). Feeds the donate prompt's "this run" copy.
+        self.scene_total: int | None = None
         # Phase 3: per-item flags set by the analyze dialog via enqueue's
         # per_item_options. Default False so legacy callers behave unchanged.
         self.delete_kestrel_on_start: bool = False
@@ -210,6 +234,8 @@ class _QueueItem:
             'current_quality_results': list(self.current_quality_results),
             'current_species_results': list(self.current_species_results),
             'warning': self.warning,
+            'files_this_run': max(0, self.processed - self.initial_processed),
+            'scene_total': self.scene_total,
             'species_regions': list(self.species_regions) if self.species_regions else None,
         }
 
@@ -782,6 +808,11 @@ class QueueManager:
                     retry_errored=self._retry_errored,
                     species_regions=item.species_regions,
                 )
+                # Counted before the item flips to 'done' so the first status
+                # poll that sees 'done' already carries it.
+                scene_total = None
+                if not self._cancel_event.is_set() and fatal_error['exc'] is None:
+                    scene_total = _count_folder_scenes(item.path)
                 with self._lock:
                     if self._cancel_event.is_set():
                         item.status = 'cancelled'
@@ -802,6 +833,7 @@ class QueueManager:
                         item.end_time = _time_mod.time()
                         if item.total > 0:
                             item.processed = item.total
+                        item.scene_total = scene_total
                 self._persist_recovery_state()
                 self._send_folder_analytics(item)
             except Exception as exc:
