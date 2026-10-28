@@ -143,6 +143,18 @@ def parse_args(argv: Sequence[str] | None = None):
         ),
     )
     parser.add_argument(
+        "--raw-embedded-preview",
+        dest="raw_use_embedded_preview",
+        action="store_true",
+        default=False,
+        help=(
+            "Analyse each RAW's embedded JPEG preview instead of decoding the "
+            "sensor data: much faster, no highlight recovery. RAWs without a "
+            "usable preview are still decoded. Off by default (the desktop "
+            "app's setting does not apply to the CLI)."
+        ),
+    )
+    parser.add_argument(
         "--quality-model",
         choices=("siglip", "legacy"),
         default=None,
@@ -458,6 +470,7 @@ def main(argv: Sequence[str] | None = None):
             ),
             smart_search_enabled=args.smart_search_enabled,
             quality_model=args.quality_model,
+            raw_use_embedded_preview=args.raw_use_embedded_preview,
         )
         print()
         for line in format_stage_summary(pipeline.stage_times, pipeline.stage_counts,

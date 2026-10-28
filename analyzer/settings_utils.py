@@ -548,6 +548,10 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     # at analysis time (one extra tower run per photo) for context queries.
     # The per-crop SigLIP embedding always runs (it is the default quality).
     _set_bool('smart_search_enabled', default=True)
+    # Analyse each RAW's embedded JPEG preview instead of decoding the sensor
+    # data (much cheaper; no highlight recovery). Desktop queue only: the CLI
+    # (and so Cloud Compute) stays on RAW decode unless asked explicitly.
+    _set_bool('raw_use_embedded_preview', default=False)
     if 'quality_model' in data:
         out['quality_model'] = _coerce_enum(data.get('quality_model'), _ALLOWED_QUALITY_MODELS, default='siglip')
     if 'tower_device' in data:

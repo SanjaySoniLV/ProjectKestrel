@@ -13,6 +13,7 @@ from typing import Callable, Dict, Generator, List, Optional
 import cv2
 import numpy as np
 import pandas as pd
+import rawpy
 
 from .config import (
     DEFAULT_DETECTOR_NAME,
@@ -24,6 +25,7 @@ from .config import (
     MODELS_DIR,
     KESTREL_DIR_NAME,
     METADATA_FILENAME,
+    RAW_EXTENSIONS,
     VERSION,
     select_camera_images,
 )
@@ -42,6 +44,8 @@ from .exposure_compensation import (
     linear_to_srgb_u8,
 )
 from .image_utils import decode_embedded_preview, read_image, read_image_for_pipeline
+
+_RAW_EXTENSION_SET = {ext.lower() for ext in RAW_EXTENSIONS}
 from .ratings import quality_to_rating, resolve_thresholds
 from .similarity import compute_capture_time_gap, compute_image_similarity_akaze
 from .raw_exif import get_capture_time
@@ -238,7 +242,36 @@ class AnalysisPipeline:
             # (PermissionError, FileNotFoundError, LibRawFileUnsupportedError,
             # …) lands on result["error"] instead of a generic message. The
             # check below is a backstop against a future contract regression.
-            img, raw_obj = read_image_for_pipeline(image_path)
+            if (getattr(self, "_raw_use_embedded_preview", False)
+                    and os.path.splitext(image_path)[1].lower() in _RAW_EXTENSION_SET):
+                # User setting: analyse the camera's embedded JPEG instead of
+                # decoding the sensor data. Much cheaper per image; highlight
+                # recovery is not available. Files without a usable preview
+                # fall through to the normal RAW decode below.
+                preview = decode_embedded_preview(image_path)
+                if preview is not None:
+                    result["img"] = preview
+                    result["exposure_pipeline"] = "embedded_preview_jpeg"
+                    result["preview_by_setting"] = True
+                    result["orientation"] = self._get_image_orientation(preview)
+                    self._fill_capture_time(result, image_path)
+                    return result
+            try:
+                img, raw_obj = read_image_for_pipeline(image_path)
+            except rawpy.LibRawFileUnsupportedError as unsupported:
+                # LibRaw refused the file outright — typically a camera body
+                # newer than the bundled LibRaw. The embedded JPEG preview is
+                # read from the TIFF container directly in that case.
+                preview = decode_embedded_preview(image_path)
+                if preview is None:
+                    raise
+                img, raw_obj = preview, None
+                result["exposure_pipeline"] = "embedded_preview_jpeg"
+                result["meter_warning"] = (
+                    f"RAW format unsupported ({unsupported}); "
+                    "analyzing embedded JPEG preview instead "
+                    "(highlight recovery disabled)"
+                )
             if img is None and raw_obj is None:
                 raise RuntimeError("Image read returned None for both img and raw_obj")
 
@@ -283,22 +316,24 @@ class AnalysisPipeline:
 
             result["img"] = img
             result["orientation"] = self._get_image_orientation(img)
-
-            try:
-                ct = get_capture_time(image_path)
-                result["capture_time"] = ct
-            except Exception as ct_exc:
-                # Scene grouping falls back to AKAZE feature similarity when
-                # capture_time is missing; not fatal. We record the reason so
-                # the main loop can surface it once via log_warning.
-                result["capture_time_warning"] = (
-                    f"Capture-time extraction failed: {ct_exc}"
-                )
+            self._fill_capture_time(result, image_path)
 
         except Exception as exc:
             result["error"] = exc
 
         return result
+
+    @staticmethod
+    def _fill_capture_time(result: dict, image_path: str) -> None:
+        try:
+            result["capture_time"] = get_capture_time(image_path)
+        except Exception as ct_exc:
+            # Scene grouping falls back to AKAZE feature similarity when
+            # capture_time is missing; not fatal. We record the reason so
+            # the main loop can surface it once via log_warning.
+            result["capture_time_warning"] = (
+                f"Capture-time extraction failed: {ct_exc}"
+            )
 
     def _iter_decoded(
         self,
@@ -712,6 +747,7 @@ class AnalysisPipeline:
         species_regions: Optional[List[str]] = None,
         smart_search_enabled: Optional[bool] = None,
         quality_model: Optional[str] = None,
+        raw_use_embedded_preview: Optional[bool] = None,
     ) -> None:
         """Analyse ``folder``.
 
@@ -729,6 +765,11 @@ class AnalysisPipeline:
         ``bird_catalog.ALLOWED_REGION_CODES``, or ``["global"]`` for every IOC
         world species. ``None`` falls back to the persisted ``bird_regions``
         setting (default ``["NA"]``).
+
+        ``raw_use_embedded_preview`` analyses each RAW's embedded JPEG preview
+        instead of decoding the sensor data (RAWs without a usable preview are
+        still decoded). ``None`` = the persisted ``raw_use_embedded_preview``
+        setting (default off).
         """
         callbacks = callbacks or {}
         status_cb = callbacks.get("on_status")
@@ -834,6 +875,17 @@ class AnalysisPipeline:
                 except Exception:
                     smart_search_enabled = True
         smart_search_enabled = bool(smart_search_enabled)
+        if raw_use_embedded_preview is None:
+            raw_use_embedded_preview = False
+            if callable(load_persisted_settings):
+                try:
+                    raw_use_embedded_preview = bool(
+                        (load_persisted_settings() or {}).get("raw_use_embedded_preview", False)
+                    )
+                except Exception:
+                    raw_use_embedded_preview = False
+        # Read by _decode_image on the prefetch threads.
+        self._raw_use_embedded_preview = bool(raw_use_embedded_preview)
         quality_model = (
             quality_model_mod.resolve(quality_model)
             if quality_model is not None
@@ -1195,6 +1247,7 @@ class AnalysisPipeline:
                     # file, where the user is most likely to notice it.
                     used_preview_fallback = (
                         decoded.get("exposure_pipeline") == "embedded_preview_jpeg"
+                        and not decoded.get("preview_by_setting")
                     )
                     if decoded.get("meter_warning"):
                         log_warning(
