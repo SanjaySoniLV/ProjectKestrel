@@ -958,6 +958,15 @@
       <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Bird crops are always indexed for smart search. This also indexes each photo's whole frame so scene queries work ("bird on a wire", "two birds", "wide landscape"). Adds one SigLIP pass per photo (~0.1&ndash;0.2 s on CPU).</div>
 
       <div class="row">
+        <label for="settingsRawEmbeddedPreview" style="flex:1">Fast RAW analysis: use the camera&rsquo;s embedded JPEG</label>
+        <label class="inline" style="gap:6px">
+          <input type="checkbox" id="settingsRawEmbeddedPreview" />
+          <span class="muted">Enable</span>
+        </label>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Analyses the JPEG preview stored inside each RAW file instead of decoding the sensor data. Much faster per photo; the SigLIP sharpness score is largely unaffected, but exposure/highlight recovery is skipped and quality depends on the preview size your camera writes (some older bodies embed only a small one). RAWs without a usable preview are still decoded. Applies to analyses started after you change it, on this computer only &mdash; Cloud Compute always decodes RAW.</div>
+
+      <div class="row">
         <label for="settingsTowerDevice" style="flex:1">BioCLIP device (advanced)</label>
         <select id="settingsTowerDevice">
           <option value="auto">Auto</option>

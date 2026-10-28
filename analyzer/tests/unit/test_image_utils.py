@@ -476,3 +476,72 @@ def test_tiff_container_orientation_is_applied(tmp_path):
     out = image_utils.extract_tiff_container_jpeg(str(path))
     with Image.open(io.BytesIO(out)) as img:
         assert img.size == (128, 256)
+
+
+class TestRawEmbeddedPreviewSetting:
+    """raw_use_embedded_preview: analyse the RAW's embedded JPEG, skip the decode."""
+
+    def _pipeline(self, on):
+        from kestrel_analyzer import pipeline as pipeline_mod
+        p = pipeline_mod.AnalysisPipeline.__new__(pipeline_mod.AnalysisPipeline)
+        p._raw_use_embedded_preview = on
+        return p
+
+    def test_setting_on_uses_preview_without_decoding(self, tmp_path):
+        path = tmp_path / "shot.NEF"
+        path.write_bytes(b"\x00")
+        with patch.object(
+            image_utils.rawpy, "imread",
+            return_value=_mock_raw(thumb_format=rawpy.ThumbFormat.JPEG,
+                                   thumb_data=_make_jpeg_bytes((120, 80))),
+        ), patch("kestrel_analyzer.pipeline.read_image_for_pipeline") as full_decode:
+            result = self._pipeline(True)._decode_image(str(path), path.name)
+        full_decode.assert_not_called()
+        assert result["error"] is None and result["img"].shape == (80, 120, 3)
+        assert result["exposure_pipeline"] == "embedded_preview_jpeg"
+        assert result["preview_by_setting"] is True and result["meter_warning"] is None
+
+    def test_setting_on_without_preview_decodes_raw(self, tmp_path):
+        path = tmp_path / "shot.NEF"
+        path.write_bytes(b"\x00")
+        frame = np.zeros((10, 20, 3), dtype=np.uint8)
+        with patch.object(
+            image_utils.rawpy, "imread",
+            return_value=_mock_raw(raise_on_thumb=rawpy.LibRawNoThumbnailError("none")),
+        ), patch("kestrel_analyzer.pipeline.read_image_for_pipeline",
+                 return_value=(frame, None)) as full_decode:
+            result = self._pipeline(True)._decode_image(str(path), path.name)
+        full_decode.assert_called_once()
+        assert result["img"] is frame and "preview_by_setting" not in result
+
+    @pytest.mark.parametrize("on", [False, None])
+    def test_setting_off_or_unset_keeps_raw_decode(self, tmp_path, on):
+        path = tmp_path / "shot.NEF"
+        path.write_bytes(b"\x00")
+        p = self._pipeline(on)
+        if on is None:
+            del p._raw_use_embedded_preview  # process_folder never ran
+        frame = np.zeros((10, 20, 3), dtype=np.uint8)
+        with patch("kestrel_analyzer.pipeline.read_image_for_pipeline",
+                   return_value=(frame, None)) as full_decode:
+            result = p._decode_image(str(path), path.name)
+        full_decode.assert_called_once()
+        assert result["img"] is frame
+
+    def test_setting_ignored_for_jpegs(self, tmp_path):
+        path = tmp_path / "shot.jpg"
+        Image.new("RGB", (30, 20)).save(path)
+        with patch("kestrel_analyzer.pipeline.decode_embedded_preview") as preview:
+            result = self._pipeline(True)._decode_image(str(path), path.name)
+        preview.assert_not_called()
+        assert result["img"].shape == (20, 30, 3)
+
+    def test_settings_sanitizer_and_cloud_allowlist(self):
+        import settings_utils
+        import cloud_compute_client
+        assert settings_utils._sanitize_settings_payload(
+            {"raw_use_embedded_preview": True})["raw_use_embedded_preview"] is True
+        assert settings_utils._sanitize_settings_payload(
+            {"raw_use_embedded_preview": "false"})["raw_use_embedded_preview"] is False
+        # Cloud Compute stays RAW-only: the key is never sent to the Worker.
+        assert "raw_use_embedded_preview" not in cloud_compute_client.ANALYSIS_SETTINGS_ALLOWLIST
