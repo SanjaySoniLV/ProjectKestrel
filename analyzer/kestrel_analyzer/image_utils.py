@@ -1,4 +1,5 @@
 import io
+import mmap
 import os
 
 import numpy as np
@@ -82,6 +83,145 @@ def _decode_standard_image(path: str) -> np.ndarray:
     return np.array(img)
 
 
+# TIFF tags used to locate JPEG previews inside a TIFF-based RAW container.
+_TIFF_TAG_SUBIFDS = 0x014A
+_TIFF_TAG_JPEG_OFFSET = 0x0201
+_TIFF_TAG_JPEG_LENGTH = 0x0202
+_TIFF_TAG_EXIF_IFD = 0x8769
+_TIFF_TAG_ORIENTATION = 0x0112
+_TIFF_MAX_IFDS = 64
+# EXIF Orientation -> the transpose that makes the image upright (the same
+# table ImageOps.exif_transpose uses).
+_ORIENTATION_TRANSPOSE = {
+    2: Image.Transpose.FLIP_LEFT_RIGHT,
+    3: Image.Transpose.ROTATE_180,
+    4: Image.Transpose.FLIP_TOP_BOTTOM,
+    5: Image.Transpose.TRANSPOSE,
+    6: Image.Transpose.ROTATE_270,
+    7: Image.Transpose.TRANSVERSE,
+    8: Image.Transpose.ROTATE_90,
+}
+
+
+def extract_tiff_container_jpeg(path: str) -> bytes | None:
+    """Return the largest JPEG embedded in a TIFF-based RAW, without LibRaw.
+
+    LibRaw rejects a body it does not recognise yet with
+    ``LibRawFileUnsupportedError`` before it will hand out the embedded
+    preview, so a camera released after the bundled LibRaw (Sony's A7R VI,
+    ``ILCE-7RM6``, against LibRaw 0.22.1) analyses nothing at all. ARW, NEF,
+    CR2, DNG, ORF, PEF and most other RAW formats are TIFF containers that
+    carry their previews as ``JPEGInterchangeFormat``/``Length`` pairs in the
+    IFD chain or a SubIFD; the A7R VI stores a full-resolution one there.
+
+    Walks IFD0's chain plus SubIFDs, decodes the header of every candidate
+    and returns the bytes of the one with the most pixels, upright: these
+    previews usually carry no EXIF of their own, so the container's IFD0
+    Orientation is applied (re-encoding only when a rotation is needed).
+    Returns None for a non-TIFF file (CR3, RAF, …), a container with no
+    usable JPEG, or any parse failure. Never raises.
+    """
+    try:
+        with open(path, 'rb') as f, \
+                mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            best, orientation = _largest_tiff_jpeg(data)
+    except (OSError, ValueError):  # ValueError: mmap of an empty file
+        return None
+    if best is None or orientation not in _ORIENTATION_TRANSPOSE:
+        return best
+    try:
+        with Image.open(io.BytesIO(best)) as img:
+            if img.getexif().get(_TIFF_TAG_ORIENTATION, 1) != 1:
+                return best  # the JPEG's own tag wins; decoders honour it
+            upright = img.transpose(_ORIENTATION_TRANSPOSE[orientation])
+            if upright.mode != 'RGB':
+                upright = upright.convert('RGB')
+            buf = io.BytesIO()
+            upright.save(buf, format='JPEG', quality=95, subsampling=0)
+            return buf.getvalue()
+    except Exception:
+        return best
+
+
+def _largest_tiff_jpeg(data) -> tuple[bytes | None, int]:
+    """(largest embedded JPEG, IFD0 Orientation) for a TIFF container buffer."""
+    if len(data) < 8 or data[:4] not in (b'II*\x00', b'MM\x00*'):
+        return None, 1
+    endian = '<' if data[:2] == b'II' else '>'
+
+    def u16(off):
+        return int.from_bytes(data[off:off + 2], 'little' if endian == '<' else 'big')
+
+    def u32(off):
+        return int.from_bytes(data[off:off + 4], 'little' if endian == '<' else 'big')
+
+    def entry_values(off):
+        """Values of a SHORT/LONG/IFD IFD entry (offset-indirect when > 4 bytes)."""
+        typ, count = u16(off + 2), u32(off + 4)
+        size = {3: 2, 4: 4, 13: 4}.get(typ)
+        if size is None or count == 0 or count > 256:
+            return []
+        start = off + 8 if size * count <= 4 else u32(off + 8)
+        if start + size * count > len(data):
+            return []
+        read = u16 if size == 2 else u32
+        return [read(start + i * size) for i in range(count)]
+
+    candidates: list[tuple[int, int]] = []
+    orientation = 1
+    pending = [u32(4)]
+    seen: set[int] = set()
+    while pending and len(seen) < _TIFF_MAX_IFDS:
+        ifd = pending.pop()
+        if ifd in seen or ifd < 8 or ifd + 2 > len(data):
+            continue
+        seen.add(ifd)
+        n = u16(ifd)
+        if ifd + 2 + 12 * n + 4 > len(data):
+            continue
+        jpeg_off = jpeg_len = None
+        for i in range(n):
+            e = ifd + 2 + 12 * i
+            tag = u16(e)
+            if tag == _TIFF_TAG_JPEG_OFFSET:
+                vals = entry_values(e)
+                jpeg_off = vals[0] if vals else None
+            elif tag == _TIFF_TAG_JPEG_LENGTH:
+                vals = entry_values(e)
+                jpeg_len = vals[0] if vals else None
+            elif tag in (_TIFF_TAG_SUBIFDS, _TIFF_TAG_EXIF_IFD):
+                pending.extend(entry_values(e))
+            elif tag == _TIFF_TAG_ORIENTATION and len(seen) == 1:
+                vals = entry_values(e)
+                orientation = vals[0] if vals else 1
+        if jpeg_off and jpeg_len and jpeg_off + jpeg_len <= len(data):
+            candidates.append((jpeg_off, jpeg_len))
+        pending.append(u32(ifd + 2 + 12 * n))
+
+    best: bytes | None = None
+    best_pixels = 0
+    for off, length in candidates:
+        blob = data[off:off + length]
+        if blob[:2] != b'\xff\xd8':
+            continue
+        try:
+            with Image.open(io.BytesIO(blob)) as img:
+                pixels = img.width * img.height
+        except Exception:
+            continue
+        if pixels > best_pixels:
+            best, best_pixels = blob, pixels
+    return best, orientation
+
+
+def _decode_jpeg_bytes(jpeg: bytes) -> np.ndarray:
+    with Image.open(io.BytesIO(jpeg)) as img:
+        img = ImageOps.exif_transpose(img)
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        return np.array(img)
+
+
 def decode_embedded_preview(path: str) -> np.ndarray | None:
     """Return the embedded JPEG preview as a (H, W, 3) uint8 RGB array, or None.
 
@@ -102,6 +242,14 @@ def decode_embedded_preview(path: str) -> np.ndarray | None:
         with rawpy.imread(path) as raw:
             thumb = raw.extract_thumb()
     except Exception as exc:
+        # A body newer than the bundled LibRaw fails imread() itself; read
+        # the preview straight out of the TIFF container instead.
+        jpeg = extract_tiff_container_jpeg(path)
+        if jpeg is not None:
+            try:
+                return _decode_jpeg_bytes(jpeg)
+            except Exception:
+                pass
         # Expected here: LibRawFileUnsupportedError, LibRawIOError,
         # LibRawNoThumbnailError, LibRawUnsupportedThumbnailError. All of
         # them, and anything else, stay non-fatal — the caller falls back to
@@ -116,11 +264,7 @@ def decode_embedded_preview(path: str) -> np.ndarray | None:
     if thumb.format != rawpy.ThumbFormat.JPEG:
         return None
     try:
-        with Image.open(io.BytesIO(thumb.data)) as img:
-            img = ImageOps.exif_transpose(img)
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
-            return np.array(img)
+        return _decode_jpeg_bytes(thumb.data)
     except Exception as exc:
         _warn(f"Embedded preview JPEG failed to decode for "
               f"{os.path.basename(path)}: {type(exc).__name__}: {exc}")

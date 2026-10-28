@@ -13,6 +13,7 @@ from typing import Callable, Dict, Generator, List, Optional
 import cv2
 import numpy as np
 import pandas as pd
+import rawpy
 
 from .config import (
     DEFAULT_DETECTOR_NAME,
@@ -238,7 +239,22 @@ class AnalysisPipeline:
             # (PermissionError, FileNotFoundError, LibRawFileUnsupportedError,
             # …) lands on result["error"] instead of a generic message. The
             # check below is a backstop against a future contract regression.
-            img, raw_obj = read_image_for_pipeline(image_path)
+            try:
+                img, raw_obj = read_image_for_pipeline(image_path)
+            except rawpy.LibRawFileUnsupportedError as unsupported:
+                # LibRaw refused the file outright — typically a camera body
+                # newer than the bundled LibRaw. The embedded JPEG preview is
+                # read from the TIFF container directly in that case.
+                preview = decode_embedded_preview(image_path)
+                if preview is None:
+                    raise
+                img, raw_obj = preview, None
+                result["exposure_pipeline"] = "embedded_preview_jpeg"
+                result["meter_warning"] = (
+                    f"RAW format unsupported ({unsupported}); "
+                    "analyzing embedded JPEG preview instead "
+                    "(highlight recovery disabled)"
+                )
             if img is None and raw_obj is None:
                 raise RuntimeError("Image read returned None for both img and raw_obj")
 

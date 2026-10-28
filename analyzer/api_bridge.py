@@ -9675,22 +9675,29 @@ class Api:
         try:
             with rawpy.imread(full_path) as raw:
                 thumb = raw.extract_thumb()
+            if thumb is None or not getattr(thumb, 'data', None):
+                return None, None
+            if thumb.format != rawpy.ThumbFormat.JPEG:
+                return None, None
+            jpeg_data = thumb.data
+        except rawpy.LibRawFileUnsupportedError:
+            # Body newer than the bundled LibRaw: imread() itself refuses the
+            # file, so read the preview straight out of the TIFF container.
+            from kestrel_analyzer.image_utils import extract_tiff_container_jpeg
+            jpeg_data = extract_tiff_container_jpeg(full_path)
+            if jpeg_data is None:
+                return None, None
         except (rawpy.LibRawNoThumbnailError,
                 rawpy.LibRawUnsupportedThumbnailError,
-                rawpy.LibRawFileUnsupportedError,
                 rawpy.LibRawIOError):
             return None, None
         except Exception:
             return None, None
-        if thumb is None or not getattr(thumb, 'data', None):
-            return None, None
-        if thumb.format != rawpy.ThumbFormat.JPEG:
-            return None, None
         try:
-            with Image.open(BytesIO(thumb.data)) as prev_img:
+            with Image.open(BytesIO(jpeg_data)) as prev_img:
                 exif_orient = prev_img.getexif().get(0x0112, 1)
                 if exif_orient in (None, 1):
-                    return thumb.data, (int(prev_img.width), int(prev_img.height))
+                    return jpeg_data, (int(prev_img.width), int(prev_img.height))
                 oriented = ImageOps.exif_transpose(prev_img)
                 if oriented.mode != 'RGB':
                     oriented = oriented.convert('RGB')

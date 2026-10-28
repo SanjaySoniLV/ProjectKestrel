@@ -347,3 +347,132 @@ class TestPipelineSurfacesDecodeCause:
 
         assert type(unsupported_error) is not type(missing_error)
         assert str(unsupported_error) != str(missing_error)
+
+
+def _tiff_entry(endian: str, tag: int, typ: int, count: int, value: int) -> bytes:
+    import struct
+    return struct.pack(endian + "HHII", tag, typ, count, value)
+
+
+def _make_tiff_raw(jpegs_ifd0: bytes, jpeg_sub: bytes, *, big_endian: bool = False) -> bytes:
+    """A minimal TIFF-based RAW: IFD0 carries a small preview JPEG and a
+    SubIFD pointer to a second IFD carrying a larger one, like ARW/NEF."""
+    import struct
+    e = ">" if big_endian else "<"
+    header = (b"MM\x00*" if big_endian else b"II*\x00") + struct.pack(e + "I", 8)
+    ifd0_size = 2 + 12 * 3 + 4
+    sub_off = 8 + ifd0_size
+    sub_size = 2 + 12 * 2 + 4
+    jpeg0_off = sub_off + sub_size
+    jpeg_sub_off = jpeg0_off + len(jpegs_ifd0)
+    ifd0 = struct.pack(e + "H", 3) + b"".join([
+        _tiff_entry(e, 0x014A, 4, 1, sub_off),
+        _tiff_entry(e, 0x0201, 4, 1, jpeg0_off),
+        _tiff_entry(e, 0x0202, 4, 1, len(jpegs_ifd0)),
+    ]) + struct.pack(e + "I", 0)
+    sub = struct.pack(e + "H", 2) + b"".join([
+        _tiff_entry(e, 0x0201, 4, 1, jpeg_sub_off),
+        _tiff_entry(e, 0x0202, 4, 1, len(jpeg_sub)),
+    ]) + struct.pack(e + "I", 0)
+    return header + ifd0 + sub + jpegs_ifd0 + jpeg_sub
+
+
+class TestTiffContainerJpeg:
+    """A camera newer than the bundled LibRaw (e.g. Sony A7R VI) fails
+    rawpy.imread() outright; the preview is read from the TIFF container."""
+
+    @pytest.mark.parametrize("big_endian", [False, True])
+    def test_picks_largest_jpeg_across_subifds(self, tmp_path, big_endian):
+        small = _make_jpeg_bytes((32, 16))
+        large = _make_jpeg_bytes((256, 128))
+        path = tmp_path / "new_body.ARW"
+        path.write_bytes(_make_tiff_raw(small, large, big_endian=big_endian))
+        assert image_utils.extract_tiff_container_jpeg(str(path)) == large
+
+    def test_non_tiff_returns_none(self, tmp_path):
+        path = tmp_path / "fake.CR3"
+        path.write_bytes(b"\x00\x00\x00\x18ftypcrx " + b"\x00" * 64)
+        assert image_utils.extract_tiff_container_jpeg(str(path)) is None
+
+    def test_truncated_container_returns_none(self, tmp_path):
+        data = _make_tiff_raw(_make_jpeg_bytes((32, 16)), _make_jpeg_bytes((64, 32)))
+        path = tmp_path / "cut.ARW"
+        path.write_bytes(data[:40])
+        assert image_utils.extract_tiff_container_jpeg(str(path)) is None
+
+    def test_missing_file_returns_none(self, tmp_path):
+        assert image_utils.extract_tiff_container_jpeg(str(tmp_path / "gone.ARW")) is None
+
+    def test_decode_embedded_preview_falls_back_when_imread_rejects(self, tmp_path):
+        path = tmp_path / "new_body.ARW"
+        path.write_bytes(_make_tiff_raw(_make_jpeg_bytes((32, 16)), _make_jpeg_bytes((200, 100))))
+        with patch.object(
+            image_utils.rawpy, "imread",
+            side_effect=rawpy.LibRawFileUnsupportedError("Unsupported file format or not RAW file"),
+        ):
+            result = image_utils.decode_embedded_preview(str(path))
+            via_read_image = image_utils.read_image(str(path))
+        assert result is not None and result.shape == (100, 200, 3)
+        assert via_read_image is not None and via_read_image.shape == (100, 200, 3)
+
+    def test_pipeline_decode_uses_container_preview(self, tmp_path):
+        from kestrel_analyzer import pipeline as pipeline_mod
+
+        path = tmp_path / "new_body.ARW"
+        path.write_bytes(_make_tiff_raw(_make_jpeg_bytes((32, 16)), _make_jpeg_bytes((200, 100))))
+        p = pipeline_mod.AnalysisPipeline.__new__(pipeline_mod.AnalysisPipeline)
+        with patch.object(
+            image_utils.rawpy, "imread",
+            side_effect=rawpy.LibRawFileUnsupportedError("Unsupported file format or not RAW file"),
+        ):
+            result = p._decode_image(str(path), path.name)
+        assert result["error"] is None
+        assert result["img"].shape == (100, 200, 3)
+        assert result["exposure_pipeline"] == "embedded_preview_jpeg"
+        assert "embedded JPEG preview" in result["meter_warning"]
+
+    def test_pipeline_decode_still_raises_without_preview(self, tmp_path):
+        from kestrel_analyzer import pipeline as pipeline_mod
+
+        path = tmp_path / "not_tiff.ARW"
+        path.write_bytes(b"\x00" * 64)
+        p = pipeline_mod.AnalysisPipeline.__new__(pipeline_mod.AnalysisPipeline)
+        with patch.object(
+            image_utils.rawpy, "imread",
+            side_effect=rawpy.LibRawFileUnsupportedError("Unsupported file format or not RAW file"),
+        ):
+            result = p._decode_image(str(path), path.name)
+        assert isinstance(result["error"], rawpy.LibRawFileUnsupportedError)
+        assert result["img"] is None
+
+
+def test_tiff_container_orientation_is_applied(tmp_path):
+    """Sony's previews carry no EXIF; the container's IFD0 Orientation must
+    turn a portrait frame upright, as LibRaw's postprocess() would."""
+    import struct
+    small = _make_jpeg_bytes((32, 16))
+    large = _make_jpeg_bytes((256, 128))
+    data = bytearray(_make_tiff_raw(small, large))
+    # Append an Orientation=6 (rotate 90 CW) entry to IFD0: rebuild IFD0 with 4 entries.
+    sub_off = 8 + 2 + 12 * 3 + 4
+    sub = bytes(data[sub_off:sub_off + 2 + 12 * 2 + 4])
+    blobs = bytes(data[sub_off + len(sub):])
+    shift = 12
+    new_sub_off = sub_off + shift
+    jpeg0_off = new_sub_off + len(sub)
+    jpeg_sub_off = jpeg0_off + len(small)
+    ifd0 = struct.pack("<H", 4) + b"".join([
+        _tiff_entry("<", 0x0112, 3, 1, 6),
+        _tiff_entry("<", 0x014A, 4, 1, new_sub_off),
+        _tiff_entry("<", 0x0201, 4, 1, jpeg0_off),
+        _tiff_entry("<", 0x0202, 4, 1, len(small)),
+    ]) + struct.pack("<I", 0)
+    sub = struct.pack("<H", 2) + b"".join([
+        _tiff_entry("<", 0x0201, 4, 1, jpeg_sub_off),
+        _tiff_entry("<", 0x0202, 4, 1, len(large)),
+    ]) + struct.pack("<I", 0)
+    path = tmp_path / "portrait.ARW"
+    path.write_bytes(bytes(data[:8]) + ifd0 + sub + blobs)
+    out = image_utils.extract_tiff_container_jpeg(str(path))
+    with Image.open(io.BytesIO(out)) as img:
+        assert img.size == (128, 256)
