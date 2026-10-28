@@ -299,6 +299,20 @@ def _find_first_image(folder: str) -> str | None:
     return os.path.join(folder, files[0])
 
 
+def format_stage_summary(stage_times, stage_counts, n_images: int, wall_s: float) -> list[str]:
+    """Per-stage wall time for the run: total seconds, calls, and seconds per
+    processed image (calls can exceed images: bioclip / siglip_crop run per crop).
+    ``other`` is wall time no stage covers (decode waits, scene grouping, exports)."""
+    n = max(1, int(n_images))
+    lines = [f"[stage-times] {n_images} images, wall {wall_s:.1f}s ({wall_s / n:.3f} s/image)"]
+    for stage, total in sorted(stage_times.items(), key=lambda kv: -kv[1]):
+        lines.append(f"[stage-times]   {stage:<15} total {total:8.1f}s  calls {stage_counts.get(stage, 0):6d}"
+                     f"  {total / n:.3f} s/image")
+    other = max(0.0, wall_s - sum(stage_times.values()))
+    lines.append(f"[stage-times]   {'other':<15} total {other:8.1f}s  {'':12}  {other / n:.3f} s/image")
+    return lines
+
+
 def main(argv: Sequence[str] | None = None):
     # Dump a Python traceback on SIGSEGV / SIGABRT / native crashes from ONNX
     # Runtime, OpenCV, etc. The full-app entrypoint (visualizer.py:main) enables
@@ -411,10 +425,13 @@ def main(argv: Sequence[str] | None = None):
             print(f"Upgrade result: {stats}", flush=True)
             sys.exit(0 if stats.get("failed", 0) == 0 else 1)
 
+        processed_count = [0]
+
         if args.json_output:
             def on_status(msg):
                 print(_json.dumps({"event": "status", "msg": msg}), flush=True)
             def on_progress(processed, total):
+                processed_count[0] = processed
                 print(_json.dumps({"event": "progress", "count": processed, "total": total}), flush=True)
             def on_pointer_stall(filename):
                 print(_json.dumps({"event": "pointer_stall", "filename": filename}), flush=True)
@@ -437,6 +454,7 @@ def main(argv: Sequence[str] | None = None):
             def on_status(msg):
                 print(msg)
             def on_progress(processed, total):
+                processed_count[0] = processed
                 print(f"\rProcessed {processed}/{total}", end="", flush=True)
             def on_pointer_stall(filename):
                 print(f"[pointer-stall] {filename}", flush=True)
@@ -466,6 +484,7 @@ def main(argv: Sequence[str] | None = None):
             },
         )
 
+        t_run = time.perf_counter()
         pipeline.process_folder(
             args.folder,
             cancel_event=cancel_event,
@@ -495,6 +514,9 @@ def main(argv: Sequence[str] | None = None):
             quality_model=args.quality_model,
         )
         print()
+        for line in format_stage_summary(pipeline.stage_times, pipeline.stage_counts,
+                                         processed_count[0], time.perf_counter() - t_run):
+            print(line, flush=True)
     except Exception as e:
         log_exception(
             log_path,
