@@ -175,7 +175,7 @@
       },
       {
         title: 'Options',
-        body: 'Click <b>Settings</b> to choose your preferred <b>photo editor</b> (Lightroom, Darktable, or system default). Opening a photo with <kbd>Space</kbd> will launch it there. You can also tweak several other options — including the experimental <b>wildlife mode</b> that detects non-bird wildlife.',
+        body: 'Click <b>Settings</b> to choose your preferred <b>photo editor</b> (Lightroom, Darktable, or system default). Opening a photo with <kbd>Space</kbd> will launch it there. You can also tweak a few other options here. (Analysis choices — like detecting <b>non-bird wildlife</b> — are made per run in the <b>Analyze Folders</b> dialog, under “Review settings”.)',
         target: '#openSettings',
         position: 'bottom',
       },
