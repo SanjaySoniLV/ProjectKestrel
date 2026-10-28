@@ -1,48 +1,6 @@
 /* Unified search: the results strip under the filter bar, match badges and the
    "show in timeline" affordances on result cards. See js/smart-search.js. */
 
-.smart-search-bar {
-  flex: 1 0 100%;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 24px;
-  font-size: 12px;
-  color: #b9c0d0;
-}
-
-.smart-search-bar.hidden {
-  display: none;
-}
-
-.smart-search-hint {
-  flex: 0 1 auto;
-}
-
-.smart-search-hint .smart-search-exp {
-  color: #9a86d6;
-}
-
-.smart-search-btn {
-  height: 24px;
-  font-size: 12px;
-  padding: 0 10px;
-  background: #0e1117;
-  border: 1px solid #2a3040;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.smart-search-btn.hidden,
-.smart-search-spinner.hidden {
-  display: none;
-}
-
-.smart-search-btn:not(.smart-search-clear) {
-  background: #2a2140;
-  border-color: #6a4fb3;
-}
-
 .smart-search-spinner {
   width: 12px;
   height: 12px;
@@ -73,42 +31,6 @@
   pointer-events: none;
 }
 
-/* Pipeline 3.0: detected-species chips, examples, match highlights. */
-.smart-search-chips {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.smart-search-chips.hidden { display: none; }
-.smart-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 1px 4px 1px 8px;
-  border-radius: 10px;
-  border: 1px solid #3a4a3a;
-  background: #1c2a1f;
-  color: #cfe9d2;
-  font-size: 12px;
-  line-height: 18px;
-}
-.smart-chip--legend { padding: 0 7px; font-size: 11px; }
-.smart-chip--species { background: #1c2a1f; border-color: #3f7a4a; color: #cfe9d2; }
-.smart-chip--family  { background: #1b2433; border-color: #3f5f8f; color: #cfdcf2; }
-.smart-chip--wildlife{ background: #2e2418; border-color: #8f6a3a; color: #f2dfc4; }
-.smart-chip--group   { background: #2a2140; border-color: #6a4fb3; color: #e7dcff; }
-.smart-chip-none { color: #e0a070; font-size: 11px; }
-.smart-chip-x {
-  border: none;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  font-size: 13px;
-  line-height: 1;
-  padding: 0 4px;
-  opacity: 0.75;
-}
-.smart-chip-x:hover { opacity: 1; }
 .smart-search-muted { color: #8a93a6; }
 .thumb .smart-search-matches {
   z-index: 2;
@@ -184,52 +106,236 @@
   font-size: 13px;
 }
 
-/* Always-on "Smart Search" identity for the search box: purple border, badge, example chips. */
-.tfb-search-wrap {
-  flex: 1 1 300px;
-  min-width: 200px;
+/* The smart search box. One bordered bar (#smartSearchBox) holds the ✨ icon, the
+   real <input> with a token overlay on top of it (detected species / family phrases
+   drawn as pills), and a right-aligned status area: "Try:" example links while the
+   box is empty, otherwise the result count / upgrade prompt and a clear button. */
+.smart-bar {
+  position: relative;
+  flex: 1 1 340px;
+  min-width: 220px;
+  height: 34px;
   display: flex;
   align-items: center;
   gap: 6px;
+  padding: 0 6px 0 10px;
+  border: 1px solid #6a4fb3;
+  border-radius: 8px;
+  background: #0e1117;
+  box-shadow: 0 0 0 1px rgba(106, 79, 179, 0.25);
+  transition: border-color .15s ease, box-shadow .15s ease;
 }
-.tfb-search-wrap .tfb-search { flex: 1 1 auto; min-width: 0; }
-.tfb-smart-badge {
+.smart-bar:focus-within {
+  border-color: #8f74e0;
+  box-shadow: 0 0 0 2px rgba(143, 116, 224, 0.3);
+}
+.smart-bar-icon {
   flex: 0 0 auto;
+  font-size: 14px;
+  line-height: 1;
+}
+.smart-bar-field {
+  position: relative;
+  flex: 1 1 300px;
+  /* Room for the placeholder; the "Try:" links give way first. */
+  min-width: min(300px, 70%);
+  height: 100%;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+#search.tfb-search--smart {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  text-overflow: ellipsis;
+  -webkit-appearance: none;
+  appearance: none;
+}
+#search.tfb-search--smart::-webkit-search-cancel-button,
+#search.tfb-search--smart::-webkit-search-decoration {
+  -webkit-appearance: none;
+  display: none;
+}
+#search.tfb-search--smart::placeholder { color: #8a93a6; }
+/* While pills are drawn the overlay shows the text; the input keeps the caret. */
+#search.smart-bar-has-tokens {
+  color: transparent;
+  caret-color: var(--text);
+}
+.smart-bar-tokens {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  white-space: pre;
+  color: var(--text);
+  pointer-events: none;
+}
+.smart-bar-tokens.hidden { display: none; }
+.smart-bar-tokens-inner {
+  display: inline-block;
+  white-space: pre;
+}
+/* A pill keeps the exact width of its words (so it stays over the input's text);
+   the coloured padding is drawn with box-shadow, which takes no layout space. */
+.smart-pill {
+  position: relative;
+  pointer-events: auto;
+  cursor: default;
+  border-radius: 4px;
+  background: #2f2450;
+  color: #ece4ff;
+  box-shadow: 0 0 0 1px #2f2450, 0 0 0 2px #7a5fd0;
+}
+.smart-pill--family,
+.smart-pill--group {
+  background: #1d3324;
+  color: #d4f0d9;
+  box-shadow: 0 0 0 1px #1d3324, 0 0 0 2px #3f9a55;
+}
+.smart-pill--wildlife {
+  background: #34291a;
+  color: #f2dfc4;
+  box-shadow: 0 0 0 1px #34291a, 0 0 0 2px #a0773f;
+}
+.smart-pill--empty { opacity: 0.7; }
+.smart-pill-x {
+  position: absolute;
+  top: -8px;
+  right: -9px;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid #5a6178;
+  background: #22273a;
+  color: #fff;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.smart-pill:hover .smart-pill-x,
+.smart-pill-x:focus-visible { display: flex; }
+.smart-pill-x:hover { background: #a03a3a; border-color: #d05050; }
+
+/* Hover card for a pill: "Species filter: Mourning Dove" and what × does. */
+.smart-chip-tip {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 60;
+  max-width: 340px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid #3a3f52;
+  background: #181c26;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  color: #cbd2dc;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: normal;
+  pointer-events: none;
+}
+.smart-chip-tip-head { color: #e7e9ee; }
+.smart-chip-tip-kind { font-weight: 600; color: #c9b8ff; }
+.smart-chip-tip-kind--family,
+.smart-chip-tip-kind--group { color: #8fdc9f; }
+.smart-chip-tip-kind--wildlife { color: #e8c089; }
+.smart-chip-tip-sci { font-style: italic; color: #a7aec0; }
+.smart-chip-none { color: #e0a070; }
+
+/* Right-aligned status inside the bar. */
+.smart-search-bar {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 55%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  font-size: 12px;
+  color: #b9c0d0;
+}
+.smart-search-bar.hidden { display: none; }
+.smart-search-hint {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.smart-search-warn { color: #e0b070; }
+.smart-search-btn {
   height: 22px;
+  font-size: 11px;
   padding: 0 8px;
   border-radius: 11px;
   background: #2a2140;
   border: 1px solid #6a4fb3;
   color: #e7dcff;
-  font-size: 11px;
-  line-height: 20px;
   white-space: nowrap;
+  flex-shrink: 0;
 }
-#search.tfb-search--smart {
-  border-color: #6a4fb3;
-  box-shadow: 0 0 0 1px rgba(106, 79, 179, 0.35);
+.smart-search-btn:hover { background: #3a2d5c; border-color: #8f74e0; }
+.smart-search-btn.hidden,
+.smart-search-spinner.hidden { display: none; }
+.smart-search-spinner { flex: 0 0 auto; }
+.smart-search-clear {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #8a93a6;
+  font-size: 12px;
+  line-height: 1;
 }
+.smart-search-clear:hover { background: #2a3040; border: 0; color: #fff; }
+.smart-search-clear.hidden { display: none; }
+
+/* "Try:" example links. One line: links that do not fit wrap onto a clipped
+   second line, and the whole group hides when none fit (js: _smartSyncExamples). */
 .smart-search-examples {
-  flex: 1 0 100%;
+  flex: 0 100 auto;
+  min-width: 0;
+  height: 22px;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  justify-content: flex-end;
+  column-gap: 8px;
+  overflow: hidden;
   font-size: 12px;
+  line-height: 22px;
 }
 .smart-search-examples.hidden { display: none; }
-.smart-example-chip {
+.smart-search-examples--none { visibility: hidden; }
+.smart-example-link {
   height: 22px;
-  padding: 0 10px;
-  border-radius: 11px;
-  background: #2a2140;
-  border: 1px solid #6a4fb3;
-  color: #c9b8ff;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #b9a7e8;
   font-size: 12px;
+  white-space: nowrap;
+  text-decoration: underline dotted rgba(185, 167, 232, 0.6);
+  text-underline-offset: 3px;
   cursor: pointer;
 }
-.smart-example-chip:hover { color: #fff; background: #3a2d5c; }
+.smart-example-link:hover { background: transparent; color: #fff; text-decoration-color: #fff; }
 @media (max-width: 900px) {
-  .tfb-smart-badge { padding: 0 6px; font-size: 10px; }
-  .tfb-search-wrap { flex-basis: 100%; }
+  .smart-bar { flex-basis: 100%; }
 }
