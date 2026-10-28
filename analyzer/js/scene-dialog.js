@@ -37,6 +37,16 @@
       _sceneCullDecisionsChanged = true;
     }
 
+    /** Reject every photo in `sceneRows` the user has not decided on yet
+     *  (manual accepts and rejects are kept). Returns how many changed. */
+    function rejectUndecidedRows(sceneRows) {
+      let n = 0;
+      for (const r of sceneRows || []) {
+        if (getCullStatus(r) === '') { setCullStatus(r, 'reject'); n += 1; }
+      }
+      return n;
+    }
+
     async function _blobUrlToBlob(url) {
       const resp = await fetch(url);
       if (!resp.ok) throw new Error(`Failed to fetch image blob (${resp.status})`);
@@ -1913,6 +1923,17 @@
         document.removeEventListener('keydown', _sceneKeyHandler);
         sceneDlg.close();
         if (closingId) _focusGridCard(closingId);
+      };
+
+      // ── Reject undecided: start from "all rejected", then pick keepers ──
+      const rejectAllBtn = el('#sceneRejectUndecidedBtn');
+      if (rejectAllBtn) rejectAllBtn.onclick = () => {
+        if (!_currentScene) return;
+        const n = rejectUndecidedRows(_currentScene.images);
+        _refreshCurrentFilmstripCard();
+        showToast(n
+          ? `Rejected ${n} undecided photo${n === 1 ? '' : 's'}. Press Z (or 7) on a photo to accept it.`
+          : 'Every photo in this scene already has a decision.', 4000);
       };
 
       // ── Split Scene ──

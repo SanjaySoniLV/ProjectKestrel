@@ -1008,6 +1008,25 @@
     document.addEventListener('keydown', _gridKeyHandler);
 
     // Merge all currently selected scenes (must all be in same folder)
+    /** Selection bar: mark every selected scene as reviewed with the tags it shows. */
+    function executeSelectionReview() {
+      let n = 0;
+      for (const id of selectedSceneIds) if (_finalizeSceneReview(id)) n += 1;
+      if (!n) return;
+      setStatus(`Marked ${n} scene${n === 1 ? '' : 's'} as reviewed.`);
+      renderScenes();
+    }
+
+    /** Selection bar: reject the undecided photos of every selected scene. */
+    function executeSelectionRejectUndecided() {
+      let photos = 0;
+      for (const id of selectedSceneIds) photos += rejectUndecidedRows(getSceneRows(id));
+      setStatus(photos
+        ? `Rejected ${photos} undecided photo${photos === 1 ? '' : 's'} in ${selectedSceneIds.size} scenes.`
+        : 'Every photo in the selected scenes already has a decision.');
+      if (photos) renderScenes();
+    }
+
     async function executeSelectionMerge() {
       const ids = Array.from(selectedSceneIds);
       if (ids.length < 2) return;
