@@ -15,7 +15,7 @@
     const _tutWorkflowStep = {
       title: 'Fit Kestrel into your workflow',
       body: '',
-      target: '.write-metadata-btn',
+      target: '.folder-group-actions-trigger',
       position: 'bottom',
       customBody: 'workflowCard',
       highlightAlso: ['.culling-assistant-btn'],
@@ -163,8 +163,8 @@
       _tutWorkflowStep,
       {
         title: 'Write Photo Metadata',
-        body: 'Click <b>Write Photo Metadata</b> to export Kestrel’s star ratings and Accept/Reject decisions into XMP sidecar files alongside your photos. These <code>.xmp</code> files are understood natively by <b>Adobe Lightroom</b>, <b>darktable</b>, <b>Capture One</b>, and other editors.<br><br>⚠️ <b>Write photo metadata <em>before</em> importing into your photo editor</b> — most catalogues ignore new sidecar files once a photo is already imported. If a sidecar was already created by another application, Kestrel will ask before overwriting it.',
-        target: '.write-metadata-btn',
+        body: 'Open the <b>Folder Actions</b> menu on a folder and click <b>Write Photo Metadata</b> to export Kestrel’s star ratings and Accept/Reject decisions into XMP sidecar files alongside your photos. These <code>.xmp</code> files are understood natively by <b>Adobe Lightroom</b>, <b>darktable</b>, <b>Capture One</b>, and other editors.<br><br>⚠️ <b>Write photo metadata <em>before</em> importing into your photo editor</b> — most catalogues ignore new sidecar files once a photo is already imported. If a sidecar was already created by another application, Kestrel will ask before overwriting it.',
+        target: '.folder-group-actions-trigger',
         position: 'bottom',
       },
       {
@@ -353,7 +353,7 @@
             '<div class="tut-wf-caption">Browse your scenes in Kestrel and press <kbd>Space</kbd> on the ones you love — they open straight in your photo editor.</div>' +
           '</div>' +
         '</div>' +
-        '<div class="tut-workflow-hint">We’ve highlighted the two buttons you’ll use most: <b>Write Photo Metadata</b> and <b>Open Culling Assistant</b>.</div>';
+        '<div class="tut-workflow-hint">We’ve highlighted where you’ll find the two tools you’ll use most: <b>Write Photo Metadata</b> (in the <b>Folder Actions</b> menu) and <b>Open Culling Assistant</b>.</div>';
 
       var tabs = bodyEl.querySelectorAll('.tut-wf-tab');
       var panels = bodyEl.querySelectorAll('.tut-wf-panel');
