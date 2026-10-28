@@ -159,6 +159,218 @@
       }, Math.max(250, durationMs || 1000));
     }
 
+    // ── Hover / click a bird on the full image to pick its crop ──
+    // Only for rows with 2+ crops. Hovering previews that bird's crop in the
+    // crop panel (debounced so sweeping across the frame doesn't thrash image
+    // loads) and reverts on mouseleave; a click commits the pick, like the
+    // filmstrip's hover-preview / click-select. Arrow Up/Down also commit.
+    // Disabled while RAW zoom owns the box (the canvas no longer maps to the
+    // image's normalized bbox space).
+    const _CROP_HOVER_DEBOUNCE_MS = 90;
+    const _CROP_CLICK_HOLD_MS = 160;   // hold longer (or drag) on a bird → RAW zoom
+    const _CROP_CLICK_SLOP_PX = 5;
+    const _cropHover = {
+      inside: false,
+      rowKey: '',
+      hoverIdx: -1,       // box under the pointer (-1 = none)
+      committedIdx: -1,   // selection to restore on mouseleave
+      timer: null,
+    };
+
+    function _cropHoverRow() {
+      return (_currentScene && Array.isArray(_currentScene.images))
+        ? _currentScene.images[currentImageIndex] || null
+        : null;
+    }
+
+    function _cropHoverZoomActive(box) {
+      return !!sceneZoomActive || !!box?.classList.contains('zoom-active');
+    }
+
+    // Client-space rect of the drawn image pixels (contain-fitted inside the
+    // <img> element box, so letterboxing from object-fit is accounted for).
+    function _previewImageDrawRect(box) {
+      const img = box?.querySelector('img');
+      if (!img) return null;
+      const r = img.getBoundingClientRect();
+      const natW = img.naturalWidth, natH = img.naturalHeight;
+      if (r.width <= 0 || r.height <= 0) return null;
+      if (!natW || !natH) return { left: r.left, top: r.top, width: r.width, height: r.height };
+      const s = Math.min(r.width / natW, r.height / natH);
+      const w = natW * s, h = natH * s;
+      return { left: r.left + (r.width - w) / 2, top: r.top + (r.height - h) / 2, width: w, height: h };
+    }
+
+    // Index of the smallest crop bbox containing the pointer, or -1.
+    function _cropIndexAtPoint(row, clientX, clientY) {
+      const box = el('#previewBox');
+      if (!box || !row || _cropHoverZoomActive(box)) return -1;
+      const crops = getRowCropRecords(row);
+      if (crops.length < 2) return -1;
+      const rect = _previewImageDrawRect(box);
+      if (!rect) return -1;
+      const nx = (clientX - rect.left) / rect.width;
+      const ny = (clientY - rect.top) / rect.height;
+      if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return -1;
+      let best = -1, bestArea = Infinity;
+      crops.forEach((crop, idx) => {
+        const b = crop?.bbox || _fullFrameBbox();
+        const x0 = _numberOr(b.x_min_norm, 0), x1 = _numberOr(b.x_max_norm, 1);
+        const y0 = _numberOr(b.y_min_norm, 0), y1 = _numberOr(b.y_max_norm, 1);
+        if (nx < Math.min(x0, x1) || nx > Math.max(x0, x1)) return;
+        if (ny < Math.min(y0, y1) || ny > Math.max(y0, y1)) return;
+        const area = Math.abs(x1 - x0) * Math.abs(y1 - y0);
+        if (area < bestArea) { bestArea = area; best = idx; }
+      });
+      return best;
+    }
+
+    // Re-baseline when the displayed image changed under the pointer
+    // (filmstrip / Left-Right navigation while hovering).
+    function _syncCropHoverRow(row) {
+      const key = row ? _cropStateKey(row) : '';
+      if (key === _cropHover.rowKey) return;
+      _cropHover.rowKey = key;
+      _cropHover.hoverIdx = -1;
+      _cropHover.committedIdx = row ? getRowActiveCropIndex(row) : -1;
+      if (_cropHover.timer) { clearTimeout(_cropHover.timer); _cropHover.timer = null; }
+    }
+
+    // Called after a deliberate pick (arrow keys, crop nav buttons) so that
+    // mouseleave keeps it instead of reverting to the pre-hover crop.
+    function _commitCropHoverSelection(row) {
+      if (!row || _cropStateKey(row) !== _cropHover.rowKey) return;
+      _cropHover.committedIdx = getRowActiveCropIndex(row);
+    }
+
+    // Subtle outline on the active box and (while the debounce is pending)
+    // the box under the pointer. Lives in its own layer so the 1s
+    // "all boxes" flash overlay can coexist with it.
+    function _renderCropHoverLayer() {
+      const box = el('#previewBox');
+      if (!box) return;
+      box.querySelectorAll('.scene-crop-hover-layer').forEach(n => n.remove());
+      const row = _cropHoverRow();
+      if (!_cropHover.inside || !row || _cropHoverZoomActive(box)) return;
+      if (_cropStateKey(row) !== _cropHover.rowKey) return;
+      const crops = getRowCropRecords(row);
+      if (crops.length < 2) return;
+      const rect = _previewImageDrawRect(box);
+      if (!rect) return;
+      const boxRect = box.getBoundingClientRect();
+      const activeIdx = getRowActiveCropIndex(row, crops);
+      const layer = document.createElement('div');
+      layer.className = 'scene-crop-hover-layer';
+      const draw = (idx, cls) => {
+        const b = crops[idx]?.bbox || _fullFrameBbox();
+        const x0 = _numberOr(b.x_min_norm, 0), x1 = _numberOr(b.x_max_norm, 1);
+        const y0 = _numberOr(b.y_min_norm, 0), y1 = _numberOr(b.y_max_norm, 1);
+        const boxEl = document.createElement('div');
+        boxEl.className = `scene-crop-hover-box ${cls}`;
+        boxEl.style.left = `${rect.left - boxRect.left + rect.width * Math.min(x0, x1)}px`;
+        boxEl.style.top = `${rect.top - boxRect.top + rect.height * Math.min(y0, y1)}px`;
+        boxEl.style.width = `${Math.max(2, rect.width * Math.abs(x1 - x0))}px`;
+        boxEl.style.height = `${Math.max(2, rect.height * Math.abs(y1 - y0))}px`;
+        const label = document.createElement('div');
+        label.className = 'scene-crop-hover-label';
+        label.textContent = `#${idx + 1}`;
+        boxEl.appendChild(label);
+        layer.appendChild(boxEl);
+      };
+      draw(activeIdx, 'active');
+      const h = _cropHover.hoverIdx;
+      if (h >= 0 && h !== activeIdx && h < crops.length) draw(h, 'pending');
+      box.appendChild(layer);
+    }
+
+    // Switch the crop panel + info bar to crop `idx` without reloading the
+    // full image under the pointer.
+    function _applyHoverCropIndex(row, idx, commit) {
+      if (!row || row !== _cropHoverRow()) return;
+      const crops = getRowCropRecords(row);
+      if (idx < 0 || idx >= crops.length) return;
+      const changed = getRowActiveCropIndex(row, crops) !== idx;
+      setRowActiveCropIndex(row, idx, crops);
+      if (commit) _cropHover.committedIdx = idx;
+      if (changed) selectFilmstripImage(currentImageIndex, _currentScene, true, false, true);
+      else _renderCropHoverLayer();
+    }
+
+    function _onPreviewBoxCropHoverMove(ev) {
+      const box = el('#previewBox');
+      const row = _cropHoverRow();
+      _cropHover.inside = true;
+      _syncCropHoverRow(row);
+      if (!row || _cropHoverZoomActive(box)) {
+        box?.querySelectorAll('.scene-crop-hover-layer').forEach(n => n.remove());
+        return;
+      }
+      const hit = _cropIndexAtPoint(row, ev.clientX, ev.clientY);
+      if (hit === _cropHover.hoverIdx) {
+        // Redraw only if something (zoom end, image reload) dropped the layer.
+        if (!box.querySelector('.scene-crop-hover-layer')) _renderCropHoverLayer();
+        return;
+      }
+      _cropHover.hoverIdx = hit;
+      if (_cropHover.timer) { clearTimeout(_cropHover.timer); _cropHover.timer = null; }
+      if (hit >= 0 && hit !== getRowActiveCropIndex(row)) {
+        _cropHover.timer = setTimeout(() => {
+          _cropHover.timer = null;
+          if (_cropHover.inside && _cropHover.hoverIdx === hit) _applyHoverCropIndex(row, hit, false);
+        }, _CROP_HOVER_DEBOUNCE_MS);
+      }
+      _renderCropHoverLayer();
+    }
+
+    function _onPreviewBoxCropHoverLeave() {
+      _cropHover.inside = false;
+      _cropHover.hoverIdx = -1;
+      if (_cropHover.timer) { clearTimeout(_cropHover.timer); _cropHover.timer = null; }
+      el('#previewBox')?.querySelectorAll('.scene-crop-hover-layer').forEach(n => n.remove());
+      const row = _cropHoverRow();
+      if (!row || _cropStateKey(row) !== _cropHover.rowKey) return;
+      const committed = _cropHover.committedIdx;
+      if (committed >= 0 && committed !== getRowActiveCropIndex(row)) {
+        setRowActiveCropIndex(row, committed);
+        selectFilmstripImage(currentImageIndex, _currentScene, true, false, true);
+      }
+    }
+
+    // mousedown on a bird box: a short click selects that crop; holding past
+    // _CROP_CLICK_HOLD_MS or dragging falls through to RAW zoom as before.
+    function _beginCropClickOrZoom(row, box, downEv, hit) {
+      const sx = downEv.clientX, sy = downEv.clientY;
+      let last = { clientX: sx, clientY: sy };
+      let done = false;
+      const cleanup = () => {
+        done = true;
+        clearTimeout(holdTimer);
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+      };
+      const toZoom = () => {
+        if (done) return;
+        cleanup();
+        if (row !== _cropHoverRow()) return;
+        el('#previewBox')?.querySelectorAll('.scene-crop-hover-layer').forEach(n => n.remove());
+        startSceneZoomPreview(row, box, last);
+      };
+      const onMove = (ev) => {
+        last = { clientX: ev.clientX, clientY: ev.clientY };
+        if (Math.hypot(ev.clientX - sx, ev.clientY - sy) > _CROP_CLICK_SLOP_PX) toZoom();
+      };
+      const onUp = () => {
+        if (done) return;
+        cleanup();
+        _syncCropHoverRow(row);
+        _cropHover.hoverIdx = hit;
+        _applyHoverCropIndex(row, hit, true);
+      };
+      const holdTimer = setTimeout(toZoom, _CROP_CLICK_HOLD_MS);
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    }
+
     async function copyRowImageToClipboard(row, relPathOverride, copyLabel = 'image') {
       const relPath = relPathOverride || row?.export_path || row?.crop_path;
       if (!relPath) {
@@ -318,7 +530,9 @@
     // "split in half" rendering as flex layout shrinks both side-by-side.
     let _filmstripPreviewToken = 0;
 
-    async function selectFilmstripImage(idx, scene, isHover = false, overlayActiveCrop = false) {
+    // keepExportPreview: leave the full-image panel as is (crop-only change,
+    // e.g. hover-select on the full image) so it doesn't flicker under the pointer.
+    async function selectFilmstripImage(idx, scene, isHover = false, overlayActiveCrop = false, keepExportPreview = false) {
       if (!scene || !scene.images || idx < 0 || idx >= scene.images.length) return;
       if (!isHover) {
         // Clear temporary crop selection for the image we're leaving so that
@@ -350,7 +564,7 @@
 
       // Load export preview
       const exportBox = el('#previewBox');
-      if (exportBox) {
+      if (exportBox && !keepExportPreview) {
         _clearScenePreviewBox(exportBox);
         const eurl = await getBlobUrlForPath(r.export_path, r.__rootPath);
         // Bail out if a newer hover/selection has superseded this load.
@@ -495,6 +709,7 @@
             if (stateNow.crops.length <= 1) return;
             const next = (stateNow.activeIndex + step + stateNow.crops.length) % stateNow.crops.length;
             setRowActiveCropIndex(r, next, stateNow.crops);
+            _commitCropHoverSelection(r);
             selectFilmstripImage(currentImageIndex, _currentScene, true, true);
           };
           cropPrevBtn.onclick = (ev) => { ev.stopPropagation(); cycleCrop(-1); };
@@ -530,6 +745,9 @@
       if (overlayActiveCrop) {
         _showSceneCropOverlay(r, cropState.activeIndex, 1000);
       }
+      // The export box may have been rebuilt; redraw the hover outline.
+      if (_cropHover.inside) _syncCropHoverRow(_cropHoverRow());
+      _renderCropHoverLayer();
     }
 
     // Repaint the grid once, on close, if cull decisions changed while the
@@ -1667,8 +1885,12 @@
           const r = scene.images[currentImageIndex];
           if (!r) return;
           ev.preventDefault();
-          startSceneZoomPreview(r, exportImgBox, ev);
+          const hit = _cropIndexAtPoint(r, ev.clientX, ev.clientY);
+          if (hit >= 0) _beginCropClickOrZoom(r, exportImgBox, ev, hit);
+          else startSceneZoomPreview(r, exportImgBox, ev);
         };
+        exportImgBox.onmousemove = _onPreviewBoxCropHoverMove;
+        exportImgBox.onmouseleave = _onPreviewBoxCropHoverLeave;
       }
 
       const cropImgBox = el('#previewCropBox');
@@ -1916,6 +2138,7 @@
               const step = e.key === 'ArrowDown' ? 1 : -1;
               const next = (cropState.activeIndex + step + cropState.crops.length) % cropState.crops.length;
               setRowActiveCropIndex(row, next, cropState.crops);
+              _commitCropHoverSelection(row);
               selectFilmstripImage(currentImageIndex, _currentScene, true, true);
             }
           }

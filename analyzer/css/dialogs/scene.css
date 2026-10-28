@@ -466,6 +466,39 @@
   background: rgba(242, 193, 76, 0.98);
 }
 
+/* Hover / click-to-select bird crop on the full image (multi-crop rows). */
+.scene-crop-hover-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+}
+.scene-crop-hover-box {
+  position: absolute;
+  border: 1.5px solid rgba(242, 193, 76, 0.85);
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+.scene-crop-hover-box.pending {
+  border-style: dashed;
+  border-color: rgba(230, 237, 243, 0.75);
+}
+.scene-crop-hover-label {
+  position: absolute;
+  top: -15px;
+  left: -1px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 3px;
+  color: #0d1117;
+  background: rgba(242, 193, 76, 0.9);
+}
+.scene-crop-hover-box.pending .scene-crop-hover-label {
+  background: rgba(230, 237, 243, 0.85);
+}
+
 /* ── Info bar ── */
 .scene-info-bar {
   display: flex;
