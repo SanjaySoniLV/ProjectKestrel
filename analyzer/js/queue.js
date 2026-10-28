@@ -3,6 +3,7 @@
     let _queuePollingTimer = null;
     let _queuePanelExpanded = true;
     let _queueLastDoneSet = new Set(); // track newly-done folders to auto-refresh tree
+    let _queueRenderedOnce = false;    // false until the first render that reaches done-tracking
     let _queueLastRunningSet = new Set(); // track newly-running folders to update tree
     let _queueLastInProgressSet = new Set(); // pending + running (auto-load when tree empty)
     let _tempKestrelPaths = new Set(); // transiently-marked paths to prevent flicker
@@ -429,14 +430,25 @@
       // Check if any folder newly finished — refresh tree + auto-reload CSV data
       const nowDone = new Set(items.filter(i => i.status === 'done').map(i => i.path));
       let treeRescanNeeded = false;
+      let justFinishedItem = null;
       for (const p of nowDone) {
         if (!_queueLastDoneSet.has(p)) {
           treeRescanNeeded = true;
+          justFinishedItem = items.find(i => i.path === p) || justFinishedItem;
           scheduleAutoRefresh(p);
           // First-time folder completion → offer analytics consent if not yet asked
           if (!getSetting('analytics_consent_shown', false)) showAnalyticsConsentDialog();
         }
       }
+      // Donate milestone check with that run's numbers. Delayed so the backend
+      // has saved the new lifetime total (it does so just after marking the
+      // item done) and the queue panel has settled. Skipped on the first
+      // render, when every already-done item looks "new".
+      if (justFinishedItem && _queueRenderedOnce) {
+        const run = donateRunFromQueueItem(justFinishedItem);
+        setTimeout(() => checkDonationThresholdAsync(run), 2500);
+      }
+      _queueRenderedOnce = true;
       if (treeRescanNeeded) {
         // Rescan only the specific root(s) whose folders just finished, not
         // every loaded root. nowDone is the set of just-completed folder

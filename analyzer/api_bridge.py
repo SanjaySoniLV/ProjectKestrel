@@ -1854,6 +1854,31 @@ class Api:
         except Exception:
             return {'success': True, 'is_store': False}
 
+    def record_donate_event(self, data):
+        """Count a donate-prompt / Support-button interaction. Called from JS.
+
+        Sent only when the user opted in to analytics (``analytics_opted_in``
+        is True); otherwise nothing leaves the machine. The event name is
+        checked against ``kestrel_telemetry.DONATE_EVENTS``. Fire-and-forget:
+        returns ``{'success': True, 'sent': bool}`` and never raises.
+        """
+        try:
+            if _telemetry is None or not isinstance(data, dict):
+                return {'success': True, 'sent': False}
+            settings = load_persisted_settings()
+            if settings.get('analytics_opted_in', False) is not True:
+                return {'success': True, 'sent': False}
+            sent = _telemetry.send_donate_event(
+                event=str(data.get('event') or ''),
+                milestone=data.get('milestone') or 0,
+                trigger=str(data.get('trigger') or ''),
+                donate_link=data.get('donate_link'),
+                machine_id=_telemetry.get_machine_id(settings),
+            )
+            return {'success': True, 'sent': bool(sent)}
+        except Exception:
+            return {'success': True, 'sent': False}
+
     def inspect_folder(self, folder_path: str):
         """Return lightweight folder summary (total images, processed count)."""
         try:

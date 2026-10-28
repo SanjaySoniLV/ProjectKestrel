@@ -370,11 +370,15 @@
     // Wire donation dialog buttons — this script runs after the dialog HTML is in the DOM
     (function() {
       var dlg = document.getElementById('donateDlg');
+      // noteDonatePromptChoice() records the click before close() fires the
+      // dialog's 'close' event, which otherwise counts as a dismissal.
       document.getElementById('donateDlgGoBtn').addEventListener('click', function() {
+        noteDonatePromptChoice('support');
         dlg.close();
         openSupportLink();
       });
       document.getElementById('donateDlgFeedbackBtn').addEventListener('click', function() {
+        noteDonatePromptChoice('feedback');
         dlg.close();
         setTimeout(function() {
           document.getElementById('feedbackDlg').showModal();

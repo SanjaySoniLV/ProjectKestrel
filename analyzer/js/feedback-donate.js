@@ -206,22 +206,128 @@
       }
     }
 
-    function showDonatePrompt(totalFiles) {
-      const countEl = document.getElementById('donateCountDisplay');
-      // Round down to nearest threshold for "over N photos" phrasing
-      const thresholds = [1000, 5000, 10000, 25000, 50000, 100000, 200000];
-      let milestone = totalFiles || 0;
-      for (let i = thresholds.length - 1; i >= 0; i--) {
-        if (milestone >= thresholds[i]) { milestone = thresholds[i]; break; }
+    const DONATE_THRESHOLDS = [
+      1000, 5000, 10000, 25000, 50000, 100000, 200000,
+      300000, 400000, 500000, 600000, 700000, 800000, 900000, 1000000,
+    ];
+    // A run smaller than this reads oddly as a headline ("just sorted 12
+    // photos"), so the prompt falls back to the lifetime-only copy.
+    const DONATE_RUN_COPY_MIN_FILES = 50;
+
+    /** Largest milestone at or below totalFiles (0 when below the first). */
+    function donateMilestoneFor(totalFiles) {
+      const total = Number(totalFiles) || 0;
+      for (let i = DONATE_THRESHOLDS.length - 1; i >= 0; i--) {
+        if (total >= DONATE_THRESHOLDS[i]) return DONATE_THRESHOLDS[i];
       }
-      if (countEl) countEl.textContent = milestone.toLocaleString();
-      const dlg = document.getElementById('donateDlg');
-      // Only show if no other dialog is already open
-      if (dlg && !document.querySelector('dialog[open]')) dlg.showModal();
+      return 0;
     }
 
-    /** Check if the cumulative total crosses a donation milestone. Call after a folder finishes. */
-    async function checkDonationThresholdAsync() {
+    /** "This run" numbers from a finished queue item (queue_manager to_dict).
+     *  Scenes are only reported when the run analysed the whole folder, so the
+     *  photo and scene counts describe the same set of photos. */
+    function donateRunFromQueueItem(item) {
+      if (!item) return null;
+      const files = Number(item.files_this_run) || 0;
+      const total = Number(item.total) || 0;
+      const scenes = Number(item.scene_total);
+      return {
+        filesThisRun: files,
+        scenes: (files > 0 && files === total && scenes > 0) ? scenes : 0,
+      };
+    }
+
+    /** Heading + subline for the milestone prompt. Pure, so it can be tested
+     *  outside the app. run is null at startup (there is no "this run"). */
+    function buildDonatePromptCopy(milestone, run) {
+      const fmt = (n) => Number(n).toLocaleString();
+      const files = Number(run?.filesThisRun) || 0;
+      if (files >= DONATE_RUN_COPY_MIN_FILES) {
+        const scenes = Number(run.scenes) || 0;
+        let heading = `Kestrel just sorted ${fmt(files)} photos`;
+        if (scenes > 0) heading += ` into ${fmt(scenes)} scene${scenes === 1 ? '' : 's'}`;
+        return { heading, subline: `That takes you past ${fmt(milestone)} photos organized with Kestrel.` };
+      }
+      return { heading: `You’ve organized over ${fmt(milestone)} photos with Kestrel!`, subline: '' };
+    }
+
+    // ── Donate click counting ──
+    // Counts prompt shown / Support / Feedback / closed and the top-strip
+    // Support button, so the prompt's conversion can be measured. The bridge
+    // sends nothing unless the user opted in to analytics.
+    let _donatePromptCtx = null;   // { milestone, trigger } while the prompt is open
+
+    async function recordDonateEvent(event, milestone, trigger) {
+      try {
+        if (!(hasPywebviewApi && window.pywebview?.api?.record_donate_event)) return;
+        await _ensureSupportUrl();
+        window.pywebview.api.record_donate_event({
+          event,
+          milestone: milestone || 0,
+          trigger: trigger || '',
+          donate_link: !!_supportUrlSticky,
+        });
+      } catch (_) { /* failsafe */ }
+    }
+
+    /** Called by the dialog's buttons (welcome.js) before they close it, so
+     *  the 'close' handler below knows the dialog wasn't simply dismissed. */
+    function noteDonatePromptChoice(choice) {
+      if (!_donatePromptCtx) return;
+      const ctx = _donatePromptCtx;
+      _donatePromptCtx = null;
+      const event = choice === 'support' ? 'donate_prompt_support' : 'donate_prompt_feedback';
+      recordDonateEvent(event, ctx.milestone, ctx.trigger);
+    }
+
+    function _onDonatePromptClosed() {
+      if (!_donatePromptCtx) return;   // a button already recorded the outcome
+      const ctx = _donatePromptCtx;
+      _donatePromptCtx = null;
+      recordDonateEvent('donate_prompt_close', ctx.milestone, ctx.trigger);
+    }
+
+    /** Show the milestone prompt. Returns true only if it was actually shown
+     *  (it stays hidden while another dialog is open). */
+    function showDonatePrompt(totalFiles, run, trigger) {
+      const dlg = document.getElementById('donateDlg');
+      if (!dlg || document.querySelector('dialog[open]')) return false;
+      const milestone = donateMilestoneFor(totalFiles);
+      const copy = buildDonatePromptCopy(milestone, run);
+      const headingEl = document.getElementById('donateDlgHeading');
+      const sublineEl = document.getElementById('donateDlgSubline');
+      if (headingEl) headingEl.textContent = copy.heading;
+      if (sublineEl) {
+        sublineEl.textContent = copy.subline;
+        sublineEl.hidden = !copy.subline;
+      }
+      dlg.showModal();
+      _donatePromptCtx = { milestone, trigger };
+      recordDonateEvent('donate_prompt_shown', milestone, trigger);
+      return true;
+    }
+
+    /** Show the prompt for the first lifetime milestone that hasn't been shown
+     *  yet. A milestone is marked shown only once the dialog really opened, so
+     *  one blocked by another dialog is retried later. */
+    function _showNextDonateMilestone(total, run, trigger) {
+      const shown = _loadDonateThresholdsShown();
+      kdebug('[donation] Thresholds already shown:', shown);
+      for (const t of DONATE_THRESHOLDS) {
+        if (total >= t && !shown.includes(t)) {
+          kdebug('[donation] Milestone crossed:', t, '- showing dialog');
+          if (showDonatePrompt(total, run, trigger)) {
+            shown.push(t);
+            _saveDonateThresholdsShown(shown);
+          }
+          return;
+        }
+      }
+    }
+
+    /** Check if the cumulative total crosses a donation milestone. Called by
+     *  queue.js after a folder finishes, with that run's numbers. */
+    async function checkDonationThresholdAsync(run) {
       try {
         let total = 0;
         if (hasPywebviewApi && window.pywebview?.api?.get_settings) {
@@ -233,17 +339,7 @@
           }
         }
         if (total <= 0) return;
-        const thresholds = [1000, 5000, 10000, 25000, 50000, 100000, 200000];
-        const shown = _loadDonateThresholdsShown();
-        for (const t of thresholds) {
-          if (total >= t && !shown.includes(t)) {
-            shown.push(t);
-            _saveDonateThresholdsShown(shown);
-            // Small delay so queue panel settles first
-            setTimeout(() => showDonatePrompt(total), 2000);
-            break;
-          }
-        }
+        _showNextDonateMilestone(total, run || null, 'analysis');
       } catch (_) { /* failsafe */ }
     }
 
@@ -267,30 +363,20 @@
           kdebug('[donation] Total < 1000, skipping');
           return;
         }
-        const thresholds = [1000, 5000, 10000, 25000, 50000, 100000, 200000];
-        const shown = _loadDonateThresholdsShown();
-        kdebug('[donation] Thresholds already shown:', shown);
-        for (const t of thresholds) {
-          if (total >= t && !shown.includes(t)) {
-            kdebug('[donation] Milestone crossed:', t, '- showing dialog');
-            shown.push(t);
-            _saveDonateThresholdsShown(shown);
-            // Show dialog after a brief delay to let UI settle
-            setTimeout(() => showDonatePrompt(total), 1000);
-            break;
-          }
-        }
-        if (shown.includes(1000)) {
-          kdebug('[donation] 1000 threshold already shown, no dialog needed');
-        }
+        // Let the UI settle before showing anything at launch.
+        setTimeout(() => _showNextDonateMilestone(total, null, 'startup'), 1000);
       } catch (e) {
         console.error('[donation] checkDonationThresholdOnStartup error:', e);
       }
     }
 
-    document.getElementById('donateBtnMain')?.addEventListener('click', openSupportLink);
-    // Note: donateDlg button listeners are wired in the inline script after the dialog HTML,
-    // because that dialog is defined after this script block and wouldn't be in the DOM yet.
+    document.getElementById('donateBtnMain')?.addEventListener('click', () => {
+      recordDonateEvent('support_button_click', 0, '');
+      openSupportLink();
+    });
+    document.getElementById('donateDlg')?.addEventListener('close', _onDonatePromptClosed);
+    // The dialog's three buttons are wired in welcome.js; each calls
+    // noteDonatePromptChoice() before closing it.
     // Resolve the support URL up front so the click path doesn't wait on the bridge.
     _ensureSupportUrl();
     // ─── End Support ──────────────────────────────────────────────────────
