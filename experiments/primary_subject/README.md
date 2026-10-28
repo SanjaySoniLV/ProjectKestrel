@@ -110,3 +110,28 @@ ranked best today (today's ranking uses the best crop of each frame).
   seed. The averaged template absorbs pose change.
 - **Not solved:** dense flocks of small, identical birds. Humans can't label those reliably
   either. The margin flags them, so the UI should say "not sure" rather than guess.
+
+## In-app prototype
+
+`analyzer/kestrel_analyzer/primary_subject.py` is `tracker.py` made importable by the app, plus a
+per-folder embedding cache. It reproduces the numbers above (97.0 % from the first frame, 95.8 % from
+the last). It also adds `label_birds`, which gives every bird in the scene a number, including birds
+that first appear in a later frame.
+
+- **Bridge.** `Api.primary_subject_scene(folder, frames, seed)` takes the scene's frames in capture
+  order (crop index, bbox and quality per crop) and an optional seed `{frame, crop}`. It returns bird
+  numbers per crop and, when a seed is given, the followed bird's crop and margin in every frame. It
+  only reads `.kestrel/embeddings/`.
+- **UI** (`analyzer/js/primary-subject.js`, hooked into the scene dialog). In a scene where some frame
+  has several birds, a bar under the info bar offers these controls:
+  - **B** shows bird numbers on the full image.
+  - **F** follows the active crop's bird (pick it with ↑/↓). Each frame's crop switches to that bird,
+    and the filmstrip sorts by its quality: sure matches first, then unsure (margin < 1), then not
+    found. Badges show which is which.
+  - **Use Bird N as primary crop** promotes the sure matches through the normal path, so ratings,
+    sorting and saving follow. **Stop following** undoes the temporary view.
+- Nothing is persisted except the promoted primary crops. No analysis runs, so a folder analysed with
+  pipeline 3.0, or upgraded to it, works as soon as it is loaded. Without embeddings, linking falls
+  back to position only and the bar says so.
+
+Tests: `analyzer/tests/unit/test_primary_subject.py`.

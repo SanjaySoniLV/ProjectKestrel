@@ -144,13 +144,14 @@
 
         const label = document.createElement('div');
         label.className = 'scene-crop-overlay-label';
-        label.textContent = `#${idx + 1}`;
+        label.textContent = (typeof psCropLabel === 'function' && psCropLabel(row, idx)) || `#${idx + 1}`;
         boxEl.appendChild(label);
         layer.appendChild(boxEl);
       });
 
       box.appendChild(layer);
       requestAnimationFrame(() => layer.classList.add('visible'));
+      if (durationMs <= 0) return; // persistent (primary-subject bird numbers)
       box.__sceneCropOverlayTimer = setTimeout(() => {
         layer.classList.remove('visible');
         setTimeout(() => {
@@ -280,6 +281,7 @@
         // Double-click to open in editor
         card.addEventListener('dblclick', (ev) => { ev.stopPropagation(); openInEditor(r); });
 
+        if (typeof psDecorateCard === 'function') psDecorateCard(card, r);
         frag.appendChild(card);
       }
       grid.appendChild(frag);
@@ -323,8 +325,11 @@
       if (!isHover) {
         // Clear temporary crop selection for the image we're leaving so that
         // returning to it later shows the primary crop, not a stale temp pick.
-        if (idx !== currentImageIndex && scene.images[currentImageIndex]) {
-          _sceneActiveCropIndexByImage.delete(_cropStateKey(scene.images[currentImageIndex]));
+        // (Not while following a primary subject: its matches live there.)
+        const leaving = scene.images[currentImageIndex];
+        if (idx !== currentImageIndex && leaving
+            && !(typeof psKeepsActiveCrop === 'function' && psKeepsActiveCrop(leaving))) {
+          _sceneActiveCropIndexByImage.delete(_cropStateKey(leaving));
         }
         currentImageIndex = idx;
       }
@@ -530,6 +535,7 @@
       if (overlayActiveCrop) {
         _showSceneCropOverlay(r, cropState.activeIndex, 1000);
       }
+      if (typeof psAfterSelect === 'function') psAfterSelect(r);
     }
 
     // Repaint the grid once, on close, if cull decisions changed while the
@@ -1719,6 +1725,7 @@
 
       // ── Show dialog and select start image ──
       sceneDlg.showModal();
+      if (typeof psOnSceneOpen === 'function') void psOnSceneOpen(scene);
       await selectFilmstripImage(startIndex, scene);
     }
 
@@ -1984,6 +1991,19 @@
           e.preventDefault();
           if (images[currentImageIndex]) openInEditor(images[currentImageIndex]);
           break;
+        // Primary subject (prototype): follow the active crop's bird / show bird numbers.
+        case 'f':
+        case 'F':
+          if (hasSceneModifier || typeof psFollow !== 'function') break;
+          e.preventDefault();
+          psFollow();
+          break;
+        case 'b':
+        case 'B':
+          if (hasSceneModifier || typeof psToggleIds !== 'function') break;
+          e.preventDefault();
+          psToggleIds();
+          break;
         case 'Escape':
           e.preventDefault();
           el('#closeDlg')?.click();
@@ -2171,7 +2191,8 @@
       const sortBy = el('#sortBy').value;
       const includeSecondary = document.getElementById('includeSecondarySpecies')?.checked ?? false;
       const all = aggregateScenes(minC, search, sortBy, includeSecondary, true);
-      return all.find(s => String(s.id) === String(sceneId));
+      const found = all.find(s => String(s.id) === String(sceneId));
+      return (found && typeof psApplyOrder === 'function') ? psApplyOrder(found) : found;
     }
 
     function refreshSceneMeta(scene) {

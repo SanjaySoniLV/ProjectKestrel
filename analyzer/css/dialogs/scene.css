@@ -823,3 +823,76 @@
   background: #10131a;
   font-size: 11px;
 }
+
+/* ── Primary subject bar (js/primary-subject.js, prototype) ── */
+.scene-ps-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 14px;
+  background: #0f1420;
+  border-top: 1px solid #1f2533;
+  font-size: 12px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.scene-ps-bar.hidden { display: none; }
+.scene-ps-bar .ps-text { color: var(--text); }
+.scene-ps-bar .ps-text.muted { color: var(--muted); }
+.scene-ps-bar .ps-text.warn { color: var(--warn); }
+.scene-ps-bar .ps-here { color: #f2c14c; }
+.scene-ps-bar .ps-btn {
+  background: #1a2235;
+  border: 1px solid #2a3d5c;
+  color: #a9c9ee;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.scene-ps-bar .ps-btn:hover { background: #22304a; color: var(--brand); }
+.scene-ps-bar .ps-btn.primary { border-color: #8a6d1f; color: #f2c14c; background: #241e10; }
+.scene-ps-bar .ps-btn.primary:hover { background: #30270f; }
+.scene-ps-bar .ps-btn.on { border-color: var(--brand); color: var(--brand); }
+.scene-ps-bar .ps-tag {
+  margin-left: auto;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: #8f7cf0;
+  border: 1px solid #3b3270;
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.filmstrip-card .filmstrip-thumb { position: relative; }
+.filmstrip-card .ps-badge {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 4px;
+  pointer-events: none;
+}
+.filmstrip-card .ps-badge.found { background: rgba(242, 193, 76, 0.95); color: #0d1117; }
+.filmstrip-card .ps-badge.unsure { background: rgba(243, 156, 18, 0.25); color: #f5b041; border: 1px dashed #f5b041; }
+.filmstrip-card .ps-badge.missing { background: rgba(20, 24, 32, 0.85); color: var(--muted); }
+.filmstrip-card.ps-missing .filmstrip-thumb img { opacity: 0.45; }
+.ps-crop-note {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  z-index: 6;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(13, 17, 23, 0.85);
+  border: 1px solid #3a4152;
+  color: var(--warn);
+  pointer-events: none;
+}

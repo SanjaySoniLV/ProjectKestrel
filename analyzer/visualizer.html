@@ -387,6 +387,8 @@
         <span><kbd>↑</kbd><kbd>↓</kbd> Switch active crop</span>
         <span><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>&larr;</kbd><kbd>&rarr;</kbd> or <kbd>Home</kbd>/<kbd>End</kbd> Jump to start/end</span>
         <span><kbd>Enter</kbd> Promote active crop</span>
+        <span><kbd>F</kbd> Follow the active crop's bird through the scene</span>
+        <span><kbd>B</kbd> Show/hide bird numbers</span>
         <span><kbd>Tab</kbd> Next scene</span>
         <span><kbd>Shift</kbd>+<kbd>Tab</kbd> or <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Tab</kbd> Previous scene</span>
         <span><kbd>Z</kbd> or <kbd>7</kbd> Accept</span>
@@ -474,6 +476,8 @@
           <!-- Quality feedback prompt (js/quality-feedback.js) -->
           <div class="scene-qf hidden" id="sceneQf" role="group" aria-label="Quality feedback"></div>
         </div>
+        <!-- Primary subject (js/primary-subject.js, prototype) -->
+        <div class="scene-ps-bar hidden" id="scenePsBar" role="group" aria-label="Follow one bird"></div>
       </div>
 
       <!-- ═══ BOTTOM: Filmstrip ═══ -->
@@ -1809,6 +1813,7 @@
        (setupScenePreviewDivider) calls getSetting() at parse time. -->
   <script src="js/settings.js"></script>
   <script src="js/scene-dialog.js"></script>
+  <script src="js/primary-subject.js"></script>
   <script src="js/feedback-donate.js"></script>
   <script src="js/quality-feedback.js"></script>
   <script src="js/folder-tree.js"></script>
