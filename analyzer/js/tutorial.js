@@ -157,8 +157,8 @@
       {
         title: 'Search across your whole library',
         body: 'Kestrel searches across <b>every loaded folder</b>. Type a species or family to filter the timeline, or describe a photo (<i>“spoonbill wading”</i>, <i>“bird in flight”</i>) to smart-search it. Right-click a result and choose <b>Go to scene in timeline</b> to see it in context.<br><br><b>Tip:</b> open a <b>parent folder</b> once (via <b>Load Folders…</b> or the Folder Tree) and Kestrel loads your entire library at once — then you can search across every outing and every year without re-loading anything.',
-        target: '#search',
-        position: 'right',
+        target: '#smartSearchBox',
+        position: 'bottom',
       },
       _tutWorkflowStep,
       {
