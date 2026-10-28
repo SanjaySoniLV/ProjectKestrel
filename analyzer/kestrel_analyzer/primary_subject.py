@@ -327,3 +327,120 @@ def analyze_scene(kestrel_dir: str, frames: Sequence[dict], seed: Optional[Tuple
                 for f in range(len(built))
             ]
     return out
+
+
+# --------------------------------------------------------------------------- stored links
+# Bird numbers are computed once per scene and stored, so they survive culls that delete
+# frames: .kestrel/bird_links.json = {"version", "params", "scenes": {scene_count: {
+# "files": [capture order], "ids": {file: [bird number per crop]}, "margins": {...},
+# "crops": {file: n_crops}}}}. Computed at the end of analysis, at the end of the
+# pipeline-3 upgrade, and lazily on folder load when missing or stale. A params change
+# invalidates the file (no pipeline version bump).
+LINKS_FILENAME = "bird_links.json"
+LINKS_VERSION = 1
+_LINK_LOCKS: Dict[str, threading.Lock] = {}
+_LINK_LOCKS_GUARD = threading.Lock()
+
+
+def _params_tag() -> str:
+    import hashlib
+    import json
+    return hashlib.sha1(json.dumps(PARAMS, sort_keys=True).encode()).hexdigest()[:12]
+
+
+def _read_scene_rows(kestrel_dir: str) -> Dict[str, List[dict]]:
+    """{scene_count: [{filename, t, crops}]} from the folder database, frames in capture order."""
+    import csv
+    import io
+    import json
+    path = os.path.join(kestrel_dir, "kestrel_database.csv")
+    if not os.path.isfile(path):
+        return {}
+    try:
+        from .database import read_database_text
+        text = read_database_text(path)
+    except Exception:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    old = csv.field_size_limit()
+    scenes: Dict[str, List[dict]] = {}
+    try:
+        csv.field_size_limit(max(old, 64 * 1024 * 1024))
+        for r in csv.DictReader(io.StringIO(text.lstrip("﻿"))):
+            fn = str(r.get("filename") or "").strip()
+            sc = str(r.get("scene_count") or "").strip()
+            if not fn or not sc:
+                continue
+            try:
+                raw = json.loads(r.get("crops_json") or "[]")
+            except ValueError:
+                raw = []
+            crops = []
+            for i, c in enumerate(raw if isinstance(raw, list) else []):
+                bb = c.get("bbox") if isinstance(c, dict) else None
+                if not isinstance(bb, dict) or "x_min_norm" not in bb:
+                    continue
+                try:
+                    q = float(c.get("quality", -1.0))
+                except (TypeError, ValueError):
+                    q = -1.0
+                crops.append({"crop_index": int(c.get("crop_index", i)), "bbox": bb, "quality": q})
+            scenes.setdefault(sc, []).append({"filename": fn, "t": str(r.get("capture_time") or ""), "crops": crops})
+    finally:
+        csv.field_size_limit(old)
+    for rows in scenes.values():
+        rows.sort(key=lambda x: (x["t"], x["filename"]))
+    return scenes
+
+
+def _scene_entry(kestrel_dir: str, rows: List[dict]) -> dict:
+    res = analyze_scene(kestrel_dir, rows)
+    ent = {"files": [r["filename"] for r in rows], "ids": {}, "margins": {}, "crops": {}}
+    for f, r in enumerate(rows):
+        # keyed by crop_index (positions can differ from crop_index when crops are skipped)
+        ent["ids"][r["filename"]] = {str(c["crop_index"]): res["birds"][f][j] for j, c in enumerate(r["crops"])}
+        ent["margins"][r["filename"]] = {str(c["crop_index"]): res["margins"][f][j] for j, c in enumerate(r["crops"])}
+        ent["crops"][r["filename"]] = len(r["crops"])
+    return ent
+
+
+def load_links(kestrel_dir: str) -> Optional[dict]:
+    import json
+    try:
+        with open(os.path.join(kestrel_dir, LINKS_FILENAME), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) and isinstance(data.get("scenes"), dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def ensure_links(kestrel_dir: str) -> dict:
+    """Bring bird_links.json up to date and return it.
+
+    Scenes whose frames are all already stored with the same crop count are kept as
+    they are, including links through frames that have since been deleted; scenes with
+    new or changed frames are recomputed; a version/params change recomputes all.
+    """
+    with _LINK_LOCKS_GUARD:
+        lock = _LINK_LOCKS.setdefault(os.path.realpath(kestrel_dir), threading.Lock())
+    with lock:
+        old = load_links(kestrel_dir)
+        fresh = bool(old) and old.get("version") == LINKS_VERSION and old.get("params") == _params_tag()
+        scenes_old = old["scenes"] if fresh else {}
+        rows_by_scene = _read_scene_rows(kestrel_dir)
+        out = {"version": LINKS_VERSION, "params": _params_tag(), "scenes": {}}
+        changed = not fresh
+        for sc, rows in rows_by_scene.items():
+            prev = scenes_old.get(sc)
+            if prev and all(prev.get("crops", {}).get(r["filename"]) == len(r["crops"]) for r in rows):
+                out["scenes"][sc] = prev
+                continue
+            out["scenes"][sc] = _scene_entry(kestrel_dir, rows)
+            changed = True
+        # keep stored scenes that no longer have rows (every frame deleted) -- harmless
+        for sc, prev in scenes_old.items():
+            out["scenes"].setdefault(sc, prev)
+        if changed:
+            from .database import write_json_atomic
+            write_json_atomic(os.path.join(kestrel_dir, LINKS_FILENAME), out, indent=None)
+        return out

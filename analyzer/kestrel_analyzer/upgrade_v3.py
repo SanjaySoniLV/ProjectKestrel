@@ -377,6 +377,12 @@ def upgrade_folder(
             "animal_gate": GATE_METHOD if models.animal_gate is not None else None,
         }
     write_json_atomic(os.path.join(kestrel_dir, METADATA_FILENAME), meta, indent=2)
+    if complete:
+        try:  # bird numbers for primary-subject focus (needs the embeddings just written)
+            from . import primary_subject
+            primary_subject.ensure_links(kestrel_dir)
+        except Exception:
+            pass
     try:
         log_event(log_path, {"level": "info", "event": "upgrade_v3", **{k: v for k, v in stats.items()}})
     except Exception:

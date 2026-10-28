@@ -152,25 +152,30 @@ against 97.0 % and 95.8 % before, so it is essentially unchanged.
 
 ## In-app prototype
 
-`analyzer/kestrel_analyzer/primary_subject.py` is `tracker.py` made importable by the app, plus a
-per-folder embedding cache. It reproduces the numbers above (97.0 % from the first frame, 95.8 % from
-the last). It also adds `label_birds`, which gives every bird in the scene a number, including birds
-that first appear in a later frame.
+`analyzer/kestrel_analyzer/primary_subject.py` is `tracker.py` made importable by the app. It numbers
+every bird in each scene, so the same number is the same bird in every frame, and stores the result in
+`.kestrel/bird_links.json`:
 
-- **Bridge.** `Api.primary_subject_scene(folder, frames, seed)` takes the scene's frames in capture
-  order (crop index, bbox and quality per crop) and an optional seed `{frame, crop}`. It returns bird
-  numbers per crop and, when a seed is given, the followed bird's crop and margin in every frame. It
-  only reads `.kestrel/embeddings/`.
-- **UI** (`analyzer/js/primary-subject.js`, hooked into the scene dialog). In a scene where some frame
-  has several birds, a bar under the info bar offers these controls:
-  - **B** shows bird numbers on the full image.
-  - **F** follows the active crop's bird (pick it with ↑/↓). Each frame's crop switches to that bird,
-    and the filmstrip sorts by its quality: sure matches first, then unsure (margin < 1), then not
-    found. Badges show which is which.
-  - **Use Bird N as primary crop** promotes the sure matches through the normal path, so ratings,
-    sorting and saving follow. **Stop following** undoes the temporary view.
-- Nothing is persisted except the promoted primary crops. No analysis runs, so a folder analysed with
-  pipeline 3.0, or upgraded to it, works as soon as it is loaded. Without embeddings, linking falls
-  back to position only and the bar says so.
+```
+{version, params, scenes: {scene_count: {files, ids: {file: {crop_index: bird}}, margins, crops}}}
+```
+
+- **When it is computed.** At the end of analysis, at the end of the pipeline-3 upgrade, and in the
+  background on folder load (`read_kestrel_csv`) when the file is missing or stale. No pipeline
+  version bump is needed: a change to the matcher's parameters changes `params` and invalidates the
+  file.
+- **Surviving culls.** A scene whose remaining frames are all already stored keeps its links, so
+  deleting frames later doesn't change the numbers.
+- **Bridge.** `Api.primary_subject_links(folder)` returns the stored links, computing them first if
+  needed.
+- **UI** (`analyzer/js/primary-subject.js`, hooked into the scene dialog). There are no new panels:
+  - Crop overlays label boxes "Bird N", or "Bird N?" when the link into that frame is unsure
+    (margin < 1).
+  - The active box adds a hint: "Shift+Click or press F to focus this scene on this bird".
+  - Focusing makes that bird the primary crop in every photo of the scene where it was found,
+    through the normal promote/save path. The filmstrip re-sorts by its quality.
+  - F on the same bird undoes the focus and restores the previous primary crops.
+  - Filmstrip badges mark unsure photos and photos where the bird wasn't found.
+  - **B** keeps the bird numbers on screen.
 
 Tests: `analyzer/tests/unit/test_primary_subject.py`.

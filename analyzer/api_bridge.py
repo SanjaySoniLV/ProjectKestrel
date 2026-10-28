@@ -1383,6 +1383,7 @@ class Api:
                     data = f.read()
 
             self._track_cache_root(parent_folder)
+            self._refresh_bird_links_async(kestrel_dir)
             
             
             return {
@@ -2832,78 +2833,50 @@ class Api:
             error(f'[API] upgrade_folder_v3({folder_path!r}) error: {e}')
             return {'success': False, 'error': str(e)}
 
-    # Bounds for primary_subject_scene payloads (a scene is one burst).
-    _PS_MAX_FRAMES = 400
-    _PS_MAX_CROPS = 64
+    @staticmethod
+    def _primary_subject_module():
+        try:
+            from kestrel_analyzer import primary_subject as _ps
+        except ImportError:  # package-style import path
+            from analyzer.kestrel_analyzer import primary_subject as _ps  # type: ignore[no-redef]
+        return _ps
 
-    def primary_subject_scene(self, folder_path: str, frames, seed=None) -> dict:
-        """Link the birds of one scene across its frames (primary-subject prototype).
+    def _refresh_bird_links_async(self, kestrel_dir: str) -> None:
+        """On folder load: compute bird links for scenes that lack them (pipeline-3.0.0
+        folders, or scenes added since). Never while this app is analysing/upgrading."""
+        try:
+            if self._running_upgrade_job(kestrel_dir) or self.is_analysis_running().get('running'):
+                return
+        except Exception:
+            return
+        _ps = self._primary_subject_module()
 
-        ``frames`` is the scene in capture order: ``[{filename, crops: [{crop_index,
-        bbox: {x_min_norm, x_max_norm, y_min_norm, y_max_norm}, quality}]}]``.
-        ``seed`` is ``{frame, crop}`` (positions in those lists) to follow one bird.
-        Reads the stored embeddings only; nothing is written.
+        def _run():
+            try:
+                _ps.ensure_links(kestrel_dir)
+            except Exception as e:
+                error(f'[API] bird links refresh failed: {e}')
+        import threading as _t
+        _t.Thread(target=_run, name='bird-links', daemon=True).start()
 
-        Returns ``{success, birds, margins, follow, embedded_crops, crops}`` -- see
-        ``kestrel_analyzer.primary_subject.analyze_scene``.
+    def primary_subject_links(self, folder_path: str) -> dict:
+        """Stored bird numbers for a folder (computed first if missing or stale).
+
+        Returns ``{success, scenes: {scene_count: {files, ids: {file: {crop_index: bird}},
+        margins: {file: {crop_index: margin}}}}, min_margin}``. Read-only apart from the
+        ``.kestrel/bird_links.json`` sidecar.
         """
         try:
             _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
-                folder_path, context='primary_subject_scene', require_root_exists=True,
+                folder_path, context='primary_subject_links', require_root_exists=True,
             )
             if err:
                 return {'success': False, 'error': err}
-            if not isinstance(frames, list) or not frames or len(frames) > self._PS_MAX_FRAMES:
-                return {'success': False, 'error': 'invalid frames'}
-
-            def _num(v, default, lo=None, hi=None):
-                try:
-                    x = float(v)
-                except (TypeError, ValueError):
-                    return default
-                if not math.isfinite(x):
-                    return default
-                if lo is not None:
-                    x = max(lo, x)
-                if hi is not None:
-                    x = min(hi, x)
-                return x
-
-            clean = []
-            for fr in frames:
-                if not isinstance(fr, dict) or not isinstance(fr.get('filename'), str):
-                    return {'success': False, 'error': 'invalid frame'}
-                crops = fr.get('crops') if isinstance(fr.get('crops'), list) else []
-                if len(crops) > self._PS_MAX_CROPS:
-                    return {'success': False, 'error': 'too many crops'}
-                cc = []
-                for c in crops:
-                    if not isinstance(c, dict):
-                        return {'success': False, 'error': 'invalid crop'}
-                    bb = c.get('bbox') if isinstance(c.get('bbox'), dict) else {}
-                    x0 = _num(bb.get('x_min_norm'), 0.0, 0.0, 1.0)
-                    x1 = _num(bb.get('x_max_norm'), 1.0, 0.0, 1.0)
-                    y0 = _num(bb.get('y_min_norm'), 0.0, 0.0, 1.0)
-                    y1 = _num(bb.get('y_max_norm'), 1.0, 0.0, 1.0)
-                    cc.append({
-                        'crop_index': int(_num(c.get('crop_index'), -1, -1, 10 ** 6)),
-                        'bbox': {'x_min_norm': min(x0, x1), 'x_max_norm': max(x0, x1),
-                                 'y_min_norm': min(y0, y1), 'y_max_norm': max(y0, y1)},
-                        'quality': _num(c.get('quality'), -1.0, -1.0, 1.0),
-                    })
-                clean.append({'filename': fr['filename'][:1024], 'crops': cc})
-
-            seed_t = None
-            if isinstance(seed, dict):
-                seed_t = (int(_num(seed.get('frame'), -1)), int(_num(seed.get('crop'), -1)))
-
-            try:
-                from kestrel_analyzer import primary_subject as _ps
-            except ImportError:  # package-style import path
-                from analyzer.kestrel_analyzer import primary_subject as _ps  # type: ignore[no-redef]
-            return {'success': True, **_ps.analyze_scene(kestrel_dir, clean, seed_t)}
+            _ps = self._primary_subject_module()
+            data = _ps.ensure_links(kestrel_dir)
+            return {'success': True, 'scenes': data.get('scenes', {}), 'min_margin': _ps.MIN_MARGIN}
         except Exception as e:
-            error(f'[API] primary_subject_scene error: {e}')
+            error(f'[API] primary_subject_links error: {e}')
             return {'success': False, 'error': str(e)}
 
     def smart_search_index_folder(self, folder_path: str) -> dict:

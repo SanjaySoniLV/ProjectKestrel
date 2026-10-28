@@ -146,6 +146,13 @@
         label.className = 'scene-crop-overlay-label';
         label.textContent = (typeof psCropLabel === 'function' && psCropLabel(row, idx)) || `#${idx + 1}`;
         boxEl.appendChild(label);
+        const hintText = idx === activeIndex && typeof psCropHint === 'function' ? psCropHint(row, idx) : null;
+        if (hintText) {
+          const hint = document.createElement('div');
+          hint.className = 'scene-crop-overlay-hint';
+          hint.textContent = hintText;
+          boxEl.appendChild(hint);
+        }
         layer.appendChild(boxEl);
       });
 
@@ -325,11 +332,8 @@
       if (!isHover) {
         // Clear temporary crop selection for the image we're leaving so that
         // returning to it later shows the primary crop, not a stale temp pick.
-        // (Not while following a primary subject: its matches live there.)
-        const leaving = scene.images[currentImageIndex];
-        if (idx !== currentImageIndex && leaving
-            && !(typeof psKeepsActiveCrop === 'function' && psKeepsActiveCrop(leaving))) {
-          _sceneActiveCropIndexByImage.delete(_cropStateKey(leaving));
+        if (idx !== currentImageIndex && scene.images[currentImageIndex]) {
+          _sceneActiveCropIndexByImage.delete(_cropStateKey(scene.images[currentImageIndex]));
         }
         currentImageIndex = idx;
       }
@@ -533,7 +537,7 @@
       }
 
       if (overlayActiveCrop) {
-        _showSceneCropOverlay(r, cropState.activeIndex, 1000);
+        _showSceneCropOverlay(r, cropState.activeIndex, 2200);
       }
       if (typeof psAfterSelect === 'function') psAfterSelect(r);
     }
@@ -1673,6 +1677,8 @@
           const r = scene.images[currentImageIndex];
           if (!r) return;
           ev.preventDefault();
+          // Shift+Click a bird's box: focus the scene on that bird (js/primary-subject.js).
+          if (ev.shiftKey && typeof psHandleShiftClick === 'function' && psHandleShiftClick(r, ev, exportImgBox)) return;
           startSceneZoomPreview(r, exportImgBox, ev);
         };
       }
@@ -1991,12 +1997,12 @@
           e.preventDefault();
           if (images[currentImageIndex]) openInEditor(images[currentImageIndex]);
           break;
-        // Primary subject (prototype): follow the active crop's bird / show bird numbers.
+        // Primary subject (prototype): focus the scene on the active crop's bird / bird numbers.
         case 'f':
         case 'F':
-          if (hasSceneModifier || typeof psFollow !== 'function') break;
+          if (hasSceneModifier || typeof psFocusActive !== 'function') break;
           e.preventDefault();
-          psFollow();
+          psFocusActive();
           break;
         case 'b':
         case 'B':
@@ -2191,8 +2197,7 @@
       const sortBy = el('#sortBy').value;
       const includeSecondary = document.getElementById('includeSecondarySpecies')?.checked ?? false;
       const all = aggregateScenes(minC, search, sortBy, includeSecondary, true);
-      const found = all.find(s => String(s.id) === String(sceneId));
-      return (found && typeof psApplyOrder === 'function') ? psApplyOrder(found) : found;
+      return all.find(s => String(s.id) === String(sceneId));
     }
 
     function refreshSceneMeta(scene) {

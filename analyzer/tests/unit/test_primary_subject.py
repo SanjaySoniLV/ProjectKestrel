@@ -130,36 +130,61 @@ def test_analyze_scene_without_embeddings_falls_back_to_position(tmp_path):
     assert [x["crop"] for x in out["follow"]] == [truth[f][0] for f in range(len(frames))]
 
 
-def test_bridge_primary_subject_scene(tmp_path):
+def _write_csv(kdir, payload, scene="1"):
+    import csv, json
+    with open(kdir / "kestrel_database.csv", "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=["filename", "scene_count", "capture_time", "crops_json"])
+        w.writeheader()
+        for i, fr in enumerate(payload):
+            w.writerow({"filename": fr["filename"], "scene_count": scene, "capture_time": f"2026-10-01T08:00:{i:02d}",
+                        "crops_json": json.dumps(fr["crops"])})
+
+
+def _ids(data, fn, scene="1"):
+    return data["scenes"][scene]["ids"][fn]
+
+
+def test_ensure_links_numbers_birds_consistently(tmp_path):
     frames, truth = _scene()
-    _, payload = _write_folder(tmp_path, frames)
-    api = api_bridge.Api()
-    res = api.primary_subject_scene(str(tmp_path), payload, {"frame": 0, "crop": truth[0][1]})
-    assert res["success"]
-    assert [x["crop"] for x in res["follow"]] == [truth[f][1] for f in range(len(frames))]
-    assert res["birds"][0] and len(res["birds"]) == len(frames)
+    kdir, payload = _write_folder(tmp_path, frames)
+    _write_csv(kdir, payload)
+    data = ps.ensure_links(str(kdir))
+    assert (kdir / ps.LINKS_FILENAME).is_file()
+    for bird in range(4):
+        nums = {_ids(data, payload[f]["filename"])[str(truth[f][bird])] for f in range(len(frames))}
+        assert len(nums) == 1
 
 
-@pytest.mark.parametrize("frames", [None, [], "x", [{"crops": []}], [{"filename": "a", "crops": ["x"]}],
-                                    [{"filename": "a", "crops": [{}] * 65}]])
-def test_bridge_primary_subject_scene_rejects_bad_payloads(tmp_path, frames):
-    (tmp_path / ".kestrel").mkdir()
-    res = api_bridge.Api().primary_subject_scene(str(tmp_path), frames, None)
-    assert res["success"] is False
+def test_ensure_links_survive_a_deleted_frame(tmp_path):
+    frames, truth = _scene()
+    kdir, payload = _write_folder(tmp_path, frames)
+    _write_csv(kdir, payload)
+    before = ps.ensure_links(str(kdir))
+    _write_csv(kdir, payload[:1] + payload[3:])          # cull frames 2-3
+    after = ps.ensure_links(str(kdir))
+    assert after["scenes"]["1"] == before["scenes"]["1"]  # stored links kept, not recomputed
 
 
-def test_bridge_primary_subject_scene_clamps_bbox_and_quality(tmp_path):
-    (tmp_path / ".kestrel").mkdir()
-    frames = [{"filename": "a.jpg", "crops": [{"crop_index": 0, "quality": "nan",
-                                               "bbox": {"x_min_norm": 2, "x_max_norm": -1,
-                                                        "y_min_norm": "inf", "y_max_norm": 0.5}}]},
-              {"filename": "b.jpg", "crops": [{"crop_index": 0, "quality": 0.4,
-                                               "bbox": _bbox(0.5, 0.5, 0.1)}]}]
-    res = api_bridge.Api().primary_subject_scene(str(tmp_path), frames, {"frame": 0, "crop": 0})
-    assert res["success"]
-    assert len(res["follow"]) == 2
+def test_ensure_links_recomputes_changed_scene_and_params(tmp_path, monkeypatch):
+    frames, _ = _scene()
+    kdir, payload = _write_folder(tmp_path, frames)
+    _write_csv(kdir, payload[:3])
+    first = ps.ensure_links(str(kdir))
+    _write_csv(kdir, payload)                             # frames added to the scene
+    grown = ps.ensure_links(str(kdir))
+    assert len(grown["scenes"]["1"]["files"]) == len(payload) > len(first["scenes"]["1"]["files"])
+    monkeypatch.setattr(ps, "PARAMS", dict(ps.PARAMS, tau=2.0))
+    assert ps.ensure_links(str(kdir))["params"] != grown["params"]
 
 
-def test_bridge_primary_subject_scene_rejects_missing_folder(tmp_path):
-    res = api_bridge.Api().primary_subject_scene(str(tmp_path / "nope"), [{"filename": "a", "crops": []}])
-    assert res["success"] is False
+def test_bridge_primary_subject_links(tmp_path):
+    frames, truth = _scene()
+    kdir, payload = _write_folder(tmp_path, frames)
+    _write_csv(kdir, payload)
+    res = api_bridge.Api().primary_subject_links(str(tmp_path))
+    assert res["success"] and res["min_margin"] == ps.MIN_MARGIN
+    assert set(res["scenes"]["1"]["ids"]) == {fr["filename"] for fr in payload}
+
+
+def test_bridge_primary_subject_links_rejects_missing_folder(tmp_path):
+    assert api_bridge.Api().primary_subject_links(str(tmp_path / "nope"))["success"] is False
