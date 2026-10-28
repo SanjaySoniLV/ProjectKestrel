@@ -163,7 +163,7 @@
       const running = !!status.running;
       const paused = !!status.paused;
       const hasItems = items.length > 0;
-      const runningUpgrades = upgrades.filter(u => u.status === 'running');
+      const runningUpgrades = upgrades.filter(u => u.status === 'running' || u.status === 'pending');
 
       // While the queue is running, keep a short-lived poll to update folder rows
       if (running) startQueueCountsPoll(); else stopQueueCountsPoll();
@@ -198,8 +198,10 @@
           badge.textContent = `${pendingItems.length + runningItems.length} pending`; badge.className = 'queue-panel-badge';
         }
       } else if (runningUpgrades.length) {
-        const u = runningUpgrades[0];
-        badge.textContent = u.total > 0 ? `${u.current} / ${u.total}` : 'Upgrading';
+        const u = runningUpgrades.find(x => x.status === 'running') || runningUpgrades[0];
+        const waiting = runningUpgrades.filter(x => x.status === 'pending').length;
+        badge.textContent = u.status === 'running' && u.total > 0 ? `${u.current} / ${u.total}`
+          : u.status === 'running' ? 'Upgrading' : `${waiting} queued`;
         badge.className = 'queue-panel-badge';
       } else if (pendingItems.length === 0 && doneItems.length === items.length) {
         badge.textContent = 'Done'; badge.className = 'queue-panel-badge done';
@@ -518,6 +520,7 @@
     }
 
     const _UPGRADE_LABELS = {
+      pending: '⏳ Queued for pipeline 3',
       running: '✨ Upgrading to pipeline 3',
       done: '✓ Upgraded to pipeline 3',
       cancelled: '— Upgrade stopped',
@@ -569,14 +572,15 @@
     /** Fill one upgrade row from a status.upgrades entry. */
     function _updateUpgradeRow(div, u) {
       const isRunning = u.status === 'running';
-      div.classList.toggle('done-item', !isRunning);
+      const isPending = u.status === 'pending';
+      div.classList.toggle('done-item', !isRunning && !isPending);
 
       const nameEl = div.querySelector('.queue-item-name');
       nameEl.textContent = u.name || u.path || 'Folder';
       nameEl.title = u.path || '';
 
       const statusEl = div.querySelector('.queue-item-status');
-      const statusCls = { running: 'running', done: 'done', error: 'error' }[u.status] || 'cancelled';
+      const statusCls = { running: 'running', pending: 'pending', done: 'done', error: 'error' }[u.status] || 'cancelled';
       statusEl.className = `queue-item-status upgrade ${statusCls}`;
       statusEl.textContent = _UPGRADE_LABELS[u.status] || u.status;
       statusEl.title = u.status === 'error' ? (u.error || '')
@@ -585,12 +589,15 @@
             : '';
 
       const cancelBtn = div.querySelector('.queue-item-cancel-btn');
-      cancelBtn.classList.toggle('hidden', !isRunning);
-      if (isRunning) {
+      cancelBtn.classList.toggle('hidden', !isRunning && !isPending);
+      if (isRunning || isPending) {
         const stopping = _upgradeCancelRequested.has(u.job_id);
         cancelBtn.textContent = stopping ? 'Stopping…' : '✕ Cancel';
         cancelBtn.disabled = stopping;
         cancelBtn.setAttribute('aria-label', `Cancel the pipeline 3 upgrade of ${u.name || 'this folder'}`);
+        cancelBtn.title = isPending
+          ? 'Take this folder out of the upgrade queue.'
+          : 'Stop the upgrade. Progress so far is kept; running it again resumes where it stopped.';
       }
 
       const total = Number(u.total) || 0;
@@ -609,7 +616,9 @@
       }
 
       const info = div.querySelector('.queue-item-eta');
-      if (isRunning) {
+      if (isPending) {
+        info.textContent = 'Waiting for the upgrade ahead of it to finish';
+      } else if (isRunning) {
         if (total > 0) info.textContent = `${current} / ${total} photos`;
         else info.textContent = u.phase === 'loading_model' ? '⏳ Loading models…' : '⏳ Starting…';
       } else if (u.status === 'done') {
@@ -641,7 +650,7 @@
       const norm = p => (p || '').replace(/\\/g, '/');
       const runningNow = new Set();
       for (const u of upgrades) {
-        if (u.status === 'running') {
+        if (u.status === 'running' || u.status === 'pending') {
           _upgradeSeenRunning.add(u.job_id);
           runningNow.add(norm(u.path));
         } else if (_upgradeSeenRunning.has(u.job_id)) {

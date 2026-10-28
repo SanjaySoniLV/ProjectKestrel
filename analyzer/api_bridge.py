@@ -2739,12 +2739,15 @@ class Api:
             return {'success': False, 'error': str(e)}
 
     def upgrade_folder_v3(self, folder_path: str) -> dict:
-        """Start upgrading an analysed folder to pipeline 3 (local only).
+        """Queue an analysed folder's upgrade to pipeline 3 (local only).
 
-        Returns ``{success, job_id}``; poll ``get_smart_search_index_progress``.
-        Refused while the folder is being analysed (both would write the same
-        files) and for folders that need a re-analysis; a job already running
-        for the folder is returned as is.
+        Returns ``{success, job_id, queued}``; poll
+        ``get_smart_search_index_progress``. Upgrades run one at a time in
+        request order (they share the queue's pipeline), so ``queued`` is True
+        when the job waits behind another upgrade; its phase is ``queued``
+        until it starts. Refused while the folder is being analysed (both
+        would write the same files) and for folders that need a re-analysis;
+        a job already queued or running for the folder is returned as is.
         """
         try:
             root_real, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
@@ -2769,7 +2772,9 @@ class Api:
             with lock:
                 for jid, j in jobs.items():
                     if j.get('kestrel_dir') == kestrel_dir and not j['progress'].get('done'):
-                        return {'success': True, 'job_id': jid, 'already_running': True}
+                        return {'success': True, 'job_id': jid, 'already_running': True,
+                                'queued': j['progress'].get('phase') == 'queued'}
+                queued_behind = any(not j['progress'].get('done') for j in jobs.values())
                 job_id = _uuid.uuid4().hex
                 cancel = _t.Event()
                 jobs[job_id] = {
@@ -2782,7 +2787,7 @@ class Api:
                     'root': root_real,
                     'started_at': time.time(),
                     'dismissed': False,
-                    'progress': {'done': False, 'current': 0, 'total': 0, 'phase': 'starting'},
+                    'progress': {'done': False, 'current': 0, 'total': 0, 'phase': 'queued'},
                 }
                 finished = [k for k, v in jobs.items() if v['progress'].get('done')]
                 for k in finished[:-8]:
@@ -2796,6 +2801,17 @@ class Api:
                     jobs[job_id]['progress'].update(kw)
 
             def _runner():
+                with lock:
+                    job = jobs.get(job_id)
+                    if job is None or job['progress'].get('done'):
+                        return  # cancelled while queued
+                if cancel.is_set():
+                    _set(phase='canceled', done=True, finished_at=time.time())
+                    return
+                if _queue_manager.has_running_writer(root_real):
+                    # Analysis of this folder started while the upgrade waited.
+                    _set(phase='stopped', done=True, finished_at=time.time())
+                    return
                 try:
                     _set(phase='loading_model')
                     # GPU follows the queue's current choice (the Analyze dialog's
@@ -2826,11 +2842,72 @@ class Api:
                 finally:
                     _set(done=True, finished_at=time.time())
 
-            _t.Thread(target=_runner, name=f'UpgradeV3-{job_id[:8]}', daemon=True).start()
-            return {'success': True, 'job_id': job_id}
+            self._enqueue_upgrade(job_id, _runner)
+            return {'success': True, 'job_id': job_id, 'queued': queued_behind}
         except Exception as e:
             error(f'[API] upgrade_folder_v3({folder_path!r}) error: {e}')
             return {'success': False, 'error': str(e)}
+
+    def _enqueue_upgrade(self, job_id: str, runner) -> None:
+        """Run ``runner`` on the single upgrade worker, after earlier jobs.
+
+        Upgrades share the analysis queue's pipeline (one ORT session per
+        model per process), so they must not run concurrently.
+        """
+        import collections as _c
+        import threading as _t
+        lock, _ = self._smart_jobs()
+        with lock:
+            if getattr(self, '_upgrade_pending', None) is None:
+                self._upgrade_pending = _c.deque()
+            self._upgrade_pending.append((job_id, runner))
+            worker = getattr(self, '_upgrade_worker', None)
+            if worker is not None and worker.is_alive():
+                return
+
+            def _drain():
+                while True:
+                    with lock:
+                        if not self._upgrade_pending:
+                            self._upgrade_worker = None
+                            return
+                        _jid, fn = self._upgrade_pending.popleft()
+                    try:
+                        fn()
+                    except Exception as e:  # runner reports its own errors
+                        error(f'[API] upgrade worker: job {_jid[:8]} raised {e}')
+
+            self._upgrade_worker = _t.Thread(target=_drain, name='UpgradeV3-worker', daemon=True)
+            self._upgrade_worker.start()
+
+    def upgrade_folders_v3(self, folder_paths) -> dict:
+        """Queue pipeline-3 upgrades for several folders (run one at a time).
+
+        Returns ``{success, results: [{path, success, job_id?, error?,
+        reason?, queued?}]}`` in the order given. Folders that are already
+        current, need a re-analysis or are being analysed are reported per
+        entry; the rest are queued.
+        """
+        if not isinstance(folder_paths, list):
+            return {'success': False, 'error': 'folder_paths must be a list'}
+        results = []
+        for fp in folder_paths[:500]:
+            if not isinstance(fp, str) or not fp:
+                continue
+            try:
+                _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                    fp, context='upgrade_folders_v3', require_root_exists=True,
+                )
+                if not err and os.path.isdir(kestrel_dir):
+                    st = self._upgrade_module().eligibility(kestrel_dir).get('status')
+                    if st in ('current', 'not_analyzed'):
+                        results.append({'path': fp, 'success': False, 'error': st})
+                        continue
+            except Exception:
+                pass  # upgrade_folder_v3 re-validates and reports the error
+            res = self.upgrade_folder_v3(fp)
+            results.append({'path': fp, **res})
+        return {'success': True, 'results': results}
 
     def smart_search_index_folder(self, folder_path: str) -> dict:
         """Pre-3.0 name of :meth:`upgrade_folder_v3` (indexing IS the upgrade now)."""
@@ -2853,8 +2930,9 @@ class Api:
         Running jobs, plus finished ones the user has not dismissed with the
         panel's close button (``clear_queue_done``). Each row is ``{job_id,
         kind: 'upgrade', path, name, status, phase, current, total, error,
-        started_at, finished_at}``; ``status`` is ``running`` while the job is
-        alive, then ``done`` / ``cancelled`` / ``stopped`` / ``error``.
+        started_at, finished_at}``; ``status`` is ``pending`` while the job
+        waits its turn, ``running`` while it runs, then ``done`` /
+        ``cancelled`` / ``stopped`` / ``error``.
         """
         lock, jobs = self._smart_jobs()
         out = []
@@ -2865,7 +2943,10 @@ class Api:
                     continue
                 path = j.get('path') or j.get('root') or os.path.dirname(j.get('kestrel_dir') or '')
                 phase = str(pr.get('phase') or '')
-                status = self._UPGRADE_ROW_STATUS.get(phase, 'error') if pr.get('done') else 'running'
+                if pr.get('done'):
+                    status = self._UPGRADE_ROW_STATUS.get(phase, 'error')
+                else:
+                    status = 'pending' if phase == 'queued' else 'running'
                 out.append({
                     'job_id': jid,
                     'kind': 'upgrade',
@@ -2895,6 +2976,12 @@ class Api:
         if job is None:
             return {'success': False, 'error': 'not_found'}
         job['cancel_event'].set()
+        with lock:
+            pr = job['progress']
+            if pr.get('phase') == 'queued' and not pr.get('done'):
+                # Never started: settle it now so the panel updates at once
+                # (the worker skips it when its turn comes).
+                pr.update(phase='canceled', done=True, finished_at=time.time())
         return {'success': True}
 
     def open_folder(self, path: str):

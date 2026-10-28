@@ -360,52 +360,69 @@
       _smartUpdateUi();
     }
 
-    async function _smartIndexMissing() {
+    /** Why an upgrade request was refused, as toast text. */
+    function _smartUpgradeRefusal(res) {
+      if (res?.error === 'analysis_running') return 'this folder is being analyzed; upgrade it once analysis finishes.';
+      if (res?.error === 'reanalyze_required') return res.reason || 're-analyse this folder to use smart search.';
+      return String(res?.error || 'unknown error');
+    }
+
+    /** Queue pipeline-3 upgrades for `roots`. The worker runs them one at a
+     *  time in this order; progress, Cancel, the folder-tree hourglass and the
+     *  end-of-job toast + reload are the analysis-queue panel's job (queue.js
+     *  renders get_queue_status().upgrades and calls
+     *  smartSearchOnUpgradeFinished). Returns the number of folders queued. */
+    async function smartSearchQueueUpgrades(roots, { quietSkips = false } = {}) {
       const api = window.pywebview?.api;
-      const start_fn = api?.upgrade_folder_v3 || api?.smart_search_index_folder;
-      if (!start_fn || _smart.indexing) return;
+      const list = [...new Set((roots || []).filter(Boolean))];
+      if (!api || !list.length) return 0;
+      let results = null;
+      if (api.upgrade_folders_v3) {
+        try { results = (await api.upgrade_folders_v3(list))?.results || null; } catch (_) { results = null; }
+      }
+      if (!results) {
+        const start_fn = api.upgrade_folder_v3 || api.smart_search_index_folder;
+        if (!start_fn) return 0;
+        results = [];
+        for (const rp of list) {
+          let r;
+          try { r = await start_fn.call(api, rp); } catch (e) { r = { success: false, error: String(e) }; }
+          results.push({ path: rp, ...r });
+        }
+      }
+      let queued = 0;
+      for (const r of results) {
+        if (r?.success && r.job_id) {
+          queued += 1;
+          if (typeof window.queueTrackUpgradeJob === 'function') window.queueTrackUpgradeJob(r.job_id);
+        } else if (!(quietSkips && (r?.error === 'current' || r?.error === 'not_analyzed'))) {
+          const why = r?.error === 'current' ? 'already on pipeline 3.0.' : _smartUpgradeRefusal(r);
+          showToast(`Couldn’t upgrade ${_smartFolderName(r?.path || '')}: ${why}`, 6000);
+        }
+      }
+      return queued;
+    }
+    window.smartSearchQueueUpgrades = smartSearchQueueUpgrades;
+
+    async function _smartIndexMissing() {
+      if (_smart.indexing) return;
       const targets = _smart.needsIndex.filter(n => n.upgrade !== 'reanalyze').map(n => n.root);
       _smart.indexing = true;
       _smartUpdateUi();
       try {
-        // One folder at a time. Progress, Cancel, the folder-tree hourglass and
-        // the end-of-job toast + reload are the analysis-queue panel's job
-        // (queue.js renders get_queue_status().upgrades and calls
-        // smartSearchOnUpgradeFinished); this loop only sequences the folders.
-        for (const rp of targets) {
-          let start;
-          try { start = await start_fn.call(api, rp); } catch (e) { start = { success: false, error: String(e) }; }
-          if (!start?.success) {
-            const why = start?.error === 'analysis_running'
-              ? 'this folder is being analyzed; upgrade it once analysis finishes.'
-              : start?.error === 'reanalyze_required'
-                ? (start.reason || 're-analyse this folder to use smart search.')
-                : String(start?.error || 'unknown error');
-            showToast(`Couldn’t upgrade ${_smartFolderName(rp)}: ${why}`, 6000);
-            continue;
-          }
-          if (typeof window.queueTrackUpgradeJob === 'function') window.queueTrackUpgradeJob(start.job_id);
-          let p = null;
-          for (;;) {
-            await new Promise(r => setTimeout(r, 500));
-            try { p = (await api.get_smart_search_index_progress(start.job_id))?.progress; } catch (_) { p = null; }
-            if (!p || p.done) break;
-          }
-          // Cancel on one row stops the rest of a multi-folder run too.
-          if (p && (p.phase === 'canceled' || p.phase === 'stopped')) break;
-        }
+        await smartSearchQueueUpgrades(targets);
       } finally {
         _smart.indexing = false;
         _smart.needsIndex = [];
         _smartUpdateUi();
       }
-      await _smartRun();
     }
 
     let _smartReloadChain = Promise.resolve();
 
     /** Called by queue.js once per upgrade job when it leaves 'running'. */
     function smartSearchOnUpgradeFinished(u) {
+      try { window.invalidateFolderPipelineStatus?.(); } catch (_) { }
       const name = u?.name || _smartFolderName(u?.path || '');
       if (u.status === 'error') showToast(`Upgrade of ${name} failed: ${u.error || 'unknown error'}`, 6000);
       else if (u.status === 'stopped') showToast(`Upgrade of ${name} paused because analysis started. Try again when it finishes.`, 6000);
@@ -423,13 +440,16 @@
       });
     }
     window.smartSearchOnUpgradeFinished = smartSearchOnUpgradeFinished;
-    window.smartSearchOnUpgradesChanged = () => { try { _smartUpdateUi(); } catch (_) { } };
+    window.smartSearchOnUpgradesChanged = () => {
+      try { _smartUpdateUi(); } catch (_) { }
+      try { window.syncFolderUpgradeButtons?.(); } catch (_) { }
+    };
 
-    /** Folder action (sidebar / menus): upgrade one folder to pipeline 3. */
+    /** Folder action (sidebar / menus): queue one folder's pipeline-3 upgrade.
+     *  Safe while other upgrades run: it waits its turn in the queue panel. */
     async function smartSearchUpgradeFolder(rp) {
       if (!rp) return;
-      _smart.needsIndex = [{ root: rp, upgrade: 'upgradable', indexed: 0, total: 0 }];
-      await _smartIndexMissing();
+      await smartSearchQueueUpgrades([rp]);
     }
     window.smartSearchUpgradeFolder = smartSearchUpgradeFolder;
 
