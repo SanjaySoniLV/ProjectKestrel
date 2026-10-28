@@ -856,3 +856,64 @@
   background: #10131a;
   font-size: 11px;
 }
+
+/* ── Primary subject (js/primary-subject.js, prototype) ── */
+.scene-crop-overlay-box.active { z-index: 2; }
+.scene-crop-overlay-hint {
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  white-space: nowrap;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.35;
+  padding: 3px 7px;
+  border-radius: 5px;
+  color: #f2c14c;
+  background: rgba(13, 17, 23, 0.9);
+  border: 1px solid rgba(242, 193, 76, 0.45);
+}
+.scene-crop-overlay-hint kbd {
+  display: inline-block;
+  font: 600 9.5px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: #e7e9ee;
+  background: #222a38;
+  border: 1px solid #3a4558;
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  padding: 1px 4px;
+  margin: 0 1px;
+}
+.filmstrip-card .filmstrip-thumb { position: relative; }
+.filmstrip-card .ps-badge {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 4px;
+  pointer-events: none;
+}
+.filmstrip-card .ps-badge.unsure { background: rgba(243, 156, 18, 0.25); color: #f5b041; border: 1px dashed #f5b041; }
+.filmstrip-card .ps-badge.missing { background: rgba(20, 24, 32, 0.85); color: var(--muted); }
+.filmstrip-card.ps-missing .filmstrip-thumb img { opacity: 0.45; }
+.ps-crop-note {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  z-index: 6;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(13, 17, 23, 0.85);
+  border: 1px solid #3a4152;
+  color: var(--warn);
+  pointer-events: none;
+}

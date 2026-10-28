@@ -154,13 +154,21 @@
 
         const label = document.createElement('div');
         label.className = 'scene-crop-overlay-label';
-        label.textContent = `#${idx + 1}`;
+        label.textContent = (typeof psCropLabel === 'function' && psCropLabel(row, idx)) || `#${idx + 1}`;
         boxEl.appendChild(label);
+        const hintText = idx === activeIndex && typeof psCropHint === 'function' ? psCropHint(row, idx) : null;
+        if (hintText) {
+          const hint = document.createElement('div');
+          hint.className = 'scene-crop-overlay-hint';
+          hint.innerHTML = hintText; // static markup from psCropHint
+          boxEl.appendChild(hint);
+        }
         layer.appendChild(boxEl);
       });
 
       box.appendChild(layer);
       requestAnimationFrame(() => layer.classList.add('visible'));
+      if (durationMs <= 0) return; // persistent (primary-subject bird numbers)
       box.__sceneCropOverlayTimer = setTimeout(() => {
         layer.classList.remove('visible');
         setTimeout(() => {
@@ -502,6 +510,7 @@
         // Double-click to open in editor
         card.addEventListener('dblclick', (ev) => { ev.stopPropagation(); openInEditor(r); });
 
+        if (typeof psDecorateCard === 'function') psDecorateCard(card, r);
         frag.appendChild(card);
       }
       grid.appendChild(frag);
@@ -753,11 +762,12 @@
       }
 
       if (overlayActiveCrop) {
-        _showSceneCropOverlay(r, cropState.activeIndex, 1000);
+        _showSceneCropOverlay(r, cropState.activeIndex, 2200);
       }
       // The export box may have been rebuilt; redraw the hover outline.
       if (_cropHover.inside) _syncCropHoverRow(_cropHoverRow());
       _renderCropHoverLayer();
+      if (typeof psAfterSelect === 'function') psAfterSelect(r);
     }
 
     // Repaint the grid once, on close, if cull decisions changed while the
@@ -1895,6 +1905,8 @@
           const r = scene.images[currentImageIndex];
           if (!r) return;
           ev.preventDefault();
+          // Shift+Click a bird's box: focus the scene on that bird (js/primary-subject.js).
+          if (ev.shiftKey && typeof psHandleShiftClick === 'function' && psHandleShiftClick(r, ev, exportImgBox)) return;
           const hit = _cropIndexAtPoint(r, ev.clientX, ev.clientY);
           if (hit >= 0) _beginCropClickOrZoom(r, exportImgBox, ev, hit);
           else startSceneZoomPreview(r, exportImgBox, ev);
@@ -1962,6 +1974,7 @@
 
       // ── Show dialog and select start image ──
       sceneDlg.showModal();
+      if (typeof psOnSceneOpen === 'function') void psOnSceneOpen(scene);
       await selectFilmstripImage(startIndex, scene);
     }
 
@@ -2227,6 +2240,19 @@
         case ' ':
           e.preventDefault();
           if (images[currentImageIndex]) openInEditor(images[currentImageIndex]);
+          break;
+        // Primary subject (prototype): focus the scene on the active crop's bird / bird numbers.
+        case 'f':
+        case 'F':
+          if (hasSceneModifier || typeof psFocusActive !== 'function') break;
+          e.preventDefault();
+          psFocusActive();
+          break;
+        case 'b':
+        case 'B':
+          if (hasSceneModifier || typeof psToggleIds !== 'function') break;
+          e.preventDefault();
+          psToggleIds();
           break;
         case 'Escape':
           e.preventDefault();

@@ -1383,6 +1383,7 @@ class Api:
                     data = f.read()
 
             self._track_cache_root(parent_folder)
+            self._refresh_bird_links_async(kestrel_dir)
             
             
             return {
@@ -2908,6 +2909,52 @@ class Api:
             res = self.upgrade_folder_v3(fp)
             results.append({'path': fp, **res})
         return {'success': True, 'results': results}
+
+    @staticmethod
+    def _primary_subject_module():
+        try:
+            from kestrel_analyzer import primary_subject as _ps
+        except ImportError:  # package-style import path
+            from analyzer.kestrel_analyzer import primary_subject as _ps  # type: ignore[no-redef]
+        return _ps
+
+    def _refresh_bird_links_async(self, kestrel_dir: str) -> None:
+        """On folder load: compute bird links for scenes that lack them (pipeline-3.0.0
+        folders, or scenes added since). Never while this app is analysing/upgrading."""
+        try:
+            if self._running_upgrade_job(kestrel_dir) or self.is_analysis_running().get('running'):
+                return
+        except Exception:
+            return
+        _ps = self._primary_subject_module()
+
+        def _run():
+            try:
+                _ps.ensure_links(kestrel_dir)
+            except Exception as e:
+                error(f'[API] bird links refresh failed: {e}')
+        import threading as _t
+        _t.Thread(target=_run, name='bird-links', daemon=True).start()
+
+    def primary_subject_links(self, folder_path: str) -> dict:
+        """Stored bird numbers for a folder (computed first if missing or stale).
+
+        Returns ``{success, scenes: {scene_count: {files, ids: {file: {crop_index: bird}},
+        margins: {file: {crop_index: margin}}}}, min_margin}``. Read-only apart from the
+        ``.kestrel/bird_links.json`` sidecar.
+        """
+        try:
+            _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path, context='primary_subject_links', require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            _ps = self._primary_subject_module()
+            data = _ps.ensure_links(kestrel_dir)
+            return {'success': True, 'scenes': data.get('scenes', {}), 'min_margin': _ps.MIN_MARGIN}
+        except Exception as e:
+            error(f'[API] primary_subject_links error: {e}')
+            return {'success': False, 'error': str(e)}
 
     def smart_search_index_folder(self, folder_path: str) -> dict:
         """Pre-3.0 name of :meth:`upgrade_folder_v3` (indexing IS the upgrade now)."""

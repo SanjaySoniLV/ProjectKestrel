@@ -2234,6 +2234,18 @@ class AnalysisPipeline:
                             stage="post_analysis_normalization",
                         )
 
+                    # Bird numbers across each scene's frames (primary-subject focus).
+                    # Stored now so they survive culls that later delete frames.
+                    try:
+                        from . import primary_subject as _primary_subject
+                        _primary_subject.ensure_links(kestrel_dir)
+                    except Exception as _ps_e:
+                        log_warning(
+                            self._log_path,
+                            f"Failed to update bird_links.json: {_ps_e}",
+                            stage="post_analysis_normalization",
+                        )
+
                 log_event(
                     self._log_path,
                     {
