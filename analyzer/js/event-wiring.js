@@ -64,9 +64,19 @@
         const speciesRegions = (speciesOn && typeof getAnalyzeDlgSpeciesRegions === 'function')
           ? getAnalyzeDlgSpeciesRegions() : null;
 
+        // Pipeline-3 eligibility drives the per-folder upgrade choice; wait
+        // for any lookup still in flight so Start never re-analyzes a folder
+        // the user would have seen offered as an upgrade. A failed lookup
+        // leaves that folder on the normal path.
+        if (typeof _adlgEnsureUpgradeStatus === 'function') {
+          try { await _adlgEnsureUpgradeStatus(checkedNorms); } catch (_) { }
+        }
+
         // Compute per-item options and classify each folder.
         const perItemOptions = {};
         const destructive = []; // [{path, name, reason}]
+        const analysisNorms = [];
+        const upgradeNorms = []; // queued via upgrade_folders_v3, not analysed
         for (const norm of checkedNorms) {
           const node = _adlgFindNode(norm);
           const info = analyzeDlgInspectionCache.get(norm);
@@ -77,8 +87,18 @@
           const outdated = node ? (typeof isVersionOutdated === 'function' && isVersionOutdated(node)) : false;
           const isFullyAnalyzed = total > 0 && processed >= total && errored === 0;
 
+          const upgradeMode = (typeof analyzeDlgUpgradeModeFor === 'function')
+            ? analyzeDlgUpgradeModeFor(norm) : null;
+          if (upgradeMode === 'upgrade') {
+            upgradeNorms.push(norm);
+            continue;
+          }
+          analysisNorms.push(norm);
           const opts = {};
-          if (outdated) {
+          if (upgradeMode === 'reanalyze') {
+            opts.delete_kestrel_on_start = true;
+            destructive.push({ path: norm, name, reason: 're-analyze from scratch instead of upgrading to pipeline 3.0' });
+          } else if (outdated) {
             // Outdated always wipes + re-analyzes (the user picked a folder
             // analyzed on an older Kestrel; the new pipeline can't safely
             // resume from old artifacts).
@@ -102,18 +122,22 @@
         // If any destructive flags are set, open the confirmation modal.
         if (destructive.length > 0) {
           _openAnalyzeConfirmModal(destructive, async () => {
-            await _persistAnalyzeSettingsAndStart(checkedNorms, perItemOptions, retryErrored);
+            await _persistAnalyzeSettingsAndStart(analysisNorms, perItemOptions, retryErrored, upgradeNorms);
           });
           return;
         }
-        await _persistAnalyzeSettingsAndStart(checkedNorms, perItemOptions, retryErrored);
+        await _persistAnalyzeSettingsAndStart(analysisNorms, perItemOptions, retryErrored, upgradeNorms);
       });
     }
 
     // Persist advanced settings, then call start_analysis_queue. Used by
     // both the direct-start path (no destructive flags) and the post-
-    // confirmation path.
-    async function _persistAnalyzeSettingsAndStart(paths, perItemOptions, retryErrored) {
+    // confirmation path. `upgradePaths` are folders the user left on
+    // "Upgrade to pipeline 3.0": they are queued as upgrade jobs (shown as
+    // upgrade rows in the queue panel) and never analysed. Upgrades always
+    // run locally, also when the destination is Cloud Compute — they only
+    // re-read stored crops, which the cloud service does not have.
+    async function _persistAnalyzeSettingsAndStart(paths, perItemOptions, retryErrored, upgradePaths = []) {
       // Read + persist advanced settings.
       const dtVal = Math.max(0.1, Math.min(0.99, parseFloat(document.getElementById('adlgDetectionThreshold')?.value) || 0.15));
       const mbcRaw = parseInt(document.getElementById('adlgMaxBirdCrops')?.value, 10);
@@ -161,6 +185,18 @@
       if (startBtn) startBtn.disabled = true;
       document.getElementById('analyzeQueueDlg').close();
       try {
+        let upgradesQueued = 0;
+        if (upgradePaths && upgradePaths.length) {
+          if (typeof smartSearchQueueUpgrades === 'function') {
+            try { upgradesQueued = await smartSearchQueueUpgrades(upgradePaths); } catch (e) {
+              console.warn('[analyzeDlg] queueing upgrades failed', e);
+            }
+          }
+          if (!paths.length) {
+            setStatus(`${upgradesQueued} folder(s) queued for the pipeline 3.0 upgrade`);
+            return;
+          }
+        }
         // Cloud destination: clear .kestrel synchronously for any destructive
         // items (the cloud worker doesn't see local .kestrel state), then
         // submit each folder via the cloud-compute bridge. Local destination
@@ -198,12 +234,13 @@
           renderQueuePanel(status);
           const skipped = Array.isArray(result.skipped_paths) ? result.skipped_paths : [];
           const queued = result.added || (paths.length - skipped.length);
+          const upgradeFrag = upgradesQueued ? `; ${upgradesQueued} queued for the pipeline 3.0 upgrade` : '';
           if (skipped.length) {
             // Folders that vanished between being listed and being queued.
             // Say so; the rest of the queue is running.
-            setStatus(`Analysis queue started — ${queued} folder(s) queued; ${skipped.length} skipped (no longer exist): ${skipped.join(', ')}`);
+            setStatus(`Analysis queue started — ${queued} folder(s) queued${upgradeFrag}; ${skipped.length} skipped (no longer exist): ${skipped.join(', ')}`);
           } else {
-            setStatus(`Analysis queue started — ${queued} folder(s) queued`);
+            setStatus(`Analysis queue started — ${queued} folder(s) queued${upgradeFrag}`);
           }
           setTimeout(() => { try { hideLoadingAnalyzer(); } catch (e) { } }, 30000);
         } else {
