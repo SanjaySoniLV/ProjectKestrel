@@ -59,7 +59,7 @@
       },
       {
         title: 'Search and filter',
-        body: 'Use the <b>Filter &amp; Sort</b> panel to narrow your scenes down:<br><br>• <b>Search</b> by bird species or family — the grid filters instantly.<br>• <b>Sort</b> by Capture Time, Quality, or Image Count.<br>• Toggle <b>Group by folder</b> / <b>capture time</b> to reorganize.<br><br>You can always tweak further in the options below.',
+        body: 'Use the <b>filter bar</b> above the timeline to narrow your scenes down:<br><br>• <b>Search</b> by bird species or family — the grid filters instantly.<br>• <b>Sort</b> by Capture Time, Quality, or Image Count.<br>• Open <b>⚙ More</b> to toggle <b>Group by folder</b> / <b>capture time</b> and more.<br><br>You can always tweak further from there.',
         target: '#timelineFilterBar',
         position: 'bottom',
       },
@@ -143,7 +143,7 @@
       },
       {
         title: 'Filtering options',
-        body: '• <b>Search</b> for any bird species or family — the grid filters instantly as you type.<br>• Don’t see scenes after searching? Lower the <b>Confidence</b> threshold to see more results.<br>• Enable <b>Multi-subject mode</b> if your scenes contain multiple species.<br>• <b>Sort</b> by Capture Time, Quality, Scene ID, or Image Count.<br>• Toggle <b>Group by folder</b> / <b>capture time</b> to reorganize the grid.',
+        body: '• <b>Search</b> for any bird species or family — the grid filters instantly as you type.<br>• Don’t see scenes after searching? Lower the <b>Confidence</b> threshold to see more results.<br>• Open <b>⚙ More</b> and enable <b>Multi-subject mode</b> if your scenes contain multiple species.<br>• <b>Sort</b> by Capture Time, Quality, Scene ID, or Image Count.<br>• Also in <b>⚙ More</b>: toggle <b>Group by folder</b> / <b>capture time</b> to reorganize the grid.',
         target: '#timelineFilterBar',
         position: 'bottom',
       },
