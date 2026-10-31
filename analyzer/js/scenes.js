@@ -56,6 +56,27 @@
       return _bestByQuality(arr) || arr[0];
     }
 
+    // ── Scene viewer image order ──────────────────────────────────────────────
+    // 'quality' = best quality first (default). 'time' = capture order, with the
+    // filename as tie-break and as the fallback when a photo has no capture time.
+    function getSceneFilmstripOrder() {
+      return getSetting(SCENE_FILMSTRIP_ORDER_KEY, 'quality') === 'time' ? 'time' : 'quality';
+    }
+
+    function sortSceneImages(rows, order) {
+      const byName = (a, b) => String(a.filename || '').localeCompare(String(b.filename || ''), undefined, { numeric: true });
+      const out = rows.slice();
+      if (order === 'time') {
+        return out.sort((a, b) => {
+          const ta = parseCaptureTimeMs(a.capture_time);
+          const tb = parseCaptureTimeMs(b.capture_time);
+          if (Number.isFinite(ta) && Number.isFinite(tb) && ta !== tb) return ta - tb;
+          return byName(a, b);
+        });
+      }
+      return out.sort((a, b) => parseNumber(b.quality) - parseNumber(a.quality));
+    }
+
     function aggregateScenes(minSpeciesConf, searchTerm, sortBy, includeSecondary, includeFamilies) {
       const groups = new Map();
       for (const r of rows) {
@@ -92,7 +113,7 @@
 
         list.push({
           id: sceneId,
-          images: arr.slice().sort((a, b) => parseNumber(b.quality) - parseNumber(a.quality)),
+          images: sortSceneImages(arr, getSceneFilmstripOrder()),
           representative: rep,
           imageCount: arr.length,
           cullCounts,

@@ -141,20 +141,34 @@
   gap: 6px;
   flex-shrink: 0;
 }
-.scene-shortcut-btn {
-  background: none;
-  border: 1px solid transparent;
-  padding: 2px 8px;
-  font-size: 16px;
-  cursor: pointer;
-  border-radius: 6px;
+.scene-review-slot {
+  display: inline-flex;
+  align-items: center;
+}
+.scene-review-slot .approval-note {
+  font-size: 12px;
+}
+.scene-review-slot .mark-reviewed-btn {
   height: auto;
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: var(--radius-sm);
+}
+/* Secondary header actions: no border until hovered. */
+.scene-topbar-icon-btn {
+  background: none;
+  border: 0;
+  padding: 4px 8px;
+  height: auto;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
   color: var(--muted);
 }
-.scene-shortcut-btn:hover {
+.scene-topbar-icon-btn:hover {
   color: var(--text);
-  border-color: #2a3040;
-  background: #1d2230;
+  background: var(--chip);
 }
 
 /* ── Shortcut legend bar ── */
@@ -275,36 +289,43 @@
   image-rendering: auto;
   display: block;
 }
+/* Copy: small icon in the corner of the image, shown while hovering or focusing it. */
 .scene-preview-copy-btn {
   position: absolute;
-  right: 10px;
-  bottom: 10px;
+  right: 8px;
+  bottom: 8px;
   z-index: 6;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 4px 8px;
-  border: 1px solid #2a3040;
-  border-radius: 7px;
-  background: rgba(14,17,23,0.88);
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: rgba(14,17,23,0.7);
   color: #cbd2dc;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1.1;
+  line-height: 1;
   cursor: pointer;
-  transition: background .12s ease, border-color .12s ease, color .12s ease, opacity .12s ease;
+  opacity: 0;
+  transition: background .12s ease, opacity .12s ease;
+}
+.scene-preview-img:hover .scene-preview-copy-btn,
+.scene-preview-copy-btn:focus-visible {
+  opacity: 1;
 }
 .scene-preview-copy-btn:hover {
-  background: #1b2a42;
-  border-color: #3a84e6;
-  color: #fff;
+  background: rgba(27,42,66,0.95);
 }
 .scene-preview-copy-btn:disabled {
   cursor: not-allowed;
-  opacity: 0.45;
+  opacity: 0;
+}
+.scene-preview-img:hover .scene-preview-copy-btn:disabled {
+  opacity: 0.35;
 }
 .scene-preview-copy-btn .copy-icon {
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1;
 }
 .scene-zoom-bar {
@@ -345,9 +366,9 @@
   align-items: center;
   gap: 4px;
   padding: 2px 9px;
-  border: 1px solid #2a3040;
-  border-radius: 7px;
-  background: rgba(14,17,23,0.88);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--chip);
   color: #8a93a3;
   font-size: 11px;
   font-weight: 600;
@@ -504,9 +525,8 @@
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 6px 14px;
+  padding: 8px 14px;
   background: #111318;
-  border-top: 1px solid #1f2533;
   font-size: 13px;
   flex-shrink: 0;
   flex-wrap: wrap;
@@ -531,10 +551,9 @@
 .scene-cull-toggle {
   display: flex;
   background: #1a1e26;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 2px;
   gap: 2px;
-  border: 1px solid #2a3040;
 }
 .cull-btn {
   background: transparent;
@@ -588,8 +607,7 @@
   align-items: center;
   gap: 2px;
   background: #1a1e26;
-  border: 1px solid #2a3040;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 2px;
   flex-shrink: 0;
 }
@@ -626,21 +644,20 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  background: #1a2235;
-  border: 1px solid #2a3d5c;
-  color: #a9c9ee;
-  font-size: 11px;
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font-size: 12px;
   font-weight: 600;
   padding: 4px 10px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: background .12s ease, border-color .12s ease, color .12s ease, opacity .12s ease;
+  transition: background .12s ease, color .12s ease, opacity .12s ease;
   flex-shrink: 0;
 }
 .scene-info-editor-btn:hover {
-  background: #1b2a42;
-  border-color: var(--brand);
-  color: #fff;
+  background: var(--chip);
+  color: var(--text);
 }
 .scene-info-editor-btn:disabled {
   opacity: 0.45;
@@ -651,13 +668,63 @@
   line-height: 1;
 }
 
+/* ── BOTTOM: Filmstrip toolbar (order, sharpness feedback, scene actions) ── */
+.scene-filmstrip-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 14px;
+  background: #0b0d12;
+  border-top: 1px solid #1f2533;
+  font-size: 12px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.scene-filmstrip-bar-spacer { flex: 1 1 auto; }
+.scene-filmstrip-bar-btn {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  height: auto;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.scene-filmstrip-bar-btn:hover {
+  background: var(--chip);
+  color: var(--text);
+}
+.scene-order-toggle {
+  display: inline-flex;
+  background: #1a1e26;
+  border-radius: var(--radius-sm);
+  padding: 2px;
+  gap: 2px;
+}
+.scene-order-toggle button {
+  background: transparent;
+  border: 0;
+  color: #6a768c;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 10px;
+  height: auto;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.scene-order-toggle button:hover { color: #cbd2dc; background: #252d40; }
+.scene-order-toggle button.active { background: #2a3042; color: var(--text); }
+
 /* ── BOTTOM: Filmstrip ── */
 .scene-filmstrip-wrap {
   display: flex;
   align-items: stretch;
   flex-shrink: 0;
   height: 140px;
-  border-top: 1px solid #1f2533;
   background: #0b0d12;
   position: relative;
 }

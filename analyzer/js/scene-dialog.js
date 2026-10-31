@@ -1475,13 +1475,15 @@
         html += `<button class="scene-chip-add" data-add-type="family" title="Add family tag">+</button>`;
       }
 
-      if (approved) {
-        html += '<span class="scene-tag-sep"></span><span class="approval-note" style="font-size:11px">✓ Reviewed</span>';
-      } else {
-        html += '<span class="scene-tag-sep"></span><button class="mark-reviewed-btn" id="markReviewedBtn" title="Confirm that Kestrel\'s tags are correct and mark this scene as reviewed">✓ Mark as Reviewed</button>';
-      }
-
       tagsEl.innerHTML = html;
+
+      // Review state lives in the header's right-hand slot, apart from the tag chips.
+      const reviewSlot = el('#sceneReviewSlot');
+      if (reviewSlot) {
+        reviewSlot.innerHTML = approved
+          ? '<span class="approval-note">✓ Reviewed</span>'
+          : '<button class="mark-reviewed-btn" id="markReviewedBtn" title="Confirm that Kestrel\'s tags are correct and mark this scene as reviewed (Ctrl/Cmd+R)">✓ Mark as Reviewed</button>';
+      }
 
       // Wire remove buttons
       tagsEl.querySelectorAll('[data-remove-species]').forEach(btn => {
@@ -1583,7 +1585,7 @@
       });
 
       // Wire "Mark as Reviewed" button
-      const markReviewedBtn = tagsEl.querySelector('#markReviewedBtn');
+      const markReviewedBtn = el('#markReviewedBtn');
       if (markReviewedBtn) {
         markReviewedBtn.onclick = () => {
           _beginSceneEditDraft(scene.id);
@@ -1827,6 +1829,8 @@
       _sceneEditMode = false;
       _sceneEditDraft = null;
       currentImageIndex = startIndex;
+      // The scene list may have been built before the filmstrip order setting changed.
+      scene.images.splice(0, scene.images.length, ...sortSceneImages(scene.images, getSceneFilmstripOrder()));
       _applyScenePreviewSplit(_getScenePreviewSplitSetting());
 
       // ── Top bar: title ──
@@ -1880,6 +1884,10 @@
 
       // ── Filmstrip ──
       renderFilmstrip(scene);
+      _syncFilmstripOrderToggle();
+      document.querySelectorAll('#sceneOrderToggle [data-order]').forEach(b => {
+        b.onclick = () => { void _setFilmstripOrder(b.dataset.order); };
+      });
 
       // ── Quality feedback prompt (js/quality-feedback.js) ──
       if (typeof qfRenderSceneControl === 'function') {
@@ -2268,6 +2276,31 @@
       renderFilmstrip(_currentScene);
       // Re-select the current image to update previews and info bar
       selectFilmstripImage(currentImageIndex, _currentScene);
+    }
+
+    // ── Filmstrip order toggle (Best quality first / Capture order) ──
+    function _syncFilmstripOrderToggle() {
+      const order = getSceneFilmstripOrder();
+      document.querySelectorAll('#sceneOrderToggle [data-order]').forEach(b => {
+        const on = b.dataset.order === order;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+    }
+
+    /** Re-order the open scene in place so arrow-key navigation follows the visible order. */
+    async function _setFilmstripOrder(order) {
+      if (!_currentScene || _splitMode) return;
+      if (order === getSceneFilmstripOrder()) return;
+      mergeSetting(SCENE_FILMSTRIP_ORDER_KEY, order);
+      _syncFilmstripOrderToggle();
+      const imgs = _currentScene.images;
+      const selected = imgs[currentImageIndex];
+      imgs.splice(0, imgs.length, ...sortSceneImages(imgs, order));
+      const idx = imgs.indexOf(selected);
+      currentImageIndex = idx >= 0 ? idx : 0;
+      renderFilmstrip(_currentScene);
+      await selectFilmstripImage(currentImageIndex, _currentScene);
     }
 
     async function _resortAndFocusSceneImage(targetRow, overlayActiveCrop = true) {
