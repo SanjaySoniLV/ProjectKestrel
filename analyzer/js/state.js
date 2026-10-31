@@ -81,6 +81,8 @@
     let _focusedCardId = null;         // Scene ID of the keyboard-focused card in the grid
     // Track which scene dialog is open for refreshing filters
     let currentSceneId = null;
+    // Filmstrip order in the scene viewer: 'quality' (best first) or 'time' (capture order).
+    const SCENE_FILMSTRIP_ORDER_KEY = 'scene_filmstrip_order';
     const SCENE_PREVIEW_SPLIT_KEY = 'scene_preview_split_ratio';
     const SCENE_PREVIEW_SPLIT_DEFAULT = 0.68;
     const SCENE_PREVIEW_SPLIT_MIN = 0.25;

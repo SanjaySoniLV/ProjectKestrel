@@ -383,10 +383,10 @@
           <!-- Species/Family chips + inline (+) add rendered by JS -->
         </div>
         <div class="scene-topbar-right">
-          <button class="scene-shortcut-btn" id="sceneShortcutBtn" title="Show keyboard shortcuts">⌨ Show keyboard shortcuts</button>
-          <button id="sceneRejectUndecidedBtn" title="Reject every photo in this scene that has no decision yet (accepted and rejected photos are kept), then accept the keepers with Z">⊘ Reject Undecided</button>
-          <button id="splitSceneBtn" title="Split this scene into multiple scenes">✂ Split Scene</button>
-          <button id="closeDlg" title="Close (Escape)">✕ Close</button>
+          <!-- "Mark as Reviewed" / "Reviewed" is rendered here by renderTopbarTags() -->
+          <span class="scene-review-slot" id="sceneReviewSlot"></span>
+          <button class="scene-topbar-icon-btn" id="sceneShortcutBtn" title="Show keyboard shortcuts" aria-label="Show keyboard shortcuts">⌨</button>
+          <button class="scene-topbar-icon-btn" id="closeDlg" title="Close (Escape)" aria-label="Close">✕</button>
         </div>
       </div>
 
@@ -423,10 +423,7 @@
             <div class="scene-preview-label">Full Image</div>
             <div class="scene-preview-img" id="previewBox" data-raw-label="RAW">
               <span class="muted">Select an image…</span>
-              <button class="scene-preview-copy-btn" id="sceneCopyExportBtn" type="button" title="Copy full image to clipboard" aria-label="Copy full image to clipboard" disabled>
-                <span class="copy-icon">📋</span>
-                <span>Copy</span>
-              </button>
+              <button class="scene-preview-copy-btn" id="sceneCopyExportBtn" type="button" title="Copy full image to clipboard" aria-label="Copy full image to clipboard" disabled><span class="copy-icon">📋</span></button>
             </div>
             <div class="scene-zoom-bar" id="sceneZoomWrap">
               <label class="scene-zoom-ctrl" title="RAW Zoom — click and hold on the full image to zoom">
@@ -453,10 +450,7 @@
             <div class="scene-preview-label">Bird Crop</div>
             <div class="scene-preview-img" id="previewCropBox">
               <span class="muted">Select an image…</span>
-              <button class="scene-preview-copy-btn" id="sceneCopyCropBtn" type="button" title="Copy bird crop to clipboard" aria-label="Copy bird crop to clipboard" disabled>
-                <span class="copy-icon">📋</span>
-                <span>Copy</span>
-              </button>
+              <button class="scene-preview-copy-btn" id="sceneCopyCropBtn" type="button" title="Copy bird crop to clipboard" aria-label="Copy bird crop to clipboard" disabled><span class="copy-icon">📋</span></button>
             </div>
           </div>
         </div>
@@ -482,12 +476,21 @@
               <span class="scene-info-editor-label" id="sceneInfoEditorLabel">Open</span>
             </button>
           </div>
-          <!-- Quality feedback prompt (js/quality-feedback.js) -->
-          <div class="scene-qf hidden" id="sceneQf" role="group" aria-label="Quality feedback"></div>
         </div>
       </div>
 
-      <!-- ═══ BOTTOM: Filmstrip ═══ -->
+      <!-- ═══ BOTTOM: Filmstrip toolbar + filmstrip ═══ -->
+      <div class="scene-filmstrip-bar" id="sceneFilmstripBar">
+        <div class="scene-order-toggle" id="sceneOrderToggle" role="group" aria-label="Filmstrip order">
+          <button type="button" data-order="quality" title="Order photos by quality score, best first">Best quality first</button>
+          <button type="button" data-order="time" title="Order photos by capture time (filename if no time)">Capture order</button>
+        </div>
+        <!-- Quality feedback prompt (js/quality-feedback.js) -->
+        <div class="scene-qf hidden" id="sceneQf" role="group" aria-label="Quality feedback"></div>
+        <div class="scene-filmstrip-bar-spacer"></div>
+        <button class="scene-filmstrip-bar-btn" id="sceneRejectUndecidedBtn" title="Reject every photo in this scene that has no decision yet (accepted and rejected photos are kept), then accept the keepers with Z">⊘ Reject Undecided</button>
+        <button class="scene-filmstrip-bar-btn" id="splitSceneBtn" title="Split this scene into multiple scenes">✂ Split Scene…</button>
+      </div>
       <div class="scene-filmstrip-wrap">
         <div class="scene-filmstrip-hint scene-filmstrip-hint-left hidden" id="filmstripHintLeft">
           ◂ Prev Scene
