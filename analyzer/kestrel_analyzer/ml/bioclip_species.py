@@ -121,7 +121,11 @@ def format_display_name(name: str) -> str:
 class BioClipSpeciesClassifier:
     """BioCLIP 2 zero-shot classifier over the (geofenced) IOC world bird list."""
 
-    def __init__(self, models_dir: str | Path, coord: ProviderCoordinator, catalog=None):
+    def __init__(self, models_dir: str | Path, coord: ProviderCoordinator, catalog=None,
+                 load_image_tower: bool = True):
+        """``load_image_tower=False`` builds a text-side-only classifier: region masks,
+        ``set_regions``, ``classify_embedding`` and ``route`` work on stored embeddings, but
+        ``embed`` / ``classify`` need the ONNX image tower and are unavailable."""
         base = Path(models_dir)
         if base.name != "bioclip" and (base / "bioclip").is_dir():
             base = base / "bioclip"
@@ -161,10 +165,15 @@ class BioClipSpeciesClassifier:
         fam_idx = {f: i for i, f in enumerate(self.family_display_names)}
         self._species_family_idx = np.array([fam_idx[f] for f in fam], dtype=np.int64)
 
-        self.session = ResilientOnnxSession("bird_species", base / IMAGE_MODEL_FILENAME, coord,
-                                            gpu_model_path=base / GPU_IMAGE_MODEL_FILENAME)
-        self.providers_used = list(self.session.get_providers())
-        self._input_name = self.session.get_inputs()[0].name
+        if load_image_tower:
+            self.session = ResilientOnnxSession("bird_species", base / IMAGE_MODEL_FILENAME, coord,
+                                                gpu_model_path=base / GPU_IMAGE_MODEL_FILENAME)
+            self.providers_used = list(self.session.get_providers())
+            self._input_name = self.session.get_inputs()[0].name
+        else:
+            self.session = None
+            self.providers_used = []
+            self._input_name = ""
         debug(
             f"[BioClipSpeciesClassifier] {len(sci_names)} species, providers: {self.providers_used}"
         )
@@ -231,6 +240,8 @@ class BioClipSpeciesClassifier:
 
     def embed(self, images) -> np.ndarray:
         """L2-normalised float32 embeddings, one row per RGB uint8 image."""
+        if self.session is None:
+            raise RuntimeError("image tower not loaded (text-only classifier)")
         if isinstance(images, np.ndarray) and images.ndim == 3:
             images = [images]
         # One crop per run, deliberately. The tower is dynamically quantised:

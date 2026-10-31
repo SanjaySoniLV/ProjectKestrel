@@ -543,7 +543,7 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     # Analysis-mode feature toggles persisted so cloud-compute settings snapshot
     # (_cc_analysis_settings_snapshot) can read them without needing the UI to
     # pass them as runtime parameters.
-    _set_bool('wildlife_enabled', default=False)
+    _set_bool('wildlife_enabled', default=True)
     _set_bool('species_detection_enabled', default=True)
     # Smart search: also embed each image's downscaled whole frame with SigLIP
     # at analysis time (one extra tower run per photo) for context queries.

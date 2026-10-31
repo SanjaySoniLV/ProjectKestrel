@@ -31,6 +31,7 @@
   <link rel="stylesheet" href="css/dialogs/kdlg.css" />
   <link rel="stylesheet" href="css/dialogs/scene.css" />
   <link rel="stylesheet" href="css/dialogs/regroup.css" />
+  <link rel="stylesheet" href="css/dialogs/folder-settings.css" />
   <link rel="stylesheet" href="css/dialogs/settings.css" />
   <link rel="stylesheet" href="css/dialogs/analyze.css" />
   <link rel="stylesheet" href="css/dialogs/live-analysis.css" />
@@ -138,6 +139,9 @@
                right segment with its checkbox positioned at the far right so
                it aligns with the row checkboxes above. The checkbox inside the
                select button is purely visual (pointer-events: none in CSS). -->
+          <div id="treeUpgradeAllRow" class="tree-upgrade-all-row hidden">
+            <button id="treeUpgradeAll" type="button" class="tree-upgrade-all-btn" title="Upgrade every loaded folder that can be upgraded to analysis pipeline 3.0 from its saved crops. No re-analysis; ratings, culls and tags are kept.">✨ Upgrade All to 3.0…</button>
+          </div>
           <div id="folderTreeFooter" class="folder-tree-footer segmented-strip">
             <button id="treeClear" class="segmented-strip-item danger-item tree-clear-btn" title="Unload all folders and reset the tree" disabled>Clear</button>
             <button id="treeCheckAll" class="segmented-strip-item tree-select-toggle" title="Check all loaded folders" disabled>
@@ -1830,6 +1834,7 @@
   <script src="js/scene-grid.js"></script>
   <script src="js/scene-zoom.js"></script>
   <script src="js/scene-regroup.js"></script>
+  <script src="js/folder-settings.js"></script>
   <!-- settings.js MUST load before scene-dialog.js: scene-dialog's IIFE
        (setupScenePreviewDivider) calls getSetting() at parse time. -->
   <script src="js/settings.js"></script>
@@ -1879,6 +1884,7 @@
         ['culling.js',         'openCullingAssistant'],
         ['repair.js',          'openRepairDialog'],
         ['scene-regroup.js',   'openRegroupDialog'],
+        ['folder-settings.js', 'openFolderSettingsDialog'],
         ['tutorial.js',        'startMainTutorial'],
         ['welcome.js',         'WELCOME_TIPS']
       ];

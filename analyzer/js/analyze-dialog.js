@@ -1315,7 +1315,7 @@
       // the user's choice survives dialog re-opens and is visible to the cloud
       // compute snapshot path (settings.js getSetting reads localStorage).
       const _adlgWildlife = document.getElementById('analyzeWildlife');
-      if (_adlgWildlife) _adlgWildlife.checked = !!getSetting('wildlife_enabled', false);
+      if (_adlgWildlife) _adlgWildlife.checked = !!getSetting('wildlife_enabled', true);
       const _adlgSpecies = document.getElementById('analyzeSpeciesDetection');
       if (_adlgSpecies) _adlgSpecies.checked = getSetting('species_detection_enabled') !== false;
 

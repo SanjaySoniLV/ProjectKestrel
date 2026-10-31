@@ -51,6 +51,16 @@
     function _invalidateRowCropCache(row) {
       if (!row) return;
       delete row.__cropRecordsCache;
+      delete row.__allCropRecordsCache;
+      delete row.__wildlifeLabels;
+    }
+
+    // Drop UI-only ``__*`` keys (e.g. ``__fullIndex``) so they never reach crops_json.
+    function _withoutInternalKeys(crop) {
+      if (!crop || typeof crop !== 'object') return {};
+      const out = {};
+      for (const k of Object.keys(crop)) if (!k.startsWith('__')) out[k] = crop[k];
+      return out;
     }
 
     function _serializeCropRecords(crops) {
@@ -58,7 +68,7 @@
       // quality_siglip / quality_legacy / animal_score / subject, ...) survive a
       // round trip through the UI instead of being silently dropped.
       return (Array.isArray(crops) ? crops : []).map((crop, idx) => ({
-        ...(crop && typeof crop === 'object' ? crop : {}),
+        ..._withoutInternalKeys(crop),
         crop_index: _intOr(crop?.crop_index, idx),
         crop_path: String(crop?.crop_path || ''),
         detection_index: _intOr(crop?.detection_index, -1),
@@ -77,9 +87,32 @@
       }));
     }
 
+    /** Every crop record on the row, including wildlife crops that a folder's
+     *  "Ignore wildlife" setting hides from getRowCropRecords(). Always the
+     *  list to serialize back to crops_json, so hidden crops are never lost. */
+    function getRowAllCropRecords(row) {
+      getRowCropRecords(row);
+      return row?.__allCropRecordsCache || [];
+    }
+
     function getRowCropRecords(row) {
       if (!row) return [];
       if (row.__cropRecordsCache) return row.__cropRecordsCache;
+      const all = _buildRowCropRecords(row);
+      row.__allCropRecordsCache = all;
+      let visible = all;
+      if (rowIgnoresWildlife(row) && all.some(c => String(c.subject || '').toLowerCase() === 'wildlife')) {
+        // __fullIndex = position in the unfiltered list, which is what
+        // primary_crop_index refers to.
+        visible = all.map((c, i) => ({ c, i }))
+          .filter(({ c }) => String(c.subject || '').toLowerCase() !== 'wildlife')
+          .map(({ c, i }) => Object.defineProperty(c, '__fullIndex', { value: i, enumerable: false, configurable: true, writable: true }));
+      }
+      row.__cropRecordsCache = visible;
+      return visible;
+    }
+
+    function _buildRowCropRecords(row) {
 
       let parsed = [];
       const raw = String(row.crops_json || '').trim();
@@ -141,7 +174,6 @@
         });
       }
 
-      row.__cropRecordsCache = normalized;
       return normalized;
     }
 
@@ -149,7 +181,11 @@
       const list = Array.isArray(crops) ? crops : getRowCropRecords(row);
       if (!list.length) return 0;
       const explicit = _intOr(row?.primary_crop_index, -1);
-      if (explicit >= 0 && explicit < list.length) return explicit;
+      if (list.some(c => c && c.__fullIndex != null)) {
+        // Wildlife crops are hidden, so list positions no longer match the stored index.
+        const hit = list.findIndex(c => c.__fullIndex === explicit);
+        if (hit >= 0) return hit;
+      } else if (explicit >= 0 && explicit < list.length) return explicit;
       const path = String(row?.crop_path || '').trim();
       if (path) {
         const idx = list.findIndex(c => String(c.crop_path || '') === path);
@@ -197,7 +233,7 @@
       if (!crop) return false;
 
       const changed = prevPrimary !== nextPrimary || String(row.crop_path || '') !== String(crop.crop_path || '');
-      row.primary_crop_index = String(nextPrimary);
+      row.primary_crop_index = String(crop.__fullIndex != null ? crop.__fullIndex : nextPrimary);
       row.crop_path = crop.crop_path || row.crop_path || '';
       row.species = crop.species || row.species || 'Unknown';
       row.species_confidence = _numberOr(crop.species_confidence, _numberOr(row.species_confidence, 0));
@@ -220,7 +256,7 @@
         row.rating_origin = 'auto';
       }
 
-      row.crops_json = JSON.stringify(_serializeCropRecords(crops));
+      row.crops_json = JSON.stringify(_serializeCropRecords(getRowAllCropRecords(row)));
       _invalidateRowCropCache(row);
       setRowActiveCropIndex(row, nextPrimary, crops);
 
@@ -333,7 +369,7 @@
       const familySet = new Set();
       for (const r of sceneRows) {
         const conf = parseNumber(r.species_confidence);
-        if (conf >= confThreshold && _isMeaningfulSpeciesLabel(r.species)) speciesSet.add(r.species);
+        if (conf >= confThreshold && _isMeaningfulSpeciesLabel(r.species) && !isHiddenWildlifeLabel(r, r.species)) speciesSet.add(r.species);
         if (includeFamilies) {
           const fconf = parseNumber(r.family_confidence);
           if (fconf >= confThreshold && _isMeaningfulFamilyLabel(r.family)) familySet.add(r.family);
@@ -341,7 +377,7 @@
         if (includeSecondary) {
           const secondary = parseSecondarySpecies(r);
           for (const { name, score } of secondary) {
-            if (score >= confThreshold && _isMeaningfulSpeciesLabel(name)) speciesSet.add(name);
+            if (score >= confThreshold && _isMeaningfulSpeciesLabel(name) && !isHiddenWildlifeLabel(r, name)) speciesSet.add(name);
           }
           if (includeFamilies) {
             const secFams = parseSecondaryFamilies(r);

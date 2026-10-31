@@ -117,13 +117,13 @@ def parse_args(argv: Sequence[str] | None = None):
         "--wildlife",
         dest="wildlife_enabled",
         action="store_true",
-        help="Enable non-bird wildlife detection (BioCLIP routing, experimental).",
+        help="Enable non-bird wildlife detection (BioCLIP routing; default).",
     )
     parser.add_argument(
         "--no-wildlife",
         dest="wildlife_enabled",
         action="store_false",
-        help="Disable non-bird wildlife detection (default).",
+        help="Disable non-bird wildlife detection.",
     )
     parser.add_argument(
         "--species-detection",
@@ -268,7 +268,7 @@ def parse_args(argv: Sequence[str] | None = None):
     )
     parser.set_defaults(
         use_gpu=True,
-        wildlife_enabled=False,
+        wildlife_enabled=True,
         species_detection_enabled=True,
         retry_errored=False,
     )

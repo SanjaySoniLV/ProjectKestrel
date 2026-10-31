@@ -23,25 +23,28 @@
       if (ev.key === 'Escape' && _openFolderActionsMenu) _closeFolderActionsMenu();
     });
 
-    function _buildFolderActionsMenu(folderPath, refreshCallback) {
+    /** True when a folder can be upgraded in place and is not on pipeline 3.x yet. */
+    function _isUpgradableTo3(up) {
+      return up?.status === 'upgradable' && (Number(up.pipeline_major) || 0) < 3;
+    }
+
+    /** ``pipelineStatus`` is the folder's upgrade status (folderPipelineStatus);
+     *  the Upgrade entry is only listed while ``_isUpgradableTo3`` holds. */
+    function _buildFolderActionsMenu(folderPath, refreshCallback, pipelineStatus = null) {
       const menu = document.createElement('div');
       menu.className = 'folder-group-actions-menu';
 
       const items = [
         { icon: '📂', label: 'Open in File Explorer',
           run: () => window.pywebview.api.open_file_explorer(folderPath) },
-        { icon: '⏱', label: 'Adjust Capture Time',
-          run: () => showAdjustCaptureTimeDialog(folderPath) },
-        { icon: '🗂', label: 'Regroup Scenes…',
-          run: () => openRegroupDialog(folderPath) },
-        { icon: '↺', label: 'Reset Culling Decisions',
-          run: () => showFolderOptionsDialog(folderPath) },
         { icon: '📝', label: 'Write Photo Metadata',
           run: () => writeMetadataForFolder(folderPath) },
-        { icon: '✨', label: 'Upgrade to Analysis Pipeline 3.0…',
-          run: () => upgradeFolderToV3(folderPath) },
-        { icon: '✨', label: 'Upgrade All Loaded Folders to 3.0…',
-          run: () => upgradeAllLoadedFoldersToV3() },
+        { icon: '⚙', label: 'Change Settings…',
+          run: () => openFolderSettingsDialog(folderPath) },
+        ...(_isUpgradableTo3(pipelineStatus) ? [
+          { icon: '✨', label: 'Upgrade to Analysis Pipeline 3.0…',
+            run: () => upgradeFolderToV3(folderPath) },
+        ] : []),
         { divider: true },
         { icon: '🗑', label: 'Clear Kestrel Analysis Data', danger: true,
           run: () => {
@@ -139,8 +142,20 @@
         btn.innerHTML = queued ? '<i>⏳</i> In upgrade queue' : '<i>✨</i> Upgrade to 3.0';
         btn.classList.toggle('hidden', !(queued || btn.dataset.upgradable === '1'));
       }
+      syncUpgradeAllButton();
     }
     window.syncFolderUpgradeButtons = syncFolderUpgradeButtons;
+
+    /** Show the left panel's "Upgrade All to 3.0" row only while a loaded folder can be upgraded. */
+    async function syncUpgradeAllButton() {
+      const row = document.getElementById('treeUpgradeAllRow');
+      if (!row) return;
+      const loaded = [...new Set((rows || []).map(r => r.__rootPath).filter(Boolean))];
+      const statuses = await Promise.all(loaded.map(fp => folderPipelineStatus(fp)));
+      row.classList.toggle('hidden', !statuses.some(_isUpgradableTo3));
+    }
+    window.syncUpgradeAllButton = syncUpgradeAllButton;
+    document.getElementById('treeUpgradeAll')?.addEventListener('click', () => { upgradeAllLoadedFoldersToV3(); });
 
     /** Folder action: queue every loaded folder that can be upgraded. */
     async function upgradeAllLoadedFoldersToV3() {
@@ -191,6 +206,7 @@
       const includeSecondary = includeSecondaryCheckbox ? includeSecondaryCheckbox.checked : !!getSetting('includeSecondarySpecies', false);
       const includeFamilies = true;
       scenes = aggregateScenes(minC, search, sortBy, includeSecondary, includeFamilies);
+      syncUpgradeAllButton(); // left-panel "Upgrade All to 3.0" row follows the loaded folders
 
       // Re-resolve _currentScene so the open scene dialog keeps working
       // after the scenes array is regenerated with new objects.
@@ -794,10 +810,14 @@
               try { if (typeof renderFolderTree === 'function') renderFolderTree(); } catch (_) {}
               try { if (typeof renderScenes === 'function') renderScenes(); } catch (_) {}
             };
-            const menu = _buildFolderActionsMenu(_folderPathForMenu, refreshCb);
-            actionsWrap.appendChild(menu);
-            _openFolderActionsMenu = menu;
+            // Status is cached for 30 s, so this rarely waits; build the menu once it is known.
             _openFolderActionsTrigger = actionsTrigger;
+            folderPipelineStatus(_folderPathForMenu).then((up) => {
+              if (_openFolderActionsTrigger !== actionsTrigger) return; // closed or replaced meanwhile
+              const menu = _buildFolderActionsMenu(_folderPathForMenu, refreshCb, up);
+              actionsWrap.appendChild(menu);
+              _openFolderActionsMenu = menu;
+            });
           });
           actionsWrap.appendChild(actionsTrigger);
 

@@ -10,6 +10,7 @@
     let rootPath = '';             // Absolute path to root folder (desktop pywebview mode)
     let rows = [];                 // CSV rows (objects)
     let _scenedata = {};           // Map of rootPath → kestrel_scenedata.json contents
+    let _folderSettings = {};      // Map of rootPath → kestrel_folder_settings.json ({ignore_wildlife}); see js/folder-settings.js
     let header = [];               // CSV header fields
     let scenes = [];               // Aggregated scene objects
     let dirty = false;             // Track unsaved edits
