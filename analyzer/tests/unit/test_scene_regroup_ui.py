@@ -110,12 +110,12 @@ class TestDialogWiring(unittest.TestCase):
         for control in ("regroupGroupWithin", "regroupSplitAfter", "regroupSimilarity"):
             self.assertIn(f'id="{control}"', self.html)
 
-    def test_dialog_has_both_views_and_one_list(self):
-        # "Current grouping" / "Proposed grouping" toggle over a single list.
-        self.assertIn('id="regroupTabCurrent"', self.html)
-        self.assertIn('id="regroupTabProposed"', self.html)
-        self.assertIn('id="regroupList"', self.html)
-        self.assertIn('id="regroupChangedOnly"', self.html)
+    def test_dialog_has_both_preview_columns(self):
+        # Current and proposed grouping are shown side by side.
+        for el in ("regroupCurrentList", "regroupProposedList",
+                   "regroupCurrentHead", "regroupProposedHead",
+                   "regroupChangedOnly"):
+            self.assertIn(f'id="{el}"', self.html)
 
     def test_folder_actions_menu_offers_it(self):
         menu = self.grid.split("function _buildFolderActionsMenu", 1)[1].split("\n    async function", 1)[0]

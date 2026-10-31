@@ -21,7 +21,6 @@
     let _regroupBusy = false;
     let _regroupOrder = [];          // filenames in the order scene 'ranges' index into
     let _regroupRowByName = new Map();
-    let _regroupView = 'proposed';   // which grouping the list shows
     let _regroupSceneLimit = 0;      // scenes rendered so far in the current view
 
     // Rendering budget. A 1000+ photo folder can regroup into hundreds of
@@ -145,9 +144,7 @@
       _regroupOrder = [];
       _regroupRowByName = new Map();
       for (const r of folderRows) _regroupRowByName.set(r.filename || '', r);
-      _regroupView = 'proposed';
       _regroupSceneLimit = REGROUP_SCENE_CHUNK;
-      _regroupSyncTabs();
       const changedOnly = _regroupEl('regroupChangedOnly');
       if (changedOnly) changedOnly.checked = false;
 
@@ -156,7 +153,8 @@
       const applyBtn = _regroupEl('regroupApplyBtn');
       if (applyBtn) applyBtn.disabled = true;
       _regroupEl('regroupSummary').textContent = 'Reading analysis data…';
-      _regroupEl('regroupList').innerHTML = '';
+      _regroupEl('regroupCurrentList').innerHTML = '';
+      _regroupEl('regroupProposedList').innerHTML = '';
       _regroupEl('regroupScoredNote').textContent = '';
       dlg.showModal();
 
@@ -193,11 +191,15 @@
         if (scoreNote) {
           const scored = res.scored_pairs || 0;
           const total = scored + (res.unscored_pairs || 0);
-          scoreNote.textContent = total === 0
+          const full = total === 0
             ? ''
             : `Appearance was measured for ${scored} of ${total} image pairs. ` +
               `The rest were grouped by the burst rule during analysis and carry no score, ` +
               `so only the time settings can separate them.`;
+          scoreNote.textContent = total === 0
+            ? ''
+            : `Appearance measured for ${scored} of ${total} pairs; the similarity control only acts on those.`;
+          scoreNote.title = full;
         }
         _regroupRefreshPreview(true);
       } catch (e) {
@@ -343,11 +345,10 @@
       return sec;
     }
 
-    /** Draw the selected grouping (current or proposed) as one block per scene. */
-    function _regroupRenderList() {
-      const host = _regroupEl('regroupList');
+    /** Draw one grouping ('current' or 'proposed') as one block per scene. */
+    function _regroupRenderList(view) {
+      const host = _regroupEl(view === 'current' ? 'regroupCurrentList' : 'regroupProposedList');
       if (!host || !_regroupPreview) return;
-      const view = _regroupView;
       const entries = (view === 'current' ? _regroupPreview.current : _regroupPreview.proposed) || [];
       const changedOnly = !!_regroupEl('regroupChangedOnly')?.checked;
       const visible = changedOnly ? entries.filter(s => s.change !== 'same') : entries;
@@ -386,42 +387,26 @@
         btn.textContent = `Show ${Math.min(rest, REGROUP_SCENE_CHUNK)} more of ${rest} remaining scenes`;
         btn.addEventListener('click', () => {
           _regroupSceneLimit += REGROUP_SCENE_CHUNK;
-          _regroupRenderList();
+          _regroupRenderLists();
         });
         host.appendChild(btn);
       }
       host.scrollTop = keepScroll;
     }
 
-    function _regroupSyncTabs() {
-      for (const [id, view] of [['regroupTabCurrent', 'current'], ['regroupTabProposed', 'proposed']]) {
-        const tab = _regroupEl(id);
-        if (!tab) continue;
-        const on = _regroupView === view;
-        tab.classList.toggle('active', on);
-        tab.setAttribute('aria-selected', on ? 'true' : 'false');
-      }
-    }
-
-    function _regroupSetView(view) {
-      if (view !== 'current' && view !== 'proposed') return;
-      if (view === _regroupView) return;
-      _regroupView = view;
-      _regroupSceneLimit = REGROUP_SCENE_CHUNK;
-      _regroupSyncTabs();
-      const host = _regroupEl('regroupList');
-      if (host) host.scrollTop = 0;
-      _regroupRenderList();
+    function _regroupRenderLists() {
+      _regroupRenderList('current');
+      _regroupRenderList('proposed');
     }
 
     function _regroupRenderPreview(preview) {
       const stats = preview.stats || {};
       const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
-      _regroupEl('regroupTabCurrent').textContent =
-        `Current grouping (${plural(stats.current_scene_count || 0, 'scene')})`;
-      _regroupEl('regroupTabProposed').textContent =
-        `Proposed grouping (${plural(stats.proposed_scene_count || 0, 'scene')})`;
+      _regroupEl('regroupCurrentHead').textContent =
+        `Current grouping · ${plural(stats.current_scene_count || 0, 'scene')}`;
+      _regroupEl('regroupProposedHead').textContent =
+        `Proposed grouping · ${plural(stats.proposed_scene_count || 0, 'scene')}`;
 
       const legend = _regroupEl('regroupLegend');
       if (legend) {
@@ -443,7 +428,7 @@
         `${plural(preview.image_count, 'photo')} · ${deltaText}` +
         (bits.length ? ` · proposed scenes: ${bits.join(', ')}` : '');
 
-      _regroupRenderList();
+      _regroupRenderLists();
     }
 
     /**
@@ -614,13 +599,10 @@
         const elm = _regroupEl(id);
         if (elm) elm.addEventListener('input', _regroupSchedulePreview);
       }
-      for (const tab of document.querySelectorAll('#regroupDlg .regroup-tab')) {
-        tab.addEventListener('click', () => _regroupSetView(tab.dataset.view));
-      }
       const changedOnly = _regroupEl('regroupChangedOnly');
       if (changedOnly) changedOnly.addEventListener('change', () => {
         _regroupSceneLimit = REGROUP_SCENE_CHUNK;
-        _regroupRenderList();
+        _regroupRenderLists();
       });
       const applyBtn = _regroupEl('regroupApplyBtn');
       if (applyBtn) applyBtn.addEventListener('click', applyRegroup);

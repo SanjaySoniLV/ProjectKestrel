@@ -1082,64 +1082,64 @@
 
   <!-- Regroup Scenes dialog — re-scene an already-analyzed folder from the
        values the analysis already stored, with a live thumbnail preview of the
-       current and proposed grouping (one row per scene, boundary reasons shown).
+       current and proposed grouping side by side (one block per scene, boundary reasons shown).
        Body logic in js/scene-regroup.js; the grouping rules themselves live in
        kestrel_analyzer/regroup.py so they can be tested against the pipeline's
        own ladder. -->
   <dialog id="regroupDlg" class="kdlg kdlg--lg kdlg--flex" aria-labelledby="regroupDlgTitle">
     <div class="kdlg-body regroup-body">
-      <h3 style="margin:0" id="regroupDlgTitle">Regroup Scenes</h3>
-      <div class="muted" style="font-size:12px;word-break:break-all" id="regroupFolderName">—</div>
-      <div class="regroup-intro muted">
-        Preview how this folder's scenes would be rebuilt from the analysis that already ran. Nothing
-        is re-analyzed or changed until you apply. Ratings and Accept/Reject decisions are kept; scene
-        names and verified tags follow their photos where that is unambiguous.
+      <div class="regroup-titlebar">
+        <h3 id="regroupDlgTitle">Regroup Scenes</h3>
+        <span class="regroup-folder muted" id="regroupFolderName">—</span>
+        <span class="regroup-summary" id="regroupSummary">—</span>
       </div>
 
       <div class="regroup-controls">
-        <div class="regroup-control">
-          <label for="regroupGroupWithin">Group photos taken within (seconds)</label>
+        <div class="regroup-control" title="Photos taken this close together always share a scene.">
+          <label for="regroupGroupWithin">Group photos within (seconds)</label>
           <input id="regroupGroupWithin" type="number" min="0" max="60" step="0.5" value="1" />
-          <div class="regroup-hint muted">Photos this close together always share a scene.</div>
         </div>
-        <div class="regroup-control">
-          <label for="regroupSplitAfter">Start a new scene after a pause of</label>
+        <div class="regroup-control" title="Splits a long session by elapsed time. Off at 0.">
+          <label for="regroupSplitAfter">New scene after a pause of</label>
           <div class="regroup-slider-row">
             <input id="regroupSplitAfter" type="range" min="0" max="3600" step="15" value="0" />
             <span class="regroup-val" id="regroupSplitAfterVal">off</span>
           </div>
-          <div class="regroup-hint muted">Splits a long session by elapsed time. Off at 0.</div>
         </div>
         <div class="regroup-control">
-          <label for="regroupSimilarity">How alike photos must look to share a scene</label>
+          <label for="regroupSimilarity">How alike photos must look</label>
           <div class="regroup-slider-row">
             <input id="regroupSimilarity" type="range" min="0" max="1" step="0.01" value="0.5" />
             <span class="regroup-val" id="regroupSimilarityVal">0.50</span>
           </div>
           <div class="regroup-hint muted" id="regroupSimilarityNote"></div>
-          <div class="regroup-hint muted" id="regroupScoredNote"></div>
         </div>
       </div>
 
-      <div class="regroup-summary" id="regroupSummary">—</div>
+      <div class="regroup-preview-bar">
+        <label class="regroup-filter">
+          <input type="checkbox" id="regroupChangedOnly" /> Changed scenes only
+        </label>
+        <div class="regroup-hint regroup-scored muted" id="regroupScoredNote"></div>
+        <div class="regroup-legend muted" id="regroupLegend"></div>
+      </div>
 
-      <div class="regroup-preview">
-        <div class="regroup-preview-bar">
-          <div class="regroup-tabs" role="tablist" aria-label="Grouping to show">
-            <button type="button" class="regroup-tab" id="regroupTabCurrent" role="tab"
-                    aria-selected="false" data-view="current">Current grouping</button>
-            <button type="button" class="regroup-tab active" id="regroupTabProposed" role="tab"
-                    aria-selected="true" data-view="proposed">Proposed grouping</button>
-          </div>
-          <label class="regroup-filter">
-            <input type="checkbox" id="regroupChangedOnly" /> Changed scenes only
-          </label>
-          <div class="regroup-legend muted" id="regroupLegend"></div>
+      <div class="regroup-compare">
+        <div class="regroup-col">
+          <div class="regroup-col-head" id="regroupCurrentHead">Current grouping</div>
+          <div class="regroup-list" id="regroupCurrentList"></div>
         </div>
-        <div class="regroup-list" id="regroupList" role="tabpanel"></div>
+        <div class="regroup-col">
+          <div class="regroup-col-head" id="regroupProposedHead">Proposed grouping</div>
+          <div class="regroup-list" id="regroupProposedList"></div>
+        </div>
       </div>
     </div>
     <div class="kdlg-footer">
+      <span class="regroup-footnote muted">
+        Nothing is re-analyzed or changed until you apply. Ratings and Accept/Reject are kept; scene
+        names and verified tags follow their photos where that is unambiguous.
+      </span>
       <button type="button" class="btn" id="regroupCancelBtn">Cancel</button>
       <button type="button" class="btn primary" id="regroupApplyBtn" disabled>Apply Regrouping</button>
     </div>
