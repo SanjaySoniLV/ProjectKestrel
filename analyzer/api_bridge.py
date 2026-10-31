@@ -2332,7 +2332,7 @@ class Api:
         filename, capture_time, orientation, feature_similarity,
         feature_confidence, color_similarity, color_confidence, scene_count.
 
-        Returns {'success', 'image_count', 'scored_pairs', 'unscored_pairs',
+        Returns {'success', 'image_count', 'order', 'scored_pairs', 'unscored_pairs',
                  'analyzed_group_within', 'analyzed_split_after', 'error'}.
         The two ``analyzed_*`` values are the settings the folder was last
         analyzed with, read from kestrel_metadata.json, so the dialog can open
@@ -2381,6 +2381,8 @@ class Api:
                 'success': True,
                 'error': '',
                 'image_count': len(cleaned),
+                # Filename order the preview's scene 'ranges' index into.
+                'order': [c['filename'] for c in cleaned],
                 'scored_pairs': scored,
                 'unscored_pairs': unscored,
                 'analyzed_group_within': analyzed['group_within'],

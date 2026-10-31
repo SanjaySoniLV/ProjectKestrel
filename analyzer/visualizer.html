@@ -1081,7 +1081,8 @@
   </dialog>
 
   <!-- Regroup Scenes dialog — re-scene an already-analyzed folder from the
-       values the analysis already stored, with a live before/after preview.
+       values the analysis already stored, with a live thumbnail preview of the
+       current and proposed grouping (one row per scene, boundary reasons shown).
        Body logic in js/scene-regroup.js; the grouping rules themselves live in
        kestrel_analyzer/regroup.py so they can be tested against the pipeline's
        own ladder. -->
@@ -1090,18 +1091,16 @@
       <h3 style="margin:0" id="regroupDlgTitle">Regroup Scenes</h3>
       <div class="muted" style="font-size:12px;word-break:break-all" id="regroupFolderName">—</div>
       <div class="regroup-intro muted">
-        Rebuilds this folder's scenes from the analysis that already ran &mdash; no photos are
-        re-analyzed and nothing is re-uploaded. Your star ratings and Accept/Reject decisions are
-        kept; scene names and verified tags follow their photos where that is unambiguous.
+        Preview how this folder's scenes would be rebuilt from the analysis that already ran. Nothing
+        is re-analyzed or changed until you apply. Ratings and Accept/Reject decisions are kept; scene
+        names and verified tags follow their photos where that is unambiguous.
       </div>
 
       <div class="regroup-controls">
         <div class="regroup-control">
           <label for="regroupGroupWithin">Group photos taken within (seconds)</label>
           <input id="regroupGroupWithin" type="number" min="0" max="60" step="0.5" value="1" />
-          <div class="regroup-hint muted">
-            A burst shot inside this window always stays in one scene.
-          </div>
+          <div class="regroup-hint muted">Photos this close together always share a scene.</div>
         </div>
         <div class="regroup-control">
           <label for="regroupSplitAfter">Start a new scene after a pause of</label>
@@ -1109,9 +1108,7 @@
             <input id="regroupSplitAfter" type="range" min="0" max="3600" step="15" value="0" />
             <span class="regroup-val" id="regroupSplitAfterVal">off</span>
           </div>
-          <div class="regroup-hint muted">
-            Splits a long session into separate scenes by elapsed time. 0 turns it off.
-          </div>
+          <div class="regroup-hint muted">Splits a long session by elapsed time. Off at 0.</div>
         </div>
         <div class="regroup-control">
           <label for="regroupSimilarity">How alike photos must look to share a scene</label>
@@ -1126,15 +1123,20 @@
 
       <div class="regroup-summary" id="regroupSummary">—</div>
 
-      <div class="regroup-compare">
-        <div class="regroup-col">
-          <div class="regroup-col-head" id="regroupCurrentHead">Current</div>
-          <div class="regroup-col-list" id="regroupCurrentList"></div>
+      <div class="regroup-preview">
+        <div class="regroup-preview-bar">
+          <div class="regroup-tabs" role="tablist" aria-label="Grouping to show">
+            <button type="button" class="regroup-tab" id="regroupTabCurrent" role="tab"
+                    aria-selected="false" data-view="current">Current grouping</button>
+            <button type="button" class="regroup-tab active" id="regroupTabProposed" role="tab"
+                    aria-selected="true" data-view="proposed">Proposed grouping</button>
+          </div>
+          <label class="regroup-filter">
+            <input type="checkbox" id="regroupChangedOnly" /> Changed scenes only
+          </label>
+          <div class="regroup-legend muted" id="regroupLegend"></div>
         </div>
-        <div class="regroup-col">
-          <div class="regroup-col-head" id="regroupProposedHead">After regrouping</div>
-          <div class="regroup-col-list" id="regroupProposedList"></div>
-        </div>
+        <div class="regroup-list" id="regroupList" role="tabpanel"></div>
       </div>
     </div>
     <div class="kdlg-footer">
