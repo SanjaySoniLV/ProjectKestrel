@@ -224,6 +224,40 @@
       };
     }
 
+    /** True when "Ignore wildlife" hides every crop the row has, so nothing
+     *  about it may be labelled or cropped (the full image is still shown). */
+    function rowHasOnlyHiddenCrops(row) {
+      return rowIgnoresWildlife(row) && getRowCropRecords(row).length === 0 && getRowAllCropRecords(row).length > 0;
+    }
+
+    /** ``row.crop_path`` as a fallback image path, unless it belongs to a hidden wildlife crop. */
+    function getRowFallbackCropPath(row) {
+      return rowHasOnlyHiddenCrops(row) ? '' : row?.crop_path;
+    }
+
+    /** Species/family/crop path the scene viewer shows for ``row``.
+     *  ``crop`` = the crop to describe; ``undefined`` = the row's primary visible
+     *  crop when wildlife is ignored, else the row-level columns. A row whose only
+     *  crops are hidden wildlife yields ``hidden: true`` and empty labels/path.
+     *  With the setting off this equals the old ``crop?.x || row.x`` expressions. */
+    function getRowDisplayLabels(row, crop) {
+      const hidden = { hidden: true, cropPath: '', species: '', speciesConf: undefined, family: '', familyConf: undefined };
+      if (rowHasOnlyHiddenCrops(row)) return hidden;
+      if (crop === undefined) {
+        crop = rowIgnoresWildlife(row) ? (getRowCropRecords(row)[getRowPrimaryCropIndex(row)] || null) : null;
+      }
+      const species = crop?.species || row.species || 'Unknown';
+      if (!crop && isHiddenWildlifeLabel(row, species)) return hidden;
+      return {
+        hidden: false,
+        cropPath: crop?.crop_path || row.crop_path,
+        species,
+        speciesConf: crop?.species_confidence ?? row.species_confidence,
+        family: crop?.family || row.family || 'Unknown',
+        familyConf: crop?.family_confidence ?? row.family_confidence,
+      };
+    }
+
     function promoteActiveCropToPrimary(row) {
       const crops = getRowCropRecords(row);
       if (!crops.length) return false;
@@ -370,7 +404,7 @@
       for (const r of sceneRows) {
         const conf = parseNumber(r.species_confidence);
         if (conf >= confThreshold && _isMeaningfulSpeciesLabel(r.species) && !isHiddenWildlifeLabel(r, r.species)) speciesSet.add(r.species);
-        if (includeFamilies) {
+        if (includeFamilies && !isHiddenWildlifeLabel(r, r.species)) {
           const fconf = parseNumber(r.family_confidence);
           if (fconf >= confThreshold && _isMeaningfulFamilyLabel(r.family)) familySet.add(r.family);
         }
