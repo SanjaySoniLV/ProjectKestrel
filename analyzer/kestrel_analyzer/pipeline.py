@@ -26,7 +26,6 @@ from .config import (
     KESTREL_DIR_NAME,
     METADATA_FILENAME,
     RAW_EXTENSIONS,
-    VERSION,
     select_camera_images,
 )
 from .database import (
@@ -36,6 +35,7 @@ from .database import (
     parse_file_size,
     DATABASE_SCHEMA_VERSION,
 )
+from .pipeline_version import folder_pipeline_major, read_app_version, stamp_pipeline
 from .exposure_compensation import (
     apply_exposure_crop_numpy,
     build_metered_detection_image,
@@ -2121,7 +2121,7 @@ class AnalysisPipeline:
                             with open(metadata_path, "r", encoding="utf-8") as mf:
                                 _meta = _json.load(mf)
                         else:
-                            _meta = {"version": VERSION, "analyzer": analyzer_name}
+                            _meta = {"analyzer": analyzer_name}
 
                         pipeline_modes = set()
                         if "exposure_pipeline" in database.columns:
@@ -2143,7 +2143,10 @@ class AnalysisPipeline:
                         _meta["exposure_quality"] = exposure_quality
 
                         _meta["analyzed_utc"] = _dt.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-                        _meta["kestrel_version"] = VERSION
+                        # App release label (audit only; no decision reads it).
+                        _app_version = read_app_version()
+                        if _app_version:
+                            _meta["app_version"] = _app_version
                         # Stamped on every run, not just on folder creation, so
                         # a folder analysed by an older build records its new
                         # schema as soon as this build touches it. The app
@@ -2183,12 +2186,9 @@ class AnalysisPipeline:
                         # A folder that still has pre-3.0 rows (analysed before,
                         # topped up now) keeps pipeline_major < 3 until it is
                         # upgraded, so the upgrade offer stays visible.
-                        try:
-                            _prior_major = int(_meta.get("pipeline_major") or 0)
-                        except (TypeError, ValueError):
-                            _prior_major = 0
+                        _prior_major = folder_pipeline_major(_meta)
                         if _prior_major >= PIPELINE_MAJOR or len(new_files) >= len(database):
-                            _meta["pipeline_major"] = PIPELINE_MAJOR
+                            stamp_pipeline(_meta)
                         _meta["models"] = {
                             "detector": str(getattr(self, "detector_name", "") or ""),
                             "species": SPECIES_MODEL_ID,
