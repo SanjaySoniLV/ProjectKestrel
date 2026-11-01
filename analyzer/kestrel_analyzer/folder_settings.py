@@ -25,6 +25,7 @@ from typing import Callable, Dict, List, Optional
 import numpy as np
 
 from .config import DATABASE_NAME, METADATA_FILENAME
+from .pipeline_version import folder_pipeline_major, folder_pipeline_version
 
 SETTINGS_FILENAME = "kestrel_folder_settings.json"
 DEFAULT_SETTINGS: Dict[str, object] = {"ignore_wildlife": False}
@@ -105,16 +106,13 @@ def folder_info(kestrel_dir: str) -> dict:
     from . import smart_search
     meta = _read_meta(kestrel_dir)
     settings = meta.get("analysis_settings") if isinstance(meta.get("analysis_settings"), dict) else {}
-    try:
-        major = int(meta.get("pipeline_major") or 0)
-    except (TypeError, ValueError):
-        major = 0
+    major = folder_pipeline_major(meta)
     rows = smart_search.read_folder_rows(kestrel_dir)
     wildlife_crops = sum(1 for crops in rows.crops.values() for c in crops if _is_wildlife(c))
     regions = meta.get("species_regions") or settings.get("species_regions") or []
     support = rescore_support(kestrel_dir)
     return {
-        "pipeline_version": str(meta.get("version") or ""),
+        "pipeline_version": folder_pipeline_version(meta),
         "pipeline_major": major,
         "analyzed_utc": str(meta.get("analyzed_utc") or ""),
         "image_count": len(rows.scene_of),

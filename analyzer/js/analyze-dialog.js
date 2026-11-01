@@ -261,7 +261,7 @@
     let analyzeDlgRootOrder = [];             // insertion order (render order)
     let analyzeDlgExpandedPaths = new Set();
     let analyzeDlgCheckedPaths = new Set();   // queue-builder selections
-    let analyzeDlgInspectionCache = new Map();// Map<path, {total, processed, errored, has_kestrel, kestrel_version}>
+    let analyzeDlgInspectionCache = new Map();// Map<path, {total, processed, errored, has_kestrel, pipeline_major}>
     let analyzeDlgReanalyzeUnlocked = false;  // gates the "re-analyze fully-analyzed" path
     let _analyzeDlgInspectionVersion = 0;     // bumped on each scan to cancel stale callbacks
     // Pipeline-3 upgrade eligibility for checked, fully analysed folders
@@ -416,7 +416,9 @@
           name: rootName,
           path: norm,
           has_kestrel: rootHasKestrel,
-          kestrel_version: result.root_kestrel_version || '',
+          pipeline_major: result.root_pipeline_major ?? null,
+          pipeline_version: result.root_pipeline_version || '',
+          upgraded: !!result.root_upgraded,
           children: result.tree || [],
         };
         analyzeDlgRootNodes.set(norm, node);
@@ -531,8 +533,9 @@
       row.className = cls;
       row.dataset.path = node.path;
       row.title = outdated
-        ? `Analyzed on Kestrel v${node.kestrel_version} (current: v${_appVersion}) — re-analyze to update.\n${node.path}`
-        : node.path;
+        ? `Analyzed on pipeline ${folderPipelineLabel(node)} (current: ${CURRENT_PIPELINE_MAJOR}.0) — re-analyze to update.\n${node.path}`
+        : (folderPipelineNote(node) ? `${folderPipelineNote(node)}
+${node.path}` : node.path);
 
       // ── Rails (Phase 1.5B mirror) ────────────────────────────────────────────
       const isRoot = ancestorContinueFlags === null;
@@ -585,10 +588,10 @@
         const upgradeMode = analyzeDlgUpgradeModeFor(_adlgNormRoot(node.path));
         outdatedBadge.className = 'adlg-outdated-badge'
           + (isChecked ? (upgradeMode === 'upgrade' ? ' upgrade' : ' warning') : '');
-        outdatedBadge.textContent = `v↑ ${node.kestrel_version || ''}`.trim();
+        outdatedBadge.textContent = `v↑ ${folderPipelineLabel(node)}`.trim();
         outdatedBadge.title = upgradeMode
-          ? `Analyzed on v${node.kestrel_version}; current is v${_appVersion}. Can be upgraded to pipeline 3.0 (keeps your culls) — choose in the queued folders list.`
-          : `Analyzed on v${node.kestrel_version}; current is v${_appVersion}. Will re-analyze (destructive) if checked.`;
+          ? `Analyzed on pipeline ${folderPipelineLabel(node)}; current is ${CURRENT_PIPELINE_MAJOR}.0. Can be upgraded to pipeline 3.0 (keeps your culls) — choose in the queued folders list.`
+          : `Analyzed on pipeline ${folderPipelineLabel(node)}; current is ${CURRENT_PIPELINE_MAJOR}.0. Will re-analyze (destructive) if checked.`;
       }
 
       // ── Right-side checkbox column (Phase 1.5A mirror) ──────────────────────
@@ -633,7 +636,8 @@
             action: () => {
               clearKestrelDataForFolder(node.path, node.name, () => {
                 node.has_kestrel = false;
-                node.kestrel_version = '';
+                node.pipeline_major = null;
+                node.pipeline_version = '';
                 _inspectAndRenderAnalyzeDlg();
               });
             },
@@ -939,7 +943,7 @@
           willReanalyze = true;
           outdatedReanalyzeCount++;
           imagesThisFolder = total;
-          warningMsg = `Analyzed on Kestrel v${node.kestrel_version} (current: v${_appVersion}). Will erase .kestrel data and re-analyze all ${total.toLocaleString()} images.`;
+          warningMsg = `Analyzed on pipeline ${folderPipelineLabel(node)} (current: ${CURRENT_PIPELINE_MAJOR}.0). Will erase .kestrel data and re-analyze all ${total.toLocaleString()} images.`;
           warningKind = 'warn';
         } else if (isFullyAnalyzed) {
           if (analyzeDlgReanalyzeUnlocked) {
@@ -1390,17 +1394,6 @@
       if (!hasPywebviewApi) {
         alert('Analysis queue is only available in the desktop (pywebview) mode.\n\nRun kestrel_visualizer as a desktop app to use this feature.');
         return;
-      }
-      // App-version fetch is needed for the outdated-version pill badges, but
-      // it's a non-blocking concern — fire it without awaiting so the dialog
-      // opens instantly. When it lands, re-render the tree so badges appear.
-      if (!_appVersion && window.pywebview?.api?.get_app_version) {
-        window.pywebview.api.get_app_version().then(vr => {
-          if (vr && vr.success && vr.version) {
-            _appVersion = vr.version;
-            if (typeof renderAnalyzeDlgTree === 'function') renderAnalyzeDlgTree();
-          }
-        }).catch(() => {});
       }
       // Detection model now lives as a plain <select> in More options →
       // Finding subjects, defaulting to Accurate. Anything that isn't an

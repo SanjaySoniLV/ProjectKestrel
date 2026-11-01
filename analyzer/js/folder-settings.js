@@ -57,8 +57,8 @@
     }
 
     function _fsetPipelineText(info) {
-      if ((Number(info.pipeline_major) || 0) >= 3) return '3.0';
-      return info.pipeline_version || 'older than 2.0';
+      if (info.pipeline_version) return info.pipeline_version;
+      return (Number(info.pipeline_major) || 0) >= 3 ? '3.0' : 'older than 2.0';
     }
 
     function _fsetRegionText(codes) {
