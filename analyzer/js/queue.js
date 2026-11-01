@@ -1,6 +1,9 @@
     // ── Analysis Queue Panel / Polling ───────────────────────────────────────────
 
     let _queuePollingTimer = null;
+    let _queuePollTick = null;   // the poll body; re-armed when the cadence changes
+    let _queuePollBusy = false;  // a status fetch+render is in flight (ticks never overlap)
+    let _queuePollMs = 500;
     let _queuePanelExpanded = true;
     let _queueLastDoneSet = new Set(); // track newly-done folders to auto-refresh tree
     let _queueRenderedOnce = false;    // false until the first render that reaches done-tracking
@@ -32,6 +35,8 @@
     let _liveLastThumbKey = '';
     let _liveLastOverlayKey = '';
     let _liveLastCropKeys = [];
+    let _liveLastCropsVer = -1;
+    let _liveLastItemPath = '';
     const CONF_HIGH = 0.75;
     const CONF_LOW = 0.30;
 
@@ -210,8 +215,9 @@
         badge.textContent = `${pendingItems.length} pending`; badge.className = 'queue-panel-badge';
       }
 
-      // Pause/resume button label
-      if (pauseBtn) pauseBtn.textContent = paused ? '▶ Resume' : '⏸ Pause';
+      // Pause/resume is one toggle that changes state (icon, label, tooltip, aria).
+      if (pauseBtn) _setPauseBtnState(pauseBtn, paused);
+      panel.classList.toggle('queue-panel--paused', paused);
 
       // Header close (X): only when every item is terminal (nothing running or
       // pending and the queue isn't running). Lets the user dismiss a finished
@@ -295,118 +301,10 @@
         overallEtaEl.classList.add('hidden');
       }
 
-      // Queue items
-      const frag = document.createDocumentFragment();
-      for (const item of items) {
-        const div = document.createElement('div');
-        const isDone = item.status === 'done';
-        const isAlreadyAnalyzed = isDone &&
-          (item.current_status_msg || '').toLowerCase().includes('no new files');
-        div.className = 'queue-item' + (isDone || item.status === 'cancelled' ? ' done-item' : '');
-
-        // Header row: name + status badge
-        const hdr = document.createElement('div');
-        hdr.className = 'queue-item-header';
-        const nameEl = document.createElement('span');
-        nameEl.className = 'queue-item-name';
-        nameEl.textContent = item.name;
-        nameEl.title = item.path;
-        const statusEl = document.createElement('span');
-        statusEl.className = `queue-item-status ${item.status}`;
-        const labels = {
-          pending: '⏳ In Queue',
-          running: '⚙ Analyzing',
-          done: isAlreadyAnalyzed ? '✓ Already analyzed' : '✓ Done',
-          error: '✗ Error',
-          cancelled: '— Cancelled',
-        };
-        statusEl.textContent = labels[item.status] || item.status;
-        if (item.status === 'error' && item.error) statusEl.title = item.error;
-        hdr.appendChild(nameEl); hdr.appendChild(statusEl);
-        // "Load" affordance: jump to this folder's results in the gallery.
-        // Shown once a folder has analyzable output (done) or is producing it
-        // (running) — loading mid-run is safe; new scenes stream in additively.
-        if (item.path && (item.status === 'done' || item.status === 'running')) {
-          const loadBtn = document.createElement('button');
-          loadBtn.className = 'queue-item-load-btn';
-          loadBtn.type = 'button';
-          loadBtn.textContent = '📂 Load';
-          loadBtn.title = 'Open this folder to browse results';
-          loadBtn.addEventListener('click', (ev) => {
-            ev.stopPropagation();
-            if (typeof loadFolderIntoBrowser === 'function') loadFolderIntoBrowser(item.path);
-          });
-          hdr.appendChild(loadBtn);
-        }
-        div.appendChild(hdr);
-
-        // Persistent warning (e.g. results can't be saved). Shown in every
-        // state so it outlives the run; the pipeline clears it on recovery.
-        if (item.warning) {
-          const warnEl = document.createElement('div');
-          warnEl.className = 'queue-item-warning';
-          warnEl.setAttribute('role', 'alert');
-          warnEl.textContent = `⚠ ${item.warning}`;
-          div.appendChild(warnEl);
-        }
-
-        // Progress bar
-        if (item.status === 'running' && item.total > 0) {
-          const prog = document.createElement('div'); prog.className = 'queue-item-progress';
-          const fill = document.createElement('div'); fill.className = 'queue-item-progress-fill';
-          fill.style.width = Math.round((item.processed / item.total) * 100) + '%';
-          prog.appendChild(fill); div.appendChild(prog);
-
-          // ETA / paused row
-          {
-            const etaEl = document.createElement('div');
-            etaEl.className = 'queue-item-eta';
-            if (item.is_paused) {
-              etaEl.textContent = `${item.processed} / ${item.total} — ⏸ Paused`;
-            } else if (!inspectionReady) {
-              etaEl.textContent = `${item.processed} / ${item.total} — ⏳ Calculating ETA…`;
-            } else if (secsPerImage !== null && item.total > item.processed) {
-              const remaining = secsPerImage * (item.total - item.processed);
-              etaEl.textContent = `${item.processed} / ${item.total} — est. ${formatDuration(remaining)} left`;
-            } else {
-              etaEl.textContent = `${item.processed} / ${item.total}`;
-            }
-            div.appendChild(etaEl);
-          }
-
-          // Current filename
-          if (item.current_filename) {
-            const fileEl = document.createElement('div');
-            fileEl.className = 'queue-item-file';
-            fileEl.textContent = item.current_filename;
-            div.appendChild(fileEl);
-          }
-
-          // Live preview thumbnail (async load deferred after DOM insert)
-          if (item.current_export_path && hasPywebviewApi) {
-            const preview = document.createElement('div');
-            preview.className = 'queue-live-preview';
-            const thumb = document.createElement('img');
-            thumb.className = 'queue-live-thumb';
-            thumb.alt = '';
-            // Store paths as data attributes; loaded after DOM insert
-            thumb.dataset.thumbRel = item.current_export_path;
-            thumb.dataset.thumbRoot = item.path;
-            preview.appendChild(thumb);
-            div.appendChild(preview);
-          }
-        } else if (item.status === 'done' && item.total > 0) {
-          const prog = document.createElement('div'); prog.className = 'queue-item-progress';
-          const fill = document.createElement('div'); fill.className = 'queue-item-progress-fill';
-          fill.style.width = '100%'; fill.style.background = '#2ecc71';
-          prog.appendChild(fill); div.appendChild(prog);
-        }
-
-        frag.appendChild(div);
-      }
-      // Analysis rows are rebuilt each poll; upgrade rows live in their own
-      // container and are updated in place, so their Cancel button is not
-      // replaced mid-click (polls run every 500 ms).
+      // Analysis rows persist between polls (keyed by folder path) and are
+      // updated in place, so the progress bar animates instead of resetting and
+      // the Load button / live thumbnail are not replaced mid-click or mid-paint.
+      // Upgrade rows live in their own container and are updated the same way.
       let analysisBox = body.querySelector(':scope > .queue-analysis-rows');
       let upgradeBox = body.querySelector(':scope > .queue-upgrade-rows');
       if (!analysisBox || !upgradeBox) {
@@ -418,13 +316,16 @@
         body.appendChild(analysisBox);
         body.appendChild(upgradeBox);
       }
-      analysisBox.innerHTML = '';
-      analysisBox.appendChild(frag);
+      _syncAnalysisRows(analysisBox, items, { inspectionReady, secsPerImage });
       _renderUpgradeRows(upgradeBox, upgrades);
 
-      // Async: load thumbnails for any img[data-thumb-rel] elements (cache avoids reload flash)
+      // Async: load thumbnails for any img[data-thumb-rel] elements. Only when the
+      // frame changed, and with a crossfade swap (cache avoids reload flash).
       body.querySelectorAll('img[data-thumb-rel]').forEach(img => {
-        _loadImg(img, img.dataset.thumbRel || '', img.dataset.thumbRoot || '');
+        const key = (img.dataset.thumbRel || '') + '|' + (img.dataset.thumbRoot || '');
+        if (img.dataset.loadedKey === key) return;
+        img.dataset.loadedKey = key;
+        _loadImg(img, img.dataset.thumbRel || '', img.dataset.thumbRoot || '', { swap: true });
       });
 
       // Check if any folder newly finished — refresh tree + auto-reload CSV data
@@ -528,6 +429,147 @@
       if (_liveAnalysisDlgOpen) {
         const runningItem = items.find(i => i.status === 'running') || null;
         updateLiveAnalysisDlg(runningItem || items[items.length - 1] || null);
+      }
+    }
+
+    /** Pause button: single toggle whose icon, label, tooltip and aria state follow `paused`. */
+    function _setPauseBtnState(btn, paused) {
+      const ico = btn.querySelector('.qctl-ico');
+      const lbl = btn.querySelector('.qctl-lbl');
+      if (ico) ico.textContent = paused ? '▶' : '⏸';
+      if (lbl) lbl.textContent = paused ? 'Resume' : 'Pause';
+      btn.title = paused ? 'Resume analysis' : 'Pause analysis';
+      btn.setAttribute('aria-pressed', paused ? 'true' : 'false');
+      btn.classList.toggle('is-paused', !!paused);
+    }
+
+    const _ANALYSIS_STATUS_LABELS = {
+      pending: '⏳ In Queue',
+      running: '⚙ Analyzing',
+      done: '✓ Done',
+      error: '✗ Error',
+      cancelled: '— Cancelled',
+    };
+
+    /** Sync the analysis rows in `box` with status.items (keyed by folder path, updated in place). */
+    function _syncAnalysisRows(box, items, ctx) {
+      const byPath = new Map();
+      for (const el of Array.from(box.children)) byPath.set(el.dataset.path, el);
+      const keep = new Set(items.map(i => String(i.path || '')));
+      for (const [path, el] of byPath) {
+        if (!keep.has(path)) { el.remove(); byPath.delete(path); }
+      }
+      let prev = null;
+      for (const item of items) {
+        const path = String(item.path || '');
+        let el = byPath.get(path);
+        if (!el) { el = _createAnalysisRow(path); byPath.set(path, el); }
+        _updateAnalysisRow(el, item, ctx);
+        const want = prev ? prev.nextSibling : box.firstChild;
+        if (el !== want) box.insertBefore(el, want);
+        prev = el;
+      }
+    }
+
+    /** Skeleton of one analysis row; _updateAnalysisRow fills it. */
+    function _createAnalysisRow(path) {
+      const div = document.createElement('div');
+      div.className = 'queue-item';
+      div.dataset.path = path;
+      div.innerHTML = '<div class="queue-item-header"><span class="queue-item-name"></span>'
+        + '<span class="queue-item-status"></span>'
+        + '<button type="button" class="queue-item-load-btn" hidden>📂 Load</button></div>'
+        + '<div class="queue-item-warning" role="alert" hidden></div>'
+        + '<div class="queue-item-error" hidden></div>'
+        + '<div class="queue-item-progress" hidden><div class="queue-item-progress-fill"></div></div>'
+        + '<div class="queue-item-eta" hidden></div>'
+        + '<div class="queue-item-file" hidden></div>'
+        + '<div class="queue-live-preview" hidden><img class="queue-live-thumb" alt="" /></div>';
+      const loadBtn = div.querySelector('.queue-item-load-btn');
+      loadBtn.title = 'Open this folder to browse results';
+      loadBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (typeof loadFolderIntoBrowser === 'function') loadFolderIntoBrowser(div.dataset.path);
+      });
+      return div;
+    }
+
+    /** Fill one analysis row from a status.items entry. */
+    function _updateAnalysisRow(div, item, ctx) {
+      const isDone = item.status === 'done';
+      const isRunning = item.status === 'running';
+      const isAlreadyAnalyzed = isDone &&
+        (item.current_status_msg || '').toLowerCase().includes('no new files');
+      div.classList.toggle('done-item', isDone || item.status === 'cancelled');
+      div.classList.toggle('is-running', isRunning);
+      div.classList.toggle('is-paused', isRunning && !!item.is_paused);
+      div.classList.toggle('is-error', item.status === 'error');
+
+      const nameEl = div.querySelector('.queue-item-name');
+      if (nameEl.textContent !== item.name) nameEl.textContent = item.name;
+      nameEl.title = item.path;
+
+      const statusEl = div.querySelector('.queue-item-status');
+      const labels = Object.assign({}, _ANALYSIS_STATUS_LABELS,
+        { done: isAlreadyAnalyzed ? '✓ Already analyzed' : '✓ Done' });
+      statusEl.className = `queue-item-status ${item.status}`;
+      statusEl.textContent = labels[item.status] || item.status;
+      statusEl.title = (item.status === 'error' && item.error) ? item.error : '';
+
+      // "Load" affordance: jump to this folder's results in the gallery.
+      // Shown once a folder has analyzable output (done) or is producing it
+      // (running) — loading mid-run is safe; new scenes stream in additively.
+      div.querySelector('.queue-item-load-btn').hidden =
+        !(item.path && (isDone || isRunning));
+
+      // Persistent warning (e.g. results can't be saved). Shown in every
+      // state so it outlives the run; the pipeline clears it on recovery.
+      const warnEl = div.querySelector('.queue-item-warning');
+      warnEl.hidden = !item.warning;
+      warnEl.textContent = item.warning ? `⚠ ${item.warning}` : '';
+
+      // An item that errored shows why on the row (full text in the tooltip).
+      const errEl = div.querySelector('.queue-item-error');
+      const showErr = item.status === 'error' && !!item.error;
+      errEl.hidden = !showErr;
+      errEl.textContent = showErr ? item.error : '';
+      errEl.title = showErr ? item.error : '';
+
+      // Progress bar
+      const prog = div.querySelector('.queue-item-progress');
+      const fill = prog.querySelector('.queue-item-progress-fill');
+      const etaEl = div.querySelector('.queue-item-eta');
+      const fileEl = div.querySelector('.queue-item-file');
+      const preview = div.querySelector('.queue-live-preview');
+      const showRunning = isRunning && item.total > 0;
+      const showDone = isDone && item.total > 0;
+      prog.hidden = !(showRunning || showDone);
+      fill.classList.toggle('is-complete', showDone);
+      if (showRunning) fill.style.width = Math.round((item.processed / item.total) * 100) + '%';
+      else if (showDone) fill.style.width = '100%';
+
+      etaEl.hidden = !showRunning;
+      fileEl.hidden = !(showRunning && item.current_filename);
+      preview.hidden = !(showRunning && item.current_export_path && hasPywebviewApi);
+      if (showRunning) {
+        // ETA / paused row
+        if (item.is_paused) {
+          etaEl.textContent = `${item.processed} / ${item.total} — ⏸ Paused`;
+        } else if (!ctx.inspectionReady) {
+          etaEl.textContent = `${item.processed} / ${item.total} — ⏳ Calculating ETA…`;
+        } else if (ctx.secsPerImage !== null && item.total > item.processed) {
+          const remaining = ctx.secsPerImage * (item.total - item.processed);
+          etaEl.textContent = `${item.processed} / ${item.total} — est. ${formatDuration(remaining)} left`;
+        } else {
+          etaEl.textContent = `${item.processed} / ${item.total}`;
+        }
+        if (item.current_filename) fileEl.textContent = item.current_filename;
+        if (item.current_export_path) {
+          // Paths go in data attributes; renderQueuePanel loads them after the pass.
+          const thumb = preview.querySelector('img');
+          thumb.dataset.thumbRel = item.current_export_path;
+          thumb.dataset.thumbRoot = item.path;
+        }
       }
     }
 
@@ -727,11 +769,26 @@
         } catch (e) { /* ignore */ }
       })();
 
-      // Poll more frequently to reflect per-image progress (500ms)
-      _queuePollingTimer = setInterval(async () => {
+      // Poll to reflect per-image progress: 500 ms normally, 250 ms while the Live
+      // Analysis dialog is open (status is a small JSON; images are only fetched
+      // when their version counter changes). Ticks never overlap.
+      _queuePollTick = async () => {
+        if (_queuePollBusy) return;
+        _queuePollBusy = true;
         try {
-          const status = await apiGetQueueStatus();
-          renderQueuePanel(status);
+          let status;
+          try {
+            status = await apiGetQueueStatus();
+            renderQueuePanel(status);
+          } finally {
+            _queuePollBusy = false;
+          }
+          // Switch cadence when the live dialog opens or closes.
+          if (_queuePollingTimer && _queuePollMs !== _desiredQueuePollMs()) {
+            clearInterval(_queuePollingTimer);
+            _queuePollMs = _desiredQueuePollMs();
+            _queuePollingTimer = setInterval(_queuePollTick, _queuePollMs);
+          }
           // Update auto-refresh timers based on pause state
           _updateAutoRefreshTimers();
 
@@ -772,8 +829,12 @@
             stopPollingQueue();
           }
         } catch (_) { }
-      }, 500);
+      };
+      _queuePollMs = _desiredQueuePollMs();
+      _queuePollingTimer = setInterval(_queuePollTick, _queuePollMs);
     }
+
+    function _desiredQueuePollMs() { return _liveAnalysisDlgOpen ? 250 : 500; }
 
     function stopPollingQueue() {
       if (_queuePollingTimer) { clearInterval(_queuePollingTimer); _queuePollingTimer = null; }
@@ -837,6 +898,12 @@
 
     function openLiveAnalysisDlg() {
       _liveAnalysisDlgOpen = true;
+      // Reopening starts from a clean slate so the current frame is fetched again.
+      _liveLastItemPath = '';
+      _liveLastThumbKey = '';
+      _liveLastOverlayKey = '';
+      _liveLastCropsVer = -1;
+      _liveLastCropKeys = [];
       document.getElementById('liveAnalysisDlg').showModal();
     }
 
@@ -846,20 +913,82 @@
      * the await so concurrent loads for the same key reuse one blob: URL
      * (BlobUrlCache.set does not revoke an overwritten value).
      */
-    async function _loadImg(imgEl, relPath, rootPath) {
+    async function _loadImg(imgEl, relPath, rootPath, opts) {
       if (!relPath || !rootPath || !hasPywebviewApi) return;
+      const swap = !!(opts && opts.swap);
+      // Latest request wins: a slower, older load must not replace a newer frame.
+      const seq = swap ? (imgEl._swapSeq = (imgEl._swapSeq || 0) + 1) : 0;
       const key = relPath + '|' + rootPath;
       const isLive = String(relPath).indexOf('__live_') >= 0;
-      if (!isLive && _thumbCache.has(key)) { imgEl.src = _thumbCache.get(key); return; }
+      const show = (url, owned) => { if (swap) _swapImage(imgEl, url, owned, seq); else imgEl.src = url; };
+      if (!isLive && _thumbCache.has(key)) { show(_thumbCache.get(key), false); return; }
       try {
         const r = await window.pywebview.api.read_image_file(relPath, rootPath);
         if (r && r.success && r.data) {
-          if (!isLive && _thumbCache.has(key)) { imgEl.src = _thumbCache.get(key); return; }
+          if (!isLive && _thumbCache.has(key)) { show(_thumbCache.get(key), false); return; }
+          if (swap && imgEl._swapSeq !== seq) return; // superseded while reading
           const url = _base64ToBlobUrl(r.data, r.mime);
           if (!isLive) _thumbCache.set(key, url);
-          imgEl.src = url;
+          // Live frames are overwritten in place and never cached, so the element
+          // owns (and later revokes) their blob: URLs; cached URLs belong to _thumbCache.
+          show(url, isLive);
         }
       } catch (_) { }
+    }
+
+    /** Clear an element's image and revoke the live blob: URL it owns (if any). */
+    function _releaseOwnedImg(imgEl) {
+      if (!imgEl) return;
+      imgEl._swapSeq = (imgEl._swapSeq || 0) + 1;
+      if (imgEl._ownedUrl) { URL.revokeObjectURL(imgEl._ownedUrl); imgEl._ownedUrl = ''; }
+      if (imgEl.getAttribute('src')) imgEl.removeAttribute('src');
+    }
+
+    function _prefersReducedMotion() {
+      try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); }
+      catch (_) { return false; }
+    }
+
+    /**
+     * Show `url` in `imgEl` once it has decoded (so the swap never flashes blank).
+     * Inside a .live-dlg-stage the previous frame stays underneath as a "ghost"
+     * while the new one fades in on top; elsewhere the new image just fades in.
+     * `owned` = this element must revoke the URL when it is replaced.
+     */
+    function _swapImage(imgEl, url, owned, seq) {
+      const apply = () => {
+        if (imgEl._swapSeq !== seq) { // a newer request took over before decode finished
+          if (owned) URL.revokeObjectURL(url);
+          return;
+        }
+        const prevOwned = imgEl._ownedUrl || '';
+        const reduce = _prefersReducedMotion();
+        const stage = imgEl.parentElement;
+        let ghost = null;
+        if (!reduce && imgEl.getAttribute('src') && stage && stage.classList.contains('live-dlg-stage')) {
+          stage.querySelectorAll('.live-dlg-ghost').forEach(g => g.remove());
+          ghost = document.createElement('img');
+          ghost.className = 'live-dlg-img live-dlg-ghost';
+          ghost.alt = '';
+          ghost.src = imgEl.src;
+          stage.insertBefore(ghost, imgEl);
+        }
+        imgEl.src = url;
+        imgEl._ownedUrl = owned ? url : '';
+        if (!reduce) {
+          imgEl.classList.remove('live-img-in');
+          void imgEl.offsetWidth; // restart the CSS animation
+          imgEl.classList.add('live-img-in');
+        }
+        // The ghost and the old URL are needed only until the fade finishes.
+        setTimeout(() => {
+          if (ghost) ghost.remove();
+          if (prevOwned && prevOwned !== url) URL.revokeObjectURL(prevOwned);
+        }, reduce ? 0 : 320);
+      };
+      const pre = new Image();
+      pre.src = url;
+      (pre.decode ? pre.decode() : Promise.resolve()).catch(() => { }).then(apply);
     }
 
     /** Update the live dialog with data from a running (or recently-finished) queue item. */
@@ -878,34 +1007,55 @@
         const paused = item && item.is_paused;
         statusEl.textContent = paused ? '⏸ Paused — ' + msg : msg;
       }
+      // Subtle "working" indicator: pulses while the item is analyzing, still when paused.
+      const working = !!item && item.status === 'running';
+      const pulseEl = document.getElementById('liveDlgPulse');
+      if (pulseEl) {
+        pulseEl.classList.toggle('on', working);
+        pulseEl.classList.toggle('is-paused', working && !!item.is_paused);
+      }
 
       if (!item) return;
 
-      // Thumbnail
-      const thumbEl = document.getElementById('liveDlgThumb');
-      if (thumbEl && item.current_export_path) {
-        const k = item.current_export_path + '|' + item.path;
-        if (_liveLastThumbKey !== k) { _liveLastThumbKey = k; _loadImg(thumbEl, item.current_export_path, item.path); }
+      // A different folder starts a fresh frame sequence.
+      if (_liveLastItemPath !== item.path) {
+        _liveLastItemPath = item.path;
+        _liveLastThumbKey = '';
+        _liveLastOverlayKey = '';
+        _liveLastCropsVer = -1;
       }
 
-      // Detection overlay
-      const overlayEl = document.getElementById('liveDlgOverlay');
-      if (overlayEl) {
-        if (item.current_overlay_rel) {
-          const k = item.current_overlay_rel + '|' + item.path;
-          // Always reload live overlay images (they are overwritten in place).
-          const isLiveOverlay = String(item.current_overlay_rel).indexOf('__live_') >= 0;
-          if (isLiveOverlay) {
-            _liveLastOverlayKey = k + '|' + Date.now();
-            _loadImg(overlayEl, item.current_overlay_rel, item.path);
-          } else if (_liveLastOverlayKey !== k) {
-            _liveLastOverlayKey = k; _loadImg(overlayEl, item.current_overlay_rel, item.path);
-          }
-          overlayEl.style.visibility = '';
-        } else {
-          overlayEl.style.visibility = 'hidden';
+      // Thumbnail: reload only when the frame changed (path or frame version).
+      const thumbEl = document.getElementById('liveDlgThumb');
+      if (thumbEl && item.current_export_path) {
+        const k = item.current_export_path + '|' + item.path + '|' + (item.live_frame_ver || 0);
+        if (_liveLastThumbKey !== k) {
+          _liveLastThumbKey = k;
+          _loadImg(thumbEl, item.current_export_path, item.path, { swap: true });
         }
       }
+
+      // Detection overlay: the backend rewrites one file in place, so reload only
+      // when its version counter moves. Between frames the old overlay stays
+      // (dimmed, with a shimmer) until the new one is ready instead of going blank.
+      const overlayEl = document.getElementById('liveDlgOverlay');
+      const overlayStage = document.getElementById('liveDlgOverlayStage');
+      if (overlayEl) {
+        if (item.current_overlay_rel) {
+          const k = item.current_overlay_rel + '|' + item.path + '|' + (item.live_overlay_ver || 0);
+          if (_liveLastOverlayKey !== k) {
+            _liveLastOverlayKey = k;
+            _loadImg(overlayEl, item.current_overlay_rel, item.path, { swap: true });
+          }
+        }
+        overlayEl.style.visibility = (item.current_overlay_rel || overlayEl.getAttribute('src')) ? '' : 'hidden';
+        if (overlayStage) {
+          overlayStage.classList.toggle('is-waiting',
+            working && !item.is_paused && !item.current_overlay_rel);
+        }
+      }
+      const thumbStage = document.getElementById('liveDlgThumbStage');
+      if (thumbStage) thumbStage.classList.toggle('is-waiting', working && !item.is_paused && !item.current_export_path);
 
       // Crop cards
       _updateLiveCropCards(item);
@@ -935,10 +1085,22 @@
       const species = item.current_species_results || [];
       const cardCount = Math.max(crops.length, dets.length, quality.length, species.length);
 
+      // Crop JPEGs are rewritten in place; refetch them only when the backend's
+      // crops version moved (text fields below are cheap and always refreshed).
+      const cropsVer = item.live_crops_ver || 0;
+      const cropsChanged = _liveLastCropsVer !== cropsVer;
+      _liveLastCropsVer = cropsVer;
+
       // Keep card count in sync with current live detections.
       while (row.children.length < cardCount) {
         const card = document.createElement('div');
-        card.className = 'live-dlg-crop-card';
+        card.className = 'live-dlg-crop-card is-new';
+        // Drop the entry class when the card's own animation ends (child <img>
+        // animationend events bubble, so check the target); the timeout covers a
+        // throttled/hidden window where animations never run.
+        const clearNew = () => card.classList.remove('is-new');
+        card.addEventListener('animationend', (ev) => { if (ev.target === card) clearNew(); });
+        setTimeout(clearNew, 500);
         card.innerHTML = `
         <img class="live-dlg-crop-img" alt="" />
         <div class="ldc-conf">–</div>
@@ -949,6 +1111,7 @@
         row.appendChild(card);
       }
       while (row.children.length > cardCount) {
+        _releaseOwnedImg(row.lastChild.querySelector('.live-dlg-crop-img'));
         row.removeChild(row.lastChild);
       }
 
@@ -968,12 +1131,13 @@
           const k = crops[i] + '|' + item.path;
           const prev = _liveLastCropKeys[i] || '';
           const isLiveCrop = String(crops[i]).indexOf('__live_') >= 0;
-          if (isLiveCrop) {
-            _liveLastCropKeys[i] = k + '|' + Date.now();
-            _loadImg(imgEl, crops[i], item.path);
-          } else if (prev !== k) { _liveLastCropKeys[i] = k; _loadImg(imgEl, crops[i], item.path); }
+          if (isLiveCrop ? (cropsChanged || prev !== k) : prev !== k) {
+            _liveLastCropKeys[i] = k;
+            _loadImg(imgEl, crops[i], item.path, { swap: true });
+          }
         } else {
-          if (imgEl.src) imgEl.removeAttribute('src');
+          _releaseOwnedImg(imgEl);
+          imgEl._swapSeq = (imgEl._swapSeq || 0) + 1; // drop any load still in flight
           _liveLastCropKeys[i] = '';
           confEl.textContent = '–';
           qualityEl.textContent = 'Quality: —';

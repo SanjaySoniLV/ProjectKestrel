@@ -1291,3 +1291,110 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ── Analysis queue panel polish (controls, at-a-glance rows, motion) ──────────
+   Scoped to #queuePanel / #queuePanelControls: the cloud panel reuses the
+   .queue-panel* base classes and must keep its own look. */
+#queuePanelControls {
+  align-items: center;
+  flex-wrap: nowrap;
+}
+#queuePanelControls .qctl {
+  flex: 0 0 auto;
+  min-width: 0;
+  height: 28px;
+  padding: 0 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  border-radius: var(--radius-sm);
+  transition: background .15s, border-color .15s, color .15s, transform .08s;
+}
+#queuePanelControls .qctl:active { transform: translateY(1px); }
+#queuePanelControls .qctl:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+#queuePanelControls .qctl-ico { font-size: 12px; width: 14px; text-align: center; }
+/* Pause/Resume is the one primary action; it fills the free width. */
+#queuePanelControls .qctl--primary { flex: 1 1 auto; justify-content: center; }
+#queuePanelControls .qctl--primary.is-paused {
+  background: #3a2408;
+  border-color: #7a5010;
+  color: #f5c542;
+}
+/* Cancel is destructive: low emphasis until hovered or focused. */
+#queuePanelControls .qctl--danger {
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+  margin-left: auto;
+}
+#queuePanelControls .qctl--danger:hover,
+#queuePanelControls .qctl--danger:focus-visible {
+  background: #2a1414;
+  border-color: #5e2a2a;
+  color: #f0b4b4;
+}
+
+.queue-item [hidden] { display: none !important; }
+.queue-item { transition: border-color .25s, background .25s, opacity .25s; }
+/* The folder being analyzed is the thing to read at a glance. */
+.queue-item.is-running { background: #0d141f; border-color: #1d4f8c; }
+.queue-item.is-running .queue-item-name { font-size: 13px; font-weight: 600; }
+.queue-item.is-running .queue-item-progress { height: 6px; }
+.queue-item.is-running .queue-item-eta { font-size: 12px; color: #b8c6d8; font-variant-numeric: tabular-nums; }
+.queue-item.is-error { border-color: #5e1a1a; }
+.queue-item-error {
+  font-size: 11px;
+  color: #f0a0a0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.queue-item-progress-fill { transition: width .45s cubic-bezier(.22, .61, .36, 1), background-color .3s; }
+.queue-item-progress-fill.is-complete { background: #2ecc71; }
+.queue-item.is-paused .queue-item-progress-fill { background: #d9a62e; }
+/* Moving sheen on the running bar = "still working"; stops when paused. */
+.queue-item.is-running:not(.is-paused) .queue-item-progress-fill {
+  background-image: linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,.28) 50%, rgba(255,255,255,0) 100%);
+  background-size: 60px 100%;
+  background-repeat: no-repeat;
+  animation: queue-bar-sheen 1.4s linear infinite;
+}
+@keyframes queue-bar-sheen {
+  from { background-position: -60px 0; }
+  to   { background-position: calc(100% + 60px) 0; }
+}
+.queue-item-status.running::before {
+  content: '';
+  display: inline-block;
+  width: 6px; height: 6px;
+  margin-right: 5px;
+  vertical-align: 1px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: queue-dot-pulse 1.2s ease-in-out infinite;
+}
+.queue-item.is-paused .queue-item-status.running::before { animation: none; opacity: .5; }
+@keyframes queue-dot-pulse {
+  0%, 100% { opacity: .35; transform: scale(.8); }
+  50%      { opacity: 1;   transform: scale(1); }
+}
+.queue-live-thumb { object-fit: cover; display: block; }
+img.live-img-in, .queue-live-thumb.live-img-in { animation: live-img-in .22s ease-out backwards; }
+@keyframes live-img-in {
+  from { opacity: 0; transform: scale(1.015); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #queuePanelControls .qctl,
+  .queue-item,
+  .queue-item-progress-fill { transition: none; }
+  .queue-item.is-running:not(.is-paused) .queue-item-progress-fill,
+  .queue-item-status.running::before,
+  img.live-img-in { animation: none; }
+}
