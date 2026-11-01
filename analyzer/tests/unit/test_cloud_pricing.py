@@ -230,3 +230,15 @@ def test_failed_fetch_on_direct_build_still_returns_links(monkeypatch):
     out = cloud_pricing.get_pricing("https://auth.example.test")
     assert out["ok"] is True and out["catalog"] is None
     assert out["plansUrl"] and out["learnMoreUrl"]
+
+# ── frontend wiring ─────────────────────────────────────────────────────────
+
+def test_sign_in_entry_point_used_by_the_cloud_card_is_defined():
+    """The Cloud card calls the global ``openPerchSignInWindow`` behind a
+    ``typeof`` guard, so a missing definition fails silently (the sign-in links
+    just do nothing). Pin that auth.js defines it."""
+    js = ANALYZER_DIR / "js"
+    used = (js / "cloud-compute.js").read_text(encoding="utf-8")
+    assert "openPerchSignInWindow" in used
+    auth = (js / "auth.js").read_text(encoding="utf-8")
+    assert re.search(r"window\.openPerchSignInWindow\s*=\s*openSignInUI", auth)
