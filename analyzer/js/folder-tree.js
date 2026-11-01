@@ -11,7 +11,6 @@
     let _checkedFolderPathSnapshot = new Map(); // normalized path -> original path
     let queuedFolderPaths = new Set();     // folders queued for analysis (dialog selection)
     let _treeFlatOrder = [];               // flat ordered list of visible tree paths for range-select
-    let _appVersion = '';                  // current app version, fetched once
     let _isFrozenApp = false;              // whether running as frozen (PyInstaller) build
     let _appPlatform = 'windows';          // 'windows' | 'macos' | 'linux'
 
@@ -120,13 +119,7 @@
         removeFolderRoot(child);
       }
 
-      // Fetch app version / frozen status / platform once (legacy behavior)
-      if (!_appVersion && window.pywebview?.api?.get_app_version) {
-        try {
-          const vr = await window.pywebview.api.get_app_version();
-          if (vr && vr.success) _appVersion = vr.version || '';
-        } catch (e) { /* ignore */ }
-      }
+      // Fetch frozen status / platform once (legacy behavior)
       if (!_isFrozenApp && window.pywebview?.api?.is_frozen_app) {
         try {
           const fr = await window.pywebview.api.is_frozen_app();
@@ -154,6 +147,8 @@
           path: norm,
           has_kestrel: rootHasKestrel,
           pipeline_major: result.root_pipeline_major ?? null,
+          pipeline_version: result.root_pipeline_version || '',
+          upgraded: !!result.root_upgraded,
           children: result.tree || [],
         };
         folderTreeRootNodes.set(norm, node);
@@ -261,9 +256,18 @@
       return Number.isFinite(major) && major < CURRENT_PIPELINE_MAJOR;
     }
 
-    /** "2.x" / "3.0" label for a node's analysis pipeline. */
+    /** Tooltip first line for a current (not outdated) analysed node, '' when unknown. */
+    function folderPipelineNote(node) {
+      const label = folderPipelineLabel(node);
+      if (!node || !node.has_kestrel || !label) return '';
+      return `Pipeline ${label}${node.upgraded ? ' (upgraded in place from 2.x)' : ''}`;
+    }
+
+    /** Pipeline label for a node: the full recorded version ("3.0.0"), else the
+     *  generation ("2.x") when only the major is known. */
     function folderPipelineLabel(node) {
       if (!node || node.pipeline_major == null) return '';
+      if (node.pipeline_version) return node.pipeline_version;
       const major = Number(node.pipeline_major);
       if (!Number.isFinite(major)) return '';
       return major >= 3 ? '3.0' : `${major}.x`;
@@ -454,7 +458,8 @@
       // Path is always visible on hover; in-progress / outdated states append context.
       if (isInProgress) row.title = `${isUpgrading && !_inProgressFolderPaths.has(normPath) ? 'Upgrading to pipeline 3…' : 'Currently analyzing…'}\n${node.path}`;
       else if (outdated) row.title = `Analyzed on pipeline ${folderPipelineLabel(node)} (current: ${CURRENT_PIPELINE_MAJOR}.0)\n${node.path}`;
-      else row.title = node.path;
+      else row.title = folderPipelineNote(node) ? `${folderPipelineNote(node)}
+${node.path}` : node.path;
 
       // ── Rail: ancestor continuation lines + own elbow ──────────────────────
       // Root (ancestorContinueFlags === null) has no rail. Every non-root row

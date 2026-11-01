@@ -20,7 +20,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from kestrel_analyzer import quality_model as qm
+from kestrel_analyzer import config, quality_model as qm
 from kestrel_analyzer import smart_search as ss
 from kestrel_analyzer import upgrade_v3
 from kestrel_analyzer.ml import siglip
@@ -149,7 +149,10 @@ def test_upgrade_keeps_user_decisions(tmp_path):
     assert crop["quality_legacy"] == pytest.approx(before.loc[2, "quality"], abs=1e-6)
     meta = json.loads((kdir / "kestrel_metadata.json").read_text())
     assert meta["pipeline_major"] == 3 and meta["schema_version"] == 3 and meta["quality_model"] == "siglip"
-    assert meta["version"] == "2.0.4"  # creation version is history, not overwritten
+    # One pipeline version per folder: the upgrade replaces the 2.x build stamp.
+    assert meta["pipeline_version"] == config.PIPELINE_VERSION
+    assert "version" not in meta and "kestrel_version" not in meta
+    assert meta["upgraded_to_v3_utc"]
     assert upgrade_v3.eligibility(str(kdir))["status"] == "current"
     cov = ss.coverage(str(kdir))
     assert cov["indexed_images"] == cov["indexable_images"] == 4

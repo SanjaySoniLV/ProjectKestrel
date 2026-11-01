@@ -131,6 +131,13 @@ packaging\build_installer_headless.bat
 - **opencv duplicate install:** if pip ends up with both `opencv-python` and `opencv-python-headless`
   (an old environment that still has `speciesnet` installed pulls in the headless one), `cv2.imwrite` rejects the JPEG-quality argument. Fix:
   `pip uninstall -y opencv-python-headless` then `pip install --force-reinstall opencv-python==4.11.0.86`.
+- **A folder records one pipeline version.** `config.PIPELINE_VERSION` (e.g. `3.0.0`) is stored per folder as
+  `pipeline_version` in `kestrel_metadata.json`; its major (`PIPELINE_MAJOR`) is the compatibility boundary
+  (upgrade path vs. re-analyze), and minor/patch never make a folder outdated. Read it only through
+  `kestrel_analyzer/pipeline_version.py`, which also falls back to the legacy `version` / `kestrel_version`
+  stamps (app-style numbers older builds wrote; never written now). The app release is separate
+  (`VERSION.txt`, `VERSION_NUMBER.txt`), logged as `app_version`, and never used to decide anything. Bump
+  `PIPELINE_VERSION` only when the data a folder holds changes. `config.VERSION` is a deprecated alias.
 - **The `.kestrel/` schema is shared** by the browse UI, the Cloud Compute result-pack merge and the Perch
   upload. Changing columns in `kestrel_analyzer/database.py` affects all three. The Cloud Compute GPU
   service runs a copy of this repo's `analyzer/`, so pipeline-output or model-loading changes also need to

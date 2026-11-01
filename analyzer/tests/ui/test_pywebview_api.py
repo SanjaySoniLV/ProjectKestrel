@@ -130,10 +130,10 @@ def test_api_probe_writes_result_json(tmp_path, probe_target, port, deadline_s, 
 
         # version should match what api_bridge.Api.get_app_version reads.
         sys.path.insert(0, str(REPO_ROOT / "analyzer"))
-        from kestrel_analyzer.config import VERSION
-        assert payload.get("version") == VERSION, (
-            f"version mismatch: probe={payload.get('version')!r}, "
-            f"config.VERSION={VERSION!r}"
+        from kestrel_analyzer.config import PIPELINE_VERSION
+        assert payload.get("pipeline_version") == PIPELINE_VERSION, (
+            f"version mismatch: probe={payload.get('pipeline_version')!r}, "
+            f"config.PIPELINE_VERSION={PIPELINE_VERSION!r}"
         )
 
         # frozen is platform-dependent but must always be a bool.

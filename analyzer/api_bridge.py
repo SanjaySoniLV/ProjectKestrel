@@ -119,6 +119,7 @@ from kestrel_analyzer.config import (
     RAW_EXTENSIONS as _RAW_EXTENSIONS,
 )
 from kestrel_analyzer.database import copy_file_atomic
+from kestrel_analyzer.pipeline_version import folder_pipeline_major, read_app_version, scan_summary
 
 # Telemetry — failsafe import (never blocks startup)
 try:
@@ -1479,14 +1480,25 @@ class Api:
         return {'frozen': getattr(sys, 'frozen', False)}
 
     def get_app_version(self):
-        """Return the current application version from config."""
+        """Return the app release label (VERSION.txt codename + VERSION_NUMBER.txt).
+
+        This is the shipped app, not the analysis pipeline: see
+        ``get_pipeline_version`` for the version folders record.
+        """
         try:
-            from kestrel_analyzer.config import VERSION
-            return {'success': True, 'version': VERSION}
+            return {'success': True, 'version': read_app_version() or 'unknown'}
+        except Exception:
+            return {'success': True, 'version': 'unknown'}
+
+    def get_pipeline_version(self):
+        """Return the version of the analysis pipeline this build writes."""
+        try:
+            from kestrel_analyzer.config import PIPELINE_VERSION
+            return {'success': True, 'version': PIPELINE_VERSION}
         except Exception:
             try:
-                from analyzer.kestrel_analyzer.config import VERSION
-                return {'success': True, 'version': VERSION}
+                from analyzer.kestrel_analyzer.config import PIPELINE_VERSION
+                return {'success': True, 'version': PIPELINE_VERSION}
             except Exception:
                 return {'success': True, 'version': 'unknown'}
 
@@ -1499,16 +1511,10 @@ class Api:
         the payload on ``self._probe_ready_payload`` and signals the event).
         """
         from datetime import datetime, timezone
-        try:
-            from kestrel_analyzer.config import VERSION
-        except Exception:
-            try:
-                from analyzer.kestrel_analyzer.config import VERSION
-            except Exception:
-                VERSION = 'unknown'
         payload = {
             'ok': True,
-            'version': VERSION,
+            'app_version': self.get_app_version().get('version', 'unknown'),
+            'pipeline_version': self.get_pipeline_version().get('version', 'unknown'),
             'frozen': bool(getattr(sys, 'frozen', False)),
             'timestamp': datetime.now(timezone.utc).isoformat(),
         }
@@ -2044,17 +2050,17 @@ class Api:
                     has_perch_link = has_kestrel and os.path.isfile(
                         os.path.join(full, '.kestrel', 'perch_link.json')
                     )
-                    pipeline_major = (
-                        Api._scan_pipeline_major(os.path.join(full, '.kestrel', 'kestrel_metadata.json'))
-                        if has_kestrel else None
-                    )
+                    pipeline = Api._scan_pipeline(
+                        os.path.join(full, '.kestrel', 'kestrel_metadata.json') if has_kestrel else '')
                     children = _scan(full, depth - 1)
                     result.append({
                         'name': name,
                         'path': full,
                         'has_kestrel': has_kestrel,
                         'has_perch_link': has_perch_link,
-                        'pipeline_major': pipeline_major,
+                        'pipeline_major': pipeline['pipeline_major'],
+                        'pipeline_version': pipeline['pipeline_version'],
+                        'upgraded': pipeline['upgraded'],
                         'children': children,
                     })
                 return result
@@ -2064,16 +2070,16 @@ class Api:
             root_has_perch_link = root_has_kestrel and os.path.isfile(
                 os.path.join(root_path, '.kestrel', 'perch_link.json')
             )
-            root_pipeline_major = (
-                Api._scan_pipeline_major(os.path.join(root_path, '.kestrel', 'kestrel_metadata.json'))
-                if root_has_kestrel else None
-            )
+            root_pipeline = Api._scan_pipeline(
+                os.path.join(root_path, '.kestrel', 'kestrel_metadata.json') if root_has_kestrel else '')
             return {
                 'success': True,
                 'tree': tree,
                 'root_has_kestrel': root_has_kestrel,
                 'root_has_perch_link': root_has_perch_link,
-                'root_pipeline_major': root_pipeline_major,
+                'root_pipeline_major': root_pipeline['pipeline_major'],
+                'root_pipeline_version': root_pipeline['pipeline_version'],
+                'root_upgraded': root_pipeline['upgraded'],
                 'error': '',
                 'nodes': node_count[0],
                 'truncated': bool(limit_reached[0]),
@@ -2083,30 +2089,23 @@ class Api:
             return {'success': False, 'tree': [], 'error': str(e)}
 
     @staticmethod
-    def _scan_pipeline_major(meta_path: str):
-        """The analysis pipeline generation recorded for a folder, for the folder tree.
+    def _scan_pipeline(meta_path: str) -> dict:
+        """The pipeline a folder was analysed with, for the folder tree.
 
-        This is the only version the tree uses to decide whether a folder is
-        outdated. The app version that created or last touched the folder
-        (``version`` / ``kestrel_version`` in the metadata) says nothing about
-        which pipeline produced the rows, and an in-place upgrade to pipeline 3
-        leaves ``version`` at the creating app version.
-
-        Returns None when the metadata is missing or unreadable (unknown, so the
-        folder is never flagged), 2 when it is readable but has no
-        ``pipeline_major`` (analysed before pipeline 3 existed), else the
-        recorded integer.
+        ``{pipeline_major, pipeline_version, upgraded}``, from the one pipeline
+        version the folder records (see ``kestrel_analyzer.pipeline_version``).
+        This is what the tree uses to decide whether a folder is outdated; the
+        app release that created or touched the folder plays no part. Both
+        version values are None when the metadata is missing or unreadable
+        (unknown, so the folder is never flagged).
         """
         try:
-            if not os.path.isfile(meta_path):
-                return None
+            if not meta_path or not os.path.isfile(meta_path):
+                return scan_summary(None)
             with open(meta_path, 'r', encoding='utf-8') as mf:
-                meta = json.load(mf)
-            if not isinstance(meta, dict):
-                return None
-            return int(meta.get('pipeline_major') or 2)
+                return scan_summary(json.load(mf))
         except Exception:
-            return None
+            return scan_summary(None)
 
     @staticmethod
     def _photo_still_in_folder(root_dir: str, filename) -> bool:
@@ -3634,7 +3633,7 @@ class Api:
                 active = 'legacy'
             try:
                 with open(os.path.join(kestrel_dir, 'kestrel_metadata.json'), 'r', encoding='utf-8') as _mf:
-                    folder_major = int((json.load(_mf) or {}).get('pipeline_major') or 2)
+                    folder_major = folder_pipeline_major(json.load(_mf) or {})
             except Exception:
                 folder_major = 2
             sel = qf.select_feedback_frames(usable, k=qf.MAX_FRAMES, active_scorer=active)
@@ -9509,22 +9508,27 @@ class Api:
 
             # 4. Give the destination an audit trail of its own.
             try:
-                from kestrel_analyzer.config import VERSION as _KVERSION
-            except ImportError:
-                _KVERSION = self.get_app_version().get('version', '')
-            try:
                 meta_path = os.path.join(dest_kestrel, 'kestrel_metadata.json')
                 if not os.path.exists(meta_path):
                     staged_files.append(meta_path)
                     from datetime import datetime, timezone
-                    write_json_atomic(meta_path, {
-                        'version': _KVERSION,
+                    # The rows were produced by whatever pipeline analysed the
+                    # source, not by this build, so carry the source's pipeline
+                    # version rather than stamping the current one.
+                    dest_meta = {
                         'analyzer': 'repair-relocate',
                         'created_utc': datetime.now(timezone.utc)
                             .replace(tzinfo=None).isoformat() + 'Z',
                         'database_file': 'kestrel_database.csv',
                         'relocated_from': src_real,
-                    })
+                    }
+                    src_pipeline = Api._scan_pipeline(
+                        os.path.join(src_kestrel, 'kestrel_metadata.json'))
+                    if src_pipeline['pipeline_version']:
+                        dest_meta['pipeline_version'] = src_pipeline['pipeline_version']
+                    if src_pipeline['pipeline_major']:
+                        dest_meta['pipeline_major'] = src_pipeline['pipeline_major']
+                    write_json_atomic(meta_path, dest_meta)
             except Exception as e:
                 warn(f'[repair] Could not write destination metadata: {e}')
 

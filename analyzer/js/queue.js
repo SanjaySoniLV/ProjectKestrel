@@ -1258,6 +1258,8 @@
           path: normRoot,
           has_kestrel: !!result.root_has_kestrel,
           pipeline_major: result.root_pipeline_major ?? null,
+          pipeline_version: result.root_pipeline_version || '',
+          upgraded: !!result.root_upgraded,
           children: result.tree || [],
         };
         // Apply transient kestrel markings (folders recently queued/started

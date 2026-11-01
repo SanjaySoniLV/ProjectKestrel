@@ -49,6 +49,7 @@ from .config import (
     LEGACY_QUALITY_MODEL_ID,
 )
 from . import quality_model as quality_model_mod
+from .pipeline_version import folder_pipeline_major, folder_pipeline_version
 
 SAVE_EVERY = 25
 BACKUP_PREFIX = "OLD_kestrel_database_pre-v3_"
@@ -87,11 +88,8 @@ def eligibility(kestrel_dir: str) -> dict:
     if not os.path.isfile(os.path.join(kestrel_dir, DATABASE_NAME)):
         return out
     meta = _read_meta(kestrel_dir)
-    try:
-        major = int(meta.get("pipeline_major") or 0)
-    except (TypeError, ValueError):
-        major = 0
-    created = str(meta.get("version") or "")
+    major = folder_pipeline_major(meta)
+    created = folder_pipeline_version(meta)
     out.update(version=created, pipeline_major=major)
     rows = smart_search.read_folder_rows(kestrel_dir)
     out["rows"] = len(rows.analysed)
@@ -364,11 +362,13 @@ def upgrade_folder(
     meta[quality_model_mod.METADATA_KEY] = quality_model
     meta["schema_version"] = max(3, int(meta.get("schema_version") or 0))
     if complete:
-        from .config import VERSION
         from .logging_utils import utc_now_naive
-        meta["pipeline_major"] = PIPELINE_MAJOR
+        from .pipeline_version import read_app_version, stamp_pipeline
+        stamp_pipeline(meta)
         meta["upgraded_to_v3_utc"] = utc_now_naive().isoformat() + "Z"
-        meta["kestrel_version"] = VERSION
+        app_version = read_app_version()
+        if app_version:
+            meta["app_version"] = app_version
         meta["models"] = {
             "detector": str(settings.get("detector_name", "") or ""),
             "species": SPECIES_MODEL_ID,

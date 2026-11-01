@@ -417,6 +417,8 @@
           path: norm,
           has_kestrel: rootHasKestrel,
           pipeline_major: result.root_pipeline_major ?? null,
+          pipeline_version: result.root_pipeline_version || '',
+          upgraded: !!result.root_upgraded,
           children: result.tree || [],
         };
         analyzeDlgRootNodes.set(norm, node);
@@ -532,7 +534,8 @@
       row.dataset.path = node.path;
       row.title = outdated
         ? `Analyzed on pipeline ${folderPipelineLabel(node)} (current: ${CURRENT_PIPELINE_MAJOR}.0) — re-analyze to update.\n${node.path}`
-        : node.path;
+        : (folderPipelineNote(node) ? `${folderPipelineNote(node)}
+${node.path}` : node.path);
 
       // ── Rails (Phase 1.5B mirror) ────────────────────────────────────────────
       const isRoot = ancestorContinueFlags === null;
@@ -634,6 +637,7 @@
               clearKestrelDataForFolder(node.path, node.name, () => {
                 node.has_kestrel = false;
                 node.pipeline_major = null;
+                node.pipeline_version = '';
                 _inspectAndRenderAnalyzeDlg();
               });
             },
@@ -1390,17 +1394,6 @@
       if (!hasPywebviewApi) {
         alert('Analysis queue is only available in the desktop (pywebview) mode.\n\nRun kestrel_visualizer as a desktop app to use this feature.');
         return;
-      }
-      // App-version fetch is needed for the outdated-version pill badges, but
-      // it's a non-blocking concern — fire it without awaiting so the dialog
-      // opens instantly. When it lands, re-render the tree so badges appear.
-      if (!_appVersion && window.pywebview?.api?.get_app_version) {
-        window.pywebview.api.get_app_version().then(vr => {
-          if (vr && vr.success && vr.version) {
-            _appVersion = vr.version;
-            if (typeof renderAnalyzeDlgTree === 'function') renderAnalyzeDlgTree();
-          }
-        }).catch(() => {});
       }
       // Detection model now lives as a plain <select> in More options →
       // Finding subjects, defaulting to Accurate. Anything that isn't an
