@@ -300,6 +300,7 @@
     <div id="queuePanel" class="queue-panel hidden" role="region" aria-label="Analysis Queue">
       <div class="queue-panel-header" id="queuePanelHeader" title="Click to expand / collapse">
         <span class="queue-panel-title">🔬 Analysis Queue</span>
+        <span class="queue-overall-eta hidden" id="queueOverallEta"></span>
         <span class="queue-panel-badge" id="queuePanelBadge">Idle</span>
         <!-- Close (X): only appears once every item is in a terminal state
              (done/error/cancelled) — i.e. nothing is analyzing. Replaces the
@@ -308,11 +309,18 @@
         <span class="queue-panel-toggle open" id="queuePanelToggle">▲</span>
       </div>
       <div class="queue-panel-body" id="queuePanelBody"></div>
-      <div class="queue-overall-eta hidden" id="queueOverallEta"></div>
       <div class="queue-panel-controls" id="queuePanelControls">
-        <button id="queuePauseBtn" title="Pause / resume analysis">⏸ Pause</button>
-        <button id="queueCancelBtn" title="Cancel all pending items">⏹ Cancel</button>
-        <button id="queueLiveBtn" title="See live analysis details">👁 Live</button>
+        <!-- One toggle: renderQueuePanel() flips icon, label, title and aria-pressed. -->
+        <button id="queuePauseBtn" class="qctl qctl--primary" type="button" title="Pause analysis" aria-pressed="false">
+          <span class="qctl-ico" aria-hidden="true">⏸</span><span class="qctl-lbl">Pause</span>
+        </button>
+        <button id="queueLiveBtn" class="qctl" type="button" title="See live analysis details">
+          <span class="qctl-ico" aria-hidden="true">👁</span><span class="qctl-lbl">Live</span>
+        </button>
+        <!-- Destructive: kept visually secondary and still behind a confirm(). -->
+        <button id="queueCancelBtn" class="qctl qctl--danger" type="button" title="Cancel all pending items">
+          <span class="qctl-ico" aria-hidden="true">⏹</span><span class="qctl-lbl">Cancel</span>
+        </button>
       </div>
     </div>
 
@@ -1766,23 +1774,33 @@
     <div class="live-dlg">
       <div class="live-dlg-hdr">
         <span class="live-dlg-title">👁 Live Analysis: <span id="liveDlgFolderName">–</span></span>
-        <span class="live-dlg-fname" id="liveDlgFilename"></span>
-        <button id="liveDlgClose">× Close</button>
+        <button id="liveDlgClose" class="live-dlg-close" type="button" title="Close" aria-label="Close">×</button>
       </div>
-      <div class="live-dlg-status-bar" id="liveDlgStatus"></div>
+      <div class="live-dlg-status-bar">
+        <span class="live-dlg-pulse" id="liveDlgPulse" aria-hidden="true"></span>
+        <span class="live-dlg-fname" id="liveDlgFilename"></span>
+        <span id="liveDlgStatus" role="status" aria-live="off"></span>
+      </div>
       <div class="live-dlg-preview-row">
         <div class="live-dlg-img-cell">
           <span class="live-dlg-img-label">Thumbnail</span>
-          <img id="liveDlgThumb" class="live-dlg-img" alt="" />
+          <div class="live-dlg-stage" id="liveDlgThumbStage">
+            <div class="live-dlg-wait"><span class="live-dlg-spin" aria-hidden="true"></span><span class="live-dlg-wait-txt">Waiting for first frame…</span></div>
+            <img id="liveDlgThumb" class="live-dlg-img" alt="" />
+          </div>
         </div>
         <div class="live-dlg-img-cell">
           <span class="live-dlg-img-label">Detections</span>
-          <img id="liveDlgOverlay" class="live-dlg-img" alt="" />
+          <div class="live-dlg-stage" id="liveDlgOverlayStage">
+            <div class="live-dlg-wait"><span class="live-dlg-spin" aria-hidden="true"></span><span class="live-dlg-wait-txt">Waiting for first frame…</span></div>
+            <img id="liveDlgOverlay" class="live-dlg-img" alt="" />
+          </div>
         </div>
       </div>
       <div class="live-dlg-detections-section">
-        <span class="live-dlg-section-label">Top Detections</span>
+        <span class="live-dlg-section-label">Top detections</span>
         <div class="live-dlg-crops-row" id="liveDlgCrops"></div>
+        <div class="live-dlg-crops-empty" id="liveDlgCropsEmpty">No birds detected yet</div>
       </div>
     </div>
   </dialog>

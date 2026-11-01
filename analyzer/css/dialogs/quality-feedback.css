@@ -27,12 +27,9 @@
 .scene-qf-link:hover, .qf-link:hover { text-decoration: underline; }
 
 /* Dialog sizing follows the step (data-step, set from JS). The consent and
-   thank-you steps are short reading text, so they get a compact card; only
-   the sort step widens to most of the window so focus can be judged. Five
-   crops share the width (~340px each at 1920px); fewer crops get larger
-   cards (capped by the image max-height). Cards wrap below 200px, so a
-   small window shows two rows and the body scrolls. The width eases between
-   steps; the height always hugs the content. */
+   thank-you steps are short reading text, so they get a compact card; the
+   sort step takes most of the window: a ranking list on the left and a large
+   preview on the right, so focus can be judged on a big image. */
 dialog.kdlg.qf-dlg {
   width: min(540px, calc(100vw - 32px));
   max-width: min(540px, calc(100vw - 32px));
@@ -45,9 +42,19 @@ dialog.kdlg.qf-dlg[data-step="thanks"] {
   max-width: min(420px, calc(100vw - 32px));
 }
 dialog.kdlg.qf-dlg[data-step="sort"] {
-  width: 92vw;
-  max-width: 92vw;
+  width: min(90vw, calc(100vw - 32px));
+  max-width: none;
+  height: min(90vh, calc(100vh - 32px));
+  max-height: none;
 }
+/* Sort step: the body is a column so the sort area can fill the leftover
+   height instead of the dialog scrolling. */
+dialog.kdlg.qf-dlg[data-step="sort"] .kdlg-body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+dialog.kdlg.qf-dlg[data-step="sort"] .qf-body { flex: 1 1 auto; min-height: 0; display: flex; }
 @media (prefers-reduced-motion: reduce) {
   dialog.kdlg.qf-dlg { transition: none; }
 }
@@ -59,19 +66,51 @@ dialog.kdlg.qf-dlg .kdlg-body { padding: 20px 22px 18px; }
 .qf-spacer { flex: 1; }
 .qf-footer { align-items: center; padding: 12px 22px; }
 
-.qf-list {
+/* Sort step: [ranking column | preview] */
+.qf-sort {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: clamp(170px, 22%, 260px) minmax(0, 1fr);
+  gap: 16px;
+}
+.qf-rank-col {
+  min-height: 0;
   display: flex;
-  gap: 12px;
-  justify-content: center;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 6px;
+}
+.qf-end {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--brand);
+  text-align: center;
+}
+.qf-end--bottom { color: var(--muted); }
+.qf-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  /* A line running from "Sharpest" down to "Blurriest" behind the cards. */
+  background: linear-gradient(var(--brand), var(--muted)) center / 2px 100% no-repeat;
 }
 .qf-card {
   position: relative;
-  /* --qf-n (set from JS) equal columns; wraps only below 200px each. */
-  flex: 0 1 calc((100% - (var(--qf-n, 5) - 1) * 12px) / var(--qf-n, 5));
-  min-width: 200px;
-  max-width: 640px;
-  padding: 4px;
+  /* Cards share the column's height equally, within a readable range. */
+  flex: 1 1 0;
+  min-height: 72px;
+  max-height: 180px;
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  padding: 4px 4px 4px 0;
   background: var(--card);
   border: 1px solid var(--card-border);
   border-radius: var(--radius-md);
@@ -81,60 +120,78 @@ dialog.kdlg.qf-dlg .kdlg-body { padding: 20px 22px 18px; }
 }
 .qf-card:active { cursor: grabbing; }
 .qf-card:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.qf-card.is-previewed { border-color: var(--brand); }
 .qf-card.is-dragging { opacity: .45; }
 .qf-card.is-drop-target { border-color: var(--brand); border-style: dashed; }
+.qf-grip {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding: 0 2px 0 6px;
+  color: var(--muted);
+  font-size: 16px;
+}
 .qf-rank {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  z-index: 1;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  min-width: 14px;
   font-weight: 700;
-  font-size: 12px;
-  min-width: 20px;
-  text-align: center;
-  padding: 1px 6px;
-  border-radius: var(--radius-pill);
-  background: var(--chip);
-  color: var(--text);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
 }
-.qf-zoom-btn {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 1;
-  padding: 1px 7px;
-  font-size: 13px;
-  line-height: 1.5;
-  border-radius: var(--radius-pill);
-  background: var(--chip);
-  color: var(--text);
-  border: 1px solid var(--card-border);
-  cursor: zoom-in;
-}
-.qf-zoom-btn:hover { border-color: var(--brand); }
 .qf-crop {
-  width: 100%;
+  /* Crops are square: size the box from the card's height so it hugs the image. */
+  flex: 0 1 auto;
+  min-width: 0;
+  height: 100%;
   aspect-ratio: 1 / 1;
-  max-height: calc(85vh - 230px);
   object-fit: contain;
   border-radius: var(--radius-sm);
   background: var(--bg);
   display: block;
   pointer-events: none;
 }
-/* Full-dialog inspect view of one crop (click or Esc to close). */
-.qf-zoom {
+
+/* Large preview of the card under the pointer */
+.qf-preview {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.qf-preview-img {
   position: absolute;
   inset: 0;
-  z-index: 5;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 12px;
-  background: rgba(0, 0, 0, .88);
-  cursor: zoom-out;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
-.qf-zoom img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.qf-preview-cap {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  padding: 2px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--chip);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* Small window: preview on top, the ranking as a horizontal strip below. */
+@media (max-width: 760px), (max-height: 520px) {
+  .qf-sort { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(120px, 1fr) auto; }
+  .qf-preview { order: 1; }
+  .qf-rank-col { order: 2; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; }
+  .qf-list { flex-direction: row; overflow-x: auto; overflow-y: hidden; background: linear-gradient(90deg, var(--brand), var(--muted)) center / 100% 2px no-repeat; }
+  .qf-card { flex: 0 0 120px; min-height: 0; height: 84px; max-height: none; }
+  .qf-end--top, .qf-end--bottom { writing-mode: vertical-rl; transform: rotate(180deg); }
+  .qf-end--bottom { transform: none; }
+}
 
 /* Consent + thank-you steps */
 .qf-consent-text { font-size: 13px; margin: 0 0 12px; line-height: 1.5; }
