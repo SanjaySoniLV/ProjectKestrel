@@ -90,6 +90,7 @@ _ALLOWED_TOWER_DEVICES = {'auto', 'cpu', 'gpu'}
 # ask before sharing, always share, or never show the prompt. Default "ask";
 # nothing is ever sent without the user's say-so.
 _ALLOWED_QUALITY_FEEDBACK_MODES = {'ask', 'always', 'never'}
+_ALLOWED_SCENE_FILMSTRIP_ORDERS = {'quality', 'time'}
 _QUALITY_FEEDBACK_INSTALL_ID_RE = re.compile(r'^qfi_[0-9a-f]{32}$')
 _ALLOWED_QUEUE_DETECTOR_NAMES = {'mdv5a', 'mdv1000-cedar'}
 # Biogeographic region codes for the species combobox. Sourced from the
@@ -542,7 +543,7 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     # Analysis-mode feature toggles persisted so cloud-compute settings snapshot
     # (_cc_analysis_settings_snapshot) can read them without needing the UI to
     # pass them as runtime parameters.
-    _set_bool('wildlife_enabled', default=False)
+    _set_bool('wildlife_enabled', default=True)
     _set_bool('species_detection_enabled', default=True)
     # Smart search: also embed each image's downscaled whole frame with SigLIP
     # at analysis time (one extra tower run per photo) for context queries.
@@ -630,6 +631,10 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     _set_bool('showBirdThumbs', default=False)
     _set_bool('onlyManualRatedScenes', default=False)
     _set_float('scene_preview_split_ratio', default=0.68, min_value=0.25, max_value=0.85, digits=4)
+    if 'scene_filmstrip_order' in data:
+        out['scene_filmstrip_order'] = _coerce_enum(
+            data.get('scene_filmstrip_order'), _ALLOWED_SCENE_FILMSTRIP_ORDERS, default='quality',
+        )
 
     if 'sortBy' in data:
         sort_by = _coerce_string(data.get('sortBy'), default='captureTime', max_len=64)

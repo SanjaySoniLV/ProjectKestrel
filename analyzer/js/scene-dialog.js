@@ -389,8 +389,16 @@
       window.addEventListener('mouseup', onUp);
     }
 
+    // Filmstrip tooltip line; empty (dropped by the caller) when the row's only
+    // crops are wildlife hidden by "Ignore wildlife".
+    function _sceneTooltipSpeciesLine(r) {
+      const labels = getRowDisplayLabels(r);
+      if (labels.hidden) return '';
+      return `Species: ${escapeHtml(labels.species)} (${fmt3(labels.speciesConf)})`;
+    }
+
     async function copyRowImageToClipboard(row, relPathOverride, copyLabel = 'image') {
-      const relPath = relPathOverride || row?.export_path || row?.crop_path;
+      const relPath = relPathOverride || row?.export_path || getRowFallbackCropPath(row);
       if (!relPath) {
         showToast('No image available to copy', 2500);
         return;
@@ -454,7 +462,7 @@
         img.alt = r.filename || '';
         img.loading = 'lazy';
         applyThumbnailExposureToImg(img, r);
-        lazyLoadImg(img, () => getBlobUrlForPath(r.export_path || r.crop_path, r.__rootPath));
+        lazyLoadImg(img, () => getBlobUrlForPath(r.export_path || getRowFallbackCropPath(r), r.__rootPath));
         th.appendChild(img);
         card.appendChild(th);
 
@@ -484,7 +492,7 @@
         tip.className = 'filmstrip-tooltip';
         tip.innerHTML = [
           `<b>${escapeHtml(r.filename || '')}</b>`,
-          `Species: ${escapeHtml(r.species || 'Unknown')} (${fmt3(r.species_confidence)})`,
+          _sceneTooltipSpeciesLine(r),
           `Quality: ${fmt3(r.quality)}`,
           `Rating: ${'★'.repeat(rating)}${'☆'.repeat(5 - rating)} ${origin ? `(${origin})` : ''}`,
           cull ? `Status: ${cull === 'accept' ? '✓ Accepted' : '✗ Rejected'}` : '',
@@ -565,11 +573,14 @@
       const r = scene.images[idx];
       const cropState = getRowActiveCropState(r);
       const activeCrop = cropState.activeCrop;
-      const activeCropPath = activeCrop?.crop_path || r.crop_path;
-      const activeSpecies = activeCrop?.species || r.species || 'Unknown';
-      const activeSpeciesConf = activeCrop?.species_confidence ?? r.species_confidence;
-      const activeFamily = activeCrop?.family || r.family || 'Unknown';
-      const activeFamilyConf = activeCrop?.family_confidence ?? r.family_confidence;
+      // "Ignore wildlife": a row whose only crops are wildlife shows the full
+      // image with no crop and no species/family label.
+      const activeLabels = getRowDisplayLabels(r, activeCrop);
+      const activeCropPath = activeLabels.cropPath;
+      const activeSpecies = activeLabels.species;
+      const activeSpeciesConf = activeLabels.speciesConf;
+      const activeFamily = activeLabels.family;
+      const activeFamilyConf = activeLabels.familyConf;
       const activeQuality = activeCrop?.quality ?? r.quality;
 
       // Update filmstrip card active state and center if not just hovering
@@ -704,11 +715,16 @@
 
       const metaTextEl = el('#sceneInfoMetaText');
       if (metaTextEl) {
-        const sp = decodeEntities(activeSpecies);
-        const spConf = fmt3(activeSpeciesConf);
-        const fam = decodeEntities(activeFamily);
-        const famConf = fmt3(activeFamilyConf);
-        metaTextEl.textContent = `${sp} (${spConf}) | ${fam} (${famConf}) · Image ${idx + 1} of ${scene.images.length}`;
+        const position = `Image ${idx + 1} of ${scene.images.length}`;
+        if (activeLabels.hidden) {
+          metaTextEl.textContent = position;
+        } else {
+          const sp = decodeEntities(activeSpecies);
+          const spConf = fmt3(activeSpeciesConf);
+          const fam = decodeEntities(activeFamily);
+          const famConf = fmt3(activeFamilyConf);
+          metaTextEl.textContent = `${sp} (${spConf}) | ${fam} (${famConf}) · ${position}`;
+        }
       }
 
       // Crop nav (shown only when a row exposes multiple bird crops).
@@ -857,13 +873,16 @@
         : ['unknown', 'n/a', 'no bird']);
 
       for (const row of sceneRows) {
-        const rawName = tagType === 'species' ? row.species : row.family;
+        // Labels come from the primary visible crop, so hidden wildlife is never suggested.
+        const labels = getRowDisplayLabels(row);
+        if (labels.hidden) continue;
+        const rawName = tagType === 'species' ? labels.species : labels.family;
         const name = String(rawName || '').trim();
         if (!name) continue;
         const key = _normalizeTagKey(name);
         if (!key || invalid.has(key)) continue;
 
-        const rawConfidence = tagType === 'species' ? row.species_confidence : row.family_confidence;
+        const rawConfidence = tagType === 'species' ? labels.speciesConf : labels.familyConf;
         const parsedConfidence = parseNumber(rawConfidence);
         const weight = parsedConfidence >= 0 ? parsedConfidence : 1;
         if (!(weight > 0)) continue;
@@ -1475,13 +1494,15 @@
         html += `<button class="scene-chip-add" data-add-type="family" title="Add family tag">+</button>`;
       }
 
-      if (approved) {
-        html += '<span class="scene-tag-sep"></span><span class="approval-note" style="font-size:11px">✓ Reviewed</span>';
-      } else {
-        html += '<span class="scene-tag-sep"></span><button class="mark-reviewed-btn" id="markReviewedBtn" title="Confirm that Kestrel\'s tags are correct and mark this scene as reviewed">✓ Mark as Reviewed</button>';
-      }
-
       tagsEl.innerHTML = html;
+
+      // Review state lives in the header's right-hand slot, apart from the tag chips.
+      const reviewSlot = el('#sceneReviewSlot');
+      if (reviewSlot) {
+        reviewSlot.innerHTML = approved
+          ? '<span class="approval-note">✓ Reviewed</span>'
+          : '<button class="mark-reviewed-btn" id="markReviewedBtn" title="Confirm that Kestrel\'s tags are correct and mark this scene as reviewed (Ctrl/Cmd+R)">✓ Mark as Reviewed</button>';
+      }
 
       // Wire remove buttons
       tagsEl.querySelectorAll('[data-remove-species]').forEach(btn => {
@@ -1583,7 +1604,7 @@
       });
 
       // Wire "Mark as Reviewed" button
-      const markReviewedBtn = tagsEl.querySelector('#markReviewedBtn');
+      const markReviewedBtn = el('#markReviewedBtn');
       if (markReviewedBtn) {
         markReviewedBtn.onclick = () => {
           _beginSceneEditDraft(scene.id);
@@ -1827,6 +1848,8 @@
       _sceneEditMode = false;
       _sceneEditDraft = null;
       currentImageIndex = startIndex;
+      // The scene list may have been built before the filmstrip order setting changed.
+      scene.images.splice(0, scene.images.length, ...sortSceneImages(scene.images, getSceneFilmstripOrder()));
       _applyScenePreviewSplit(_getScenePreviewSplitSetting());
 
       // ── Top bar: title ──
@@ -1880,6 +1903,10 @@
 
       // ── Filmstrip ──
       renderFilmstrip(scene);
+      _syncFilmstripOrderToggle();
+      document.querySelectorAll('#sceneOrderToggle [data-order]').forEach(b => {
+        b.onclick = () => { void _setFilmstripOrder(b.dataset.order); };
+      });
 
       // ── Quality feedback prompt (js/quality-feedback.js) ──
       if (typeof qfRenderSceneControl === 'function') {
@@ -2270,6 +2297,31 @@
       selectFilmstripImage(currentImageIndex, _currentScene);
     }
 
+    // ── Filmstrip order toggle (Best quality first / Capture order) ──
+    function _syncFilmstripOrderToggle() {
+      const order = getSceneFilmstripOrder();
+      document.querySelectorAll('#sceneOrderToggle [data-order]').forEach(b => {
+        const on = b.dataset.order === order;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+    }
+
+    /** Re-order the open scene in place so arrow-key navigation follows the visible order. */
+    async function _setFilmstripOrder(order) {
+      if (!_currentScene || _splitMode) return;
+      if (order === getSceneFilmstripOrder()) return;
+      mergeSetting(SCENE_FILMSTRIP_ORDER_KEY, order);
+      _syncFilmstripOrderToggle();
+      const imgs = _currentScene.images;
+      const selected = imgs[currentImageIndex];
+      imgs.splice(0, imgs.length, ...sortSceneImages(imgs, order));
+      const idx = imgs.indexOf(selected);
+      currentImageIndex = idx >= 0 ? idx : 0;
+      renderFilmstrip(_currentScene);
+      await selectFilmstripImage(currentImageIndex, _currentScene);
+    }
+
     async function _resortAndFocusSceneImage(targetRow, overlayActiveCrop = true) {
       if (!_currentScene || !targetRow) return;
 
@@ -2574,7 +2626,7 @@
         img.alt = r.filename || '';
         img.loading = 'lazy';
         applyThumbnailExposureToImg(img, r);
-        lazyLoadImg(img, () => getBlobUrlForPath(r.export_path || r.crop_path, r.__rootPath));
+        lazyLoadImg(img, () => getBlobUrlForPath(r.export_path || getRowFallbackCropPath(r), r.__rootPath));
         th.appendChild(img);
         card.appendChild(th);
 
@@ -2611,7 +2663,7 @@
         tip.className = 'filmstrip-tooltip';
         tip.innerHTML = [
           `<b>${escapeHtml(r.filename || '')}</b>`,
-          `Species: ${escapeHtml(r.species || 'Unknown')} (${fmt3(r.species_confidence)})`,
+          _sceneTooltipSpeciesLine(r),
           `Quality: ${fmt3(r.quality)}`,
           `Rating: ${'★'.repeat(rating)}${'☆'.repeat(5 - rating)}`,
         ].filter(Boolean).join('<br>');

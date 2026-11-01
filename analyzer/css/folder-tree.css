@@ -464,3 +464,20 @@
   cursor: pointer;
   accent-color: #3a84e6;
 }
+
+/* ── "Upgrade All to 3.0" row: sits directly above the Clear / Select strip.
+   Shown by syncUpgradeAllButton() only while a loaded folder can be upgraded. */
+.folder-tree-wrap.folder-tree-empty .tree-upgrade-all-row {
+  display: none;
+}
+.tree-upgrade-all-row {
+  flex: 0 0 auto;
+  padding: 6px 8px;
+  border-top: 1px solid #2a3040;
+}
+.tree-upgrade-all-row.hidden { display: none; }
+.tree-upgrade-all-btn {
+  width: 100%;
+  padding: 6px 10px;
+  font-size: 12px;
+}

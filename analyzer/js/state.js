@@ -10,6 +10,7 @@
     let rootPath = '';             // Absolute path to root folder (desktop pywebview mode)
     let rows = [];                 // CSV rows (objects)
     let _scenedata = {};           // Map of rootPath → kestrel_scenedata.json contents
+    let _folderSettings = {};      // Map of rootPath → kestrel_folder_settings.json ({ignore_wildlife}); see js/folder-settings.js
     let header = [];               // CSV header fields
     let scenes = [];               // Aggregated scene objects
     let dirty = false;             // Track unsaved edits
@@ -81,6 +82,8 @@
     let _focusedCardId = null;         // Scene ID of the keyboard-focused card in the grid
     // Track which scene dialog is open for refreshing filters
     let currentSceneId = null;
+    // Filmstrip order in the scene viewer: 'quality' (best first) or 'time' (capture order).
+    const SCENE_FILMSTRIP_ORDER_KEY = 'scene_filmstrip_order';
     const SCENE_PREVIEW_SPLIT_KEY = 'scene_preview_split_ratio';
     const SCENE_PREVIEW_SPLIT_DEFAULT = 0.68;
     const SCENE_PREVIEW_SPLIT_MIN = 0.25;

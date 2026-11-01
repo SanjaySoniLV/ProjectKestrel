@@ -2332,7 +2332,7 @@ class Api:
         filename, capture_time, orientation, feature_similarity,
         feature_confidence, color_similarity, color_confidence, scene_count.
 
-        Returns {'success', 'image_count', 'scored_pairs', 'unscored_pairs',
+        Returns {'success', 'image_count', 'order', 'scored_pairs', 'unscored_pairs',
                  'analyzed_group_within', 'analyzed_split_after', 'error'}.
         The two ``analyzed_*`` values are the settings the folder was last
         analyzed with, read from kestrel_metadata.json, so the dialog can open
@@ -2381,6 +2381,8 @@ class Api:
                 'success': True,
                 'error': '',
                 'image_count': len(cleaned),
+                # Filename order the preview's scene 'ranges' index into.
+                'order': [c['filename'] for c in cleaned],
                 'scored_pairs': scored,
                 'unscored_pairs': unscored,
                 'analyzed_group_within': analyzed['group_within'],
@@ -2702,6 +2704,155 @@ class Api:
             }
         except Exception as e:
             error(f'[API] smart_search_status({folder_path!r}) error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    # ── Change Settings dialog (per-folder, no re-analysis) ──────────────────
+    # Read-only folder facts, the per-folder "ignore wildlife" display setting,
+    # and species-region re-scoring from the stored BioCLIP embeddings. Every
+    # method validates the folder through ``_resolve_folder_root_and_kestrel``.
+
+    @staticmethod
+    def _folder_settings_module():
+        try:
+            from kestrel_analyzer import folder_settings as _fs
+        except ImportError:  # package-style import path
+            from analyzer.kestrel_analyzer import folder_settings as _fs  # type: ignore[no-redef]
+        return _fs
+
+    def get_folder_info(self, folder_path: str) -> dict:
+        """Folder facts for the Change Settings dialog.
+
+        Returns ``{success, info: {pipeline_version, pipeline_major, analyzed_utc,
+        image_count, scene_count, species_regions, wildlife_enabled, wildlife_crops,
+        rescore_supported, rescore_reason, settings: {ignore_wildlife}}}``.
+        Review/cull counts depend on UI state and are computed by the frontend.
+        """
+        try:
+            _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path, context='get_folder_info', require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            return {'success': True, 'info': self._folder_settings_module().folder_info(kestrel_dir)}
+        except Exception as e:
+            error(f'[API] get_folder_info({folder_path!r}) error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def get_folder_settings(self, folder_path: str) -> dict:
+        """Per-folder display settings (``{ignore_wildlife}``), defaults when none are stored."""
+        try:
+            _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path, context='get_folder_settings', require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            return {'success': True, 'settings': self._folder_settings_module().read_folder_settings(kestrel_dir)}
+        except Exception as e:
+            error(f'[API] get_folder_settings({folder_path!r}) error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def set_folder_setting(self, folder_path: str, key: str, value) -> dict:
+        """Persist one per-folder display setting. Only allow-listed boolean keys are accepted."""
+        try:
+            if not isinstance(key, str) or not isinstance(value, bool):
+                return {'success': False, 'error': 'key must be a string and value a boolean'}
+            _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path, context='set_folder_setting', require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            if not os.path.isdir(kestrel_dir):
+                return {'success': False, 'error': 'This folder has no Kestrel data'}
+            return {'success': True,
+                    'settings': self._folder_settings_module().write_folder_setting(kestrel_dir, key, value)}
+        except ValueError as e:
+            return {'success': False, 'error': str(e)}
+        except Exception as e:
+            error(f'[API] set_folder_setting({folder_path!r}) error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def _region_rescore_jobs(self):
+        import threading as _t
+        if getattr(self, '_region_rescore_lock', None) is None:
+            self._region_rescore_lock = _t.Lock()
+            self._region_rescore_state = {}
+        return self._region_rescore_lock, self._region_rescore_state
+
+    def rescore_folder_species_regions(self, folder_path: str, regions) -> dict:
+        """Start re-scoring a folder's species/family predictions for new ``regions``.
+
+        Uses the stored BioCLIP embeddings only (no detection, no image decode).
+        Species in scenes with user-edited or finalized tags and non-bird
+        wildlife labels are left alone. Runs on a worker thread; poll
+        ``get_species_rescore_status``. Refused while an analysis or upgrade is running.
+        """
+        try:
+            regs = self._sanitize_species_regions(regions)
+            if not regs:
+                return {'success': False, 'error': 'Pick at least one region'}
+            _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path, context='rescore_folder_species_regions', require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            if _queue_manager.is_running:
+                return {'success': False, 'error': 'Wait for the analysis queue to finish, then try again.'}
+            if self._running_upgrade_job(kestrel_dir):
+                return {'success': False, 'error': 'This folder is being upgraded. Try again when that finishes.'}
+            fs = self._folder_settings_module()
+            support = fs.rescore_support(kestrel_dir)
+            if not support['supported']:
+                return {'success': False, 'error': support['reason']}
+            lock, state = self._region_rescore_jobs()
+            with lock:
+                cur = state.get(kestrel_dir)
+                if cur and cur.get('state') == 'running':
+                    return {'success': False, 'error': 'Already re-scoring this folder.'}
+                job = {'state': 'running', 'done': 0, 'total': 0, 'regions': list(regs), 'error': '', 'stats': None}
+                state[kestrel_dir] = job
+
+            def _run():
+                try:
+                    try:
+                        from kestrel_analyzer.ml.bioclip_species import BioClipSpeciesClassifier
+                        from kestrel_analyzer.config import BIOCLIP_MODELS_DIR
+                    except ImportError:
+                        from analyzer.kestrel_analyzer.ml.bioclip_species import BioClipSpeciesClassifier  # type: ignore[no-redef]
+                        from analyzer.kestrel_analyzer.config import BIOCLIP_MODELS_DIR  # type: ignore[no-redef]
+                    clf = BioClipSpeciesClassifier(str(BIOCLIP_MODELS_DIR), None, load_image_tower=False)
+
+                    def _progress(done, total):
+                        job['done'], job['total'] = done, total
+
+                    job['stats'] = fs.rescore_species_regions(kestrel_dir, regs, clf, progress_cb=_progress)
+                    job['state'] = 'done'
+                except Exception as e:  # reported through the status poll
+                    error(f'[API] species rescore failed for {kestrel_dir!r}: {e}')
+                    job['error'] = str(e)
+                    job['state'] = 'error'
+
+            import threading as _t
+            _t.Thread(target=_run, name='species-rescore', daemon=True).start()
+            return {'success': True, 'started': True, 'regions': list(regs)}
+        except Exception as e:
+            error(f'[API] rescore_folder_species_regions({folder_path!r}) error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def get_species_rescore_status(self, folder_path: str) -> dict:
+        """``{success, state: idle|running|done|error, done, total, error, stats}`` for a folder's re-score."""
+        try:
+            _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path, context='get_species_rescore_status', require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            lock, state = self._region_rescore_jobs()
+            with lock:
+                job = state.get(kestrel_dir)
+                if not job:
+                    return {'success': True, 'state': 'idle'}
+                return {'success': True, **job}
+        except Exception as e:
             return {'success': False, 'error': str(e)}
 
     def classify_search_query(self, query: str, folder_species=None, folder_families=None) -> dict:

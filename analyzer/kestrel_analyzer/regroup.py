@@ -240,10 +240,13 @@ def compute_groups(
         )
 
         reason = REASON_CONTINUES
+        detail: dict | None = None
         if orientation_changed:
             reason = REASON_ORIENTATION
+            detail = {"kind": "orientation", "from": prev_o, "to": cur_o}
         elif split_after > 0 and gap is not None and gap > split_after:
             reason = REASON_TIME_GAP
+            detail = {"kind": "time", "value": gap, "threshold": split_after}
         elif gap is not None and gap <= group_within:
             reason = REASON_CONTINUES
         else:
@@ -253,12 +256,18 @@ def compute_groups(
                 cut = color_cut if kind == "color" else feature_cut
                 if score < cut:
                     reason = REASON_APPEARANCE
+                    detail = {"kind": kind, "value": score, "threshold": cut}
             # No stored score: the pipeline never measured this pair, so there
             # is nothing to split on. Keep them together (see module docstring).
 
         if reason:
             scene += 1
-        out.append({"filename": filename, "scene": scene, "reason": reason, "gap": gap})
+        entry = {"filename": filename, "scene": scene, "reason": reason, "gap": gap}
+        if detail is not None:
+            # What triggered the break and by how much, so the preview can say
+            # "time gap 4m 12s > 2m threshold" instead of just "long pause".
+            entry["detail"] = detail
+        out.append(entry)
         prev = row
 
     return out
@@ -273,7 +282,7 @@ def summarize(items: Sequence[Any], assignment: Sequence[dict]) -> list[dict]:
     """
     by_scene: dict[int, dict] = {}
     order: list[int] = []
-    for row, a in zip(items, assignment):
+    for index, (row, a) in enumerate(zip(items, assignment)):
         get = row.get if hasattr(row, "get") else (lambda k, d=None: getattr(row, k, d))
         scene = int(a["scene"])
         entry = by_scene.get(scene)
@@ -286,10 +295,21 @@ def summarize(items: Sequence[Any], assignment: Sequence[dict]) -> list[dict]:
                 "last_filename": a.get("filename") or "",
                 "start_time": str(get("capture_time", "") or ""),
                 "end_time": str(get("capture_time", "") or ""),
+                # Inclusive [first, last] index runs into the filename-sorted
+                # list, so the UI can find a scene's photos without the server
+                # shipping every filename on each preview.
+                "ranges": [],
             }
+            if a.get("detail"):
+                entry["detail"] = a["detail"]
             by_scene[scene] = entry
             order.append(scene)
         entry["size"] += 1
+        runs = entry["ranges"]
+        if runs and runs[-1][1] == index - 1:
+            runs[-1][1] = index
+        else:
+            runs.append([index, index])
         entry["last_filename"] = a.get("filename") or entry["last_filename"]
         ct = str(get("capture_time", "") or "")
         if ct:
@@ -299,12 +319,11 @@ def summarize(items: Sequence[Any], assignment: Sequence[dict]) -> list[dict]:
     return [by_scene[s] for s in order]
 
 
-def summarize_current(items: Sequence[Any]) -> list[dict]:
-    """Summarize the grouping a folder already has, from its ``scene_count``.
+def current_assignment(items: Sequence[Any]) -> list[dict]:
+    """Per-image scene numbers for the grouping a folder already has.
 
-    Used for the "current" side of the preview. Scenes are listed in the order
-    their first image appears, so the two columns line up visually even though
-    stored ``scene_count`` values need not be contiguous or sorted.
+    Scenes are numbered in the order their first image appears, so the stored
+    ``scene_count`` values need not be contiguous or sorted.
     """
     assignment = []
     seen: dict[str, int] = {}
@@ -321,7 +340,73 @@ def summarize_current(items: Sequence[Any]) -> list[dict]:
             "reason": REASON_CONTINUES,
             "gap": None,
         })
-    return summarize(items, assignment)
+    return assignment
+
+
+def summarize_current(items: Sequence[Any]) -> list[dict]:
+    """Summarize the grouping a folder already has, from its ``scene_count``.
+
+    Used for the "current" side of the preview.
+    """
+    return summarize(items, current_assignment(items))
+
+
+CHANGE_SAME = "same"
+CHANGE_MERGED = "merged"
+CHANGE_SPLIT = "split"
+
+
+def classify_changes(
+    current: Sequence[dict],
+    proposed: Sequence[dict],
+    current_assignment_: Sequence[dict],
+    proposed_assignment: Sequence[dict],
+) -> None:
+    """Tag every scene on both sides with how it differs from the other side.
+
+    Sets ``change`` (``same`` / ``merged`` / ``split``) and ``change_count``
+    (how many scenes on the other side it overlaps) on each summary entry:
+
+      * identical membership                      -> ``same``
+      * a proposed scene drawing on 2+ current    -> ``merged``
+      * a current scene spread over 2+ proposed   -> ``split``
+      * the one-sided leftovers follow from those: a proposed scene that is a
+        strict part of one current scene is ``split``; a current scene wholly
+        absorbed into a larger proposed scene is ``merged``.
+    """
+    cur_of = [int(a["scene"]) for a in current_assignment_]
+    new_of = [int(a["scene"]) for a in proposed_assignment]
+
+    overlap_cur: dict[int, dict[int, int]] = {}   # current scene -> {proposed: n}
+    overlap_new: dict[int, dict[int, int]] = {}   # proposed scene -> {current: n}
+    for c, p in zip(cur_of, new_of):
+        overlap_cur.setdefault(c, {})
+        overlap_cur[c][p] = overlap_cur[c].get(p, 0) + 1
+        overlap_new.setdefault(p, {})
+        overlap_new[p][c] = overlap_new[p].get(c, 0) + 1
+
+    cur_size = {s["scene"]: s["size"] for s in current}
+    new_size = {s["scene"]: s["size"] for s in proposed}
+
+    for entry in proposed:
+        others = overlap_new.get(entry["scene"], {})
+        entry["change_count"] = len(others)
+        if len(others) >= 2:
+            entry["change"] = CHANGE_MERGED
+        elif len(others) == 1 and cur_size.get(next(iter(others))) == entry["size"]:
+            entry["change"] = CHANGE_SAME
+        else:
+            entry["change"] = CHANGE_SPLIT
+
+    for entry in current:
+        others = overlap_cur.get(entry["scene"], {})
+        entry["change_count"] = len(others)
+        if len(others) >= 2:
+            entry["change"] = CHANGE_SPLIT
+        elif len(others) == 1 and new_size.get(next(iter(others))) == entry["size"]:
+            entry["change"] = CHANGE_SAME
+        else:
+            entry["change"] = CHANGE_MERGED
 
 
 def plan_regroup(
@@ -340,7 +425,9 @@ def plan_regroup(
         similarity_threshold=similarity_threshold,
     )
     proposed = summarize(ordered, assignment)
-    current = summarize_current(ordered)
+    cur_assignment = current_assignment(ordered)
+    current = summarize(ordered, cur_assignment)
+    classify_changes(current, proposed, cur_assignment, assignment)
     scored, unscored = count_scored_pairs(ordered)
     feature_cut, color_cut = map_similarity_threshold(similarity_threshold)
 
@@ -365,6 +452,9 @@ def plan_regroup(
             "scored_pairs": scored,
             "unscored_pairs": unscored,
             "breaks_by_reason": reason_counts,
+            "unchanged_scenes": sum(1 for s in proposed if s["change"] == CHANGE_SAME),
+            "merged_scenes": sum(1 for s in proposed if s["change"] == CHANGE_MERGED),
+            "split_scenes": sum(1 for s in proposed if s["change"] == CHANGE_SPLIT),
             "feature_cut": round(feature_cut, 4),
             "color_cut": round(color_cut, 4),
         },

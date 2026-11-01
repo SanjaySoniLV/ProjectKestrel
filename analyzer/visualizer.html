@@ -31,6 +31,7 @@
   <link rel="stylesheet" href="css/dialogs/kdlg.css" />
   <link rel="stylesheet" href="css/dialogs/scene.css" />
   <link rel="stylesheet" href="css/dialogs/regroup.css" />
+  <link rel="stylesheet" href="css/dialogs/folder-settings.css" />
   <link rel="stylesheet" href="css/dialogs/settings.css" />
   <link rel="stylesheet" href="css/dialogs/analyze.css" />
   <link rel="stylesheet" href="css/dialogs/live-analysis.css" />
@@ -138,6 +139,9 @@
                right segment with its checkbox positioned at the far right so
                it aligns with the row checkboxes above. The checkbox inside the
                select button is purely visual (pointer-events: none in CSS). -->
+          <div id="treeUpgradeAllRow" class="tree-upgrade-all-row hidden">
+            <button id="treeUpgradeAll" type="button" class="tree-upgrade-all-btn" title="Upgrade every loaded folder that can be upgraded to analysis pipeline 3.0 from its saved crops. No re-analysis; ratings, culls and tags are kept.">✨ Upgrade All to 3.0…</button>
+          </div>
           <div id="folderTreeFooter" class="folder-tree-footer segmented-strip">
             <button id="treeClear" class="segmented-strip-item danger-item tree-clear-btn" title="Unload all folders and reset the tree" disabled>Clear</button>
             <button id="treeCheckAll" class="segmented-strip-item tree-select-toggle" title="Check all loaded folders" disabled>
@@ -383,10 +387,10 @@
           <!-- Species/Family chips + inline (+) add rendered by JS -->
         </div>
         <div class="scene-topbar-right">
-          <button class="scene-shortcut-btn" id="sceneShortcutBtn" title="Show keyboard shortcuts">⌨ Show keyboard shortcuts</button>
-          <button id="sceneRejectUndecidedBtn" title="Reject every photo in this scene that has no decision yet (accepted and rejected photos are kept), then accept the keepers with Z">⊘ Reject Undecided</button>
-          <button id="splitSceneBtn" title="Split this scene into multiple scenes">✂ Split Scene</button>
-          <button id="closeDlg" title="Close (Escape)">✕ Close</button>
+          <!-- "Mark as Reviewed" / "Reviewed" is rendered here by renderTopbarTags() -->
+          <span class="scene-review-slot" id="sceneReviewSlot"></span>
+          <button class="scene-topbar-icon-btn" id="sceneShortcutBtn" title="Show keyboard shortcuts" aria-label="Show keyboard shortcuts">⌨</button>
+          <button class="scene-topbar-icon-btn" id="closeDlg" title="Close (Escape)" aria-label="Close">✕</button>
         </div>
       </div>
 
@@ -423,10 +427,7 @@
             <div class="scene-preview-label">Full Image</div>
             <div class="scene-preview-img" id="previewBox" data-raw-label="RAW">
               <span class="muted">Select an image…</span>
-              <button class="scene-preview-copy-btn" id="sceneCopyExportBtn" type="button" title="Copy full image to clipboard" aria-label="Copy full image to clipboard" disabled>
-                <span class="copy-icon">📋</span>
-                <span>Copy</span>
-              </button>
+              <button class="scene-preview-copy-btn" id="sceneCopyExportBtn" type="button" title="Copy full image to clipboard" aria-label="Copy full image to clipboard" disabled><span class="copy-icon">📋</span></button>
             </div>
             <div class="scene-zoom-bar" id="sceneZoomWrap">
               <label class="scene-zoom-ctrl" title="RAW Zoom — click and hold on the full image to zoom">
@@ -453,10 +454,7 @@
             <div class="scene-preview-label">Bird Crop</div>
             <div class="scene-preview-img" id="previewCropBox">
               <span class="muted">Select an image…</span>
-              <button class="scene-preview-copy-btn" id="sceneCopyCropBtn" type="button" title="Copy bird crop to clipboard" aria-label="Copy bird crop to clipboard" disabled>
-                <span class="copy-icon">📋</span>
-                <span>Copy</span>
-              </button>
+              <button class="scene-preview-copy-btn" id="sceneCopyCropBtn" type="button" title="Copy bird crop to clipboard" aria-label="Copy bird crop to clipboard" disabled><span class="copy-icon">📋</span></button>
             </div>
           </div>
         </div>
@@ -482,12 +480,21 @@
               <span class="scene-info-editor-label" id="sceneInfoEditorLabel">Open</span>
             </button>
           </div>
-          <!-- Quality feedback prompt (js/quality-feedback.js) -->
-          <div class="scene-qf hidden" id="sceneQf" role="group" aria-label="Quality feedback"></div>
         </div>
       </div>
 
-      <!-- ═══ BOTTOM: Filmstrip ═══ -->
+      <!-- ═══ BOTTOM: Filmstrip toolbar + filmstrip ═══ -->
+      <div class="scene-filmstrip-bar" id="sceneFilmstripBar">
+        <div class="scene-order-toggle" id="sceneOrderToggle" role="group" aria-label="Filmstrip order">
+          <button type="button" data-order="quality" title="Order photos by quality score, best first">Best quality first</button>
+          <button type="button" data-order="time" title="Order photos by capture time (filename if no time)">Capture order</button>
+        </div>
+        <!-- Quality feedback prompt (js/quality-feedback.js) -->
+        <div class="scene-qf hidden" id="sceneQf" role="group" aria-label="Quality feedback"></div>
+        <div class="scene-filmstrip-bar-spacer"></div>
+        <button class="scene-filmstrip-bar-btn" id="sceneRejectUndecidedBtn" title="Reject every photo in this scene that has no decision yet (accepted and rejected photos are kept), then accept the keepers with Z">⊘ Reject Undecided</button>
+        <button class="scene-filmstrip-bar-btn" id="splitSceneBtn" title="Split this scene into multiple scenes">✂ Split Scene…</button>
+      </div>
       <div class="scene-filmstrip-wrap">
         <div class="scene-filmstrip-hint scene-filmstrip-hint-left hidden" id="filmstripHintLeft">
           ◂ Prev Scene
@@ -1081,63 +1088,65 @@
   </dialog>
 
   <!-- Regroup Scenes dialog — re-scene an already-analyzed folder from the
-       values the analysis already stored, with a live before/after preview.
+       values the analysis already stored, with a live thumbnail preview of the
+       current and proposed grouping side by side (one block per scene, boundary reasons shown).
        Body logic in js/scene-regroup.js; the grouping rules themselves live in
        kestrel_analyzer/regroup.py so they can be tested against the pipeline's
        own ladder. -->
   <dialog id="regroupDlg" class="kdlg kdlg--lg kdlg--flex" aria-labelledby="regroupDlgTitle">
     <div class="kdlg-body regroup-body">
-      <h3 style="margin:0" id="regroupDlgTitle">Regroup Scenes</h3>
-      <div class="muted" style="font-size:12px;word-break:break-all" id="regroupFolderName">—</div>
-      <div class="regroup-intro muted">
-        Rebuilds this folder's scenes from the analysis that already ran &mdash; no photos are
-        re-analyzed and nothing is re-uploaded. Your star ratings and Accept/Reject decisions are
-        kept; scene names and verified tags follow their photos where that is unambiguous.
+      <div class="regroup-titlebar">
+        <h3 id="regroupDlgTitle">Regroup Scenes</h3>
+        <span class="regroup-folder muted" id="regroupFolderName">—</span>
+        <span class="regroup-summary" id="regroupSummary">—</span>
       </div>
 
       <div class="regroup-controls">
-        <div class="regroup-control">
-          <label for="regroupGroupWithin">Group photos taken within (seconds)</label>
+        <div class="regroup-control" title="Photos taken this close together always share a scene.">
+          <label for="regroupGroupWithin">Group photos within (seconds)</label>
           <input id="regroupGroupWithin" type="number" min="0" max="60" step="0.5" value="1" />
-          <div class="regroup-hint muted">
-            A burst shot inside this window always stays in one scene.
-          </div>
         </div>
-        <div class="regroup-control">
-          <label for="regroupSplitAfter">Start a new scene after a pause of</label>
+        <div class="regroup-control" title="Splits a long session by elapsed time. Off at 0.">
+          <label for="regroupSplitAfter">New scene after a pause of</label>
           <div class="regroup-slider-row">
             <input id="regroupSplitAfter" type="range" min="0" max="3600" step="15" value="0" />
             <span class="regroup-val" id="regroupSplitAfterVal">off</span>
           </div>
-          <div class="regroup-hint muted">
-            Splits a long session into separate scenes by elapsed time. 0 turns it off.
-          </div>
         </div>
         <div class="regroup-control">
-          <label for="regroupSimilarity">How alike photos must look to share a scene</label>
+          <label for="regroupSimilarity">How alike photos must look</label>
           <div class="regroup-slider-row">
             <input id="regroupSimilarity" type="range" min="0" max="1" step="0.01" value="0.5" />
             <span class="regroup-val" id="regroupSimilarityVal">0.50</span>
           </div>
           <div class="regroup-hint muted" id="regroupSimilarityNote"></div>
-          <div class="regroup-hint muted" id="regroupScoredNote"></div>
         </div>
       </div>
 
-      <div class="regroup-summary" id="regroupSummary">—</div>
+      <div class="regroup-preview-bar">
+        <label class="regroup-filter">
+          <input type="checkbox" id="regroupChangedOnly" /> Changed scenes only
+        </label>
+        <div class="regroup-hint regroup-scored muted" id="regroupScoredNote"></div>
+        <div class="regroup-legend muted" id="regroupLegend"></div>
+      </div>
 
       <div class="regroup-compare">
         <div class="regroup-col">
-          <div class="regroup-col-head" id="regroupCurrentHead">Current</div>
-          <div class="regroup-col-list" id="regroupCurrentList"></div>
+          <div class="regroup-col-head" id="regroupCurrentHead">Current grouping</div>
+          <div class="regroup-list" id="regroupCurrentList"></div>
         </div>
         <div class="regroup-col">
-          <div class="regroup-col-head" id="regroupProposedHead">After regrouping</div>
-          <div class="regroup-col-list" id="regroupProposedList"></div>
+          <div class="regroup-col-head" id="regroupProposedHead">Proposed grouping</div>
+          <div class="regroup-list" id="regroupProposedList"></div>
         </div>
       </div>
     </div>
     <div class="kdlg-footer">
+      <span class="regroup-footnote muted">
+        Nothing is re-analyzed or changed until you apply. Ratings and Accept/Reject are kept; scene
+        names and verified tags follow their photos where that is unambiguous.
+      </span>
       <button type="button" class="btn" id="regroupCancelBtn">Cancel</button>
       <button type="button" class="btn primary" id="regroupApplyBtn" disabled>Apply Regrouping</button>
     </div>
@@ -1827,6 +1836,7 @@
   <script src="js/scene-grid.js"></script>
   <script src="js/scene-zoom.js"></script>
   <script src="js/scene-regroup.js"></script>
+  <script src="js/folder-settings.js"></script>
   <!-- settings.js MUST load before scene-dialog.js: scene-dialog's IIFE
        (setupScenePreviewDivider) calls getSetting() at parse time. -->
   <script src="js/settings.js"></script>
@@ -1876,6 +1886,7 @@
         ['culling.js',         'openCullingAssistant'],
         ['repair.js',          'openRepairDialog'],
         ['scene-regroup.js',   'openRegroupDialog'],
+        ['folder-settings.js', 'openFolderSettingsDialog'],
         ['tutorial.js',        'startMainTutorial'],
         ['welcome.js',         'WELCOME_TIPS']
       ];
