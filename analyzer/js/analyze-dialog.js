@@ -1046,35 +1046,13 @@
         }
       }
 
-      // Local vs cloud comparison, shown for either destination so the user can
-      // see that Cloud may be much faster before choosing it. The cloud figure
-      // is the compute-limited best case until a speed test has run.
-      const compareEl = document.getElementById('analyzeDlgEstCompare');
-      const compareTextEl = document.getElementById('analyzeDlgEstCompareText');
-      if (compareEl && compareTextEl) {
-        if (checkedCount > 0 && totalImagesToProcess >= _EST_MIN_IMAGES_TO_ESTIMATE) {
-          const localSecs = totalImagesToProcess * _getEstRate(useGpu).rate;
-          const cloud = _getCloudEstSeconds(totalImagesToProcess);
-          const cloudText = cloud.secs != null
-            ? `<b>~${_formatDuration(cloud.secs)}</b> at your measured upload speed`
-            : `as fast as <b>~${_formatDuration(cloud.analysisSecs)}</b>, depending on your upload speed`;
-          compareTextEl.innerHTML =
-            `Local analysis: <b>~${_formatDuration(localSecs)}</b> &middot; Cloud analysis: ${cloudText}.`;
-          compareEl.classList.remove('hidden');
-        } else {
-          compareEl.classList.add('hidden');
-          compareTextEl.textContent = '';
-        }
-      }
-
       // Tell the cloud card how many images are queued so it can decide whether
       // to show prices (a comparison against the remaining count, nothing more).
       if (typeof _ccUpdateCloudPricing === 'function') {
         try { _ccUpdateCloudPricing(totalImagesToProcess); } catch (e) { /* failsafe */ }
       }
 
-      // Speed-test button + measured-upload status live in the comparison row
-      // and show for either destination. The button is enabled iff at least one
+      // Speed-test button + measured-upload status live in the Cloud card. The button is enabled iff at least one
       // folder is checked; after a test it reads "Re-test" and the status shows
       // the measured rate. (The price panel is driven by cloud-compute.js.)
       {
@@ -1085,7 +1063,7 @@
           runBtn.disabled = checkedCount === 0;
           // Keep the leading lightning icon span intact.
           runBtn.innerHTML = '<span class="adlg-cloud-speed-btn-icon">⚡</span>'
-            + (hasResult ? ' Re-test upload speed' : ' Test upload speed');
+            + (hasResult ? ' Re-run upload speed test' : ' Run upload speed test');
         }
         if (statusEl && hasResult) {
           const mbps = Number(_cloudSpeedTestResult.mbps || 0).toFixed(1);

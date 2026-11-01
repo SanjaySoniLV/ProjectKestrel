@@ -57,6 +57,8 @@
       analyzeDlgAdd.addEventListener('click', async () => {
         const checkedNorms = Array.from(analyzeDlgCheckedPaths);
         if (checkedNorms.length === 0) return;
+        // Cloud selected while signed out: open sign-in instead of starting.
+        if (typeof _ccBlockCloudStart === 'function' && await _ccBlockCloudStart()) return;
         const retryErrored = document.getElementById('adlgRetryErrored')?.checked ?? true;
         // Species geofence for every folder queued by this Start (per-item so
         // a later Start with a different region doesn't change these).
