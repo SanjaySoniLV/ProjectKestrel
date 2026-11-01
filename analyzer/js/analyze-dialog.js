@@ -264,6 +264,65 @@
     let analyzeDlgInspectionCache = new Map();// Map<path, {total, processed, errored, has_kestrel, kestrel_version}>
     let analyzeDlgReanalyzeUnlocked = false;  // gates the "re-analyze fully-analyzed" path
     let _analyzeDlgInspectionVersion = 0;     // bumped on each scan to cancel stale callbacks
+    // Pipeline-3 upgrade eligibility for checked, fully analysed folders
+    // (upgrade_v3.eligibility via smart_search_status). A folder whose status
+    // is 'upgradable' gets a per-folder "Upgrade to 3.0 / Re-analyze" choice in
+    // the queued list, defaulting to the upgrade. Unknown or failed lookups keep
+    // the dialog's pre-3.0 behaviour for that folder.
+    let analyzeDlgUpgradeStatus = new Map();  // Map<norm, eligibility|null>
+    let analyzeDlgUpgradeChoice = new Map();  // Map<norm, 'upgrade'|'reanalyze'>
+    const _adlgUpgradePending = new Map();    // Map<norm, Promise>
+
+    /** Fully analysed folders are the only ones offered the upgrade: the
+     *  upgrade re-reads stored crops and cannot analyse images missing from
+     *  the database, so a partial folder keeps the normal analysis path. */
+    function _adlgIsUpgradeCandidate(norm) {
+      const info = analyzeDlgInspectionCache.get(norm);
+      const total = (info && info.total) || 0;
+      return total > 0 && ((info && info.processed) || 0) >= total;
+    }
+
+    /** Fetch upgrade eligibility for the candidates among `norms` that have
+     *  not been looked up yet. Resolves once every lookup has settled; the
+     *  summary re-renders as results arrive. */
+    function _adlgEnsureUpgradeStatus(norms) {
+      const api = window.pywebview?.api;
+      if (!api?.smart_search_status) return Promise.resolve();
+      const waits = [];
+      for (const norm of norms || []) {
+        if (!_adlgIsUpgradeCandidate(norm)) continue;
+        if (analyzeDlgUpgradeStatus.has(norm)) continue;
+        let p = _adlgUpgradePending.get(norm);
+        if (!p) {
+          const node = _adlgFindNode(norm);
+          const path = (node && node.path) || norm;
+          const lookup = (typeof folderPipelineStatus === 'function')
+            ? folderPipelineStatus(path)
+            : Promise.resolve(api.smart_search_status(path)).then(st => (st?.success ? st.upgrade || null : null));
+          p = Promise.resolve(lookup).catch(() => null).then((up) => {
+            analyzeDlgUpgradeStatus.set(norm, up || null);
+            _adlgUpgradePending.delete(norm);
+            const dlg = document.getElementById('analyzeQueueDlg');
+            if (dlg && dlg.open) {
+              try { renderAnalyzeDlgTree(); refreshAnalyzeDlgSummary(); } catch (_) { }
+            }
+          });
+          _adlgUpgradePending.set(norm, p);
+        }
+        waits.push(p);
+      }
+      return Promise.all(waits).then(() => undefined);
+    }
+
+    /** 'upgrade' | 'reanalyze' for a folder that can be upgraded to pipeline
+     *  3.0, or null when the choice does not apply (not upgradable, not fully
+     *  analysed, or eligibility unknown). */
+    function analyzeDlgUpgradeModeFor(norm) {
+      if (!_adlgIsUpgradeCandidate(norm)) return null;
+      const up = analyzeDlgUpgradeStatus.get(norm);
+      if (!up || up.status !== 'upgradable') return null;
+      return analyzeDlgUpgradeChoice.get(norm) === 'reanalyze' ? 'reanalyze' : 'upgrade';
+    }
 
     // ── Multi-root accessors (dialog-scoped mirror of folder-tree.js helpers) ────
     function _adlgHasAnyRoots() { return analyzeDlgRootOrder.length > 0; }
@@ -394,6 +453,8 @@
       analyzeDlgExpandedPaths.clear();
       analyzeDlgCheckedPaths.clear();
       analyzeDlgInspectionCache.clear();
+      analyzeDlgUpgradeStatus.clear();
+      analyzeDlgUpgradeChoice.clear();
       analyzeDlgReanalyzeUnlocked = false;
       const unlockBox = document.getElementById('analyzeDlgReanalyzeUnlock');
       if (unlockBox) unlockBox.checked = false;
@@ -521,9 +582,13 @@
       let outdatedBadge = null;
       if (outdated) {
         outdatedBadge = document.createElement('span');
-        outdatedBadge.className = 'adlg-outdated-badge' + (isChecked ? ' warning' : '');
+        const upgradeMode = analyzeDlgUpgradeModeFor(_adlgNormRoot(node.path));
+        outdatedBadge.className = 'adlg-outdated-badge'
+          + (isChecked ? (upgradeMode === 'upgrade' ? ' upgrade' : ' warning') : '');
         outdatedBadge.textContent = `v↑ ${node.kestrel_version || ''}`.trim();
-        outdatedBadge.title = `Analyzed on v${node.kestrel_version}; current is v${_appVersion}. Will re-analyze (destructive) if checked.`;
+        outdatedBadge.title = upgradeMode
+          ? `Analyzed on v${node.kestrel_version}; current is v${_appVersion}. Can be upgraded to pipeline 3.0 (keeps your culls) — choose in the queued folders list.`
+          : `Analyzed on v${node.kestrel_version}; current is v${_appVersion}. Will re-analyze (destructive) if checked.`;
       }
 
       // ── Right-side checkbox column (Phase 1.5A mirror) ──────────────────────
@@ -838,7 +903,12 @@
       let fullyAnalyzedSkipCount = 0;       // would skip-silently
       let fullyAnalyzedWillReanalyzeCount = 0; // will lose data (unlock ON)
       let outdatedReanalyzeCount = 0;       // will lose data (outdated → always re-analyze)
+      let upgradeCount = 0;                 // pipeline-3 upgrade chosen (no re-analysis)
+      let chosenReanalyzeCount = 0;         // upgradable, but user picked "re-analyze"
       const perFolder = [];
+      // Look up upgrade eligibility for newly checked folders (async; the
+      // summary re-renders when each answer arrives).
+      _adlgEnsureUpgradeStatus(checkedNorms).catch(() => {});
       for (const norm of checkedNorms) {
         const node = _adlgFindNode(norm);
         const info = analyzeDlgInspectionCache.get(norm);
@@ -853,7 +923,19 @@
         let warningMsg = '';
         let warningKind = ''; // '' | 'warn' | 'error'
         let imagesThisFolder = 0;
-        if (outdated) {
+        const upgradeMode = analyzeDlgUpgradeModeFor(norm);
+        if (upgradeMode === 'upgrade') {
+          // Analysed on pipeline 2.x: the default is the in-place upgrade,
+          // which is queued separately and adds nothing to the analysis
+          // image count or time estimate.
+          upgradeCount++;
+        } else if (upgradeMode === 'reanalyze') {
+          willReanalyze = true;
+          chosenReanalyzeCount++;
+          imagesThisFolder = total;
+          warningMsg = `Will erase .kestrel data (ratings, decisions, scene names) and re-analyze all ${total.toLocaleString()} images.`;
+          warningKind = 'warn';
+        } else if (outdated) {
           willReanalyze = true;
           outdatedReanalyzeCount++;
           imagesThisFolder = total;
@@ -883,7 +965,7 @@
         }
         if (!willSkip) totalImagesToProcess += imagesThisFolder;
         const pillSpec = _computeAnalyzeDlgPill(node || { path: norm }, info, true);
-        perFolder.push({ name, path: norm, info, pillSpec, willSkip, willReanalyze, imagesThisFolder, warningMsg, warningKind });
+        perFolder.push({ name, path: norm, info, pillSpec, willSkip, willReanalyze, imagesThisFolder, warningMsg, warningKind, upgradeMode, total });
       }
 
       // Per-folder list
@@ -900,6 +982,7 @@
           if (f.willSkip) itemCls += ' will-skip';
           if (f.warningKind === 'warn') itemCls += ' has-warning';
           if (f.warningKind === 'error') itemCls += ' has-error';
+          if (f.upgradeMode === 'upgrade') itemCls += ' will-upgrade';
           item.className = itemCls;
           item.title = f.path;
 
@@ -916,7 +999,12 @@
 
           const meta = document.createElement('div');
           meta.className = 'analyze-dlg-queued-item-meta';
-          if (f.willSkip) {
+          if (f.upgradeMode === 'upgrade') {
+            const imgSpan = document.createElement('span');
+            imgSpan.className = 'meta-images';
+            imgSpan.textContent = `${f.total.toLocaleString()} image${f.total === 1 ? '' : 's'} · upgrade to pipeline 3.0`;
+            meta.appendChild(imgSpan);
+          } else if (f.willSkip) {
             const skip = document.createElement('span');
             skip.className = 'meta-skip';
             skip.textContent = 'Already analyzed — will be skipped';
@@ -953,6 +1041,7 @@
             }
           }
           item.appendChild(meta);
+          if (f.upgradeMode) item.appendChild(_adlgBuildUpgradeChoice(f));
 
           if (f.warningMsg) {
             const warn = document.createElement('div');
@@ -972,9 +1061,13 @@
       } else {
         const imgCount = totalImagesToProcess.toLocaleString();
         const folderWord = checkedCount === 1 ? 'folder' : 'folders';
-        const imgLabel = totalImagesToProcess === 1 ? 'image' : 'images';
+        let imgLabel = totalImagesToProcess === 1 ? 'image' : 'images';
+        if (upgradeCount > 0) imgLabel += ' to analyze';
         const skipFrag = fullyAnalyzedSkipCount > 0
           ? `<span class="analyze-dlg-stat-skip">${fullyAnalyzedSkipCount} skipped</span>`
+          : '';
+        const upgradeFrag = upgradeCount > 0
+          ? `<span class="analyze-dlg-stat-skip analyze-dlg-stat-upgrade">${upgradeCount} to upgrade</span>`
           : '';
         // Time stat — destination-dependent.
         //   Local: existing baseline-or-local logic with optional "?" badge.
@@ -1025,7 +1118,7 @@
           `<div class="analyze-dlg-stat">` +
             `<div class="analyze-dlg-stat-value">${checkedCount}</div>` +
             `<div class="analyze-dlg-stat-label">${folderWord}</div>` +
-            skipFrag +
+            skipFrag + upgradeFrag +
           `</div>` +
           `<div class="analyze-dlg-stat">` +
             `<div class="analyze-dlg-stat-value${timeDim ? ' dim' : ''}" id="_analyzeDlgTimeStatValue">${timeValue}</div>` +
@@ -1079,7 +1172,7 @@
       }
 
       // Aggregate warning row (above the unlock checkbox)
-      const reanalyzeWithUnlockCount = fullyAnalyzedWillReanalyzeCount + outdatedReanalyzeCount;
+      const reanalyzeWithUnlockCount = fullyAnalyzedWillReanalyzeCount + outdatedReanalyzeCount + chosenReanalyzeCount;
       if (reanalyzeWithUnlockCount > 0) {
         const word = reanalyzeWithUnlockCount === 1 ? 'folder' : 'folders';
         warningsEl.innerHTML = `⚠ ${reanalyzeWithUnlockCount} ${word} will lose user data on re-analysis (ratings, decisions, scene names).`;
@@ -1094,6 +1187,47 @@
       if (unlockRow) unlockRow.classList.toggle('hidden', !showUnlockRow);
 
       startBtn.disabled = checkedCount === 0;
+    }
+
+    /** Per-folder "Upgrade to 3.0 / Re-analyze" dropdown for a folder that
+     *  was analysed on pipeline 2.x. The upgrade always runs on this
+     *  computer (it re-reads the stored crops), even with Cloud Compute as
+     *  the destination; only "Re-analyze" goes to the chosen destination. */
+    function _adlgBuildUpgradeChoice(f) {
+      const wrap = document.createElement('div');
+      wrap.className = 'adlg-upgrade-choice';
+      const sel = document.createElement('select');
+      sel.className = 'adlg-upgrade-mode';
+      sel.setAttribute('aria-label', `What to do with ${f.name}`);
+      const cloud = _isCloudDestination();
+      const opts = [
+        ['upgrade', 'Upgrade to pipeline 3.0 (fast, keeps your culls)'],
+        ['reanalyze', cloud
+          ? 'Re-analyze from scratch on Cloud Compute (clears Kestrel data)'
+          : 'Re-analyze from scratch (clears Kestrel data)'],
+      ];
+      for (const [value, text] of opts) {
+        const o = document.createElement('option');
+        o.value = value;
+        o.textContent = text;
+        sel.appendChild(o);
+      }
+      sel.value = f.upgradeMode;
+      sel.addEventListener('change', () => {
+        analyzeDlgUpgradeChoice.set(f.path, sel.value === 'reanalyze' ? 'reanalyze' : 'upgrade');
+        renderAnalyzeDlgTree();
+        refreshAnalyzeDlgSummary();
+      });
+      wrap.appendChild(sel);
+      if (f.upgradeMode === 'upgrade') {
+        const hint = document.createElement('div');
+        hint.className = 'adlg-upgrade-hint';
+        hint.textContent = 'Re-reads the saved crops to update species IDs, add the SigLIP sharpness score '
+          + 'and smart search. Ratings, decisions and edited tags are kept.'
+          + (cloud ? ' Runs on this computer — upgrades don\u2019t use Cloud Compute.' : '');
+        wrap.appendChild(hint);
+      }
+      return wrap;
     }
 
     function _formatDuration(seconds) {
@@ -1398,6 +1532,12 @@
         _dtBox.addEventListener('change', _syncDetectionConfidenceWarning);
       }
       _syncDetectionConfidenceWarning();
+
+      // Upgrade eligibility can change between opens (an upgrade finished,
+      // a folder was re-analysed), and the upgrade-vs-re-analyze choice
+      // resets to the upgrade like the unlock box above.
+      analyzeDlgUpgradeStatus.clear();
+      analyzeDlgUpgradeChoice.clear();
 
       // Sync render passes — fast, no IPC. These paint a usable dialog
       // immediately. Background tasks below refine the data when ready.

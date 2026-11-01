@@ -439,6 +439,31 @@
   font-style: italic;
   color: var(--muted);
 }
+/* Folder analysed on pipeline 2.x and left on "Upgrade to pipeline 3.0":
+   violet like the folder header's Upgrade button. */
+.analyze-dlg-queued-item.will-upgrade {
+  border-color: rgba(106, 79, 179, 0.6);
+  background: rgba(106, 79, 179, 0.06);
+}
+.analyze-dlg-queued-item.will-upgrade .meta-images { color: #b9a9f0; }
+.adlg-upgrade-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-left: 22px;
+}
+.adlg-upgrade-choice select.adlg-upgrade-mode {
+  height: 28px;
+  max-width: 100%;
+  padding: 0 8px;
+  font-size: 12px;
+}
+.analyze-dlg-queued-item.will-upgrade select.adlg-upgrade-mode { border-color: #6a4fb3; }
+.adlg-upgrade-hint {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--muted);
+}
 .analyze-dlg-queued-item-warning {
   margin-left: 22px;
   padding: 5px 9px;
@@ -517,6 +542,7 @@
   color: var(--muted);
   font-style: italic;
 }
+.analyze-dlg-stat-skip.analyze-dlg-stat-upgrade { color: #b9a9f0; }
 
 .analyze-dlg-warnings {
   padding: 7px 10px;
@@ -682,6 +708,13 @@
   color: #ffb37a;
   background: rgba(232, 154, 90, 0.12);
   border-color: rgba(232, 154, 90, 0.55);
+}
+
+.adlg-outdated-badge.upgrade {
+  /* Queued for the non-destructive pipeline-3 upgrade: violet, not a warning. */
+  color: #d4c6ff;
+  background: rgba(106, 79, 179, 0.18);
+  border-color: rgba(106, 79, 179, 0.7);
 }
 
 /* Queue-builder checkbox: orange-ish accent so it visually distinguishes
