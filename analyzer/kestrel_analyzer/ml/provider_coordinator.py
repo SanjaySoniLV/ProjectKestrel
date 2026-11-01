@@ -77,15 +77,19 @@ class ResilienceConfig:
 # Substring matches against str(exc) for known "session is now corpse" errors.
 # DirectML errors carry the DXGI HRESULT in hex plus Windows' description text,
 # never the DXGI_ERROR_* symbol, so each device-lost code needs its hex form:
-# 887A0005 removed, 887A0006 hung, 887A0007 reset.
+# 887A0005 removed, 887A0006 hung, 887A0007 reset, 887A0020 driver internal
+# error (seen after a device removal: every later session rebuild in the same
+# process fails with it, and only a new process gets the GPU back).
 _SESSION_DEAD_SIGNATURES: tuple[str, ...] = (
     "GPU device instance has been suspended",
     "887A0005",
     "887A0006",
     "887A0007",
+    "887A0020",
     "DXGI_ERROR_DEVICE_REMOVED",
     "DXGI_ERROR_DEVICE_HUNG",
     "DXGI_ERROR_DEVICE_RESET",
+    "DXGI_ERROR_DRIVER_INTERNAL_ERROR",
     "GetDeviceRemovedReason",
     "!model_path.empty()",
     "model_path must not be empty",
@@ -113,6 +117,30 @@ def is_session_dead(exc: BaseException, *, aggressive: bool = False) -> bool:
         if "onnxruntime" in mod or type_name in {"Fail", "RuntimeException"}:
             return True
     return False
+
+
+# Signatures that mean the GPU *device* itself is gone (not just one session).
+# A session rebuild in the same process cannot recover from these; a fresh
+# process can. A subset of the session-dead signatures: the CoreML and
+# empty-model-path entries describe a broken session, not a lost device.
+_DEVICE_LOST_SIGNATURES: tuple[str, ...] = (
+    "GPU device instance has been suspended",
+    "887A0005",
+    "887A0006",
+    "887A0007",
+    "887A0020",
+    "DXGI_ERROR_DEVICE_REMOVED",
+    "DXGI_ERROR_DEVICE_HUNG",
+    "DXGI_ERROR_DEVICE_RESET",
+    "DXGI_ERROR_DRIVER_INTERNAL_ERROR",
+    "GetDeviceRemovedReason",
+)
+
+
+def is_device_lost(exc_or_text: object) -> bool:
+    """True if the error (or its text) says the GPU device was removed/reset."""
+    msg = exc_or_text if isinstance(exc_or_text, str) else str(exc_or_text or "")
+    return any(sig in msg for sig in _DEVICE_LOST_SIGNATURES)
 
 
 _RecreateFn = Callable[[bool], None]
@@ -145,6 +173,11 @@ class ProviderCoordinator:
         self._cpu_success_streak = 0
         self._current_promote_threshold = self.cfg.initial_promote_threshold
         self._demotions = 0
+        # Set when the GPU was lost for this process (device removed/reset, or
+        # the run locked itself out of the GPU). Sticky until
+        # ``clear_gpu_lost()``: in-process rebuilds do not recover a lost
+        # device, so callers use it to stop and continue in a fresh process.
+        self._gpu_lost_reason: Optional[str] = None
         self._recreate_cb: Optional[_RecreateFn] = None
         # All ResilientOnnxSession instances built against this coord. The
         # coordinator walks this list to recreate sessions on demote/promote,
@@ -171,6 +204,23 @@ class ProviderCoordinator:
     @property
     def current_promote_threshold(self) -> int:
         return self._current_promote_threshold
+
+    @property
+    def gpu_lost(self) -> bool:
+        return self._gpu_lost_reason is not None
+
+    @property
+    def gpu_lost_reason(self) -> Optional[str]:
+        return self._gpu_lost_reason
+
+    def clear_gpu_lost(self) -> None:
+        self._gpu_lost_reason = None
+
+    def _flag_gpu_lost(self, reason: str, *, locked_out: bool) -> None:
+        if not self._user_gpu_enabled or self._gpu_lost_reason is not None:
+            return
+        if locked_out or is_device_lost(reason):
+            self._gpu_lost_reason = (reason or "repeated GPU failures")[:500]
 
     # ---- wiring ----
 
@@ -290,7 +340,9 @@ class ProviderCoordinator:
         self._state = ProviderState.CPU
         self._cpu_success_streak = 0
         self._demotions += 1
-        if self._demotions >= self.cfg.max_demotions_before_lockout > 0:
+        locked = self._demotions >= self.cfg.max_demotions_before_lockout > 0
+        self._flag_gpu_lost(reason, locked_out=locked)
+        if locked:
             self._state = ProviderState.GPU_LOCKED_OUT
             self._notify("GPU disabled for the rest of this run — repeated GPU failures.")
             return
@@ -306,7 +358,9 @@ class ProviderCoordinator:
         self._demotions += 1
         new_threshold = int(self._current_promote_threshold * self.cfg.promote_backoff_factor)
         self._current_promote_threshold = min(new_threshold, self.cfg.max_promote_threshold)
-        if self._demotions >= self.cfg.max_demotions_before_lockout > 0:
+        locked = self._demotions >= self.cfg.max_demotions_before_lockout > 0
+        self._flag_gpu_lost(reason, locked_out=locked)
+        if locked:
             self._state = ProviderState.GPU_LOCKED_OUT
             self._notify("GPU disabled for the rest of this run — repeated GPU failures.")
             return
@@ -329,5 +383,6 @@ __all__ = [
     "ProviderCoordinator",
     "ProviderState",
     "ResilienceConfig",
+    "is_device_lost",
     "is_session_dead",
 ]

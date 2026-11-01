@@ -73,7 +73,7 @@ except (ImportError, ValueError):
         def _error(*_a, **_kw): pass
 from .ml import GPU_EP
 from .ml.speciesnet_sam_hq import DetectorSAMHQWrapper
-from .ml.provider_coordinator import ResilienceConfig
+from .ml.provider_coordinator import ResilienceConfig, is_device_lost
 from .ml.bioclip_species import BioClipSpeciesClassifier, MODEL_ID as SPECIES_MODEL_ID
 from .ml.animal_gate import AnimalGate, GATE_METHOD
 from .ml import siglip
@@ -725,6 +725,35 @@ class AnalysisPipeline:
         if status_cb:
             status_cb("Models loaded. Processing started.")
 
+    def _note_gpu_lost(self, file_name: str, status_cb=None) -> bool:
+        """True (and ``self.gpu_lost`` set) if the shared coordinator reports
+        the GPU as lost. ``file_name`` is the image being handled when the
+        loss was first noticed, logged so a frame-specific cause (for example
+        a flock frame with very many SAM-HQ boxes) can be spotted."""
+        try:
+            coord = self.sn_sam.coord
+        except Exception:
+            return False
+        if not coord.gpu_lost:
+            return False
+        self._record_gpu_lost(file_name, coord.gpu_lost_reason or "", status_cb)
+        return True
+
+    def _record_gpu_lost(self, file_name: str, reason: str, status_cb=None) -> None:
+        self.gpu_lost = {"file": file_name, "reason": reason}
+        _error(f"[pipeline] GPU lost while processing {file_name!r}: {reason}")
+        log_event(
+            self._log_path,
+            {
+                "level": "warning",
+                "event": "gpu_lost",
+                "file": file_name,
+                "reason": reason[:500],
+            },
+        )
+        if status_cb:
+            status_cb("GPU stopped responding; stopping so analysis can resume on the GPU.")
+
     def process_folder(
         self,
         folder: str,
@@ -748,8 +777,16 @@ class AnalysisPipeline:
         smart_search_enabled: Optional[bool] = None,
         quality_model: Optional[str] = None,
         raw_use_embedded_preview: Optional[bool] = None,
+        stop_on_gpu_loss: bool = False,
     ) -> None:
         """Analyse ``folder``.
+
+        ``stop_on_gpu_loss`` makes the run end cleanly at an image boundary
+        when the GPU device is lost (Windows GPU reset), instead of carrying on
+        at CPU speed: a lost device cannot be recovered inside the process, but
+        a new process gets the GPU back. Everything analysed so far is saved
+        and ``self.gpu_lost`` is set to ``{"file", "reason"}`` so the caller can
+        restart. Default off, so existing callers behave as before.
 
         Pipeline 3.0.0 always stores the BioCLIP and SigLIP crop embeddings
         (the SigLIP one is also the default quality score).
@@ -784,6 +821,7 @@ class AnalysisPipeline:
         self._save_warning_cb = callbacks.get("on_warning")
         self._save_failure_streak = 0
         self._save_warning_shown = False
+        self.gpu_lost: Optional[Dict[str, str]] = None
 
         try:
             max_bird_crops = int(max_bird_crops)
@@ -1161,11 +1199,19 @@ class AnalysisPipeline:
                         previous_orientation = self._get_image_orientation(img)
             scene_count = database["scene_count"].max() if not database.empty else 0
 
+            last_done_file = ""
             for idx, decoded in enumerate(
                 self._iter_decoded(new_files, folder, max_workers=decode_workers),
                 start=1,
             ):
                 raw_file = decoded["file_name"]
+
+                # GPU lost while handling the previous image (it finished and
+                # was saved, on CPU). Stop here so the caller can continue in a
+                # fresh process; the remaining files are picked up on resume.
+                if stop_on_gpu_loss and self._note_gpu_lost(last_done_file, status_cb):
+                    return
+                last_done_file = raw_file
 
                 # Pause: wait until resume or until cancel_event is set.
                 if pause_event is not None:
@@ -2028,6 +2074,12 @@ class AnalysisPipeline:
                             f" ({idx + processed_count}/{total}){_suffix}"
                         )
                 except Exception as e:
+                    # A device-lost error that reached here is not this
+                    # image's fault: don't record an Error row; stop so the
+                    # image is retried by the next process.
+                    if stop_on_gpu_loss and is_device_lost(e):
+                        self._record_gpu_lost(raw_file, str(e), status_cb)
+                        return
                     log_exception(
                         self._log_path,
                         e,

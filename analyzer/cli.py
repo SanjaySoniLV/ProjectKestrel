@@ -1,6 +1,7 @@
 import argparse
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -266,6 +267,15 @@ def parse_args(argv: Sequence[str] | None = None):
         "--json-out", dest="json_out", type=str, default=None,
         help="Also write the headless cloud command's JSON result to this path.",
     )
+    parser.add_argument(
+        "--max-gpu-restarts", dest="max_gpu_restarts", type=int, default=3,
+        help="If the GPU is lost mid-run (Windows GPU reset), continue the same folder in a fresh "
+             "process, up to this many times, then finish on CPU. 0 disables restarting.",
+    )
+    # Internal: set by the restart loop on the processes it starts.
+    parser.add_argument("--gpu-child", dest="gpu_child", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--gpu-restart-attempt", dest="gpu_restart_attempt", type=int, default=0,
+                        help=argparse.SUPPRESS)
     parser.set_defaults(
         use_gpu=True,
         wildlife_enabled=True,
@@ -273,6 +283,82 @@ def parse_args(argv: Sequence[str] | None = None):
         retry_errored=False,
     )
     return parser.parse_args(argv)
+
+
+# Exit code a restart child uses to say "the GPU was lost; run me again".
+EXIT_GPU_LOST = 75
+
+
+def _child_command(argv: Sequence[str]) -> list[str]:
+    """Command line that re-runs this CLI with ``argv`` in a new process."""
+    if getattr(sys, "frozen", False):
+        # Frozen app: the executable's own ``--cli`` switch reaches cli.main.
+        return [sys.executable, "--cli", *argv]
+    return [sys.executable, os.path.abspath(__file__), *argv]
+
+
+def _strip_internal_flags(argv: Sequence[str]) -> list[str]:
+    out: list[str] = []
+    skip = False
+    for a in argv:
+        if skip:
+            skip = False
+            continue
+        if a == "--gpu-child":
+            continue
+        if a == "--gpu-restart-attempt":
+            skip = True
+            continue
+        if a.startswith("--gpu-restart-attempt="):
+            continue
+        out.append(a)
+    return out
+
+
+def run_gpu_restart_loop(argv: Sequence[str], first_attempt: int, max_restarts: int, log_path=None,
+                         runner=None) -> int:
+    """Re-run the CLI in fresh processes until it stops reporting a GPU loss.
+
+    A lost GPU device cannot be recovered inside the process that lost it, but
+    a new process gets the GPU back; ``process_folder`` resumes from the
+    database. Attempts ``first_attempt`` .. ``max_restarts`` are started; the
+    last one runs without stop-on-loss, so it carries on at CPU speed exactly
+    as a run without this feature would. Returns the last child's exit code.
+    """
+    run = runner or (lambda cmd: subprocess.call(cmd))
+    base = _strip_internal_flags(argv)
+    attempt = first_attempt
+    while True:
+        print(f"\nGPU was reset; continuing in a fresh process (restart {attempt} of {max_restarts}).",
+              flush=True)
+        if log_path:
+            log_event(log_path, {"level": "warning", "event": "gpu_restart", "attempt": attempt,
+                                 "max_restarts": max_restarts})
+        try:
+            rc = run(_child_command([*base, "--gpu-child", "--gpu-restart-attempt", str(attempt)]))
+        except KeyboardInterrupt:
+            return 130
+        if rc != EXIT_GPU_LOST:
+            return rc
+        attempt += 1
+        if attempt > max_restarts:  # defensive: the last child never exits with EXIT_GPU_LOST
+            return rc
+
+
+def _maybe_inject_test_gpu_loss(pipeline, state: dict, processed: int, attempt: int) -> None:
+    """Test-only: ``KESTREL_TEST_GPU_LOSS_AFTER=N`` simulates a device-lost
+    error N images into the first attempt, to exercise the restart loop."""
+    raw = os.environ.get("KESTREL_TEST_GPU_LOSS_AFTER")
+    if not raw or attempt != 0 or state.get("done"):
+        return
+    state.setdefault("base", processed)
+    try:
+        if processed - state["base"] >= int(raw):
+            state["done"] = True
+            pipeline.sn_sam.coord.on_run_failure(
+                RuntimeError("887A0005 The GPU device instance has been suspended (injected test fault)"))
+    except Exception:
+        pass
 
 
 def _resolve_detector_name(args) -> str:
@@ -418,9 +504,14 @@ def main(argv: Sequence[str] | None = None):
             print(msg)
 
         processed_count = [0]
+        test_fault_state: dict = {}
+        stop_on_gpu_loss = bool(
+            args.use_gpu and int(args.gpu_restart_attempt) < max(0, int(args.max_gpu_restarts))
+        )
 
         def on_progress(processed, total):
             processed_count[0] = processed
+            _maybe_inject_test_gpu_loss(pipeline, test_fault_state, processed, int(args.gpu_restart_attempt))
             print(f"\rProcessed {processed}/{total}", end="", flush=True)
 
         log_event(
@@ -471,8 +562,25 @@ def main(argv: Sequence[str] | None = None):
             smart_search_enabled=args.smart_search_enabled,
             quality_model=args.quality_model,
             raw_use_embedded_preview=args.raw_use_embedded_preview,
+            stop_on_gpu_loss=stop_on_gpu_loss,
         )
         print()
+        lost = getattr(pipeline, "gpu_lost", None)
+        if isinstance(lost, dict) and lost:
+            print(f"GPU lost while processing {lost.get('file') or '(unknown file)'}: "
+                  f"{(lost.get('reason') or '')[:200]}", flush=True)
+            if args.gpu_child:
+                sys.exit(EXIT_GPU_LOST)
+            # Top-level process: free the models, then continue in fresh processes.
+            del pipeline
+            import gc
+            gc.collect()
+            sys.exit(run_gpu_restart_loop(
+                list(argv) if argv is not None else sys.argv[1:],
+                first_attempt=int(args.gpu_restart_attempt) + 1,
+                max_restarts=int(args.max_gpu_restarts),
+                log_path=log_path,
+            ))
         for line in format_stage_summary(pipeline.stage_times, pipeline.stage_counts,
                                          processed_count[0], time.perf_counter() - t_run):
             print(line, flush=True)

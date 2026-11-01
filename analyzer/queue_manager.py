@@ -160,6 +160,11 @@ def _quality_to_raw_rating(quality: float) -> int:
     return 5
 
 
+_GPU_LOST_MESSAGE = (
+    'The GPU stopped responding (a Windows GPU reset). Progress is saved. '
+    'Restart Kestrel, then analyze this folder again to continue on the GPU.'
+)
+
 # Live-preview JPEG limits. The Live Analysis dialog shows these in panes a few
 # hundred pixels wide, so full-size frames only cost encode time on the analysis
 # thread and IPC/base64 time on the UI side.
@@ -314,6 +319,10 @@ class QueueManager:
         self._parallel_prefetch = 3
         self._detector_name = _DEFAULT_DETECTOR_NAME
         self._retry_errored = False
+        # Set when the GPU device is lost during a run ({'file', 'reason'}).
+        # A lost device cannot be recovered inside this process, so it stays
+        # set until the app is restarted; the UI shows a banner.
+        self._gpu_lost: dict | None = None
 
     # Phase 3: queue-restore feature deleted (replaced by analyze_recents in
     # the dialog). _collect_restore_paths_locked, _build_recovery_state_locked,
@@ -381,6 +390,7 @@ class QueueManager:
                 'running': self.is_running,
                 'paused': self.is_paused,
                 'items': [it.to_dict() for it in self._items],
+                'gpu_lost': dict(self._gpu_lost) if self._gpu_lost else None,
             }
 
     # ---- control ----
@@ -644,6 +654,16 @@ class QueueManager:
             if item is None:
                 break
 
+            # The GPU was lost earlier in this process: it cannot come back
+            # without a restart, so don't start more work on a dead device.
+            if self._gpu_lost and self._use_gpu:
+                with self._lock:
+                    item.status = 'error'
+                    item.end_time = _time_mod.time()
+                    item.error = _GPU_LOST_MESSAGE
+                self._persist_recovery_state()
+                continue
+
             # ── Phase 3: per-item gates BEFORE marking running / pipeline ──
             # 1. skip_if_already_done — silently mark done without touching
             #    .kestrel if the folder is still fully analyzed with no errors.
@@ -848,7 +868,24 @@ class QueueManager:
                     parallel_prefetch=self._parallel_prefetch,
                     retry_errored=self._retry_errored,
                     species_regions=item.species_regions,
+                    stop_on_gpu_loss=bool(self._use_gpu),
                 )
+                lost = getattr(self._pipeline, 'gpu_lost', None)
+                if isinstance(lost, dict) and lost and self._use_gpu:
+                    # Device lost: process_folder stopped at an image boundary
+                    # and saved everything done so far. Surface it and stop the
+                    # queue; the user restarts Kestrel and re-runs the folder,
+                    # which resumes where it left off.
+                    self._gpu_lost = dict(lost)
+                    error(f'[queue] GPU lost while processing {lost.get("file")!r} in {item.path!r}: '
+                          f'{lost.get("reason")}')
+                    with self._lock:
+                        item.status = 'error'
+                        item.end_time = _time_mod.time()
+                        item.error = _GPU_LOST_MESSAGE
+                    self._persist_recovery_state()
+                    self._send_folder_analytics(item)
+                    continue
                 # Counted before the item flips to 'done' so the first status
                 # poll that sees 'done' already carries it.
                 scene_total = None
