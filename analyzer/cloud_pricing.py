@@ -50,7 +50,7 @@ MAX_ITEMS = 8
 
 # Web pages the dialog links to. Opened only through the bridge's open_url.
 PLANS_URL = "https://myaccount.projectkestrel.org/plan/"
-LEARN_MORE_URL = "https://projectkestrel.org/cloud-compute"
+LEARN_MORE_URL = "https://projectkestrel.org/cloud"
 
 UNAVAILABLE = {"ok": False, "reason": "unavailable"}
 

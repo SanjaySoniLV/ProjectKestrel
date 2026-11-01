@@ -165,6 +165,9 @@
       const el = document.getElementById('cloudDestUsage');
       if (!el) return;
       _ccRemaining = null;
+      // Re-check on every refresh: the page's idea of "signed in" must never
+      // outlive the keychain (e.g. after Sign out).
+      await _ccApplySignInGate();
       if (!_ccSignedIn) {
         el.textContent = '';
         _ccRenderPricing();
@@ -189,6 +192,18 @@
       } else {
         el.textContent = 'Usage unavailable.';
       }
+      _ccRenderPricing();
+    }
+
+    // Called by auth.js when the user signs out: drop everything the card knew
+    // about the account so no stale balance or price block stays on screen.
+    function _ccOnSignedOut() {
+      _ccSignedIn = false;
+      _ccRemaining = null;
+      const el = document.getElementById('cloudDestUsage');
+      if (el) el.textContent = '';
+      _ccRefreshSignInPrompt();
+      document.getElementById('cloudDestSignInOverlay')?.classList.remove('hidden');
       _ccRenderPricing();
     }
 
@@ -257,10 +272,12 @@
       // textContent. If the catalog fetch failed, only the "See plans" link shows.
       const box = document.getElementById('analyzeDlgCloudPricing');
       if (!box) return;
-      const short = _ccSignedIn && _ccPricing && _ccRemaining != null
-        && _ccQueuedImages > _ccRemaining;
+      const short = _analyzeDestination === 'cloud' && _ccSignedIn && _ccPricing
+        && _ccRemaining != null && _ccQueuedImages > _ccRemaining;
+      const panel = document.getElementById('analyzeDlgCloudEstPanel');
       box.textContent = '';
       box.classList.toggle('hidden', !short);
+      if (panel) panel.classList.toggle('hidden', !short);
       if (!short) return;
 
       const cat = _ccPricing.catalog;
@@ -334,7 +351,7 @@
       if (!signedIn) {
         status.classList.remove('hidden', 'success');
         status.classList.add('error');
-        status.textContent = 'Sign in to Perch to run the upload speed test.';
+        status.textContent = 'Sign in to run the upload speed test.';
         if (typeof openPerchSignInWindow === 'function') {
           try { openPerchSignInWindow(); } catch {}
         }

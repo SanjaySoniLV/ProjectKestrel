@@ -1392,25 +1392,28 @@
             <!-- Local vs cloud estimate, always shown once enough images are
                  queued so the speed difference is visible before Cloud is chosen.
                  Filled by refreshAnalyzeDlgSummary(). -->
-            <div id="analyzeDlgEstCompare" class="adlg-est-compare hidden"></div>
-            <!-- Cloud-only affordances under the summary headline. Hidden when
-                 destination=local. The speed-test button replaces the "as fast
-                 as" figure with one based on the measured upload speed. -->
-            <div id="analyzeDlgCloudEstPanel" class="analyze-dlg-cloud-est-panel hidden">
-              <button id="analyzeDlgRunSpeedTest" type="button" class="adlg-cloud-speed-btn"
-                      title="Upload 10 sample images to measure your upload throughput">
-                <span class="adlg-cloud-speed-btn-icon">⚡</span> Run Upload Speed Test
-              </button>
-              <div id="analyzeDlgCloudSpeedStatus" class="adlg-cloud-speed-status hidden"></div>
-              <!-- Prices: shown by cloud-compute.js only to a signed-in user whose
-                   queue is larger than their remaining images, and never on the
-                   Mac App Store build (the bridge returns nothing there). -->
-              <div id="analyzeDlgCloudPricing" class="adlg-cloud-pricing hidden" aria-live="polite"></div>
-              <!-- Hidden unless the bridge reports pricing links are available
-                   (not the Mac App Store build). Opened through open_url. -->
-              <div class="adlg-cloud-learn">
+            <div id="analyzeDlgEstCompare" class="adlg-est-compare hidden">
+              <div id="analyzeDlgEstCompareText"></div>
+              <!-- The speed test sits right after the estimate it refines, for
+                   either destination. It replaces the "as fast as" figure with
+                   one based on the measured upload speed. Learn more is hidden
+                   unless the bridge reports links are available (not the Mac
+                   App Store build) and opens through open_url. -->
+              <div class="adlg-est-actions">
+                <button id="analyzeDlgRunSpeedTest" type="button" class="adlg-cloud-speed-btn"
+                        title="Upload 10 sample images to measure your upload throughput">
+                  <span class="adlg-cloud-speed-btn-icon">⚡</span> Test upload speed
+                </button>
+                <span id="analyzeDlgCloudSpeedStatus" class="adlg-cloud-speed-status hidden"></span>
                 <a id="analyzeDlgCloudLearnMore" href="#" class="adlg-cloud-learn-more hidden">Learn more</a>
               </div>
+            </div>
+            <!-- Prices: shown by cloud-compute.js only while Cloud is selected, to
+                 a signed-in user whose queue is larger than their remaining
+                 images, and never on the Mac App Store build (the bridge
+                 returns nothing there). -->
+            <div id="analyzeDlgCloudEstPanel" class="analyze-dlg-cloud-est-panel hidden">
+              <div id="analyzeDlgCloudPricing" class="adlg-cloud-pricing hidden" aria-live="polite"></div>
             </div>
             <div id="analyzeDlgWarnings" class="analyze-dlg-warnings hidden"></div>
             <label id="analyzeDlgReanalyzeUnlockRow" class="adlg-toggle-row analyze-dlg-unlock-row hidden">

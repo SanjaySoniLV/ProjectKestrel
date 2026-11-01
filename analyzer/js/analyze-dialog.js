@@ -1050,19 +1050,20 @@
       // see that Cloud may be much faster before choosing it. The cloud figure
       // is the compute-limited best case until a speed test has run.
       const compareEl = document.getElementById('analyzeDlgEstCompare');
-      if (compareEl) {
+      const compareTextEl = document.getElementById('analyzeDlgEstCompareText');
+      if (compareEl && compareTextEl) {
         if (checkedCount > 0 && totalImagesToProcess >= _EST_MIN_IMAGES_TO_ESTIMATE) {
           const localSecs = totalImagesToProcess * _getEstRate(useGpu).rate;
           const cloud = _getCloudEstSeconds(totalImagesToProcess);
           const cloudText = cloud.secs != null
             ? `<b>~${_formatDuration(cloud.secs)}</b> at your measured upload speed`
             : `as fast as <b>~${_formatDuration(cloud.analysisSecs)}</b>, depending on your upload speed`;
-          compareEl.innerHTML =
+          compareTextEl.innerHTML =
             `Local analysis: <b>~${_formatDuration(localSecs)}</b> &middot; Cloud analysis: ${cloudText}.`;
           compareEl.classList.remove('hidden');
         } else {
           compareEl.classList.add('hidden');
-          compareEl.textContent = '';
+          compareTextEl.textContent = '';
         }
       }
 
@@ -1072,35 +1073,25 @@
         try { _ccUpdateCloudPricing(totalImagesToProcess); } catch (e) { /* failsafe */ }
       }
 
-      // Toggle the cloud-only affordances panel under the headline. Speed-test
-      // button is enabled iff at least one folder is checked. When a speed test
-      // has already run, the button reads "Re-run upload speed test" and the
-      // status line surfaces the measured mbps for transparency.
-      const cloudPanel = document.getElementById('analyzeDlgCloudEstPanel');
-      if (cloudPanel) {
-        const showCloudPanel = _isCloudDestination();
-        cloudPanel.classList.toggle('hidden', !showCloudPanel);
-        if (showCloudPanel) {
-          const runBtn = document.getElementById('analyzeDlgRunSpeedTest');
-          const statusEl = document.getElementById('analyzeDlgCloudSpeedStatus');
-          const hasResult = !!(typeof _cloudSpeedTestResult !== 'undefined' && _cloudSpeedTestResult);
-          if (runBtn) {
-            runBtn.disabled = checkedCount === 0;
-            const labelText = hasResult ? ' Re-run upload speed test' : ' Run Upload Speed Test';
-            // Keep the leading lightning icon span intact.
-            const iconHtml = '<span class="adlg-cloud-speed-btn-icon">⚡</span>';
-            runBtn.innerHTML = iconHtml + labelText;
-          }
-          if (statusEl) {
-            if (hasResult) {
-              const mbps = Number(_cloudSpeedTestResult.mbps || 0).toFixed(1);
-              statusEl.textContent = `Measured upload: ${mbps} MB/s`;
-              statusEl.classList.remove('hidden', 'error');
-              statusEl.classList.add('success');
-            } else {
-              statusEl.classList.add('hidden');
-            }
-          }
+      // Speed-test button + measured-upload status live in the comparison row
+      // and show for either destination. The button is enabled iff at least one
+      // folder is checked; after a test it reads "Re-test" and the status shows
+      // the measured rate. (The price panel is driven by cloud-compute.js.)
+      {
+        const runBtn = document.getElementById('analyzeDlgRunSpeedTest');
+        const statusEl = document.getElementById('analyzeDlgCloudSpeedStatus');
+        const hasResult = !!(typeof _cloudSpeedTestResult !== 'undefined' && _cloudSpeedTestResult);
+        if (runBtn) {
+          runBtn.disabled = checkedCount === 0;
+          // Keep the leading lightning icon span intact.
+          runBtn.innerHTML = '<span class="adlg-cloud-speed-btn-icon">⚡</span>'
+            + (hasResult ? ' Re-test upload speed' : ' Test upload speed');
+        }
+        if (statusEl && hasResult) {
+          const mbps = Number(_cloudSpeedTestResult.mbps || 0).toFixed(1);
+          statusEl.textContent = `Measured upload: ${mbps} MB/s`;
+          statusEl.classList.remove('hidden', 'error');
+          statusEl.classList.add('success');
         }
       }
 

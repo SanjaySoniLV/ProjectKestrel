@@ -295,6 +295,9 @@
     // Called by Python after sign_out clears the keychain.
     window.onAuthSignOut = () => {
       _perchToken = null;
+      if (typeof _ccOnSignedOut === 'function') {
+        try { _ccOnSignedOut(); } catch {}
+      }
       const accountBtn = el('#accountBtn');
       const labelEl = el('#accountBtnLabel');
       if (accountBtn) {

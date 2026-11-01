@@ -1175,6 +1175,15 @@
   text-align: center;
 }
 .adlg-est-compare.hidden { display: none; }
+.adlg-est-actions {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.adlg-est-actions .adlg-cloud-speed-btn { align-self: auto; padding: 4px 10px; }
 .adlg-est-compare b { color: var(--fg, #eee); font-weight: 600; }
 
 /* Price list, shown only to a signed-in user who is short for the queue. */
