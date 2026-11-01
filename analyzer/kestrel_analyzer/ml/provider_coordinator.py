@@ -106,7 +106,7 @@ def is_session_dead(exc: BaseException, *, aggressive: bool = False) -> bool:
     msg = str(exc) if exc is not None else ""
     type_name = type(exc).__name__ if exc is not None else ""
 
-    if any(sig in msg for sig in _SESSION_DEAD_SIGNATURES):
+    if any(sig in msg for sig in _SESSION_DEAD_SIGNATURES) or is_device_lost(msg):
         return True
     if "CoreML" in msg and "fail" in msg.lower():
         return True
@@ -137,10 +137,30 @@ _DEVICE_LOST_SIGNATURES: tuple[str, ...] = (
 )
 
 
+# DirectML also reports a poisoned device as a generic E_FAIL raised from its
+# command recorder (observed: every frame failing with
+# "DmlCommandRecorder.cpp(342) 80004005 Unspecified error" while another process
+# shared the GPU) and as E_OUTOFMEMORY when GPU memory runs out. 80004005 alone
+# is a generic code, so it only counts together with the DirectML component
+# name; the out-of-memory HRESULT text is specific to the D3D/DXGI stack, unlike
+# a Python MemoryError or an ONNX Runtime CPU allocation failure.
+_DML_COMMAND_RECORDER = "DmlCommandRecorder"
+_E_FAIL = "80004005"
+_GPU_OUT_OF_MEMORY_SIGNATURES: tuple[str, ...] = (
+    "8007000E",
+    "Not enough memory resources",
+)
+
+
 def is_device_lost(exc_or_text: object) -> bool:
-    """True if the error (or its text) says the GPU device was removed/reset."""
+    """True if the error (or its text) says the GPU device was removed, reset
+    or poisoned, so that only a new process will get a working GPU back."""
     msg = exc_or_text if isinstance(exc_or_text, str) else str(exc_or_text or "")
-    return any(sig in msg for sig in _DEVICE_LOST_SIGNATURES)
+    if any(sig in msg for sig in _DEVICE_LOST_SIGNATURES):
+        return True
+    if _DML_COMMAND_RECORDER in msg and _E_FAIL in msg:
+        return True
+    return any(sig in msg for sig in _GPU_OUT_OF_MEMORY_SIGNATURES)
 
 
 _RecreateFn = Callable[[bool], None]

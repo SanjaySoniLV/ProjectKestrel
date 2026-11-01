@@ -160,6 +160,11 @@ def _quality_to_raw_rating(quality: float) -> int:
     return 5
 
 
+try:
+    from kestrel_analyzer.config import DEFAULT_MAX_CONSECUTIVE_ERRORS as _DEFAULT_MAX_CONSECUTIVE_ERRORS
+except Exception:  # pragma: no cover - config import must never block the queue
+    _DEFAULT_MAX_CONSECUTIVE_ERRORS = 10
+
 _GPU_LOST_MESSAGE = (
     'The GPU stopped responding (a Windows GPU reset). Progress is saved. '
     'Restart Kestrel, then analyze this folder again to continue on the GPU.'
@@ -869,6 +874,7 @@ class QueueManager:
                     retry_errored=self._retry_errored,
                     species_regions=item.species_regions,
                     stop_on_gpu_loss=bool(self._use_gpu),
+                    max_consecutive_errors=_DEFAULT_MAX_CONSECUTIVE_ERRORS,
                 )
                 lost = getattr(self._pipeline, 'gpu_lost', None)
                 if isinstance(lost, dict) and lost and self._use_gpu:
@@ -883,6 +889,23 @@ class QueueManager:
                         item.status = 'error'
                         item.end_time = _time_mod.time()
                         item.error = _GPU_LOST_MESSAGE
+                    self._persist_recovery_state()
+                    self._send_folder_analytics(item)
+                    continue
+                error_stop = getattr(self._pipeline, 'error_stop', None)
+                if isinstance(error_stop, dict) and error_stop:
+                    # Every frame was failing (broken session or device), not
+                    # one bad photo. Progress is saved; frames not reached yet
+                    # are picked up when the folder is analysed again.
+                    msg = (f"Analysis stopped after {error_stop.get('consecutive')} frames in a row "
+                           f"failed (last: {error_stop.get('last_file')}). Progress is saved. Restart "
+                           "Kestrel and analyze this folder again; failed frames are retried when "
+                           "'retry errored' is on.")
+                    error(f'[queue] {msg} {error_stop.get("last_error")}')
+                    with self._lock:
+                        item.status = 'error'
+                        item.end_time = _time_mod.time()
+                        item.error = msg
                     self._persist_recovery_state()
                     self._send_folder_analytics(item)
                     continue

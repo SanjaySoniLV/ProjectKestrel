@@ -94,6 +94,31 @@ def _write_jpeg(path: str, bgr: np.ndarray, params) -> bool:
     return True
 
 
+class ConsecutiveErrorTracker:
+    """Counts frames that ended as Error rows to spot a run that is failing
+    wholesale (broken session or device) as opposed to isolated bad photos.
+
+    ``limit`` 0 disables stopping. A successful frame resets the streak. A
+    frame that failed to *decode* is a problem with that file, not with the
+    session, so it neither extends nor resets the streak.
+    """
+
+    def __init__(self, limit: int = 0):
+        self.limit = max(0, int(limit or 0))
+        self.streak = 0
+        self.total = 0
+
+    def record_success(self) -> None:
+        self.streak = 0
+
+    def record_error(self, decode_error: bool = False) -> bool:
+        """Record an errored frame; True when the run should stop."""
+        self.total += 1
+        if not decode_error:
+            self.streak += 1
+        return self.limit > 0 and self.streak >= self.limit
+
+
 class AnalysisPipeline:
     # Class-level defaults so instances built with ``__new__`` (tests) work.
     siglip_img = None
@@ -739,6 +764,15 @@ class AnalysisPipeline:
         self._record_gpu_lost(file_name, coord.gpu_lost_reason or "", status_cb)
         return True
 
+    def _gpu_in_use(self) -> bool:
+        """True while the shared coordinator is on the GPU, or has already
+        flagged it lost (so a run that fell back to CPU still counts)."""
+        try:
+            coord = self.sn_sam.coord
+            return bool(coord.effective_use_gpu or coord.gpu_lost)
+        except Exception:
+            return False
+
     def _record_gpu_lost(self, file_name: str, reason: str, status_cb=None) -> None:
         self.gpu_lost = {"file": file_name, "reason": reason}
         _error(f"[pipeline] GPU lost while processing {file_name!r}: {reason}")
@@ -778,6 +812,7 @@ class AnalysisPipeline:
         quality_model: Optional[str] = None,
         raw_use_embedded_preview: Optional[bool] = None,
         stop_on_gpu_loss: bool = False,
+        max_consecutive_errors: int = 0,
     ) -> None:
         """Analyse ``folder``.
 
@@ -787,6 +822,15 @@ class AnalysisPipeline:
         a new process gets the GPU back. Everything analysed so far is saved
         and ``self.gpu_lost`` is set to ``{"file", "reason"}`` so the caller can
         restart. Default off, so existing callers behave as before.
+
+        ``max_consecutive_errors`` (0 = off) stops the run once that many
+        frames in a row end as Error rows, whatever the cause, instead of
+        writing an Error row for every remaining photo. A successful frame
+        resets the count; frames that fail to decode (a bad file, not a
+        failing session) neither count nor reset it. The stop sets
+        ``self.error_stop = {"consecutive", "total_errors", "last_file",
+        "last_error"}``; ``self.error_count`` is the number of Error rows this
+        run wrote either way. Default off, so existing callers are unchanged.
 
         Pipeline 3.0.0 always stores the BioCLIP and SigLIP crop embeddings
         (the SigLIP one is also the default quality score).
@@ -822,6 +866,9 @@ class AnalysisPipeline:
         self._save_failure_streak = 0
         self._save_warning_shown = False
         self.gpu_lost: Optional[Dict[str, str]] = None
+        self.error_stop: Optional[Dict[str, object]] = None
+        errors = ConsecutiveErrorTracker(max_consecutive_errors)
+        self.error_count = 0
 
         try:
             max_bird_crops = int(max_bird_crops)
@@ -1269,6 +1316,7 @@ class AnalysisPipeline:
 
                 image_path = decoded["image_path"]
                 raw_meter_scale = decoded["raw_meter_scale"]
+                frame_failed = False
                 try:
                     stage_ctx["stage"] = "read_image"
                     stage_ctx["file"] = raw_file
@@ -1712,6 +1760,7 @@ class AnalysisPipeline:
                         self._timing_add("writes", _t_stage)
                         if image_cb:
                             image_cb(entry)
+                        errors.record_success()
                         if progress_cb:
                             progress_cb(idx + processed_count, total)
                         continue
@@ -2077,9 +2126,10 @@ class AnalysisPipeline:
                     # A device-lost error that reached here is not this
                     # image's fault: don't record an Error row; stop so the
                     # image is retried by the next process.
-                    if stop_on_gpu_loss and is_device_lost(e):
+                    if stop_on_gpu_loss and is_device_lost(e) and self._gpu_in_use():
                         self._record_gpu_lost(raw_file, str(e), status_cb)
                         return
+                    frame_failed = True
                     log_exception(
                         self._log_path,
                         e,
@@ -2122,7 +2172,33 @@ class AnalysisPipeline:
                     # escaping exception here has no handler left and would end
                     # the run while reporting the wrong cause.
                     self._save_database_soft(database, db_path, "save_error_entry")
+                    stop_run = errors.record_error(decode_error=decoded["error"] is not None)
+                    self.error_count = errors.total
+                    if stop_run:
+                        self.error_stop = {
+                            "consecutive": errors.streak,
+                            "total_errors": errors.total,
+                            "last_file": raw_file,
+                            "last_error": f"{type(e).__name__}: {e}"[:500],
+                        }
+                        _error(
+                            f"[pipeline] Stopping after {errors.streak} consecutive errored "
+                            f"frames (last: {raw_file})"
+                        )
+                        log_event(
+                            self._log_path,
+                            {"level": "error", "event": "consecutive_error_stop", **self.error_stop},
+                        )
+                        if status_cb:
+                            status_cb(
+                                f"Stopped after {errors.streak} frames in a row failed "
+                                f"(last: {raw_file}). Progress is saved."
+                            )
+                        return
                     time.sleep(2)
+
+                if not frame_failed:
+                    errors.record_success()
 
                 if progress_cb:
                     progress_cb(idx + processed_count, total)

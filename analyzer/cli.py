@@ -13,6 +13,7 @@ from kestrel_analyzer.pipeline import AnalysisPipeline
 from kestrel_analyzer.logging_utils import get_log_path, log_event, log_exception
 from kestrel_analyzer.config import (
     DEFAULT_DETECTOR_NAME,
+    DEFAULT_MAX_CONSECUTIVE_ERRORS,
     DETECTOR_ONNX_PATHS,
     select_camera_images,
 )
@@ -272,6 +273,17 @@ def parse_args(argv: Sequence[str] | None = None):
         help="If the GPU is lost mid-run (Windows GPU reset), continue the same folder in a fresh "
              "process, up to this many times, then finish on CPU. 0 disables restarting.",
     )
+    parser.add_argument(
+        "--max-consecutive-errors", dest="max_consecutive_errors", type=int,
+        default=DEFAULT_MAX_CONSECUTIVE_ERRORS,
+        help="Stop the run (exit code 5) after this many frames in a row end as Error rows, instead of "
+             "writing an Error row for every remaining photo. A successful frame resets the count. "
+             "0 disables.",
+    )
+    parser.add_argument(
+        "--fail-on-errors", dest="fail_on_errors", action="store_true",
+        help="Exit with code 4 if any frame ended as an Error row (default: exit 0, as before).",
+    )
     # Internal: set by the restart loop on the processes it starts.
     parser.add_argument("--gpu-child", dest="gpu_child", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--gpu-restart-attempt", dest="gpu_restart_attempt", type=int, default=0,
@@ -287,6 +299,22 @@ def parse_args(argv: Sequence[str] | None = None):
 
 # Exit code a restart child uses to say "the GPU was lost; run me again".
 EXIT_GPU_LOST = 75
+# Some frames ended as Error rows and --fail-on-errors was given.
+EXIT_FRAMES_ERRORED = 4
+# The run stopped because --max-consecutive-errors frames in a row failed.
+EXIT_ERROR_STOP = 5
+
+
+def _count_error_rows(folder: str):
+    """Rows of ``folder/.kestrel/kestrel_database.csv`` whose species is
+    ``Error`` (None when the database is missing or unreadable)."""
+    try:
+        import csv
+        path = os.path.join(folder, ".kestrel", "kestrel_database.csv")
+        with open(path, "r", encoding="utf-8", newline="") as f:
+            return sum(1 for row in csv.DictReader(f) if (row.get("species") or "") == "Error")
+    except Exception:
+        return None
 
 
 def _child_command(argv: Sequence[str]) -> list[str]:
@@ -563,6 +591,7 @@ def main(argv: Sequence[str] | None = None):
             quality_model=args.quality_model,
             raw_use_embedded_preview=args.raw_use_embedded_preview,
             stop_on_gpu_loss=stop_on_gpu_loss,
+            max_consecutive_errors=max(0, int(args.max_consecutive_errors)),
         )
         print()
         lost = getattr(pipeline, "gpu_lost", None)
@@ -584,6 +613,26 @@ def main(argv: Sequence[str] | None = None):
         for line in format_stage_summary(pipeline.stage_times, pipeline.stage_counts,
                                          processed_count[0], time.perf_counter() - t_run):
             print(line, flush=True)
+        retry_cmd = f'python analyzer/cli.py "{args.folder}" --retry-errored'
+        error_stop = getattr(pipeline, "error_stop", None)
+        run_errors = getattr(pipeline, "error_count", 0)
+        run_errors = run_errors if isinstance(run_errors, int) else 0
+        folder_errors = _count_error_rows(args.folder) if run_errors or isinstance(error_stop, dict) else None
+        if run_errors:
+            where = f" ({folder_errors} Error row(s) in the folder in total)" if folder_errors is not None else ""
+            print(f"WARNING: {run_errors} frame(s) ended as Error rows in this run{where}.", flush=True)
+            print(f"To retry them: {retry_cmd}", flush=True)
+        if isinstance(error_stop, dict) and error_stop:
+            print(
+                f"STOPPED: {error_stop.get('consecutive')} frames in a row failed "
+                f"(last: {error_stop.get('last_file')}: {str(error_stop.get('last_error'))[:200]}). "
+                "The remaining photos were not processed; run the same command again to continue "
+                "(add --retry-errored to also retry the failed frames).",
+                flush=True,
+            )
+            sys.exit(EXIT_ERROR_STOP)
+        if run_errors and args.fail_on_errors:
+            sys.exit(EXIT_FRAMES_ERRORED)
     except Exception as e:
         log_exception(
             log_path,
