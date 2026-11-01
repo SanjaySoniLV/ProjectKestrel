@@ -274,7 +274,7 @@
       if (overallEtaEl && running && cur) {
         if (!inspectionReady) {
           // Inspection data still in flight — show placeholder so user isn't misled
-          overallEtaEl.textContent = '⏳ Calculating ETA…';
+          overallEtaEl.textContent = 'Calculating ETA…';
           overallEtaEl.classList.remove('hidden');
         } else if (secsPerImage !== null) {
           let totalRemaining = 0;
@@ -289,7 +289,7 @@
             }
           }
           if (totalRemaining > 5) {
-            overallEtaEl.textContent = `⏱ Overall est. remaining: ${formatDuration(totalRemaining)}`;
+            overallEtaEl.textContent = `about ${formatDuration(totalRemaining)} left`;
             overallEtaEl.classList.remove('hidden');
           } else {
             overallEtaEl.classList.add('hidden');
@@ -483,7 +483,6 @@
         + '<div class="queue-item-error" hidden></div>'
         + '<div class="queue-item-progress" hidden><div class="queue-item-progress-fill"></div></div>'
         + '<div class="queue-item-eta" hidden></div>'
-        + '<div class="queue-item-file" hidden></div>'
         + '<div class="queue-live-preview" hidden><img class="queue-live-thumb" alt="" /></div>';
       const loadBtn = div.querySelector('.queue-item-load-btn');
       loadBtn.title = 'Open this folder to browse results';
@@ -539,7 +538,6 @@
       const prog = div.querySelector('.queue-item-progress');
       const fill = prog.querySelector('.queue-item-progress-fill');
       const etaEl = div.querySelector('.queue-item-eta');
-      const fileEl = div.querySelector('.queue-item-file');
       const preview = div.querySelector('.queue-live-preview');
       const showRunning = isRunning && item.total > 0;
       const showDone = isDone && item.total > 0;
@@ -549,21 +547,14 @@
       else if (showDone) fill.style.width = '100%';
 
       etaEl.hidden = !showRunning;
-      fileEl.hidden = !(showRunning && item.current_filename);
       preview.hidden = !(showRunning && item.current_export_path && hasPywebviewApi);
       if (showRunning) {
-        // ETA / paused row
-        if (item.is_paused) {
-          etaEl.textContent = `${item.processed} / ${item.total} — ⏸ Paused`;
-        } else if (!ctx.inspectionReady) {
-          etaEl.textContent = `${item.processed} / ${item.total} — ⏳ Calculating ETA…`;
-        } else if (ctx.secsPerImage !== null && item.total > item.processed) {
-          const remaining = ctx.secsPerImage * (item.total - item.processed);
-          etaEl.textContent = `${item.processed} / ${item.total} — est. ${formatDuration(remaining)} left`;
-        } else {
-          etaEl.textContent = `${item.processed} / ${item.total}`;
-        }
-        if (item.current_filename) fileEl.textContent = item.current_filename;
+        // One muted line: count, paused state, current file. The ETA lives in the
+        // panel header (queueOverallEta).
+        let line = `${item.processed} of ${item.total}`;
+        if (item.is_paused) line += ' · Paused';
+        if (item.current_filename) line += ` · ${item.current_filename}`;
+        etaEl.textContent = line;
         if (item.current_export_path) {
           // Paths go in data attributes; renderQueuePanel loads them after the pass.
           const thumb = preview.querySelector('img');
@@ -975,6 +966,7 @@
         }
         imgEl.src = url;
         imgEl._ownedUrl = owned ? url : '';
+        if (stage) stage.classList.add('has-frame');
         if (!reduce) {
           imgEl.classList.remove('live-img-in');
           void imgEl.offsetWidth; // restart the CSS animation
@@ -1048,14 +1040,20 @@
             _loadImg(overlayEl, item.current_overlay_rel, item.path, { swap: true });
           }
         }
-        overlayEl.style.visibility = (item.current_overlay_rel || overlayEl.getAttribute('src')) ? '' : 'hidden';
-        if (overlayStage) {
-          overlayStage.classList.toggle('is-waiting',
-            working && !item.is_paused && !item.current_overlay_rel);
-        }
       }
-      const thumbStage = document.getElementById('liveDlgThumbStage');
-      if (thumbStage) thumbStage.classList.toggle('is-waiting', working && !item.is_paused && !item.current_export_path);
+      // Empty stages show a calm placeholder (spinner only while actually working);
+      // once a frame exists the placeholder is gone and nothing is dimmed.
+      const waitLabel = !working ? 'No frame yet' : (item.is_paused ? 'Paused' : 'Waiting for first frame…');
+      for (const [stageId, imgId] of [['liveDlgThumbStage', 'liveDlgThumb'], ['liveDlgOverlayStage', 'liveDlgOverlay']]) {
+        const stage = document.getElementById(stageId);
+        const img = document.getElementById(imgId);
+        if (!stage) continue;
+        const hasFrame = !!(img && img.getAttribute('src'));
+        stage.classList.toggle('has-frame', hasFrame);
+        stage.classList.toggle('is-waiting', !hasFrame && working && !item.is_paused);
+        const txt = stage.querySelector('.live-dlg-wait-txt');
+        if (txt && txt.textContent !== waitLabel) txt.textContent = waitLabel;
+      }
 
       // Crop cards
       _updateLiveCropCards(item);
@@ -1090,6 +1088,13 @@
       const cropsVer = item.live_crops_ver || 0;
       const cropsChanged = _liveLastCropsVer !== cropsVer;
       _liveLastCropsVer = cropsVer;
+
+      // Quiet placeholder instead of blank space while there are no cards.
+      const emptyEl = document.getElementById('liveDlgCropsEmpty');
+      if (emptyEl) {
+        emptyEl.hidden = cardCount > 0;
+        emptyEl.textContent = item.current_overlay_rel ? 'No birds in this frame' : 'No birds detected yet';
+      }
 
       // Keep card count in sync with current live detections.
       while (row.children.length < cardCount) {
