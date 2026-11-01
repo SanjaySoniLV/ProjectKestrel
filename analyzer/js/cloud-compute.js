@@ -97,6 +97,7 @@
       if (_analyzeDestination === 'cloud') {
         _ccRefreshUsage();
       }
+      _ccRenderPricing();   // prices show only while Cloud is selected
       // Re-render the summary so the est. time stat + cloud panel match the
       // new destination immediately (button label, estimate panel, "?" badge).
       if (typeof refreshAnalyzeDlgSummary === 'function') {
@@ -117,11 +118,12 @@
 
     // Cloud card state used to decide what the price block shows.
     let _ccSignedIn = false;
+    let _ccAuthKnown = false;       // false until this dialog open's sign-in check finishes
     let _ccRemaining = null;        // effectiveRemaining from the Auth Worker, or null
     let _ccPricing = null;          // cloud_compute_get_pricing result, or null
     let _ccQueuedImages = 0;        // images in the current Analyze queue
 
-    function _ccSignInPrompt() {
+    function _ccSignInPromptTail() {
       // "New accounts get N free images." comes from the service's catalog (a value
       // the service sets), never from a number in the app. If the catalog is
       // unavailable the offer is omitted rather than guessed. The offer is a
@@ -129,14 +131,33 @@
       // returns no pricing data there).
       const n = _ccPricing?.catalog?.signupBonusImages;
       if (_ccPricing?.ok && typeof n === 'number' && n > 0) {
-        return `Sign in to use Cloud Compute. New accounts get ${n.toLocaleString()} free images.`;
+        return ` to use Cloud Compute. New accounts get ${n.toLocaleString()} free images.`;
       }
-      return 'Sign in to use Cloud Compute.';
+      return ' to use Cloud Compute.';
+    }
+
+    // Fill `el` with a clickable "Sign in" followed by `tail`. The link opens the
+    // sign-in window; stopPropagation keeps a click inside the Cloud card from
+    // also re-selecting the card.
+    function _ccFillSignInPrompt(el, tail) {
+      el.textContent = '';
+      const a = document.createElement('a');
+      a.href = '#';
+      a.className = 'adlg-signin-link';
+      a.textContent = 'Sign in';
+      a.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof openPerchSignInWindow === 'function') {
+          try { openPerchSignInWindow(); } catch {}
+        }
+      });
+      el.append(a, document.createTextNode(tail));
     }
 
     function _ccRefreshSignInPrompt() {
       const overlay = document.getElementById('cloudDestSignInOverlay');
-      if (overlay) overlay.textContent = _ccSignInPrompt();
+      if (overlay) _ccFillSignInPrompt(overlay, _ccSignInPromptTail());
     }
 
     async function _ccApplySignInGate() {
@@ -153,6 +174,7 @@
         // (safer: prompts sign-in rather than letting submit fail later).
         _ccSignedIn = false;
       }
+      _ccAuthKnown = true;
       _ccRefreshSignInPrompt();
       overlay.classList.toggle('hidden', _ccSignedIn);
     }
@@ -199,6 +221,7 @@
     // about the account so no stale balance or price block stays on screen.
     function _ccOnSignedOut() {
       _ccSignedIn = false;
+      _ccAuthKnown = true;
       _ccRemaining = null;
       const el = document.getElementById('cloudDestUsage');
       if (el) el.textContent = '';
@@ -266,14 +289,16 @@
     }
 
     function _ccRenderPricing() {
-      // Prices appear only for a signed-in user whose queue is larger than the
-      // images they have left (a comparison of two numbers; remaining = 0
-      // counts). Everything shown is supplied by the service; labels go in via
+      // Prices appear while Cloud is selected: to a signed-out user, or to a
+      // signed-in user whose queue is larger than the images they have left (a
+      // comparison of two numbers; remaining = 0 counts). Everything shown is supplied by the service; labels go in via
       // textContent. If the catalog fetch failed, only the "See plans" link shows.
       const box = document.getElementById('analyzeDlgCloudPricing');
       if (!box) return;
-      const short = _analyzeDestination === 'cloud' && _ccSignedIn && _ccPricing
-        && _ccRemaining != null && _ccQueuedImages > _ccRemaining;
+      // Signed out: no balance to compare against, so show the prices. Signed in:
+      // only when the queue is larger than the images left.
+      const short = _analyzeDestination === 'cloud' && _ccAuthKnown && !!_ccPricing
+        && (!_ccSignedIn || (_ccRemaining != null && _ccQueuedImages > _ccRemaining));
       const panel = document.getElementById('analyzeDlgCloudEstPanel');
       box.textContent = '';
       box.classList.toggle('hidden', !short);
@@ -285,7 +310,7 @@
       if (hasPrices) {
         const head = document.createElement('div');
         head.className = 'adlg-cloud-pricing-head';
-        head.textContent = 'Need more images? Cloud Compute prices:';
+        head.textContent = _ccSignedIn ? 'Need more images? Cloud Compute prices:' : 'Cloud Compute prices:';
         box.appendChild(head);
         for (const p of cat.plans) {
           box.appendChild(_ccPriceRow(
@@ -351,7 +376,7 @@
       if (!signedIn) {
         status.classList.remove('hidden', 'success');
         status.classList.add('error');
-        status.textContent = 'Sign in to run the upload speed test.';
+        _ccFillSignInPrompt(status, ' to run the upload speed test.');
         if (typeof openPerchSignInWindow === 'function') {
           try { openPerchSignInWindow(); } catch {}
         }
@@ -427,6 +452,7 @@
       _ccPricing = null;
       _ccRemaining = null;
       _ccQueuedImages = 0;
+      _ccAuthKnown = false;
       _ccRenderLearnMore();
       _ccLoadPricing();   // not awaited: never delays opening the dialog
       await _ccApplySignInGate();

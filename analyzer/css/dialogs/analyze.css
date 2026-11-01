@@ -1288,3 +1288,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* "Sign in" link in the Cloud card overlay and the speed-test status. */
+.adlg-signin-link { color: #7eb8e0; font-weight: 600; text-decoration: underline; cursor: pointer; }
+.adlg-signin-link:hover { color: #cfe2ff; }
