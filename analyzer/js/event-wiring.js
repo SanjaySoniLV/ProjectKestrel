@@ -103,7 +103,7 @@
             // analyzed on an older Kestrel; the new pipeline can't safely
             // resume from old artifacts).
             opts.delete_kestrel_on_start = true;
-            destructive.push({ path: norm, name, reason: `outdated (v${node.kestrel_version} → v${_appVersion})` });
+            destructive.push({ path: norm, name, reason: `outdated (pipeline ${folderPipelineLabel(node)} → ${CURRENT_PIPELINE_MAJOR}.0)` });
           } else if (isFullyAnalyzed) {
             if (analyzeDlgReanalyzeUnlocked) {
               opts.delete_kestrel_on_start = true;

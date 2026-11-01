@@ -153,7 +153,7 @@
           name: rootName,
           path: norm,
           has_kestrel: rootHasKestrel,
-          kestrel_version: result.root_kestrel_version || '',
+          pipeline_major: result.root_pipeline_major ?? null,
           children: result.tree || [],
         };
         folderTreeRootNodes.set(norm, node);
@@ -247,10 +247,26 @@
       return 0;
     }
 
-    /** Check if a node's kestrel_version is older than the current app version. */
+    // Analysis pipeline generation this build writes (config.PIPELINE_MAJOR).
+    const CURRENT_PIPELINE_MAJOR = 3;
+
+    /** True when a node's analysis pipeline is older than the current one.
+     *  Judged only on pipeline_major (null = unknown, never flagged): the app
+     *  version that created or last touched the folder says nothing about which
+     *  pipeline produced its rows. */
     function isVersionOutdated(node) {
-      if (!node || !node.has_kestrel || !node.kestrel_version || !_appVersion) return false;
-      return compareVersions(node.kestrel_version, _appVersion) < 0;
+      if (!node || !node.has_kestrel) return false;
+      if (node.pipeline_major == null) return false;
+      const major = Number(node.pipeline_major);
+      return Number.isFinite(major) && major < CURRENT_PIPELINE_MAJOR;
+    }
+
+    /** "2.x" / "3.0" label for a node's analysis pipeline. */
+    function folderPipelineLabel(node) {
+      if (!node || node.pipeline_major == null) return '';
+      const major = Number(node.pipeline_major);
+      if (!Number.isFinite(major)) return '';
+      return major >= 3 ? '3.0' : `${major}.x`;
     }
 
     /** Show a custom context menu at (x, y) with given items. */
@@ -437,7 +453,7 @@
       if (node.path === treeActivePath) row.classList.add('active');
       // Path is always visible on hover; in-progress / outdated states append context.
       if (isInProgress) row.title = `${isUpgrading && !_inProgressFolderPaths.has(normPath) ? 'Upgrading to pipeline 3…' : 'Currently analyzing…'}\n${node.path}`;
-      else if (outdated) row.title = `Analyzed on Kestrel v${node.kestrel_version} (current: v${_appVersion})\n${node.path}`;
+      else if (outdated) row.title = `Analyzed on pipeline ${folderPipelineLabel(node)} (current: ${CURRENT_PIPELINE_MAJOR}.0)\n${node.path}`;
       else row.title = node.path;
 
       // ── Rail: ancestor continuation lines + own elbow ──────────────────────

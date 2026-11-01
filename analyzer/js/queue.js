@@ -1257,7 +1257,7 @@
           name: rootName,
           path: normRoot,
           has_kestrel: !!result.root_has_kestrel,
-          kestrel_version: result.root_kestrel_version || '',
+          pipeline_major: result.root_pipeline_major ?? null,
           children: result.tree || [],
         };
         // Apply transient kestrel markings (folders recently queued/started

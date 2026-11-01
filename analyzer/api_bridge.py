@@ -2041,25 +2041,20 @@ class Api:
                     node_count[0] += 1
                     full = entry.path
                     has_kestrel = os.path.isfile(os.path.join(full, '.kestrel', 'kestrel_database.csv'))
-                    kestrel_version = ''
                     has_perch_link = has_kestrel and os.path.isfile(
                         os.path.join(full, '.kestrel', 'perch_link.json')
                     )
-                    if has_kestrel:
-                        try:
-                            meta_path = os.path.join(full, '.kestrel', 'kestrel_metadata.json')
-                            if os.path.isfile(meta_path):
-                                with open(meta_path, 'r', encoding='utf-8') as mf:
-                                    kestrel_version = json.load(mf).get('version', '')
-                        except Exception:
-                            pass
+                    pipeline_major = (
+                        Api._scan_pipeline_major(os.path.join(full, '.kestrel', 'kestrel_metadata.json'))
+                        if has_kestrel else None
+                    )
                     children = _scan(full, depth - 1)
                     result.append({
                         'name': name,
                         'path': full,
                         'has_kestrel': has_kestrel,
                         'has_perch_link': has_perch_link,
-                        'kestrel_version': kestrel_version,
+                        'pipeline_major': pipeline_major,
                         'children': children,
                     })
                 return result
@@ -2069,21 +2064,16 @@ class Api:
             root_has_perch_link = root_has_kestrel and os.path.isfile(
                 os.path.join(root_path, '.kestrel', 'perch_link.json')
             )
-            root_kestrel_version = ''
-            if root_has_kestrel:
-                try:
-                    meta_path = os.path.join(root_path, '.kestrel', 'kestrel_metadata.json')
-                    if os.path.isfile(meta_path):
-                        with open(meta_path, 'r', encoding='utf-8') as mf:
-                            root_kestrel_version = json.load(mf).get('version', '')
-                except Exception:
-                    pass
+            root_pipeline_major = (
+                Api._scan_pipeline_major(os.path.join(root_path, '.kestrel', 'kestrel_metadata.json'))
+                if root_has_kestrel else None
+            )
             return {
                 'success': True,
                 'tree': tree,
                 'root_has_kestrel': root_has_kestrel,
                 'root_has_perch_link': root_has_perch_link,
-                'root_kestrel_version': root_kestrel_version,
+                'root_pipeline_major': root_pipeline_major,
                 'error': '',
                 'nodes': node_count[0],
                 'truncated': bool(limit_reached[0]),
@@ -2091,6 +2081,32 @@ class Api:
         except Exception as e:
             error(f'[API] list_subfolders error: {e}')
             return {'success': False, 'tree': [], 'error': str(e)}
+
+    @staticmethod
+    def _scan_pipeline_major(meta_path: str):
+        """The analysis pipeline generation recorded for a folder, for the folder tree.
+
+        This is the only version the tree uses to decide whether a folder is
+        outdated. The app version that created or last touched the folder
+        (``version`` / ``kestrel_version`` in the metadata) says nothing about
+        which pipeline produced the rows, and an in-place upgrade to pipeline 3
+        leaves ``version`` at the creating app version.
+
+        Returns None when the metadata is missing or unreadable (unknown, so the
+        folder is never flagged), 2 when it is readable but has no
+        ``pipeline_major`` (analysed before pipeline 3 existed), else the
+        recorded integer.
+        """
+        try:
+            if not os.path.isfile(meta_path):
+                return None
+            with open(meta_path, 'r', encoding='utf-8') as mf:
+                meta = json.load(mf)
+            if not isinstance(meta, dict):
+                return None
+            return int(meta.get('pipeline_major') or 2)
+        except Exception:
+            return None
 
     @staticmethod
     def _photo_still_in_folder(root_dir: str, filename) -> bool:
