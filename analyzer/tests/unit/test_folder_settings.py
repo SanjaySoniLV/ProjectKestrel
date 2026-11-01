@@ -178,25 +178,33 @@ class TestRescore:
         assert meta["species_regions"] == ["PAL"]
         assert meta["analysis_settings"]["species_regions"] == ["PAL"]
 
-    def test_user_edited_scene_is_not_touched(self, tmp_path, clf):
+    def test_user_edited_scene_images_are_rescored_but_scene_tags_kept(self, tmp_path, clf):
         scenedata = {"scenes": {
             "1": {"image_filenames": ["a.jpg"], "user_tags": {"species": ["Barn Swallow"], "families": [], "finalized": False}},
             "2": {"image_filenames": ["b.jpg"], "user_tags": {"species": [], "families": [], "finalized": False}},
         }}
         kdir = _make_folder(tmp_path, clf, {"a.jpg": (1, [_crop(0)]), "b.jpg": (2, [_crop(0)])}, scenedata=scenedata)
+        sd_path = Path(kdir) / "kestrel_scenedata.json"
+        before = sd_path.read_bytes()
         stats = fs.rescore_species_regions(kdir, ["PAL"], clf)
-        assert stats["locked"] == 1 and stats["updated"] == 1
-        assert _crops_of(kdir, "a.jpg")[0][0]["species"] == "Barn Swallow"
+        assert stats["locked"] == 1 and stats["updated"] == 2 and stats["images"] == 2
+        assert _crops_of(kdir, "a.jpg")[0][0]["species"] == EURASIAN
         assert _crops_of(kdir, "b.jpg")[0][0]["species"] == EURASIAN
+        assert sd_path.read_bytes() == before
 
-    def test_finalized_scene_is_not_touched(self, tmp_path, clf):
+    def test_finalized_scene_images_change_but_scene_tags_do_not(self, tmp_path, clf):
         scenedata = {"scenes": {
-            "1": {"image_filenames": ["a.jpg"], "user_tags": {"species": [], "families": [], "finalized": True}},
+            "1": {"image_filenames": ["a.jpg"], "user_tags": {"species": ["Barn Swallow"], "families": ["Swallows"], "finalized": True}},
         }}
         kdir = _make_folder(tmp_path, clf, {"a.jpg": (1, [_crop(0)])}, scenedata=scenedata)
+        sd_path = Path(kdir) / "kestrel_scenedata.json"
+        before = sd_path.read_bytes()
         stats = fs.rescore_species_regions(kdir, ["PAL"], clf)
-        assert stats["locked"] == 1 and stats["updated"] == 0
-        assert _crops_of(kdir, "a.jpg")[0][0]["species"] == "Barn Swallow"
+        assert stats["locked"] == 1 and stats["updated"] == 1
+        crops, row = _crops_of(kdir, "a.jpg")
+        assert crops[0]["species"] == EURASIAN and row["species"] == EURASIAN
+        assert json.loads(sd_path.read_text(encoding="utf-8"))["scenes"]["1"]["user_tags"]["species"] == ["Barn Swallow"]
+        assert sd_path.read_bytes() == before
 
     def test_wildlife_crops_keep_their_label(self, tmp_path, clf):
         kdir = _make_folder(tmp_path, clf, {"a.jpg": (1, [_crop(0), _crop(1, "Black Bear", "wildlife")])})

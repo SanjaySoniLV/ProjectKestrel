@@ -9,10 +9,11 @@
   the *stored* crop embeddings with a different region geofence. No detection,
   no image decode, no ONNX image tower.
 
-Species the user set by hand are never changed: a scene with edited or
-finalized tags keeps the species/family of all its images (same rule as the
-pipeline-3 upgrade, ``upgrade_v3._scene_locks``). Crops routed to non-bird
-wildlife keep their label too.
+Every image's own prediction is re-scored, including images in scenes the user
+edited or finalized. Scene-level user tags live in ``kestrel_scenedata.json``,
+which this module never writes, so reviewed scene tags are never changed
+(``reviewed_scene_images`` counts the images that sit in such scenes). Crops
+routed to non-bird wildlife keep their label.
 """
 
 from __future__ import annotations
@@ -147,7 +148,7 @@ def rescore_species_regions(
     """Re-classify every bird crop from its stored BioCLIP embedding under ``regions``.
 
     ``classifier`` is a ``BioClipSpeciesClassifier`` (text-only is enough).
-    Returns ``{updated, changed, locked, wildlife_skipped, missing, total, canceled, regions}``;
+    Returns ``{updated, changed, images, locked, wildlife_skipped, missing, total, canceled, regions}``;
     ``changed`` counts crops whose species label actually differs from before.
     """
     from . import embedding_store, smart_search
@@ -172,7 +173,7 @@ def rescore_species_regions(
     rows = smart_search.read_folder_rows(kestrel_dir)
     locked = _scene_locks(kestrel_dir, rows)
 
-    stats = {"updated": 0, "changed": 0, "locked": 0, "wildlife_skipped": 0, "missing": 0,
+    stats = {"updated": 0, "changed": 0, "locked": 0, "wildlife_skipped": 0, "missing": 0, "images": 0,
              "total": len(df), "canceled": False, "regions": applied}
     if progress_cb:
         progress_cb(0, len(df))
@@ -185,56 +186,56 @@ def rescore_species_regions(
         if fn in rows.analysed:
             if fn in locked:
                 stats["locked"] += 1
-            else:
-                crops = _json_list(df.at[ix, "crops_json"])
-                touched = False
-                for c in crops:
-                    if not isinstance(c, dict):
-                        continue
-                    try:
-                        di, ci = int(c.get("detection_index", -1)), int(c.get("crop_index"))
-                    except (TypeError, ValueError):
-                        continue
-                    if di < 0:
-                        continue
-                    if _is_wildlife(c):
-                        stats["wildlife_skipped"] += 1
-                        continue
-                    emb = vecs.get((fn, ci))
-                    if emb is None:
-                        stats["missing"] += 1
-                        continue
-                    res = classifier.classify_embedding(np.asarray(emb, dtype=np.float32))
-                    labels, scores = res["top_species_labels"], res["top_species_scores"]
-                    fams, fscores = res["top_family_labels"], res["top_family_scores"]
-                    new_sp = str(labels[0]) if len(labels) else "Unknown"
-                    if new_sp != str(c.get("species", "")):
-                        stats["changed"] += 1
-                    c["species"] = new_sp
-                    c["species_confidence"] = float(scores[0]) if len(scores) else 0.0
-                    c["family"] = str(fams[0]) if len(fams) else "Unknown"
-                    c["family_confidence"] = float(fscores[0]) if len(fscores) else 0.0
-                    stats["updated"] += 1
-                    touched = True
-                if touched:
-                    df.at[ix, "crops_json"] = json.dumps(crops)
-                    try:
-                        p = int(float(df.at[ix, "primary_crop_index"]))
-                    except (TypeError, ValueError):
-                        p = 0
-                    p = max(0, min(len(crops) - 1, p))
-                    prim = crops[p] if isinstance(crops[p], dict) else next(
-                        (c for c in crops if isinstance(c, dict) and int(c.get("detection_index", -1)) >= 0), None)
-                    if prim is not None:
-                        for col in ("species", "species_confidence", "family", "family_confidence"):
-                            if col in prim:
-                                df.at[ix, col] = prim[col]
-                    cs = [c for c in crops if isinstance(c, dict)]
-                    df.at[ix, "secondary_species_list"] = json.dumps([str(c.get("species", "Unknown")) for c in cs])
-                    df.at[ix, "secondary_species_scores"] = json.dumps([float(c.get("species_confidence", 0.0)) for c in cs])
-                    df.at[ix, "secondary_family_list"] = json.dumps([str(c.get("family", "Unknown")) for c in cs])
-                    df.at[ix, "secondary_family_scores"] = json.dumps([float(c.get("family_confidence", 0.0)) for c in cs])
-                    dirty = True
+            crops = _json_list(df.at[ix, "crops_json"])
+            touched = False
+            for c in crops:
+                if not isinstance(c, dict):
+                    continue
+                try:
+                    di, ci = int(c.get("detection_index", -1)), int(c.get("crop_index"))
+                except (TypeError, ValueError):
+                    continue
+                if di < 0:
+                    continue
+                if _is_wildlife(c):
+                    stats["wildlife_skipped"] += 1
+                    continue
+                emb = vecs.get((fn, ci))
+                if emb is None:
+                    stats["missing"] += 1
+                    continue
+                res = classifier.classify_embedding(np.asarray(emb, dtype=np.float32))
+                labels, scores = res["top_species_labels"], res["top_species_scores"]
+                fams, fscores = res["top_family_labels"], res["top_family_scores"]
+                new_sp = str(labels[0]) if len(labels) else "Unknown"
+                if new_sp != str(c.get("species", "")):
+                    stats["changed"] += 1
+                c["species"] = new_sp
+                c["species_confidence"] = float(scores[0]) if len(scores) else 0.0
+                c["family"] = str(fams[0]) if len(fams) else "Unknown"
+                c["family_confidence"] = float(fscores[0]) if len(fscores) else 0.0
+                stats["updated"] += 1
+                touched = True
+            if touched:
+                stats["images"] += 1
+                df.at[ix, "crops_json"] = json.dumps(crops)
+                try:
+                    p = int(float(df.at[ix, "primary_crop_index"]))
+                except (TypeError, ValueError):
+                    p = 0
+                p = max(0, min(len(crops) - 1, p))
+                prim = crops[p] if isinstance(crops[p], dict) else next(
+                    (c for c in crops if isinstance(c, dict) and int(c.get("detection_index", -1)) >= 0), None)
+                if prim is not None:
+                    for col in ("species", "species_confidence", "family", "family_confidence"):
+                        if col in prim:
+                            df.at[ix, col] = prim[col]
+                cs = [c for c in crops if isinstance(c, dict)]
+                df.at[ix, "secondary_species_list"] = json.dumps([str(c.get("species", "Unknown")) for c in cs])
+                df.at[ix, "secondary_species_scores"] = json.dumps([float(c.get("species_confidence", 0.0)) for c in cs])
+                df.at[ix, "secondary_family_list"] = json.dumps([str(c.get("family", "Unknown")) for c in cs])
+                df.at[ix, "secondary_family_scores"] = json.dumps([float(c.get("family_confidence", 0.0)) for c in cs])
+                dirty = True
         if progress_cb and (n % 25 == 0 or n + 1 == len(df)):
             progress_cb(n + 1, len(df))
 

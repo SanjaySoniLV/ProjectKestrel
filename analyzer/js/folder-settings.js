@@ -111,7 +111,7 @@
               </div>
               <div class="fset-progress hidden" id="fsetRegionProgress"><div class="fset-progress-fill" id="fsetRegionFill"></div></div>
             </div>
-            <div class="fset-hint muted" id="fsetRegionHint">Re-scores the species names from data saved during analysis. Photos are not re-analyzed, and species you edited by hand are kept.</div>
+            <div class="fset-hint muted" id="fsetRegionHint">Re-scores the species names from data saved during analysis. Photos are not re-analyzed, and your reviewed scene tags are kept.</div>
           </section>
           <section class="fset-sec fset-sec--row">
             <div>
@@ -331,8 +331,8 @@
       btn.disabled = false;
       if (st?.state === 'done') {
         const s = st.stats || {};
-        const msg = `Species re-scored for ${label}: ${Number(s.changed || 0).toLocaleString()} name${s.changed === 1 ? '' : 's'} changed` +
-          (s.locked ? `, ${Number(s.locked).toLocaleString()} edited photo${s.locked === 1 ? '' : 's'} kept` : '') + '.';
+        const msg = `Species re-scored for ${label}: ${Number(s.changed || 0).toLocaleString()} name${s.changed === 1 ? '' : 's'} changed across ${Number(s.images || 0).toLocaleString()} image${s.images === 1 ? '' : 's'}` +
+          (s.locked ? `; your tags on reviewed scenes were kept (${Number(s.locked).toLocaleString()} image${s.locked === 1 ? '' : 's'})` : '') + '.';
         showToast(msg, 7000);
         info.species_regions = s.regions || regions;
         if (dlg.isConnected) {
