@@ -165,12 +165,32 @@ def _session_options(ort, config: Optional[Dict[str, str]]):
     return so
 
 
+def _new_session(ort, model_path, so, providers, kind=""):
+    """EXPERIMENT (exp/winml-benchmark): with KESTREL_WINML_DEVICE=ov_gpu|ov_npu|ov_cpu the session runs on
+    that Windows ML (OpenVINO) device instead of DirectML; unset = unchanged behaviour."""
+    dev = os.environ.get("KESTREL_WINML_DEVICE", "").strip().lower()
+    keep_dml = os.environ.get("KESTREL_WINML_DML_KINDS", "sam_dec,quality").split(",")
+    if dev and kind not in keep_dml and any(_ep_name(p) == "DmlExecutionProvider" for p in providers):
+        import sys as _sys
+        _bench = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "tools", "winml_bench"))
+        if _bench not in _sys.path:
+            _sys.path.insert(0, _bench)
+        import winml_setup
+        from model_bench import EP_FOR
+        winml_setup.init(download=False, verbose=False)
+        ep, typ = EP_FOR[dev]
+        devs = [d for d in ort.get_ep_devices() if d.ep_name == ep and str(d.device.type).endswith(typ)]
+        so.add_provider_for_devices(devs, {})
+        return ort.InferenceSession(model_path, sess_options=so)
+    return ort.InferenceSession(model_path, sess_options=so, providers=providers)
+
+
 def _needs_probe(providers: List[str]) -> bool:
     return any(_ep_name(p) != "CPUExecutionProvider" for p in providers)
 
 
 def _probe_placement(ort, model_path: str, providers: List[str],
-                     config: Optional[Dict[str, str]]) -> Optional[Dict[str, int]]:
+                     config: Optional[Dict[str, str]], kind: str = "") -> Optional[Dict[str, int]]:
     """Build a throwaway VERBOSE session with fd 2 captured and return its per-EP
     node counts, or None when the capture cannot be set up (no fd 2, frozen GUI
     app...). A build error propagates: the real build would fail the same way."""
@@ -203,7 +223,7 @@ def _probe_placement(ort, model_path: str, providers: List[str],
                     pass
             return None
         try:
-            probe = ort.InferenceSession(model_path, sess_options=so, providers=providers)
+            probe = _new_session(ort, model_path, so, providers, kind)
             # Release before the real build so a GPU EP never holds two copies.
             del probe
         finally:
@@ -241,16 +261,16 @@ def build_session(model_path: str, providers: List[str], kind: str = "",
     import onnxruntime as ort
 
     if not _diag_enabled():
-        return ort.InferenceSession(model_path, sess_options=_session_options(ort, config), providers=providers)
+        return _new_session(ort, model_path, _session_options(ort, config), providers, kind)
     key = (str(model_path), repr(list(providers)), tuple(sorted((config or {}).items())))
     with _lock:
         nodes = _placement_cache.get(key)
     if nodes is None and _needs_probe(providers):
-        nodes = _probe_placement(ort, model_path, providers, config)
+        nodes = _probe_placement(ort, model_path, providers, config, kind)
         if nodes is not None:
             with _lock:
                 _placement_cache[key] = nodes
-    sess = ort.InferenceSession(model_path, sess_options=_session_options(ort, config), providers=providers)
+    sess = _new_session(ort, model_path, _session_options(ort, config), providers, kind)
     try:
         actual = [str(p) for p in sess.get_providers()]
     except Exception:

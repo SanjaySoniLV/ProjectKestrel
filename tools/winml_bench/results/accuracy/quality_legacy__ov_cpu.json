@@ -1,0 +1,83 @@
+{
+ "model": "quality_legacy",
+ "device": "ov_cpu",
+ "file": "quality.onnx",
+ "ov_opts": {},
+ "ort": "1.25.2",
+ "n_feeds": 6,
+ "input_shapes": {
+  "input_layer": [
+   1,
+   1024,
+   1024,
+   1
+  ]
+ },
+ "load_s": 0.06835819999105297,
+ "providers": [
+  "OpenVINOExecutionProvider",
+  "CPUExecutionProvider"
+ ],
+ "first_run_s": 0.0886774999962654,
+ "compare": [
+  [
+   {
+    "cos": 1.0,
+    "max_abs": 5.960464477539063e-08,
+    "ref_absmax": 0.9999587535858154,
+    "n": 1
+   }
+  ],
+  [
+   {
+    "cos": 1.0,
+    "max_abs": 5.960464477539063e-08,
+    "ref_absmax": 0.9997517466545105,
+    "n": 1
+   }
+  ],
+  [
+   {
+    "cos": 1.0,
+    "max_abs": 0.0,
+    "ref_absmax": 0.9992179274559021,
+    "n": 1
+   }
+  ],
+  [
+   {
+    "cos": 1.0,
+    "max_abs": 5.960464477539063e-08,
+    "ref_absmax": 0.6514788269996643,
+    "n": 1
+   }
+  ],
+  [
+   {
+    "cos": 1.0,
+    "max_abs": 7.450580596923828e-09,
+    "ref_absmax": 0.06978592276573181,
+    "n": 1
+   }
+  ],
+  [
+   {
+    "cos": 1.0,
+    "max_abs": 2.086162567138672e-07,
+    "ref_absmax": 0.26221925020217896,
+    "n": 1
+   }
+  ]
+ ],
+ "cos_min": 1.0,
+ "relmax_worst": 7.955794875968021e-07,
+ "bad": 0,
+ "lat_ms": {
+  "median": 197.6839000126347,
+  "p90": 242.52010000054725,
+  "min": 145.5126999935601,
+  "max": 242.52010000054725,
+  "n": 3
+ },
+ "ok": true
+}

@@ -1,0 +1,57 @@
+Processed 0/43Loading models (detector=mdv5a)... This may take a while on first run.
+Models loaded. Processing started.
+Processed IMG_1440.CR3: Orange-crowned Warbler Q=0.715 (1/43)
+Processed 1/43Processed IMG_1441.CR3: Orange-crowned Warbler Q=0.706 (2/43)
+Processed 2/43Processed IMG_1442.CR3: Orange-crowned Warbler Q=0.725 (3/43)
+Processed 3/43Processed IMG_1443.CR3: Orange-crowned Warbler Q=0.504 (4/43)
+Processed 4/43Processed IMG_1444.CR3: Orange-crowned Warbler Q=0.356 (5/43)
+Processed 5/43Processed IMG_1445.CR3: Orange-crowned Warbler Q=0.598 (6/43)
+Processed 6/43Processed IMG_1446.CR3: Orange-crowned Warbler Q=0.386 (7/43)
+Processed 7/43Processed IMG_1447.CR3: Orange-crowned Warbler Q=0.740 (8/43)
+Processed 8/43Processed IMG_1448.CR3: Orange-crowned Warbler Q=0.745 (9/43)
+Processed 9/43Processed IMG_1449.CR3: Orange-crowned Warbler Q=0.677 (10/43)
+Processed 10/43Processed IMG_3633.CR3: Rufous Hummingbird Q=0.780 (11/43)
+Processed 11/43Processed IMG_3634.CR3: Rufous Hummingbird Q=0.529 (12/43)
+Processed 12/43Processed IMG_3635.CR3: Rufous Hummingbird Q=0.732 (13/43)
+Processed 13/43Processed IMG_3636.CR3: Rufous Hummingbird Q=0.757 (14/43)
+Processed 14/43Processed IMG_6946.CR3: Mourning Dove Q=0.444 (15/43)
+Processed 15/43Processed IMG_6947.CR3: Mourning Dove Q=0.420 (16/43)
+Processed 16/43Processed IMG_6948.CR3: Mourning Dove Q=0.357 (17/43)
+Processed 17/43Processed IMG_6949.CR3: Plain Pigeon Q=0.260 (18/43)
+Processed 18/43Processed IMG_6950.CR3: Mourning Dove Q=0.312 (19/43)
+Processed 19/43Processed IMG_6951.CR3: Zenaida Dove Q=0.328 (20/43)
+Processed 20/43Processed IMG_6952.CR3: Mourning Dove Q=0.478 (21/43)
+Processed 21/43Processed IMG_6953.CR3: Mourning Dove Q=0.473 (22/43)
+Processed 22/43Processed IMG_6954.CR3: Mourning Dove Q=0.492 (23/43)
+Processed 23/43Processed IMG_6955.CR3: Mourning Dove Q=0.473 (24/43)
+Processed 24/43Processed IMG_6956.CR3: Mourning Dove Q=0.378 (25/43)
+Processed 25/43Processed IMG_6957.CR3: Mourning Dove Q=0.421 (26/43)
+Processed 26/43Processed IMG_7392.CR3: Northern Mockingbird Q=0.734 (27/43)
+Processed 27/43Processed IMG_7393.CR3: Northern Mockingbird Q=0.629 (28/43)
+Processed 28/43Processed IMG_7394.CR3: Northern Mockingbird Q=0.839 (29/43)
+Processed 29/43Processed IMG_7395.CR3: Northern Mockingbird Q=0.950 (30/43)
+Processed 30/43Processed IMG_7396.CR3: Northern Mockingbird Q=0.976 (31/43)
+Processed 31/43Processed IMG_7397.CR3: Northern Mockingbird Q=0.991 (32/43)
+Processed 32/43Processed IMG_7398.CR3: Northern Mockingbird Q=0.867 (33/43)
+Processed 33/43Processed IMG_7399.CR3: Northern Mockingbird Q=0.894 (34/43)
+Processed 34/43Processed IMG_8378.CR3: Northern Cardinal Q=0.658 (35/43)
+Processed 35/43Processed IMG_8379.CR3: Northern Cardinal Q=0.792 (36/43)
+Processed 36/43Processed IMG_8380.CR3: Northern Cardinal Q=0.509 (37/43)
+Processed 37/43Processed IMG_8381.CR3: Northern Cardinal Q=0.582 (38/43)
+Processed 38/43Processed IMG_8382.CR3: Northern Cardinal Q=0.767 (39/43)
+Processed 39/43Processed IMG_8383.CR3: Northern Cardinal Q=0.734 (40/43)
+Processed 40/43Processed IMG_8384.CR3: Northern Cardinal Q=0.759 (41/43)
+Processed 41/43Processed IMG_8385.CR3: Northern Cardinal Q=0.408 (42/43)
+Processed 42/43Processed IMG_8386.CR3: Northern Cardinal Q=0.659 (43/43)
+Processed 43/43Analysis complete.
+
+[stage-times] 43 images, wall 168.7s (3.922 s/image)
+[stage-times]   detector_sam    total     71.6s  calls     43  1.664 s/image
+[stage-times]   siglip_frame    total     16.2s  calls     43  0.377 s/image
+[stage-times]   siglip_crop     total     11.3s  calls     43  0.263 s/image
+[stage-times]   legacy_quality  total      2.7s  calls     43  0.063 s/image
+[stage-times]   writes          total      2.7s  calls     43  0.062 s/image
+[stage-times]   bioclip         total      2.3s  calls     43  0.054 s/image
+[stage-times]   gate_route      total      0.1s  calls     43  0.002 s/image
+[stage-times]   other           total     61.9s                1.439 s/image
+exit 0

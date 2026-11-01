@@ -1,0 +1,24 @@
+{
+ "model": "quality_legacy",
+ "device": "ov_gpu",
+ "file": "quality.onnx",
+ "ov_opts": {},
+ "ort": "1.25.2",
+ "n_feeds": 6,
+ "input_shapes": {
+  "input_layer": [
+   1,
+   1024,
+   1024,
+   1
+  ]
+ },
+ "load_s": 1.3002461999712978,
+ "providers": [
+  "OpenVINOExecutionProvider",
+  "CPUExecutionProvider"
+ ],
+ "ok": false,
+ "error": "RuntimeException: [ONNXRuntimeError] : 6 : RUNTIME_EXCEPTION : Non-zero status code returned while running OpenVINOExecutionProvider_4341994478905677119_0 node. Name:'OpenVINOExecutionProvider_OpenVINOExecutionProvider_4341994478905677119_0_0' Status Message: Exception from src\\inference\\src\\cpp\\infer_request.cpp:224:\nCheck 'DimType::merge(merged_dimension, arg0_col_dim, arg1_row_dim) || arg0_col_dim.is_dynamic() || arg1_row_dim.is_dynamic()' failed at src\\core\\shape_inference\\include\\matmul_shape_inference.hpp:76:\nWhile validating node 'opset1::MatMul MatMul_7148 () -> ()' with friendly_name 'MatMul_7148':\nIncompatible MatMul matrix dimension. First input dimension=64 at COL_INDEX_DIM=1 doesn't match the second input dimension=1 at ROW_INDEX_DIM=0\n\n",
+ "trace": "Traceback (most recent call last):\n  File \"tools\\winml_bench\\model_bench.py\", line 122, in main\n    outs = [sess.run(None, feeds[0])]\n            ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \".venv-winml\\Lib\\site-packages\\onnxruntime\\capi\\onnxruntime_inference_collection.py\", line 321, in run\n    return self._sess.run(output_names, input_feed, run_options)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nonnxruntime.capi.onnxruntime_pybind11_state.RuntimeException: [ONNXRuntimeError] : 6 : RUNTIME_EXCEPTION : Non-zero status code returned while running OpenVINOExecutionProvider_4341994478905677119_0 node. Name:'OpenVINOExecutionProvider_OpenVINOExecutionProvider_4341994478905677119_0_0' Status Message: Exception from src\\inference\\src\\cpp\\infer_request.cpp:224:\nCheck 'DimType::merge(merged_dimension, arg0_col_dim, arg1_row_dim) || arg0_col_dim.is_dynamic() || arg1_row_dim.is_dynamic()' failed at src\\core\\shape_inference\\include\\matmul_shape_inference.hpp:76:\nWhile validating node 'opset1::MatMul MatMul_7148 () -> ()' with friendly_name 'MatMul_7148':\nIncompatible MatMul matrix dimension. First input dimension=64 at COL_INDEX_DIM=1 doesn't match the second input dimension=1 at ROW_INDEX_DIM=0\n\n\n"
+}

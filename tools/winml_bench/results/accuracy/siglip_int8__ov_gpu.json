@@ -1,0 +1,85 @@
+{
+ "model": "siglip_int8",
+ "device": "ov_gpu",
+ "file": "siglip2_b16_image_int8.onnx",
+ "ov_opts": {},
+ "ort": "1.25.2",
+ "n_feeds": 10,
+ "input_shapes": {
+  "image": [
+   1,
+   3,
+   224,
+   224
+  ]
+ },
+ "load_s": 5.493563700001687,
+ "providers": [
+  "OpenVINOExecutionProvider",
+  "CPUExecutionProvider"
+ ],
+ "first_run_s": 0.03108719998272136,
+ "compare": [
+  [
+   {
+    "nonfinite": 768
+   }
+  ],
+  [
+   {
+    "nonfinite": 768
+   }
+  ],
+  [
+   {
+    "nonfinite": 768
+   }
+  ],
+  [
+   {
+    "nonfinite": 768
+   }
+  ],
+  [
+   {
+    "nonfinite": 768
+   }
+  ],
+  [
+   {
+    "nonfinite": 768
+   }
+  ],
+  [
+   {
+    "nonfinite": 768
+   }
+  ],
+  [
+   {
+    "nonfinite": 768
+   }
+  ],
+  [
+   {
+    "nonfinite": 768
+   }
+  ],
+  [
+   {
+    "nonfinite": 768
+   }
+  ]
+ ],
+ "cos_min": null,
+ "relmax_worst": null,
+ "bad": 10,
+ "lat_ms": {
+  "median": 99.77849997812882,
+  "p90": 138.42050000675954,
+  "min": 98.28060001018457,
+  "max": 138.42050000675954,
+  "n": 3
+ },
+ "ok": true
+}

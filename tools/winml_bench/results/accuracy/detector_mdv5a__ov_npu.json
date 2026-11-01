@@ -1,0 +1,1 @@
+{"model": "detector_mdv5a", "device": "ov_npu", "ok": false, "error": "crash rc=3221225477: \u001b[0;93m2026-11-01 12:40:44.6691879 [W:onnxruntime:Default, onnxruntime_pybind_module.cc:45 onnxruntime::python::CreateOrtEnv] Init provider bridge failed.\u001b[m\n"}

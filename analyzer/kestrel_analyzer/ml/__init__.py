@@ -20,7 +20,7 @@ def gpu_providers() -> list[str]:
 
 def is_gpu_active(active_providers: list[str]) -> bool:
     """Return True if the platform GPU execution provider is active."""
-    return GPU_EP in active_providers
+    return GPU_EP in active_providers or "OpenVINOExecutionProvider" in active_providers  # EXPERIMENT winml
 
 
 def __getattr__(name: str) -> Any:

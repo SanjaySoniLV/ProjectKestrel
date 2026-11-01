@@ -1,0 +1,82 @@
+{
+ "model": "quality_legacy",
+ "device": "cpu",
+ "file": "quality.onnx",
+ "ov_opts": {},
+ "ort": "1.25.2",
+ "n_feeds": 6,
+ "input_shapes": {
+  "input_layer": [
+   1,
+   1024,
+   1024,
+   1
+  ]
+ },
+ "load_s": 0.009741200017742813,
+ "providers": [
+  "CPUExecutionProvider"
+ ],
+ "first_run_s": 0.04624140000669286,
+ "compare": [
+  [
+   {
+    "cos": 1.0,
+    "max_abs": 0.0,
+    "ref_absmax": 0.9999587535858154,
+    "n": 1
+   }
+  ],
+  [
+   {
+    "cos": 1.0,
+    "max_abs": 0.0,
+    "ref_absmax": 0.9997517466545105,
+    "n": 1
+   }
+  ],
+  [
+   {
+    "cos": 1.0,
+    "max_abs": 0.0,
+    "ref_absmax": 0.9992179274559021,
+    "n": 1
+   }
+  ],
+  [
+   {
+    "cos": 1.0,
+    "max_abs": 0.0,
+    "ref_absmax": 0.6514788269996643,
+    "n": 1
+   }
+  ],
+  [
+   {
+    "cos": 1.0,
+    "max_abs": 0.0,
+    "ref_absmax": 0.06978592276573181,
+    "n": 1
+   }
+  ],
+  [
+   {
+    "cos": 1.0,
+    "max_abs": 0.0,
+    "ref_absmax": 0.26221925020217896,
+    "n": 1
+   }
+  ]
+ ],
+ "cos_min": 1.0,
+ "relmax_worst": 0.0,
+ "bad": 0,
+ "lat_ms": {
+  "median": 42.00460002175532,
+  "p90": 43.936200003372505,
+  "min": 39.3597999936901,
+  "max": 43.936200003372505,
+  "n": 3
+ },
+ "ok": true
+}
