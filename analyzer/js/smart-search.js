@@ -10,12 +10,18 @@
     // show the "upgrade folder" prompt in the box's right-aligned status area.
     const SMART_SEARCH_LIMIT = 48;
     const SMART_SEARCH_EXAMPLES = ['dove pair', 'side view bird in flight', 'perched on a wire', 'heron in a marsh', 'two birds', 'blurry'];
+    // A query that is the start of a species/family name in the loaded folders
+    // ("purple" on the way to "purple gallinule") shows the instant tag filter
+    // and only asks the classifier (which may start a whole-library smart
+    // search) once typing pauses this long on top of the input debounce.
+    const SMART_PREFIX_SETTLE_MS = 900;
     const SMART_CHIP_KIND_LABEL = {
       species: 'species', family: 'family', wildlife: 'wildlife', group: 'species group',
     };
     const _smart = {
       route: { query: '', kind: 'empty', labels: [] }, // how the current query was classified
       tags: { species: [], families: [] },             // tags in the loaded folders (classifier hint)
+      tagIndex: null,                                  // lazily built from tags (see _smartTagIndex)
       query: '',          // query the current scores belong to
       seq: 0,             // bumps per request so stale replies are dropped
       scores: null,       // Map(rootPath\0filename -> score) or null
@@ -74,6 +80,34 @@
         for (const x of s.families || []) fa.add(x);
       }
       _smart.tags = { species: Array.from(sp), families: Array.from(fa) };
+      _smart.tagIndex = null;
+    }
+
+    /** Lower-cased tag name -> tag, over the loaded folders' species and families. */
+    function _smartTagIndex() {
+      if (!_smart.tagIndex) {
+        const m = new Map();
+        for (const t of [..._smart.tags.species, ..._smart.tags.families]) {
+          const k = String(t || '').trim().toLowerCase().replace(/\s+/g, ' ');
+          if (k && k !== 'unknown' && !m.has(k)) m.set(k, t);
+        }
+        _smart.tagIndex = m;
+      }
+      return _smart.tagIndex;
+    }
+
+    /** Route a query from the loaded tags alone, without a bridge call:
+     *  ``exact`` when it IS a tag name ("Purple Gallinule"), ``prefix`` when it is
+     *  the start of one ("purple", "purple gal"), else null (ask the classifier). */
+    function _smartLocalRoute(q) {
+      const k = String(q || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      if (!k) return null;
+      const idx = _smartTagIndex();
+      if (idx.has(k)) return { kind: 'exact', labels: [idx.get(k)] };
+      for (const name of idx.keys()) {
+        if (name.startsWith(k)) return { kind: 'prefix', labels: [] };
+      }
+      return null;
     }
 
     /** Score of one image in the current smart search, or undefined (used to highlight matches). */
@@ -408,6 +442,18 @@
         await renderScenes();
         return;
       }
+      // Fast path: a species/family name from the loaded folders filters at once,
+      // with no bridge round trip. While the query is still only the start of
+      // such a name, show the same instant filter and hold the classifier (and
+      // any smart search it would start over the whole library) until typing
+      // settles, so "purple" never queues a search ahead of "purple gallinule".
+      const local = _smartLocalRoute(q);
+      if (local) {
+        _smartShowFilter({ query: q, kind: 'filter', labels: local.labels });
+        if (local.kind === 'exact') return;
+        await new Promise(r => setTimeout(r, SMART_PREFIX_SETTLE_MS));
+        if (my !== _smart.seq) return;
+      }
       const api = window.pywebview?.api;
       let route = { query: q, kind: 'filter', labels: [] };
       if (api?.classify_search_query) {
@@ -419,18 +465,28 @@
           route = { query: q, kind: res.kind, labels: res.labels || [] };
         }
       }
-      _smart.route = route;
       if (route.kind !== 'semantic') {
-        Object.assign(_smart, { scores: null, percents: new Map(), pending: false, error: '', chips: [],
-          semantic: '', mode: '', needsIndex: [], unavailable: false });
-        _smart.disabled.clear();
-        _smartUpdateUi();
-        renderScenes();
+        // Already showing this exact filter (prefix fast path): skip a second render.
+        const cur = _smart.route;
+        const same = cur.query === q && cur.kind === 'filter'
+          && cur.labels.length === route.labels.length && cur.labels.every((l, i) => l === route.labels[i]);
+        if (!same) _smartShowFilter(route);
         return;
       }
+      _smart.route = route;
       await _smartRun();
     }
     window.smartSearchOnInput = smartSearchOnInput;
+
+    /** Show ``route`` as the classic species/family filter (no smart-search state). */
+    function _smartShowFilter(route) {
+      _smart.route = route;
+      Object.assign(_smart, { scores: null, percents: new Map(), pending: false, error: '', chips: [],
+        semantic: '', mode: '', needsIndex: [], unavailable: false });
+      _smart.disabled.clear();
+      _smartUpdateUi();
+      renderScenes();
+    }
 
     async function _smartRun() {
       const input = el('#search');
