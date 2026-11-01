@@ -5,7 +5,9 @@ Handles opening original photo files in various editors across Windows, macOS, a
 
 from __future__ import annotations
 
+import glob
 import os
+import re
 import subprocess
 import sys
 
@@ -123,6 +125,47 @@ def _find_darktable_exe() -> str:
             _DARKTABLE_EXE = exe
             return exe
     return 'darktable.exe'
+
+
+def _find_on1_exes() -> list[str]:
+    """Candidate ON1 Photo RAW executables on Windows, newest release first.
+
+    ON1 installs each yearly release side by side with the year in both the
+    folder and the executable name, e.g.
+    ``C:\\Program Files\\ON1\\ON1 Photo RAW 2026\\ON1 Photo RAW 2026.exe``
+    (the MAX edition uses the same layout). A fixed list of paths missed every
+    install, so this globs for any year and falls back to the unversioned
+    layout.
+    """
+    found: list[str] = []
+    for env in ('ProgramFiles', 'ProgramW6432', 'ProgramFiles(x86)'):
+        base = os.environ.get(env, '')
+        if not base:
+            continue
+        pattern = os.path.join(glob.escape(base), 'ON1', 'ON1 Photo RAW*', 'ON1 Photo RAW*.exe')
+        try:
+            found.extend(
+                exe for exe in glob.glob(pattern)
+                if 'unins' not in os.path.basename(exe).lower()
+            )
+        except Exception:
+            continue
+
+    def _year(p: str) -> int:
+        m = re.search(r'(\d{4})', os.path.basename(os.path.dirname(p)))
+        return int(m.group(1)) if m else 0
+
+    # Newest year first; de-duplicate while keeping order (ProgramFiles and
+    # ProgramW6432 usually point at the same folder).
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for exe in sorted(found, key=lambda p: (_year(p), p), reverse=True):
+        key = os.path.normcase(os.path.abspath(exe))
+        if key not in seen:
+            seen.add(key)
+            ordered.append(exe)
+    ordered.append(os.path.join(os.environ.get('ProgramFiles', ''), 'ON1', 'ON1 Photo RAW', 'ON1 Photo RAW.exe'))
+    return ordered
 
 
 def launch(path: str, editor: str):
@@ -249,10 +292,7 @@ def launch(path: str, editor: str):
             'linux': [],
         },
         'on1': {
-            'win_candidates': [
-                os.path.join(os.environ.get('ProgramFiles', ''), 'ON1', 'ON1 Photo RAW 2024', 'ON1 Photo RAW.exe'),
-                os.path.join(os.environ.get('ProgramFiles', ''), 'ON1', 'ON1 Photo RAW', 'ON1 Photo RAW.exe'),
-            ],
+            'win_find': _find_on1_exes,
             'mac_app': 'ON1 Photo RAW 2024',
             'mac_app_fallbacks': ['ON1 Photo RAW'],
             'linux': [],
