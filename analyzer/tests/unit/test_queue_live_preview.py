@@ -176,3 +176,40 @@ def test_cancel_still_asks_for_confirmation():
     start = wiring.find("getElementById('queueCancelBtn')")
     assert start != -1
     assert 'confirm(' in wiring[start:start + 400]
+
+
+# ── Live dialog loading state / borderless chrome (static) ───────────────────
+
+@pytest.fixture(scope="module")
+def live_css() -> str:
+    return (_ANALYZER / 'css' / 'dialogs' / 'live-analysis.css').read_text(encoding='utf-8')
+
+
+def test_live_panes_have_a_fixed_aspect_so_nothing_shifts(live_css):
+    stage = live_css[live_css.find('.live-dlg-stage {'):][:300]
+    assert 'aspect-ratio: 3 / 2' in stage
+    # The sweeping shimmer band and the dimming of shown frames are gone.
+    assert 'live-sheen' not in live_css
+    assert '.is-waiting .live-dlg-img' not in live_css
+
+
+def test_live_dialog_has_calm_placeholders(html, queue_js):
+    assert html.count('live-dlg-wait-txt') == 2
+    assert 'id="liveDlgCropsEmpty"' in html
+    assert 'Waiting for first frame' in html
+    assert "'has-frame'" in queue_js and 'liveDlgCropsEmpty' in queue_js
+
+
+def test_live_dialog_close_is_a_borderless_icon_button(html, live_css):
+    btn = html[html.find('id="liveDlgClose"'):][:160]
+    assert 'live-dlg-close' in btn and 'aria-label="Close"' in btn
+    assert 'border: 0' in live_css[live_css.find('.live-dlg-close {'):][:200]
+
+
+def test_queue_panel_is_borderless_and_eta_lives_in_the_header(html):
+    header = html[html.find('id="queuePanelHeader"'):][:700]
+    assert 'id="queueOverallEta"' in header
+    analyze = (_ANALYZER / 'css' / 'dialogs' / 'analyze.css').read_text(encoding='utf-8')
+    section = analyze[analyze.find('Analysis queue panel: borderless'):]
+    assert '#queuePanel .queue-item {' in section and 'border: 0;' in section
+    assert 'border: 1px solid' not in section
