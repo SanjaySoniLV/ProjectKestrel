@@ -233,13 +233,13 @@
     }
 
     // Always-on "?" badge for cloud est. time. Phrasing differs from the local
-    // baseline badge — the cloud "?" stays permanent because the estimate is
-    // beta and depends on transfer speed + Modal worker availability.
+    // baseline badge — the cloud "?" stays permanent because the estimate
+    // depends on transfer speed + worker availability.
     function _buildCloudUncertainBadge() {
       const p = _cloudPipelineParams();
       const tip =
-        'Cloud Compute is in beta. The estimate models your measured upload ' +
-        'speed against Cloud Compute analyzing roughly ' +
+        'The estimate models your upload speed (once measured) against Cloud ' +
+        'Compute analyzing roughly ' +
         `${p.containerImagesPerSec} image/sec per worker, scaling up to ` +
         `${p.maxContainers} workers as the backlog grows. Actual time ` +
         'depends on transfer speed and worker availability.';
@@ -978,8 +978,8 @@
           : '';
         // Time stat — destination-dependent.
         //   Local: existing baseline-or-local logic with optional "?" badge.
-        //   Cloud: "?" until a speed test has run, then max(upload, 2-img/sec
-        //          floor) with a permanent "?" + beta affordance underneath.
+        //   Cloud: best-case "as fast as" figure until a speed test has run, then
+        //          the modelled time at the measured upload speed; permanent "?" tooltip.
         let timeValue = '—';
         let timeLabel = 'estimated time';
         let timeDim = true;
@@ -993,17 +993,17 @@
               _getCloudEstSeconds(totalImagesToProcess);
             if (secs != null) {
               timeValue = `~${_formatDuration(secs)}`;
-              timeLabel = 'est. time (cloud · beta)';
+              timeLabel = 'est. time (cloud)';
               timeDim = false;
               timeBadgeKind = 'cloud';
               cloudRegimeChip = _buildCloudRegimeChip(regime, uploadSecs, analysisSecs);
             } else {
-              // Cloud destination, no speed test yet — show "?" prominently
-              // and let the panel below host the Run Speed Test button.
-              timeValue = '?';
-              timeLabel = 'est. time (cloud · beta)';
-              timeDim = false; // we want the "?" to read clearly, not muted
-              timeBadgeKind = null; // value IS the "?"; no separate badge
+              // No speed test yet: show the compute-limited best case, labelled
+              // as such. The speed test replaces it with a measured figure.
+              timeValue = `~${_formatDuration(analysisSecs)}`;
+              timeLabel = 'as fast as (cloud)';
+              timeDim = false;
+              timeBadgeKind = 'cloud';
             }
           }
         } else if (totalImagesToProcess >= _EST_MIN_IMAGES_TO_ESTIMATE) {
@@ -1044,6 +1044,32 @@
           const statEl = headline.querySelector('#_analyzeDlgTimeStatValue')?.parentElement;
           if (statEl) statEl.appendChild(cloudRegimeChip);
         }
+      }
+
+      // Local vs cloud comparison, shown for either destination so the user can
+      // see that Cloud may be much faster before choosing it. The cloud figure
+      // is the compute-limited best case until a speed test has run.
+      const compareEl = document.getElementById('analyzeDlgEstCompare');
+      if (compareEl) {
+        if (checkedCount > 0 && totalImagesToProcess >= _EST_MIN_IMAGES_TO_ESTIMATE) {
+          const localSecs = totalImagesToProcess * _getEstRate(useGpu).rate;
+          const cloud = _getCloudEstSeconds(totalImagesToProcess);
+          const cloudText = cloud.secs != null
+            ? `<b>~${_formatDuration(cloud.secs)}</b> at your measured upload speed`
+            : `as fast as <b>~${_formatDuration(cloud.analysisSecs)}</b>, depending on your upload speed`;
+          compareEl.innerHTML =
+            `Local analysis: <b>~${_formatDuration(localSecs)}</b> &middot; Cloud analysis: ${cloudText}.`;
+          compareEl.classList.remove('hidden');
+        } else {
+          compareEl.classList.add('hidden');
+          compareEl.textContent = '';
+        }
+      }
+
+      // Tell the cloud card how many images are queued so it can decide whether
+      // to show prices (a comparison against the remaining count, nothing more).
+      if (typeof _ccUpdateCloudPricing === 'function') {
+        try { _ccUpdateCloudPricing(totalImagesToProcess); } catch (e) { /* failsafe */ }
       }
 
       // Toggle the cloud-only affordances panel under the headline. Speed-test

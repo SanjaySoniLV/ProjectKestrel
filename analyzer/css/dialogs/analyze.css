@@ -1118,9 +1118,8 @@
 
 /* ── Cloud destination affordances under the summary headline ─────────── */
 /* Hidden by default (destination=local); shown only when the user picks the
-   Cloud destination card. The speed-test button is the gateway from "?" to a
-   computed estimate; the beta notice + Learn more link stay visible after the
-   test so the user remembers the estimate is approximate. */
+   Cloud destination card. The speed-test button is the gateway from the best-case
+   figure to a measured estimate. */
 .analyze-dlg-cloud-est-panel {
   margin-top: 10px;
   padding: 10px 12px;
@@ -1167,24 +1166,46 @@
 .adlg-cloud-speed-status.error { color: #e07c7c; }
 .adlg-cloud-speed-status.hidden { display: none; }
 
-.adlg-cloud-beta-note {
-  font-size: 11px;
-  line-height: 1.45;
+/* Local vs cloud estimate line under the summary headline. */
+.adlg-est-compare {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  text-align: center;
+}
+.adlg-est-compare.hidden { display: none; }
+.adlg-est-compare b { color: var(--fg, #eee); font-weight: 600; }
+
+/* Price list, shown only to a signed-in user who is short for the queue. */
+.adlg-cloud-pricing {
+  font-size: 12px;
+  line-height: 1.5;
   color: var(--muted);
 }
-.adlg-beta-badge {
-  display: inline-block;
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  color: #ffd57a;
-  background: rgba(255, 213, 122, 0.12);
-  border: 1px solid rgba(255, 213, 122, 0.4);
-  padding: 1px 5px;
-  border-radius: 3px;
-  margin-right: 6px;
-  vertical-align: 1px;
+.adlg-cloud-pricing.hidden { display: none; }
+.adlg-cloud-pricing-head { margin-bottom: 4px; }
+.adlg-cloud-price-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1.2fr);
+  gap: 8px;
+  padding: 3px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
+.adlg-cloud-price-name { color: var(--fg, #eee); font-weight: 600; }
+.adlg-cloud-price-rate { text-align: right; }
+.adlg-cloud-pricing-foot {
+  margin-top: 4px;
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+.adlg-cloud-see-plans { color: #7eb8e0; text-decoration: none; font-weight: 600; }
+.adlg-cloud-see-plans:hover { text-decoration: underline; color: #cfe2ff; }
+.adlg-cloud-learn { font-size: 11px; }
+.adlg-cloud-learn:has(.hidden:only-child) { display: none; }
+
 .adlg-cloud-learn-more {
   color: #7eb8e0;
   text-decoration: none;

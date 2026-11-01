@@ -5829,6 +5829,29 @@ class Api:
         body["ok"] = True
         return body
 
+    def cloud_compute_get_pricing(self) -> dict:
+        """Prices and links for the Analyze dialog's Cloud card.
+
+        The Mac App Store gate lives here, not in the page: on the ``'appstore'``
+        channel this returns ``{'ok': False, 'reason': 'unavailable'}`` before
+        any network call, so no price, link or free-image offer reaches the
+        frontend on that build. Elsewhere it fetches the service's public price
+        catalog (no sign-in, short timeout) and returns display fields only;
+        ``catalog`` is ``None`` if the fetch failed, and the page then shows no
+        prices. Never raises. Runs on a pywebview worker thread, so a slow
+        network cannot block the UI. See ``cloud_pricing.py``.
+        """
+        try:
+            try:
+                import cloud_pricing as cp
+            except ImportError:
+                from analyzer import cloud_pricing as cp  # type: ignore[no-redef]
+            api_base = self._auth_import().default_auth_api_base()
+            return cp.get_pricing(api_base)
+        except Exception as e:
+            warn(f'[API] cloud_compute_get_pricing failed: {e}')
+            return {"ok": False, "reason": "unavailable"}
+
     def cloud_compute_clear_done(self) -> dict:
         """Legacy bridge hook — does **not** touch the persistent job ledger.
 

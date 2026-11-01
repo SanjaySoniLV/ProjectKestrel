@@ -1389,21 +1389,27 @@
             <div id="analyzeDlgSummaryHeadline" class="analyze-dlg-summary-headline">
               <span class="analyze-dlg-summary-empty">Check folders in the queue builder to add them.</span>
             </div>
+            <!-- Local vs cloud estimate, always shown once enough images are
+                 queued so the speed difference is visible before Cloud is chosen.
+                 Filled by refreshAnalyzeDlgSummary(). -->
+            <div id="analyzeDlgEstCompare" class="adlg-est-compare hidden"></div>
             <!-- Cloud-only affordances under the summary headline. Hidden when
-                 destination=local. The speed-test button is the gateway to
-                 turning the "?" est. time into a real number; the beta notice
-                 keeps the "?" qualifier visible even after the test completes. -->
+                 destination=local. The speed-test button replaces the "as fast
+                 as" figure with one based on the measured upload speed. -->
             <div id="analyzeDlgCloudEstPanel" class="analyze-dlg-cloud-est-panel hidden">
               <button id="analyzeDlgRunSpeedTest" type="button" class="adlg-cloud-speed-btn"
                       title="Upload 10 sample images to measure your upload throughput">
                 <span class="adlg-cloud-speed-btn-icon">⚡</span> Run Upload Speed Test
               </button>
               <div id="analyzeDlgCloudSpeedStatus" class="adlg-cloud-speed-status hidden"></div>
-              <div class="adlg-cloud-beta-note">
-                <span class="adlg-beta-badge">BETA</span>
-                Cloud Compute is in beta. Time estimates are approximate.
-                <a href="https://projectkestrel.org/cloud-compute" target="_blank" rel="noopener"
-                   class="adlg-cloud-learn-more">Learn more</a>
+              <!-- Prices: shown by cloud-compute.js only to a signed-in user whose
+                   queue is larger than their remaining images, and never on the
+                   Mac App Store build (the bridge returns nothing there). -->
+              <div id="analyzeDlgCloudPricing" class="adlg-cloud-pricing hidden" aria-live="polite"></div>
+              <!-- Hidden unless the bridge reports pricing links are available
+                   (not the Mac App Store build). Opened through open_url. -->
+              <div class="adlg-cloud-learn">
+                <a id="analyzeDlgCloudLearnMore" href="#" class="adlg-cloud-learn-more hidden">Learn more</a>
               </div>
             </div>
             <div id="analyzeDlgWarnings" class="analyze-dlg-warnings hidden"></div>
@@ -1430,7 +1436,7 @@
                 <div class="dest-card-desc">Upload to Project Kestrel's cloud. Slower per-image, but frees up your machine.</div>
                 <div class="dest-card-usage" id="cloudDestUsage">Loading usage…</div>
                 <div class="dest-card-signin-overlay hidden" id="cloudDestSignInOverlay">
-                  Sign in to Perch to use Cloud Compute.
+                  Sign in to use Cloud Compute.
                 </div>
               </div>
             </div>
