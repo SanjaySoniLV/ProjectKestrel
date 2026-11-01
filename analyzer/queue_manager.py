@@ -160,6 +160,45 @@ def _quality_to_raw_rating(quality: float) -> int:
     return 5
 
 
+# Live-preview JPEG limits. The Live Analysis dialog shows these in panes a few
+# hundred pixels wide, so full-size frames only cost encode time on the analysis
+# thread and IPC/base64 time on the UI side.
+_LIVE_OVERLAY_MAX_DIM = 720
+_LIVE_OVERLAY_QUALITY = 80
+_LIVE_CROP_MAX_DIM = 224
+_LIVE_CROP_QUALITY = 85
+
+
+def _write_live_jpeg(path: str, rgb, max_dim: int, quality: int) -> bool:
+    """Best-effort write of a small live-preview JPEG from an RGB array.
+
+    Downscales so the long edge is at most ``max_dim`` and writes to a temp file
+    then ``os.replace``s it, so the UI never reads a half-written frame. Returns
+    True when the file was replaced; False (never raises) on any failure, in
+    which case the previous frame stays in place.
+    """
+    try:
+        import cv2 as _cv2
+        h, w = rgb.shape[:2]
+        longest = max(h, w)
+        if longest > max_dim > 0:
+            scale = max_dim / float(longest)
+            rgb = _cv2.resize(rgb, (max(1, round(w * scale)), max(1, round(h * scale))),
+                              interpolation=_cv2.INTER_AREA)
+        ok, buf = _cv2.imencode('.jpg', _cv2.cvtColor(rgb, _cv2.COLOR_RGB2BGR),
+                                [_cv2.IMWRITE_JPEG_QUALITY, int(quality)])
+        if not ok:
+            return False
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + '.tmp'
+        with open(tmp, 'wb') as f:
+            f.write(buf.tobytes())
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        return False
+
+
 class _QueueItem:
     __slots__ = ('path', 'name', 'status', 'processed', 'total', 'error',
                  'start_time', 'end_time', 'paused_duration', 'pause_start_time',
@@ -167,6 +206,9 @@ class _QueueItem:
                  'current_overlay_rel', 'current_crops_rel', 'current_detections',
                  'current_quality_results', 'current_species_results',
                  'initial_processed', 'warning', 'scene_total',
+                 # Live-preview change counters: bumped each time the matching
+                 # preview image is rewritten, so the UI refetches only on change.
+                 'live_frame_ver', 'live_overlay_ver', 'live_crops_ver',
                  # Phase 3 per-item options (set at enqueue time by the analyze
                  # dialog; honored by the worker just-before processing).
                  'delete_kestrel_on_start', 'skip_if_already_done',
@@ -193,6 +235,9 @@ class _QueueItem:
         self.current_detections: list = []
         self.current_quality_results: list = []
         self.current_species_results: list = []
+        self.live_frame_ver: int = 0
+        self.live_overlay_ver: int = 0
+        self.live_crops_ver: int = 0
         self.initial_processed: int = 0  # files already done before this session
         # Persistent, user-facing problem with this folder's run (e.g. results
         # can't be saved). Unlike current_status_msg it is not overwritten per
@@ -233,6 +278,9 @@ class _QueueItem:
             'current_detections': list(self.current_detections),
             'current_quality_results': list(self.current_quality_results),
             'current_species_results': list(self.current_species_results),
+            'live_frame_ver': self.live_frame_ver,
+            'live_overlay_ver': self.live_overlay_ver,
+            'live_crops_ver': self.live_crops_ver,
             'warning': self.warning,
             'files_this_run': max(0, self.processed - self.initial_processed),
             'scene_total': self.scene_total,
@@ -387,6 +435,9 @@ class QueueManager:
                         existing_item.current_detections = []
                         existing_item.current_quality_results = []
                         existing_item.current_species_results = []
+                        existing_item.live_frame_ver = 0
+                        existing_item.live_overlay_ver = 0
+                        existing_item.live_crops_ver = 0
                         existing_item.initial_processed = 0
                         existing_item.delete_kestrel_on_start = bool(opts.get('delete_kestrel_on_start'))
                         existing_item.skip_if_already_done = bool(opts.get('skip_if_already_done'))
@@ -712,49 +763,39 @@ class QueueManager:
                         _it.current_detections = []
                         _it.current_quality_results = []
                         _it.current_species_results = []
+                        _it.live_frame_ver += 1
 
                 def _on_detection(data, _it=item):
-                    import cv2 as _cv2
                     overlay_np = data.get('overlay')
                     rel = ''
                     if overlay_np is not None:
                         overlay_path = os.path.join(_it.path, '.kestrel', 'export',
                                                      '__live_overlay.jpg')
-                        try:
-                            os.makedirs(os.path.dirname(overlay_path), exist_ok=True)
-                            _cv2.imwrite(overlay_path,
-                                         _cv2.cvtColor(overlay_np, _cv2.COLOR_RGB2BGR))
+                        if _write_live_jpeg(overlay_path, overlay_np,
+                                            _LIVE_OVERLAY_MAX_DIM, _LIVE_OVERLAY_QUALITY):
                             rel = os.path.relpath(overlay_path, _it.path).replace('\\', '/')
-                        except Exception:
-                            pass
                     with self._lock:
                         _it.current_overlay_rel = rel
+                        if rel:
+                            _it.live_overlay_ver += 1
 
                 def _on_crops(data, _it=item):
-                    import cv2 as _cv2
                     crops = data.get('crops') or []
                     confidences = data.get('confidences') or []
                     saved_rels = []
                     export_dir = os.path.join(_it.path, '.kestrel', 'export')
-                    try:
-                        os.makedirs(export_dir, exist_ok=True)
-                    except Exception:
-                        pass
                     for idx, crop in enumerate(crops):
                         if crop is None:
                             continue
                         cp = os.path.join(export_dir, f'__live_crop_{idx}.jpg')
-                        try:
-                            _cv2.imwrite(cp,
-                                         _cv2.cvtColor(crop, _cv2.COLOR_RGB2BGR))
+                        if _write_live_jpeg(cp, crop, _LIVE_CROP_MAX_DIM, _LIVE_CROP_QUALITY):
                             saved_rels.append(
                                 os.path.relpath(cp, _it.path).replace('\\', '/'))
-                        except Exception:
-                            pass
                     with self._lock:
                         _it.current_crops_rel = saved_rels
                         _it.current_detections = [
                             {'confidence': float(c)} for c in confidences]
+                        _it.live_crops_ver += 1
 
                 def _on_quality(data, _it=item):
                     incoming = list(data.get('results') or [])

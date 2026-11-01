@@ -310,9 +310,17 @@
       <div class="queue-panel-body" id="queuePanelBody"></div>
       <div class="queue-overall-eta hidden" id="queueOverallEta"></div>
       <div class="queue-panel-controls" id="queuePanelControls">
-        <button id="queuePauseBtn" title="Pause / resume analysis">⏸ Pause</button>
-        <button id="queueCancelBtn" title="Cancel all pending items">⏹ Cancel</button>
-        <button id="queueLiveBtn" title="See live analysis details">👁 Live</button>
+        <!-- One toggle: renderQueuePanel() flips icon, label, title and aria-pressed. -->
+        <button id="queuePauseBtn" class="qctl qctl--primary" type="button" title="Pause analysis" aria-pressed="false">
+          <span class="qctl-ico" aria-hidden="true">⏸</span><span class="qctl-lbl">Pause</span>
+        </button>
+        <button id="queueLiveBtn" class="qctl" type="button" title="See live analysis details">
+          <span class="qctl-ico" aria-hidden="true">👁</span><span class="qctl-lbl">Live</span>
+        </button>
+        <!-- Destructive: kept visually secondary and still behind a confirm(). -->
+        <button id="queueCancelBtn" class="qctl qctl--danger" type="button" title="Cancel all pending items">
+          <span class="qctl-ico" aria-hidden="true">⏹</span><span class="qctl-lbl">Cancel</span>
+        </button>
       </div>
     </div>
 
@@ -1769,15 +1777,18 @@
         <span class="live-dlg-fname" id="liveDlgFilename"></span>
         <button id="liveDlgClose">× Close</button>
       </div>
-      <div class="live-dlg-status-bar" id="liveDlgStatus"></div>
+      <div class="live-dlg-status-bar">
+        <span class="live-dlg-pulse" id="liveDlgPulse" aria-hidden="true"></span>
+        <span id="liveDlgStatus" role="status" aria-live="off"></span>
+      </div>
       <div class="live-dlg-preview-row">
         <div class="live-dlg-img-cell">
           <span class="live-dlg-img-label">Thumbnail</span>
-          <img id="liveDlgThumb" class="live-dlg-img" alt="" />
+          <div class="live-dlg-stage" id="liveDlgThumbStage"><img id="liveDlgThumb" class="live-dlg-img" alt="" /></div>
         </div>
         <div class="live-dlg-img-cell">
           <span class="live-dlg-img-label">Detections</span>
-          <img id="liveDlgOverlay" class="live-dlg-img" alt="" />
+          <div class="live-dlg-stage" id="liveDlgOverlayStage"><img id="liveDlgOverlay" class="live-dlg-img" alt="" /></div>
         </div>
       </div>
       <div class="live-dlg-detections-section">
