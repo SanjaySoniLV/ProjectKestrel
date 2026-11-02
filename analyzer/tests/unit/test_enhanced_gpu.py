@@ -183,7 +183,8 @@ def test_mode_summary_none_when_off(monkeypatch):
 
 def test_is_gpu_active_counts_vendor_ep():
     assert is_gpu_active(["OpenVINOExecutionProvider"])
-    assert is_gpu_active(["DmlExecutionProvider", "CPUExecutionProvider"])
+    from kestrel_analyzer.ml import GPU_EP
+    assert is_gpu_active([GPU_EP, "CPUExecutionProvider"])
     assert not is_gpu_active(["CPUExecutionProvider"])
 
 
