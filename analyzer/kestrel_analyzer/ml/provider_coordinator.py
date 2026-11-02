@@ -206,6 +206,12 @@ class ProviderCoordinator:
         # together. If only some sessions migrate, the dead-provider sessions
         # error every subsequent image and the run looks "stuck on error".
         self._sessions: list["ResilientOnnxSession"] = []
+        # Per-component CPU fallback after a DirectML device-lost error (see handle_device_lost):
+        # kind -> {"reason", "at"}. Sticky for the process: a lost device is not recovered
+        # in-process, so these components stay on the CPU until Kestrel is restarted.
+        self._cpu_components: dict[str, dict] = {}
+        self._dml_lost = False
+        self._fallback_listeners: list[Callable[[str, str], None]] = []
 
     # ---- public read-only ----
 
@@ -232,6 +238,49 @@ class ProviderCoordinator:
     @property
     def gpu_lost_reason(self) -> Optional[str]:
         return self._gpu_lost_reason
+
+    @property
+    def dml_lost(self) -> bool:
+        """True once a DirectML device-lost error moved components to the CPU in this process."""
+        return self._dml_lost
+
+    @property
+    def cpu_fallbacks(self) -> list[dict]:
+        """Components that fell back to the CPU: ``[{"kind", "reason", "at"}]``, oldest first."""
+        return [dict(v, kind=k) for k, v in self._cpu_components.items()]
+
+    def add_fallback_listener(self, fn: Callable[[str, str], None]) -> None:
+        """``fn(kind, reason)`` is called once per component that falls back to the CPU."""
+        self._fallback_listeners.append(fn)
+
+    def note_cpu_component(self, kind: str, reason: str) -> None:
+        if kind in self._cpu_components:
+            return
+        import time
+        self._cpu_components[kind] = {"reason": str(reason)[:300], "at": int(time.time())}
+        for fn in list(self._fallback_listeners):
+            try:
+                fn(kind, str(reason)[:300])
+            except Exception:
+                pass
+
+    def handle_device_lost(self, failing: "ResilientOnnxSession", exc: BaseException) -> None:
+        """A run on ``failing`` raised a device-lost error. Move that session and every other session
+        that runs on the shared DirectML device to the CPU. Sessions on a vendor EP keep running
+        there. The caller then retries the same run on the CPU, so no frame is lost or saved empty."""
+        reason = f"{type(exc).__name__}: {str(exc)[:200]}"
+        first = not self._dml_lost
+        self._dml_lost = True
+        for sess in list(self._sessions):
+            if sess is failing or sess.on_directml():
+                had_gpu_graph = getattr(sess, "_gpu_path", None) is not None
+                sess.fall_back_to_cpu()
+                # The transformer towers have a separate GPU graph; the CPU graph can score slightly differently.
+                self.note_cpu_component(
+                    sess.kind, reason + (" [now on the CPU graph; scores may differ slightly]" if had_gpu_graph else ""))
+        if first:
+            self._notify("Part of the GPU stopped responding. Some analysis steps now run on the "
+                         "CPU (slower). Restart Kestrel to restore full speed.")
 
     def clear_gpu_lost(self) -> None:
         self._gpu_lost_reason = None
@@ -275,6 +324,8 @@ class ProviderCoordinator:
         also honour the tower device policy, and ``CPU_PINNED_KINDS`` (the SigLIP
         quality tower), which always run on CPU.
         """
+        if self._dml_lost and kind not in CPU_PINNED_KINDS:
+            return ["CPUExecutionProvider"]  # the device is gone; a new session must not touch it
         if kind in CPU_PINNED_KINDS:
             # Consistency over speed (see providers.CPU_PINNED_KINDS): the SigLIP
             # quality score must not depend on the machine's GPU.
@@ -292,9 +343,11 @@ class ProviderCoordinator:
 
     def vendor_for(self, kind: str, model_name: str = ""):
         """Enhanced GPU mode: the vendor EP spec when this session should use it, else None.
-        Only while the run is on the GPU and the model's device policy allows the GPU; a CPU
-        demotion or GPU lock-out therefore also turns the vendor EP off for every session."""
-        if self._state is not ProviderState.GPU or kind in CPU_PINNED_KINDS or self._gpu_lost_reason:
+        Independent of the DirectML state: a model on the vendor EP keeps running there when
+        DirectML components fall back to the CPU. Off when the user turned the GPU off, after a
+        lock-out or lost GPU, or when the model's device policy keeps it off the GPU."""
+        if (not self._user_gpu_enabled or self._state is ProviderState.GPU_LOCKED_OUT
+                or kind in CPU_PINNED_KINDS or self._gpu_lost_reason):
             return None
         if kind in TOWER_KINDS:
             from . import GPU_EP
@@ -331,8 +384,8 @@ class ProviderCoordinator:
     def should_try_promote(self) -> bool:
         if self._state is not ProviderState.CPU:
             return False
-        if not self._user_gpu_enabled:
-            return False
+        if not self._user_gpu_enabled or self._dml_lost:
+            return False  # a lost DirectML device is never retried in this process (rebuilds fail with 887A0020)
         return self._cpu_success_streak >= self._current_promote_threshold
 
     def attempt_promotion(self) -> bool:

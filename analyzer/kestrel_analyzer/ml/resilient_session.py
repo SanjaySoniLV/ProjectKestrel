@@ -52,18 +52,38 @@ class ResilientOnnxSession:
         # good once that EP failed here, so rebuilds stay on DirectML.
         self._vendor_active = False
         self._skip_vendor = False
+        # Set when the DirectML device was lost: this session stays on the CPU for the process.
+        self._force_cpu = False
         self._build()
         # Register with the coordinator so a single recreate_all() call walks
         # every ONNX session in the run — wrapper sessions AND classifier
         # sessions owned by pipeline.py.
         coord._register_session(self)
 
+    @property
+    def kind(self) -> str:
+        return self._kind
+
+    def on_directml(self) -> bool:
+        """True while this session runs on a platform GPU EP (not a vendor EP, not the CPU)."""
+        if self._vendor_active or self._force_cpu or self._session is None:
+            return False
+        try:
+            return any(p != "CPUExecutionProvider" for p in self._session.get_providers())
+        except Exception:
+            return False
+
+    def fall_back_to_cpu(self) -> None:
+        """Rebuild this session on the CPU and keep it there."""
+        self._force_cpu = True
+        self._rebuild()
+
     def _build(self) -> None:
         from .providers import build_session  # lazy: ORT-free test environments import this module
 
         was_vendor = self._vendor_active
         self._vendor_active = False
-        if self._build_vendor():
+        if not self._force_cpu and self._build_vendor():
             return
         if was_vendor:  # rebuilt without the vendor EP (the run moved to CPU): not an error of the EP itself
             try:
@@ -71,7 +91,12 @@ class ResilientOnnxSession:
                 note_vendor_left(self._kind, "the run moved to the CPU", to="CPU")
             except Exception:
                 pass
-        providers = self._coord.providers_for(self._kind)
+        providers = ["CPUExecutionProvider"] if self._force_cpu else self._coord.providers_for(self._kind)
+        if (providers == ["CPUExecutionProvider"] and not self._force_cpu
+                and getattr(self._coord, "dml_lost", False)):
+            from .providers import CPU_PINNED_KINDS
+            if self._kind not in CPU_PINNED_KINDS:
+                self._coord.note_cpu_component(self._kind, "the GPU device was lost earlier in this run")
         # build_session records requested/actual providers + per-EP node
         # placement for the analysis log (see ml/providers.py).
         if self._gpu_path is None:
@@ -156,6 +181,12 @@ class ResilientOnnxSession:
         try:
             return self._session.run(output_names, input_feed, run_options)
         except Exception as e:
+            from .provider_coordinator import is_device_lost
+            if not self._force_cpu and is_device_lost(e):
+                # DirectML device lost: this session (and the other DirectML sessions) continue on the
+                # CPU, and the same run is retried here, so the frame is neither lost nor saved empty.
+                self._coord.handle_device_lost(self, e)
+                return self._session.run(output_names, input_feed, run_options)
             if self._vendor_active and self._vendor_fallback(e):
                 return self._session.run(output_names, input_feed, run_options)
             # Re-raise unchanged. The coordinator is consulted at the wrapper /
@@ -164,10 +195,7 @@ class ResilientOnnxSession:
 
     def _vendor_fallback(self, exc: BaseException) -> bool:
         """A vendor-EP run failed: rebuild this session on DirectML and let the caller retry once.
-        DirectX device-lost errors are left to the coordinator (a rebuild cannot fix them)."""
-        from .provider_coordinator import is_device_lost
-        if is_device_lost(exc):
-            return False
+        (Device-lost errors are handled before this, in ``run``.)"""
         try:
             from .enhanced_gpu import record_runtime_failure
             record_runtime_failure(self._kind, exc)

@@ -3412,7 +3412,7 @@ class Api:
         try:
             eg = self._eg_module()
             st = eg.status()
-            st['runtime'] = eg.runtime_summary()
+            st['runtime'] = dict(eg.runtime_summary(), cpu_components=[f.get('kind') for f in _queue_manager.cpu_fallbacks()])
             with self._eg_lock:
                 job = {k: v for k, v in self._eg_job.items() if k != 'cancel'}
             st['job'] = job
@@ -3492,7 +3492,7 @@ class Api:
     def gpu_mode_report_text(self):
         """Plain-text summary for a bug report about the GPU mode (enhanced / standard / CPU fallback)."""
         try:
-            return {'success': True, 'text': self._eg_module().report_text()}
+            return {'success': True, 'text': self._eg_module().report_text(_queue_manager.cpu_fallbacks())}
         except Exception as e:
             return {'success': False, 'error': str(e), 'text': ''}
 

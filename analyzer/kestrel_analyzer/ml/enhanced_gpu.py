@@ -51,10 +51,10 @@ MAX_RUNTIME_FAILURES = 2
 # (the default), and the experimental WebGPU EP (not benchmarked).
 _NON_VENDOR_EPS = frozenset({"CPUExecutionProvider", "DmlExecutionProvider", "WebGpuExecutionProvider"})
 _VENDOR_LABELS = {
-    "OpenVINOExecutionProvider": "Intel (OpenVINO)",
-    "MIGraphXExecutionProvider": "AMD (MIGraphX)",
-    "VitisAIExecutionProvider": "AMD (Vitis AI)",
-    "NvTensorRTRTXExecutionProvider": "NVIDIA (TensorRT-RTX)",
+    "OpenVINOExecutionProvider": "Intel OpenVINO",
+    "MIGraphXExecutionProvider": "AMD MIGraphX",
+    "VitisAIExecutionProvider": "AMD Vitis AI",
+    "NvTensorRTRTXExecutionProvider": "NVIDIA TensorRT",
 }
 # Only the Intel OpenVINO EP has been measured; the others are tried on request and fall back
 # to DirectML if validation fails. Informational (shown in the UI and logged).
@@ -796,15 +796,19 @@ def _names(kinds) -> str:
 def gpu_mode(use_gpu: bool, coord=None, gpu_lost: bool = False) -> Optional[dict]:
     """One answer for "what is analysis running on?", shown in the queue panel and the Live Analysis
     dialog. ``mode`` is one of ``enhanced``, ``enhanced_partial``, ``standard``, ``cpu_selected``,
-    ``cpu_fallback``, ``gpu_lost``. ``needs_restart`` / ``report`` tell the UI to offer a restart
-    hint and the bug-report button. None until the models are loaded (``coord`` is None)."""
+    ``component_cpu`` (some steps fell back to the CPU after a GPU failure), ``cpu_fallback``,
+    ``gpu_lost``. ``needs_restart`` / ``report`` tell the UI to offer a restart hint and the
+    bug-report button. The text is for ordinary users (no model, provider or DirectML names).
+    None until the models are loaded (``coord`` is None)."""
     if coord is None:
         return None
     rt = runtime_summary()
+    on_cpu = list(getattr(coord, "cpu_fallbacks", None) or [])
     base: Dict[str, Any] = {"vendor": rt["on_vendor"], "fallbacks": rt["fallbacks"],
+                            "cpu_components": [f.get("kind") for f in on_cpu],
                             "needs_restart": False, "report": False}
     if not use_gpu:
-        return dict(base, mode="cpu_selected", label="CPU", detail="GPU analysis is turned off for this run.")
+        return dict(base, mode="cpu_selected", label="CPU", detail="GPU acceleration is turned off for this analysis.")
     if gpu_lost or getattr(coord, "gpu_lost", False):
         return dict(base, mode="gpu_lost", needs_restart=True, report=True, label="GPU stopped responding",
                     detail="Windows reset the GPU. Restart Kestrel to use the GPU again. "
@@ -812,40 +816,46 @@ def gpu_mode(use_gpu: bool, coord=None, gpu_lost: bool = False) -> Optional[dict
     state = getattr(getattr(coord, "state", None), "value", "gpu")
     if state != "gpu":
         locked = state == "gpu_locked_out"
-        return dict(base, mode="cpu_fallback", needs_restart=True, report=True, label="Fell back to CPU",
+        return dict(base, mode="cpu_fallback", needs_restart=True, report=True, label="Running on the CPU",
                     detail=("The GPU failed repeatedly, so the rest of this session runs on the CPU (slower). "
                             if locked else "The GPU failed, so analysis is running on the CPU (slower) for now. ")
                     + "Restart Kestrel to use the GPU again, and please report the problem so we can fix it.")
+    if on_cpu:
+        extra = " The other steps still use Enhanced GPU Performance." if rt["on_vendor"] else ""
+        return dict(base, mode="component_cpu", needs_restart=True, report=True,
+                    label="Some steps are running on the CPU",
+                    detail="Part of the GPU stopped responding, so some analysis steps now run on the CPU, "
+                           "which is slower." + extra + " Restart Kestrel to restore full speed. "
+                           "If this keeps happening, please report it.")
     spec = current_spec()
     if rt["on_vendor"]:
-        label = f"Enhanced GPU ({spec.label() if spec else 'vendor'})"
+        label = f"Enhanced GPU Performance Active ({spec.label() if spec else 'vendor'})"
         if rt["fallbacks"]:
-            gone = sorted({f["kind"] for f in rt["fallbacks"]})
-            return dict(base, mode="enhanced_partial", report=True, label=label + ", partly",
-                        detail=f"On the enhanced GPU: {_names(rt['on_vendor'])}. "
-                               f"Fell back to the standard GPU (DirectML): {_names(gone)}.")
-        return dict(base, mode="enhanced", label=label,
-                    detail=f"On the enhanced GPU: {_names(rt['on_vendor'])}. "
-                           "Other models use the standard GPU (DirectML) or the CPU by design.")
+            return dict(base, mode="enhanced_partial", report=True, label=label,
+                        detail="Some analysis steps use standard GPU acceleration instead.")
+        return dict(base, mode="enhanced", label=label, detail="")
     set_up = bool((load_state() or {}).get("ok")) and user_enabled()
     if rt["fallbacks"]:
-        return dict(base, mode="standard", report=True, label="Standard GPU (DirectML)",
-                    detail="Enhanced GPU mode failed and was switched off for this session: "
-                           + rt["fallbacks"][0]["reason"] + ".")
+        return dict(base, mode="standard", report=True, label="Standard GPU Acceleration",
+                    detail="Enhanced GPU Performance stopped working, so standard GPU acceleration is used "
+                           "for this session.")
     if set_up and spec is None:
-        return dict(base, mode="standard", label="Standard GPU (DirectML)",
-                    detail="Enhanced GPU mode is set up but not in use (switched off or out of date). "
-                           "Run setup again in Settings.")
-    return dict(base, mode="standard", label="Standard GPU (DirectML)", detail="")
+        return dict(base, mode="standard", label="Standard GPU Acceleration",
+                    detail="Enhanced GPU Performance is set up but not in use (it was switched off or is out "
+                           "of date). Run setup again in Settings.")
+    return dict(base, mode="standard", label="Standard GPU Acceleration", detail="")
 
 
-def report_text() -> str:
-    """Plain-text description for a bug report about the GPU mode (the log tail is attached separately)."""
+def report_text(cpu_fallbacks: Optional[list] = None) -> str:
+    """Plain-text description for a bug report about the GPU mode (the log tail is attached separately).
+    ``cpu_fallbacks`` is the coordinator's list of components that fell back to the CPU."""
+    cpu_fallbacks = cpu_fallbacks or []
     st = load_state() or {}
     rt = runtime_summary()
     lines = [f"GPU mode problem. Enhanced mode set up: {bool(st.get('ok'))}, enabled: {user_enabled()}.",
              f"Vendor EP: {st.get('ep_name') or 'none'}; models on vendor now: {rt['on_vendor']}.",
              f"Fell back: {json.dumps(rt['fallbacks'])}",
+             f"On the CPU after a GPU failure: {json.dumps(cpu_fallbacks)}",
              f"Setup result: {st.get('reason') or 'ok'}; failures: {st.get('runtime_failures', 0)}; "
              f"unclean exits: {st.get('unclean_exits', 0)}; disabled: {st.get('disabled_reason', '') or 'no'}.",
              f"Per-model validation: {json.dumps(st.get('models', {}))}",

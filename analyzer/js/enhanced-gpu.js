@@ -8,7 +8,6 @@
 (function () {
   'use strict';
 
-  const MODEL_LABELS = { detector: 'detector', sam_enc: 'segmentation', bird_species: 'species ID' };
   let pollTimer = null;
   let wasRunning = false;
   let lastStatus = null;
@@ -16,8 +15,6 @@
   function api() { return window.pywebview && window.pywebview.api; }
   function el(id) { return document.getElementById(id); }
   function sentence(t) { t = String(t || '').trim(); return t && !/[.!?]$/.test(t) ? t + '.' : t; }
-  function label(k) { return MODEL_LABELS[k] || k; }
-  function list(kinds) { return (kinds || []).map(label).join(', '); }
 
   // ── Report a problem (opens the feedback dialog with the GPU details and logs attached) ──
   async function reportProblem(setupFailed) {
@@ -32,7 +29,7 @@
   // ── Live strip (queue panel + Live Analysis dialog) ──
   const STRIP_CLASS = {
     enhanced: 'enhanced', enhanced_partial: 'warn', standard: 'standard',
-    cpu_selected: 'cpu', cpu_fallback: 'bad', gpu_lost: 'bad',
+    cpu_selected: 'cpu', component_cpu: 'bad', cpu_fallback: 'bad', gpu_lost: 'bad',
   };
 
   window.egRenderGpuMode = function (mode) {
@@ -52,34 +49,37 @@
   };
 
   // ── Settings status ──
+  // Plain language only: no model, provider or DirectML names and no speed multipliers here. Those
+  // details are in the analysis log and in the bug report text.
   function setupLine(st) {
     if (!st.available) return 'Not available: ' + sentence(st.unavailable_reason);
-    if (st.disabled) return 'Switched off automatically (' + (st.disabled_reason || 'problems detected') + '). Using the standard GPU (DirectML). You can run setup again.';
+    if (st.disabled) return 'Switched off automatically after problems were detected. Standard GPU acceleration is used. You can run setup again.';
     if (st.set_up) {
       const on = st.enabled ? 'Set up and on' : 'Set up, but turned off';
-      return on + ' — ' + (st.ep_label || st.ep) + (st.measured ? '' : ' (not yet tested on this kind of GPU)') + '.';
+      return on + ' \u2014 ' + (st.ep_label || 'vendor acceleration') + (st.measured ? '' : ' (not yet tested on this kind of GPU)') + '.';
     }
     return null;
   }
 
   function speedLine(st) {
-    const parts = [];
-    Object.keys(st.models || {}).forEach((k) => {
-      const m = st.models[k];
-      if (m.enabled) parts.push(label(k) + ' ' + (m.speedup ? m.speedup + '× faster' : 'on'));
-      else parts.push(label(k) + ' stays on DirectML' + (m.reason ? ' (' + m.reason + ')' : ''));
-    });
-    return parts.length ? 'Speed when checked (model time vs DirectML): ' + parts.join('; ') + '.' : '';
+    const models = Object.keys(st.models || {}).map((k) => st.models[k]);
+    if (!models.length) return '';
+    const on = models.filter((m) => m.enabled).length;
+    if (!on) return 'Setup found no speed-up on this computer, so standard GPU acceleration is used.';
+    return on === models.length
+      ? 'Setup confirmed that Enhanced GPU Performance speeds up analysis on this computer.'
+      : 'Setup confirmed a speed-up for part of the analysis; the rest uses standard GPU acceleration.';
   }
 
   function runtimeLine(st) {
     const rt = st.runtime || {};
-    const on = rt.on_vendor || [];
-    const fb = rt.fallbacks || [];
     const out = [];
-    if (on.length) out.push('In use now: ' + list(on) + '.');
+    if ((rt.cpu_components || []).length) {
+      out.push('Part of the GPU stopped responding, so some analysis steps now run on the CPU (slower). Restart Kestrel to restore full speed.');
+    }
+    if ((rt.on_vendor || []).length) out.push('In use now.');
     else if (st.set_up && st.enabled && !st.disabled) out.push('Not used yet this session (it starts with the next analysis).');
-    fb.forEach((f) => out.push('Fell back to ' + (f.to === 'CPU' ? 'the CPU' : 'the standard GPU (DirectML)') + ': ' + label(f.kind) + ' — ' + sentence(f.reason)));
+    if ((rt.fallbacks || []).length) out.push('Some steps switched to standard GPU acceleration after a problem.');
     return out.join('\n');
   }
 
@@ -114,11 +114,13 @@
       if (sp) lines.push(sp);
       const rt = runtimeLine(st);
       if (rt) lines.push(rt);
-      if (st.stale) lines.push('Kestrel or its GPU component was updated since the last check; run setup again to refresh it.');
+      if (st.stale) lines.push('Kestrel or its GPU software was updated since the last check; run setup again to refresh it.');
       if (st.finished) lines.push('Checked ' + new Date(st.finished * 1000).toLocaleString() + '.');
     } else {
       const why = (job.result && !job.result.ok && job.result.reason) || st.reason;
-      lines.push(why ? 'Not set up: ' + sentence(why) + ' Using the standard GPU (DirectML).' : 'Not set up. Using the standard GPU (DirectML).');
+      if (/cancel/i.test(why || '')) lines.push('Setup was cancelled. Standard GPU acceleration is used.');
+      else if (why) lines.push('Setup did not finish. Standard GPU acceleration is used.');
+      else lines.push('Not set up. Standard GPU acceleration is used.');
     }
     el('egStatus').textContent = lines.join('\n');
 
@@ -127,7 +129,8 @@
       && st.available;
     if (failed) el('egReportRow').classList.remove('hidden');
     if (running) el('egReportRow').classList.add('hidden');
-    const hadFallback = ((st.runtime || {}).fallbacks || []).length > 0 || st.disabled;
+    const rtNow = st.runtime || {};
+    const hadFallback = (rtNow.fallbacks || []).length > 0 || (rtNow.cpu_components || []).length > 0 || st.disabled;
     el('egReportNowBtn').classList.toggle('hidden', !hadFallback || running);
     wasRunning = running;
   }

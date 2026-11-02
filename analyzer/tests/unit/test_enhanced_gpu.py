@@ -190,12 +190,14 @@ def test_is_gpu_active_counts_vendor_ep():
 
 # ---- coordinator gating -------------------------------------------------------------------
 
-def test_coordinator_only_offers_vendor_ep_while_on_gpu():
+def test_coordinator_offers_vendor_ep_unless_locked_out_lost_or_gpu_off():
     _good_state()
     gpu = ProviderCoordinator(user_gpu_enabled=True)
     assert gpu.vendor_for("detector", "mdv5a.onnx") is not None
     assert gpu.vendor_for("siglip_image", "siglip.onnx") is None
-    gpu._state = ProviderState.CPU
+    gpu._state = ProviderState.CPU  # a DirectML demotion no longer takes working vendor sessions with it
+    assert gpu.vendor_for("detector", "mdv5a.onnx") is not None
+    gpu._state = ProviderState.GPU_LOCKED_OUT
     assert gpu.vendor_for("detector", "mdv5a.onnx") is None
     gpu._state = ProviderState.GPU
     gpu._gpu_lost_reason = "device removed"
@@ -281,13 +283,17 @@ def test_vendor_run_failure_rebuilds_on_directml_and_retries(monkeypatch):
     assert s.run(None, {}) == ["dml"] and built == ["vendor", "dml"]  # stays on DirectML
 
 
-def test_device_lost_error_is_left_to_the_coordinator(monkeypatch):
+def test_device_lost_error_is_handled_by_the_coordinator_not_the_vendor_fallback(monkeypatch):
     spec = eg.VendorSpec("OpenVINOExecutionProvider", frozenset({"detector"}), (("detector", "mdv5a.onnx"),))
     lost = RuntimeError("ReadbackHeap.cpp(22) 887A0005 The GPU device instance has been suspended.")
     _patch_build(monkeypatch, vendor_session=_FakeSession("ov", fail_run=lost))
-    s = ResilientOnnxSession("detector", "mdv5a.onnx", _FakeCoord(spec))
-    with pytest.raises(RuntimeError, match="887A0005"):
-        s.run(None, {})
+    coord = _FakeCoord(spec)
+    handled = []
+    coord.handle_device_lost = lambda sess, exc: (handled.append(type(exc).__name__), sess.fall_back_to_cpu())
+    s = ResilientOnnxSession("detector", "mdv5a.onnx", coord)
+    s.run(None, {})
+    assert handled == ["RuntimeError"] and s._force_cpu
+    assert not s._skip_vendor  # not counted as a vendor-EP failure
 
 
 def test_vendor_error_text_is_not_misread_as_directx_device_lost():
@@ -513,7 +519,7 @@ def test_gpu_mode_vendor_failure_everywhere_is_standard_with_report(clean_runtim
     eg.note_vendor_active("detector", "mdv5a.onnx")
     eg.note_vendor_left("detector", "bad node")
     m = eg.gpu_mode(True, _ModeCoord())
-    assert m["mode"] == "standard" and m["report"] and "bad node" in m["detail"]
+    assert m["mode"] == "standard" and m["report"] and "stopped working" in m["detail"]
 
 
 @pytest.mark.parametrize("state", ["cpu", "gpu_locked_out"])

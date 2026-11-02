@@ -408,6 +408,13 @@ class QueueManager:
         except Exception:
             return None
 
+    def cpu_fallbacks(self):
+        """Components that fell back to the CPU after a GPU failure in the current pipeline."""
+        try:
+            return list(self._pipeline.sn_sam.coord.cpu_fallbacks)
+        except Exception:
+            return []
+
     # ---- control ----
 
     def enqueue(

@@ -605,6 +605,7 @@ def main(argv: Sequence[str] | None = None):
             quality_model=args.quality_model,
             raw_use_embedded_preview=args.raw_use_embedded_preview,
             stop_on_gpu_loss=stop_on_gpu_loss,
+            restart_on_cpu_fallback=stop_on_gpu_loss,
             max_consecutive_errors=max(0, int(args.max_consecutive_errors)),
         )
         print()

@@ -759,10 +759,27 @@ class AnalysisPipeline:
                 coord=coord,
             )
         self._load_v3_extras(coord)
+        if not getattr(coord, "_pipeline_fallback_listener", False):
+            coord.add_fallback_listener(self._on_cpu_fallback)
+            coord._pipeline_fallback_listener = True
         if status_cb:
             status_cb("Models loaded. Processing started.")
 
-    def _note_gpu_lost(self, file_name: str, status_cb=None) -> bool:
+    def _on_cpu_fallback(self, kind: str, reason: str) -> None:
+        """A component moved from the GPU to the CPU: remember it and write it to the folder's log.
+        Nothing is added to the database: the frame itself is processed normally on the CPU, and a frame
+        that cannot be processed raises into the normal error path (saved as an Error row, which
+        re-analysis picks up)."""
+        import time as _time
+        event = {"component": kind, "reason": reason, "file": self._current_file, "at": int(_time.time())}
+        self.cpu_fallback_events.append(event)
+        _error(f"[pipeline] {kind} fell back to the CPU while processing {self._current_file!r}: {reason}")
+        try:
+            log_event(self._log_path, dict(event, level="warning", event="cpu_fallback"))
+        except Exception:
+            pass
+
+    def _note_gpu_lost(self, file_name: str, status_cb=None, include_cpu_fallback: bool = False) -> bool:
         """True (and ``self.gpu_lost`` set) if the shared coordinator reports
         the GPU as lost. ``file_name`` is the image being handled when the
         loss was first noticed, logged so a frame-specific cause (for example
@@ -771,9 +788,11 @@ class AnalysisPipeline:
             coord = self.sn_sam.coord
         except Exception:
             return False
-        if not coord.gpu_lost:
+        fallbacks = (getattr(coord, "cpu_fallbacks", None) or []) if include_cpu_fallback else []
+        if not coord.gpu_lost and not fallbacks:
             return False
-        self._record_gpu_lost(file_name, coord.gpu_lost_reason or "", status_cb)
+        reason = coord.gpu_lost_reason or (fallbacks[0]["kind"] + ": " + fallbacks[0]["reason"] if fallbacks else "")
+        self._record_gpu_lost(file_name, reason, status_cb)
         return True
 
     def _gpu_in_use(self) -> bool:
@@ -825,6 +844,7 @@ class AnalysisPipeline:
         raw_use_embedded_preview: Optional[bool] = None,
         stop_on_gpu_loss: bool = False,
         max_consecutive_errors: int = 0,
+        restart_on_cpu_fallback: bool = False,
     ) -> None:
         """Analyse ``folder``.
 
@@ -834,6 +854,12 @@ class AnalysisPipeline:
         a new process gets the GPU back. Everything analysed so far is saved
         and ``self.gpu_lost`` is set to ``{"file", "reason"}`` so the caller can
         restart. Default off, so existing callers behave as before.
+
+        A DirectML device loss that the CPU fallback handled (components moved to the CPU, the frame
+        was retried and saved normally) does not stop the run. ``restart_on_cpu_fallback`` (the CLI)
+        additionally ends the run at the next image boundary after such a fallback, so that the CLI
+        can continue in a fresh process with the GPU back; the app leaves it off and keeps going on
+        the CPU.
 
         ``max_consecutive_errors`` (0 = off) stops the run once that many
         frames in a row end as Error rows, whatever the cause, instead of
@@ -878,6 +904,10 @@ class AnalysisPipeline:
         self._save_failure_streak = 0
         self._save_warning_shown = False
         self.gpu_lost: Optional[Dict[str, str]] = None
+        # Components that fell back to the CPU after a DirectML device-lost error (see
+        # ProviderCoordinator.handle_device_lost): [{"component", "reason", "file", "at"}].
+        self.cpu_fallback_events: list = []
+        self._current_file = ""
         self.error_stop: Optional[Dict[str, object]] = None
         errors = ConsecutiveErrorTracker(max_consecutive_errors)
         self.error_count = 0
@@ -1264,11 +1294,12 @@ class AnalysisPipeline:
                 start=1,
             ):
                 raw_file = decoded["file_name"]
+                self._current_file = raw_file
 
                 # GPU lost while handling the previous image (it finished and
                 # was saved, on CPU). Stop here so the caller can continue in a
                 # fresh process; the remaining files are picked up on resume.
-                if stop_on_gpu_loss and self._note_gpu_lost(last_done_file, status_cb):
+                if stop_on_gpu_loss and self._note_gpu_lost(last_done_file, status_cb, restart_on_cpu_fallback):
                     return
                 last_done_file = raw_file
 
