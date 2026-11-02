@@ -21,6 +21,10 @@
 onnxruntime-windowsml==1.25.2.202605110140
 wasdk-Microsoft.Windows.AI.MachineLearning==2.3.0
 wasdk-Microsoft.Windows.ApplicationModel.DynamicDependency.Bootstrap==2.3.0
+# Awaiting Windows ML's async calls (ensure_ready_async().get()) imports winrt.windows.foundation; the wasdk
+# wheels only depend on winrt-runtime. Must match winrt-runtime 3.2.1 (4.x breaks the wasdk extension modules).
+winrt-Windows.Foundation==3.2.1
+winrt-Windows.Foundation.Collections==3.2.1
 
 numpy==2.4.4
 
