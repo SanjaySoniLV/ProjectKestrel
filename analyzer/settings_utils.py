@@ -85,6 +85,9 @@ _ALLOWED_WILDLIFE_MODEL_MODES = {'fast', 'accurate'}
 # kestrel_analyzer/quality_model.py), and where the int8 BioCLIP / SigLIP
 # image towers run (kestrel_analyzer/ml/providers.py).
 _ALLOWED_QUALITY_MODELS = {'siglip', 'legacy'}
+# Keep in sync with kestrel_analyzer/quality_model.py (DEFAULT_QUALITY_MODEL).
+DEFAULT_QUALITY_MODEL = 'legacy'
+QUALITY_MODEL_MIGRATED_KEY = 'quality_model_legacy_migrated'
 _ALLOWED_TOWER_DEVICES = {'auto', 'cpu', 'gpu'}
 # Quality feedback (scene viewer "sort these by sharpness" prompt): whether to
 # ask before sharing, always share, or never show the prompt. Default "ask";
@@ -547,14 +550,18 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     _set_bool('species_detection_enabled', default=True)
     # Smart search: also embed each image's downscaled whole frame with SigLIP
     # at analysis time (one extra tower run per photo) for context queries.
-    # The per-crop SigLIP embedding always runs (it is the default quality).
+    # The per-crop SigLIP embedding always runs (smart search and the optional siglip scorer).
     _set_bool('smart_search_enabled', default=True)
     # Analyse each RAW's embedded JPEG preview instead of decoding the sensor
     # data (much cheaper; no highlight recovery). Desktop queue only: the CLI
     # (and so Cloud Compute) stays on RAW decode unless asked explicitly.
     _set_bool('raw_use_embedded_preview', default=False)
     if 'quality_model' in data:
-        out['quality_model'] = _coerce_enum(data.get('quality_model'), _ALLOWED_QUALITY_MODELS, default='siglip')
+        out['quality_model'] = _coerce_enum(data.get('quality_model'), _ALLOWED_QUALITY_MODELS, default=DEFAULT_QUALITY_MODEL)
+    # One-time marker: set when the default scorer was switched back to the legacy
+    # CNN for existing users (see ``_migrate_quality_model_default``). After it is
+    # set, a user's own choice of 'siglip' is kept.
+    _set_bool(QUALITY_MODEL_MIGRATED_KEY, default=False)
     if 'tower_device' in data:
         out['tower_device'] = _coerce_enum(data.get('tower_device'), _ALLOWED_TOWER_DEVICES, default='auto')
     if 'quality_feedback_mode' in data:
@@ -855,13 +862,54 @@ def load_persisted_settings() -> dict:
     """
     data, status = _load_settings_raw()
     if status == 'ok':
-        return _sanitize_settings_payload(data, emit_log=False)
+        return _migrate_quality_model_default(_sanitize_settings_payload(data, emit_log=False))
     if status == 'corrupt':
         bak_data = _load_backup_if_valid()
         if bak_data is not None:
             warn('[settings] Main settings file is corrupt; serving from .bak.')
-            return _sanitize_settings_payload(bak_data, emit_log=False)
+            return _migrate_quality_model_default(_sanitize_settings_payload(bak_data, emit_log=False))
     return {}
+
+
+_QM_MIGRATION_PERSIST_TRIED = False
+
+
+def _migrate_quality_model_default(settings: dict) -> dict:
+    """One-time switch of existing users to the legacy quality scorer.
+
+    The shipped 3.0 release defaulted to SigLIP and the settings dialog stored
+    ``quality_model`` on every save, so a stored ``siglip`` usually is not a
+    choice. The first time settings are loaded without the marker, set
+    ``quality_model='legacy'`` and the marker, in memory and (best effort, once
+    per process) on disk. Afterwards a deliberate switch back to SigLIP is kept.
+    Never raises; the in-memory result is returned even if the write fails.
+    A missing settings file (new install) needs no migration: the default is
+    already legacy and ``save_persisted_settings`` stamps the marker on the
+    first write.
+    """
+    global _QM_MIGRATION_PERSIST_TRIED
+    if settings.get(QUALITY_MODEL_MIGRATED_KEY):
+        return settings
+    out = dict(settings)
+    out['quality_model'] = DEFAULT_QUALITY_MODEL
+    out[QUALITY_MODEL_MIGRATED_KEY] = True
+    if _QM_MIGRATION_PERSIST_TRIED:
+        return out
+    _QM_MIGRATION_PERSIST_TRIED = True
+    try:
+        with _SAVE_LOCK:
+            raw, status = _load_settings_raw()
+            if status == 'corrupt':
+                raw = _load_backup_if_valid()
+            if isinstance(raw, dict) and not raw.get(QUALITY_MODEL_MIGRATED_KEY):
+                updated = dict(raw)
+                updated['quality_model'] = DEFAULT_QUALITY_MODEL
+                updated[QUALITY_MODEL_MIGRATED_KEY] = True
+                save_persisted_settings(updated)
+                info('[settings] quality_model set to legacy (one-time default change).')
+    except Exception as exc:
+        warn(f'[settings] quality_model migration not persisted: {exc}')
+    return out
 
 
 def _reap_orphan_tmp_files(directory: str) -> None:
@@ -910,6 +958,7 @@ def save_persisted_settings(data: dict) -> None:
         path = _get_settings_path()
         directory = os.path.dirname(path)
         existing_raw, status = _load_settings_raw()
+        first_write = status == 'missing'
 
         if status == 'corrupt':
             bak_data = _load_backup_if_valid()
@@ -931,6 +980,12 @@ def save_persisted_settings(data: dict) -> None:
             status = 'missing'
 
         data = _apply_monotonic_guard(data, existing_raw)
+
+        # The quality-model migration marker never regresses (a caller that omits
+        # it must not re-arm the migration), and a brand-new settings file is
+        # stamped as already migrated so the user's first choice is kept.
+        if first_write or (isinstance(existing_raw, dict) and existing_raw.get(QUALITY_MODEL_MIGRATED_KEY) is True):
+            data[QUALITY_MODEL_MIGRATED_KEY] = True
 
         # Re-sanitize while preserving forward-compatible keys so merges from the UI
         # cannot strip unknown keys that were loaded from disk.

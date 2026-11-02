@@ -343,7 +343,7 @@
       const rawPreviewCb = document.getElementById('settingsRawEmbeddedPreview');
       if (rawPreviewCb) rawPreviewCb.checked = getSetting('raw_use_embedded_preview', false) === true;
       const qualityModelSel = document.getElementById('settingsQualityModel');
-      if (qualityModelSel) qualityModelSel.value = getSetting('quality_model', 'siglip') === 'legacy' ? 'legacy' : 'siglip';
+      if (qualityModelSel) qualityModelSel.value = getSetting('quality_model', 'legacy') === 'siglip' ? 'siglip' : 'legacy';
       const qfModeSel = document.getElementById('settingsQualityFeedbackMode');
       if (qfModeSel) {
         const qm = String(getSetting('quality_feedback_mode', 'ask') || 'ask');
@@ -421,7 +421,7 @@
       const rawPreviewCb2 = document.getElementById('settingsRawEmbeddedPreview');
       const rawUseEmbeddedPreview = rawPreviewCb2 ? rawPreviewCb2.checked : getSetting('raw_use_embedded_preview', false) === true;
       const qualityModelEl = document.getElementById('settingsQualityModel');
-      const qualityModel = qualityModelEl && qualityModelEl.value === 'legacy' ? 'legacy' : 'siglip';
+      const qualityModel = qualityModelEl && qualityModelEl.value === 'siglip' ? 'siglip' : 'legacy';
       const qfModeEl = document.getElementById('settingsQualityFeedbackMode');
       const qualityFeedbackMode = qfModeEl && ['ask', 'always', 'never'].includes(qfModeEl.value) ? qfModeEl.value : 'ask';
       const towerEl = document.getElementById('settingsTowerDevice');
@@ -488,7 +488,7 @@
       // Quality scorer switch: the backend rewrites each folder's effective
       // `quality` from the stored scores when its CSV is next read, so save
       // pending edits and reload what is open (no re-analysis).
-      const qualityModelChanged = (existing.quality_model === 'legacy' ? 'legacy' : 'siglip') !== qualityModel;
+      const qualityModelChanged = (existing.quality_model === 'siglip' ? 'siglip' : 'legacy') !== qualityModel;
       if (qualityModelChanged && rows.length > 0) {
         try {
           if (dirty && typeof saveCsv === 'function') await saveCsv();

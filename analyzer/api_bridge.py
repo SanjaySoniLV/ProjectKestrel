@@ -3627,8 +3627,8 @@ class Api:
             for r in usable:
                 if not str(r.get('quality_siglip') or '').strip() and not str(r.get('quality_legacy') or '').strip():
                     r['quality_legacy'] = r.get('quality')
-            active = str(settings.get('quality_model') or 'siglip').lower()
-            active = active if active in qf.SCORERS else 'siglip'
+            active = str(settings.get('quality_model') or 'legacy').lower()
+            active = active if active in qf.SCORERS else 'legacy'
             if not any(str(r.get('quality_siglip') or '').strip() for r in usable):
                 active = 'legacy'
             try:

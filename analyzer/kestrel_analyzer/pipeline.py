@@ -106,8 +106,8 @@ class AnalysisPipeline:
         self.sn_sam: Optional[DetectorSAMHQWrapper] = None
         self.species_clf: Optional[BioClipSpeciesClassifier] = None
         self.quality_clf: Optional[QualityClassifier] = None
-        # Pipeline 3.0.0: SigLIP 2 image tower (search embeddings + default
-        # quality) and the BioCLIP false-positive gate. Both best-effort: a
+        # Pipeline 3.0.0: SigLIP 2 image tower (search embeddings + optional
+        # siglip quality scorer) and the BioCLIP false-positive gate. Both best-effort: a
         # missing asset logs a warning and analysis carries on (quality then
         # falls back to the legacy CNN, every MegaDetector box is kept).
         self.siglip_img: Optional[siglip.SiglipImageEmbedder] = None
@@ -752,14 +752,14 @@ class AnalysisPipeline:
         """Analyse ``folder``.
 
         Pipeline 3.0.0 always stores the BioCLIP and SigLIP crop embeddings
-        (the SigLIP one is also the default quality score).
+        (the SigLIP one also scores quality when the quality_model setting is siglip).
         ``smart_search_enabled`` additionally embeds the downscaled whole
         frame with SigLIP for context queries ("bird on a wire", "wide
         landscape"); ``None`` falls back to the persisted setting (default on).
 
         ``quality_model`` (``"siglip"`` | ``"legacy"``) picks which stored
         score becomes the effective ``quality``; ``None`` = the persisted
-        ``quality_model`` setting (default ``"siglip"``).
+        ``quality_model`` setting (default ``"legacy"``).
 
         ``species_regions`` geofences the bird species classifier: a list of
         ``bird_catalog.ALLOWED_REGION_CODES``, or ``["global"]`` for every IOC

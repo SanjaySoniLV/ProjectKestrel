@@ -2,9 +2,11 @@
 
 Since 3.0.0 every crop is scored twice and both raw 0-1 scores are stored:
 
-* ``quality_siglip`` -- zero-shot SigLIP 2 sharpness (default; ``ml/siglip.py``)
-* ``quality_legacy`` -- the pre-3.0 quality CNN (``models/quality.onnx``), kept
-  for one major version as an optional scorer.
+* ``quality_siglip`` -- zero-shot SigLIP 2 sharpness (optional; ``ml/siglip.py``)
+* ``quality_legacy`` -- the quality CNN (``models/quality.onnx``), the default.
+  It sees the crop at 1024x1024, which separates fine focus detail better than
+  SigLIP's 224x224 input. Legacy stays the default until a better model can be
+  trained from the quality-feedback data.
 
 ``quality`` (in the CSV and in each ``crops_json`` entry) stays *the
 effective score*, so every existing reader -- ratings, culling assistant,
@@ -31,7 +33,7 @@ import os
 from typing import Optional
 
 QUALITY_MODELS = ("siglip", "legacy")
-DEFAULT_QUALITY_MODEL = "siglip"
+DEFAULT_QUALITY_MODEL = "legacy"
 METADATA_KEY = "quality_model"
 
 
