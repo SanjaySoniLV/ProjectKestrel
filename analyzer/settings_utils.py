@@ -573,6 +573,9 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     # pre-resilience behavior (single GPU session, no recovery).
     _set_bool('gpu_resilience_enabled', default=True)
     _set_bool('gpu_aggressive_recreate', default=False)
+    # Opt-in enhanced GPU mode (vendor execution providers via Windows ML; Windows only,
+    # ml/enhanced_gpu.py). Off until the user runs the setup action in Settings.
+    _set_bool('enhanced_gpu_enabled', default=False)
     if 'wildlife_model_mode' in data:
         out['wildlife_model_mode'] = _coerce_enum(
             data.get('wildlife_model_mode'),

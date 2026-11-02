@@ -228,6 +228,15 @@ def parse_args(argv: Sequence[str] | None = None):
         default=None,
         help="Path for the --validate result JSON. Recommended on Windows where console=False hides stdout.",
     )
+    # Internal: validation child of the "enhanced GPU performance" setup (ml/enhanced_gpu.py). It runs
+    # in its own process because a vendor execution provider can end its process with an access violation.
+    parser.add_argument("--enhanced-gpu-validate", dest="enhanced_gpu_validate", action="store_true",
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--enhanced-gpu-ep", dest="enhanced_gpu_ep", type=str, default="", help=argparse.SUPPRESS)
+    parser.add_argument("--enhanced-gpu-kinds", dest="enhanced_gpu_kinds", type=str, default="",
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--enhanced-gpu-output", dest="enhanced_gpu_output", type=str, default="",
+                        help=argparse.SUPPRESS)
     # ── Headless cloud / Perch commands (CI E2E + local smoke) ──────────────
     # Each short-circuits to cli_cloud (like --validate/--smoke); they drive the
     # real upload/cloud-compute/Perch paths against `folder` with no GUI.
@@ -440,6 +449,11 @@ def main(argv: Sequence[str] | None = None):
     log_path = get_log_path(None)
     try:
         args = parse_args(argv)
+        if args.enhanced_gpu_validate:
+            from kestrel_analyzer.ml import enhanced_validate
+            from kestrel_analyzer.ml.enhanced_gpu import ROUTABLE_KINDS
+            kinds = [k for k in args.enhanced_gpu_kinds.split(",") if k] or list(ROUTABLE_KINDS)
+            sys.exit(enhanced_validate.main(args.enhanced_gpu_ep, kinds, args.enhanced_gpu_output))
         if args.validate:
             from kestrel_analyzer.validation import run_validation
             sys.exit(run_validation(

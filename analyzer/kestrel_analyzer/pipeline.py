@@ -630,6 +630,16 @@ class AnalysisPipeline:
             )
             return False
 
+    def _enhanced_gpu_mode(self):
+        """Enhanced GPU mode summary for the logs / metadata, or None when it is not in use."""
+        try:
+            if not getattr(self, "use_gpu", False):
+                return None
+            from .ml import enhanced_gpu
+            return enhanced_gpu.mode_summary()
+        except Exception:
+            return None
+
     def _log_resolved_providers(self) -> None:
         """Log the execution providers ONNX Runtime actually chose.
 
@@ -660,6 +670,8 @@ class AnalysisPipeline:
                     "use_gpu": bool(self.use_gpu),
                     "gpu_ep": GPU_EP,
                     "providers": providers,
+                    # Enhanced GPU mode (vendor EP, device, versions) or None.
+                    "enhanced_gpu": self._enhanced_gpu_mode(),
                     # Requested vs actual providers + per-EP node placement for
                     # every session built so far (see ml/providers.py).
                     "placement": provider_diag.placement_summary(),
@@ -2281,6 +2293,13 @@ class AnalysisPipeline:
                         # version above cannot stand in for this: it says which
                         # build wrote the folder, not which columns it wrote.
                         _meta["schema_version"] = DATABASE_SCHEMA_VERSION
+                        # Enhanced GPU mode shifts crops slightly (and the SigLIP score with them), so
+                        # a folder analysed with it records the EP, device and versions.
+                        _eg_mode = self._enhanced_gpu_mode()
+                        if _eg_mode:
+                            _meta["enhanced_gpu"] = _eg_mode
+                        else:
+                            _meta.pop("enhanced_gpu", None)
                         _meta["analysis_settings"] = {
                             "detector_name": str(getattr(self, "detector_name", "") or ""),
                             "use_gpu": bool(getattr(self, "use_gpu", False)),

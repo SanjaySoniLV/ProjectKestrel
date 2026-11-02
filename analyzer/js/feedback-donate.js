@@ -48,6 +48,15 @@
       document.getElementById('feedbackDlg').showModal();
     }
 
+    // Open the feedback dialog with a type, description and "include logs" already filled in
+    // (used by the enhanced GPU setup to offer a bug report when it fails).
+    window.openFeedbackWithPrefill = function (type, description, includeLogs) {
+      openFeedbackDialog();
+      document.getElementById('feedbackType').value = type || 'bug';
+      document.getElementById('feedbackDesc').value = description || '';
+      document.getElementById('feedbackIncludeLogs').checked = !!includeLogs;
+    };
+
     document.getElementById('feedbackSendAsUser').addEventListener('change', _syncFeedbackSendAs);
 
     // Auto-check logs when Bug Report type is selected

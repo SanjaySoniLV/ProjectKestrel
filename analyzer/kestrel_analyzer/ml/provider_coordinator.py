@@ -290,6 +290,19 @@ class ProviderCoordinator:
             return gpu_providers()
         return ["CPUExecutionProvider"]
 
+    def vendor_for(self, kind: str, model_name: str = ""):
+        """Enhanced GPU mode: the vendor EP spec when this session should use it, else None.
+        Only while the run is on the GPU and the model's device policy allows the GPU; a CPU
+        demotion or GPU lock-out therefore also turns the vendor EP off for every session."""
+        if self._state is not ProviderState.GPU or kind in CPU_PINNED_KINDS or self._gpu_lost_reason:
+            return None
+        if kind in TOWER_KINDS:
+            from . import GPU_EP
+            if not tower_use_gpu(GPU_EP):
+                return None
+        from . import enhanced_gpu
+        return enhanced_gpu.vendor_spec_for(kind, model_name)
+
     # ---- event handlers ----
 
     def on_run_success(self) -> None:

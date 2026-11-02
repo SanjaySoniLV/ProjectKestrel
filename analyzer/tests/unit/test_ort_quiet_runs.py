@@ -8,6 +8,7 @@ throwaway VERBOSE session and returns one built at the default level.
 """
 
 import base64
+import sys
 
 import numpy as np
 import pytest
@@ -32,6 +33,32 @@ _MODEL_B64 = (
 )
 
 
+def _ort_emits_logs() -> bool:
+    """False for the onnxruntime-windowsml build (ORT 1.25.2), which writes no log text to fd 2, so
+    placement counts (and per-run VERBOSE lines) cannot be captured there."""
+    import os
+    import tempfile
+    path = os.path.join(tempfile.mkdtemp(), "dyn.onnx")
+    with open(path, "wb") as f:
+        f.write(base64.b64decode(_MODEL_B64))
+    sys.stderr.flush()
+    tmp, saved = tempfile.TemporaryFile(mode="w+b"), os.dup(2)
+    os.dup2(tmp.fileno(), 2)
+    try:
+        so = ort.SessionOptions()
+        so.log_severity_level = 0
+        ort.InferenceSession(path, sess_options=so, providers=["CPUExecutionProvider"])
+    finally:
+        os.dup2(saved, 2)
+        os.close(saved)
+    tmp.seek(0)
+    return b"onnxruntime" in tmp.read().replace(b"\x00", b"")
+
+
+requires_ort_log = pytest.mark.skipif(
+    not _ort_emits_logs(), reason="this ONNX Runtime build (onnxruntime-windowsml) writes no log text")
+
+
 @pytest.fixture
 def model(tmp_path, monkeypatch):
     monkeypatch.setenv("KESTREL_ORT_PLACEMENT_DIAG", "1")
@@ -53,6 +80,7 @@ def _verbose_lines(capfd):
     return [ln for ln in err.splitlines() if "[V:onnxruntime" in ln]
 
 
+@requires_ort_log
 def test_model_logs_per_run_at_verbose(model, capfd):
     """Guard against a vacuous test: a VERBOSE session does log during run()."""
     so = ort.SessionOptions()
@@ -63,6 +91,7 @@ def test_model_logs_per_run_at_verbose(model, capfd):
     assert _verbose_lines(capfd)
 
 
+@requires_ort_log
 def test_probed_session_keeps_placement_and_runs_quiet(model, capfd, monkeypatch):
     monkeypatch.setattr(P, "_needs_probe", lambda providers: True)
     sess = P.build_session(model, CPU, kind="dyn")
@@ -72,6 +101,7 @@ def test_probed_session_keeps_placement_and_runs_quiet(model, capfd, monkeypatch
     assert _verbose_lines(capfd) == []
 
 
+@requires_ort_log
 def test_placement_is_probed_once_per_model(model, monkeypatch):
     calls = []
     real = P._probe_placement

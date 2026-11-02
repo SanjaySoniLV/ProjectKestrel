@@ -2,6 +2,7 @@
 import os
 from PyInstaller.utils.hooks import collect_dynamic_libs
 from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_submodules
 
 # Bake the distribution channel into the bundle (read at runtime by
 # dist_channel.py). The Windows installer / Microsoft Store bundle is the
@@ -38,6 +39,15 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 # module and its bundled shared libs so the frozen app can import it.
 tmp_ret = collect_all('pyexiv2')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# Windows ML (opt-in enhanced GPU mode, ml/enhanced_gpu.py): the winui3 extension modules and the
+# Windows App SDK bootstrap DLL come from the wasdk-* wheels. Optional -- a build without them
+# (e.g. onnxruntime-directml installed) just has no enhanced GPU mode.
+try:
+    tmp_ret = collect_all('winui3')
+    datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+    hiddenimports += collect_submodules('winrt')
+except Exception as _e:
+    print(f'[spec] Windows ML packages not bundled: {_e}')
 # optree removed: was a transitive dependency of torch via speciesnet (now eliminated)
 
 
