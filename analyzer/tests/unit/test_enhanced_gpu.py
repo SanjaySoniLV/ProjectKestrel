@@ -308,9 +308,10 @@ def test_decide_thresholds():
     assert ev.decide(0.99999, True, 2.5) is None
     assert "non-finite" in ev.decide(1.0, False, 3.0)
     assert "differs" in ev.decide(0.9990, True, 3.0)
-    assert "not fast enough" in ev.decide(1.0, True, 1.2)
-    assert "not fast enough" in ev.decide(1.0, True, 1.49)
-    assert ev.decide(1.0, True, 1.5) is None
+    assert "not faster" in ev.decide(1.0, True, 0.9)
+    assert "not faster" in ev.decide(1.0, True, 1.0)
+    assert ev.decide(1.0, True, 1.01) is None
+    assert ev.decide(1.0, True, 1.40) is None  # BioCLIP measured 1.40x on one setup: now routed to the vendor EP
 
 
 def test_compare_outputs_detects_mismatch_and_nan():

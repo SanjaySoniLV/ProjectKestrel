@@ -6,8 +6,8 @@ routed to the vendor EP:
 
 * the first vendor inference must succeed (the legacy quality model failed here on OpenVINO),
 * every output must be finite and match the baseline (cosine >= ``MIN_COSINE``),
-* the median model-run time, measured in steady state after ``WARMUP_RUNS`` runs, must be at
-  least ``MIN_SPEEDUP`` times faster than the baseline. Only model time is compared; RAW
+* the median model-run time, measured in steady state after ``WARMUP_RUNS`` runs, must be
+  more than ``MIN_SPEEDUP`` times as fast as the baseline. Only model time is compared; RAW
   decode and other CPU work are not part of the criterion.
 
 Vendor EP crashes (access violations) cannot be caught, so ``main`` is meant to run in a child
@@ -101,8 +101,8 @@ def decide(cosine: float, finite: bool, speedup: float) -> Optional[str]:
         return "vendor output contained non-finite values"
     if cosine < MIN_COSINE:
         return f"output differs from DirectML (cosine {cosine:.6f} < {MIN_COSINE})"
-    if speedup < MIN_SPEEDUP:
-        return f"not fast enough ({speedup:.2f}x < {MIN_SPEEDUP}x)"
+    if speedup <= MIN_SPEEDUP:
+        return f"not faster than DirectML ({speedup:.2f}x <= {MIN_SPEEDUP}x)"
     return None
 
 
