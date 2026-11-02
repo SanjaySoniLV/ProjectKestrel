@@ -520,7 +520,7 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
         out['rating_thresholds_custom'] = normalize_custom_thresholds(
             data.get('rating_thresholds_custom')
         )
-    _set_float('detection_threshold', default=0.25, min_value=0.1, max_value=0.99, digits=4)
+    _set_float('detection_threshold', default=0.15, min_value=0.1, max_value=0.99, digits=4)
     _set_float('scene_time_threshold', default=1.0, min_value=0.0, max_value=60.0, digits=4)
     # Long-gap scene break, in seconds. 0 = disabled (the historical behaviour:
     # scene boundaries come from AKAZE visual similarity alone, which chains

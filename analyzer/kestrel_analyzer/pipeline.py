@@ -828,7 +828,7 @@ class AnalysisPipeline:
         analyzer_name: str = "pipeline",
         wildlife_enabled: bool = True,
         species_detection_enabled: bool = True,
-        detection_threshold: float = 0.25,
+        detection_threshold: float = 0.15,
         scene_time_threshold: float = 1.0,
         scene_break_gap_seconds: float = 0.0,
         mask_threshold: float = 0.5,

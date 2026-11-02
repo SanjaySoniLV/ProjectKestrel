@@ -316,7 +316,7 @@ class QueueManager:
         self._use_gpu = True
         self._wildlife_enabled = True
         self._species_detection_enabled = True
-        self._detection_threshold = 0.25
+        self._detection_threshold = 0.15
         self._scene_time_threshold = 1.0
         self._scene_break_gap_seconds = 0.0
         self._mask_threshold = 0.5
@@ -424,7 +424,7 @@ class QueueManager:
         wildlife_enabled: bool = True,
         species_detection_enabled: bool = True,
         detector_name: str = _DEFAULT_DETECTOR_NAME,
-        detection_threshold: float = 0.25,
+        detection_threshold: float = 0.15,
         scene_time_threshold: float = 1.0,
         scene_break_gap_seconds: float = 0.0,
         mask_threshold: float = 0.5,

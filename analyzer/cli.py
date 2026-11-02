@@ -56,7 +56,7 @@ def parse_args(argv: Sequence[str] | None = None):
     parser.add_argument(
         "--detection-threshold",
         type=float,
-        default=0.25,
+        default=0.15,
         help="Minimum detection confidence threshold (0.10-0.99); matches desktop default.",
     )
     parser.add_argument(
