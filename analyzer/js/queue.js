@@ -171,6 +171,7 @@
           }
         }
       } catch (_) { }
+      try { if (window.egRenderGpuMode) window.egRenderGpuMode(status && status.gpu_mode); } catch (_) { }
       const panel = document.getElementById('queuePanel');
       const badge = document.getElementById('queuePanelBadge');
       const body = document.getElementById('queuePanelBody');

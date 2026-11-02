@@ -3412,6 +3412,7 @@ class Api:
         try:
             eg = self._eg_module()
             st = eg.status()
+            st['runtime'] = eg.runtime_summary()
             with self._eg_lock:
                 job = {k: v for k, v in self._eg_job.items() if k != 'cancel'}
             st['job'] = job
@@ -3485,6 +3486,13 @@ class Api:
                      f"Models: {json.dumps(st.get('models', {}))}",
                      f"Hardware: {json.dumps(st.get('hardware', {}))}"]
             return {'success': True, 'text': '\n'.join(lines)[:6000]}
+        except Exception as e:
+            return {'success': False, 'error': str(e), 'text': ''}
+
+    def gpu_mode_report_text(self):
+        """Plain-text summary for a bug report about the GPU mode (enhanced / standard / CPU fallback)."""
+        try:
+            return {'success': True, 'text': self._eg_module().report_text()}
         except Exception as e:
             return {'success': False, 'error': str(e), 'text': ''}
 

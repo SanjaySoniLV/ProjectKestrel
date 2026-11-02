@@ -396,7 +396,17 @@ class QueueManager:
                 'paused': self.is_paused,
                 'items': [it.to_dict() for it in self._items],
                 'gpu_lost': dict(self._gpu_lost) if self._gpu_lost else None,
+                'gpu_mode': self._gpu_mode(),
             }
+
+    def _gpu_mode(self):
+        """What analysis is running on (enhanced GPU / standard GPU / CPU fallback); None until models load."""
+        try:
+            coord = getattr(getattr(self._pipeline, 'sn_sam', None), 'coord', None)
+            from kestrel_analyzer.ml import enhanced_gpu
+            return enhanced_gpu.gpu_mode(bool(self._use_gpu), coord, bool(self._gpu_lost))
+        except Exception:
+            return None
 
     # ---- control ----
 

@@ -61,9 +61,16 @@ class ResilientOnnxSession:
     def _build(self) -> None:
         from .providers import build_session  # lazy: ORT-free test environments import this module
 
+        was_vendor = self._vendor_active
         self._vendor_active = False
         if self._build_vendor():
             return
+        if was_vendor:  # rebuilt without the vendor EP (the run moved to CPU): not an error of the EP itself
+            try:
+                from .enhanced_gpu import note_vendor_left
+                note_vendor_left(self._kind, "the run moved to the CPU", to="CPU")
+            except Exception:
+                pass
         providers = self._coord.providers_for(self._kind)
         # build_session records requested/actual providers + per-EP node
         # placement for the analysis log (see ml/providers.py).
@@ -109,6 +116,11 @@ class ResilientOnnxSession:
             self._session = build_session(str(path), [], kind=self._kind, config=cfg, vendor=spec)
             self.model_path_used = str(path)
             self._vendor_active = True
+            try:
+                from .enhanced_gpu import note_vendor_active
+                note_vendor_active(self._kind, path.name)
+            except Exception:
+                pass
             return True
         except Exception as e:
             self._session = None

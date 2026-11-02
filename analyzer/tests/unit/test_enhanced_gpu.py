@@ -462,3 +462,85 @@ def test_ep_version_is_parsed_from_the_install_path_and_a_change_means_stale(mon
     _good_state(ep_version="1.7.0.0")  # validated against an older EP: re-validate before using
     eg.reset_cache()
     assert eg.vendor_spec_for("detector", "mdv5a.onnx") is None
+
+
+# ---- live status ("what is analysis running on?") --------------------------------------------
+
+class _ModeCoord:
+    def __init__(self, state="gpu", gpu_lost=False):
+        self.state = types.SimpleNamespace(value=state)
+        self.gpu_lost = gpu_lost
+
+
+@pytest.fixture
+def clean_runtime():
+    eg.reset_runtime()
+    yield
+    eg.reset_runtime()
+
+
+def test_gpu_mode_none_until_models_load(clean_runtime):
+    assert eg.gpu_mode(True, None) is None
+
+
+def test_gpu_mode_cpu_selected(clean_runtime):
+    m = eg.gpu_mode(False, _ModeCoord())
+    assert m["mode"] == "cpu_selected" and not m["report"] and not m["needs_restart"]
+
+
+def test_gpu_mode_standard_when_not_set_up(clean_runtime, monkeypatch):
+    monkeypatch.setattr(eg, "user_enabled", lambda: False)
+    m = eg.gpu_mode(True, _ModeCoord())
+    assert m["mode"] == "standard" and not m["report"]
+
+
+def test_gpu_mode_enhanced_and_partial(clean_runtime, monkeypatch):
+    _good_state()
+    monkeypatch.setattr(eg, "current_spec", lambda: types.SimpleNamespace(label=lambda: "Intel OpenVINO"))
+    eg.note_vendor_active("detector", "mdv5a.onnx")
+    eg.note_vendor_active("sam_enc", "enc.onnx")
+    m = eg.gpu_mode(True, _ModeCoord())
+    assert m["mode"] == "enhanced" and "Intel OpenVINO" in m["label"] and not m["report"]
+    eg.note_vendor_left("sam_enc", "boom")
+    m = eg.gpu_mode(True, _ModeCoord())
+    assert m["mode"] == "enhanced_partial" and m["report"]
+    assert eg.runtime_summary()["on_vendor"] == ["detector"]
+    assert eg.runtime_summary()["fallbacks"][0]["to"] == "DirectML"
+
+
+def test_gpu_mode_vendor_failure_everywhere_is_standard_with_report(clean_runtime):
+    eg.note_vendor_active("detector", "mdv5a.onnx")
+    eg.note_vendor_left("detector", "bad node")
+    m = eg.gpu_mode(True, _ModeCoord())
+    assert m["mode"] == "standard" and m["report"] and "bad node" in m["detail"]
+
+
+@pytest.mark.parametrize("state", ["cpu", "gpu_locked_out"])
+def test_gpu_mode_cpu_fallback_needs_restart_and_report(clean_runtime, state):
+    m = eg.gpu_mode(True, _ModeCoord(state=state))
+    assert m["mode"] == "cpu_fallback" and m["needs_restart"] and m["report"]
+    assert "Restart Kestrel" in m["detail"]
+
+
+def test_gpu_mode_gpu_lost(clean_runtime):
+    m = eg.gpu_mode(True, _ModeCoord(), gpu_lost=True)
+    assert m["mode"] == "gpu_lost" and m["needs_restart"] and m["report"]
+
+
+def test_note_vendor_left_ignores_models_never_on_vendor(clean_runtime):
+    eg.note_vendor_left("detector", "x")
+    assert eg.runtime_summary() == {"on_vendor": [], "fallbacks": []}
+
+
+def test_report_text_mentions_fallbacks(clean_runtime):
+    _good_state()
+    eg.note_vendor_active("detector", "mdv5a.onnx")
+    eg.note_vendor_left("detector", "bad node", to="CPU")
+    t = eg.report_text()
+    assert "bad node" in t and "OpenVINOExecutionProvider" in t
+
+
+def test_status_includes_setup_time_and_failures():
+    _good_state(finished=123, runtime_failures=2, last_failure={"kind": "detector"})
+    st = eg.status()
+    assert st["finished"] == 123 and st["runtime_failures"] == 2 and st["last_failure"]["kind"] == "detector"
