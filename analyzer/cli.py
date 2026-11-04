@@ -1,8 +1,10 @@
 import argparse
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Sequence
 
@@ -11,6 +13,7 @@ from kestrel_analyzer.pipeline import AnalysisPipeline
 from kestrel_analyzer.logging_utils import get_log_path, log_event, log_exception
 from kestrel_analyzer.config import (
     DEFAULT_DETECTOR_NAME,
+    DEFAULT_MAX_CONSECUTIVE_ERRORS,
     DETECTOR_ONNX_PATHS,
     select_camera_images,
 )
@@ -53,7 +56,7 @@ def parse_args(argv: Sequence[str] | None = None):
     parser.add_argument(
         "--detection-threshold",
         type=float,
-        default=0.25,
+        default=0.15,
         help="Minimum detection confidence threshold (0.10-0.99); matches desktop default.",
     )
     parser.add_argument(
@@ -116,13 +119,13 @@ def parse_args(argv: Sequence[str] | None = None):
         "--wildlife",
         dest="wildlife_enabled",
         action="store_true",
-        help="Enable non-bird wildlife detection (BioCLIP routing, experimental).",
+        help="Enable non-bird wildlife detection (BioCLIP routing; default).",
     )
     parser.add_argument(
         "--no-wildlife",
         dest="wildlife_enabled",
         action="store_false",
-        help="Disable non-bird wildlife detection (default).",
+        help="Disable non-bird wildlife detection.",
     )
     parser.add_argument(
         "--species-detection",
@@ -139,6 +142,18 @@ def parse_args(argv: Sequence[str] | None = None):
             "Skip the SigLIP whole-frame embedding used by smart search (crops are "
             "always embedded: that embedding is also the default quality score). "
             "Default: the smart_search_enabled setting (on)."
+        ),
+    )
+    parser.add_argument(
+        "--raw-embedded-preview",
+        dest="raw_use_embedded_preview",
+        action="store_true",
+        default=False,
+        help=(
+            "Analyse each RAW's embedded JPEG preview instead of decoding the "
+            "sensor data: much faster, no highlight recovery. RAWs without a "
+            "usable preview are still decoded. Off by default (the desktop "
+            "app's setting does not apply to the CLI)."
         ),
     )
     parser.add_argument(
@@ -213,6 +228,15 @@ def parse_args(argv: Sequence[str] | None = None):
         default=None,
         help="Path for the --validate result JSON. Recommended on Windows where console=False hides stdout.",
     )
+    # Internal: validation child of the "enhanced GPU performance" setup (ml/enhanced_gpu.py). It runs
+    # in its own process because a vendor execution provider can end its process with an access violation.
+    parser.add_argument("--enhanced-gpu-validate", dest="enhanced_gpu_validate", action="store_true",
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--enhanced-gpu-ep", dest="enhanced_gpu_ep", type=str, default="", help=argparse.SUPPRESS)
+    parser.add_argument("--enhanced-gpu-kinds", dest="enhanced_gpu_kinds", type=str, default="",
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--enhanced-gpu-output", dest="enhanced_gpu_output", type=str, default="",
+                        help=argparse.SUPPRESS)
     # ── Headless cloud / Perch commands (CI E2E + local smoke) ──────────────
     # Each short-circuits to cli_cloud (like --validate/--smoke); they drive the
     # real upload/cloud-compute/Perch paths against `folder` with no GUI.
@@ -253,13 +277,125 @@ def parse_args(argv: Sequence[str] | None = None):
         "--json-out", dest="json_out", type=str, default=None,
         help="Also write the headless cloud command's JSON result to this path.",
     )
+    parser.add_argument(
+        "--max-gpu-restarts", dest="max_gpu_restarts", type=int, default=3,
+        help="If the GPU is lost mid-run (Windows GPU reset), continue the same folder in a fresh "
+             "process, up to this many times, then finish on CPU. 0 disables restarting.",
+    )
+    parser.add_argument(
+        "--max-consecutive-errors", dest="max_consecutive_errors", type=int,
+        default=DEFAULT_MAX_CONSECUTIVE_ERRORS,
+        help="Stop the run (exit code 5) after this many frames in a row end as Error rows, instead of "
+             "writing an Error row for every remaining photo. A successful frame resets the count. "
+             "0 disables.",
+    )
+    parser.add_argument(
+        "--fail-on-errors", dest="fail_on_errors", action="store_true",
+        help="Exit with code 4 if any frame ended as an Error row (default: exit 0, as before).",
+    )
+    # Internal: set by the restart loop on the processes it starts.
+    parser.add_argument("--gpu-child", dest="gpu_child", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--gpu-restart-attempt", dest="gpu_restart_attempt", type=int, default=0,
+                        help=argparse.SUPPRESS)
     parser.set_defaults(
         use_gpu=True,
-        wildlife_enabled=False,
+        wildlife_enabled=True,
         species_detection_enabled=True,
         retry_errored=False,
     )
     return parser.parse_args(argv)
+
+
+# Exit code a restart child uses to say "the GPU was lost; run me again".
+EXIT_GPU_LOST = 75
+# Some frames ended as Error rows and --fail-on-errors was given.
+EXIT_FRAMES_ERRORED = 4
+# The run stopped because --max-consecutive-errors frames in a row failed.
+EXIT_ERROR_STOP = 5
+
+
+def _count_error_rows(folder: str):
+    """Rows of ``folder/.kestrel/kestrel_database.csv`` whose species is
+    ``Error`` (None when the database is missing or unreadable)."""
+    try:
+        import csv
+        path = os.path.join(folder, ".kestrel", "kestrel_database.csv")
+        with open(path, "r", encoding="utf-8", newline="") as f:
+            return sum(1 for row in csv.DictReader(f) if (row.get("species") or "") == "Error")
+    except Exception:
+        return None
+
+
+def _child_command(argv: Sequence[str]) -> list[str]:
+    """Command line that re-runs this CLI with ``argv`` in a new process."""
+    if getattr(sys, "frozen", False):
+        # Frozen app: the executable's own ``--cli`` switch reaches cli.main.
+        return [sys.executable, "--cli", *argv]
+    return [sys.executable, os.path.abspath(__file__), *argv]
+
+
+def _strip_internal_flags(argv: Sequence[str]) -> list[str]:
+    out: list[str] = []
+    skip = False
+    for a in argv:
+        if skip:
+            skip = False
+            continue
+        if a == "--gpu-child":
+            continue
+        if a == "--gpu-restart-attempt":
+            skip = True
+            continue
+        if a.startswith("--gpu-restart-attempt="):
+            continue
+        out.append(a)
+    return out
+
+
+def run_gpu_restart_loop(argv: Sequence[str], first_attempt: int, max_restarts: int, log_path=None,
+                         runner=None) -> int:
+    """Re-run the CLI in fresh processes until it stops reporting a GPU loss.
+
+    A lost GPU device cannot be recovered inside the process that lost it, but
+    a new process gets the GPU back; ``process_folder`` resumes from the
+    database. Attempts ``first_attempt`` .. ``max_restarts`` are started; the
+    last one runs without stop-on-loss, so it carries on at CPU speed exactly
+    as a run without this feature would. Returns the last child's exit code.
+    """
+    run = runner or (lambda cmd: subprocess.call(cmd))
+    base = _strip_internal_flags(argv)
+    attempt = first_attempt
+    while True:
+        print(f"\nGPU was reset; continuing in a fresh process (restart {attempt} of {max_restarts}).",
+              flush=True)
+        if log_path:
+            log_event(log_path, {"level": "warning", "event": "gpu_restart", "attempt": attempt,
+                                 "max_restarts": max_restarts})
+        try:
+            rc = run(_child_command([*base, "--gpu-child", "--gpu-restart-attempt", str(attempt)]))
+        except KeyboardInterrupt:
+            return 130
+        if rc != EXIT_GPU_LOST:
+            return rc
+        attempt += 1
+        if attempt > max_restarts:  # defensive: the last child never exits with EXIT_GPU_LOST
+            return rc
+
+
+def _maybe_inject_test_gpu_loss(pipeline, state: dict, processed: int, attempt: int) -> None:
+    """Test-only: ``KESTREL_TEST_GPU_LOSS_AFTER=N`` simulates a device-lost
+    error N images into the first attempt, to exercise the restart loop."""
+    raw = os.environ.get("KESTREL_TEST_GPU_LOSS_AFTER")
+    if not raw or attempt != 0 or state.get("done"):
+        return
+    state.setdefault("base", processed)
+    try:
+        if processed - state["base"] >= int(raw):
+            state["done"] = True
+            pipeline.sn_sam.coord.on_run_failure(
+                RuntimeError("887A0005 The GPU device instance has been suspended (injected test fault)"))
+    except Exception:
+        pass
 
 
 def _resolve_detector_name(args) -> str:
@@ -285,6 +421,20 @@ def _find_first_image(folder: str) -> str | None:
     return os.path.join(folder, files[0])
 
 
+def format_stage_summary(stage_times, stage_counts, n_images: int, wall_s: float) -> list[str]:
+    """Per-stage wall time for the run: total seconds, calls, and seconds per
+    processed image (calls can exceed images: bioclip / siglip_crop run per crop).
+    ``other`` is wall time no stage covers (decode waits, scene grouping, exports)."""
+    n = max(1, int(n_images))
+    lines = [f"[stage-times] {n_images} images, wall {wall_s:.1f}s ({wall_s / n:.3f} s/image)"]
+    for stage, total in sorted(stage_times.items(), key=lambda kv: -kv[1]):
+        lines.append(f"[stage-times]   {stage:<15} total {total:8.1f}s  calls {stage_counts.get(stage, 0):6d}"
+                     f"  {total / n:.3f} s/image")
+    other = max(0.0, wall_s - sum(stage_times.values()))
+    lines.append(f"[stage-times]   {'other':<15} total {other:8.1f}s  {'':12}  {other / n:.3f} s/image")
+    return lines
+
+
 def main(argv: Sequence[str] | None = None):
     # Dump a Python traceback on SIGSEGV / SIGABRT / native crashes from ONNX
     # Runtime, OpenCV, etc. The full-app entrypoint (visualizer.py:main) enables
@@ -299,6 +449,11 @@ def main(argv: Sequence[str] | None = None):
     log_path = get_log_path(None)
     try:
         args = parse_args(argv)
+        if args.enhanced_gpu_validate:
+            from kestrel_analyzer.ml import enhanced_validate
+            from kestrel_analyzer.ml.enhanced_gpu import ROUTABLE_KINDS
+            kinds = [k for k in args.enhanced_gpu_kinds.split(",") if k] or list(ROUTABLE_KINDS)
+            sys.exit(enhanced_validate.main(args.enhanced_gpu_ep, kinds, args.enhanced_gpu_output))
         if args.validate:
             from kestrel_analyzer.validation import run_validation
             sys.exit(run_validation(
@@ -390,7 +545,15 @@ def main(argv: Sequence[str] | None = None):
         def on_status(msg):
             print(msg)
 
+        processed_count = [0]
+        test_fault_state: dict = {}
+        stop_on_gpu_loss = bool(
+            args.use_gpu and int(args.gpu_restart_attempt) < max(0, int(args.max_gpu_restarts))
+        )
+
         def on_progress(processed, total):
+            processed_count[0] = processed
+            _maybe_inject_test_gpu_loss(pipeline, test_fault_state, processed, int(args.gpu_restart_attempt))
             print(f"\rProcessed {processed}/{total}", end="", flush=True)
 
         log_event(
@@ -415,6 +578,7 @@ def main(argv: Sequence[str] | None = None):
             },
         )
 
+        t_run = time.perf_counter()
         pipeline.process_folder(
             args.folder,
             callbacks={
@@ -439,8 +603,51 @@ def main(argv: Sequence[str] | None = None):
             ),
             smart_search_enabled=args.smart_search_enabled,
             quality_model=args.quality_model,
+            raw_use_embedded_preview=args.raw_use_embedded_preview,
+            stop_on_gpu_loss=stop_on_gpu_loss,
+            restart_on_cpu_fallback=stop_on_gpu_loss,
+            max_consecutive_errors=max(0, int(args.max_consecutive_errors)),
         )
         print()
+        lost = getattr(pipeline, "gpu_lost", None)
+        if isinstance(lost, dict) and lost:
+            print(f"GPU lost while processing {lost.get('file') or '(unknown file)'}: "
+                  f"{(lost.get('reason') or '')[:200]}", flush=True)
+            if args.gpu_child:
+                sys.exit(EXIT_GPU_LOST)
+            # Top-level process: free the models, then continue in fresh processes.
+            del pipeline
+            import gc
+            gc.collect()
+            sys.exit(run_gpu_restart_loop(
+                list(argv) if argv is not None else sys.argv[1:],
+                first_attempt=int(args.gpu_restart_attempt) + 1,
+                max_restarts=int(args.max_gpu_restarts),
+                log_path=log_path,
+            ))
+        for line in format_stage_summary(pipeline.stage_times, pipeline.stage_counts,
+                                         processed_count[0], time.perf_counter() - t_run):
+            print(line, flush=True)
+        retry_cmd = f'python analyzer/cli.py "{args.folder}" --retry-errored'
+        error_stop = getattr(pipeline, "error_stop", None)
+        run_errors = getattr(pipeline, "error_count", 0)
+        run_errors = run_errors if isinstance(run_errors, int) else 0
+        folder_errors = _count_error_rows(args.folder) if run_errors or isinstance(error_stop, dict) else None
+        if run_errors:
+            where = f" ({folder_errors} Error row(s) in the folder in total)" if folder_errors is not None else ""
+            print(f"WARNING: {run_errors} frame(s) ended as Error rows in this run{where}.", flush=True)
+            print(f"To retry them: {retry_cmd}", flush=True)
+        if isinstance(error_stop, dict) and error_stop:
+            print(
+                f"STOPPED: {error_stop.get('consecutive')} frames in a row failed "
+                f"(last: {error_stop.get('last_file')}: {str(error_stop.get('last_error'))[:200]}). "
+                "The remaining photos were not processed; run the same command again to continue "
+                "(add --retry-errored to also retry the failed frames).",
+                flush=True,
+            )
+            sys.exit(EXIT_ERROR_STOP)
+        if run_errors and args.fail_on_errors:
+            sys.exit(EXIT_FRAMES_ERRORED)
     except Exception as e:
         log_exception(
             log_path,

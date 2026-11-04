@@ -20,7 +20,11 @@ def gpu_providers() -> list[str]:
 
 def is_gpu_active(active_providers: list[str]) -> bool:
     """Return True if the platform GPU execution provider is active."""
-    return GPU_EP in active_providers
+    if GPU_EP in active_providers:
+        return True
+    # Enhanced GPU mode (Windows only): a vendor EP created from a Windows ML device.
+    from .enhanced_gpu import is_vendor_ep
+    return any(is_vendor_ep(p) for p in active_providers)
 
 
 def __getattr__(name: str) -> Any:

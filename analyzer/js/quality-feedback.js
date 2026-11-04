@@ -1,7 +1,8 @@
     // ─── Quality feedback ──────────────────────────────────────────────────────
     // "Did Kestrel sort by sharpness well? 👍 👎" in the scene viewer. 👎 opens
     // a dialog: consent first (skipped when the user chose "always share"),
-    // then drag 2–5 bird crops into order, sharpest first, then a thank-you.
+    // then drag 2–5 bird crops into a vertical list, sharpest at the top, with
+    // a large preview of whichever one the pointer is on, then a thank-you.
     // No ties and few options: giving feedback should take seconds.
     // Kestrel scores focus/sharpness only, so the dialog asks about focus only.
     // Frames are chosen (and shuffled) in Python — kestrel_analyzer/
@@ -134,7 +135,6 @@
 
     function _qfClose(discard) {
       const dlg = document.getElementById('qfDlg');
-      _qfZoomClose();
       if (discard && _qf && !_qf.submitted && _qf.token) {
         try { window.pywebview?.api?.discard_quality_feedback?.(_qf.token); } catch (_) { }
       }
@@ -152,24 +152,11 @@
       return img;
     }
 
-    function _qfZoomClose() {
-      const z = document.getElementById('qfZoom');
-      if (!z) return false;
-      z.remove();
-      return true;
-    }
-
-    // Enlarge one crop over the whole dialog; click or Esc closes it.
-    function _qfZoom(index) {
-      _qfZoomClose();
+    // The dialog's size follows the step (see quality-feedback.css): compact
+    // for consent / thank-you, most of the window while sorting.
+    function _qfSetStep(step) {
       const dlg = document.getElementById('qfDlg');
-      const z = _qfEl('div', 'qf-zoom');
-      z.id = 'qfZoom';
-      const img = _qfImg(index);
-      img.className = '';
-      z.appendChild(img);
-      z.addEventListener('click', _qfZoomClose);
-      dlg.appendChild(z);
+      if (dlg) dlg.dataset.step = step;
     }
 
     function _qfRankingFromItems() {
@@ -183,19 +170,38 @@
       items.splice(to, 0, it);
     }
 
-    // One step, no explanations: drag the crops into order, then Done.
+    // Show one crop in the large preview pane (hover / keyboard focus / click).
+    function _qfPreview(index) {
+      if (!_qf) return;
+      _qf.previewIndex = index;
+      const img = document.getElementById('qfPreviewImg');
+      const cap = document.getElementById('qfPreviewCap');
+      const f = _qf.frames.find(fr => fr.index === index);
+      if (img && f && img.getAttribute('src') !== f.data_url) img.src = f.data_url;
+      const pos = _qf.items.findIndex(it => it.index === index);
+      if (cap) cap.textContent = `Position ${pos + 1} of ${_qf.items.length}`;
+      document.querySelectorAll('#qfBody .qf-card').forEach((c) => {
+        c.classList.toggle('is-previewed', c.dataset.index === String(index));
+      });
+    }
+
+    // One step, no explanations: drag the crops into order, then Submit.
+    // Left: the ranking, sharpest at the top. Right: a large preview.
     function _qfRenderSort() {
+      _qfSetStep('sort');
       const body = document.getElementById('qfBody');
       const footer = document.getElementById('qfFooter');
-      document.getElementById('qfTitle').textContent = 'Sort these thumbnails from sharpest to blurriest';
-      document.getElementById('qfSubtitle').textContent = 'Drag to reorder. Judge focus only, not pose.';
+      document.getElementById('qfTitle').textContent = 'Sort these photos from sharpest to blurriest';
+      document.getElementById('qfSubtitle').textContent = 'Drag them into order. Point at one to see it larger. Judge focus only, not pose.';
       body.replaceChildren();
       footer.replaceChildren();
+      if (!_qf.items.some(it => it.index === _qf.previewIndex)) _qf.previewIndex = _qf.items[0].index;
 
+      const sort = _qfEl('div', 'qf-sort');
+      const rank = _qfEl('div', 'qf-rank-col');
       const list = _qfEl('div', 'qf-list');
-      list.style.setProperty('--qf-n', String(_qf.items.length));
       list.setAttribute('role', 'list');
-      list.setAttribute('aria-label', 'Crops, sharpest first');
+      list.setAttribute('aria-label', 'Photos, sharpest first');
       _qf.items.forEach((it, pos) => {
         const card = _qfEl('div', 'qf-card');
         card.setAttribute('role', 'listitem');
@@ -203,16 +209,13 @@
         card.tabIndex = 0;
         card.draggable = true;
         card.dataset.pos = String(pos);
+        card.dataset.index = String(it.index);
+        card.appendChild(_qfEl('span', 'qf-grip', '⠿'));
         card.appendChild(_qfEl('span', 'qf-rank', String(pos + 1)));
         card.appendChild(_qfImg(it.index));
-        const zoom = _qfEl('button', 'qf-zoom-btn', '🔍');
-        zoom.type = 'button';
-        zoom.title = 'Enlarge to inspect focus';
-        zoom.setAttribute('aria-label', 'Enlarge this crop');
-        zoom.draggable = false;
-        zoom.addEventListener('click', (e) => { e.stopPropagation(); _qfZoom(it.index); });
-        zoom.addEventListener('keydown', (e) => { if (e.key !== 'Escape') e.stopPropagation(); });
-        card.appendChild(zoom);
+        card.addEventListener('mouseenter', () => _qfPreview(it.index));
+        card.addEventListener('focus', () => _qfPreview(it.index));
+        card.addEventListener('click', () => _qfPreview(it.index));
         // Arrow keys move the focused crop (keyboard fallback for drag).
         card.addEventListener('keydown', (e) => {
           const k = e.key;
@@ -241,7 +244,21 @@
         });
         list.appendChild(card);
       });
-      body.appendChild(list);
+      rank.append(_qfEl('div', 'qf-end qf-end--top', '▲ Sharpest'), list, _qfEl('div', 'qf-end qf-end--bottom', '▼ Blurriest'));
+
+      const view = _qfEl('div', 'qf-preview');
+      const img = document.createElement('img');
+      img.id = 'qfPreviewImg';
+      img.className = 'qf-preview-img';
+      img.alt = 'Larger view of the photo you are pointing at';
+      img.draggable = false;
+      const cap = _qfEl('div', 'qf-preview-cap');
+      cap.id = 'qfPreviewCap';
+      view.append(img, cap);
+
+      sort.append(rank, view);
+      body.appendChild(sort);
+      _qfPreview(_qf.previewIndex);
 
       const cancel = _qfEl('button', '', 'Cancel');
       cancel.type = 'button';
@@ -276,6 +293,7 @@
 
     // Asked before sorting, so nobody sorts and then declines.
     function _qfRenderConsent() {
+      _qfSetStep('consent');
       document.getElementById('qfTitle').textContent = 'Would you like to help improve Kestrel’s quality scores?';
       document.getElementById('qfSubtitle').textContent = '';
       const body = document.getElementById('qfBody');
@@ -293,7 +311,7 @@
         _qfEl('div', 'muted', 'Your full photos, location or camera data, file names, or anything tied to your account.'));
       lists.append(yes, no);
       body.appendChild(lists);
-      const links = _qfEl('p', 'qf-consent-text muted');
+      const links = _qfEl('p', 'qf-consent-text qf-consent-links muted');
       links.append(_qfLink('Read more', QF_PRIVACY_URL + '#quality-feedback'), document.createTextNode(' · '),
         _qfLink('Privacy policy', QF_PRIVACY_URL));
       const remember = _qfEl('label', 'inline qf-remember');
@@ -318,15 +336,19 @@
         _qf.started = performance.now();
       });
       footer.append(no_, _qfEl('span', 'qf-spacer'), next);
+      // Rendered before showModal(), so focus() alone is lost: autofocus makes
+      // the dialog start on Next instead of the first link.
+      next.autofocus = true;
       try { next.focus(); } catch (_) { }
     }
 
     function _qfRenderThanks() {
+      _qfSetStep('thanks');
       document.getElementById('qfTitle').textContent = 'Thank you!';
       document.getElementById('qfSubtitle').textContent = '';
       const body = document.getElementById('qfBody');
       const footer = document.getElementById('qfFooter');
-      body.replaceChildren(_qfEl('p', 'qf-consent-text', 'Your feedback helps Kestrel rank photos by sharpness.'));
+      body.replaceChildren(_qfEl('p', 'qf-consent-text qf-thanks-text', 'Your feedback helps Kestrel rank photos by sharpness.'));
       footer.replaceChildren();
       const close = _qfEl('button', 'primary', 'Close');
       close.type = 'button';
@@ -378,8 +400,6 @@
       if (!dlg) return;
       dlg.addEventListener('keydown', (e) => { e.stopPropagation(); });
       dlg.addEventListener('cancel', (e) => {
-        // Esc closes the enlarged crop first, not the whole dialog.
-        if (_qfZoomClose()) { e.preventDefault(); return; }
         if (_qf && !_qf.submitted && _qf.token) {
           try { window.pywebview?.api?.discard_quality_feedback?.(_qf.token); } catch (_) { }
         }

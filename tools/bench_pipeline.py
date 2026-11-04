@@ -195,7 +195,7 @@ def run(args) -> dict:
     hooked = _instrument(analyzer_dir)
     from kestrel_analyzer import pipeline as pl
     try:
-        from kestrel_analyzer.config import VERSION
+        from kestrel_analyzer.config import PIPELINE_VERSION as VERSION
     except Exception:
         VERSION = "?"
 

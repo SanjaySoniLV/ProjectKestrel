@@ -205,6 +205,8 @@ jobs:
         with:
           name: windows-dev-bundle
           path: analyzer/dist/ProjectKestrel/
+          # The bundled sample sets only contain .kestrel/ (hidden) folders, which upload-artifact@v4 skips by default.
+          include-hidden-files: true
           retention-days: 14
 
       - name: Upload validate-result.json

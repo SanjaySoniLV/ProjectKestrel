@@ -6,6 +6,7 @@ for folder analysis, and the _QueueItem dataclass used internally.
 
 from __future__ import annotations
 
+import csv
 import os
 import shutil
 import sys
@@ -74,6 +75,26 @@ def _wipe_kestrel_dir(folder_path: str) -> None:
         shutil.rmtree(kestrel_dir)
 
 
+def _count_folder_scenes(folder_path: str) -> int | None:
+    """Number of distinct scenes in ``folder/.kestrel/kestrel_database.csv``.
+
+    Used only for the "Kestrel just sorted N photos into M scenes" line in the
+    donate prompt, so it is failsafe: None when the CSV is missing, has no
+    ``scene_count`` column, or can't be read.
+    """
+    try:
+        db_path = os.path.join(folder_path, ".kestrel", "kestrel_database.csv")
+        with open(db_path, "r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            if not reader.fieldnames or "scene_count" not in reader.fieldnames:
+                return None
+            scenes = {(row.get("scene_count") or "").strip() for row in reader}
+        scenes.discard("")
+        return len(scenes)
+    except Exception:
+        return None
+
+
 def _utc_timestamp() -> str:
     return datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + 'Z'
 
@@ -139,13 +160,65 @@ def _quality_to_raw_rating(quality: float) -> int:
     return 5
 
 
+try:
+    from kestrel_analyzer.config import DEFAULT_MAX_CONSECUTIVE_ERRORS as _DEFAULT_MAX_CONSECUTIVE_ERRORS
+except Exception:  # pragma: no cover - config import must never block the queue
+    _DEFAULT_MAX_CONSECUTIVE_ERRORS = 10
+
+_GPU_LOST_MESSAGE = (
+    'The GPU stopped responding (a Windows GPU reset). Progress is saved. '
+    'Restart Kestrel, then analyze this folder again to continue on the GPU.'
+)
+
+# Live-preview JPEG limits. The Live Analysis dialog shows these in panes a few
+# hundred pixels wide, so full-size frames only cost encode time on the analysis
+# thread and IPC/base64 time on the UI side.
+_LIVE_OVERLAY_MAX_DIM = 720
+_LIVE_OVERLAY_QUALITY = 80
+_LIVE_CROP_MAX_DIM = 224
+_LIVE_CROP_QUALITY = 85
+
+
+def _write_live_jpeg(path: str, rgb, max_dim: int, quality: int) -> bool:
+    """Best-effort write of a small live-preview JPEG from an RGB array.
+
+    Downscales so the long edge is at most ``max_dim`` and writes to a temp file
+    then ``os.replace``s it, so the UI never reads a half-written frame. Returns
+    True when the file was replaced; False (never raises) on any failure, in
+    which case the previous frame stays in place.
+    """
+    try:
+        import cv2 as _cv2
+        h, w = rgb.shape[:2]
+        longest = max(h, w)
+        if longest > max_dim > 0:
+            scale = max_dim / float(longest)
+            rgb = _cv2.resize(rgb, (max(1, round(w * scale)), max(1, round(h * scale))),
+                              interpolation=_cv2.INTER_AREA)
+        ok, buf = _cv2.imencode('.jpg', _cv2.cvtColor(rgb, _cv2.COLOR_RGB2BGR),
+                                [_cv2.IMWRITE_JPEG_QUALITY, int(quality)])
+        if not ok:
+            return False
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + '.tmp'
+        with open(tmp, 'wb') as f:
+            f.write(buf.tobytes())
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        return False
+
+
 class _QueueItem:
     __slots__ = ('path', 'name', 'status', 'processed', 'total', 'error',
                  'start_time', 'end_time', 'paused_duration', 'pause_start_time',
                  'current_filename', 'current_export_path', 'current_status_msg',
                  'current_overlay_rel', 'current_crops_rel', 'current_detections',
                  'current_quality_results', 'current_species_results',
-                 'initial_processed', 'warning',
+                 'initial_processed', 'warning', 'scene_total',
+                 # Live-preview change counters: bumped each time the matching
+                 # preview image is rewritten, so the UI refetches only on change.
+                 'live_frame_ver', 'live_overlay_ver', 'live_crops_ver',
                  # Phase 3 per-item options (set at enqueue time by the analyze
                  # dialog; honored by the worker just-before processing).
                  'delete_kestrel_on_start', 'skip_if_already_done',
@@ -172,11 +245,17 @@ class _QueueItem:
         self.current_detections: list = []
         self.current_quality_results: list = []
         self.current_species_results: list = []
+        self.live_frame_ver: int = 0
+        self.live_overlay_ver: int = 0
+        self.live_crops_ver: int = 0
         self.initial_processed: int = 0  # files already done before this session
         # Persistent, user-facing problem with this folder's run (e.g. results
         # can't be saved). Unlike current_status_msg it is not overwritten per
         # image; the pipeline clears it when the problem goes away.
         self.warning: str = ''
+        # Distinct scenes in the folder after a successful run (None until then
+        # or when unknown). Feeds the donate prompt's "this run" copy.
+        self.scene_total: int | None = None
         # Phase 3: per-item flags set by the analyze dialog via enqueue's
         # per_item_options. Default False so legacy callers behave unchanged.
         self.delete_kestrel_on_start: bool = False
@@ -209,7 +288,12 @@ class _QueueItem:
             'current_detections': list(self.current_detections),
             'current_quality_results': list(self.current_quality_results),
             'current_species_results': list(self.current_species_results),
+            'live_frame_ver': self.live_frame_ver,
+            'live_overlay_ver': self.live_overlay_ver,
+            'live_crops_ver': self.live_crops_ver,
             'warning': self.warning,
+            'files_this_run': max(0, self.processed - self.initial_processed),
+            'scene_total': self.scene_total,
             'species_regions': list(self.species_regions) if self.species_regions else None,
         }
 
@@ -232,7 +316,7 @@ class QueueManager:
         self._use_gpu = True
         self._wildlife_enabled = True
         self._species_detection_enabled = True
-        self._detection_threshold = 0.25
+        self._detection_threshold = 0.15
         self._scene_time_threshold = 1.0
         self._scene_break_gap_seconds = 0.0
         self._mask_threshold = 0.5
@@ -240,6 +324,10 @@ class QueueManager:
         self._parallel_prefetch = 3
         self._detector_name = _DEFAULT_DETECTOR_NAME
         self._retry_errored = False
+        # Set when the GPU device is lost during a run ({'file', 'reason'}).
+        # A lost device cannot be recovered inside this process, so it stays
+        # set until the app is restarted; the UI shows a banner.
+        self._gpu_lost: dict | None = None
 
     # Phase 3: queue-restore feature deleted (replaced by analyze_recents in
     # the dialog). _collect_restore_paths_locked, _build_recovery_state_locked,
@@ -307,7 +395,25 @@ class QueueManager:
                 'running': self.is_running,
                 'paused': self.is_paused,
                 'items': [it.to_dict() for it in self._items],
+                'gpu_lost': dict(self._gpu_lost) if self._gpu_lost else None,
+                'gpu_mode': self._gpu_mode(),
             }
+
+    def _gpu_mode(self):
+        """What analysis is running on (enhanced GPU / standard GPU / CPU fallback); None until models load."""
+        try:
+            coord = getattr(getattr(self._pipeline, 'sn_sam', None), 'coord', None)
+            from kestrel_analyzer.ml import enhanced_gpu
+            return enhanced_gpu.gpu_mode(bool(self._use_gpu), coord, bool(self._gpu_lost))
+        except Exception:
+            return None
+
+    def cpu_fallbacks(self):
+        """Components that fell back to the CPU after a GPU failure in the current pipeline."""
+        try:
+            return list(self._pipeline.sn_sam.coord.cpu_fallbacks)
+        except Exception:
+            return []
 
     # ---- control ----
 
@@ -318,7 +424,7 @@ class QueueManager:
         wildlife_enabled: bool = True,
         species_detection_enabled: bool = True,
         detector_name: str = _DEFAULT_DETECTOR_NAME,
-        detection_threshold: float = 0.25,
+        detection_threshold: float = 0.15,
         scene_time_threshold: float = 1.0,
         scene_break_gap_seconds: float = 0.0,
         mask_threshold: float = 0.5,
@@ -361,6 +467,9 @@ class QueueManager:
                         existing_item.current_detections = []
                         existing_item.current_quality_results = []
                         existing_item.current_species_results = []
+                        existing_item.live_frame_ver = 0
+                        existing_item.live_overlay_ver = 0
+                        existing_item.live_crops_ver = 0
                         existing_item.initial_processed = 0
                         existing_item.delete_kestrel_on_start = bool(opts.get('delete_kestrel_on_start'))
                         existing_item.skip_if_already_done = bool(opts.get('skip_if_already_done'))
@@ -567,6 +676,16 @@ class QueueManager:
             if item is None:
                 break
 
+            # The GPU was lost earlier in this process: it cannot come back
+            # without a restart, so don't start more work on a dead device.
+            if self._gpu_lost and self._use_gpu:
+                with self._lock:
+                    item.status = 'error'
+                    item.end_time = _time_mod.time()
+                    item.error = _GPU_LOST_MESSAGE
+                self._persist_recovery_state()
+                continue
+
             # ── Phase 3: per-item gates BEFORE marking running / pipeline ──
             # 1. skip_if_already_done — silently mark done without touching
             #    .kestrel if the folder is still fully analyzed with no errors.
@@ -686,49 +805,39 @@ class QueueManager:
                         _it.current_detections = []
                         _it.current_quality_results = []
                         _it.current_species_results = []
+                        _it.live_frame_ver += 1
 
                 def _on_detection(data, _it=item):
-                    import cv2 as _cv2
                     overlay_np = data.get('overlay')
                     rel = ''
                     if overlay_np is not None:
                         overlay_path = os.path.join(_it.path, '.kestrel', 'export',
                                                      '__live_overlay.jpg')
-                        try:
-                            os.makedirs(os.path.dirname(overlay_path), exist_ok=True)
-                            _cv2.imwrite(overlay_path,
-                                         _cv2.cvtColor(overlay_np, _cv2.COLOR_RGB2BGR))
+                        if _write_live_jpeg(overlay_path, overlay_np,
+                                            _LIVE_OVERLAY_MAX_DIM, _LIVE_OVERLAY_QUALITY):
                             rel = os.path.relpath(overlay_path, _it.path).replace('\\', '/')
-                        except Exception:
-                            pass
                     with self._lock:
                         _it.current_overlay_rel = rel
+                        if rel:
+                            _it.live_overlay_ver += 1
 
                 def _on_crops(data, _it=item):
-                    import cv2 as _cv2
                     crops = data.get('crops') or []
                     confidences = data.get('confidences') or []
                     saved_rels = []
                     export_dir = os.path.join(_it.path, '.kestrel', 'export')
-                    try:
-                        os.makedirs(export_dir, exist_ok=True)
-                    except Exception:
-                        pass
                     for idx, crop in enumerate(crops):
                         if crop is None:
                             continue
                         cp = os.path.join(export_dir, f'__live_crop_{idx}.jpg')
-                        try:
-                            _cv2.imwrite(cp,
-                                         _cv2.cvtColor(crop, _cv2.COLOR_RGB2BGR))
+                        if _write_live_jpeg(cp, crop, _LIVE_CROP_MAX_DIM, _LIVE_CROP_QUALITY):
                             saved_rels.append(
                                 os.path.relpath(cp, _it.path).replace('\\', '/'))
-                        except Exception:
-                            pass
                     with self._lock:
                         _it.current_crops_rel = saved_rels
                         _it.current_detections = [
                             {'confidence': float(c)} for c in confidences]
+                        _it.live_crops_ver += 1
 
                 def _on_quality(data, _it=item):
                     incoming = list(data.get('results') or [])
@@ -781,7 +890,47 @@ class QueueManager:
                     parallel_prefetch=self._parallel_prefetch,
                     retry_errored=self._retry_errored,
                     species_regions=item.species_regions,
+                    stop_on_gpu_loss=bool(self._use_gpu),
+                    max_consecutive_errors=_DEFAULT_MAX_CONSECUTIVE_ERRORS,
                 )
+                lost = getattr(self._pipeline, 'gpu_lost', None)
+                if isinstance(lost, dict) and lost and self._use_gpu:
+                    # Device lost: process_folder stopped at an image boundary
+                    # and saved everything done so far. Surface it and stop the
+                    # queue; the user restarts Kestrel and re-runs the folder,
+                    # which resumes where it left off.
+                    self._gpu_lost = dict(lost)
+                    error(f'[queue] GPU lost while processing {lost.get("file")!r} in {item.path!r}: '
+                          f'{lost.get("reason")}')
+                    with self._lock:
+                        item.status = 'error'
+                        item.end_time = _time_mod.time()
+                        item.error = _GPU_LOST_MESSAGE
+                    self._persist_recovery_state()
+                    self._send_folder_analytics(item)
+                    continue
+                error_stop = getattr(self._pipeline, 'error_stop', None)
+                if isinstance(error_stop, dict) and error_stop:
+                    # Every frame was failing (broken session or device), not
+                    # one bad photo. Progress is saved; frames not reached yet
+                    # are picked up when the folder is analysed again.
+                    msg = (f"Analysis stopped after {error_stop.get('consecutive')} frames in a row "
+                           f"failed (last: {error_stop.get('last_file')}). Progress is saved. Restart "
+                           "Kestrel and analyze this folder again; failed frames are retried when "
+                           "'retry errored' is on.")
+                    error(f'[queue] {msg} {error_stop.get("last_error")}')
+                    with self._lock:
+                        item.status = 'error'
+                        item.end_time = _time_mod.time()
+                        item.error = msg
+                    self._persist_recovery_state()
+                    self._send_folder_analytics(item)
+                    continue
+                # Counted before the item flips to 'done' so the first status
+                # poll that sees 'done' already carries it.
+                scene_total = None
+                if not self._cancel_event.is_set() and fatal_error['exc'] is None:
+                    scene_total = _count_folder_scenes(item.path)
                 with self._lock:
                     if self._cancel_event.is_set():
                         item.status = 'cancelled'
@@ -802,6 +951,7 @@ class QueueManager:
                         item.end_time = _time_mod.time()
                         if item.total > 0:
                             item.processed = item.total
+                        item.scene_total = scene_total
                 self._persist_recovery_state()
                 self._send_folder_analytics(item)
             except Exception as exc:

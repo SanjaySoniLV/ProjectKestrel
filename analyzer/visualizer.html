@@ -27,10 +27,12 @@
   <link rel="stylesheet" href="css/smart-search.css" />
   <link rel="stylesheet" href="css/legal-banner.css" />
   <link rel="stylesheet" href="css/raw-warn-banner.css" />
+  <link rel="stylesheet" href="css/gpu-mode.css" />
   <link rel="stylesheet" href="css/dialogs/base.css" />
   <link rel="stylesheet" href="css/dialogs/kdlg.css" />
   <link rel="stylesheet" href="css/dialogs/scene.css" />
   <link rel="stylesheet" href="css/dialogs/regroup.css" />
+  <link rel="stylesheet" href="css/dialogs/folder-settings.css" />
   <link rel="stylesheet" href="css/dialogs/settings.css" />
   <link rel="stylesheet" href="css/dialogs/analyze.css" />
   <link rel="stylesheet" href="css/dialogs/live-analysis.css" />
@@ -65,6 +67,9 @@
     </div>
     <button id="rawWarnCloseBtn" class="raw-warn-close" type="button"
       aria-label="Dismiss this warning">&times;</button>
+  </div>
+  <div id="gpuLostNotice" class="raw-warn-banner gpu-lost-banner hidden" role="alert">
+    <span id="gpuLostMsg" class="raw-warn-msg"></span>
   </div>
   <div class="app-body">
   <header>
@@ -138,6 +143,9 @@
                right segment with its checkbox positioned at the far right so
                it aligns with the row checkboxes above. The checkbox inside the
                select button is purely visual (pointer-events: none in CSS). -->
+          <div id="treeUpgradeAllRow" class="tree-upgrade-all-row hidden">
+            <button id="treeUpgradeAll" type="button" class="tree-upgrade-all-btn" title="Upgrade every loaded folder that can be upgraded to analysis pipeline 3.0 from its saved crops. No re-analysis; ratings, culls and tags are kept.">✨ Upgrade All to 3.0…</button>
+          </div>
           <div id="folderTreeFooter" class="folder-tree-footer segmented-strip">
             <button id="treeClear" class="segmented-strip-item danger-item tree-clear-btn" title="Unload all folders and reset the tree" disabled>Clear</button>
             <button id="treeCheckAll" class="segmented-strip-item tree-select-toggle" title="Check all loaded folders" disabled>
@@ -169,10 +177,24 @@
     <div id="mainZoom">
       <!-- Sticky top filter/sort bar — sits above the timeline, hidden when welcome panel is shown -->
       <div id="timelineFilterBar" class="timeline-filter-bar hidden" role="region" aria-label="Filter and sort options">
-        <span class="tfb-search-wrap">
-          <span class="tfb-smart-badge" aria-hidden="true">&#10024; Smart Search</span>
-          <input id="search" type="search" placeholder="🔍 Search species, family, or describe a photo" title="Type a species or family to filter the timeline, or describe what is happening (&quot;bird in flight&quot;, &quot;spoonbill wading&quot;) for smart search. Right-click a result for Go to scene in timeline." class="tfb-search tfb-search--smart" aria-label="Smart Search: species, family, or describe a photo" />
-        </span>
+        <!-- Smart search bar: ✨ icon, the real <input> under a token overlay that turns
+             detected species / family phrases into pills, and a right-aligned status area
+             ("Try:" examples when empty, result count / upgrade prompt otherwise). -->
+        <div id="smartSearchBox" class="tfb-search-wrap smart-bar">
+          <span class="smart-bar-icon" aria-hidden="true">&#10024;</span>
+          <span class="smart-bar-field">
+            <input id="search" type="search" autocomplete="off" spellcheck="false" placeholder="Search species, family, or describe a photo" title="Type a species or family to filter the timeline, or describe what is happening (&quot;bird in flight&quot;, &quot;spoonbill wading&quot;) for smart search. Right-click a result for Go to scene in timeline." class="tfb-search tfb-search--smart" aria-label="Smart Search: species, family, or describe a photo" />
+            <span id="smartSearchTokens" class="smart-bar-tokens hidden" aria-label="Filters detected in your query"><span class="smart-bar-tokens-inner"></span></span>
+          </span>
+          <span id="smartSearchExamples" class="smart-search-examples hidden" aria-label="Example smart searches"></span>
+          <span id="smartSearchBar" class="smart-search-bar hidden" role="status" aria-live="polite">
+            <span id="smartSearchSpinner" class="smart-search-spinner hidden" aria-hidden="true"></span>
+            <span id="smartSearchHint" class="smart-search-hint"></span>
+            <button id="smartSearchIndexBtn" type="button" class="smart-search-btn hidden">Upgrade folder</button>
+          </span>
+          <button id="smartSearchClear" type="button" class="smart-search-clear hidden" title="Clear the search (Esc)" aria-label="Clear the search">&#x2715;</button>
+          <span id="smartChipTip" class="smart-chip-tip hidden" role="tooltip"></span>
+        </div>
         <label class="tfb-field" title="Minimum confidence threshold for species classification">
           <span class="tfb-label">Confidence</span>
           <input id="speciesConf" type="number" min="0" max="1" step="0.05" value="0.75" class="tfb-conf" />
@@ -218,14 +240,6 @@
               <span>Show bird thumbnails</span>
             </label>
           </div>
-        </div>
-        <div id="smartSearchExamples" class="smart-search-examples hidden" aria-label="Example smart searches"></div>
-        <div id="smartSearchBar" class="smart-search-bar hidden" role="status" aria-live="polite">
-          <span id="smartSearchSpinner" class="smart-search-spinner hidden" aria-hidden="true"></span>
-          <span id="smartSearchChips" class="smart-search-chips hidden" aria-label="Filters detected in your query"></span>
-          <span id="smartSearchHint" class="smart-search-hint"></span>
-          <button id="smartSearchIndexBtn" type="button" class="smart-search-btn hidden">Upgrade folder</button>
-          <button id="smartSearchClear" type="button" class="smart-search-btn smart-search-clear hidden" title="Clear the smart search">✕ Clear</button>
         </div>
       </div>
       <div id="compat" class="wrap hidden">
@@ -281,6 +295,8 @@
     <div id="selectActionBar" class="select-action-bar hidden">
       <span id="selectActionLabel" class="muted">0 scenes selected</span>
       <button id="selectMergeBtn" class="primary">Merge selected scenes</button>
+      <button id="selectReviewBtn" title="Confirm the tags Kestrel shows on each selected scene and mark them as reviewed">✓ Mark as Reviewed</button>
+      <button id="selectRejectBtn" title="Reject every photo without a decision in the selected scenes (accepted and rejected photos are kept)">⊘ Reject Undecided</button>
       <button id="selectClearBtn">× Clear selection</button>
     </div>
 
@@ -288,6 +304,7 @@
     <div id="queuePanel" class="queue-panel hidden" role="region" aria-label="Analysis Queue">
       <div class="queue-panel-header" id="queuePanelHeader" title="Click to expand / collapse">
         <span class="queue-panel-title">🔬 Analysis Queue</span>
+        <span class="queue-overall-eta hidden" id="queueOverallEta"></span>
         <span class="queue-panel-badge" id="queuePanelBadge">Idle</span>
         <!-- Close (X): only appears once every item is in a terminal state
              (done/error/cancelled) — i.e. nothing is analyzing. Replaces the
@@ -295,12 +312,24 @@
         <button class="queue-panel-close hidden" id="queuePanelCloseBtn" type="button" title="Close — all items finished">×</button>
         <span class="queue-panel-toggle open" id="queuePanelToggle">▲</span>
       </div>
+      <div class="gpu-mode-strip hidden" data-gpu-mode-strip role="status" aria-live="polite">
+        <span class="gms-label"></span>
+        <span class="gms-detail"></span>
+        <span class="gms-actions"><button type="button" class="gms-report hidden">Report a problem</button></span>
+      </div>
       <div class="queue-panel-body" id="queuePanelBody"></div>
-      <div class="queue-overall-eta hidden" id="queueOverallEta"></div>
       <div class="queue-panel-controls" id="queuePanelControls">
-        <button id="queuePauseBtn" title="Pause / resume analysis">⏸ Pause</button>
-        <button id="queueCancelBtn" title="Cancel all pending items">⏹ Cancel</button>
-        <button id="queueLiveBtn" title="See live analysis details">👁 Live</button>
+        <!-- One toggle: renderQueuePanel() flips icon, label, title and aria-pressed. -->
+        <button id="queuePauseBtn" class="qctl qctl--primary" type="button" title="Pause analysis" aria-pressed="false">
+          <span class="qctl-ico" aria-hidden="true">⏸</span><span class="qctl-lbl">Pause</span>
+        </button>
+        <button id="queueLiveBtn" class="qctl" type="button" title="See live analysis details">
+          <span class="qctl-ico" aria-hidden="true">👁</span><span class="qctl-lbl">Live</span>
+        </button>
+        <!-- Destructive: kept visually secondary and still behind a confirm(). -->
+        <button id="queueCancelBtn" class="qctl qctl--danger" type="button" title="Cancel all pending items">
+          <span class="qctl-ico" aria-hidden="true">⏹</span><span class="qctl-lbl">Cancel</span>
+        </button>
       </div>
     </div>
 
@@ -375,9 +404,10 @@
           <!-- Species/Family chips + inline (+) add rendered by JS -->
         </div>
         <div class="scene-topbar-right">
-          <button class="scene-shortcut-btn" id="sceneShortcutBtn" title="Show keyboard shortcuts">⌨ Show keyboard shortcuts</button>
-          <button id="splitSceneBtn" title="Split this scene into multiple scenes">✂ Split Scene</button>
-          <button id="closeDlg" title="Close (Escape)">✕ Close</button>
+          <!-- "Mark as Reviewed" / "Reviewed" is rendered here by renderTopbarTags() -->
+          <span class="scene-review-slot" id="sceneReviewSlot"></span>
+          <button class="scene-topbar-icon-btn" id="sceneShortcutBtn" title="Show keyboard shortcuts" aria-label="Show keyboard shortcuts">⌨</button>
+          <button class="scene-topbar-icon-btn" id="closeDlg" title="Close (Escape)" aria-label="Close">✕</button>
         </div>
       </div>
 
@@ -387,6 +417,8 @@
         <span><kbd>↑</kbd><kbd>↓</kbd> Switch active crop</span>
         <span><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>&larr;</kbd><kbd>&rarr;</kbd> or <kbd>Home</kbd>/<kbd>End</kbd> Jump to start/end</span>
         <span><kbd>Enter</kbd> Promote active crop</span>
+        <span><kbd>F</kbd> or <kbd>Shift</kbd>+Click a bird: focus the scene on that bird (again to undo)</span>
+        <span><kbd>B</kbd> Show/hide bird numbers</span>
         <span><kbd>Tab</kbd> Next scene</span>
         <span><kbd>Shift</kbd>+<kbd>Tab</kbd> or <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Tab</kbd> Previous scene</span>
         <span><kbd>Z</kbd> or <kbd>7</kbd> Accept</span>
@@ -412,10 +444,7 @@
             <div class="scene-preview-label">Full Image</div>
             <div class="scene-preview-img" id="previewBox" data-raw-label="RAW">
               <span class="muted">Select an image…</span>
-              <button class="scene-preview-copy-btn" id="sceneCopyExportBtn" type="button" title="Copy full image to clipboard" aria-label="Copy full image to clipboard" disabled>
-                <span class="copy-icon">📋</span>
-                <span>Copy</span>
-              </button>
+              <button class="scene-preview-copy-btn" id="sceneCopyExportBtn" type="button" title="Copy full image to clipboard" aria-label="Copy full image to clipboard" disabled><span class="copy-icon">📋</span></button>
             </div>
             <div class="scene-zoom-bar" id="sceneZoomWrap">
               <label class="scene-zoom-ctrl" title="RAW Zoom — click and hold on the full image to zoom">
@@ -442,10 +471,7 @@
             <div class="scene-preview-label">Bird Crop</div>
             <div class="scene-preview-img" id="previewCropBox">
               <span class="muted">Select an image…</span>
-              <button class="scene-preview-copy-btn" id="sceneCopyCropBtn" type="button" title="Copy bird crop to clipboard" aria-label="Copy bird crop to clipboard" disabled>
-                <span class="copy-icon">📋</span>
-                <span>Copy</span>
-              </button>
+              <button class="scene-preview-copy-btn" id="sceneCopyCropBtn" type="button" title="Copy bird crop to clipboard" aria-label="Copy bird crop to clipboard" disabled><span class="copy-icon">📋</span></button>
             </div>
           </div>
         </div>
@@ -471,12 +497,21 @@
               <span class="scene-info-editor-label" id="sceneInfoEditorLabel">Open</span>
             </button>
           </div>
-          <!-- Quality feedback prompt (js/quality-feedback.js) -->
-          <div class="scene-qf hidden" id="sceneQf" role="group" aria-label="Quality feedback"></div>
         </div>
       </div>
 
-      <!-- ═══ BOTTOM: Filmstrip ═══ -->
+      <!-- ═══ BOTTOM: Filmstrip toolbar + filmstrip ═══ -->
+      <div class="scene-filmstrip-bar" id="sceneFilmstripBar">
+        <div class="scene-order-toggle" id="sceneOrderToggle" role="group" aria-label="Filmstrip order">
+          <button type="button" data-order="quality" title="Order photos by quality score, best first">Best quality first</button>
+          <button type="button" data-order="time" title="Order photos by capture time (filename if no time)">Capture order</button>
+        </div>
+        <!-- Quality feedback prompt (js/quality-feedback.js) -->
+        <div class="scene-qf hidden" id="sceneQf" role="group" aria-label="Quality feedback"></div>
+        <div class="scene-filmstrip-bar-spacer"></div>
+        <button class="scene-filmstrip-bar-btn" id="sceneRejectUndecidedBtn" title="Reject every photo in this scene that has no decision yet (accepted and rejected photos are kept), then accept the keepers with Z">⊘ Reject Undecided</button>
+        <button class="scene-filmstrip-bar-btn" id="splitSceneBtn" title="Split this scene into multiple scenes">✂ Split Scene…</button>
+      </div>
       <div class="scene-filmstrip-wrap">
         <div class="scene-filmstrip-hint scene-filmstrip-hint-left hidden" id="filmstripHintLeft">
           ◂ Prev Scene
@@ -958,6 +993,15 @@
       <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Bird crops are always indexed for smart search. This also indexes each photo's whole frame so scene queries work ("bird on a wire", "two birds", "wide landscape"). Adds one SigLIP pass per photo (~0.1&ndash;0.2 s on CPU).</div>
 
       <div class="row">
+        <label for="settingsRawEmbeddedPreview" style="flex:1">Fast RAW analysis: use the camera&rsquo;s embedded JPEG</label>
+        <label class="inline" style="gap:6px">
+          <input type="checkbox" id="settingsRawEmbeddedPreview" />
+          <span class="muted">Enable</span>
+        </label>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Analyses the JPEG preview stored inside each RAW file instead of decoding the sensor data. Much faster per photo; the SigLIP sharpness score is largely unaffected, but exposure/highlight recovery is skipped and quality depends on the preview size your camera writes (some older bodies embed only a small one). RAWs without a usable preview are still decoded. Applies to analyses started after you change it, on this computer only &mdash; Cloud Compute always decodes RAW.</div>
+
+      <div class="row">
         <label for="settingsTowerDevice" style="flex:1">BioCLIP device (advanced)</label>
         <select id="settingsTowerDevice">
           <option value="auto">Auto</option>
@@ -966,6 +1010,27 @@
         </select>
       </div>
       <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Where the species and search models run when GPU analysis is on. Auto: GPU on Windows (DirectML), CPU on macOS (their int8 layers don't run on Core ML and would bounce between devices). Applies to the next analysis.</div>
+
+      <div id="egSection">
+        <div class="row">
+          <label for="settingsEnhancedGpu" style="flex:1">Enhanced GPU performance <span class="muted">(experimental)</span></label>
+          <label class="inline" style="gap:6px">
+            <input type="checkbox" id="settingsEnhancedGpu" disabled />
+            <span class="muted">Use</span>
+          </label>
+        </div>
+        <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Enhanced GPU Performance uses specialized software unique to your hardware to speed up Kestrel&rsquo;s analysis. Setup downloads components from Windows and tests Kestrel&rsquo;s models on your computer. Kestrel will use standard GPU acceleration if enhanced GPU performance fails for any reason.</div>
+        <div class="muted" id="egStatus" style="font-size:12px;margin-bottom:8px;white-space:pre-line"></div>
+        <div class="row" style="gap:8px;justify-content:flex-start">
+          <button id="egSetupBtn" type="button">Set up enhanced GPU performance</button>
+          <button id="egCancelBtn" type="button" class="hidden">Cancel</button>
+          <button id="egReportNowBtn" type="button" class="hidden">Report a problem</button>
+        </div>
+        <div id="egReportRow" class="muted hidden" style="font-size:12px;margin:8px 0">
+          Setup did not finish. Would you like to send a bug report? It includes your recent log, which lists the GPU options Windows offered, so we can improve support for your hardware.
+          <div style="margin-top:6px"><button id="egReportBtn" type="button">Send bug report</button> <button id="egReportDismiss" type="button">Not now</button></div>
+        </div>
+      </div>
 
       <h4 style="margin:12px 0 8px;padding-top:8px;border-top:1px solid #1d2230;color:#a0a8b8;font-size:13px;text-transform:uppercase;letter-spacing:0.5px">Analytics &amp; Privacy</h4>
 
@@ -1061,63 +1126,65 @@
   </dialog>
 
   <!-- Regroup Scenes dialog — re-scene an already-analyzed folder from the
-       values the analysis already stored, with a live before/after preview.
+       values the analysis already stored, with a live thumbnail preview of the
+       current and proposed grouping side by side (one block per scene, boundary reasons shown).
        Body logic in js/scene-regroup.js; the grouping rules themselves live in
        kestrel_analyzer/regroup.py so they can be tested against the pipeline's
        own ladder. -->
   <dialog id="regroupDlg" class="kdlg kdlg--lg kdlg--flex" aria-labelledby="regroupDlgTitle">
     <div class="kdlg-body regroup-body">
-      <h3 style="margin:0" id="regroupDlgTitle">Regroup Scenes</h3>
-      <div class="muted" style="font-size:12px;word-break:break-all" id="regroupFolderName">—</div>
-      <div class="regroup-intro muted">
-        Rebuilds this folder's scenes from the analysis that already ran &mdash; no photos are
-        re-analyzed and nothing is re-uploaded. Your star ratings and Accept/Reject decisions are
-        kept; scene names and verified tags follow their photos where that is unambiguous.
+      <div class="regroup-titlebar">
+        <h3 id="regroupDlgTitle">Regroup Scenes</h3>
+        <span class="regroup-folder muted" id="regroupFolderName">—</span>
+        <span class="regroup-summary" id="regroupSummary">—</span>
       </div>
 
       <div class="regroup-controls">
-        <div class="regroup-control">
-          <label for="regroupGroupWithin">Group photos taken within (seconds)</label>
+        <div class="regroup-control" title="Photos taken this close together always share a scene.">
+          <label for="regroupGroupWithin">Group photos within (seconds)</label>
           <input id="regroupGroupWithin" type="number" min="0" max="60" step="0.5" value="1" />
-          <div class="regroup-hint muted">
-            A burst shot inside this window always stays in one scene.
-          </div>
         </div>
-        <div class="regroup-control">
-          <label for="regroupSplitAfter">Start a new scene after a pause of</label>
+        <div class="regroup-control" title="Splits a long session by elapsed time. Off at 0.">
+          <label for="regroupSplitAfter">New scene after a pause of</label>
           <div class="regroup-slider-row">
             <input id="regroupSplitAfter" type="range" min="0" max="3600" step="15" value="0" />
             <span class="regroup-val" id="regroupSplitAfterVal">off</span>
           </div>
-          <div class="regroup-hint muted">
-            Splits a long session into separate scenes by elapsed time. 0 turns it off.
-          </div>
         </div>
         <div class="regroup-control">
-          <label for="regroupSimilarity">How alike photos must look to share a scene</label>
+          <label for="regroupSimilarity">How alike photos must look</label>
           <div class="regroup-slider-row">
             <input id="regroupSimilarity" type="range" min="0" max="1" step="0.01" value="0.5" />
             <span class="regroup-val" id="regroupSimilarityVal">0.50</span>
           </div>
           <div class="regroup-hint muted" id="regroupSimilarityNote"></div>
-          <div class="regroup-hint muted" id="regroupScoredNote"></div>
         </div>
       </div>
 
-      <div class="regroup-summary" id="regroupSummary">—</div>
+      <div class="regroup-preview-bar">
+        <label class="regroup-filter">
+          <input type="checkbox" id="regroupChangedOnly" /> Changed scenes only
+        </label>
+        <div class="regroup-hint regroup-scored muted" id="regroupScoredNote"></div>
+        <div class="regroup-legend muted" id="regroupLegend"></div>
+      </div>
 
       <div class="regroup-compare">
         <div class="regroup-col">
-          <div class="regroup-col-head" id="regroupCurrentHead">Current</div>
-          <div class="regroup-col-list" id="regroupCurrentList"></div>
+          <div class="regroup-col-head" id="regroupCurrentHead">Current grouping</div>
+          <div class="regroup-list" id="regroupCurrentList"></div>
         </div>
         <div class="regroup-col">
-          <div class="regroup-col-head" id="regroupProposedHead">After regrouping</div>
-          <div class="regroup-col-list" id="regroupProposedList"></div>
+          <div class="regroup-col-head" id="regroupProposedHead">Proposed grouping</div>
+          <div class="regroup-list" id="regroupProposedList"></div>
         </div>
       </div>
     </div>
     <div class="kdlg-footer">
+      <span class="regroup-footnote muted">
+        Nothing is re-analyzed or changed until you apply. Ratings and Accept/Reject are kept; scene
+        names and verified tags follow their photos where that is unambiguous.
+      </span>
       <button type="button" class="btn" id="regroupCancelBtn">Cancel</button>
       <button type="button" class="btn primary" id="regroupApplyBtn" disabled>Apply Regrouping</button>
     </div>
@@ -1736,23 +1803,38 @@
     <div class="live-dlg">
       <div class="live-dlg-hdr">
         <span class="live-dlg-title">👁 Live Analysis: <span id="liveDlgFolderName">–</span></span>
-        <span class="live-dlg-fname" id="liveDlgFilename"></span>
-        <button id="liveDlgClose">× Close</button>
+        <button id="liveDlgClose" class="live-dlg-close" type="button" title="Close" aria-label="Close">×</button>
       </div>
-      <div class="live-dlg-status-bar" id="liveDlgStatus"></div>
+      <div class="live-dlg-status-bar">
+        <span class="live-dlg-pulse" id="liveDlgPulse" aria-hidden="true"></span>
+        <span class="live-dlg-fname" id="liveDlgFilename"></span>
+        <span id="liveDlgStatus" role="status" aria-live="off"></span>
+      </div>
+      <div class="gpu-mode-strip hidden" data-gpu-mode-strip role="status" aria-live="polite">
+        <span class="gms-label"></span>
+        <span class="gms-detail"></span>
+        <span class="gms-actions"><button type="button" class="gms-report hidden">Report a problem</button></span>
+      </div>
       <div class="live-dlg-preview-row">
         <div class="live-dlg-img-cell">
           <span class="live-dlg-img-label">Thumbnail</span>
-          <img id="liveDlgThumb" class="live-dlg-img" alt="" />
+          <div class="live-dlg-stage" id="liveDlgThumbStage">
+            <div class="live-dlg-wait"><span class="live-dlg-spin" aria-hidden="true"></span><span class="live-dlg-wait-txt">Waiting for first frame…</span></div>
+            <img id="liveDlgThumb" class="live-dlg-img" alt="" />
+          </div>
         </div>
         <div class="live-dlg-img-cell">
           <span class="live-dlg-img-label">Detections</span>
-          <img id="liveDlgOverlay" class="live-dlg-img" alt="" />
+          <div class="live-dlg-stage" id="liveDlgOverlayStage">
+            <div class="live-dlg-wait"><span class="live-dlg-spin" aria-hidden="true"></span><span class="live-dlg-wait-txt">Waiting for first frame…</span></div>
+            <img id="liveDlgOverlay" class="live-dlg-img" alt="" />
+          </div>
         </div>
       </div>
       <div class="live-dlg-detections-section">
-        <span class="live-dlg-section-label">Top Detections</span>
+        <span class="live-dlg-section-label">Top detections</span>
         <div class="live-dlg-crops-row" id="liveDlgCrops"></div>
+        <div class="live-dlg-crops-empty" id="liveDlgCropsEmpty">No birds detected yet</div>
       </div>
     </div>
   </dialog>
@@ -1762,8 +1844,10 @@
   <dialog id="donateDlg" class="kdlg kdlg--sm kdlg--flex">
     <div class="donate-dlg">
       <div class="donate-dlg-icon"><img src="logo.png" alt="Kestrel Logo" /></div>
-      <h3>Kestrel has analyzed over <span id="donateCountDisplay">many</span> photos!</h3>
-      <p>Thank you for using Project Kestrel! I’m a solo student developer and birder who built Kestrel because I love taking wildlife photos — but not sorting through them. If Kestrel has been useful to you, please consider supporting its development, or share your thoughts and feedback!</p>
+      <!-- Heading and subline are filled in by showDonatePrompt() (js/feedback-donate.js). -->
+      <h3 id="donateDlgHeading">You’ve organized over 1,000 photos with Kestrel!</h3>
+      <p id="donateDlgSubline" class="donate-dlg-subline" hidden></p>
+      <p>I’m a student and birder building Kestrel on my own. It stays free, local and open source because the people who find it useful chip in. If it saved you time, please consider supporting me, or tell me what to improve.</p>
       <p style="font-size:12px;color:#607080;">Project Kestrel is free &amp; open-source. Every <a href="https://github.com/SanjaySoniLV/ProjectKestrel" target="_blank">contribution</a> helps keep it growing.</p>
       <div class="donate-dlg-btns">
         <button class="donate-main-btn" id="donateDlgGoBtn">💛 Support Project Kestrel</button>
@@ -1804,10 +1888,13 @@
   <script src="js/scene-grid.js"></script>
   <script src="js/scene-zoom.js"></script>
   <script src="js/scene-regroup.js"></script>
+  <script src="js/folder-settings.js"></script>
   <!-- settings.js MUST load before scene-dialog.js: scene-dialog's IIFE
        (setupScenePreviewDivider) calls getSetting() at parse time. -->
   <script src="js/settings.js"></script>
+  <script src="js/enhanced-gpu.js"></script>
   <script src="js/scene-dialog.js"></script>
+  <script src="js/primary-subject.js"></script>
   <script src="js/feedback-donate.js"></script>
   <script src="js/quality-feedback.js"></script>
   <script src="js/folder-tree.js"></script>
@@ -1852,6 +1939,7 @@
         ['culling.js',         'openCullingAssistant'],
         ['repair.js',          'openRepairDialog'],
         ['scene-regroup.js',   'openRegroupDialog'],
+        ['folder-settings.js', 'openFolderSettingsDialog'],
         ['tutorial.js',        'startMainTutorial'],
         ['welcome.js',         'WELCOME_TIPS']
       ];

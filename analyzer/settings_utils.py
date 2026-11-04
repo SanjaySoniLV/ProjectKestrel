@@ -90,6 +90,7 @@ _ALLOWED_TOWER_DEVICES = {'auto', 'cpu', 'gpu'}
 # ask before sharing, always share, or never show the prompt. Default "ask";
 # nothing is ever sent without the user's say-so.
 _ALLOWED_QUALITY_FEEDBACK_MODES = {'ask', 'always', 'never'}
+_ALLOWED_SCENE_FILMSTRIP_ORDERS = {'quality', 'time'}
 _QUALITY_FEEDBACK_INSTALL_ID_RE = re.compile(r'^qfi_[0-9a-f]{32}$')
 _ALLOWED_QUEUE_DETECTOR_NAMES = {'mdv5a', 'mdv1000-cedar'}
 # Biogeographic region codes for the species combobox. Sourced from the
@@ -519,7 +520,7 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
         out['rating_thresholds_custom'] = normalize_custom_thresholds(
             data.get('rating_thresholds_custom')
         )
-    _set_float('detection_threshold', default=0.25, min_value=0.1, max_value=0.99, digits=4)
+    _set_float('detection_threshold', default=0.15, min_value=0.1, max_value=0.99, digits=4)
     _set_float('scene_time_threshold', default=1.0, min_value=0.0, max_value=60.0, digits=4)
     # Long-gap scene break, in seconds. 0 = disabled (the historical behaviour:
     # scene boundaries come from AKAZE visual similarity alone, which chains
@@ -542,12 +543,16 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     # Analysis-mode feature toggles persisted so cloud-compute settings snapshot
     # (_cc_analysis_settings_snapshot) can read them without needing the UI to
     # pass them as runtime parameters.
-    _set_bool('wildlife_enabled', default=False)
+    _set_bool('wildlife_enabled', default=True)
     _set_bool('species_detection_enabled', default=True)
     # Smart search: also embed each image's downscaled whole frame with SigLIP
     # at analysis time (one extra tower run per photo) for context queries.
     # The per-crop SigLIP embedding always runs (it is the default quality).
     _set_bool('smart_search_enabled', default=True)
+    # Analyse each RAW's embedded JPEG preview instead of decoding the sensor
+    # data (much cheaper; no highlight recovery). Desktop queue only: the CLI
+    # (and so Cloud Compute) stays on RAW decode unless asked explicitly.
+    _set_bool('raw_use_embedded_preview', default=False)
     if 'quality_model' in data:
         out['quality_model'] = _coerce_enum(data.get('quality_model'), _ALLOWED_QUALITY_MODELS, default='siglip')
     if 'tower_device' in data:
@@ -568,6 +573,9 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     # pre-resilience behavior (single GPU session, no recovery).
     _set_bool('gpu_resilience_enabled', default=True)
     _set_bool('gpu_aggressive_recreate', default=False)
+    # Opt-in enhanced GPU mode (vendor execution providers via Windows ML; Windows only,
+    # ml/enhanced_gpu.py). Off until the user runs the setup action in Settings.
+    _set_bool('enhanced_gpu_enabled', default=False)
     if 'wildlife_model_mode' in data:
         out['wildlife_model_mode'] = _coerce_enum(
             data.get('wildlife_model_mode'),
@@ -626,6 +634,10 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     _set_bool('showBirdThumbs', default=False)
     _set_bool('onlyManualRatedScenes', default=False)
     _set_float('scene_preview_split_ratio', default=0.68, min_value=0.25, max_value=0.85, digits=4)
+    if 'scene_filmstrip_order' in data:
+        out['scene_filmstrip_order'] = _coerce_enum(
+            data.get('scene_filmstrip_order'), _ALLOWED_SCENE_FILMSTRIP_ORDERS, default='quality',
+        )
 
     if 'sortBy' in data:
         sort_by = _coerce_string(data.get('sortBy'), default='captureTime', max_len=64)

@@ -1,6 +1,6 @@
 /* ═══ Regroup Scenes dialog ═══════════════════════════════════════════════
    Outer sizing comes from .kdlg--lg + .kdlg--flex on the <dialog>; this file
-   paints the controls row and the side-by-side before/after comparison.
+   paints the controls row and the thumbnail preview of the grouping.
    Tokens are the shared ones from base.css so the dialog tracks the theme.
    ═══════════════════════════════════════════════════════════════════════ */
 
@@ -10,18 +10,35 @@
   gap: 10px;
 }
 
-.regroup-intro {
-  font-size: 12px;
-  line-height: 1.5;
-  max-width: 70ch;
+/* Title, folder name and the one-line result share a single row. */
+.regroup-titlebar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 12px;
 }
 
-/* Controls sit on one row on a wide dialog and wrap on a narrow one. */
+.regroup-titlebar h3 {
+  margin: 0;
+}
+
+.regroup-folder {
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.regroup-summary {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* All three controls on one compact row; hints live in tooltips. */
 .regroup-controls {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 14px;
-  padding: 12px;
+  grid-template-columns: auto minmax(160px, 1fr) minmax(160px, 1fr);
+  gap: 6px 18px;
+  padding: 6px 12px 8px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel);
@@ -30,17 +47,18 @@
 .regroup-control {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 2px;
   min-width: 0;
 }
 
 .regroup-control > label {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
 }
 
 .regroup-control input[type="number"] {
-  width: 90px;
+  width: 80px;
+  padding: 3px 6px;
 }
 
 .regroup-slider-row {
@@ -56,7 +74,7 @@
 
 /* Tabular figures keep the dialog from reflowing as a slider is dragged. */
 .regroup-val {
-  min-width: 56px;
+  min-width: 48px;
   text-align: right;
   font-variant-numeric: tabular-nums;
   font-size: 12px;
@@ -65,30 +83,58 @@
 
 .regroup-hint {
   font-size: 11px;
-  line-height: 1.45;
+  line-height: 1.35;
 }
 
-.regroup-summary {
-  font-size: 13px;
-  font-weight: 600;
-  padding: 8px 12px;
-  border-radius: 6px;
-  background: var(--panel);
-  border: 1px solid var(--border);
+.regroup-footnote {
+  margin-right: auto;
+  max-width: 62ch;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
-/* Before/after columns share the remaining height and scroll independently. */
+.regroup-preview-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.regroup-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* One line; the full explanation is in the tooltip. */
+.regroup-scored {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.regroup-legend {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+/* Current and proposed grouping side by side, each scrolling on its own. */
 .regroup-compare {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  gap: 10px;
   flex: 1;
-  min-height: 0;
+  min-height: 240px;
 }
 
 .regroup-col {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   min-height: 0;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -96,54 +142,134 @@
 }
 
 .regroup-col-head {
-  padding: 8px 10px;
+  padding: 6px 10px;
   font-size: 12px;
   font-weight: 600;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
 
-.regroup-col-list {
+.regroup-list {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 4px;
+  padding: 6px 8px 10px;
 }
 
-.regroup-scene-row {
-  display: grid;
-  grid-template-columns: 44px 84px 1fr auto;
-  gap: 8px;
-  align-items: baseline;
-  padding: 4px 6px;
-  font-size: 12px;
+/* Scene blocks are laid out only when scrolled near, which keeps a
+   several-hundred-scene list cheap to build and scroll. */
+.regroup-scene {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 96px;
+  padding: 6px 8px 8px;
+  border-left: 3px solid var(--border);
   border-radius: 4px;
-}
-
-.regroup-scene-row:nth-child(odd) {
   background: color-mix(in srgb, var(--panel) 60%, transparent);
 }
 
+.regroup-scene--merged { border-left-color: var(--brand); }
+.regroup-scene--split { border-left-color: var(--warn); }
+
+.regroup-scene + .regroup-scene {
+  margin-top: 6px;
+}
+
+.regroup-scene-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
 .regroup-scene-idx {
-  font-variant-numeric: tabular-nums;
   font-weight: 600;
-}
-
-.regroup-scene-size {
   font-variant-numeric: tabular-nums;
 }
 
-/* Filenames are the least important column, so they are the ones that clip. */
-.regroup-scene-range {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
+.regroup-scene-size,
+.regroup-scene-time {
+  font-variant-numeric: tabular-nums;
 }
 
-.regroup-scene-reason {
+.regroup-badge {
+  padding: 1px 7px;
   font-size: 11px;
-  white-space: nowrap;
+  font-weight: 600;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.regroup-scene-head .regroup-badge {
+  margin-left: auto;
+}
+
+.regroup-badge--merged {
+  color: var(--brand);
+  border-color: color-mix(in srgb, var(--brand) 55%, transparent);
+}
+
+.regroup-badge--split {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 55%, transparent);
+}
+
+.regroup-thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.regroup-thumb,
+.regroup-thumb-more {
+  width: 52px;
+  height: 39px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--card);
+}
+
+.regroup-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.regroup-thumb-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  border: 1px dashed var(--border);
+  box-sizing: border-box;
+}
+
+/* Why the scene below it began: a rule with the measured value centred on it. */
+.regroup-boundary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--warn);
+}
+
+.regroup-boundary::before,
+.regroup-boundary::after {
+  content: "";
+  flex: 1;
+  border-top: 1px dashed color-mix(in srgb, var(--warn) 45%, transparent);
+}
+
+.regroup-more {
+  display: block;
+  margin: 10px auto 0;
 }
 
 .regroup-empty {
@@ -152,6 +278,9 @@
 }
 
 @media (max-width: 900px) {
+  .regroup-controls {
+    grid-template-columns: 1fr;
+  }
   .regroup-compare {
     grid-template-columns: 1fr;
   }

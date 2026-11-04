@@ -111,13 +111,19 @@ class TestDialogWiring(unittest.TestCase):
             self.assertIn(f'id="{control}"', self.html)
 
     def test_dialog_has_both_preview_columns(self):
-        self.assertIn('id="regroupCurrentList"', self.html)
-        self.assertIn('id="regroupProposedList"', self.html)
+        # Current and proposed grouping are shown side by side.
+        for el in ("regroupCurrentList", "regroupProposedList",
+                   "regroupCurrentHead", "regroupProposedHead",
+                   "regroupChangedOnly"):
+            self.assertIn(f'id="{el}"', self.html)
 
-    def test_folder_actions_menu_offers_it(self):
+    def test_change_settings_dialog_offers_it(self):
+        # Regroup moved from the Folder Actions menu into the Change Settings dialog.
         menu = self.grid.split("function _buildFolderActionsMenu", 1)[1].split("\n    async function", 1)[0]
-        self.assertIn("Regroup Scenes", menu)
-        self.assertIn("openRegroupDialog(folderPath)", menu)
+        self.assertNotIn("Regroup Scenes", menu)
+        settings = _read("js", "folder-settings.js")
+        self.assertIn("Regroup Scenes", settings)
+        self.assertIn("openRegroupDialog(folderPath)", settings)
 
     def test_apply_button_starts_disabled(self):
         # Nothing to apply until a preview says the grouping would change.
@@ -198,18 +204,51 @@ class TestRegroupFrontend(unittest.TestCase):
         self.assertIn("regroup_scenes_release", self.src)
 
     def test_scene_list_render_is_bounded(self):
-        # A folder can regroup into thousands of scenes and this reruns on
-        # every slider tick.
-        body = self.src.split("function _regroupRenderSceneList", 1)[1].split(
+        # A folder can regroup into hundreds of scenes and this reruns on
+        # every (debounced) slider tick: scenes come in chunks and each shows a
+        # capped number of thumbnails.
+        self.assertIn("REGROUP_SCENE_CHUNK", self.src)
+        self.assertIn("REGROUP_THUMBS_PER_SCENE", self.src)
+        body = self.src.split("function _regroupRenderList", 1)[1].split(
             "\n    function ", 1)[0]
-        self.assertIn("LIMIT", body)
-        self.assertIn("slice(0, LIMIT)", body)
+        self.assertIn("slice(0, _regroupSceneLimit)", body)
+        self.assertIn("REGROUP_SCENE_CHUNK", body)
+        scene = self.src.split("function _regroupMakeScene", 1)[1].split(
+            "\n    /**", 1)[0]
+        self.assertIn("_regroupSceneFilenames(s, REGROUP_THUMBS_PER_SCENE)", scene)
 
-    def test_filenames_are_escaped(self):
-        body = self.src.split("function _regroupRenderSceneList", 1)[1].split(
+    def test_thumbnails_load_lazily_from_the_existing_sources(self):
+        body = self.src.split("function _regroupMakeThumb", 1)[1].split(
             "\n    function ", 1)[0]
-        self.assertIn("escapeHtml(s.first_filename", body)
-        self.assertIn("escapeHtml(s.last_filename", body)
+        self.assertIn("lazyLoadImg(img", body)
+        self.assertIn("getBlobUrlForPath(path, r.__rootPath)", body)
+        self.assertIn("r.export_path || r.crop_path", body)
+
+    def test_filenames_never_reach_innerhtml(self):
+        # Filenames come from the user's disk. The list is built with DOM APIs
+        # (textContent / title / alt), so none of the render helpers may feed
+        # them through innerHTML.
+        for fn in ("_regroupMakeThumb", "_regroupMakeScene"):
+            body = self.src.split(f"function {fn}", 1)[1].split("\n    function ", 1)[0]
+            self.assertNotIn("innerHTML", body, fn)
+
+    def test_boundary_labels_name_the_value_and_the_threshold(self):
+        body = self.src.split("function _regroupBoundaryLabel", 1)[1].split(
+            "\n    function ", 1)[0]
+        self.assertIn("time gap", body)
+        self.assertIn("> ${_regroupFormatGap(d.threshold)} threshold", body)
+        self.assertIn("similarity", body)
+        self.assertIn("< ${Number(d.threshold).toFixed(2)} threshold", body)
+
+    def test_boundary_labels_only_appear_in_the_proposed_view(self):
+        body = self.src.split("function _regroupRenderList", 1)[1].split(
+            "\n    function ", 1)[0]
+        self.assertIn("view === 'proposed' ? _regroupBoundaryLabel(s)", body)
+
+    def test_apply_enabled_only_when_a_scene_changes(self):
+        body = self.src.split("function _regroupHasChange", 1)[1].split(
+            "\n    /**", 1)[0]
+        self.assertIn("s.change !== 'same'", body)
 
     def test_opens_on_the_settings_the_folder_was_analyzed_with(self):
         # So the first preview reproduces the current grouping and any

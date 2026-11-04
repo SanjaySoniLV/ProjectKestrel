@@ -19,7 +19,6 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
   flex: 0 0 auto;
 }
 
@@ -32,43 +31,111 @@
   text-overflow: ellipsis;
 }
 
-.live-dlg-fname {
-  font-size: 12px;
-  color: #6a8aaa;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 300px;
+/* Borderless icon button, like the scene viewer's header actions. */
+.live-dlg-close {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  padding: 4px 9px;
+  height: auto;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
 }
+.live-dlg-close:hover { background: var(--chip); color: var(--text); }
+
+.live-dlg-fname { flex: 0 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 240px; }
+.live-dlg-fname:not(:empty)::after { content: ' \00b7'; }
 
 .live-dlg-status-bar {
   grid-column: 1 / -1;
   grid-row: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
   color: var(--muted);
   min-height: 16px;
+  margin-top: -6px;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
   flex: 0 0 auto;
 }
+.live-dlg-status-bar #liveDlgStatus { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 
+/* Panes and the crops column have a fixed shape from the start, so nothing
+   moves when the first frame or the first crop card arrives. */
 .live-dlg-preview-row {
   grid-column: 1;
   grid-row: 3;
+  align-self: start;
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  flex: 1 1 0;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
   min-height: 0;
-  overflow: hidden;
 }
 
 .live-dlg-img-cell {
-  background: #05080f;
-  border: 1px solid #1d2230;
-  border-radius: 8px;
-  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.live-dlg-img-label {
+  font-size: 12px;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+
+.live-dlg-stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 3 / 2;
+  background: var(--card);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.live-dlg-stage .live-dlg-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.live-dlg-stage .live-dlg-img:not([src]) { visibility: hidden; }
+.live-dlg-ghost { pointer-events: none; }
+
+/* Placeholder: one uniform, centered state; leaves once a frame exists. */
+.live-dlg-wait {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  transition: opacity .2s;
+}
+.live-dlg-stage.has-frame .live-dlg-wait { opacity: 0; }
+.live-dlg-spin {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--chip);
+  border-top-color: var(--brand);
+  display: none;
+}
+.live-dlg-stage.is-waiting .live-dlg-spin { display: block; animation: live-spin 1s linear infinite; }
+@keyframes live-spin { to { transform: rotate(360deg); } }
+
+.live-dlg-detections-section {
+  grid-column: 2;
+  grid-row: 3;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -76,47 +143,15 @@
   overflow: hidden;
 }
 
-.live-dlg-img-label {
-  font-size: 11px;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: .05em;
-  flex: 0 0 auto;
-}
-
-.live-dlg-img {
-  flex: 1 1 0;
-  min-height: 0;
-  width: 100%;
-  object-fit: contain;
-  background: #020508;
-  border-radius: 4px;
-  display: block;
-}
-
-.live-dlg-detections-section {
-  grid-column: 2;
-  grid-row: 3;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-height: 0;
-  overflow: hidden;
-}
-
 .live-dlg-section-label {
-  font-size: 11px;
-  font-weight: 700;
+  font-size: 12px;
   color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: .06em;
-  margin-top: 0;
   flex: 0 0 auto;
 }
 
 .live-dlg-crops-row {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-content: start;
   gap: 8px;
   flex: 1 1 0;
@@ -124,11 +159,25 @@
   overflow-y: auto;
   overflow-x: hidden;
 }
+.live-dlg-crops-row:empty { display: none; }
+
+.live-dlg-crops-empty {
+  min-height: 96px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--card);
+  border-radius: var(--radius-md);
+}
+.live-dlg-crops-empty[hidden] { display: none; }
 
 .live-dlg-crop-card {
-  background: #080d12;
-  border: 1px solid #1d2230;
-  border-radius: 8px;
+  background: var(--card);
+  border-radius: var(--radius-md);
   padding: 7px;
   display: flex;
   flex-direction: column;
@@ -140,7 +189,7 @@
   width: 100%;
   aspect-ratio: 1;
   object-fit: cover;
-  background: #020508;
+  background: var(--chip);
   border-radius: 5px;
   display: block;
 }
@@ -184,4 +233,43 @@
 .low-conf {
   font-style: italic;
   color: #606878 !important;
+}
+
+/* ── Motion ────────────────────────────────────────────────────────────
+   Frames crossfade (the previous frame stays underneath as a ghost while the
+   new one fades in, see _swapImage in queue.js); nothing waits on an animation
+   to show the newest frame. Animations start only when a frame really changes. */
+.live-dlg-pulse {
+  flex: 0 0 auto;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--brand);
+  opacity: 0;
+  transition: opacity .2s;
+}
+.live-dlg-pulse.on { opacity: 1; animation: live-pulse 1.1s ease-in-out infinite; }
+.live-dlg-pulse.on.is-paused { animation: none; background: #f5c542; opacity: .8; }
+@keyframes live-pulse {
+  0%, 100% { transform: scale(.7); box-shadow: 0 0 0 0 rgba(74, 163, 255, .55); }
+  50%      { transform: scale(1);  box-shadow: 0 0 0 6px rgba(74, 163, 255, 0); }
+}
+
+/* Opacity only: no slide or scale on the big panes. */
+.live-dlg-stage .live-dlg-img.live-img-in { animation: live-fade-in .25s ease-out backwards; }
+@keyframes live-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+.live-dlg-crop-card.is-new { animation: live-card-in .26s cubic-bezier(.22, .61, .36, 1) backwards; }
+@keyframes live-card-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+.live-dlg-crop-img.live-img-in { animation: live-fade-in .22s ease-out backwards; }
+
+@media (prefers-reduced-motion: reduce) {
+  .live-dlg-pulse.on,
+  .live-dlg-stage.is-waiting .live-dlg-spin,
+  .live-dlg-stage .live-dlg-img.live-img-in,
+  .live-dlg-crop-card.is-new,
+  .live-dlg-crop-img.live-img-in { animation: none; }
+  .live-dlg-wait, .live-dlg-crop-card { transition: none; }
 }

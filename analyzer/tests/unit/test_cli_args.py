@@ -42,7 +42,7 @@ class TestDefaults:
         assert args.use_gpu is True
         assert args.detector_name is None
         assert args.wildlife_model_mode is None
-        assert args.detection_threshold == pytest.approx(0.25)
+        assert args.detection_threshold == pytest.approx(0.15)
         assert args.parallel_prefetch == 3
         assert args.max_bird_crops == 10
         assert args.exposure_quality is None
@@ -50,7 +50,7 @@ class TestDefaults:
         assert args.scene_break_gap == pytest.approx(0.0)
         assert args.thumbnail_max_width is None
         assert args.thumbnail_jpeg_compression is None
-        assert args.wildlife_enabled is False
+        assert args.wildlife_enabled is True
         assert args.species_detection_enabled is True
         assert args.retry_errored is False
         assert args.smoke is False
@@ -237,10 +237,10 @@ class TestMainForwardsToPipeline:
         instance.process_folder.assert_called_once()
         pf_kwargs = instance.process_folder.call_args.kwargs
         assert pf_kwargs["analyzer_name"] == "cli"
-        assert pf_kwargs["wildlife_enabled"] is False
+        assert pf_kwargs["wildlife_enabled"] is True
         assert pf_kwargs["species_detection_enabled"] is True
         assert pf_kwargs["retry_errored"] is False
-        assert pf_kwargs["detection_threshold"] == pytest.approx(0.25)
+        assert pf_kwargs["detection_threshold"] == pytest.approx(0.15)
         assert pf_kwargs["scene_time_threshold"] == pytest.approx(1.0)
         assert pf_kwargs["max_bird_crops"] == 10
         assert pf_kwargs["parallel_prefetch"] == 3

@@ -355,9 +355,9 @@
           }
           
           // Fetch pipeline version from config.py via API
-          if (hasPywebviewApi && window.pywebview?.api?.get_app_version) {
+          if (hasPywebviewApi && window.pywebview?.api?.get_pipeline_version) {
             try {
-              const result = await window.pywebview.api.get_app_version();
+              const result = await window.pywebview.api.get_pipeline_version();
               const pipelineVersion = result?.version || result;
               if (pipelineVersion && pipelineVersion !== 'unknown') {
                 displayVersion += ` | Pipeline Version: ${pipelineVersion}`;
@@ -498,7 +498,7 @@
     async function checkRemoteVersion() {
       try {
         // Read current app version from VERSION.txt
-        let currentVer = _appVersion;
+        let currentVer = '';
         if (!currentVer) {
           try {
             const versionResp = await fetch('VERSION.txt', { cache: 'no-store' });

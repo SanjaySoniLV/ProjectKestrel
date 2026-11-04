@@ -23,23 +23,28 @@
       if (ev.key === 'Escape' && _openFolderActionsMenu) _closeFolderActionsMenu();
     });
 
-    function _buildFolderActionsMenu(folderPath, refreshCallback) {
+    /** True when a folder can be upgraded in place and is not on pipeline 3.x yet. */
+    function _isUpgradableTo3(up) {
+      return up?.status === 'upgradable' && (Number(up.pipeline_major) || 0) < 3;
+    }
+
+    /** ``pipelineStatus`` is the folder's upgrade status (folderPipelineStatus);
+     *  the Upgrade entry is only listed while ``_isUpgradableTo3`` holds. */
+    function _buildFolderActionsMenu(folderPath, refreshCallback, pipelineStatus = null) {
       const menu = document.createElement('div');
       menu.className = 'folder-group-actions-menu';
 
       const items = [
         { icon: '📂', label: 'Open in File Explorer',
           run: () => window.pywebview.api.open_file_explorer(folderPath) },
-        { icon: '⏱', label: 'Adjust Capture Time',
-          run: () => showAdjustCaptureTimeDialog(folderPath) },
-        { icon: '🗂', label: 'Regroup Scenes…',
-          run: () => openRegroupDialog(folderPath) },
-        { icon: '↺', label: 'Reset Culling Decisions',
-          run: () => showFolderOptionsDialog(folderPath) },
         { icon: '📝', label: 'Write Photo Metadata',
           run: () => writeMetadataForFolder(folderPath) },
-        { icon: '✨', label: 'Upgrade to Analysis Pipeline 3.0…',
-          run: () => upgradeFolderToV3(folderPath) },
+        { icon: '⚙', label: 'Change Settings…',
+          run: () => openFolderSettingsDialog(folderPath) },
+        ...(_isUpgradableTo3(pipelineStatus) ? [
+          { icon: '✨', label: 'Upgrade to Analysis Pipeline 3.0…',
+            run: () => upgradeFolderToV3(folderPath) },
+        ] : []),
         { divider: true },
         { icon: '🗑', label: 'Clear Kestrel Analysis Data', danger: true,
           run: () => {
@@ -96,6 +101,90 @@
       if (typeof smartSearchUpgradeFolder === 'function') await smartSearchUpgradeFolder(folderPath);
     }
 
+    // Per-folder pipeline status for the folder headers (version label + the
+    // Upgrade button). smart_search_status reads the folder's CSV, so results
+    // are cached briefly; an upgrade finishing clears the cache.
+    const _PIPELINE_STATUS_TTL_MS = 30000;
+    const _pipelineStatusCache = new Map(); // folderPath -> {at, promise}
+
+    function folderPipelineStatus(folderPath) {
+      const api = window.pywebview?.api;
+      if (!api?.smart_search_status || !folderPath) return Promise.resolve(null);
+      const hit = _pipelineStatusCache.get(folderPath);
+      if (hit && Date.now() - hit.at < _PIPELINE_STATUS_TTL_MS) return hit.promise;
+      const promise = Promise.resolve(api.smart_search_status(folderPath))
+        .then(st => (st?.success ? st.upgrade || null : null))
+        .catch(() => null);
+      _pipelineStatusCache.set(folderPath, { at: Date.now(), promise });
+      return promise;
+    }
+
+    function invalidateFolderPipelineStatus() { _pipelineStatusCache.clear(); }
+    window.invalidateFolderPipelineStatus = invalidateFolderPipelineStatus;
+
+    /** Header label for a folder's analysis pipeline ("Pipeline 2.0.4"). */
+    function _pipelineVersionLabel(up) {
+      if (!up || up.status === 'not_analyzed') return '';
+      if ((Number(up.pipeline_major) || 0) >= 3) return 'Pipeline 3.0';
+      return up.version ? `Pipeline ${up.version}` : 'Pipeline < 2.0';
+    }
+
+    /** Show/hide every header Upgrade button from its folder's status and the
+     *  queue panel's queued/running upgrades. Called after render and whenever
+     *  the set of queued/running upgrades changes. */
+    function syncFolderUpgradeButtons() {
+      let busy = new Set();
+      try { busy = window.queueUpgradeRunningPaths?.() || new Set(); } catch (_) { }
+      for (const btn of document.querySelectorAll('.folder-upgrade-btn[data-folder-path]')) {
+        const fp = btn.dataset.folderPath;
+        const queued = busy.has(String(fp).replace(/\\/g, '/'));
+        btn.disabled = queued;
+        btn.innerHTML = queued ? '<i>⏳</i> In upgrade queue' : '<i>✨</i> Upgrade to 3.0';
+        btn.classList.toggle('hidden', !(queued || btn.dataset.upgradable === '1'));
+      }
+      syncUpgradeAllButton();
+    }
+    window.syncFolderUpgradeButtons = syncFolderUpgradeButtons;
+
+    /** Show the left panel's "Upgrade All to 3.0" row only while a loaded folder can be upgraded. */
+    async function syncUpgradeAllButton() {
+      const row = document.getElementById('treeUpgradeAllRow');
+      if (!row) return;
+      const loaded = [...new Set((rows || []).map(r => r.__rootPath).filter(Boolean))];
+      const statuses = await Promise.all(loaded.map(fp => folderPipelineStatus(fp)));
+      row.classList.toggle('hidden', !statuses.some(_isUpgradableTo3));
+    }
+    window.syncUpgradeAllButton = syncUpgradeAllButton;
+    document.getElementById('treeUpgradeAll')?.addEventListener('click', () => { upgradeAllLoadedFoldersToV3(); });
+
+    /** Folder action: queue every loaded folder that can be upgraded. */
+    async function upgradeAllLoadedFoldersToV3() {
+      const loaded = [...new Set((rows || []).map(r => r.__rootPath).filter(Boolean))];
+      if (!loaded.length) return;
+      invalidateFolderPipelineStatus();
+      const statuses = await Promise.all(loaded.map(fp => folderPipelineStatus(fp)));
+      const targets = loaded.filter((fp, i) => statuses[i]?.status === 'upgradable');
+      const needReanalysis = statuses.filter(u => u?.status === 'reanalyze').length;
+      if (!targets.length) {
+        showToast(needReanalysis
+          ? `No loaded folder can be upgraded in place; ${needReanalysis} need${needReanalysis === 1 ? 's' : ''} a re-analysis.`
+          : 'All loaded folders are already on analysis pipeline 3.0.', 6000);
+        return;
+      }
+      const ok = window.confirm(
+        `Upgrade ${targets.length} loaded folder${targets.length === 1 ? '' : 's'} to analysis pipeline 3.0?\n\n` +
+        'They are queued and upgraded one after another; follow progress in the analysis queue panel. ' +
+        'Kestrel re-reads the bird crops and preview images it already saved (no RAW decoding). ' +
+        'Culling decisions, star ratings and edited tags are not changed, and each database is backed up first.' +
+        (needReanalysis ? `\n\n${needReanalysis} other folder${needReanalysis === 1 ? '' : 's'} need${needReanalysis === 1 ? 's' : ''} a full re-analysis instead and ${needReanalysis === 1 ? 'is' : 'are'} skipped.` : '')
+      );
+      if (!ok) return;
+      if (typeof smartSearchQueueUpgrades === 'function') {
+        await smartSearchQueueUpgrades(targets, { quietSkips: true });
+      }
+      syncFolderUpgradeButtons();
+    }
+
     async function renderScenes() {
       const myVer = ++_renderScenesVersion;
       const minC = parseFloat(el('#speciesConf').value) || 0;
@@ -117,6 +206,7 @@
       const includeSecondary = includeSecondaryCheckbox ? includeSecondaryCheckbox.checked : !!getSetting('includeSecondarySpecies', false);
       const includeFamilies = true;
       scenes = aggregateScenes(minC, search, sortBy, includeSecondary, includeFamilies);
+      syncUpgradeAllButton(); // left-panel "Upgrade All to 3.0" row follows the loaded folders
 
       // Re-resolve _currentScene so the open scene dialog keeps working
       // after the scenes array is regenerated with new objects.
@@ -720,12 +810,41 @@
               try { if (typeof renderFolderTree === 'function') renderFolderTree(); } catch (_) {}
               try { if (typeof renderScenes === 'function') renderScenes(); } catch (_) {}
             };
-            const menu = _buildFolderActionsMenu(_folderPathForMenu, refreshCb);
-            actionsWrap.appendChild(menu);
-            _openFolderActionsMenu = menu;
+            // Status is cached for 30 s, so this rarely waits; build the menu once it is known.
             _openFolderActionsTrigger = actionsTrigger;
+            folderPipelineStatus(_folderPathForMenu).then((up) => {
+              if (_openFolderActionsTrigger !== actionsTrigger) return; // closed or replaced meanwhile
+              const menu = _buildFolderActionsMenu(_folderPathForMenu, refreshCb, up);
+              actionsWrap.appendChild(menu);
+              _openFolderActionsMenu = menu;
+            });
           });
           actionsWrap.appendChild(actionsTrigger);
+
+          // Pipeline version + Upgrade to 3.0, left of Folder Actions. Filled
+          // in once the folder's status arrives; the button stays hidden for
+          // folders already on 3.0 (or needing a full re-analysis).
+          const pipelineLabel = document.createElement('span');
+          pipelineLabel.className = 'folder-pipeline-label hidden';
+          rightActions.appendChild(pipelineLabel);
+          const upgradeBtn = document.createElement('button');
+          upgradeBtn.type = 'button';
+          upgradeBtn.className = 'action-btn folder-upgrade-btn hidden';
+          upgradeBtn.dataset.folderPath = fd.folderPath;
+          upgradeBtn.innerHTML = '<i>✨</i> Upgrade to 3.0';
+          upgradeBtn.title = 'Upgrade to analysis pipeline 3.0 from the crops Kestrel already saved: new species IDs, the SigLIP sharpness score and smart search. No re-analysis; ratings, culls and tags are kept.';
+          upgradeBtn.addEventListener('click', (ev) => { ev.stopPropagation(); upgradeFolderToV3(fd.folderPath); });
+          rightActions.appendChild(upgradeBtn);
+          folderPipelineStatus(fd.folderPath).then((up) => {
+            const label = _pipelineVersionLabel(up);
+            pipelineLabel.textContent = label;
+            pipelineLabel.title = up?.reason || '';
+            pipelineLabel.classList.toggle('hidden', !label);
+            pipelineLabel.classList.toggle('is-current', (Number(up?.pipeline_major) || 0) >= 3);
+            upgradeBtn.dataset.upgradable = up?.status === 'upgradable' ? '1' : '0';
+            syncFolderUpgradeButtons();
+          });
+
           rightActions.appendChild(actionsWrap);
 
           // Repair — only rendered visible once a background diff has found
@@ -1008,6 +1127,25 @@
     document.addEventListener('keydown', _gridKeyHandler);
 
     // Merge all currently selected scenes (must all be in same folder)
+    /** Selection bar: mark every selected scene as reviewed with the tags it shows. */
+    function executeSelectionReview() {
+      let n = 0;
+      for (const id of selectedSceneIds) if (_finalizeSceneReview(id)) n += 1;
+      if (!n) return;
+      setStatus(`Marked ${n} scene${n === 1 ? '' : 's'} as reviewed.`);
+      renderScenes();
+    }
+
+    /** Selection bar: reject the undecided photos of every selected scene. */
+    function executeSelectionRejectUndecided() {
+      let photos = 0;
+      for (const id of selectedSceneIds) photos += rejectUndecidedRows(getSceneRows(id));
+      setStatus(photos
+        ? `Rejected ${photos} undecided photo${photos === 1 ? '' : 's'} in ${selectedSceneIds.size} scenes.`
+        : 'Every photo in the selected scenes already has a decision.');
+      if (photos) renderScenes();
+    }
+
     async function executeSelectionMerge() {
       const ids = Array.from(selectedSceneIds);
       if (ids.length < 2) return;

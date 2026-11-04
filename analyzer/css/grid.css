@@ -654,6 +654,42 @@
   border-color: #2a3040;
 }
 
+/* Analysis pipeline version + Upgrade to 3.0 (left of Folder Actions).
+   Violet like the smart-search styling: 3.0 is what unlocks smart features. */
+.folder-pipeline-label {
+  align-self: center;
+  margin-right: 8px;
+  padding: 2px 8px;
+  border: 1px solid #2a3040;
+  border-radius: 10px;
+  color: #8a93a3;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.folder-pipeline-label.is-current {
+  border-color: #4a3a80;
+  color: #b9a9f0;
+}
+.folder-group-right-actions .folder-upgrade-btn {
+  color: #d4c6ff;
+  font-weight: 500;
+  background: #2a2140;
+  border-left: 1px solid #6a4fb3;
+  border-right: 1px solid #6a4fb3;
+}
+.folder-group-right-actions .folder-upgrade-btn:hover:not(:disabled) {
+  background: #352a52;
+  color: #fff;
+}
+.folder-group-right-actions .folder-upgrade-btn:disabled {
+  opacity: 0.75;
+  cursor: default;
+}
+/* With the Upgrade button hidden, Folder Actions is the strip's first segment. */
+.folder-group-right-actions .folder-upgrade-btn.hidden + .folder-group-actions-wrap .action-btn {
+  border-left: none;
+}
+
 /* Repair — only present when a background diff found this folder's photos and
    its .kestrel data out of sync. Amber so it reads as "needs a look" rather
    than an error; nothing behind it acts without explicit confirmation. */

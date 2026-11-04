@@ -117,3 +117,9 @@
   outline: 2px solid #fff;
   outline-offset: 2px;
 }
+
+/* GPU-lost banner reuses the red strip; it is urgent, so it sits above the
+   legal / RAW-warning banners instead of stacking with them. */
+.gpu-lost-banner {
+  z-index: 100001;
+}

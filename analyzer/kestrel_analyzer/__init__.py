@@ -1,3 +1,3 @@
-from .config import VERSION
+from .config import PIPELINE_VERSION, VERSION
 
-__all__ = ["VERSION"]
+__all__ = ["PIPELINE_VERSION", "VERSION"]

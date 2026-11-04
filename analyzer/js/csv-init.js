@@ -76,6 +76,8 @@
     // Multi-select merge action bar
     const selectMergeBtn = document.getElementById('selectMergeBtn');
     if (selectMergeBtn) selectMergeBtn.addEventListener('click', executeSelectionMerge);
+    document.getElementById('selectReviewBtn')?.addEventListener('click', executeSelectionReview);
+    document.getElementById('selectRejectBtn')?.addEventListener('click', executeSelectionRejectUndecided);
     const selectClearBtn = document.getElementById('selectClearBtn');
     if (selectClearBtn) selectClearBtn.addEventListener('click', () => { selectedSceneIds.clear(); _lastSelectedIdx = -1; updateSelectionUI(); });
     document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && !document.querySelector('dialog[open]')) { if (selectedSceneIds.size > 0) { selectedSceneIds.clear(); _lastSelectedIdx = -1; updateSelectionUI(); } _clearGridFocus(); } });
