@@ -73,7 +73,7 @@ except (ImportError, ValueError):
         def _error(*_a, **_kw): pass
 from .ml import GPU_EP
 from .ml.speciesnet_sam_hq import DetectorSAMHQWrapper
-from .ml.provider_coordinator import ResilienceConfig
+from .ml.provider_coordinator import ResilienceConfig, is_device_lost
 from .ml.bioclip_species import BioClipSpeciesClassifier, MODEL_ID as SPECIES_MODEL_ID
 from .ml.animal_gate import AnimalGate, GATE_METHOD
 from .ml import siglip
@@ -92,6 +92,31 @@ def _write_jpeg(path: str, bgr: np.ndarray, params) -> bool:
         return False
     buf.tofile(path)
     return True
+
+
+class ConsecutiveErrorTracker:
+    """Counts frames that ended as Error rows to spot a run that is failing
+    wholesale (broken session or device) as opposed to isolated bad photos.
+
+    ``limit`` 0 disables stopping. A successful frame resets the streak. A
+    frame that failed to *decode* is a problem with that file, not with the
+    session, so it neither extends nor resets the streak.
+    """
+
+    def __init__(self, limit: int = 0):
+        self.limit = max(0, int(limit or 0))
+        self.streak = 0
+        self.total = 0
+
+    def record_success(self) -> None:
+        self.streak = 0
+
+    def record_error(self, decode_error: bool = False) -> bool:
+        """Record an errored frame; True when the run should stop."""
+        self.total += 1
+        if not decode_error:
+            self.streak += 1
+        return self.limit > 0 and self.streak >= self.limit
 
 
 class AnalysisPipeline:
@@ -605,6 +630,16 @@ class AnalysisPipeline:
             )
             return False
 
+    def _enhanced_gpu_mode(self):
+        """Enhanced GPU mode summary for the logs / metadata, or None when it is not in use."""
+        try:
+            if not getattr(self, "use_gpu", False):
+                return None
+            from .ml import enhanced_gpu
+            return enhanced_gpu.mode_summary()
+        except Exception:
+            return None
+
     def _log_resolved_providers(self) -> None:
         """Log the execution providers ONNX Runtime actually chose.
 
@@ -635,6 +670,8 @@ class AnalysisPipeline:
                     "use_gpu": bool(self.use_gpu),
                     "gpu_ep": GPU_EP,
                     "providers": providers,
+                    # Enhanced GPU mode (vendor EP, device, versions) or None.
+                    "enhanced_gpu": self._enhanced_gpu_mode(),
                     # Requested vs actual providers + per-EP node placement for
                     # every session built so far (see ml/providers.py).
                     "placement": provider_diag.placement_summary(),
@@ -722,8 +759,65 @@ class AnalysisPipeline:
                 coord=coord,
             )
         self._load_v3_extras(coord)
+        if not getattr(coord, "_pipeline_fallback_listener", False):
+            coord.add_fallback_listener(self._on_cpu_fallback)
+            coord._pipeline_fallback_listener = True
         if status_cb:
             status_cb("Models loaded. Processing started.")
+
+    def _on_cpu_fallback(self, kind: str, reason: str) -> None:
+        """A component moved from the GPU to the CPU: remember it and write it to the folder's log.
+        Nothing is added to the database: the frame itself is processed normally on the CPU, and a frame
+        that cannot be processed raises into the normal error path (saved as an Error row, which
+        re-analysis picks up)."""
+        import time as _time
+        event = {"component": kind, "reason": reason, "file": self._current_file, "at": int(_time.time())}
+        self.cpu_fallback_events.append(event)
+        _error(f"[pipeline] {kind} fell back to the CPU while processing {self._current_file!r}: {reason}")
+        try:
+            log_event(self._log_path, dict(event, level="warning", event="cpu_fallback"))
+        except Exception:
+            pass
+
+    def _note_gpu_lost(self, file_name: str, status_cb=None, include_cpu_fallback: bool = False) -> bool:
+        """True (and ``self.gpu_lost`` set) if the shared coordinator reports
+        the GPU as lost. ``file_name`` is the image being handled when the
+        loss was first noticed, logged so a frame-specific cause (for example
+        a flock frame with very many SAM-HQ boxes) can be spotted."""
+        try:
+            coord = self.sn_sam.coord
+        except Exception:
+            return False
+        fallbacks = (getattr(coord, "cpu_fallbacks", None) or []) if include_cpu_fallback else []
+        if not coord.gpu_lost and not fallbacks:
+            return False
+        reason = coord.gpu_lost_reason or (fallbacks[0]["kind"] + ": " + fallbacks[0]["reason"] if fallbacks else "")
+        self._record_gpu_lost(file_name, reason, status_cb)
+        return True
+
+    def _gpu_in_use(self) -> bool:
+        """True while the shared coordinator is on the GPU, or has already
+        flagged it lost (so a run that fell back to CPU still counts)."""
+        try:
+            coord = self.sn_sam.coord
+            return bool(coord.effective_use_gpu or coord.gpu_lost)
+        except Exception:
+            return False
+
+    def _record_gpu_lost(self, file_name: str, reason: str, status_cb=None) -> None:
+        self.gpu_lost = {"file": file_name, "reason": reason}
+        _error(f"[pipeline] GPU lost while processing {file_name!r}: {reason}")
+        log_event(
+            self._log_path,
+            {
+                "level": "warning",
+                "event": "gpu_lost",
+                "file": file_name,
+                "reason": reason[:500],
+            },
+        )
+        if status_cb:
+            status_cb("GPU stopped responding; stopping so analysis can resume on the GPU.")
 
     def process_folder(
         self,
@@ -734,7 +828,7 @@ class AnalysisPipeline:
         analyzer_name: str = "pipeline",
         wildlife_enabled: bool = True,
         species_detection_enabled: bool = True,
-        detection_threshold: float = 0.25,
+        detection_threshold: float = 0.15,
         scene_time_threshold: float = 1.0,
         scene_break_gap_seconds: float = 0.0,
         mask_threshold: float = 0.5,
@@ -748,8 +842,33 @@ class AnalysisPipeline:
         smart_search_enabled: Optional[bool] = None,
         quality_model: Optional[str] = None,
         raw_use_embedded_preview: Optional[bool] = None,
+        stop_on_gpu_loss: bool = False,
+        max_consecutive_errors: int = 0,
+        restart_on_cpu_fallback: bool = False,
     ) -> None:
         """Analyse ``folder``.
+
+        ``stop_on_gpu_loss`` makes the run end cleanly at an image boundary
+        when the GPU device is lost (Windows GPU reset), instead of carrying on
+        at CPU speed: a lost device cannot be recovered inside the process, but
+        a new process gets the GPU back. Everything analysed so far is saved
+        and ``self.gpu_lost`` is set to ``{"file", "reason"}`` so the caller can
+        restart. Default off, so existing callers behave as before.
+
+        A DirectML device loss that the CPU fallback handled (components moved to the CPU, the frame
+        was retried and saved normally) does not stop the run. ``restart_on_cpu_fallback`` (the CLI)
+        additionally ends the run at the next image boundary after such a fallback, so that the CLI
+        can continue in a fresh process with the GPU back; the app leaves it off and keeps going on
+        the CPU.
+
+        ``max_consecutive_errors`` (0 = off) stops the run once that many
+        frames in a row end as Error rows, whatever the cause, instead of
+        writing an Error row for every remaining photo. A successful frame
+        resets the count; frames that fail to decode (a bad file, not a
+        failing session) neither count nor reset it. The stop sets
+        ``self.error_stop = {"consecutive", "total_errors", "last_file",
+        "last_error"}``; ``self.error_count`` is the number of Error rows this
+        run wrote either way. Default off, so existing callers are unchanged.
 
         Pipeline 3.0.0 always stores the BioCLIP and SigLIP crop embeddings
         (the SigLIP one is also the default quality score).
@@ -784,6 +903,14 @@ class AnalysisPipeline:
         self._save_warning_cb = callbacks.get("on_warning")
         self._save_failure_streak = 0
         self._save_warning_shown = False
+        self.gpu_lost: Optional[Dict[str, str]] = None
+        # Components that fell back to the CPU after a DirectML device-lost error (see
+        # ProviderCoordinator.handle_device_lost): [{"component", "reason", "file", "at"}].
+        self.cpu_fallback_events: list = []
+        self._current_file = ""
+        self.error_stop: Optional[Dict[str, object]] = None
+        errors = ConsecutiveErrorTracker(max_consecutive_errors)
+        self.error_count = 0
 
         try:
             max_bird_crops = int(max_bird_crops)
@@ -1161,11 +1288,20 @@ class AnalysisPipeline:
                         previous_orientation = self._get_image_orientation(img)
             scene_count = database["scene_count"].max() if not database.empty else 0
 
+            last_done_file = ""
             for idx, decoded in enumerate(
                 self._iter_decoded(new_files, folder, max_workers=decode_workers),
                 start=1,
             ):
                 raw_file = decoded["file_name"]
+                self._current_file = raw_file
+
+                # GPU lost while handling the previous image (it finished and
+                # was saved, on CPU). Stop here so the caller can continue in a
+                # fresh process; the remaining files are picked up on resume.
+                if stop_on_gpu_loss and self._note_gpu_lost(last_done_file, status_cb, restart_on_cpu_fallback):
+                    return
+                last_done_file = raw_file
 
                 # Pause: wait until resume or until cancel_event is set.
                 if pause_event is not None:
@@ -1223,6 +1359,7 @@ class AnalysisPipeline:
 
                 image_path = decoded["image_path"]
                 raw_meter_scale = decoded["raw_meter_scale"]
+                frame_failed = False
                 try:
                     stage_ctx["stage"] = "read_image"
                     stage_ctx["file"] = raw_file
@@ -1666,6 +1803,7 @@ class AnalysisPipeline:
                         self._timing_add("writes", _t_stage)
                         if image_cb:
                             image_cb(entry)
+                        errors.record_success()
                         if progress_cb:
                             progress_cb(idx + processed_count, total)
                         continue
@@ -2028,6 +2166,13 @@ class AnalysisPipeline:
                             f" ({idx + processed_count}/{total}){_suffix}"
                         )
                 except Exception as e:
+                    # A device-lost error that reached here is not this
+                    # image's fault: don't record an Error row; stop so the
+                    # image is retried by the next process.
+                    if stop_on_gpu_loss and is_device_lost(e) and self._gpu_in_use():
+                        self._record_gpu_lost(raw_file, str(e), status_cb)
+                        return
+                    frame_failed = True
                     log_exception(
                         self._log_path,
                         e,
@@ -2070,7 +2215,33 @@ class AnalysisPipeline:
                     # escaping exception here has no handler left and would end
                     # the run while reporting the wrong cause.
                     self._save_database_soft(database, db_path, "save_error_entry")
+                    stop_run = errors.record_error(decode_error=decoded["error"] is not None)
+                    self.error_count = errors.total
+                    if stop_run:
+                        self.error_stop = {
+                            "consecutive": errors.streak,
+                            "total_errors": errors.total,
+                            "last_file": raw_file,
+                            "last_error": f"{type(e).__name__}: {e}"[:500],
+                        }
+                        _error(
+                            f"[pipeline] Stopping after {errors.streak} consecutive errored "
+                            f"frames (last: {raw_file})"
+                        )
+                        log_event(
+                            self._log_path,
+                            {"level": "error", "event": "consecutive_error_stop", **self.error_stop},
+                        )
+                        if status_cb:
+                            status_cb(
+                                f"Stopped after {errors.streak} frames in a row failed "
+                                f"(last: {raw_file}). Progress is saved."
+                            )
+                        return
                     time.sleep(2)
+
+                if not frame_failed:
+                    errors.record_success()
 
                 if progress_cb:
                     progress_cb(idx + processed_count, total)
@@ -2153,6 +2324,13 @@ class AnalysisPipeline:
                         # version above cannot stand in for this: it says which
                         # build wrote the folder, not which columns it wrote.
                         _meta["schema_version"] = DATABASE_SCHEMA_VERSION
+                        # Enhanced GPU mode shifts crops slightly (and the SigLIP score with them), so
+                        # a folder analysed with it records the EP, device and versions.
+                        _eg_mode = self._enhanced_gpu_mode()
+                        if _eg_mode:
+                            _meta["enhanced_gpu"] = _eg_mode
+                        else:
+                            _meta.pop("enhanced_gpu", None)
                         _meta["analysis_settings"] = {
                             "detector_name": str(getattr(self, "detector_name", "") or ""),
                             "use_gpu": bool(getattr(self, "use_gpu", False)),

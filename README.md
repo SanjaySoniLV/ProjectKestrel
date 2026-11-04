@@ -224,7 +224,7 @@ GPU acceleration is supported out of the box in the distributed builds, and ever
 
 Kestrel falls back to the CPU execution provider automatically when no compatible GPU is available, so it works on any machine. GPU is on by default; if you hit trouble, untick **Use GPU** in the Analyze Folders dialog, or pass `--no-gpu` on the CLI.
 
-If you're running from source, install the right requirements file for your platform — `requirements-windows.txt` pulls `onnxruntime-directml`, while `requirements-macos.txt` uses the stock `onnxruntime`, which ships CoreML on macOS. The generic `requirements.txt` is CPU-only.
+If you're running from source, install the right requirements file for your platform — `requirements-windows.txt` pulls `onnxruntime-windowsml` (DirectML plus the optional Windows ML mode), while `requirements-macos.txt` uses the stock `onnxruntime`, which ships CoreML on macOS. The generic `requirements.txt` is CPU-only.
 
 > Even with a GPU, a big backlog takes a while on a laptop. [Cloud Compute](#cloud-compute) runs the same pipeline on dedicated GPUs if you want it faster.
 

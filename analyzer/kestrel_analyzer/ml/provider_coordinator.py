@@ -77,15 +77,19 @@ class ResilienceConfig:
 # Substring matches against str(exc) for known "session is now corpse" errors.
 # DirectML errors carry the DXGI HRESULT in hex plus Windows' description text,
 # never the DXGI_ERROR_* symbol, so each device-lost code needs its hex form:
-# 887A0005 removed, 887A0006 hung, 887A0007 reset.
+# 887A0005 removed, 887A0006 hung, 887A0007 reset, 887A0020 driver internal
+# error (seen after a device removal: every later session rebuild in the same
+# process fails with it, and only a new process gets the GPU back).
 _SESSION_DEAD_SIGNATURES: tuple[str, ...] = (
     "GPU device instance has been suspended",
     "887A0005",
     "887A0006",
     "887A0007",
+    "887A0020",
     "DXGI_ERROR_DEVICE_REMOVED",
     "DXGI_ERROR_DEVICE_HUNG",
     "DXGI_ERROR_DEVICE_RESET",
+    "DXGI_ERROR_DRIVER_INTERNAL_ERROR",
     "GetDeviceRemovedReason",
     "!model_path.empty()",
     "model_path must not be empty",
@@ -102,7 +106,7 @@ def is_session_dead(exc: BaseException, *, aggressive: bool = False) -> bool:
     msg = str(exc) if exc is not None else ""
     type_name = type(exc).__name__ if exc is not None else ""
 
-    if any(sig in msg for sig in _SESSION_DEAD_SIGNATURES):
+    if any(sig in msg for sig in _SESSION_DEAD_SIGNATURES) or is_device_lost(msg):
         return True
     if "CoreML" in msg and "fail" in msg.lower():
         return True
@@ -113,6 +117,50 @@ def is_session_dead(exc: BaseException, *, aggressive: bool = False) -> bool:
         if "onnxruntime" in mod or type_name in {"Fail", "RuntimeException"}:
             return True
     return False
+
+
+# Signatures that mean the GPU *device* itself is gone (not just one session).
+# A session rebuild in the same process cannot recover from these; a fresh
+# process can. A subset of the session-dead signatures: the CoreML and
+# empty-model-path entries describe a broken session, not a lost device.
+_DEVICE_LOST_SIGNATURES: tuple[str, ...] = (
+    "GPU device instance has been suspended",
+    "887A0005",
+    "887A0006",
+    "887A0007",
+    "887A0020",
+    "DXGI_ERROR_DEVICE_REMOVED",
+    "DXGI_ERROR_DEVICE_HUNG",
+    "DXGI_ERROR_DEVICE_RESET",
+    "DXGI_ERROR_DRIVER_INTERNAL_ERROR",
+    "GetDeviceRemovedReason",
+)
+
+
+# DirectML also reports a poisoned device as a generic E_FAIL raised from its
+# command recorder (observed: every frame failing with
+# "DmlCommandRecorder.cpp(342) 80004005 Unspecified error" while another process
+# shared the GPU) and as E_OUTOFMEMORY when GPU memory runs out. 80004005 alone
+# is a generic code, so it only counts together with the DirectML component
+# name; the out-of-memory HRESULT text is specific to the D3D/DXGI stack, unlike
+# a Python MemoryError or an ONNX Runtime CPU allocation failure.
+_DML_COMMAND_RECORDER = "DmlCommandRecorder"
+_E_FAIL = "80004005"
+_GPU_OUT_OF_MEMORY_SIGNATURES: tuple[str, ...] = (
+    "8007000E",
+    "Not enough memory resources",
+)
+
+
+def is_device_lost(exc_or_text: object) -> bool:
+    """True if the error (or its text) says the GPU device was removed, reset
+    or poisoned, so that only a new process will get a working GPU back."""
+    msg = exc_or_text if isinstance(exc_or_text, str) else str(exc_or_text or "")
+    if any(sig in msg for sig in _DEVICE_LOST_SIGNATURES):
+        return True
+    if _DML_COMMAND_RECORDER in msg and _E_FAIL in msg:
+        return True
+    return any(sig in msg for sig in _GPU_OUT_OF_MEMORY_SIGNATURES)
 
 
 _RecreateFn = Callable[[bool], None]
@@ -145,6 +193,11 @@ class ProviderCoordinator:
         self._cpu_success_streak = 0
         self._current_promote_threshold = self.cfg.initial_promote_threshold
         self._demotions = 0
+        # Set when the GPU was lost for this process (device removed/reset, or
+        # the run locked itself out of the GPU). Sticky until
+        # ``clear_gpu_lost()``: in-process rebuilds do not recover a lost
+        # device, so callers use it to stop and continue in a fresh process.
+        self._gpu_lost_reason: Optional[str] = None
         self._recreate_cb: Optional[_RecreateFn] = None
         # All ResilientOnnxSession instances built against this coord. The
         # coordinator walks this list to recreate sessions on demote/promote,
@@ -153,6 +206,12 @@ class ProviderCoordinator:
         # together. If only some sessions migrate, the dead-provider sessions
         # error every subsequent image and the run looks "stuck on error".
         self._sessions: list["ResilientOnnxSession"] = []
+        # Per-component CPU fallback after a DirectML device-lost error (see handle_device_lost):
+        # kind -> {"reason", "at"}. Sticky for the process: a lost device is not recovered
+        # in-process, so these components stay on the CPU until Kestrel is restarted.
+        self._cpu_components: dict[str, dict] = {}
+        self._dml_lost = False
+        self._fallback_listeners: list[Callable[[str, str], None]] = []
 
     # ---- public read-only ----
 
@@ -171,6 +230,66 @@ class ProviderCoordinator:
     @property
     def current_promote_threshold(self) -> int:
         return self._current_promote_threshold
+
+    @property
+    def gpu_lost(self) -> bool:
+        return self._gpu_lost_reason is not None
+
+    @property
+    def gpu_lost_reason(self) -> Optional[str]:
+        return self._gpu_lost_reason
+
+    @property
+    def dml_lost(self) -> bool:
+        """True once a DirectML device-lost error moved components to the CPU in this process."""
+        return self._dml_lost
+
+    @property
+    def cpu_fallbacks(self) -> list[dict]:
+        """Components that fell back to the CPU: ``[{"kind", "reason", "at"}]``, oldest first."""
+        return [dict(v, kind=k) for k, v in self._cpu_components.items()]
+
+    def add_fallback_listener(self, fn: Callable[[str, str], None]) -> None:
+        """``fn(kind, reason)`` is called once per component that falls back to the CPU."""
+        self._fallback_listeners.append(fn)
+
+    def note_cpu_component(self, kind: str, reason: str) -> None:
+        if kind in self._cpu_components:
+            return
+        import time
+        self._cpu_components[kind] = {"reason": str(reason)[:300], "at": int(time.time())}
+        for fn in list(self._fallback_listeners):
+            try:
+                fn(kind, str(reason)[:300])
+            except Exception:
+                pass
+
+    def handle_device_lost(self, failing: "ResilientOnnxSession", exc: BaseException) -> None:
+        """A run on ``failing`` raised a device-lost error. Move that session and every other session
+        that runs on the shared DirectML device to the CPU. Sessions on a vendor EP keep running
+        there. The caller then retries the same run on the CPU, so no frame is lost or saved empty."""
+        reason = f"{type(exc).__name__}: {str(exc)[:200]}"
+        first = not self._dml_lost
+        self._dml_lost = True
+        for sess in list(self._sessions):
+            if sess is failing or sess.on_directml():
+                had_gpu_graph = getattr(sess, "_gpu_path", None) is not None
+                sess.fall_back_to_cpu()
+                # The transformer towers have a separate GPU graph; the CPU graph can score slightly differently.
+                self.note_cpu_component(
+                    sess.kind, reason + (" [now on the CPU graph; scores may differ slightly]" if had_gpu_graph else ""))
+        if first:
+            self._notify("Part of the GPU stopped responding. Some analysis steps now run on the "
+                         "CPU (slower). Restart Kestrel to restore full speed.")
+
+    def clear_gpu_lost(self) -> None:
+        self._gpu_lost_reason = None
+
+    def _flag_gpu_lost(self, reason: str, *, locked_out: bool) -> None:
+        if not self._user_gpu_enabled or self._gpu_lost_reason is not None:
+            return
+        if locked_out or is_device_lost(reason):
+            self._gpu_lost_reason = (reason or "repeated GPU failures")[:500]
 
     # ---- wiring ----
 
@@ -205,6 +324,8 @@ class ProviderCoordinator:
         also honour the tower device policy, and ``CPU_PINNED_KINDS`` (the SigLIP
         quality tower), which always run on CPU.
         """
+        if self._dml_lost and kind not in CPU_PINNED_KINDS:
+            return ["CPUExecutionProvider"]  # the device is gone; a new session must not touch it
         if kind in CPU_PINNED_KINDS:
             # Consistency over speed (see providers.CPU_PINNED_KINDS): the SigLIP
             # quality score must not depend on the machine's GPU.
@@ -219,6 +340,21 @@ class ProviderCoordinator:
                     return ["CPUExecutionProvider"]
             return gpu_providers()
         return ["CPUExecutionProvider"]
+
+    def vendor_for(self, kind: str, model_name: str = ""):
+        """Enhanced GPU mode: the vendor EP spec when this session should use it, else None.
+        Independent of the DirectML state: a model on the vendor EP keeps running there when
+        DirectML components fall back to the CPU. Off when the user turned the GPU off, after a
+        lock-out or lost GPU, or when the model's device policy keeps it off the GPU."""
+        if (not self._user_gpu_enabled or self._state is ProviderState.GPU_LOCKED_OUT
+                or kind in CPU_PINNED_KINDS or self._gpu_lost_reason):
+            return None
+        if kind in TOWER_KINDS:
+            from . import GPU_EP
+            if not tower_use_gpu(GPU_EP):
+                return None
+        from . import enhanced_gpu
+        return enhanced_gpu.vendor_spec_for(kind, model_name)
 
     # ---- event handlers ----
 
@@ -248,8 +384,8 @@ class ProviderCoordinator:
     def should_try_promote(self) -> bool:
         if self._state is not ProviderState.CPU:
             return False
-        if not self._user_gpu_enabled:
-            return False
+        if not self._user_gpu_enabled or self._dml_lost:
+            return False  # a lost DirectML device is never retried in this process (rebuilds fail with 887A0020)
         return self._cpu_success_streak >= self._current_promote_threshold
 
     def attempt_promotion(self) -> bool:
@@ -290,7 +426,9 @@ class ProviderCoordinator:
         self._state = ProviderState.CPU
         self._cpu_success_streak = 0
         self._demotions += 1
-        if self._demotions >= self.cfg.max_demotions_before_lockout > 0:
+        locked = self._demotions >= self.cfg.max_demotions_before_lockout > 0
+        self._flag_gpu_lost(reason, locked_out=locked)
+        if locked:
             self._state = ProviderState.GPU_LOCKED_OUT
             self._notify("GPU disabled for the rest of this run — repeated GPU failures.")
             return
@@ -306,7 +444,9 @@ class ProviderCoordinator:
         self._demotions += 1
         new_threshold = int(self._current_promote_threshold * self.cfg.promote_backoff_factor)
         self._current_promote_threshold = min(new_threshold, self.cfg.max_promote_threshold)
-        if self._demotions >= self.cfg.max_demotions_before_lockout > 0:
+        locked = self._demotions >= self.cfg.max_demotions_before_lockout > 0
+        self._flag_gpu_lost(reason, locked_out=locked)
+        if locked:
             self._state = ProviderState.GPU_LOCKED_OUT
             self._notify("GPU disabled for the rest of this run — repeated GPU failures.")
             return
@@ -329,5 +469,6 @@ __all__ = [
     "ProviderCoordinator",
     "ProviderState",
     "ResilienceConfig",
+    "is_device_lost",
     "is_session_dead",
 ]

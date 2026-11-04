@@ -1,0 +1,26 @@
+/* "What is analysis running on?" strip: enhanced GPU / standard GPU / CPU fallback.
+   Shown in the analysis queue panel and the Live Analysis dialog (js/enhanced-gpu.js). */
+.gpu-mode-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin: 6px 0;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid #2a3142;
+  border-left-width: 3px;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.gpu-mode-strip.hidden { display: none; }
+.gpu-mode-strip .gms-label { font-weight: 600; }
+.gpu-mode-strip .gms-detail { color: #a0a8b8; flex: 1 1 220px; }
+.gpu-mode-strip .gms-actions { display: flex; gap: 6px; }
+.gpu-mode-strip .gms-actions button { font-size: 12px; padding: 2px 8px; }
+.gpu-mode-strip--enhanced { border-left-color: #3fb27f; }
+.gpu-mode-strip--standard { border-left-color: #5b8def; }
+.gpu-mode-strip--cpu { border-left-color: #8a93a6; }
+.gpu-mode-strip--warn { border-left-color: #e0a030; }
+.gpu-mode-strip--bad { border-left-color: #e05555; }

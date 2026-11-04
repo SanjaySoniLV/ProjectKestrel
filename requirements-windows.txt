@@ -1,19 +1,30 @@
 # Windows CI build requirements
 #
-# Identical to requirements.txt except we use onnxruntime-directml instead of
-# the CPU-only onnxruntime package. onnxruntime-directml ships the DirectML
-# execution provider, which gives GPU acceleration on any DX12-compatible GPU
-# (NVIDIA, AMD, Intel). The two packages are mutually exclusive — they share
-# the `onnxruntime` module name — so only one may be installed at a time.
+# Identical to requirements.txt except we use onnxruntime-windowsml instead of
+# the CPU-only onnxruntime package. onnxruntime-windowsml is a normal ONNX Runtime
+# build that bundles the DirectML execution provider, which gives GPU acceleration
+# on any DX12-compatible GPU (NVIDIA, AMD, Intel), and can also load the vendor
+# execution providers that Windows ML downloads for the opt-in "enhanced GPU
+# performance" mode (analyzer/kestrel_analyzer/ml/enhanced_gpu.py). DirectML stays
+# the default; the vendor path is off until the user runs its setup. The package
+# conflicts with onnxruntime / onnxruntime-directml (same `onnxruntime` module
+# name), so only one may be installed at a time; uninstall the others first.
 #
 # Local dev installs still use requirements.txt (CPU-only) to avoid dragging
 # GPU drivers into the dev loop. This file is referenced by the Windows build
 # in .github/workflows/main.yml.
 
 # Core ML/AI Dependencies
-# onnxruntime-directml has no 1.23.2 release; 1.23.0 is the nearest match to
-# the 1.23.2 pin used for macOS / local dev (same minor series).
-onnxruntime-directml==1.24.4
+# The wasdk-* packages (Windows App SDK Python bindings, used only by the enhanced GPU
+# mode) pin onnxruntime-windowsml to exactly 1.25.2, so these three move together.
+# Benchmarked: DirectML speed in 1.25.2 matches onnxruntime-directml 1.24.4.
+onnxruntime-windowsml==1.25.2.202605110140
+wasdk-Microsoft.Windows.AI.MachineLearning==2.3.0
+wasdk-Microsoft.Windows.ApplicationModel.DynamicDependency.Bootstrap==2.3.0
+# Awaiting Windows ML's async calls (ensure_ready_async().get()) imports winrt.windows.foundation; the wasdk
+# wheels only depend on winrt-runtime. Must match winrt-runtime 3.2.1 (4.x breaks the wasdk extension modules).
+winrt-Windows.Foundation==3.2.1
+winrt-Windows.Foundation.Collections==3.2.1
 
 numpy==2.4.4
 

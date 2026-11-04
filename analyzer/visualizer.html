@@ -27,6 +27,7 @@
   <link rel="stylesheet" href="css/smart-search.css" />
   <link rel="stylesheet" href="css/legal-banner.css" />
   <link rel="stylesheet" href="css/raw-warn-banner.css" />
+  <link rel="stylesheet" href="css/gpu-mode.css" />
   <link rel="stylesheet" href="css/dialogs/base.css" />
   <link rel="stylesheet" href="css/dialogs/kdlg.css" />
   <link rel="stylesheet" href="css/dialogs/scene.css" />
@@ -66,6 +67,9 @@
     </div>
     <button id="rawWarnCloseBtn" class="raw-warn-close" type="button"
       aria-label="Dismiss this warning">&times;</button>
+  </div>
+  <div id="gpuLostNotice" class="raw-warn-banner gpu-lost-banner hidden" role="alert">
+    <span id="gpuLostMsg" class="raw-warn-msg"></span>
   </div>
   <div class="app-body">
   <header>
@@ -307,6 +311,11 @@
              old "Clear done" button. -->
         <button class="queue-panel-close hidden" id="queuePanelCloseBtn" type="button" title="Close — all items finished">×</button>
         <span class="queue-panel-toggle open" id="queuePanelToggle">▲</span>
+      </div>
+      <div class="gpu-mode-strip hidden" data-gpu-mode-strip role="status" aria-live="polite">
+        <span class="gms-label"></span>
+        <span class="gms-detail"></span>
+        <span class="gms-actions"><button type="button" class="gms-report hidden">Report a problem</button></span>
       </div>
       <div class="queue-panel-body" id="queuePanelBody"></div>
       <div class="queue-panel-controls" id="queuePanelControls">
@@ -1001,6 +1010,27 @@
         </select>
       </div>
       <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Where the species and search models run when GPU analysis is on. Auto: GPU on Windows (DirectML), CPU on macOS (their int8 layers don't run on Core ML and would bounce between devices). Applies to the next analysis.</div>
+
+      <div id="egSection">
+        <div class="row">
+          <label for="settingsEnhancedGpu" style="flex:1">Enhanced GPU performance <span class="muted">(experimental)</span></label>
+          <label class="inline" style="gap:6px">
+            <input type="checkbox" id="settingsEnhancedGpu" disabled />
+            <span class="muted">Use</span>
+          </label>
+        </div>
+        <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Enhanced GPU Performance uses specialized software unique to your hardware to speed up Kestrel&rsquo;s analysis. Setup downloads components from Windows and tests Kestrel&rsquo;s models on your computer. Kestrel will use standard GPU acceleration if enhanced GPU performance fails for any reason.</div>
+        <div class="muted" id="egStatus" style="font-size:12px;margin-bottom:8px;white-space:pre-line"></div>
+        <div class="row" style="gap:8px;justify-content:flex-start">
+          <button id="egSetupBtn" type="button">Set up enhanced GPU performance</button>
+          <button id="egCancelBtn" type="button" class="hidden">Cancel</button>
+          <button id="egReportNowBtn" type="button" class="hidden">Report a problem</button>
+        </div>
+        <div id="egReportRow" class="muted hidden" style="font-size:12px;margin:8px 0">
+          Setup did not finish. Would you like to send a bug report? It includes your recent log, which lists the GPU options Windows offered, so we can improve support for your hardware.
+          <div style="margin-top:6px"><button id="egReportBtn" type="button">Send bug report</button> <button id="egReportDismiss" type="button">Not now</button></div>
+        </div>
+      </div>
 
       <h4 style="margin:12px 0 8px;padding-top:8px;border-top:1px solid #1d2230;color:#a0a8b8;font-size:13px;text-transform:uppercase;letter-spacing:0.5px">Analytics &amp; Privacy</h4>
 
@@ -1781,6 +1811,11 @@
         <span class="live-dlg-fname" id="liveDlgFilename"></span>
         <span id="liveDlgStatus" role="status" aria-live="off"></span>
       </div>
+      <div class="gpu-mode-strip hidden" data-gpu-mode-strip role="status" aria-live="polite">
+        <span class="gms-label"></span>
+        <span class="gms-detail"></span>
+        <span class="gms-actions"><button type="button" class="gms-report hidden">Report a problem</button></span>
+      </div>
       <div class="live-dlg-preview-row">
         <div class="live-dlg-img-cell">
           <span class="live-dlg-img-label">Thumbnail</span>
@@ -1858,6 +1893,7 @@
   <!-- settings.js MUST load before scene-dialog.js: scene-dialog's IIFE
        (setupScenePreviewDivider) calls getSetting() at parse time. -->
   <script src="js/settings.js"></script>
+  <script src="js/enhanced-gpu.js"></script>
   <script src="js/scene-dialog.js"></script>
   <script src="js/primary-subject.js"></script>
   <script src="js/feedback-donate.js"></script>

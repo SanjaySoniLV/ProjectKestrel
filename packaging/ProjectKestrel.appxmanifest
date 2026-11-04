@@ -22,6 +22,14 @@
       Name="Windows.Desktop"
       MinVersion="10.0.17763.0"
       MaxVersionTested="10.0.22621.0" />
+    <!-- Windows App SDK 2.x runtime framework. Used only by the opt-in "enhanced GPU performance"
+         mode (Windows ML, analyzer/kestrel_analyzer/ml/enhanced_gpu.py): a packaged process cannot
+         bootstrap the runtime dynamically, so it must be a package dependency. The Store installs it
+         automatically. MinVersion matches the version the Python bindings request. -->
+    <PackageDependency
+      Name="Microsoft.WindowsAppRuntime.2"
+      MinVersion="2.3.0.0"
+      Publisher="CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US" />
   </Dependencies>
 
   <Resources>

@@ -82,6 +82,9 @@ _MIN_GRAPH_BYTES = 100_000  # LFS pointer stubs are ~130 bytes
 _PLACED_RE = re.compile(r"placed on \[(\w+)\]\. Number of nodes: (\d+)")
 
 _lock = threading.Lock()
+# Set when a probe captured no placement lines at all: the onnxruntime-windowsml build (ORT 1.25.2)
+# writes no log text to stdout/stderr, so probing would only build every model twice for nothing.
+_probe_unsupported = False
 _records: List[dict] = []
 _placement_cache: Dict[tuple, Dict[str, int]] = {}
 
@@ -233,32 +236,12 @@ def _probe_placement(ort, model_path: str, providers: List[str],
     return parse_placement(captured)
 
 
-def build_session(model_path: str, providers: List[str], kind: str = "",
-                  config: Optional[Dict[str, str]] = None):
-    """``ort.InferenceSession`` + placement record (see the module docstring).
-    The returned session always logs at ORT's default severity.
-    ``config`` = session config entries (``SessionOptions.add_session_config_entry``)."""
-    import onnxruntime as ort
-
-    if not _diag_enabled():
-        return ort.InferenceSession(model_path, sess_options=_session_options(ort, config), providers=providers)
-    key = (str(model_path), repr(list(providers)), tuple(sorted((config or {}).items())))
-    with _lock:
-        nodes = _placement_cache.get(key)
-    if nodes is None and _needs_probe(providers):
-        nodes = _probe_placement(ort, model_path, providers, config)
-        if nodes is not None:
-            with _lock:
-                _placement_cache[key] = nodes
-    sess = ort.InferenceSession(model_path, sess_options=_session_options(ort, config), providers=providers)
-    try:
-        actual = [str(p) for p in sess.get_providers()]
-    except Exception:
-        actual = []
+def _record_session(kind: str, model_path: str, requested: list, actual: list, nodes: Optional[Dict[str, int]],
+                    config: Optional[Dict[str, str]]) -> None:
     record = {
         "kind": str(kind),
         "model": os.path.basename(str(model_path)),
-        "requested": list(providers),
+        "requested": list(requested),
         "actual": actual,
         "nodes": nodes or {},
     }
@@ -279,6 +262,45 @@ def build_session(model_path: str, providers: List[str], kind: str = "",
         )
     except Exception:
         pass
+
+
+def build_session(model_path: str, providers: List[str], kind: str = "",
+                  config: Optional[Dict[str, str]] = None, vendor=None):
+    """``ort.InferenceSession`` + placement record (see the module docstring).
+    The returned session always logs at ORT's default severity.
+    ``config`` = session config entries (``SessionOptions.add_session_config_entry``).
+    ``vendor`` = an ``enhanced_gpu.VendorSpec``: build on that vendor EP's GPU device instead of
+    ``providers`` (enhanced GPU mode; raises if it cannot, the caller falls back)."""
+    import onnxruntime as ort
+
+    if vendor is not None:
+        from . import enhanced_gpu
+        sess = enhanced_gpu.build_vendor_session(ort, model_path, _session_options(ort, config), vendor)
+        try:
+            actual = [str(p) for p in sess.get_providers()]
+        except Exception:
+            actual = []
+        _record_session(kind, model_path, [f"{vendor.ep_name} (enhanced GPU)"], actual, None, config)
+        return sess
+    if not _diag_enabled():
+        return ort.InferenceSession(model_path, sess_options=_session_options(ort, config), providers=providers)
+    key = (str(model_path), repr(list(providers)), tuple(sorted((config or {}).items())))
+    with _lock:
+        nodes = _placement_cache.get(key)
+    global _probe_unsupported
+    if nodes is None and not _probe_unsupported and _needs_probe(providers):
+        nodes = _probe_placement(ort, model_path, providers, config)
+        if nodes is not None:
+            with _lock:
+                _placement_cache[key] = nodes
+            if not nodes:
+                _probe_unsupported = True
+    sess = ort.InferenceSession(model_path, sess_options=_session_options(ort, config), providers=providers)
+    try:
+        actual = [str(p) for p in sess.get_providers()]
+    except Exception:
+        actual = []
+    _record_session(kind, model_path, providers, actual, nodes, config)
     return sess
 
 
@@ -288,6 +310,8 @@ def placement_summary() -> List[dict]:
 
 
 def clear() -> None:
+    global _probe_unsupported
     with _lock:
+        _probe_unsupported = False
         _records.clear()
         _placement_cache.clear()

@@ -270,6 +270,7 @@
       try { await hydrateSettingsFromServer(); } catch (_) { }
 
       const dlg = document.getElementById('settingsDlg');
+      if (window.egRefreshSettings) { try { window.egRefreshSettings(); } catch (_) { } }
       const editor = getSetting('editor', 'darktable');
       const editorSelect = document.getElementById('editorChoice');
       const customRow = document.getElementById('customEditorRow');
@@ -465,6 +466,7 @@
         raw_use_embedded_preview: rawUseEmbeddedPreview,
         quality_model: qualityModel,
         tower_device: towerDevice,
+        enhanced_gpu_enabled: (() => { const el = document.getElementById('settingsEnhancedGpu'); return el && !el.disabled ? !!el.checked : !!existing.enhanced_gpu_enabled; })(),
         quality_feedback_mode: qualityFeedbackMode,
         bird_regions: finalRegions,
         show_scientific_names: showScientificNames,

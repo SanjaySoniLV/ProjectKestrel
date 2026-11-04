@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import threading
 import webbrowser
 
 from settings_utils import load_persisted_settings, save_persisted_settings, debug, info, warn, error
@@ -3396,6 +3397,105 @@ class Api:
             error(f'[API] send_feedback error: {e}')
             return {'success': False, 'error': str(e)}
 
+    # ── Enhanced GPU performance (opt-in vendor GPU execution providers; Windows only) ──
+    # Setup runs on a worker thread; the UI polls enhanced_gpu_status() for progress. Nothing here
+    # touches Windows ML unless the user starts setup, so macOS and unsupported Windows are unaffected.
+    _eg_lock = threading.Lock()
+    _eg_job: dict = {'running': False, 'stage': '', 'message': '', 'cancel': False, 'result': None}
+
+    def _eg_module(self):
+        from kestrel_analyzer.ml import enhanced_gpu
+        return enhanced_gpu
+
+    def enhanced_gpu_status(self):
+        """Settings-dialog state: availability, whether set up / enabled, per-model results, setup progress."""
+        try:
+            eg = self._eg_module()
+            st = eg.status()
+            st['runtime'] = dict(eg.runtime_summary(), cpu_components=[f.get('kind') for f in _queue_manager.cpu_fallbacks()])
+            with self._eg_lock:
+                job = {k: v for k, v in self._eg_job.items() if k != 'cancel'}
+            st['job'] = job
+            return {'success': True, 'status': st}
+        except Exception as e:
+            return {'success': False, 'error': str(e), 'status': {'available': False}}
+
+    def enhanced_gpu_start_setup(self):
+        """Start the set-up worker (platform check, EP download, validation). Returns at once."""
+        try:
+            eg = self._eg_module()
+            if not eg.platform_status().get('available'):
+                return {'success': False, 'error': eg.platform_status().get('reason', 'Not available')}
+            with self._eg_lock:
+                if self._eg_job.get('running'):
+                    return {'success': False, 'error': 'Setup is already running.'}
+                self._eg_job.update(running=True, stage='platform', message='Starting...', cancel=False, result=None)
+
+            def _progress(stage, message):
+                with self._eg_lock:
+                    self._eg_job.update(stage=stage, message=message)
+
+            def _work():
+                result = None
+                try:
+                    result = eg.run_setup(_progress, lambda: bool(self._eg_job.get('cancel')))
+                    if result.get('ok'):
+                        # Turn the mode on once it has been validated; the user can switch it off.
+                        s = load_persisted_settings()
+                        s['enhanced_gpu_enabled'] = True
+                        save_persisted_settings(s)
+                        eg.reset_cache()
+                except Exception as e:  # run_setup should not raise, but never leave 'running' stuck
+                    result = {'ok': False, 'reason': f'{type(e).__name__}: {e}'}
+                finally:
+                    with self._eg_lock:
+                        self._eg_job.update(running=False, stage='done', message='',
+                                            result={'ok': bool(result and result.get('ok')),
+                                                    'reason': (result or {}).get('reason', '')})
+
+            threading.Thread(target=_work, name='enhanced-gpu-setup', daemon=True).start()
+            return {'success': True}
+        except Exception as e:
+            error(f'[API] enhanced_gpu_start_setup error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def enhanced_gpu_cancel_setup(self):
+        with self._eg_lock:
+            self._eg_job['cancel'] = True
+        return {'success': True}
+
+    def enhanced_gpu_set_enabled(self, enabled):
+        """Turn the mode on or off (off returns every model to DirectML on the next analysis)."""
+        try:
+            s = load_persisted_settings()
+            s['enhanced_gpu_enabled'] = bool(enabled)
+            save_persisted_settings(s)
+            self._eg_module().reset_cache()
+            return {'success': True}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def enhanced_gpu_report_text(self):
+        """Plain-text summary for a bug report about the setup (the log tail is attached separately)."""
+        try:
+            eg = self._eg_module()
+            st = eg.load_state() or {}
+            lines = ['Enhanced GPU performance setup did not work.', '',
+                     f"Result: {st.get('reason') or 'see log'}",
+                     f"Vendor EP tried: {st.get('ep_name') or 'none'}",
+                     f"Models: {json.dumps(st.get('models', {}))}",
+                     f"Hardware: {json.dumps(st.get('hardware', {}))}"]
+            return {'success': True, 'text': '\n'.join(lines)[:6000]}
+        except Exception as e:
+            return {'success': False, 'error': str(e), 'text': ''}
+
+    def gpu_mode_report_text(self):
+        """Plain-text summary for a bug report about the GPU mode (enhanced / standard / CPU fallback)."""
+        try:
+            return {'success': True, 'text': self._eg_module().report_text(_queue_manager.cpu_fallbacks())}
+        except Exception as e:
+            return {'success': False, 'error': str(e), 'text': ''}
+
     def get_settings(self):
         """Return persisted settings, ensuring machine_id and version exist."""
         try:
@@ -4207,7 +4307,7 @@ class Api:
                         }
 
             sett = load_persisted_settings()
-            detection_threshold = float(sett.get('detection_threshold', 0.25))
+            detection_threshold = float(sett.get('detection_threshold', 0.15))
             detection_threshold = max(0.1, min(0.99, detection_threshold))
             scene_time_threshold = float(sett.get('scene_time_threshold', 1.0))
             scene_time_threshold = max(0.0, scene_time_threshold)

@@ -51,6 +51,11 @@ SIGLIP_MODELS_DIR = MODELS_DIR / "siglip"
 # exporter path is also what makes cedar DirectML-compatible — the dynamo-exported
 # mdv1000 variants hit a Reshape op DML rejects.
 DEFAULT_DETECTOR_NAME = "mdv5a"
+
+# Callers that opt in (the CLI and the desktop queue) stop a run after this many
+# consecutive frames that ended as Error rows: a healthy run has isolated bad
+# photos, a run where every frame fails has a broken session or device.
+DEFAULT_MAX_CONSECUTIVE_ERRORS = 10
 DETECTOR_ONNX_PATHS = {
     "mdv5a":         SPECIESNET_MODEL_DIR / "mdv5a.onnx",
     "mdv1000-cedar": SPECIESNET_MODEL_DIR / "mdv1000-cedar.onnx",

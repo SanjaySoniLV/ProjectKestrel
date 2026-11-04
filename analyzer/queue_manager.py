@@ -160,6 +160,16 @@ def _quality_to_raw_rating(quality: float) -> int:
     return 5
 
 
+try:
+    from kestrel_analyzer.config import DEFAULT_MAX_CONSECUTIVE_ERRORS as _DEFAULT_MAX_CONSECUTIVE_ERRORS
+except Exception:  # pragma: no cover - config import must never block the queue
+    _DEFAULT_MAX_CONSECUTIVE_ERRORS = 10
+
+_GPU_LOST_MESSAGE = (
+    'The GPU stopped responding (a Windows GPU reset). Progress is saved. '
+    'Restart Kestrel, then analyze this folder again to continue on the GPU.'
+)
+
 # Live-preview JPEG limits. The Live Analysis dialog shows these in panes a few
 # hundred pixels wide, so full-size frames only cost encode time on the analysis
 # thread and IPC/base64 time on the UI side.
@@ -306,7 +316,7 @@ class QueueManager:
         self._use_gpu = True
         self._wildlife_enabled = True
         self._species_detection_enabled = True
-        self._detection_threshold = 0.25
+        self._detection_threshold = 0.15
         self._scene_time_threshold = 1.0
         self._scene_break_gap_seconds = 0.0
         self._mask_threshold = 0.5
@@ -314,6 +324,10 @@ class QueueManager:
         self._parallel_prefetch = 3
         self._detector_name = _DEFAULT_DETECTOR_NAME
         self._retry_errored = False
+        # Set when the GPU device is lost during a run ({'file', 'reason'}).
+        # A lost device cannot be recovered inside this process, so it stays
+        # set until the app is restarted; the UI shows a banner.
+        self._gpu_lost: dict | None = None
 
     # Phase 3: queue-restore feature deleted (replaced by analyze_recents in
     # the dialog). _collect_restore_paths_locked, _build_recovery_state_locked,
@@ -381,7 +395,25 @@ class QueueManager:
                 'running': self.is_running,
                 'paused': self.is_paused,
                 'items': [it.to_dict() for it in self._items],
+                'gpu_lost': dict(self._gpu_lost) if self._gpu_lost else None,
+                'gpu_mode': self._gpu_mode(),
             }
+
+    def _gpu_mode(self):
+        """What analysis is running on (enhanced GPU / standard GPU / CPU fallback); None until models load."""
+        try:
+            coord = getattr(getattr(self._pipeline, 'sn_sam', None), 'coord', None)
+            from kestrel_analyzer.ml import enhanced_gpu
+            return enhanced_gpu.gpu_mode(bool(self._use_gpu), coord, bool(self._gpu_lost))
+        except Exception:
+            return None
+
+    def cpu_fallbacks(self):
+        """Components that fell back to the CPU after a GPU failure in the current pipeline."""
+        try:
+            return list(self._pipeline.sn_sam.coord.cpu_fallbacks)
+        except Exception:
+            return []
 
     # ---- control ----
 
@@ -392,7 +424,7 @@ class QueueManager:
         wildlife_enabled: bool = True,
         species_detection_enabled: bool = True,
         detector_name: str = _DEFAULT_DETECTOR_NAME,
-        detection_threshold: float = 0.25,
+        detection_threshold: float = 0.15,
         scene_time_threshold: float = 1.0,
         scene_break_gap_seconds: float = 0.0,
         mask_threshold: float = 0.5,
@@ -644,6 +676,16 @@ class QueueManager:
             if item is None:
                 break
 
+            # The GPU was lost earlier in this process: it cannot come back
+            # without a restart, so don't start more work on a dead device.
+            if self._gpu_lost and self._use_gpu:
+                with self._lock:
+                    item.status = 'error'
+                    item.end_time = _time_mod.time()
+                    item.error = _GPU_LOST_MESSAGE
+                self._persist_recovery_state()
+                continue
+
             # ── Phase 3: per-item gates BEFORE marking running / pipeline ──
             # 1. skip_if_already_done — silently mark done without touching
             #    .kestrel if the folder is still fully analyzed with no errors.
@@ -848,7 +890,42 @@ class QueueManager:
                     parallel_prefetch=self._parallel_prefetch,
                     retry_errored=self._retry_errored,
                     species_regions=item.species_regions,
+                    stop_on_gpu_loss=bool(self._use_gpu),
+                    max_consecutive_errors=_DEFAULT_MAX_CONSECUTIVE_ERRORS,
                 )
+                lost = getattr(self._pipeline, 'gpu_lost', None)
+                if isinstance(lost, dict) and lost and self._use_gpu:
+                    # Device lost: process_folder stopped at an image boundary
+                    # and saved everything done so far. Surface it and stop the
+                    # queue; the user restarts Kestrel and re-runs the folder,
+                    # which resumes where it left off.
+                    self._gpu_lost = dict(lost)
+                    error(f'[queue] GPU lost while processing {lost.get("file")!r} in {item.path!r}: '
+                          f'{lost.get("reason")}')
+                    with self._lock:
+                        item.status = 'error'
+                        item.end_time = _time_mod.time()
+                        item.error = _GPU_LOST_MESSAGE
+                    self._persist_recovery_state()
+                    self._send_folder_analytics(item)
+                    continue
+                error_stop = getattr(self._pipeline, 'error_stop', None)
+                if isinstance(error_stop, dict) and error_stop:
+                    # Every frame was failing (broken session or device), not
+                    # one bad photo. Progress is saved; frames not reached yet
+                    # are picked up when the folder is analysed again.
+                    msg = (f"Analysis stopped after {error_stop.get('consecutive')} frames in a row "
+                           f"failed (last: {error_stop.get('last_file')}). Progress is saved. Restart "
+                           "Kestrel and analyze this folder again; failed frames are retried when "
+                           "'retry errored' is on.")
+                    error(f'[queue] {msg} {error_stop.get("last_error")}')
+                    with self._lock:
+                        item.status = 'error'
+                        item.end_time = _time_mod.time()
+                        item.error = msg
+                    self._persist_recovery_state()
+                    self._send_folder_analytics(item)
+                    continue
                 # Counted before the item flips to 'done' so the first status
                 # poll that sees 'done' already carries it.
                 scene_total = None
