@@ -125,6 +125,7 @@
     let _ccAuthKnown = false;       // false until this dialog open's sign-in check finishes
     let _ccRemaining = null;        // effectiveRemaining from the Auth Worker, or null
     let _ccPricing = null;          // cloud_compute_get_pricing result, or null
+    let _ccPricingLoaded = false;   // false until this dialog open's pricing call finishes
     let _ccQueuedImages = 0;        // images in the current Analyze queue
 
     let _ccUsageMsg = '';           // shown when the remaining count could not be read
@@ -268,6 +269,7 @@
       // worker thread). Any failure leaves _ccPricing null and the card shows
       // no price-related content. Never delays opening the dialog.
       _ccPricing = null;
+      _ccPricingLoaded = false;
       if (window.pywebview?.api?.cloud_compute_get_pricing) {
         try {
           const r = await window.pywebview.api.cloud_compute_get_pricing();
@@ -276,6 +278,7 @@
           _ccPricing = null;
         }
       }
+      _ccPricingLoaded = true;
       _ccRenderCard();
       _ccRenderLearnMore();
       _ccRenderPricing();
@@ -327,7 +330,9 @@
       // counts). The explanation always shows then; prices and "See plans" only
       // when the bridge supplied them (not on the Mac App Store build). Everything
       // shown is supplied by the service; labels go in via textContent. If the
-      // catalog fetch failed, only the explanation and "See plans" show.
+      // catalog fetch failed, only the explanation and "See plans" show. With no
+      // "See plans" link (the Mac App Store build), "Manage my account" is the next
+      // step, matching the same button in the account panel.
       const box = document.getElementById('analyzeDlgCloudPricing');
       if (!box) return;
       const short = _analyzeDestination === 'cloud' && _ccAuthKnown && _ccSignedIn
@@ -372,6 +377,16 @@
         a.addEventListener('click', (e) => {
           e.preventDefault();
           _ccOpenExternal(_ccPricing.plansUrl);
+        });
+        foot.appendChild(a);
+      } else if (_ccPricingLoaded) {
+        const a = document.createElement('a');
+        a.href = '#';
+        a.className = 'adlg-cloud-see-plans';
+        a.textContent = 'Manage my account';
+        a.addEventListener('click', (e) => {
+          e.preventDefault();
+          _ccOpenExternal(_CC_MYACCOUNT_URL);
         });
         foot.appendChild(a);
       }
