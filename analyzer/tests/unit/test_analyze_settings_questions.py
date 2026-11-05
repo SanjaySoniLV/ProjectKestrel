@@ -58,7 +58,7 @@ class TestQuestionMarkup(unittest.TestCase):
     def test_species_help_text_describes_the_world_list_and_region(self):
         # The NA-only CNN is gone: BioCLIP 2 names birds worldwide, geofenced by region.
         self.assertNotIn("only recognizes North American birds", self.html)
-        self.assertIn("BioCLIP&nbsp;2", self.html)
+        self.assertIn("names each bird from the world's", self.html)
         self.assertIn("narrowed to the region below", self.html)
 
     def test_wildlife_help_does_not_claim_a_per_image_cost(self):
