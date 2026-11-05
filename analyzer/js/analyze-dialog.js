@@ -1221,7 +1221,7 @@ ${node.path}` : node.path);
       if (f.upgradeMode === 'upgrade') {
         const hint = document.createElement('div');
         hint.className = 'adlg-upgrade-hint';
-        hint.textContent = 'Re-reads the saved crops to update species IDs, add the SigLIP sharpness score '
+        hint.textContent = 'Re-reads the saved crops to update species IDs, add the sharpness score '
           + 'and smart search. Ratings, decisions and edited tags are kept.'
           + (cloud ? ' Runs on this computer — upgrades don\u2019t use Cloud Compute.' : '');
         wrap.appendChild(hint);

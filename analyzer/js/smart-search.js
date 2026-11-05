@@ -356,7 +356,7 @@
       idxBtn?.classList.toggle('hidden', upgrading || _smart.unavailable || upgradable.length === 0);
       if (idxBtn) {
         idxBtn.textContent = upgradable.length > 1 ? `Upgrade ${upgradable.length} folders` : 'Upgrade folder';
-        idxBtn.title = 'Upgrade to analysis version 3.0 using the crops Kestrel already saved: new species IDs, the SigLIP quality score and the smart-search index. No re-analysis, never changes your ratings, culls or tags. Runs on this computer only.';
+        idxBtn.title = 'Upgrade to analysis version 3.0 using the crops Kestrel already saved: new species IDs, the sharpness score and the smart-search index. No re-analysis, never changes your ratings, culls or tags. Runs on this computer only.';
       }
 
       // The status sits right-aligned inside the search box, so each message is short;

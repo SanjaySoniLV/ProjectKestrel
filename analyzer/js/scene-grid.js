@@ -93,7 +93,7 @@
       const ok = window.confirm(
         `Upgrade “${name}” to analysis version 3.0?\n\n` +
         'Kestrel re-reads the bird crops and preview images it already saved (no RAW decoding) to ' +
-        'update species IDs, add the new SigLIP sharpness score and build the smart-search index. ' +
+        'update species IDs, add the new sharpness score and build the smart-search index. ' +
         'Your culling decisions, star ratings and edited tags are not changed, and the database is ' +
         'backed up first. Runs on this computer only (uses the GPU when enabled).'
       );
@@ -832,7 +832,7 @@
           upgradeBtn.className = 'action-btn folder-upgrade-btn hidden';
           upgradeBtn.dataset.folderPath = fd.folderPath;
           upgradeBtn.innerHTML = '<i>✨</i> Upgrade to 3.0';
-          upgradeBtn.title = 'Upgrade to analysis version 3.0 from the crops Kestrel already saved: new species IDs, the SigLIP sharpness score and smart search. No re-analysis; ratings, culls and tags are kept.';
+          upgradeBtn.title = 'Upgrade to analysis version 3.0 from the crops Kestrel already saved: new species IDs, the sharpness score and smart search. No re-analysis; ratings, culls and tags are kept.';
           upgradeBtn.addEventListener('click', (ev) => { ev.stopPropagation(); upgradeFolderToV3(fd.folderPath); });
           rightActions.appendChild(upgradeBtn);
           folderPipelineStatus(fd.folderPath).then((up) => {
