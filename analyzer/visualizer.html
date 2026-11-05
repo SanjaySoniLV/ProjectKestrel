@@ -947,14 +947,14 @@
       <h4 style="margin:12px 0 8px;padding-top:8px;border-top:1px solid #1d2230;color:#a0a8b8;font-size:13px;text-transform:uppercase;letter-spacing:0.5px">Data &amp; Preview</h4>
 
       <div class="row">
-        <label for="rawPreviewCacheEnabled" style="flex:1">Cache RAW Preview Images</label>
+        <label for="rawPreviewCacheEnabled" style="flex:1">Save RAW previews for faster loading</label>
         <label class="inline" style="gap:6px">
           <input type="checkbox" id="rawPreviewCacheEnabled" checked />
           <span class="muted">Enable</span>
         </label>
       </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Cache full-resolution RAW previews
-        in .kestrel/culling_TMP for faster subsequent loads. Disable to save disk space (previews will be generated fresh each time).</div>
+      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Keep full-size RAW previews
+        in the .kestrel/culling_TMP folder so later loads are faster. Turn off to save disk space; previews are then made again each time.</div>
 
       <div class="row">
         <label for="settingsExpStrengthSlider" style="flex:1">Preview exposure compensation</label>
