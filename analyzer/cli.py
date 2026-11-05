@@ -162,7 +162,7 @@ def parse_args(argv: Sequence[str] | None = None):
         default=None,
         help=(
             "Which stored quality score becomes the effective `quality` column: "
-            "'siglip' (SigLIP 2 sharpness, default) or 'legacy' (pre-3.0 quality CNN). "
+            "'legacy' (quality CNN, default) or 'siglip' (SigLIP 2 sharpness). "
             "Both are always computed. Default: the quality_model setting."
         ),
     )

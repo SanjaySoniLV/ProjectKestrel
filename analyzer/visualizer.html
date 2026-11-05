@@ -977,11 +977,11 @@
       <div class="row">
         <label for="settingsQualityModel" style="flex:1">Quality scorer</label>
         <select id="settingsQualityModel">
-          <option value="siglip">SigLIP 2 sharpness (default)</option>
-          <option value="legacy">Legacy quality model</option>
+          <option value="legacy">Legacy quality model (default)</option>
+          <option value="siglip">SigLIP 2 sharpness</option>
         </select>
       </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Both scores are computed during analysis (pipeline 3.0) and stored, so switching is instant &mdash; no re-analysis. Both judge focus/sharpness only, not whether a photo is "good". The SigLIP score is the new default; the legacy model is kept for this major version for comparison. Folders analysed before 3.0 only have the legacy score until upgraded.</div>
+      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Both scores are computed during analysis (pipeline 3.0) and stored, so switching is instant &mdash; no re-analysis. Both judge focus/sharpness only, not whether a photo is "good". The legacy model is the default because it examines each crop at higher resolution, which separates fine focus detail better. Folders analysed before 3.0 only have the legacy score until upgraded.</div>
 
       <div class="row">
         <label for="settingsSmartSearch" style="flex:1">Smart search: index whole frames</label>
