@@ -157,3 +157,23 @@ def test_flow_aborts_without_opening_browser_when_no_port(monkeypatch):
     assert result["ok"] is False
     assert result["error"] == "no_loopback_port"
     assert opened == [], "browser must not be opened when no port could bind"
+
+
+def test_revoke_url_is_clerks_revocation_endpoint():
+    # Clerk publishes revocation_endpoint as /oauth/token/revoke; /oauth/revoke
+    # returns 404, so sign-out silently never revoked the refresh token.
+    assert oauth_client.CLERK_REVOKE_URL == "https://clerk.projectkestrel.org/oauth/token/revoke"
+
+
+def test_revoke_token_posts_to_revoke_url(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        oauth_client, "_token_request",
+        lambda url, form, timeout=15.0: calls.append((url, form, timeout)) or {},
+    )
+    oauth_client.revoke_token("rt_example")
+    assert calls == [(
+        oauth_client.CLERK_REVOKE_URL,
+        {"token": "rt_example", "client_id": oauth_client.CLERK_CLIENT_ID},
+        3.0,
+    )]
