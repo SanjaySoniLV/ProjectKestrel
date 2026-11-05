@@ -47,7 +47,9 @@ except ImportError:  # pragma: no cover - package-style import path
 
 CLERK_AUTHORIZE_URL = "https://clerk.projectkestrel.org/oauth/authorize"
 CLERK_TOKEN_URL     = "https://clerk.projectkestrel.org/oauth/token"
-CLERK_REVOKE_URL    = "https://clerk.projectkestrel.org/oauth/revoke"
+# Clerk's published revocation_endpoint (/.well-known/openid-configuration).
+# The bare /oauth/revoke path returns 404.
+CLERK_REVOKE_URL    = "https://clerk.projectkestrel.org/oauth/token/revoke"
 
 # Public OAuth client — no secret. PKCE replaces what a confidential client's
 # secret would do. The client_id below is registered in the Clerk dashboard,
