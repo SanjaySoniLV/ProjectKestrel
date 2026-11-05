@@ -456,8 +456,8 @@
       row.className = 'tree-node-row ' + (effectiveHasKestrel ? 'has-kestrel' : 'no-kestrel') + (outdated ? ' version-outdated' : '') + (isInProgress ? ' in-progress' : '');
       if (node.path === treeActivePath) row.classList.add('active');
       // Path is always visible on hover; in-progress / outdated states append context.
-      if (isInProgress) row.title = `${isUpgrading && !_inProgressFolderPaths.has(normPath) ? 'Upgrading to pipeline 3…' : 'Currently analyzing…'}\n${node.path}`;
-      else if (outdated) row.title = `Analyzed on pipeline ${folderPipelineLabel(node)} (current: ${CURRENT_PIPELINE_MAJOR}.0)\n${node.path}`;
+      if (isInProgress) row.title = `${isUpgrading && !_inProgressFolderPaths.has(normPath) ? 'Upgrading to analysis version 3…' : 'Currently analyzing…'}\n${node.path}`;
+      else if (outdated) row.title = `Analyzed with analysis version ${folderPipelineLabel(node)} (current: ${CURRENT_PIPELINE_MAJOR}.0)\n${node.path}`;
       else row.title = folderPipelineNote(node) ? `${folderPipelineNote(node)}
 ${node.path}` : node.path;
 
@@ -508,7 +508,7 @@ ${node.path}` : node.path;
         inProgressHourglass.className = 'tree-in-progress-hourglass';
         inProgressHourglass.textContent = '⏳';
         inProgressHourglass.title = isUpgrading && !_inProgressFolderPaths.has(normPath)
-          ? 'Upgrading to pipeline 3' : 'Analysis in progress';
+          ? 'Upgrading to analysis version 3' : 'Analysis in progress';
       }
 
       // Label

@@ -581,9 +581,9 @@
     }
 
     const _UPGRADE_LABELS = {
-      pending: '⏳ Queued for pipeline 3',
-      running: '✨ Upgrading to pipeline 3',
-      done: '✓ Upgraded to pipeline 3',
+      pending: '⏳ Queued for analysis version 3',
+      running: '✨ Upgrading to analysis version 3',
+      done: '✓ Upgraded to analysis version 3',
       cancelled: '— Upgrade stopped',
       stopped: '⏸ Upgrade paused',
       error: '✗ Upgrade failed',
@@ -655,7 +655,7 @@
         const stopping = _upgradeCancelRequested.has(u.job_id);
         cancelBtn.textContent = stopping ? 'Stopping…' : '✕ Cancel';
         cancelBtn.disabled = stopping;
-        cancelBtn.setAttribute('aria-label', `Cancel the pipeline 3 upgrade of ${u.name || 'this folder'}`);
+        cancelBtn.setAttribute('aria-label', `Cancel the analysis version 3 upgrade of ${u.name || 'this folder'}`);
         cancelBtn.title = isPending
           ? 'Take this folder out of the upgrade queue.'
           : 'Stop the upgrade. Progress so far is kept; running it again resumes where it stopped.';
@@ -1493,7 +1493,7 @@
               else if (anchorEl) anchorEl.parentNode.appendChild(hg);
             }
             const hgEl = row.querySelector('.tree-in-progress-hourglass');
-            if (hgEl) hgEl.title = isUpgrading ? 'Upgrading to pipeline 3' : 'Analysis in progress';
+            if (hgEl) hgEl.title = isUpgrading ? 'Upgrading to analysis version 3' : 'Analysis in progress';
 
             if (!row.querySelector('.tree-cb')) {
               const cb = document.createElement('input');
