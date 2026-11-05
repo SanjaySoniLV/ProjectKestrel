@@ -495,7 +495,7 @@
         try {
           if (dirty && typeof saveCsv === 'function') await saveCsv();
           if (typeof reloadCurrentFolders === 'function') await reloadCurrentFolders();
-          showToast(`Quality scorer: ${qualityModel === 'legacy' ? 'legacy model' : 'SigLIP 2 sharpness'}`, 3000);
+          showToast(`Quality scorer: ${qualityModel === 'legacy' ? 'older sharpness model' : 'newer sharpness model'}`, 3000);
         } catch (e) {
           console.warn('[quality_model] reload failed', e);
         }
