@@ -240,9 +240,9 @@
       const tip =
         'The estimate models your upload speed (once measured) against Cloud ' +
         'Compute analyzing roughly ' +
-        `${p.containerImagesPerSec} image/sec per worker, scaling up to ` +
-        `${p.maxContainers} workers as the backlog grows. Actual time ` +
-        'depends on transfer speed and worker availability.';
+        `${p.containerImagesPerSec} images per second per cloud machine, using up to ` +
+        `${p.maxContainers} machines as the queue grows. Actual time ` +
+        'depends on upload speed and how many machines are free.';
       const el = document.createElement('span');
       el.className = 'est-time-uncertain est-time-uncertain--cloud';
       el.setAttribute('title', tip);
