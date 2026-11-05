@@ -233,13 +233,13 @@
     }
 
     // Always-on "?" badge for cloud est. time. Phrasing differs from the local
-    // baseline badge — the cloud "?" stays permanent because the estimate is
-    // beta and depends on transfer speed + Modal worker availability.
+    // baseline badge — the cloud "?" stays permanent because the estimate
+    // depends on transfer speed + worker availability.
     function _buildCloudUncertainBadge() {
       const p = _cloudPipelineParams();
       const tip =
-        'Cloud Compute is in beta. The estimate models your measured upload ' +
-        'speed against Cloud Compute analyzing roughly ' +
+        'The estimate models your upload speed (once measured) against Cloud ' +
+        'Compute analyzing roughly ' +
         `${p.containerImagesPerSec} image/sec per worker, scaling up to ` +
         `${p.maxContainers} workers as the backlog grows. Actual time ` +
         'depends on transfer speed and worker availability.';
@@ -1075,8 +1075,8 @@ ${node.path}` : node.path);
           : '';
         // Time stat — destination-dependent.
         //   Local: existing baseline-or-local logic with optional "?" badge.
-        //   Cloud: "?" until a speed test has run, then max(upload, 2-img/sec
-        //          floor) with a permanent "?" + beta affordance underneath.
+        //   Cloud: best-case "as fast as" figure until a speed test has run, then
+        //          the modelled time at the measured upload speed; permanent "?" tooltip.
         let timeValue = '—';
         let timeLabel = 'estimated time';
         let timeDim = true;
@@ -1090,17 +1090,17 @@ ${node.path}` : node.path);
               _getCloudEstSeconds(totalImagesToProcess);
             if (secs != null) {
               timeValue = `~${_formatDuration(secs)}`;
-              timeLabel = 'est. time (cloud · beta)';
+              timeLabel = 'est. time (cloud)';
               timeDim = false;
               timeBadgeKind = 'cloud';
               cloudRegimeChip = _buildCloudRegimeChip(regime, uploadSecs, analysisSecs);
             } else {
-              // Cloud destination, no speed test yet — show "?" prominently
-              // and let the panel below host the Run Speed Test button.
-              timeValue = '?';
-              timeLabel = 'est. time (cloud · beta)';
-              timeDim = false; // we want the "?" to read clearly, not muted
-              timeBadgeKind = null; // value IS the "?"; no separate badge
+              // No speed test yet: show the compute-limited best case, labelled
+              // as such. The speed test replaces it with a measured figure.
+              timeValue = `~${_formatDuration(analysisSecs)}`;
+              timeLabel = 'as fast as (cloud)';
+              timeDim = false;
+              timeBadgeKind = 'cloud';
             }
           }
         } else if (totalImagesToProcess >= _EST_MIN_IMAGES_TO_ESTIMATE) {
@@ -1143,35 +1143,30 @@ ${node.path}` : node.path);
         }
       }
 
-      // Toggle the cloud-only affordances panel under the headline. Speed-test
-      // button is enabled iff at least one folder is checked. When a speed test
-      // has already run, the button reads "Re-run upload speed test" and the
-      // status line surfaces the measured mbps for transparency.
-      const cloudPanel = document.getElementById('analyzeDlgCloudEstPanel');
-      if (cloudPanel) {
-        const showCloudPanel = _isCloudDestination();
-        cloudPanel.classList.toggle('hidden', !showCloudPanel);
-        if (showCloudPanel) {
-          const runBtn = document.getElementById('analyzeDlgRunSpeedTest');
-          const statusEl = document.getElementById('analyzeDlgCloudSpeedStatus');
-          const hasResult = !!(typeof _cloudSpeedTestResult !== 'undefined' && _cloudSpeedTestResult);
-          if (runBtn) {
-            runBtn.disabled = checkedCount === 0;
-            const labelText = hasResult ? ' Re-run upload speed test' : ' Run Upload Speed Test';
-            // Keep the leading lightning icon span intact.
-            const iconHtml = '<span class="adlg-cloud-speed-btn-icon">⚡</span>';
-            runBtn.innerHTML = iconHtml + labelText;
-          }
-          if (statusEl) {
-            if (hasResult) {
-              const mbps = Number(_cloudSpeedTestResult.mbps || 0).toFixed(1);
-              statusEl.textContent = `Measured upload: ${mbps} MB/s`;
-              statusEl.classList.remove('hidden', 'error');
-              statusEl.classList.add('success');
-            } else {
-              statusEl.classList.add('hidden');
-            }
-          }
+      // Tell the cloud card how many images are queued so it can decide whether
+      // to show prices (a comparison against the remaining count, nothing more).
+      if (typeof _ccUpdateCloudPricing === 'function') {
+        try { _ccUpdateCloudPricing(totalImagesToProcess); } catch (e) { /* failsafe */ }
+      }
+
+      // Speed-test button + measured-upload status live in the Cloud card. The button is enabled iff at least one
+      // folder is checked; after a test it reads "Re-test" and the status shows
+      // the measured rate. (The price panel is driven by cloud-compute.js.)
+      {
+        const runBtn = document.getElementById('analyzeDlgRunSpeedTest');
+        const statusEl = document.getElementById('analyzeDlgCloudSpeedStatus');
+        const hasResult = !!(typeof _cloudSpeedTestResult !== 'undefined' && _cloudSpeedTestResult);
+        if (runBtn) {
+          runBtn.disabled = checkedCount === 0;
+          // Keep the leading lightning icon span intact.
+          runBtn.innerHTML = '<span class="adlg-cloud-speed-btn-icon">⚡</span>'
+            + (hasResult ? ' Re-run upload speed test' : ' Run upload speed test');
+        }
+        if (statusEl && hasResult) {
+          const mbps = Number(_cloudSpeedTestResult.mbps || 0).toFixed(1);
+          statusEl.textContent = `Measured upload: ${mbps} MB/s`;
+          statusEl.classList.remove('hidden', 'error');
+          statusEl.classList.add('success');
         }
       }
 

@@ -76,9 +76,13 @@
     function _ccUpdateAddButtonLabel() {
       const btn = document.getElementById('analyzeDlgAdd');
       if (!btn) return;
-      const label = _analyzeDestination === 'cloud'
-        ? '☁ Add to Cloud Analysis Queue'
-        : '➕ Add to Local Analysis Queue';
+      // Signed-out users can pick Cloud, but Start is blocked behind sign-in.
+      const needsSignIn = _analyzeDestination === 'cloud' && _ccAuthKnown && !_ccSignedIn;
+      const label = needsSignIn
+        ? 'Sign in to use Cloud Compute'
+        : (_analyzeDestination === 'cloud'
+          ? '☁ Add to Cloud Analysis Queue'
+          : '➕ Add to Local Analysis Queue');
       // Preserve disabled state; just rename.
       btn.textContent = label;
     }
@@ -97,8 +101,9 @@
       if (_analyzeDestination === 'cloud') {
         _ccRefreshUsage();
       }
+      _ccRenderPricing();   // prices show only while Cloud is selected
       // Re-render the summary so the est. time stat + cloud panel match the
-      // new destination immediately (button label, beta notice, "?" badge).
+      // new destination immediately (button label, estimate panel, "?" badge).
       if (typeof refreshAnalyzeDlgSummary === 'function') {
         try { refreshAnalyzeDlgSummary(); } catch (e) { /* failsafe */ }
       }
@@ -115,54 +120,285 @@
       } catch { return false; }
     }
 
-    async function _ccApplySignInGate() {
-      // Show/hide the sign-in overlay based on auth state, but DO NOT mark the
-      // card as .disabled — selection should always be possible so the user
-      // sees the "?" est. time and beta affordances even before signing in.
-      // The actual sign-in requirement is enforced at speed-test + submit time.
-      const overlay = document.getElementById('cloudDestSignInOverlay');
-      if (!overlay) return;
-      try {
-        const signedIn = await _ccCheckSignedIn();
-        overlay.classList.toggle('hidden', signedIn);
-      } catch {
-        // If the bridge call hangs/fails, default to showing the overlay
-        // (safer: prompts sign-in rather than letting submit fail later).
-        overlay.classList.remove('hidden');
+    // Cloud card state used to decide what the price block shows.
+    let _ccSignedIn = false;
+    let _ccAuthKnown = false;       // false until this dialog open's sign-in check finishes
+    let _ccRemaining = null;        // effectiveRemaining from the Auth Worker, or null
+    let _ccPricing = null;          // cloud_compute_get_pricing result, or null
+    let _ccPricingLoaded = false;   // false until this dialog open's pricing call finishes
+    let _ccQueuedImages = 0;        // images in the current Analyze queue
+
+    let _ccUsageMsg = '';           // shown when the remaining count could not be read
+
+    // Fill `el` with a clickable "Sign in" followed by `tail`. The link opens the
+    // sign-in window.
+    function _ccFillSignInPrompt(el, tail) {
+      el.textContent = '';
+      const a = document.createElement('a');
+      a.href = '#';
+      a.className = 'adlg-signin-link';
+      a.textContent = 'Sign in';
+      a.addEventListener('click', (e) => {
+        e.preventDefault();
+        if (typeof openPerchSignInWindow === 'function') {
+          try { openPerchSignInWindow(); } catch {}
+        }
+      });
+      el.append(a, document.createTextNode(tail));
+    }
+
+    // "N images free for new accounts." comes from the service's catalog (a value
+    // the service sets), never from a number in the app. If the catalog is
+    // unavailable the offer is omitted rather than guessed. It is also absent on
+    // the Mac App Store build (the bridge returns no pricing data there).
+    function _ccFreeOfferText() {
+      const n = _ccPricing?.catalog?.signupBonusImages;
+      if (_ccPricing?.ok && typeof n === 'number' && n > 0) {
+        return `${n.toLocaleString()} images free for new accounts.`;
+      }
+      return '';
+    }
+
+    // The Cloud card: the "as fast as" estimate and the line under it (images
+    // left when signed in, the free-image offer when signed out).
+    function _ccRenderCard() {
+      const fastEl = document.getElementById('cloudDestFast');
+      if (fastEl) {
+        let text = '';
+        const minImages = (typeof _EST_MIN_IMAGES_TO_ESTIMATE !== 'undefined') ? _EST_MIN_IMAGES_TO_ESTIMATE : 50;
+        if (_ccQueuedImages >= minImages && typeof _getCloudEstSeconds === 'function') {
+          const est = _getCloudEstSeconds(_ccQueuedImages);
+          text = est.secs != null
+            ? `~${_formatDuration(est.secs)} at your measured upload speed.`
+            : `As fast as ~${_formatDuration(est.analysisSecs)}, depending on your upload speed.`;
+        }
+        fastEl.textContent = text;
+        fastEl.classList.toggle('hidden', !text);
+      }
+      const usageEl = document.getElementById('cloudDestUsage');
+      if (usageEl) {
+        let text = '';
+        if (_ccAuthKnown && !_ccSignedIn) text = _ccFreeOfferText();
+        else if (_ccAuthKnown && _ccRemaining != null) text = `Images left: ${_ccRemaining.toLocaleString()}`;
+        else if (_ccAuthKnown) text = _ccUsageMsg;
+        usageEl.textContent = text;
+        usageEl.classList.toggle('hidden', !text);
       }
     }
 
-    async function _ccRefreshUsage() {
-      // Race the bridge call against a 3s timeout so the "Loading usage…"
-      // line never gets stuck when the API hangs (e.g. user not signed in,
-      // network down, or worker slow to respond).
-      const el = document.getElementById('cloudDestUsage');
-      if (!el) return;
-      if (!window.pywebview?.api?.cloud_compute_get_usage) {
-        el.textContent = 'Usage unavailable.';
-        return;
-      }
-      const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve({ __timedOut: true }), 3000));
-      let r;
+    async function _ccApplySignInGate() {
+      // Records whether a usable sign-in exists. The card stays selectable when
+      // signed out; Start is what is blocked (see _ccBlockCloudStart).
       try {
-        r = await Promise.race([window.pywebview.api.cloud_compute_get_usage(), timeoutPromise]);
+        _ccSignedIn = await _ccCheckSignedIn();
       } catch {
-        r = null;
+        _ccSignedIn = false;
       }
-      if (r && r.__timedOut) {
-        el.textContent = 'Usage unavailable (timed out).';
-        return;
-      }
-      if (r && r.ok && r.usage) {
-        const u = r.usage;
-        if (u.remainingImages == null) {
-          el.textContent = 'Usage metering not configured yet.';
+      _ccAuthKnown = true;
+      _ccRenderCard();
+      _ccUpdateAddButtonLabel();
+    }
+
+    async function _ccRefreshUsage() {
+      // Remaining images = the Auth Worker's pre-computed effectiveRemaining
+      // (credits plus remaining monthly allowance), the same figure as the
+      // Account panel. The app does no cap or credit math. Raced against a 3 s
+      // timeout so the line never gets stuck when the API hangs.
+      _ccRemaining = null;
+      _ccUsageMsg = '';
+      // Re-check on every refresh: the page's idea of "signed in" must never
+      // outlive the keychain (e.g. after Sign out).
+      await _ccApplySignInGate();
+      if (_ccSignedIn) {
+        if (!window.pywebview?.api?.cloud_compute_get_entitlements) {
+          _ccUsageMsg = 'Usage unavailable.';
         } else {
-          el.textContent = `Remaining cloud images: ${u.remainingImages}`;
+          const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve({ __timedOut: true }), 3000));
+          let r;
+          try {
+            r = await Promise.race([window.pywebview.api.cloud_compute_get_entitlements(), timeoutPromise]);
+          } catch {
+            r = null;
+          }
+          if (r && r.__timedOut) {
+            _ccUsageMsg = 'Usage unavailable (timed out).';
+          } else if (r && r.ok && typeof r.effectiveRemaining === 'number') {
+            _ccRemaining = r.effectiveRemaining;
+          } else {
+            _ccUsageMsg = 'Usage unavailable.';
+          }
         }
-      } else {
-        el.textContent = 'Usage unavailable.';
       }
+      _ccRenderCard();
+      _ccRenderPricing();
+    }
+
+    // Called by auth.js when the user signs out: drop everything the card knew
+    // about the account so no stale balance or price block stays on screen.
+    function _ccOnSignedOut() {
+      _ccSignedIn = false;
+      _ccAuthKnown = true;
+      _ccRemaining = null;
+      _ccUsageMsg = '';
+      _ccRenderCard();
+      _ccUpdateAddButtonLabel();
+      _ccRenderPricing();
+    }
+
+    // Start is blocked for a signed-out user with Cloud selected: open the
+    // sign-in window instead. Re-checks first so a user who just finished
+    // signing in is not blocked by stale page state. Returns true when blocked.
+    async function _ccBlockCloudStart() {
+      if (_analyzeDestination !== 'cloud') return false;
+      if (await _ccCheckSignedIn()) {
+        if (!_ccSignedIn) _ccRefreshUsage();   // just signed in: refresh the card
+        return false;
+      }
+      _ccSignedIn = false;
+      _ccAuthKnown = true;
+      _ccRenderCard();
+      _ccUpdateAddButtonLabel();
+      if (typeof openPerchSignInWindow === 'function') {
+        try { openPerchSignInWindow(); } catch {}
+      }
+      return true;
+    }
+
+    async function _ccLoadPricing() {
+      // Best effort and off the UI thread (pywebview runs bridge calls on a
+      // worker thread). Any failure leaves _ccPricing null and the card shows
+      // no price-related content. Never delays opening the dialog.
+      _ccPricing = null;
+      _ccPricingLoaded = false;
+      if (window.pywebview?.api?.cloud_compute_get_pricing) {
+        try {
+          const r = await window.pywebview.api.cloud_compute_get_pricing();
+          _ccPricing = (r && r.ok) ? r : null;
+        } catch {
+          _ccPricing = null;
+        }
+      }
+      _ccPricingLoaded = true;
+      _ccRenderCard();
+      _ccRenderLearnMore();
+      _ccRenderPricing();
+    }
+
+    function _ccOpenExternal(url) {
+      if (url && window.pywebview?.api?.open_url) {
+        try { window.pywebview.api.open_url(url); } catch {}
+      }
+    }
+
+    function _ccRenderLearnMore() {
+      // Hidden unless the bridge said links are available (not the App Store build).
+      const link = document.getElementById('analyzeDlgCloudLearnMore');
+      if (!link) return;
+      link.classList.toggle('hidden', !_ccPricing?.learnMoreUrl);
+      if (!link._ccWired) {
+        link._ccWired = true;
+        link.addEventListener('click', (e) => {
+          e.preventDefault();
+          _ccOpenExternal(_ccPricing?.learnMoreUrl);
+        });
+      }
+    }
+
+    const _ccUsd = (n) => new Intl.NumberFormat('en-US', {
+      style: 'currency', currency: 'USD',
+      minimumFractionDigits: Number.isInteger(n) ? 0 : 2,
+    }).format(n);
+
+    function _ccPriceRow(name, price, detail, per1000) {
+      const row = document.createElement('div');
+      row.className = 'adlg-cloud-price-row';
+      const a = document.createElement('span');
+      a.className = 'adlg-cloud-price-name';
+      a.textContent = name;
+      const b = document.createElement('span');
+      b.textContent = `${price} · ${detail}`;
+      const c = document.createElement('span');
+      c.className = 'adlg-cloud-price-rate';
+      c.textContent = `${_ccUsd(per1000)} per 1,000 images`;
+      row.append(a, b, c);
+      return row;
+    }
+
+    function _ccRenderPricing() {
+      // Shown while Cloud is selected, to a signed-in user whose queue is larger
+      // than the images they have left (a comparison of two numbers; remaining = 0
+      // counts). The explanation always shows then; prices and "See plans" only
+      // when the bridge supplied them (not on the Mac App Store build). Everything
+      // shown is supplied by the service; labels go in via textContent. If the
+      // catalog fetch failed, only the explanation and "See plans" show. With no
+      // "See plans" link (the Mac App Store build), "Manage my account" is the next
+      // step, matching the same button in the account panel.
+      const box = document.getElementById('analyzeDlgCloudPricing');
+      if (!box) return;
+      const short = _analyzeDestination === 'cloud' && _ccAuthKnown && _ccSignedIn
+        && _ccRemaining != null && _ccQueuedImages > _ccRemaining;
+      const panel = document.getElementById('analyzeDlgCloudEstPanel');
+      box.textContent = '';
+      box.classList.toggle('hidden', !short);
+      if (panel) panel.classList.toggle('hidden', !short);
+      if (!short) return;
+
+      const head = document.createElement('div');
+      head.className = 'adlg-cloud-pricing-head';
+      head.textContent = 'Your Cloud Compute balance does not cover this queue. '
+        + 'Folders over your balance will be skipped.';
+      box.appendChild(head);
+
+      const cat = _ccPricing?.catalog;
+      const hasPrices = !!(cat && (cat.plans.length || cat.packs.length));
+      if (hasPrices) {
+        for (const p of cat.plans) {
+          box.appendChild(_ccPriceRow(
+            p.label, `${_ccUsd(p.priceUsd)}/month`,
+            `${p.imagesPerMonth.toLocaleString()} images per month`, p.per1000Usd));
+        }
+        for (const p of cat.packs) {
+          box.appendChild(_ccPriceRow(
+            p.label, _ccUsd(p.priceUsd), 'one-time pack', p.per1000Usd));
+        }
+      }
+      const foot = document.createElement('div');
+      foot.className = 'adlg-cloud-pricing-foot';
+      if (hasPrices) {
+        const tax = document.createElement('span');
+        tax.textContent = 'Prices are before sales tax; applicable sales tax is added at checkout.';
+        foot.appendChild(tax);
+      }
+      if (_ccPricing?.plansUrl) {
+        const a = document.createElement('a');
+        a.href = '#';
+        a.className = 'adlg-cloud-see-plans';
+        a.textContent = 'See plans';
+        a.addEventListener('click', (e) => {
+          e.preventDefault();
+          _ccOpenExternal(_ccPricing.plansUrl);
+        });
+        foot.appendChild(a);
+      } else if (_ccPricingLoaded) {
+        const a = document.createElement('a');
+        a.href = '#';
+        a.className = 'adlg-cloud-see-plans';
+        a.textContent = 'Manage my account';
+        a.addEventListener('click', (e) => {
+          e.preventDefault();
+          _ccOpenExternal(_CC_MYACCOUNT_URL);
+        });
+        foot.appendChild(a);
+      }
+      if (foot.childNodes.length) box.appendChild(foot);
+    }
+
+    // Called by refreshAnalyzeDlgSummary() whenever the queue's image count changes.
+    function _ccUpdateCloudPricing(totalImages) {
+      const n = Number(totalImages);
+      _ccQueuedImages = Number.isFinite(n) && n > 0 ? n : 0;
+      _ccRenderCard();
+      _ccRenderPricing();
     }
 
     async function _ccRunSpeedTest() {
@@ -191,7 +427,7 @@
       if (!signedIn) {
         status.classList.remove('hidden', 'success');
         status.classList.add('error');
-        status.textContent = 'Sign in to Perch to run the upload speed test.';
+        _ccFillSignInPrompt(status, ' to test upload speed.');
         if (typeof openPerchSignInWindow === 'function') {
           try { openPerchSignInWindow(); } catch {}
         }
@@ -248,6 +484,12 @@
       cloud.addEventListener('click', pickCloud);
       local.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pickLocal(); } });
       cloud.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pickCloud(); } });
+      const actions = document.getElementById('cloudDestActions');
+      if (actions) {
+        // Buttons and links inside the card must not also select the card.
+        actions.addEventListener('click', (e) => e.stopPropagation());
+        actions.addEventListener('keydown', (e) => e.stopPropagation());
+      }
       if (speedBtn && !speedBtn._ccWired) {
         speedBtn._ccWired = true;
         speedBtn.addEventListener('click', _ccRunSpeedTest);
@@ -264,6 +506,12 @@
         speedStatus.classList.remove('success', 'error');
         speedStatus.textContent = '';
       }
+      _ccPricing = null;
+      _ccRemaining = null;
+      _ccQueuedImages = 0;
+      _ccAuthKnown = false;
+      _ccRenderLearnMore();
+      _ccLoadPricing();   // not awaited: never delays opening the dialog
       await _ccApplySignInGate();
       _ccRefreshUsage();
       // Repaint the summary so the cloud panel reflects the freshly-reset

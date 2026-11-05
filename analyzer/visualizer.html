@@ -1456,23 +1456,6 @@
             <div id="analyzeDlgSummaryHeadline" class="analyze-dlg-summary-headline">
               <span class="analyze-dlg-summary-empty">Check folders in the queue builder to add them.</span>
             </div>
-            <!-- Cloud-only affordances under the summary headline. Hidden when
-                 destination=local. The speed-test button is the gateway to
-                 turning the "?" est. time into a real number; the beta notice
-                 keeps the "?" qualifier visible even after the test completes. -->
-            <div id="analyzeDlgCloudEstPanel" class="analyze-dlg-cloud-est-panel hidden">
-              <button id="analyzeDlgRunSpeedTest" type="button" class="adlg-cloud-speed-btn"
-                      title="Upload 10 sample images to measure your upload throughput">
-                <span class="adlg-cloud-speed-btn-icon">⚡</span> Run Upload Speed Test
-              </button>
-              <div id="analyzeDlgCloudSpeedStatus" class="adlg-cloud-speed-status hidden"></div>
-              <div class="adlg-cloud-beta-note">
-                <span class="adlg-beta-badge">BETA</span>
-                Cloud Compute is in beta. Time estimates are approximate.
-                <a href="https://projectkestrel.org/cloud-compute" target="_blank" rel="noopener"
-                   class="adlg-cloud-learn-more">Learn more</a>
-              </div>
-            </div>
             <div id="analyzeDlgWarnings" class="analyze-dlg-warnings hidden"></div>
             <label id="analyzeDlgReanalyzeUnlockRow" class="adlg-toggle-row analyze-dlg-unlock-row hidden">
               <input id="analyzeDlgReanalyzeUnlock" type="checkbox" />
@@ -1494,12 +1477,28 @@
               <div class="analyze-dlg-destination-card" id="analyzeDestCloud"
                    data-destination="cloud" role="radio" aria-checked="false" tabindex="0">
                 <div class="dest-card-title">☁ Cloud Analysis</div>
-                <div class="dest-card-desc">Upload to Project Kestrel's cloud. Slower per-image, but frees up your machine.</div>
-                <div class="dest-card-usage" id="cloudDestUsage">Loading usage…</div>
-                <div class="dest-card-signin-overlay hidden" id="cloudDestSignInOverlay">
-                  Sign in to Perch to use Cloud Compute.
+                <div class="dest-card-desc">Upload to Project Kestrel's cloud and free up your machine.</div>
+                <div class="dest-card-fast hidden" id="cloudDestFast"></div>
+                <div class="dest-card-usage" id="cloudDestUsage"></div>
+                <!-- The speed test refines the "as fast as" figure. Learn more is
+                     hidden unless the bridge reports links are available (not the
+                     Mac App Store build) and opens through open_url. -->
+                <div class="dest-card-actions" id="cloudDestActions">
+                  <button id="analyzeDlgRunSpeedTest" type="button" class="adlg-cloud-speed-btn"
+                          title="Upload 10 sample images to measure your upload throughput">
+                    <span class="adlg-cloud-speed-btn-icon">⚡</span> Run upload speed test
+                  </button>
+                  <span id="analyzeDlgCloudSpeedStatus" class="adlg-cloud-speed-status hidden"></span>
+                  <a id="analyzeDlgCloudLearnMore" href="#" class="adlg-cloud-learn-more hidden">Learn more</a>
                 </div>
               </div>
+            </div>
+            <!-- Shown by cloud-compute.js only while Cloud is selected and a
+                 signed-in user's remaining images do not cover the queue: a short
+                 explanation plus the catalog prices. The prices never appear on
+                 the Mac App Store build (the bridge returns nothing there). -->
+            <div id="analyzeDlgCloudEstPanel" class="analyze-dlg-cloud-est-panel hidden">
+              <div id="analyzeDlgCloudPricing" class="adlg-cloud-pricing hidden" aria-live="polite"></div>
             </div>
           </div>
 

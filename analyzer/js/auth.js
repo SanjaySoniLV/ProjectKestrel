@@ -191,6 +191,10 @@
         _startWebSignIn();
       }
 
+      // Global entry point for sign-in prompts elsewhere (the Analyze dialog's
+      // Cloud card, speed test and Start button).
+      window.openPerchSignInWindow = openSignInUI;
+
       accountBtn.addEventListener('click', () => {
         // §4a: when signed in, the account button opens the Account & Cloud
         // Compute panel instead of re-triggering sign-in. Signed-out (incl.
@@ -234,6 +238,10 @@
     // before this fires, so the get_perch_account call below hits the network.
     window.onAuthSignIn = async (token) => {
       _perchToken = token;
+      // The Analyze dialog's Cloud card caches sign-in state; refresh it.
+      if (typeof _ccRefreshUsage === 'function') {
+        try { _ccRefreshUsage(); } catch (_) {}
+      }
       const accountBtn = el('#accountBtn');
       const labelEl = el('#accountBtnLabel');
       if (accountBtn) {
@@ -295,6 +303,9 @@
     // Called by Python after sign_out clears the keychain.
     window.onAuthSignOut = () => {
       _perchToken = null;
+      if (typeof _ccOnSignedOut === 'function') {
+        try { _ccOnSignedOut(); } catch {}
+      }
       const accountBtn = el('#accountBtn');
       const labelEl = el('#accountBtnLabel');
       if (accountBtn) {
