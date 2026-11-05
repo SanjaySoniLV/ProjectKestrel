@@ -99,7 +99,7 @@
           const opts = {};
           if (upgradeMode === 'reanalyze') {
             opts.delete_kestrel_on_start = true;
-            destructive.push({ path: norm, name, reason: 're-analyze from scratch instead of upgrading to pipeline 3.0' });
+            destructive.push({ path: norm, name, reason: 're-analyze from scratch instead of upgrading to analysis version 3.0' });
           } else if (outdated) {
             // Outdated always wipes + re-analyzes (the user picked a folder
             // analyzed on an older Kestrel; the new pipeline can't safely
@@ -195,7 +195,7 @@
             }
           }
           if (!paths.length) {
-            setStatus(`${upgradesQueued} folder(s) queued for the pipeline 3.0 upgrade`);
+            setStatus(`${upgradesQueued} folder(s) queued for the analysis version 3.0 upgrade`);
             return;
           }
         }
@@ -236,7 +236,7 @@
           renderQueuePanel(status);
           const skipped = Array.isArray(result.skipped_paths) ? result.skipped_paths : [];
           const queued = result.added || (paths.length - skipped.length);
-          const upgradeFrag = upgradesQueued ? `; ${upgradesQueued} queued for the pipeline 3.0 upgrade` : '';
+          const upgradeFrag = upgradesQueued ? `; ${upgradesQueued} queued for the analysis version 3.0 upgrade` : '';
           if (skipped.length) {
             // Folders that vanished between being listed and being queued.
             // Say so; the rest of the queue is running.

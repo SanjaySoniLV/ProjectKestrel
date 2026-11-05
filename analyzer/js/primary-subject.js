@@ -106,7 +106,7 @@
       if (!scene || !row) return;
       await _psLoadLinks(_psRoot(row));
       const b = _psBirdOf(row, pos);
-      if (!b) { showToast('No bird links for this photo yet (needs a pipeline 3.0 folder)', 2600); return; }
+      if (!b) { showToast('No bird links for this photo yet (needs an analysis version 3.0 folder)', 2600); return; }
       const sameAgain = _psFocusHere(row) && _ps.focus.key === b.key;
       if (_psFocusHere(row)) await _psRestore(_ps.focus);
       if (sameAgain) {

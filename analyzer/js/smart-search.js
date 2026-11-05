@@ -356,7 +356,7 @@
       idxBtn?.classList.toggle('hidden', upgrading || _smart.unavailable || upgradable.length === 0);
       if (idxBtn) {
         idxBtn.textContent = upgradable.length > 1 ? `Upgrade ${upgradable.length} folders` : 'Upgrade folder';
-        idxBtn.title = 'Upgrade to analysis pipeline 3.0 using the crops Kestrel already saved: new species IDs, the SigLIP quality score and the smart-search index. No re-analysis, never changes your ratings, culls or tags. Runs on this computer only.';
+        idxBtn.title = 'Upgrade to analysis version 3.0 using the crops Kestrel already saved: new species IDs, the SigLIP quality score and the smart-search index. No re-analysis, never changes your ratings, culls or tags. Runs on this computer only.';
       }
 
       // The status sits right-aligned inside the search box, so each message is short;
@@ -377,7 +377,7 @@
       const totalIndexed = _smart.needsIndex.reduce((a, n) => a + (n.indexed || 0), 0);
       const nothingIndexed = q && _smart.scores && _smart.scores.size === 0 && _smart.needsIndex.length > 0 && totalIndexed === 0;
       if (nothingIndexed && !_smart.chips.length) {
-        add('Not indexed for smart search', 'smart-search-warn', 'Describing a scene needs smart search, and these folders aren’t indexed for it yet (they were analysed before pipeline 3.0). Upgrading reads the crops Kestrel already saved — no re-analysis. Species and family names still filter normally.');
+        add('Not indexed for smart search', 'smart-search-warn', 'Describing a scene needs smart search, and these folders aren’t indexed for it yet (they were analysed before analysis version 3.0). Upgrading reads the crops Kestrel already saved — no re-analysis. Species and family names still filter normally.');
         return done();
       }
       if (_smart.pending && !_smart.scores) { add('Searching…'); return done(); }
@@ -392,7 +392,7 @@
       if (_smart.needsIndex.length) {
         const missing = _smart.needsIndex.reduce((a, n) => a + Math.max(0, (n.total || 0) - (n.indexed || 0)), 0);
         if (missing > 0) {
-          const long = `${missing} photo${missing === 1 ? '' : 's'} need the pipeline 3 upgrade before smart search can see them`
+          const long = `${missing} photo${missing === 1 ? '' : 's'} need the analysis version 3 upgrade before smart search can see them`
             + (upgrading ? ' (upgrading — see the analysis queue).' : '.');
           add(upgrading ? ` · ${missing} upgrading` : ` · ${missing} not indexed`, 'smart-search-muted', long);
         }
@@ -586,7 +586,7 @@
           queued += 1;
           if (typeof window.queueTrackUpgradeJob === 'function') window.queueTrackUpgradeJob(r.job_id);
         } else if (!(quietSkips && (r?.error === 'current' || r?.error === 'not_analyzed'))) {
-          const why = r?.error === 'current' ? 'already on pipeline 3.0.' : _smartUpgradeRefusal(r);
+          const why = r?.error === 'current' ? 'already on analysis version 3.0.' : _smartUpgradeRefusal(r);
           showToast(`Couldn’t upgrade ${_smartFolderName(r?.path || '')}: ${why}`, 6000);
         }
       }
@@ -617,7 +617,7 @@
       if (u.status === 'error') showToast(`Upgrade of ${name} failed: ${u.error || 'unknown error'}`, 6000);
       else if (u.status === 'stopped') showToast(`Upgrade of ${name} paused because analysis started. Try again when it finishes.`, 6000);
       else if (u.status === 'cancelled') showToast(`Upgrade of ${name} stopped — run it again to resume.`, 5000);
-      else if (u.status === 'done') showToast(`Upgraded ${name} to pipeline 3.0 — species, quality and smart search are up to date.`, 5000);
+      else if (u.status === 'done') showToast(`Upgraded ${name} to analysis version 3.0 — species, quality and smart search are up to date.`, 5000);
       if (u.status !== 'done' && u.status !== 'cancelled') { _smartUpdateUi(); return; }
       // The upgrade rewrote species / quality columns: reload what is open so
       // the grid shows them (and so a later save cannot write the old values back).
