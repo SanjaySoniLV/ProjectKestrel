@@ -383,7 +383,7 @@ class QueueManager:
             if self._pipeline is None:
                 cls = _get_pipeline_class()
                 if cls is None:
-                    raise RuntimeError(f"Pipeline unavailable: {_pipeline_import_error}")
+                    raise RuntimeError(f"Analysis could not start: {_pipeline_import_error}")
                 self._pipeline = cls(use_gpu=bool(use_gpu), detector_name=self._detector_name)
             return self._pipeline
 
@@ -440,7 +440,7 @@ class QueueManager:
         per_item_options: dict | None = None,
     ) -> dict:
         if not _PIPELINE_AVAILABLE:
-            return {'success': False, 'error': f'Analyzer unavailable: {_pipeline_import_error}'}
+            return {'success': False, 'error': f'Analysis could not start: {_pipeline_import_error}'}
         per_item_options = per_item_options or {}
         with self._lock:
             path_to_item = {it.path: it for it in self._items}
@@ -653,7 +653,7 @@ class QueueManager:
                     for it in self._items:
                         if it.status in ('pending', 'running'):
                             it.status = 'error'
-                            it.error = f'Pipeline unavailable: {_pipeline_import_error}'
+                            it.error = f'Analysis could not start: {_pipeline_import_error}'
                 error('[queue] Pipeline unavailable, aborting:', _pipeline_import_error)
                 self._persist_recovery_state()
                 return
