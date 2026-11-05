@@ -118,15 +118,17 @@
       if (st.finished) lines.push('Checked ' + new Date(st.finished * 1000).toLocaleString() + '.');
     } else {
       const why = (job.result && !job.result.ok && job.result.reason) || st.reason;
-      if (/cancel/i.test(why || '')) lines.push('Setup was cancelled. Standard GPU acceleration is used.');
+      if (st.no_provider) lines.push('Windows does not offer enhanced GPU software for this computer. Standard GPU acceleration is used.');
+      else if (/cancel/i.test(why || '')) lines.push('Setup was cancelled. Standard GPU acceleration is used.');
       else if (why) lines.push('Setup did not finish. Standard GPU acceleration is used.');
       else lines.push('Not set up. Standard GPU acceleration is used.');
     }
     el('egStatus').textContent = lines.join('\n');
 
-    // A problem report is offered after a setup run that did not succeed, and whenever a model fell back at runtime.
+    // A problem report is offered after a setup run that failed, and whenever a model fell back at runtime.
+    // Windows offering no package for this GPU is an expected result, not a failure.
     const failed = !running && wasRunning && job.result && !job.result.ok && !/cancelled/i.test(job.result.reason || '')
-      && st.available;
+      && !job.result.no_provider && st.available;
     if (failed) el('egReportRow').classList.remove('hidden');
     if (running) el('egReportRow').classList.add('hidden');
     const rtNow = st.runtime || {};
