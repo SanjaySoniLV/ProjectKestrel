@@ -3324,23 +3324,43 @@ class Api:
     #  Telemetry / Feedback API                                            #
     # ------------------------------------------------------------------ #
 
-    # Map dialog type values to Auth Worker report_type enum.
-    # 'liked' has no direct equivalent; fold into 'general'.
-    _FEEDBACK_TYPE_MAP: dict[str, str] = {
-        'bug':        'bug',
-        'suggestion': 'suggestion',
-        'liked':      'general',
-        'general':    'general',
-        'account':    'account',
-    }
+    def _support_import(self):
+        """Lazy import of support_client. Returns the module or raises."""
+        try:
+            import support_client as sc
+            return sc
+        except ImportError:
+            from analyzer import support_client as sc  # type: ignore[no-redef]
+            return sc
+
+    def _support_make_client(self):
+        """Build an authenticated SupportClient. Returns (client, error_dict).
+        Same Clerk token as the account calls; only the host differs."""
+        token, dev_user, token_err = self._check_auth_token()
+        if token_err:
+            return None, token_err
+        try:
+            sc = self._support_import()
+        except ImportError as e:
+            return None, {"ok": False, "error": f"support_client import failed: {e}"}
+        try:
+            client = sc.SupportClient(sc.default_support_api_base(), token, dev_user=dev_user)
+        except ValueError as e:
+            return None, {"ok": False, "error": str(e)}
+        return client, None
 
     def send_feedback(self, data):
-        """Send feedback / bug report (async, failsafe). Called from JS.
+        """Send feedback / bug report (failsafe). Called from JS.
 
-        When the user is signed in, routes to the Auth Worker
-        (POST /v1/me/feedback) so feedback lands in the unified store.
-        Falls back to the analytics-worker path when signed out or if the
-        Auth Worker call fails.  Screenshots stay on the analytics path.
+        Signed-in users who tick "Send as <account>" post to the Support host
+        (POST /v1/me/reports) with the redacted log tail and screenshot.
+        Everything else — signed out, box unticked, or the Support call
+        failing — takes the anonymous analytics path, unchanged.
+
+        Returns ``{'success': True}`` plus, on the signed-in path, ``ref`` (the
+        support case reference, when the report joined or created one) and
+        ``screenshot_dropped`` (a reason string, when the screenshot could not
+        be sent).
         """
         try:
             if _telemetry is None:
@@ -3350,44 +3370,66 @@ class Api:
                 return {'success': False, 'error': 'Invalid data'}
             settings = load_persisted_settings()
             machine_id = _telemetry.get_machine_id(settings)
+            include_logs = bool(data.get('include_logs', False))
             log_tail = ''
-            if data.get('include_logs', False):
+            if include_logs:
                 active_folder = str(settings.get('active_analysis_path', '') or '').strip()
                 log_tail = _telemetry.get_recent_log_tail(folder=active_folder or None, runtime_log_files=3)
 
             raw_type = data.get('type', 'general')
-            report_type = self._FEEDBACK_TYPE_MAP.get(str(raw_type).lower(), 'general')
             description = data.get('description', '')
+            contact = str(data.get('contact', '') or '').strip()
+            screenshot_b64 = data.get('screenshot_b64', '') or ''
+            raw_case_ref = str(data.get('case_ref', '') or '').strip()
 
-            # --- Auth Worker path (signed-in users who opted to send as self) ---
+            # --- Support path (signed-in users who opted to send as self) ---
             # Gated on the explicit `send_as_user` opt-in from the dialog: even
             # when signed in, an unchecked box means the report is anonymous and
-            # must take the analytics path below.
-            # Screenshots are out of scope for the Auth path; they stay on the
-            # analytics path only.  Any failure falls through to analytics.
-            try:
-                send_as_user = bool(data.get('send_as_user', False))
-                client, _err = (self._auth_make_client() if send_as_user else (None, None))
-                if client is not None:
-                    version = _telemetry._read_version() if _telemetry else ''
-                    os_info = _telemetry._get_os_info() if _telemetry else ''  # module-level fn
-                    client.post_feedback(
-                        report_type=report_type,
-                        message=description,
-                        version=version,
-                        os=os_info,
-                        contact=str(data.get('contact', '') or '').strip(),
-                    )
-                    return {'success': True}
-            except Exception:
-                pass  # fall through to analytics path
+            # must take the analytics path below. Any failure falls through to
+            # analytics, which also carries the logs and screenshot.
+            if bool(data.get('send_as_user', False)):
+                try:
+                    client, _err = self._support_make_client()
+                    if client is not None:
+                        sc = self._support_import()
+                        shot, shot_drop = sc.prepare_screenshot(screenshot_b64)
+                        extra = {'logs_requested': include_logs}
+                        if shot_drop:
+                            extra['screenshot_dropped'] = shot_drop
+                        resp = client.post_report(
+                            report_type=sc.report_type_for(raw_type),
+                            message=description,
+                            app_version=_telemetry._read_version(),
+                            os=_telemetry._get_os_info(),
+                            platform=sc.platform_name(),
+                            contact_email=contact,
+                            case_ref=sc.normalize_case_ref(raw_case_ref),
+                            # Redaction must run here: the analytics path does
+                            # it inside kestrel_telemetry, this path does not.
+                            log_tail=sc.prepare_log_tail(log_tail),
+                            screenshot_b64=shot,
+                            extra=extra,
+                        )
+                        result = {'success': True}
+                        ref = (resp or {}).get('ref') if isinstance(resp, dict) else None
+                        if ref:
+                            result['ref'] = str(ref)
+                        if shot_drop:
+                            result['screenshot_dropped'] = shot_drop
+                        return result
+                except Exception as e:
+                    warn(f'[API] send_feedback: support report failed, sending anonymously: {e}')
 
-            # --- Analytics-worker path (signed-out or Auth call failed) ---
+            # --- Analytics-worker path (anonymous, signed out, or Support failed) ---
+            # The analytics payload has no case-reference field, so keep the
+            # reference in the text where triage will see it.
+            if raw_case_ref:
+                description = f'[Case reference: {raw_case_ref[:40]}]\n{description}'
             _telemetry.send_feedback(
                 report_type=raw_type,
                 description=description,
                 contact=data.get('contact', ''),
-                screenshot_b64=data.get('screenshot_b64', ''),
+                screenshot_b64=screenshot_b64,
                 log_tail=log_tail,
                 machine_id=machine_id,
                 version=_telemetry._read_version(),

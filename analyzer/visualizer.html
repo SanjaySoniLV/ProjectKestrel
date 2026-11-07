@@ -1745,6 +1745,10 @@
         <label class="f-label" for="feedbackContact">Contact email (optional)</label>
         <input type="email" id="feedbackContact" placeholder="your@email.com" />
       </div>
+      <div>
+        <label class="f-label" for="feedbackCaseRef">Case reference (if we gave you one)</label>
+        <input type="text" id="feedbackCaseRef" placeholder="K-1042" maxlength="20" autocomplete="off" spellcheck="false" />
+      </div>
       <div style="display:flex; gap:14px; align-items:center; flex-wrap:wrap">
         <label class="inline" style="font-size:13px">
           <input type="checkbox" id="feedbackIncludeLogs" />
@@ -1761,6 +1765,7 @@
           <input type="checkbox" id="feedbackSendAsUser" />
           <span class="muted" id="feedbackSendAsUserLabel">Send as my account</span>
         </label>
+        <div class="feedback-signin-hint" id="feedbackSignInHint"></div>
       </div>
       <img id="feedbackSsPreview" class="feedback-ss-preview" alt="screenshot preview" style="display:none" />
       <div id="feedbackStatus" style="font-size:13px; color:var(--muted); min-height:18px"></div>
