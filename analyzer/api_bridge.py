@@ -3389,7 +3389,8 @@ class Api:
         Returns ``{'success': True}`` plus, on the signed-in path, ``ref`` (the
         support case reference, when the report joined or created one) and
         ``screenshot_dropped`` (a reason string, when the screenshot could not
-        be sent).
+        be sent). ``sent_anonymously`` is True when the user asked to send as
+        their account but the report fell back to the anonymous path.
         """
         try:
             if _telemetry is None:
@@ -3416,10 +3417,16 @@ class Api:
             # when signed in, an unchecked box means the report is anonymous and
             # must take the analytics path below. Any failure falls through to
             # analytics, which also carries the logs and screenshot.
+            sent_anonymously = False
             if bool(data.get('send_as_user', False)):
+                # Set before the attempt; cleared only by the successful return
+                # below, so every fallback tells the dialog the account was dropped.
+                sent_anonymously = True
                 try:
                     client, _err = self._support_make_client()
-                    if client is not None:
+                    if client is None:
+                        warn(f'[API] send_feedback: no support client, sending anonymously: {(_err or {}).get("error")}')
+                    else:
                         sc = self._support_import()
                         shot, shot_drop = sc.prepare_screenshot(screenshot_b64)
                         extra = {'logs_requested': include_logs}
@@ -3447,7 +3454,7 @@ class Api:
                             result['screenshot_dropped'] = shot_drop
                         return result
                 except Exception as e:
-                    warn(f'[API] send_feedback: support report failed, sending anonymously: {e}')
+                    warn(f'[API] send_feedback: support report failed, sending anonymously: {type(e).__name__}: {e}')
 
             # --- Analytics-worker path (anonymous, signed out, or Support failed) ---
             # The analytics payload has no case-reference field, so keep the
@@ -3463,6 +3470,8 @@ class Api:
                 machine_id=machine_id,
                 version=_telemetry._read_version(),
             )
+            if sent_anonymously:
+                return {'success': True, 'sent_anonymously': True}
             return {'success': True}
         except Exception as e:
             error(f'[API] send_feedback error: {e}')

@@ -154,9 +154,10 @@
           let msg = '✓ Feedback sent — thank you!';
           if (result.ref) msg += ` Your case reference is ${result.ref}.`;
           if (result.screenshot_dropped) msg += ' The screenshot could not be attached (it must be a PNG, JPEG or WebP under 10 MB).';
+          if (result.sent_anonymously) msg += ' It was sent without your account, so we can’t reply to you through it. Add an email above if you’d like a reply.';
           document.getElementById('feedbackStatus').textContent = msg;
           // Leave the dialog open longer when there is something to read.
-          const delay = (result.ref || result.screenshot_dropped) ? 5000 : 1200;
+          const delay = (result.ref || result.screenshot_dropped || result.sent_anonymously) ? 5000 : 1200;
           setTimeout(() => { try { document.getElementById('feedbackDlg').close(); } catch (_) { } }, delay);
         } else {
           document.getElementById('feedbackStatus').textContent = '⚠ Could not send — please try again later.';

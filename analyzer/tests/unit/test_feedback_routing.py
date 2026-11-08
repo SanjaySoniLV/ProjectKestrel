@@ -205,7 +205,7 @@ class TestSendFeedbackRouting:
 
         result = api.send_feedback(_base_data(send_as_user=True))
 
-        assert result == {"success": True}
+        assert result == {"success": True, "sent_anonymously": True}
         assert len(fake_telemetry.feedback_calls) == 1, "should fall back to anonymous when signed out"
 
     def test_opted_in_support_failure_falls_back_to_analytics(self, api, fake_telemetry, monkeypatch):
@@ -218,7 +218,7 @@ class TestSendFeedbackRouting:
             send_as_user=True, include_logs=True, screenshot_b64=_PNG_B64,
         ))
 
-        assert result == {"success": True}
+        assert result == {"success": True, "sent_anonymously": True}
         assert len(client.calls) == 1, "support post was attempted"
         assert len(fake_telemetry.feedback_calls) == 1, "and then fell back to analytics"
         anon = fake_telemetry.feedback_calls[0]

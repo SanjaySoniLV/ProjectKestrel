@@ -732,8 +732,9 @@ ${node.path}` : node.path);
         const res = await window.pywebview.api.inspect_folders(paths);
         if (myVer !== _analyzeDlgInspectionVersion) return; // cancelled
         if (res && res.success && res.results) {
-          // inspect_folders keys results by realpath; we key the cache by
-          // normalized-input path. Build a lookup that matches both.
+          // inspect_folders keys each result by the exact path we sent, so the
+          // direct lookup normally hits. The normalized scan below is a safety
+          // net for a backend that keys by another spelling of the same path.
           for (const inputPath of paths) {
             const inputNorm = _adlgNormRoot(inputPath);
             let info = res.results[inputPath];
