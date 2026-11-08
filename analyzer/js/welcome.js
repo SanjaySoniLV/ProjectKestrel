@@ -9,8 +9,8 @@
     // projectkestrel.org/whats-new.json; that remote-override path was removed —
     // the note now lives entirely in the app.)
     const WHATS_NEW = {
-      version: 'arctic-tern',
-      eyebrow: 'v(Arctic Tern)',
+      version: 'arctic-tern-fp-1',
+      eyebrow: 'v(Arctic Tern (FP 1))',
       // The release's namesake bird. `whatsnew-bird.jpg` is a STABLE filename
       // whose contents are replaced each release, so the three PyInstaller
       // specs list it once and never need touching again. Update `heroAlt`
@@ -24,8 +24,12 @@
           // Desktop app logo — bundled at the static-server root (see .spec datas).
           iconImg: 'logo.png',
           name: 'Project Kestrel',
-          tag: 'New in v(Arctic Tern)',
+          tag: 'New in v(Arctic Tern (FP 1))',
           bullets: [
+            // v(Arctic Tern (FP 1)) additions; the Arctic Tern bullets below stay.
+            '<b>Enhanced GPU Performance</b> (Windows 11 24H2 or later, experimental): set it up in Settings to use extra GPU software made for your graphics hardware. If it fails, Kestrel falls back to standard GPU acceleration or the CPU, and a lost GPU no longer saves empty results.',
+            'Folders from analysis version 2.x now default to a fast <b>upgrade to 3.0</b> that keeps your culls, and upgrades can be queued from each folder’s header. New <b>Reject Undecided</b> speeds up bulk culling.',
+            'Polish and fixes: a cleaner scene viewer and analysis queue, capture time in the scene viewer, an updated tutorial and demo set, plainer wording in settings, and a fix for network (NAS) folders showing 0 images.',
             'One of the most significant updates to date, v(Arctic Tern) introduces analysis v3.0, with several major improvements.',
             'Kestrel can now accurately identify bird species worldwide, not just in North America. Accuracy for bird species recognition is significantly improved.',
             'New <b>Smart Search</b>: find your photos by simply describing what you remember, ex. “herons in a marsh” or “flock of doves in flight”. Works on all folders analyzed with analysis version 3.0. Results show a % match and can jump to the scene in your timeline.',
@@ -41,7 +45,7 @@
           name: 'Perch',
           tag: 'What’s new',
           bullets: [
-            'You can now <b>follow other birders</b> on Perch. Follow someone from their profile page and any perch they publish publicly appears in your <b>Following</b> feed, newest first.',
+            'Changes to Perch are coming soon. There’s a new <b>feedback button</b> in Perch, and I’d love to hear your feedback on how we can make Perch better!',
           ],
           links: [
             { label: 'See your Following feed →', href: 'https://perch.projectkestrel.org/following.html' },
@@ -53,6 +57,7 @@
           name: 'Cloud Compute',
           tag: 'What’s new',
           bullets: [
+            'Cloud Compute is upgraded to <b>analysis 3.0</b>.',
             '<b>Much more accurate time estimates.</b> The estimate now follows the real analysis steps.',
             'A new indicator tells you whether <b>your upload speed or the cloud</b> is the constraint — before you start, and live while a job runs.',
           ],
@@ -61,7 +66,7 @@
       ],
       note: 'Thank you for supporting the solo dev of Project Kestrel.',
       sign: '— Sanjay',
-      blogLink: { label: 'Read the full v(Dusky Grouse) release notes →', href: 'https://projectkestrel.org/notes/dusky-grouse/' },
+      blogLink: { label: 'Read the full v(Arctic Tern (FP 1)) release notes →', href: 'https://projectkestrel.org/notes/arctic-tern-fp-1/' },
     };
 
     const WELCOME_TIPS = [
