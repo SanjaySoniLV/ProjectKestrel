@@ -492,6 +492,8 @@ def mark_run_started() -> None:
 
 
 def mark_run_finished() -> None:
+    """Clean exit of a process that ran vendor sessions: remove the marker and reset the
+    unclean-exit count, so only consecutive unclean exits switch the mode off."""
     global _marker_active
     if _marker_active:
         try:
@@ -499,6 +501,10 @@ def mark_run_finished() -> None:
         except OSError:
             pass
         _marker_active = False
+        try:
+            clear_unclean_exits()
+        except Exception:
+            pass
 
 
 def _pid_alive(pid: int) -> bool:

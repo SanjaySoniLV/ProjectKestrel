@@ -2827,8 +2827,9 @@ class Api:
         """Start re-scoring a folder's species/family predictions for new ``regions``.
 
         Uses the stored BioCLIP embeddings only (no detection, no image decode).
-        Species in scenes with user-edited or finalized tags and non-bird
-        wildlife labels are left alone. Runs on a worker thread; poll
+        Non-bird wildlife labels are left alone. Images in scenes with
+        user-edited or finalized tags are re-scored too, but those scenes' tags
+        in the scenedata file are not changed. Runs on a worker thread; poll
         ``get_species_rescore_status``. Refused while an analysis or upgrade is running.
         """
         try:
