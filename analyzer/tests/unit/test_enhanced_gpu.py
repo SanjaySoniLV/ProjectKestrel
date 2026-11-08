@@ -391,6 +391,15 @@ def test_setup_skips_directml_cpu_webgpu_and_npu_only_eps(monkeypatch):
                lambda ep, progress, cancel, timeout=0: called.append(ep))
     st = eg.run_setup()
     assert not st["ok"] and called == [] and "did not offer" in st["reason"]
+    assert st["no_provider"] is True and eg.status()["no_provider"] is True
+
+
+def test_setup_offered_package_that_failed_to_install_is_a_real_failure(monkeypatch):
+    _setup_env(monkeypatch, [_dev("DmlExecutionProvider")], lambda ep, progress, cancel, timeout=0: None)
+    monkeypatch.setattr(eg, "_rt_install_failures", ["MIGraphXExecutionProvider"])
+    st = eg.run_setup()
+    assert not st["ok"] and "could not be installed" in st["reason"]
+    assert "no_provider" not in st and eg.status()["no_provider"] is False
 
 
 def test_setup_windows_ml_failure_is_reported_not_raised(monkeypatch):
