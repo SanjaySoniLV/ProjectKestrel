@@ -1130,7 +1130,12 @@
     /** Selection bar: mark every selected scene as reviewed with the tags it shows. */
     function executeSelectionReview() {
       let n = 0;
-      for (const id of selectedSceneIds) if (_finalizeSceneReview(id)) n += 1;
+      for (const id of selectedSceneIds) {
+        // An already-reviewed scene keeps its tags: _finalizeSceneReview rebuilds them
+        // from the model's visible tags, which would undo the user's corrections.
+        if (_getSceneScenedataEntry(id, false)?.user_tags?.finalized) continue;
+        if (_finalizeSceneReview(id)) n += 1;
+      }
       if (!n) return;
       setStatus(`Marked ${n} scene${n === 1 ? '' : 's'} as reviewed.`);
       renderScenes();

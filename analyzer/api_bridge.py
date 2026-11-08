@@ -351,6 +351,11 @@ _SESSION_OWNED_SETTINGS_KEYS = frozenset({
     'app_session_pid',
     'last_session_closed_utc',
 })
+# Written only by Python: enhanced GPU setup turns it on, and the Settings
+# checkbox calls enhanced_gpu_set_enabled the moment it changes. Whole-object
+# frontend saves (mergeSetting, the settings dialog) carry a cached copy that
+# can predate setup, so they must not write it back.
+_ENHANCED_GPU_ENABLED_KEY = 'enhanced_gpu_enabled'
 _QF_MODES = ('ask', 'always', 'never')
 _QF_MAX_SESSIONS = 8
 _QF_PREVIEW_MAX_SIDE = 1024
@@ -3649,7 +3654,8 @@ class Api:
             # Python-owned keys the frontend must never overwrite.
             settings_dict = {
                 k: v for k, v in settings_dict.items()
-                if k != _QF_INSTALL_ID_KEY and k not in _SESSION_OWNED_SETTINGS_KEYS
+                if k != _QF_INSTALL_ID_KEY and k != _ENHANCED_GPU_ENABLED_KEY
+                and k not in _SESSION_OWNED_SETTINGS_KEYS
             }
             merged = {**existing, **settings_dict}
 

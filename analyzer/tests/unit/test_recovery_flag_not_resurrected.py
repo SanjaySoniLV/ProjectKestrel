@@ -124,3 +124,25 @@ def test_second_instance_does_not_reprompt_after_clear(store, monkeypatch):
     monkeypatch.setattr(visualizer, '_prior_session_still_running', lambda *a: True)
     visualizer._mark_session_start()
     assert api.get_recovery_status()['unclean_shutdown'] is False
+
+
+def test_stale_snapshot_does_not_turn_enhanced_gpu_off(store, monkeypatch):
+    """Setup turns enhanced GPU on in Python; a whole-object frontend save that still
+    carries the older ``false`` (for example mergeSetting from the filmstrip toggle)
+    must not switch it off. The checkbox writes through enhanced_gpu_set_enabled."""
+    api = api_bridge.Api()
+    store.update({'enhanced_gpu_enabled': False, 'editor': 'darktable'})
+    snapshot = api.get_settings()['settings']
+    store['enhanced_gpu_enabled'] = True          # what a successful setup writes
+    snapshot['filmstrip_order'] = 'capture'
+    assert api.save_settings_data(snapshot)['success']
+    assert store['enhanced_gpu_enabled'] is True
+    assert store['filmstrip_order'] == 'capture'
+
+    class _EG:  # the toggle path stays authoritative
+        @staticmethod
+        def reset_cache():
+            pass
+    monkeypatch.setattr(api, '_eg_module', lambda: _EG)
+    assert api.enhanced_gpu_set_enabled(False)['success']
+    assert store['enhanced_gpu_enabled'] is False
