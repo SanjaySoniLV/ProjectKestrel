@@ -43,7 +43,7 @@ from .exposure_compensation import (
 )
 from .image_utils import decode_embedded_preview, read_image, read_image_for_pipeline
 from .ratings import quality_to_rating, resolve_thresholds
-from .similarity import compute_capture_time_gap, compute_image_similarity_akaze
+from .similarity import compute_capture_time_gap, compute_image_similarity_akaze, prepare_akaze_features
 from .raw_exif import get_capture_time
 from .logging_utils import (
     get_log_path,
@@ -88,6 +88,25 @@ def _write_jpeg(path: str, bgr: np.ndarray, params) -> bool:
         return False
     buf.tofile(path)
     return True
+
+
+def _render_thumbnail(noauto_linear, img, max_width: int) -> np.ndarray:
+    """Downscaled RGB uint8 frame. For RAW it renders from ``noauto_linear``, with no
+    baked-in meter scale, so the browser's live exposure correction doesn't double-apply.
+
+    Downsizing happens before the sRGB curve: running the gamma LUT over the entire
+    linear frame first is about 40x more work, and box-filtering linear values also
+    avoids the edge and highlight artifacts of filtering gamma-compressed ones.
+    """
+    if noauto_linear is not None:
+        src_h, src_w = noauto_linear.shape[:2]
+        tgt_w = min(max_width, int(src_w))
+        tgt_h = max(1, int(tgt_w * src_h / src_w))
+        return linear_to_srgb_u8(cv2.resize(noauto_linear, (tgt_w, tgt_h), interpolation=cv2.INTER_AREA))
+    src_h, src_w = img.shape[:2]
+    tgt_w = min(max_width, int(src_w))
+    tgt_h = max(1, int(tgt_w * src_h / src_w))
+    return cv2.resize(img, (tgt_w, tgt_h), interpolation=cv2.INTER_AREA)
 
 
 class AnalysisPipeline:
@@ -389,6 +408,8 @@ class AnalysisPipeline:
             except Exception:
                 result["detector_input"] = None
 
+            self._prepare_frame_extras(result, image_path, raw_file, img)
+
             try:
                 ct = get_capture_time(image_path)
                 result["capture_time"] = ct
@@ -404,6 +425,33 @@ class AnalysisPipeline:
             result["error"] = exc
 
         return result
+
+    def _prepare_frame_extras(self, result: dict, image_path: str, raw_file: str, img) -> None:
+        """Do thumbnail and AKAZE work in the decode worker instead of on the main thread.
+
+        Each step is an optimization only: on any failure, or outside a folder run,
+        the key stays absent and the main loop computes the value itself.
+        """
+        ctx = getattr(self, "_decode_ctx", None)
+        if not ctx:
+            return
+        try:
+            small = _render_thumbnail(result.get("noauto_linear"), img, ctx["thumbnail_max_width"])
+            ok, buf = cv2.imencode(".jpg", cv2.cvtColor(small, cv2.COLOR_RGB2BGR), ctx["jpeg_params"])
+            if ok:
+                result["thumbnail_small"] = small
+                result["thumbnail_jpeg"] = buf
+        except Exception:
+            pass
+        # Frames within the same-burst threshold skip AKAZE, so don't spend CPU on them.
+        previous = ctx["previous_file"].get(raw_file)
+        if previous is None:
+            return
+        gap = compute_capture_time_gap(os.path.join(os.path.dirname(image_path), previous), image_path)
+        if gap is None or gap > ctx["scene_time_threshold"]:
+            features = prepare_akaze_features(img)
+            if features is not None:
+                result["akaze_features"] = features
 
     def _decoded_is_pointer_stall(self, decoded: dict) -> bool:
         """Handle a decoded result the worker tagged as a pointer stall.
@@ -428,6 +476,20 @@ class AnalysisPipeline:
             except Exception:
                 pass
         return True
+
+    def _iter_decoded_with_extras(self, file_list, folder, max_workers, thumbnail_max_width, jpeg_params,
+                                  scene_time_threshold):
+        """``_iter_decoded`` with the settings its workers need for thumbnails and AKAZE."""
+        self._decode_ctx = {
+            "thumbnail_max_width": thumbnail_max_width,
+            "jpeg_params": jpeg_params,
+            "scene_time_threshold": scene_time_threshold,
+            "previous_file": dict(zip(file_list[1:], file_list[:-1])),
+        }
+        try:
+            yield from self._iter_decoded(file_list, folder, max_workers=max_workers)
+        finally:
+            self._decode_ctx = None
 
     def _iter_decoded(
         self,
@@ -1231,6 +1293,7 @@ class AnalysisPipeline:
                 )
 
             previous_image = None
+            previous_akaze = None
             previous_image_path = None
             previous_orientation = None
             if not database.empty:
@@ -1246,7 +1309,9 @@ class AnalysisPipeline:
             scene_count = database["scene_count"].max() if not database.empty else 0
 
             for idx, decoded in enumerate(
-                self._iter_decoded(new_files, folder, max_workers=decode_workers),
+                self._iter_decoded_with_extras(
+                    new_files, folder, decode_workers, thumbnail_max_width, jpeg_params, scene_time_threshold
+                ),
                 start=1,
             ):
                 raw_file = decoded["file_name"]
@@ -1367,6 +1432,7 @@ class AnalysisPipeline:
                     entry["capture_time"] = ct.isoformat() if ct is not None else ""
 
                     stage_ctx["stage"] = "compute_similarity"
+                    current_akaze = decoded.get("akaze_features")
 
                     preserved_row = errored_rows_by_filename.get(raw_file)
 
@@ -1420,10 +1486,12 @@ class AnalysisPipeline:
                                         pred_img = None
                                     if pred_img is not None:
                                         previous_image = pred_img
+                                        previous_akaze = None
                                         previous_image_path = pred_path
                                         previous_orientation = self._get_image_orientation(pred_img)
                             else:
                                 previous_image = None
+                                previous_akaze = None
                                 previous_image_path = None
                                 previous_orientation = None
 
@@ -1489,7 +1557,14 @@ class AnalysisPipeline:
                                 }
                             )
                         else:
-                            similarity = compute_image_similarity_akaze(previous_image, img)
+                            if previous_image is not None and previous_image.shape == img.shape:
+                                if current_akaze is None:
+                                    current_akaze = prepare_akaze_features(img)
+                                if previous_akaze is None:
+                                    previous_akaze = prepare_akaze_features(previous_image)
+                            similarity = compute_image_similarity_akaze(
+                                previous_image, img, features1=previous_akaze, features2=current_akaze
+                            )
                             if not similarity["similar"]:
                                 scene_count += 1
                             entry.update(
@@ -1511,6 +1586,7 @@ class AnalysisPipeline:
                     # a significant slice of the gap between "bird crop shown"
                     # and "next image thumbnail shown".
                     previous_image = img
+                    previous_akaze = current_akaze
                     previous_image_path = image_path
                     previous_orientation = current_orientation
 
@@ -1532,25 +1608,16 @@ class AnalysisPipeline:
                     # correct for photographs (standard practice in any serious
                     # image pipeline — avoids edge/highlight artifacts that
                     # come from box-filtering gamma-compressed values).
-                    if noauto_linear is not None:
-                        src_h, src_w = noauto_linear.shape[:2]
-                        _tgt_w = min(thumbnail_max_width, int(src_w))
-                        _tgt_h = max(1, int(_tgt_w * src_h / src_w))
-                        linear_small = cv2.resize(
-                            noauto_linear, (_tgt_w, _tgt_h),
-                            interpolation=cv2.INTER_AREA,
-                        )
-                        img_small = linear_to_srgb_u8(linear_small)
+                    img_small = decoded.get("thumbnail_small")
+                    if img_small is not None:
+                        decoded["thumbnail_jpeg"].tofile(export_path)
                     else:
-                        src_h, src_w = img.shape[:2]
-                        _tgt_w = min(thumbnail_max_width, int(src_w))
-                        _tgt_h = max(1, int(_tgt_w * src_h / src_w))
-                        img_small = cv2.resize(img, (_tgt_w, _tgt_h), interpolation=cv2.INTER_AREA)
-                    _write_jpeg(
-                        export_path,
-                        cv2.cvtColor(img_small, cv2.COLOR_RGB2BGR),
-                        jpeg_params,
-                    )
+                        img_small = _render_thumbnail(noauto_linear, img, thumbnail_max_width)
+                        _write_jpeg(
+                            export_path,
+                            cv2.cvtColor(img_small, cv2.COLOR_RGB2BGR),
+                            jpeg_params,
+                        )
                     # Store relative path for cross-platform compatibility
                     export_path_rel = os.path.relpath(export_path, folder)
                     entry.update({"export_path": export_path_rel})

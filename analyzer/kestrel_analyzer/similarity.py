@@ -34,7 +34,34 @@ def compute_similarity_timestamp(path1, path2, threshold_seconds: float = 1.0):
     return gap <= threshold_seconds
 
 
-def compute_image_similarity_akaze(img1, img2, max_dim=1600):
+def _akaze_features(img, max_dim=1600):
+    """Downscale a frame and find its strongest AKAZE features. Raises on failure."""
+    h, w = img.shape[:2]
+    scale = max_dim / max(h, w)
+    if scale < 1.0:
+        img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY) if img.ndim == 3 else img
+    kp, des = cv2.AKAZE_create().detectAndCompute(gray, None)
+    if des is not None and len(kp) > 300:
+        kp, des = zip(*sorted(zip(kp, des), key=lambda x: x[0].response, reverse=True)[:300])
+        kp = list(kp)
+        des = np.array(des)
+    return {"small": img, "kp": kp, "des": des}
+
+
+def prepare_akaze_features(img, max_dim=1600):
+    """Features for ``compute_image_similarity_akaze``, or None if they can't be computed.
+
+    A frame's features don't depend on the frame it is compared with, so they can be
+    computed once, ahead of time, and reused for both of the frame's comparisons.
+    """
+    try:
+        return _akaze_features(img, max_dim)
+    except Exception:
+        return None
+
+
+def compute_image_similarity_akaze(img1, img2, max_dim=1600, features1=None, features2=None):
     if img1 is None or img2 is None or img1.shape != img2.shape:
         return {
             "feature_similarity": -1,
@@ -47,13 +74,6 @@ def compute_image_similarity_akaze(img1, img2, max_dim=1600):
     try:
         def clamp(value, low, high):
             return float(max(low, min(high, value)))
-
-        def resize(img):
-            h, w = img.shape[:2]
-            scale = max_dim / max(h, w)
-            if scale < 1.0:
-                img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
-            return img
 
         def color_similarity_score(a, b):
             # Histogram-based color similarity is much more stable under blur than mean-RGB deltas.
@@ -89,21 +109,10 @@ def compute_image_similarity_akaze(img1, img2, max_dim=1600):
             color_sim = 0.75 * hist_sim + 0.25 * mean_sim
             return float(color_sim), float(color_conf)
 
-        img1 = resize(img1)
-        img2 = resize(img2)
-        gray1 = cv2.cvtColor(img1, cv2.COLOR_RGB2GRAY) if img1.ndim == 3 else img1
-        gray2 = cv2.cvtColor(img2, cv2.COLOR_RGB2GRAY) if img2.ndim == 3 else img2
-        akaze = cv2.AKAZE_create()
-        kp1, des1 = akaze.detectAndCompute(gray1, None)
-        kp2, des2 = akaze.detectAndCompute(gray2, None)
-        if des1 is not None and len(kp1) > 300:
-            kp1, des1 = zip(*sorted(zip(kp1, des1), key=lambda x: x[0].response, reverse=True)[:300])
-            kp1 = list(kp1)
-            des1 = np.array(des1)
-        if des2 is not None and len(kp2) > 300:
-            kp2, des2 = zip(*sorted(zip(kp2, des2), key=lambda x: x[0].response, reverse=True)[:300])
-            kp2 = list(kp2)
-            des2 = np.array(des2)
+        f1 = features1 if features1 is not None else _akaze_features(img1, max_dim)
+        f2 = features2 if features2 is not None else _akaze_features(img2, max_dim)
+        img1, kp1, des1 = f1["small"], f1["kp"], f1["des"]
+        img2, kp2, des2 = f2["small"], f2["kp"], f2["des"]
         feature_confidence = min(len(kp1), len(kp2)) / 300 if kp1 and kp2 else 0
         if feature_confidence < 0.25 or des1 is None or des2 is None or len(kp1) == 0 or len(kp2) == 0:
             color_similarity, color_confidence = color_similarity_score(img1, img2)
