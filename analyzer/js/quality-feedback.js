@@ -57,6 +57,23 @@
       return b;
     }
 
+    /** Count a 👍 as one aggregate telemetry event. Fire-and-forget: the bridge
+     *  sends nothing unless the user opted in to analytics, and no failure
+     *  here may reach the user. Sends counts only (no names, paths or ids). */
+    function qfRecordThumbsUp(scene) {
+      try {
+        const fn = window.pywebview?.api?.record_quality_thumbs_up;
+        if (!fn) return;
+        const imgs = (scene && scene.images) || [];
+        const p = window.pywebview.api.record_quality_thumbs_up({
+          scene_images: imgs.length,
+          scene_crops: imgs.filter(_qfHasCrop).length,
+          has_siglip: imgs.some(r => _qfNum(r?.quality_siglip) !== null),
+        });
+        if (p && typeof p.catch === 'function') p.catch(() => { });
+      } catch (_) { /* failsafe: never block "Thanks!" */ }
+    }
+
     /** Paint the thumbs control for the scene shown in the scene viewer. */
     function qfRenderSceneControl(scene) {
       const box = document.getElementById('sceneQf');
@@ -79,6 +96,7 @@
       box.appendChild(label);
       box.appendChild(_qfButton('👍', 'Yes', () => {
         _qfAnswered.add(_qfSceneKey(scene));
+        qfRecordThumbsUp(scene);
         box.replaceChildren();
         const t = document.createElement('span');
         t.className = 'scene-qf-label';

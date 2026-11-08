@@ -1909,6 +1909,38 @@ class Api:
         except Exception:
             return {'success': True, 'sent': False}
 
+    def record_quality_thumbs_up(self, data):
+        """Count a scene-viewer sharpness thumbs-up. Called from JS.
+
+        Same consent gate as ``record_donate_event``: sent only when
+        ``analytics_opted_in`` is True; otherwise nothing leaves the machine.
+        JS passes aggregate counts only (``scene_images``, ``scene_crops``,
+        ``has_siglip``); the active scorer is derived here from the
+        ``quality_model`` setting the same way the feedback dialog does.
+        Fire-and-forget: returns ``{'success': True, 'sent': bool}`` and
+        never raises.
+        """
+        try:
+            if _telemetry is None or not isinstance(data, dict):
+                return {'success': True, 'sent': False}
+            settings = load_persisted_settings() or {}
+            if settings.get('analytics_opted_in', False) is not True:
+                return {'success': True, 'sent': False}
+            scorer = str(settings.get('quality_model') or 'siglip').lower()
+            if scorer not in ('siglip', 'legacy'):
+                scorer = 'siglip'
+            if data.get('has_siglip') is not True:
+                scorer = 'legacy'  # scene has no SigLIP scores; legacy is what ranked it
+            sent = _telemetry.send_quality_thumbs_up(
+                scene_images=data.get('scene_images') or 0,
+                scene_crops=data.get('scene_crops') or 0,
+                scorer=scorer,
+                machine_id=_telemetry.get_machine_id(settings),
+            )
+            return {'success': True, 'sent': bool(sent)}
+        except Exception:
+            return {'success': True, 'sent': False}
+
     def inspect_folder(self, folder_path: str):
         """Return lightweight folder summary (total images, processed count)."""
         try:
