@@ -333,6 +333,24 @@ HOST = '127.0.0.1'
 # Quality feedback (see the "Quality feedback" section of Api).
 _QF_MODE_KEY = 'quality_feedback_mode'
 _QF_INSTALL_ID_KEY = 'quality_feedback_install_id'
+
+# Session / shutdown bookkeeping owned by visualizer._mark_session_start,
+# the clean-exit path and clear_recovery_state. The frontend caches a full
+# get_settings() snapshot in localStorage at startup and sends it back whole
+# on many later saves (folder recents, mergeSetting, the settings dialog), so
+# without this filter a stale copy re-adds last_unclean_shutdown_utc after the
+# user has dealt with the recovery prompt, and the same unclean shutdown is
+# offered for reporting again on a later launch.
+_SESSION_OWNED_SETTINGS_KEYS = frozenset({
+    'last_unclean_shutdown_utc',
+    'last_exit_reason',
+    'app_session_exit_reason',
+    'exit_reason_migrated_v1',
+    'app_session_started_utc',
+    'app_session_closed_cleanly',
+    'app_session_pid',
+    'last_session_closed_utc',
+})
 _QF_MODES = ('ask', 'always', 'never')
 _QF_MAX_SESSIONS = 8
 _QF_PREVIEW_MAX_SIDE = 1024
@@ -3566,7 +3584,10 @@ class Api:
             if not isinstance(existing, dict):
                 existing = {}
             # Python-owned keys the frontend must never overwrite.
-            settings_dict = {k: v for k, v in settings_dict.items() if k != _QF_INSTALL_ID_KEY}
+            settings_dict = {
+                k: v for k, v in settings_dict.items()
+                if k != _QF_INSTALL_ID_KEY and k not in _SESSION_OWNED_SETTINGS_KEYS
+            }
             merged = {**existing, **settings_dict}
 
             # Keep cumulative impact counters monotonic so stale UI payloads cannot
