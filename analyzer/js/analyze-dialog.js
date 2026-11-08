@@ -240,9 +240,9 @@
       const tip =
         'The estimate models your upload speed (once measured) against Cloud ' +
         'Compute analyzing roughly ' +
-        `${p.containerImagesPerSec} image/sec per worker, scaling up to ` +
-        `${p.maxContainers} workers as the backlog grows. Actual time ` +
-        'depends on transfer speed and worker availability.';
+        `${p.containerImagesPerSec} images per second per cloud machine, using up to ` +
+        `${p.maxContainers} machines as the queue grows. Actual time ` +
+        'depends on upload speed and how many machines are free.';
       const el = document.createElement('span');
       el.className = 'est-time-uncertain est-time-uncertain--cloud';
       el.setAttribute('title', tip);
@@ -533,7 +533,7 @@
       row.className = cls;
       row.dataset.path = node.path;
       row.title = outdated
-        ? `Analyzed on pipeline ${folderPipelineLabel(node)} (current: ${CURRENT_PIPELINE_MAJOR}.0) — re-analyze to update.\n${node.path}`
+        ? `Analyzed with analysis version ${folderPipelineLabel(node)} (current: ${CURRENT_PIPELINE_MAJOR}.0) — re-analyze to update.\n${node.path}`
         : (folderPipelineNote(node) ? `${folderPipelineNote(node)}
 ${node.path}` : node.path);
 
@@ -590,8 +590,8 @@ ${node.path}` : node.path);
           + (isChecked ? (upgradeMode === 'upgrade' ? ' upgrade' : ' warning') : '');
         outdatedBadge.textContent = `v↑ ${folderPipelineLabel(node)}`.trim();
         outdatedBadge.title = upgradeMode
-          ? `Analyzed on pipeline ${folderPipelineLabel(node)}; current is ${CURRENT_PIPELINE_MAJOR}.0. Can be upgraded to pipeline 3.0 (keeps your culls) — choose in the queued folders list.`
-          : `Analyzed on pipeline ${folderPipelineLabel(node)}; current is ${CURRENT_PIPELINE_MAJOR}.0. Will re-analyze (destructive) if checked.`;
+          ? `Analyzed with analysis version ${folderPipelineLabel(node)}; current is ${CURRENT_PIPELINE_MAJOR}.0. Can be upgraded to analysis version 3.0 (keeps your culls) — choose in the queued folders list.`
+          : `Analyzed with analysis version ${folderPipelineLabel(node)}; current is ${CURRENT_PIPELINE_MAJOR}.0. Will re-analyze (destructive) if checked.`;
       }
 
       // ── Right-side checkbox column (Phase 1.5A mirror) ──────────────────────
@@ -943,7 +943,7 @@ ${node.path}` : node.path);
           willReanalyze = true;
           outdatedReanalyzeCount++;
           imagesThisFolder = total;
-          warningMsg = `Analyzed on pipeline ${folderPipelineLabel(node)} (current: ${CURRENT_PIPELINE_MAJOR}.0). Will erase .kestrel data and re-analyze all ${total.toLocaleString()} images.`;
+          warningMsg = `Analyzed with analysis version ${folderPipelineLabel(node)} (current: ${CURRENT_PIPELINE_MAJOR}.0). Will erase .kestrel data and re-analyze all ${total.toLocaleString()} images.`;
           warningKind = 'warn';
         } else if (isFullyAnalyzed) {
           if (analyzeDlgReanalyzeUnlocked) {
@@ -1006,7 +1006,7 @@ ${node.path}` : node.path);
           if (f.upgradeMode === 'upgrade') {
             const imgSpan = document.createElement('span');
             imgSpan.className = 'meta-images';
-            imgSpan.textContent = `${f.total.toLocaleString()} image${f.total === 1 ? '' : 's'} · upgrade to pipeline 3.0`;
+            imgSpan.textContent = `${f.total.toLocaleString()} image${f.total === 1 ? '' : 's'} · upgrade to analysis version 3.0`;
             meta.appendChild(imgSpan);
           } else if (f.willSkip) {
             const skip = document.createElement('span');
@@ -1107,7 +1107,7 @@ ${node.path}` : node.path);
           const { rate, source, sampledImgs } = _getEstRate(useGpu);
           const seconds = totalImagesToProcess * rate;
           timeValue = `~${_formatDuration(seconds)}`;
-          timeLabel = `est. time (${useGpu ? 'GPU' : 'CPU'}${source === 'local' ? ' · local' : ''})`;
+          timeLabel = `estimated time (${useGpu ? 'GPU' : 'CPU'}${source === 'local' ? ' · this computer' : ''})`;
           timeDim = false;
           if (source === 'baseline') {
             timeBadgeKind = 'local-baseline';
@@ -1200,7 +1200,7 @@ ${node.path}` : node.path);
       sel.setAttribute('aria-label', `What to do with ${f.name}`);
       const cloud = _isCloudDestination();
       const opts = [
-        ['upgrade', 'Upgrade to pipeline 3.0 (fast, keeps your culls)'],
+        ['upgrade', 'Upgrade to analysis version 3.0 (fast, keeps your culls)'],
         ['reanalyze', cloud
           ? 'Re-analyze from scratch on Cloud Compute (clears Kestrel data)'
           : 'Re-analyze from scratch (clears Kestrel data)'],
@@ -1221,7 +1221,7 @@ ${node.path}` : node.path);
       if (f.upgradeMode === 'upgrade') {
         const hint = document.createElement('div');
         hint.className = 'adlg-upgrade-hint';
-        hint.textContent = 'Re-reads the saved crops to update species IDs, add the SigLIP sharpness score '
+        hint.textContent = 'Re-reads the saved crops to update species IDs, add the sharpness score '
           + 'and smart search. Ratings, decisions and edited tags are kept.'
           + (cloud ? ' Runs on this computer — upgrades don\u2019t use Cloud Compute.' : '');
         wrap.appendChild(hint);
@@ -1387,7 +1387,7 @@ ${node.path}` : node.path);
 
     async function openAnalyzeDialog() {
       if (!hasPywebviewApi) {
-        alert('Analysis queue is only available in the desktop (pywebview) mode.\n\nRun kestrel_visualizer as a desktop app to use this feature.');
+        alert('The analysis queue is only available in the Kestrel desktop app.\n\nOpen Kestrel as a desktop app to use this feature.');
         return;
       }
       // Detection model now lives as a plain <select> in More options →
