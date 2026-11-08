@@ -165,6 +165,10 @@ def _is_ort_log_line(line: str) -> bool:
 
 def _session_options(ort, config: Optional[Dict[str, str]]):
     so = ort.SessionOptions()
+    # Idle pool threads otherwise spin between runs. That only changes how threads
+    # wait, not what a model computes.
+    so.add_session_config_entry("session.intra_op.allow_spinning", "0")
+    so.add_session_config_entry("session.inter_op.allow_spinning", "0")
     for k, v in (config or {}).items():
         so.add_session_config_entry(str(k), str(v))
     return so
