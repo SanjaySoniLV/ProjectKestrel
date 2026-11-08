@@ -1605,7 +1605,9 @@ class AnalysisPipeline:
                             original_patch = img[y0:y1, x0:x1].copy()
                             img[y0:y1, x0:x1] = corrected_crop
                             try:
-                                quality_crop, quality_mask = self.sn_sam.get_square_crop(masks[i], img, resize=True)
+                                quality_crop, quality_mask = self.sn_sam.get_square_crop(
+                                    masks[i], img, resize=True, bbox=crop_bbox
+                                )
                             finally:
                                 img[y0:y1, x0:x1] = original_patch
                             total_stops = ec_compose_total_stops(stops, raw_meter_scale)
@@ -1617,7 +1619,9 @@ class AnalysisPipeline:
                             total_stops = 0.0
                             meter_scale = 1.0
                             pipeline_mode = "legacy_auto_bright_v1"
-                            quality_crop, quality_mask = self.sn_sam.get_square_crop(masks[i], img, resize=True)
+                            quality_crop, quality_mask = self.sn_sam.get_square_crop(
+                                masks[i], img, resize=True, bbox=crop_bbox
+                            )
                         return {
                             "index": i,
                             "confidence": float(pred_score[i]),

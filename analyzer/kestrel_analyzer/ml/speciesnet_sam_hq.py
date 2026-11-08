@@ -120,6 +120,21 @@ def _box_intersection_over_min_area(box_a, box_b) -> float:
     return float(inter / min_area)
 
 
+def _mask_extent(mask) -> tuple[int, int, int, int, int]:
+    """Return (area, x0, y0, x1, y1): the true-pixel count and tight box of a mask.
+
+    x1/y1 are exclusive. Empty masks return area 0 and a zero-size box. This is the
+    one full-frame pass a mask needs; later work can stay inside its tight box.
+    """
+    arr = np.asarray(mask)
+    m8 = arr.view(np.uint8) if arr.dtype == np.bool_ else (arr != 0).astype(np.uint8)
+    area = int(cv2.countNonZero(m8))
+    if area == 0:
+        return 0, 0, 0, 0, 0
+    x, y, w, h = cv2.boundingRect(m8)
+    return area, x, y, x + w, y + h
+
+
 def filter_overlapping_detections(
     masks,
     pred_boxes,
@@ -149,15 +164,34 @@ def filter_overlapping_detections(
         reverse=True,
     )
 
+    # Each mask's area and tight box are computed once. A pair's intersection only
+    # needs the overlap of the two tight boxes, and union = area_i + area_j -
+    # intersection, so the IoU and containment values match full-frame arithmetic
+    # exactly without scanning the whole frame for every pair.
+    extents: dict[int, tuple[int, int, int, int, int]] = {}
+
+    def _extent(idx: int) -> tuple[int, int, int, int, int]:
+        if idx not in extents:
+            extents[idx] = _mask_extent(masks[idx])
+        return extents[idx]
+
     for i_idx, i in enumerate(sorted_indices):
         if not keep[i]:
             continue
         for j in sorted_indices[i_idx + 1 :]:
             if not keep[j]:
                 continue
-            intersection = np.logical_and(masks[i], masks[j]).sum()
-            union = np.logical_or(masks[i], masks[j]).sum()
-            min_mask_area = min(float(masks[i].sum()), float(masks[j].sum()))
+            area_i, ix0, iy0, ix1, iy1 = _extent(i)
+            area_j, jx0, jy0, jx1, jy1 = _extent(j)
+            ox0, oy0, ox1, oy1 = max(ix0, jx0), max(iy0, jy0), min(ix1, jx1), min(iy1, jy1)
+            intersection = 0
+            if ox1 > ox0 and oy1 > oy0:
+                intersection = int(np.logical_and(
+                    np.asarray(masks[i])[oy0:oy1, ox0:ox1],
+                    np.asarray(masks[j])[oy0:oy1, ox0:ox1],
+                ).sum())
+            union = area_i + area_j - intersection
+            min_mask_area = float(min(area_i, area_j))
             mask_iou = float(intersection / union) if union > 0 else 0.0
             mask_containment = float(intersection / min_mask_area) if min_mask_area > 0.0 else 0.0
             box_iou = _box_iou(pred_boxes[i], pred_boxes[j])
@@ -1211,22 +1245,28 @@ class DetectorSAMHQWrapper:
         # all nonzero coordinates with np.where (allocates ~19 MB for a 30% mask).
         # Also caches mask_sum in the bisection closure, avoiding repeated full-image
         # scans (was 8+ np.sum(mask) calls, each ~5-10 ms on a 12 MP mask).
-        cols_sum = mask.sum(axis=0, dtype=np.int64)   # (W,)
-        rows_sum = mask.sum(axis=1, dtype=np.int64)   # (H,)
-        mask_sum = int(cols_sum.sum())
+        # All true pixels sit inside the tight box, so the sums below only visit that
+        # region. The weighted sums stay well under 2**53, so they are exact floats
+        # and the centre matches a full-frame computation.
+        mask_sum, tx0, ty0, tx1, ty1 = _mask_extent(mask)
         if mask_sum == 0:
             h, w = mask.shape[:2]
             return 0, w, 0, h
-        cx = int(np.dot(cols_sum.astype(np.float64), np.arange(mask.shape[1], dtype=np.float64)) / mask_sum)
-        cy = int(np.dot(rows_sum.astype(np.float64), np.arange(mask.shape[0], dtype=np.float64)) / mask_sum)
+        tight = mask[ty0:ty1, tx0:tx1]
+        cols_sum = tight.sum(axis=0, dtype=np.int64)
+        rows_sum = tight.sum(axis=1, dtype=np.int64)
+        cx = int(np.dot(cols_sum.astype(np.float64), np.arange(tx0, tx1, dtype=np.float64)) / mask_sum)
+        cy = int(np.dot(rows_sum.astype(np.float64), np.arange(ty0, ty1, dtype=np.float64)) / mask_sum)
         center = (cx, cy)
 
         def fraction_inside(center_of_mass, S):
-            x_min2 = max(0, int(center_of_mass[0] - S / 2))
-            x_max2 = min(mask.shape[1], int(center_of_mass[0] + S / 2))
-            y_min2 = max(0, int(center_of_mass[1] - S / 2))
-            y_max2 = min(mask.shape[0], int(center_of_mass[1] + S / 2))
-            return int(mask[y_min2:y_max2, x_min2:x_max2].sum()) / mask_sum  # cached
+            x_min2 = max(tx0, int(center_of_mass[0] - S / 2))
+            x_max2 = min(tx1, int(center_of_mass[0] + S / 2))
+            y_min2 = max(ty0, int(center_of_mass[1] - S / 2))
+            y_max2 = min(ty1, int(center_of_mass[1] + S / 2))
+            if x_max2 <= x_min2 or y_max2 <= y_min2:
+                return 0.0
+            return int(mask[y_min2:y_max2, x_min2:x_max2].sum()) / mask_sum
 
         S = self._fsolve(lambda S: fraction_inside(center, S) - 0.8, 10, 3000)
         S = int(S * 1 / 0.5)
@@ -1252,8 +1292,10 @@ class DetectorSAMHQWrapper:
         y_max = int(center[1] + s_new / 2)
         return x_min, x_max, y_min, y_max
 
-    def get_square_crop(self, mask, img, resize=True):
-        bbox = self.get_square_crop_box(mask)
+    def get_square_crop(self, mask, img, resize=True, bbox=None):
+        """``bbox``: a result of get_square_crop_box(mask), to avoid recomputing it."""
+        if bbox is None:
+            bbox = self.get_square_crop_box(mask)
         x_min = bbox["x_min"]
         x_max = bbox["x_max"]
         y_min = bbox["y_min"]
