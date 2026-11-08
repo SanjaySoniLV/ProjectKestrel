@@ -493,6 +493,7 @@
         tip.innerHTML = [
           `<b>${escapeHtml(r.filename || '')}</b>`,
           _sceneTooltipSpeciesLine(r),
+          formatCaptureTime(r.capture_time) ? `Captured: ${formatCaptureTime(r.capture_time)}` : '',
           `Quality: ${fmt3(r.quality)}`,
           `Rating: ${'★'.repeat(rating)}${'☆'.repeat(5 - rating)} ${origin ? `(${origin})` : ''}`,
           cull ? `Status: ${cull === 'accept' ? '✓ Accepted' : '✗ Rejected'}` : '',
@@ -715,7 +716,8 @@
 
       const metaTextEl = el('#sceneInfoMetaText');
       if (metaTextEl) {
-        const position = `Image ${idx + 1} of ${scene.images.length}`;
+        const captured = formatCaptureTime(r.capture_time);
+        const position = `Image ${idx + 1} of ${scene.images.length}` + (captured ? ` · ${captured}` : '');
         if (activeLabels.hidden) {
           metaTextEl.textContent = position;
         } else {
@@ -2690,6 +2692,7 @@
         tip.innerHTML = [
           `<b>${escapeHtml(r.filename || '')}</b>`,
           _sceneTooltipSpeciesLine(r),
+          formatCaptureTime(r.capture_time) ? `Captured: ${formatCaptureTime(r.capture_time)}` : '',
           `Quality: ${fmt3(r.quality)}`,
           `Rating: ${'★'.repeat(rating)}${'☆'.repeat(5 - rating)}`,
         ].filter(Boolean).join('<br>');
@@ -2784,6 +2787,16 @@
     }
 
     function fmt3(v) { const n = parseNumber(v); return n < 0 ? '—' : n.toFixed(3); }
+
+    // Capture time as the camera recorded it, e.g. '2026-11-01 07:32:10'.
+    // capture_time is a naive isoformat() string (camera wall clock, no
+    // timezone), so format it from its own digits rather than through Date,
+    // which would reinterpret it in the viewer's timezone. '' when absent.
+    function formatCaptureTime(v) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/.exec(String(v == null ? '' : v).trim());
+      if (!m) return '';
+      return `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}${m[6] ? ':' + m[6] : ''}`;
+    }
 
     function decodeEntities(s) {
       if (!s || typeof s !== 'string') return s;
