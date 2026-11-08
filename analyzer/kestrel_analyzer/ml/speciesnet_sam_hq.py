@@ -1049,8 +1049,12 @@ class DetectorSAMHQWrapper:
         wildlife_enabled: bool = True,
         threshold: float = 0.75,
         mask_threshold: float = 0.5,
+        detector_input: Optional[tuple] = None,
     ):
         """Run MegaDetector + SAM-HQ with provider-resilience retry.
+
+        ``detector_input``: a result of ``prepare_detector_input(image_data)``,
+        when the caller already has one; otherwise it is computed here.
 
         On a known "session is now corpse" error (DML device-removed, CoreML
         cold-start path loss, etc.) the coordinator demotes GPU→CPU, the
@@ -1070,6 +1074,7 @@ class DetectorSAMHQWrapper:
                     wildlife_enabled=wildlife_enabled,
                     threshold=threshold,
                     mask_threshold=mask_threshold,
+                    detector_input=detector_input,
                 )
                 self._coord.on_run_success()
                 return result
@@ -1087,6 +1092,17 @@ class DetectorSAMHQWrapper:
         if last_exc is not None:
             raise last_exc
         return [], [], [], []
+
+    def prepare_detector_input(self, image_data: np.ndarray) -> Optional[tuple]:
+        """Resize a frame for the detector. Safe to call from a decode worker.
+
+        Returns None when the detector is not loaded yet, in which case
+        ``get_prediction`` does this work itself.
+        """
+        detector = self.detector
+        if detector is None:
+            return None
+        return detector.preprocess(Image.fromarray(image_data))
 
     def run_with_resilience(self, fn: Callable[[], Any]) -> Any:
         """Run ``fn`` (one pipeline-owned model call, e.g. BioCLIP/SigLIP on a
@@ -1117,6 +1133,7 @@ class DetectorSAMHQWrapper:
         wildlife_enabled: bool = True,
         threshold: float = 0.75,
         mask_threshold: float = 0.5,
+        detector_input: Optional[tuple] = None,
     ):
         """Body of ``get_prediction``. Single attempt, no retry."""
         _ = mask_threshold  # SAM-HQ ignores the old Mask R-CNN pixel threshold; UI keeps the knob.
@@ -1127,9 +1144,9 @@ class DetectorSAMHQWrapper:
 
         fp = str(Path(image_path).resolve())
         h, w = image_data.shape[:2]
-        img_pil = Image.fromarray(image_data)
 
-        detector_input = self.detector.preprocess(img_pil)
+        if detector_input is None:
+            detector_input = self.detector.preprocess(Image.fromarray(image_data))
         det_result = self.detector.predict(fp, detector_input)
         detections = det_result.get("detections", []) or []
 

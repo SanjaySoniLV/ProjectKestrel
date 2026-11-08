@@ -380,6 +380,15 @@ class AnalysisPipeline:
             result["img"] = img
             result["orientation"] = self._get_image_orientation(img)
 
+            # The resize for the detector takes longer than the detector itself on
+            # high-resolution frames. Doing it here keeps it off the main thread. A
+            # failure is not fatal: get_prediction then repeats the work and reports
+            # any real problem through the normal per-image path.
+            try:
+                result["detector_input"] = self.sn_sam.prepare_detector_input(img)
+            except Exception:
+                result["detector_input"] = None
+
             try:
                 ct = get_capture_time(image_path)
                 result["capture_time"] = ct
@@ -1580,6 +1589,7 @@ class AnalysisPipeline:
                         wildlife_enabled=wildlife_enabled,
                         threshold=detection_threshold,
                         mask_threshold=mask_threshold,
+                        detector_input=decoded.get("detector_input"),
                     )
                     self._timing_add("detector_sam", _t_stage)
 
