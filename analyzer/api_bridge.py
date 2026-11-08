@@ -1972,9 +1972,20 @@ class Api:
                     # from being inspected.
                     missing_paths.append(str(raw))
                     continue
-                validated_paths.append(root_real)
+                validated_paths.append((str(raw), root_real))
 
-            results = inspector.inspect_folders(validated_paths)
+            by_real = inspector.inspect_folders([real for _, real in validated_paths])
+            # Key each result by the path the caller sent, not by root_real.
+            # realpath rewrites a Windows mapped network drive (P:\...) to its
+            # UNC form (\\server\share\...) and resolves symlinks/junctions, so
+            # realpath keys never matched the caller's own path and a NAS folder
+            # showed 0 images in the Analyze dialog. The inspector strips
+            # trailing separators from its keys; do the same for the lookup.
+            results = {}
+            for raw, real in validated_paths:
+                key = real.rstrip('/\\')
+                if key in by_real:
+                    results[raw] = by_real[key]
             return {'success': True, 'results': results, 'missing_paths': missing_paths}
         except Exception as e:
             error(f'[API] inspect_folders error: {e}')
