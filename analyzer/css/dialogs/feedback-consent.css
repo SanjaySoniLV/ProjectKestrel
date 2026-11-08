@@ -39,7 +39,8 @@
   border-color: var(--brand);
 }
 
-.feedback-dlg input[type="email"] {
+.feedback-dlg input[type="email"],
+.feedback-dlg input[type="text"] {
   width: 100%;
   background: #0a0d12;
   border: 1px solid #1d2230;
@@ -50,7 +51,8 @@
   box-sizing: border-box;
 }
 
-.feedback-dlg input[type="email"]:focus {
+.feedback-dlg input[type="email"]:focus,
+.feedback-dlg input[type="text"]:focus {
   outline: none;
   border-color: var(--brand);
 }
@@ -121,4 +123,15 @@
   gap: 8px;
   justify-content: flex-end;
   margin-top: 4px;
+}
+
+/* Line under "Send as …" nudging sign-in so we can reply and keep logs with the report. */
+.feedback-signin-hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.feedback-signin-hint:empty {
+  display: none;
 }

@@ -67,6 +67,8 @@ class AuthClient:
     ``analyzer/cloud_compute_client.py:CloudComputeClient`` but trimmed to a
     single endpoint."""
 
+    USER_AGENT = "KestrelDesktop/Auth/1.0"
+
     def __init__(
         self,
         api_base: str,
@@ -93,7 +95,7 @@ class AuthClient:
         url = f"{self.api_base}{path}"
         headers = {
             "Accept": "application/json",
-            "User-Agent": "KestrelDesktop/Auth/1.0",
+            "User-Agent": self.USER_AGENT,
             **self._auth_headers,
         }
         data: bytes | None = None
@@ -151,32 +153,3 @@ class AuthClient:
         return self._request(
             "DELETE", f"/v1/me/notifications/{quote(str(notif_id), safe='')}"
         )
-
-    def post_feedback(
-        self,
-        report_type: str,
-        message: str,
-        subject: str = "",
-        version: str = "",
-        os: str = "",
-        contact: str = "",
-    ) -> dict:
-        """POST /v1/me/feedback — submit feedback as the signed-in user.
-
-        report_type must be one of: bug, suggestion, general, account.
-        Returns {ok: true, id} on success; raises AuthClientError on failure.
-        """
-        body: dict = {
-            "product": "desktop",
-            "report_type": report_type,
-            "message": message,
-        }
-        if subject:
-            body["subject"] = subject
-        if version:
-            body["version"] = version
-        if os:
-            body["os"] = os
-        if contact:
-            body["contact"] = contact
-        return self._request("POST", "/v1/me/feedback", body)
