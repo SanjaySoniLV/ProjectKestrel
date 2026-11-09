@@ -270,7 +270,8 @@ class TestPipelineE2EOnCR3:
                 if int(c.get("detection_index", -1)) < 0:
                     continue
                 assert 0.0 <= c["quality_siglip"] <= 1.0 and 0.0 <= c["quality_legacy"] <= 1.0
-                assert c["quality"] == pytest.approx(c["quality_siglip" if model == "siglip" else "quality_legacy"])
+                # quality_siglip / quality_legacy are stored rounded to 6 decimals; quality is not.
+                assert c["quality"] == pytest.approx(c["quality_siglip" if model == "siglip" else "quality_legacy"], abs=1e-6)
                 assert 0.0 <= c["animal_score"] <= 1.0 and c["subject"] in ("bird", "wildlife")
 
     def test_export_thumbnails_created(self, pipeline_result_dir):

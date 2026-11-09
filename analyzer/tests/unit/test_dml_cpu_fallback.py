@@ -73,6 +73,9 @@ def world(monkeypatch):
     dev = _Device()
     built = []
     monkeypatch.setattr(pc, "gpu_providers", lambda: ["DmlExecutionProvider", "CPUExecutionProvider"])
+    # Towers follow the DirectML policy (on the GPU), even when the suite runs on macOS, where
+    # the CoreML policy keeps them on the CPU.
+    monkeypatch.setattr(pc, "tower_use_gpu", lambda ep: True)
 
     def fake_build(path, providers, kind="", config=None, vendor=None):
         provs = ["OpenVINOExecutionProvider"] if vendor else list(providers)
