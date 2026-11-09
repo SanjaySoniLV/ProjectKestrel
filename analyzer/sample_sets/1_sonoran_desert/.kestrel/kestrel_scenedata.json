@@ -1,0 +1,233 @@
+{
+  "version": "2.0",
+  "image_ratings": {},
+  "scenes": {
+    "1": {
+      "scene_id": "1",
+      "image_filenames": [
+        "IMG_4146.CR3",
+        "IMG_4147.CR3",
+        "IMG_4151.CR3",
+        "IMG_4163.CR3",
+        "IMG_4169.CR3",
+        "IMG_4172.CR3",
+        "IMG_4173.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    },
+    "2": {
+      "scene_id": "2",
+      "image_filenames": [
+        "IMG_2871.CR3",
+        "IMG_2889.CR3",
+        "IMG_2892.CR3",
+        "IMG_2905.CR3",
+        "IMG_2909.CR3",
+        "IMG_2911.CR3",
+        "IMG_2916.CR3",
+        "IMG_2929.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    },
+    "3": {
+      "scene_id": "3",
+      "image_filenames": [
+        "IMG_3466.CR3",
+        "IMG_3468.CR3",
+        "IMG_3482.CR3",
+        "IMG_3519.CR3",
+        "IMG_3521.CR3",
+        "IMG_3522.CR3",
+        "IMG_3525.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    },
+    "4": {
+      "scene_id": "4",
+      "image_filenames": [
+        "IMG_3689.CR3",
+        "IMG_3693.CR3",
+        "IMG_3694.CR3",
+        "IMG_3696.CR3",
+        "IMG_3702.CR3",
+        "IMG_3713.CR3",
+        "IMG_3719.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    },
+    "5": {
+      "scene_id": "5",
+      "image_filenames": [
+        "IMG_4081.CR3",
+        "IMG_4082.CR3",
+        "IMG_4093.CR3",
+        "IMG_4107.CR3",
+        "IMG_4108.CR3",
+        "IMG_4110.CR3",
+        "IMG_4112.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    },
+    "6": {
+      "scene_id": "6",
+      "image_filenames": [
+        "IMG_5505.CR3",
+        "IMG_5506.CR3",
+        "IMG_5507.CR3",
+        "IMG_5508.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    },
+    "7": {
+      "scene_id": "7",
+      "image_filenames": [
+        "IMG_4468.CR3",
+        "IMG_4473.CR3",
+        "IMG_4478.CR3",
+        "IMG_4493.CR3",
+        "IMG_4502.CR3",
+        "IMG_4505.CR3",
+        "IMG_4506.CR3",
+        "IMG_4520.CR3",
+        "IMG_4526.CR3",
+        "IMG_4531.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    },
+    "8": {
+      "scene_id": "8",
+      "image_filenames": [
+        "IMG_4751.CR3",
+        "IMG_4755.CR3",
+        "IMG_4760.CR3",
+        "IMG_4766.CR3",
+        "IMG_4772.CR3",
+        "IMG_4774.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    },
+    "9": {
+      "scene_id": "9",
+      "image_filenames": [
+        "IMG_9342.CR3",
+        "IMG_9344.CR3",
+        "IMG_9346.CR3",
+        "IMG_9347.CR3",
+        "IMG_9348.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    },
+    "10": {
+      "scene_id": "10",
+      "image_filenames": [
+        "IMG_3902.CR3",
+        "IMG_3906.CR3",
+        "IMG_3907.CR3",
+        "IMG_3908.CR3",
+        "IMG_3912.CR3",
+        "IMG_3915.CR3",
+        "IMG_3916.CR3",
+        "IMG_3917.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    },
+    "11": {
+      "scene_id": "11",
+      "image_filenames": [
+        "IMG_3768.CR3",
+        "IMG_3769.CR3",
+        "IMG_3771.CR3",
+        "IMG_3773.CR3",
+        "IMG_3775.CR3",
+        "IMG_3779.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    },
+    "12": {
+      "scene_id": "12",
+      "image_filenames": [
+        "IMG_4388.CR3",
+        "IMG_4389.CR3",
+        "IMG_4390.CR3",
+        "IMG_4391.CR3",
+        "IMG_4392.CR3",
+        "IMG_4393.CR3",
+        "IMG_4394.CR3",
+        "IMG_4395.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    }
+  }
+}

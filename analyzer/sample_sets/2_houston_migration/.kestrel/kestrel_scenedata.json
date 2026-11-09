@@ -1,0 +1,203 @@
+{
+  "version": "2.0",
+  "image_ratings": {},
+  "scenes": {
+    "1": {
+      "scene_id": "1",
+      "image_filenames": [
+        "IMG_4853.CR3",
+        "IMG_4854.CR3",
+        "IMG_4855.CR3",
+        "IMG_4856.CR3",
+        "IMG_4857.CR3",
+        "IMG_4858.CR3",
+        "IMG_4859.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    },
+    "2": {
+      "scene_id": "2",
+      "image_filenames": [
+        "IMG_7936.CR3",
+        "IMG_7940.CR3",
+        "IMG_7944.CR3",
+        "IMG_7945.CR3",
+        "IMG_7950.CR3",
+        "IMG_7954.CR3",
+        "IMG_7956.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    },
+    "3": {
+      "scene_id": "3",
+      "image_filenames": [
+        "IMG_9170.CR3",
+        "IMG_9172.CR3",
+        "IMG_9173.CR3",
+        "IMG_9174.CR3",
+        "IMG_9175.CR3",
+        "IMG_9176.CR3",
+        "IMG_9177.CR3",
+        "IMG_9178.CR3",
+        "IMG_9179.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    },
+    "4": {
+      "scene_id": "4",
+      "image_filenames": [
+        "IMG_9209.CR3",
+        "IMG_9213.CR3",
+        "IMG_9214.CR3",
+        "IMG_9215.CR3",
+        "IMG_9216.CR3",
+        "IMG_9219.CR3"
+      ],
+      "name": "",
+      "status": "accepted",
+      "user_tags": {
+        "species": [
+          "Red-vented Bulbul"
+        ],
+        "families": [
+          "Bulbuls"
+        ],
+        "finalized": true
+      }
+    },
+    "5": {
+      "scene_id": "5",
+      "image_filenames": [
+        "IMG_5295.CR3",
+        "IMG_5297.CR3",
+        "IMG_5301.CR3",
+        "IMG_5310.CR3",
+        "IMG_5312.CR3",
+        "IMG_5324.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    },
+    "6": {
+      "scene_id": "6",
+      "image_filenames": [
+        "IMG_5466.CR3",
+        "IMG_5467.CR3",
+        "IMG_5468.CR3",
+        "IMG_5469.CR3",
+        "IMG_5470.CR3",
+        "IMG_5471.CR3",
+        "IMG_5472.CR3",
+        "IMG_5473.CR3",
+        "IMG_5474.CR3",
+        "IMG_5475.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    },
+    "7": {
+      "scene_id": "7",
+      "image_filenames": [
+        "IMG_5776.CR3",
+        "IMG_5777.CR3",
+        "IMG_5779.CR3",
+        "IMG_5781.CR3",
+        "IMG_5785.CR3",
+        "IMG_5787.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    },
+    "8": {
+      "scene_id": "8",
+      "image_filenames": [
+        "IMG_6028.CR3",
+        "IMG_6029.CR3",
+        "IMG_6030.CR3",
+        "IMG_6031.CR3",
+        "IMG_6032.CR3",
+        "IMG_6033.CR3",
+        "IMG_6034.CR3",
+        "IMG_6035.CR3",
+        "IMG_6036.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    },
+    "9": {
+      "scene_id": "9",
+      "image_filenames": [
+        "IMG_6178.CR3",
+        "IMG_6179.CR3",
+        "IMG_6180.CR3",
+        "IMG_6181.CR3",
+        "IMG_6182.CR3",
+        "IMG_6183.CR3",
+        "IMG_6184.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    },
+    "10": {
+      "scene_id": "10",
+      "image_filenames": [
+        "IMG_9290.CR3",
+        "IMG_9291.CR3",
+        "IMG_9292.CR3",
+        "IMG_9293.CR3",
+        "IMG_9294.CR3",
+        "IMG_9295.CR3"
+      ],
+      "name": "",
+      "status": "pending",
+      "user_tags": {
+        "species": [],
+        "families": [],
+        "finalized": false
+      }
+    }
+  }
+}

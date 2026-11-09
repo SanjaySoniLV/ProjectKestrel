@@ -9,7 +9,7 @@
     // points each card at its best-matching image. Folders without embeddings
     // show the "upgrade folder" prompt in the box's right-aligned status area.
     const SMART_SEARCH_LIMIT = 48;
-    const SMART_SEARCH_EXAMPLES = ['dove pair', 'side view bird in flight', 'perched on a wire', 'heron in a marsh', 'two birds', 'blurry'];
+    const SMART_SEARCH_EXAMPLES = ['perched on a tree', 'foraging in grass', 'feeding from a flower', 'bird in flight'];
     // A query that is the start of a species/family name in the loaded folders
     // ("purple" on the way to "purple gallinule") shows the instant tag filter
     // and only asks the classifier (which may start a whole-library smart
