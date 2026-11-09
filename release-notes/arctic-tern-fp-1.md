@@ -1,4 +1,4 @@
-# v(Arctic Tern (FP 1)) — 2026-11-08
+# v(Arctic Tern (FP 1)) — 2026-11-09
 
 v(Arctic Tern (FP 1)) is a feature patch for v(Arctic Tern), focused on stability, polish and speed. It adds an opt-in Enhanced GPU Performance mode for Windows, makes analysis recover from a lost GPU instead of saving empty results, and shows Cloud Compute estimates and prices inside the Analyze dialog. It also brings a cleaner scene viewer and analysis queue, queued analysis version 3.0 upgrades, bulk culling actions, an updated tutorial and demo set, plainer wording across settings and analysis screens, and a round of bug fixes.
 
@@ -75,7 +75,7 @@ Project Kestrel card, Arctic Tern bullets: 'Improved sharpness scoring…' is re
 ```
 ---
 title: "Arctic Tern (FP 1)"
-date: 2026-11-08
+date: 2026-11-09
 section: changelog
 draft: true
 tags: [Desktop, Cloud Compute]
