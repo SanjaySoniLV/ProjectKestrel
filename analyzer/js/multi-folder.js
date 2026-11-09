@@ -116,6 +116,7 @@
               if (sdRes?.success) _scenedata[root] = sdRes.data;
             } catch (_) {}
           }
+          await loadFolderSettingsFor(root);
           // Apply normalization (in-memory: sets r.__normalized_rating)
           if (hasPywebviewApi && window.pywebview?.api?.apply_normalization) {
             try {
@@ -186,6 +187,7 @@
             if (sdRes?.success) _scenedata[loadedRoot] = sdRes.data;
           } catch (_) {}
         }
+        await loadFolderSettingsFor(loadedRoot);
         
         // Apply normalization (in-memory: sets r.__normalized_rating)
         if (hasPywebviewApi && window.pywebview?.api?.apply_normalization) {

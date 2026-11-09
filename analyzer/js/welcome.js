@@ -9,8 +9,8 @@
     // projectkestrel.org/whats-new.json; that remote-override path was removed —
     // the note now lives entirely in the app.)
     const WHATS_NEW = {
-      version: 'arctic-tern',
-      eyebrow: 'v(Arctic Tern)',
+      version: 'arctic-tern-fp-1',
+      eyebrow: 'v(Arctic Tern (FP 1))',
       // The release's namesake bird. `whatsnew-bird.jpg` is a STABLE filename
       // whose contents are replaced each release, so the three PyInstaller
       // specs list it once and never need touching again. Update `heroAlt`
@@ -24,14 +24,18 @@
           // Desktop app logo — bundled at the static-server root (see .spec datas).
           iconImg: 'logo.png',
           name: 'Project Kestrel',
-          tag: 'New in v(Arctic Tern)',
+          tag: 'New in v(Arctic Tern (FP 1))',
           bullets: [
+            // v(Arctic Tern (FP 1)) additions; the Arctic Tern bullets below stay.
+            '<b>Enhanced GPU Performance</b> (Windows 11 24H2 or later, experimental): set it up in Settings to use extra GPU software made for your graphics hardware. If it fails, Kestrel falls back to standard GPU acceleration or the CPU, and a lost GPU no longer saves empty results.',
+            'Folders from analysis version 2.x now default to a fast <b>upgrade to 3.0</b> that keeps your culls, and upgrades can be queued from each folder’s header. New <b>Reject Undecided</b> speeds up bulk culling.',
+            'Polish and fixes: a cleaner scene viewer and analysis queue, capture time in the scene viewer, an updated tutorial and demo set, plainer wording in settings, and a fix for network (NAS) folders showing 0 images.',
             'One of the most significant updates to date, v(Arctic Tern) introduces analysis v3.0, with several major improvements.',
             'Kestrel can now accurately identify bird species worldwide, not just in North America. Accuracy for bird species recognition is significantly improved.',
-            'New <b>Smart Search</b>: find your photos by simply describing what you remember, ex. “herons in a marsh” or “flock of doves in flight”. Works on all folders analyzed with pipeline v3.0. Results show a % match and can jump to the scene in your timeline.',
-            'Improved sharpness scoring: Kestrel should more accurately sort your photos from sharpest to blurriest within a burst.',
+            'New <b>Smart Search</b>: find your photos by simply describing what you remember, ex. “herons in a marsh” or “flock of doves in flight”. Works on all folders analyzed with analysis version 3.0. Results show a % match and can jump to the scene in your timeline.',
+            'We are temporarily changing the default quality scoring model to the previous version, while we evaluate possible options to improve quality scoring. You can change the default in Settings.',
             '<b>Help improve sharpness scoring</b> (optional): sort a burst from sharpest to blurriest and choose whether to share the crops. The sort dialog now has larger thumbnails and a zoom button.',
-            '<b>Regroup Scenes</b>, <b>Cloud Compute on the new pipeline</b>, and many stability and data-safety fixes.',
+            '<b>Regroup Scenes</b> and many stability and data-safety fixes.',
             'Important: Folders analyzed on previous versions of Kestrel can be upgraded to v3.0 without requiring full re-analysis.',
           ],
         },
@@ -41,10 +45,9 @@
           name: 'Perch',
           tag: 'What’s new',
           bullets: [
-            'You can now <b>follow other birders</b> on Perch. Follow someone from their profile page and any perch they publish publicly appears in your <b>Following</b> feed, newest first.',
+            'Changes to Perch are coming soon. There’s a new <b>feedback button</b> in Perch, and I’d love to hear your feedback on how we can make Perch better!',
           ],
           links: [
-            { label: 'See your Following feed →', href: 'https://perch.projectkestrel.org/following.html' },
             { label: 'Learn about Perch →', href: 'https://perch.projectkestrel.org/' },
           ],
         },
@@ -53,15 +56,16 @@
           name: 'Cloud Compute',
           tag: 'What’s new',
           bullets: [
-            '<b>Much more accurate time estimates.</b> The estimate now simulates the real worker pipeline.',
-            'A new indicator tells you whether <b>your upload speed or the cloud</b> is the constraint — before you start, and live while a job runs.',
+            'Cloud Compute has been updated to <b>analysis version 3.0</b>.',
+            // The Mac App Store build hides in-app prices, so it doesn't get this bullet.
+            { html: 'Cloud Compute <b>timing and pricing</b> options are now available in the app.', hideOnChannel: 'appstore' },
           ],
           hint: 'Find it in the Analyze Folders dialog.',
         },
       ],
       note: 'Thank you for supporting the solo dev of Project Kestrel.',
       sign: '— Sanjay',
-      blogLink: { label: 'Read the full v(Dusky Grouse) release notes →', href: 'https://projectkestrel.org/notes/dusky-grouse/' },
+      blogLink: { label: 'Read the full v(Arctic Tern (FP 1)) release notes →', href: 'https://projectkestrel.org/notes/arctic-tern-fp-1/' },
     };
 
     const WELCOME_TIPS = [
@@ -179,8 +183,10 @@
       return /^[a-z0-9][a-z0-9._-]*\.(png|svg|webp|jpe?g)$/i.test(s) ? s : null;
     }
 
-    // Build the note's inner HTML from the baked-in WHATS_NEW shape.
-    function buildNoteHTML(note) {
+    // Build the note's inner HTML from the baked-in WHATS_NEW shape. A bullet is
+    // either an HTML string or {html, hideOnChannel}, which is left out on that
+    // distribution channel ('appstore' = the Mac App Store build).
+    function buildNoteHTML(note, channel) {
       var cards = (note.cards || []).map(function(c) {
         var cta = '';
         // A card may carry a single `link` or a `links[]` array (one or more CTAs).
@@ -196,7 +202,9 @@
         var bodyHtml = '';
         if (Array.isArray(c.bullets) && c.bullets.length) {
           bodyHtml = '<ul class="wln-card-list">' +
-            c.bullets.map(function(b) { return '<li>' + sr(b) + '</li>'; }).join('') +
+            c.bullets
+              .filter(function(b) { return !(b && typeof b === 'object' && b.hideOnChannel && b.hideOnChannel === channel); })
+              .map(function(b) { return '<li>' + sr(b && typeof b === 'object' ? b.html : b) + '</li>'; }).join('') +
             '</ul>';
         } else if (c.body) {
           bodyHtml = '<p class="wln-card-body">' + sr(c.body) + '</p>';
@@ -253,8 +261,8 @@
       var banner = document.getElementById('welcomeWhatsNew');
       if (!banner) return;
 
-      function showNote(note) {
-        banner.innerHTML = buildNoteHTML(note);
+      function showNote(note, channel) {
+        banner.innerHTML = buildNoteHTML(note, channel);
         banner.classList.remove('hidden');
         var dismiss = banner.querySelector('#wwnDismiss');
         if (dismiss) dismiss.addEventListener('click', async function() {
@@ -280,7 +288,15 @@
             lastSeen = res && res.settings && res.settings.last_seen_whats_new_version;
           } catch (_) {}
         }
-        if (WHATS_NEW.version !== lastSeen) showNote(WHATS_NEW);
+        if (WHATS_NEW.version === lastSeen) return;
+        var channel = 'direct';
+        if (hasPywebviewApi && window.pywebview?.api?.get_dist_channel) {
+          try {
+            var ch = await window.pywebview.api.get_dist_channel();
+            channel = (ch && ch.channel) || 'direct';
+          } catch (_) {}
+        }
+        showNote(WHATS_NEW, channel);
       })();
     })();
 
@@ -370,11 +386,15 @@
     // Wire donation dialog buttons — this script runs after the dialog HTML is in the DOM
     (function() {
       var dlg = document.getElementById('donateDlg');
+      // noteDonatePromptChoice() records the click before close() fires the
+      // dialog's 'close' event, which otherwise counts as a dismissal.
       document.getElementById('donateDlgGoBtn').addEventListener('click', function() {
+        noteDonatePromptChoice('support');
         dlg.close();
         openSupportLink();
       });
       document.getElementById('donateDlgFeedbackBtn').addEventListener('click', function() {
+        noteDonatePromptChoice('feedback');
         dlg.close();
         setTimeout(function() {
           document.getElementById('feedbackDlg').showModal();

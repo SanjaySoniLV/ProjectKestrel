@@ -75,7 +75,7 @@ def _has_crop(row: dict) -> bool:
     return bool(s) and s.lower() not in ("nan", "none")
 
 
-def eligible_rows(rows: Iterable[dict], active_scorer: str = "siglip") -> list[dict]:
+def eligible_rows(rows: Iterable[dict], active_scorer: str = "legacy") -> list[dict]:
     """Rows that can be shown: a bird crop and at least one quality score."""
     out = []
     for r in rows or []:
@@ -96,7 +96,7 @@ def select_feedback_frames(
     rows: Sequence[dict],
     k: int = MAX_FRAMES,
     *,
-    active_scorer: str = "siglip",
+    active_scorer: str = "legacy",
     rng: Optional[random.Random] = None,
 ) -> dict:
     """Choose 2..k frames of one burst for the sort dialog.
@@ -128,7 +128,7 @@ def select_feedback_frames(
     order, so the user isn't anchored by it. Fewer than two eligible frames
     gives empty lists.
     """
-    active_scorer = active_scorer if active_scorer in SCORERS else "siglip"
+    active_scorer = active_scorer if active_scorer in SCORERS else "legacy"
     rng = rng or random.Random()
     k = max(MIN_FRAMES, min(MAX_FRAMES, int(k or MAX_FRAMES)))
     pool = eligible_rows(rows, active_scorer)
@@ -315,7 +315,7 @@ def build_submission_payload(
             "platform": platform if platform in PLATFORMS else "linux",
         },
         "thumbs": thumbs,
-        "active_scorer": active_scorer if active_scorer in SCORERS else "siglip",
+        "active_scorer": active_scorer if active_scorer in SCORERS else "legacy",
         "shown_order": [int(i) for i in shown_order],
         "ranking": normalize_ranking(ranking, n),
         "duration_ms": max(0, min(dur, 24 * 3600 * 1000)),

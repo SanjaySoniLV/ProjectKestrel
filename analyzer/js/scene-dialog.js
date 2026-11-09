@@ -37,6 +37,16 @@
       _sceneCullDecisionsChanged = true;
     }
 
+    /** Reject every photo in `sceneRows` the user has not decided on yet
+     *  (manual accepts and rejects are kept). Returns how many changed. */
+    function rejectUndecidedRows(sceneRows) {
+      let n = 0;
+      for (const r of sceneRows || []) {
+        if (getCullStatus(r) === '') { setCullStatus(r, 'reject'); n += 1; }
+      }
+      return n;
+    }
+
     async function _blobUrlToBlob(url) {
       const resp = await fetch(url);
       if (!resp.ok) throw new Error(`Failed to fetch image blob (${resp.status})`);
@@ -144,13 +154,21 @@
 
         const label = document.createElement('div');
         label.className = 'scene-crop-overlay-label';
-        label.textContent = `#${idx + 1}`;
+        label.textContent = (typeof psCropLabel === 'function' && psCropLabel(row, idx)) || `#${idx + 1}`;
         boxEl.appendChild(label);
+        const hintText = idx === activeIndex && typeof psCropHint === 'function' ? psCropHint(row, idx) : null;
+        if (hintText) {
+          const hint = document.createElement('div');
+          hint.className = 'scene-crop-overlay-hint';
+          hint.innerHTML = hintText; // static markup from psCropHint
+          boxEl.appendChild(hint);
+        }
         layer.appendChild(boxEl);
       });
 
       box.appendChild(layer);
       requestAnimationFrame(() => layer.classList.add('visible'));
+      if (durationMs <= 0) return; // persistent (primary-subject bird numbers)
       box.__sceneCropOverlayTimer = setTimeout(() => {
         layer.classList.remove('visible');
         setTimeout(() => {
@@ -159,8 +177,228 @@
       }, Math.max(250, durationMs || 1000));
     }
 
+    // ── Hover / click a bird on the full image to pick its crop ──
+    // Only for rows with 2+ crops. Hovering previews that bird's crop in the
+    // crop panel (debounced so sweeping across the frame doesn't thrash image
+    // loads) and reverts on mouseleave; a click commits the pick, like the
+    // filmstrip's hover-preview / click-select. Arrow Up/Down also commit.
+    // Disabled while RAW zoom owns the box (the canvas no longer maps to the
+    // image's normalized bbox space).
+    const _CROP_HOVER_DEBOUNCE_MS = 90;
+    const _CROP_CLICK_HOLD_MS = 160;   // hold longer (or drag) on a bird → RAW zoom
+    const _CROP_CLICK_SLOP_PX = 5;
+    const _cropHover = {
+      inside: false,
+      rowKey: '',
+      hoverIdx: -1,       // box under the pointer (-1 = none)
+      committedIdx: -1,   // selection to restore on mouseleave
+      timer: null,
+    };
+
+    function _cropHoverRow() {
+      return (_currentScene && Array.isArray(_currentScene.images))
+        ? _currentScene.images[currentImageIndex] || null
+        : null;
+    }
+
+    function _cropHoverZoomActive(box) {
+      return !!sceneZoomActive || !!box?.classList.contains('zoom-active');
+    }
+
+    // Client-space rect of the drawn image pixels (contain-fitted inside the
+    // <img> element box, so letterboxing from object-fit is accounted for).
+    function _previewImageDrawRect(box) {
+      const img = box?.querySelector('img');
+      if (!img) return null;
+      const r = img.getBoundingClientRect();
+      const natW = img.naturalWidth, natH = img.naturalHeight;
+      if (r.width <= 0 || r.height <= 0) return null;
+      if (!natW || !natH) return { left: r.left, top: r.top, width: r.width, height: r.height };
+      const s = Math.min(r.width / natW, r.height / natH);
+      const w = natW * s, h = natH * s;
+      return { left: r.left + (r.width - w) / 2, top: r.top + (r.height - h) / 2, width: w, height: h };
+    }
+
+    // Index of the smallest crop bbox containing the pointer, or -1.
+    function _cropIndexAtPoint(row, clientX, clientY) {
+      const box = el('#previewBox');
+      if (!box || !row || _cropHoverZoomActive(box)) return -1;
+      const crops = getRowCropRecords(row);
+      if (crops.length < 2) return -1;
+      const rect = _previewImageDrawRect(box);
+      if (!rect) return -1;
+      const nx = (clientX - rect.left) / rect.width;
+      const ny = (clientY - rect.top) / rect.height;
+      if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return -1;
+      let best = -1, bestArea = Infinity;
+      crops.forEach((crop, idx) => {
+        const b = crop?.bbox || _fullFrameBbox();
+        const x0 = _numberOr(b.x_min_norm, 0), x1 = _numberOr(b.x_max_norm, 1);
+        const y0 = _numberOr(b.y_min_norm, 0), y1 = _numberOr(b.y_max_norm, 1);
+        if (nx < Math.min(x0, x1) || nx > Math.max(x0, x1)) return;
+        if (ny < Math.min(y0, y1) || ny > Math.max(y0, y1)) return;
+        const area = Math.abs(x1 - x0) * Math.abs(y1 - y0);
+        if (area < bestArea) { bestArea = area; best = idx; }
+      });
+      return best;
+    }
+
+    // Re-baseline when the displayed image changed under the pointer
+    // (filmstrip / Left-Right navigation while hovering).
+    function _syncCropHoverRow(row) {
+      const key = row ? _cropStateKey(row) : '';
+      if (key === _cropHover.rowKey) return;
+      _cropHover.rowKey = key;
+      _cropHover.hoverIdx = -1;
+      _cropHover.committedIdx = row ? getRowActiveCropIndex(row) : -1;
+      if (_cropHover.timer) { clearTimeout(_cropHover.timer); _cropHover.timer = null; }
+    }
+
+    // Called after a deliberate pick (arrow keys, crop nav buttons) so that
+    // mouseleave keeps it instead of reverting to the pre-hover crop.
+    function _commitCropHoverSelection(row) {
+      if (!row || _cropStateKey(row) !== _cropHover.rowKey) return;
+      _cropHover.committedIdx = getRowActiveCropIndex(row);
+    }
+
+    // Subtle outline on the active box and (while the debounce is pending)
+    // the box under the pointer. Lives in its own layer so the 1s
+    // "all boxes" flash overlay can coexist with it.
+    function _renderCropHoverLayer() {
+      const box = el('#previewBox');
+      if (!box) return;
+      box.querySelectorAll('.scene-crop-hover-layer').forEach(n => n.remove());
+      const row = _cropHoverRow();
+      if (!_cropHover.inside || !row || _cropHoverZoomActive(box)) return;
+      if (_cropStateKey(row) !== _cropHover.rowKey) return;
+      const crops = getRowCropRecords(row);
+      if (crops.length < 2) return;
+      const rect = _previewImageDrawRect(box);
+      if (!rect) return;
+      const boxRect = box.getBoundingClientRect();
+      const activeIdx = getRowActiveCropIndex(row, crops);
+      const layer = document.createElement('div');
+      layer.className = 'scene-crop-hover-layer';
+      const draw = (idx, cls) => {
+        const b = crops[idx]?.bbox || _fullFrameBbox();
+        const x0 = _numberOr(b.x_min_norm, 0), x1 = _numberOr(b.x_max_norm, 1);
+        const y0 = _numberOr(b.y_min_norm, 0), y1 = _numberOr(b.y_max_norm, 1);
+        const boxEl = document.createElement('div');
+        boxEl.className = `scene-crop-hover-box ${cls}`;
+        boxEl.style.left = `${rect.left - boxRect.left + rect.width * Math.min(x0, x1)}px`;
+        boxEl.style.top = `${rect.top - boxRect.top + rect.height * Math.min(y0, y1)}px`;
+        boxEl.style.width = `${Math.max(2, rect.width * Math.abs(x1 - x0))}px`;
+        boxEl.style.height = `${Math.max(2, rect.height * Math.abs(y1 - y0))}px`;
+        const label = document.createElement('div');
+        label.className = 'scene-crop-hover-label';
+        label.textContent = `#${idx + 1}`;
+        boxEl.appendChild(label);
+        layer.appendChild(boxEl);
+      };
+      draw(activeIdx, 'active');
+      const h = _cropHover.hoverIdx;
+      if (h >= 0 && h !== activeIdx && h < crops.length) draw(h, 'pending');
+      box.appendChild(layer);
+    }
+
+    // Switch the crop panel + info bar to crop `idx` without reloading the
+    // full image under the pointer.
+    function _applyHoverCropIndex(row, idx, commit) {
+      if (!row || row !== _cropHoverRow()) return;
+      const crops = getRowCropRecords(row);
+      if (idx < 0 || idx >= crops.length) return;
+      const changed = getRowActiveCropIndex(row, crops) !== idx;
+      setRowActiveCropIndex(row, idx, crops);
+      if (commit) _cropHover.committedIdx = idx;
+      if (changed) selectFilmstripImage(currentImageIndex, _currentScene, true, false, true);
+      else _renderCropHoverLayer();
+    }
+
+    function _onPreviewBoxCropHoverMove(ev) {
+      const box = el('#previewBox');
+      const row = _cropHoverRow();
+      _cropHover.inside = true;
+      _syncCropHoverRow(row);
+      if (!row || _cropHoverZoomActive(box)) {
+        box?.querySelectorAll('.scene-crop-hover-layer').forEach(n => n.remove());
+        return;
+      }
+      const hit = _cropIndexAtPoint(row, ev.clientX, ev.clientY);
+      if (hit === _cropHover.hoverIdx) {
+        // Redraw only if something (zoom end, image reload) dropped the layer.
+        if (!box.querySelector('.scene-crop-hover-layer')) _renderCropHoverLayer();
+        return;
+      }
+      _cropHover.hoverIdx = hit;
+      if (_cropHover.timer) { clearTimeout(_cropHover.timer); _cropHover.timer = null; }
+      if (hit >= 0 && hit !== getRowActiveCropIndex(row)) {
+        _cropHover.timer = setTimeout(() => {
+          _cropHover.timer = null;
+          if (_cropHover.inside && _cropHover.hoverIdx === hit) _applyHoverCropIndex(row, hit, false);
+        }, _CROP_HOVER_DEBOUNCE_MS);
+      }
+      _renderCropHoverLayer();
+    }
+
+    function _onPreviewBoxCropHoverLeave() {
+      _cropHover.inside = false;
+      _cropHover.hoverIdx = -1;
+      if (_cropHover.timer) { clearTimeout(_cropHover.timer); _cropHover.timer = null; }
+      el('#previewBox')?.querySelectorAll('.scene-crop-hover-layer').forEach(n => n.remove());
+      const row = _cropHoverRow();
+      if (!row || _cropStateKey(row) !== _cropHover.rowKey) return;
+      const committed = _cropHover.committedIdx;
+      if (committed >= 0 && committed !== getRowActiveCropIndex(row)) {
+        setRowActiveCropIndex(row, committed);
+        selectFilmstripImage(currentImageIndex, _currentScene, true, false, true);
+      }
+    }
+
+    // mousedown on a bird box: a short click selects that crop; holding past
+    // _CROP_CLICK_HOLD_MS or dragging falls through to RAW zoom as before.
+    function _beginCropClickOrZoom(row, box, downEv, hit) {
+      const sx = downEv.clientX, sy = downEv.clientY;
+      let last = { clientX: sx, clientY: sy };
+      let done = false;
+      const cleanup = () => {
+        done = true;
+        clearTimeout(holdTimer);
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+      };
+      const toZoom = () => {
+        if (done) return;
+        cleanup();
+        if (row !== _cropHoverRow()) return;
+        el('#previewBox')?.querySelectorAll('.scene-crop-hover-layer').forEach(n => n.remove());
+        startSceneZoomPreview(row, box, last);
+      };
+      const onMove = (ev) => {
+        last = { clientX: ev.clientX, clientY: ev.clientY };
+        if (Math.hypot(ev.clientX - sx, ev.clientY - sy) > _CROP_CLICK_SLOP_PX) toZoom();
+      };
+      const onUp = () => {
+        if (done) return;
+        cleanup();
+        _syncCropHoverRow(row);
+        _cropHover.hoverIdx = hit;
+        _applyHoverCropIndex(row, hit, true);
+      };
+      const holdTimer = setTimeout(toZoom, _CROP_CLICK_HOLD_MS);
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    }
+
+    // Filmstrip tooltip line; empty (dropped by the caller) when the row's only
+    // crops are wildlife hidden by "Ignore wildlife".
+    function _sceneTooltipSpeciesLine(r) {
+      const labels = getRowDisplayLabels(r);
+      if (labels.hidden) return '';
+      return `Species: ${escapeHtml(labels.species)} (${fmt3(labels.speciesConf)})`;
+    }
+
     async function copyRowImageToClipboard(row, relPathOverride, copyLabel = 'image') {
-      const relPath = relPathOverride || row?.export_path || row?.crop_path;
+      const relPath = relPathOverride || row?.export_path || getRowFallbackCropPath(row);
       if (!relPath) {
         showToast('No image available to copy', 2500);
         return;
@@ -224,7 +462,7 @@
         img.alt = r.filename || '';
         img.loading = 'lazy';
         applyThumbnailExposureToImg(img, r);
-        lazyLoadImg(img, () => getBlobUrlForPath(r.export_path || r.crop_path, r.__rootPath));
+        lazyLoadImg(img, () => getBlobUrlForPath(r.export_path || getRowFallbackCropPath(r), r.__rootPath));
         th.appendChild(img);
         card.appendChild(th);
 
@@ -254,7 +492,8 @@
         tip.className = 'filmstrip-tooltip';
         tip.innerHTML = [
           `<b>${escapeHtml(r.filename || '')}</b>`,
-          `Species: ${escapeHtml(r.species || 'Unknown')} (${fmt3(r.species_confidence)})`,
+          _sceneTooltipSpeciesLine(r),
+          formatCaptureTime(r.capture_time) ? `Captured: ${formatCaptureTime(r.capture_time)}` : '',
           `Quality: ${fmt3(r.quality)}`,
           `Rating: ${'★'.repeat(rating)}${'☆'.repeat(5 - rating)} ${origin ? `(${origin})` : ''}`,
           cull ? `Status: ${cull === 'accept' ? '✓ Accepted' : '✗ Rejected'}` : '',
@@ -280,6 +519,7 @@
         // Double-click to open in editor
         card.addEventListener('dblclick', (ev) => { ev.stopPropagation(); openInEditor(r); });
 
+        if (typeof psDecorateCard === 'function') psDecorateCard(card, r);
         frag.appendChild(card);
       }
       grid.appendChild(frag);
@@ -318,7 +558,9 @@
     // "split in half" rendering as flex layout shrinks both side-by-side.
     let _filmstripPreviewToken = 0;
 
-    async function selectFilmstripImage(idx, scene, isHover = false, overlayActiveCrop = false) {
+    // keepExportPreview: leave the full-image panel as is (crop-only change,
+    // e.g. hover-select on the full image) so it doesn't flicker under the pointer.
+    async function selectFilmstripImage(idx, scene, isHover = false, overlayActiveCrop = false, keepExportPreview = false) {
       if (!scene || !scene.images || idx < 0 || idx >= scene.images.length) return;
       if (!isHover) {
         // Clear temporary crop selection for the image we're leaving so that
@@ -332,11 +574,14 @@
       const r = scene.images[idx];
       const cropState = getRowActiveCropState(r);
       const activeCrop = cropState.activeCrop;
-      const activeCropPath = activeCrop?.crop_path || r.crop_path;
-      const activeSpecies = activeCrop?.species || r.species || 'Unknown';
-      const activeSpeciesConf = activeCrop?.species_confidence ?? r.species_confidence;
-      const activeFamily = activeCrop?.family || r.family || 'Unknown';
-      const activeFamilyConf = activeCrop?.family_confidence ?? r.family_confidence;
+      // "Ignore wildlife": a row whose only crops are wildlife shows the full
+      // image with no crop and no species/family label.
+      const activeLabels = getRowDisplayLabels(r, activeCrop);
+      const activeCropPath = activeLabels.cropPath;
+      const activeSpecies = activeLabels.species;
+      const activeSpeciesConf = activeLabels.speciesConf;
+      const activeFamily = activeLabels.family;
+      const activeFamilyConf = activeLabels.familyConf;
       const activeQuality = activeCrop?.quality ?? r.quality;
 
       // Update filmstrip card active state and center if not just hovering
@@ -350,7 +595,7 @@
 
       // Load export preview
       const exportBox = el('#previewBox');
-      if (exportBox) {
+      if (exportBox && !keepExportPreview) {
         _clearScenePreviewBox(exportBox);
         const eurl = await getBlobUrlForPath(r.export_path, r.__rootPath);
         // Bail out if a newer hover/selection has superseded this load.
@@ -471,11 +716,17 @@
 
       const metaTextEl = el('#sceneInfoMetaText');
       if (metaTextEl) {
-        const sp = decodeEntities(activeSpecies);
-        const spConf = fmt3(activeSpeciesConf);
-        const fam = decodeEntities(activeFamily);
-        const famConf = fmt3(activeFamilyConf);
-        metaTextEl.textContent = `${sp} (${spConf}) | ${fam} (${famConf}) · Image ${idx + 1} of ${scene.images.length}`;
+        const captured = formatCaptureTime(r.capture_time);
+        const position = `Image ${idx + 1} of ${scene.images.length}` + (captured ? ` · ${captured}` : '');
+        if (activeLabels.hidden) {
+          metaTextEl.textContent = position;
+        } else {
+          const sp = decodeEntities(activeSpecies);
+          const spConf = fmt3(activeSpeciesConf);
+          const fam = decodeEntities(activeFamily);
+          const famConf = fmt3(activeFamilyConf);
+          metaTextEl.textContent = `${sp} (${spConf}) | ${fam} (${famConf}) · ${position}`;
+        }
       }
 
       // Crop nav (shown only when a row exposes multiple bird crops).
@@ -495,6 +746,7 @@
             if (stateNow.crops.length <= 1) return;
             const next = (stateNow.activeIndex + step + stateNow.crops.length) % stateNow.crops.length;
             setRowActiveCropIndex(r, next, stateNow.crops);
+            _commitCropHoverSelection(r);
             selectFilmstripImage(currentImageIndex, _currentScene, true, true);
           };
           cropPrevBtn.onclick = (ev) => { ev.stopPropagation(); cycleCrop(-1); };
@@ -528,8 +780,12 @@
       }
 
       if (overlayActiveCrop) {
-        _showSceneCropOverlay(r, cropState.activeIndex, 1000);
+        _showSceneCropOverlay(r, cropState.activeIndex, 2200);
       }
+      // The export box may have been rebuilt; redraw the hover outline.
+      if (_cropHover.inside) _syncCropHoverRow(_cropHoverRow());
+      _renderCropHoverLayer();
+      if (typeof psAfterSelect === 'function') psAfterSelect(r);
     }
 
     // Repaint the grid once, on close, if cull decisions changed while the
@@ -619,13 +875,16 @@
         : ['unknown', 'n/a', 'no bird']);
 
       for (const row of sceneRows) {
-        const rawName = tagType === 'species' ? row.species : row.family;
+        // Labels come from the primary visible crop, so hidden wildlife is never suggested.
+        const labels = getRowDisplayLabels(row);
+        if (labels.hidden) continue;
+        const rawName = tagType === 'species' ? labels.species : labels.family;
         const name = String(rawName || '').trim();
         if (!name) continue;
         const key = _normalizeTagKey(name);
         if (!key || invalid.has(key)) continue;
 
-        const rawConfidence = tagType === 'species' ? row.species_confidence : row.family_confidence;
+        const rawConfidence = tagType === 'species' ? labels.speciesConf : labels.familyConf;
         const parsedConfidence = parseNumber(rawConfidence);
         const weight = parsedConfidence >= 0 ? parsedConfidence : 1;
         if (!(weight > 0)) continue;
@@ -1237,13 +1496,15 @@
         html += `<button class="scene-chip-add" data-add-type="family" title="Add family tag">+</button>`;
       }
 
-      if (approved) {
-        html += '<span class="scene-tag-sep"></span><span class="approval-note" style="font-size:11px">✓ Reviewed</span>';
-      } else {
-        html += '<span class="scene-tag-sep"></span><button class="mark-reviewed-btn" id="markReviewedBtn" title="Confirm that Kestrel\'s tags are correct and mark this scene as reviewed">✓ Mark as Reviewed</button>';
-      }
-
       tagsEl.innerHTML = html;
+
+      // Review state lives in the header's right-hand slot, apart from the tag chips.
+      const reviewSlot = el('#sceneReviewSlot');
+      if (reviewSlot) {
+        reviewSlot.innerHTML = approved
+          ? '<span class="approval-note">✓ Reviewed</span>'
+          : '<button class="mark-reviewed-btn" id="markReviewedBtn" title="Confirm that Kestrel\'s tags are correct and mark this scene as reviewed (Ctrl/Cmd+R)">✓ Mark as Reviewed</button>';
+      }
 
       // Wire remove buttons
       tagsEl.querySelectorAll('[data-remove-species]').forEach(btn => {
@@ -1345,7 +1606,7 @@
       });
 
       // Wire "Mark as Reviewed" button
-      const markReviewedBtn = tagsEl.querySelector('#markReviewedBtn');
+      const markReviewedBtn = el('#markReviewedBtn');
       if (markReviewedBtn) {
         markReviewedBtn.onclick = () => {
           _beginSceneEditDraft(scene.id);
@@ -1589,6 +1850,8 @@
       _sceneEditMode = false;
       _sceneEditDraft = null;
       currentImageIndex = startIndex;
+      // The scene list may have been built before the filmstrip order setting changed.
+      scene.images.splice(0, scene.images.length, ...sortSceneImages(scene.images, getSceneFilmstripOrder()));
       _applyScenePreviewSplit(_getScenePreviewSplitSetting());
 
       // ── Top bar: title ──
@@ -1642,6 +1905,10 @@
 
       // ── Filmstrip ──
       renderFilmstrip(scene);
+      _syncFilmstripOrderToggle();
+      document.querySelectorAll('#sceneOrderToggle [data-order]').forEach(b => {
+        b.onclick = () => { void _setFilmstripOrder(b.dataset.order); };
+      });
 
       // ── Quality feedback prompt (js/quality-feedback.js) ──
       if (typeof qfRenderSceneControl === 'function') {
@@ -1667,8 +1934,14 @@
           const r = scene.images[currentImageIndex];
           if (!r) return;
           ev.preventDefault();
-          startSceneZoomPreview(r, exportImgBox, ev);
+          // Shift+Click a bird's box: focus the scene on that bird (js/primary-subject.js).
+          if (ev.shiftKey && typeof psHandleShiftClick === 'function' && psHandleShiftClick(r, ev, exportImgBox)) return;
+          const hit = _cropIndexAtPoint(r, ev.clientX, ev.clientY);
+          if (hit >= 0) _beginCropClickOrZoom(r, exportImgBox, ev, hit);
+          else startSceneZoomPreview(r, exportImgBox, ev);
         };
+        exportImgBox.onmousemove = _onPreviewBoxCropHoverMove;
+        exportImgBox.onmouseleave = _onPreviewBoxCropHoverLeave;
       }
 
       const cropImgBox = el('#previewCropBox');
@@ -1691,6 +1964,17 @@
         document.removeEventListener('keydown', _sceneKeyHandler);
         sceneDlg.close();
         if (closingId) _focusGridCard(closingId);
+      };
+
+      // ── Reject undecided: start from "all rejected", then pick keepers ──
+      const rejectAllBtn = el('#sceneRejectUndecidedBtn');
+      if (rejectAllBtn) rejectAllBtn.onclick = () => {
+        if (!_currentScene) return;
+        const n = rejectUndecidedRows(_currentScene.images);
+        _refreshCurrentFilmstripCard();
+        showToast(n
+          ? `Rejected ${n} undecided photo${n === 1 ? '' : 's'}. Press Z (or 7) on a photo to accept it.`
+          : 'Every photo in this scene already has a decision.', 4000);
       };
 
       // ── Split Scene ──
@@ -1719,7 +2003,15 @@
 
       // ── Show dialog and select start image ──
       sceneDlg.showModal();
+      if (typeof psOnSceneOpen === 'function') void psOnSceneOpen(scene);
       await selectFilmstripImage(startIndex, scene);
+    }
+
+    /** The grid's review-state filter: 'all' | 'reviewed' | 'unreviewed'. */
+    function _sceneReviewFilterValue() {
+      let v = document.getElementById('filterSceneReviewState')?.value;
+      if (!v && typeof getSetting === 'function') v = getSetting('sceneReviewFilter', 'all');
+      return (v === 'reviewed' || v === 'unreviewed') ? v : 'all';
     }
 
     // Navigate to prev/next scene — uses ID-based lookup so it survives
@@ -1733,9 +2025,30 @@
       const curId = String(_currentScene.id);
       const idx = scenes.findIndex(s => String(s.id) === curId);
       if (idx < 0) return;
-      const newIdx = idx + direction;
-      if (newIdx < 0 || newIdx >= scenes.length) return;
+      // Step within the grid's review-state filter ("Unreviewed only" /
+      // "Reviewed only"), so Tab and arrow-past-the-end go to the next scene
+      // the grid shows rather than one it hides. The current scene may itself
+      // have just left the filter (e.g. it was marked reviewed), so search from
+      // its position in the full list.
+      const reviewFilter = _sceneReviewFilterValue();
+      const inFilter = (s) => {
+        if (reviewFilter === 'all' || typeof isManuallyReviewedScene !== 'function') return true;
+        const reviewed = !!isManuallyReviewedScene(s);
+        return reviewFilter === 'reviewed' ? reviewed : !reviewed;
+      };
+      let newIdx = idx + direction;
+      while (newIdx >= 0 && newIdx < scenes.length && !inFilter(scenes[newIdx])) newIdx += direction;
+      if (newIdx < 0 || newIdx >= scenes.length) {
+        if (reviewFilter === 'unreviewed' && typeof showToast === 'function') {
+          showToast(direction > 0 ? 'No more unreviewed scenes after this one' : 'No unreviewed scenes before this one', 1800);
+        }
+        return;
+      }
       const nextScene = scenes[newIdx];
+      if (startIndex < 0) {
+        const n = Array.isArray(nextScene.images) ? nextScene.images.length : 0;
+        startIndex = Math.max(0, n - 1);
+      }
       _sceneEditDraft = null;
       _sceneEditMode = false;
       document.removeEventListener('keydown', _sceneKeyHandler);
@@ -1889,11 +2202,9 @@
               selectFilmstripImage(currentImageIndex - 1, _currentScene);
             } else {
               // At first image — jump to previous scene's LAST image
-              const prevIdx = scenes.indexOf(_currentScene) - 1;
-              if (prevIdx >= 0) {
-                const prevScene = scenes[prevIdx];
-                navigateToScene(-1, prevScene.images.length - 1);
-              }
+              // (-1 = last image of whichever scene navigateToScene lands on,
+              // which can skip scenes hidden by the review-state filter).
+              navigateToScene(-1, -1);
             }
           }
           break;
@@ -1916,6 +2227,7 @@
               const step = e.key === 'ArrowDown' ? 1 : -1;
               const next = (cropState.activeIndex + step + cropState.crops.length) % cropState.crops.length;
               setRowActiveCropIndex(row, next, cropState.crops);
+              _commitCropHoverSelection(row);
               selectFilmstripImage(currentImageIndex, _currentScene, true, true);
             }
           }
@@ -1984,6 +2296,19 @@
           e.preventDefault();
           if (images[currentImageIndex]) openInEditor(images[currentImageIndex]);
           break;
+        // Primary subject (prototype): focus the scene on the active crop's bird / bird numbers.
+        case 'f':
+        case 'F':
+          if (hasSceneModifier || typeof psFocusActive !== 'function') break;
+          e.preventDefault();
+          psFocusActive();
+          break;
+        case 'b':
+        case 'B':
+          if (hasSceneModifier || typeof psToggleIds !== 'function') break;
+          e.preventDefault();
+          psToggleIds();
+          break;
         case 'Escape':
           e.preventDefault();
           el('#closeDlg')?.click();
@@ -1998,6 +2323,31 @@
       renderFilmstrip(_currentScene);
       // Re-select the current image to update previews and info bar
       selectFilmstripImage(currentImageIndex, _currentScene);
+    }
+
+    // ── Filmstrip order toggle (Best quality first / Capture order) ──
+    function _syncFilmstripOrderToggle() {
+      const order = getSceneFilmstripOrder();
+      document.querySelectorAll('#sceneOrderToggle [data-order]').forEach(b => {
+        const on = b.dataset.order === order;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+    }
+
+    /** Re-order the open scene in place so arrow-key navigation follows the visible order. */
+    async function _setFilmstripOrder(order) {
+      if (!_currentScene || _splitMode) return;
+      if (order === getSceneFilmstripOrder()) return;
+      mergeSetting(SCENE_FILMSTRIP_ORDER_KEY, order);
+      _syncFilmstripOrderToggle();
+      const imgs = _currentScene.images;
+      const selected = imgs[currentImageIndex];
+      imgs.splice(0, imgs.length, ...sortSceneImages(imgs, order));
+      const idx = imgs.indexOf(selected);
+      currentImageIndex = idx >= 0 ? idx : 0;
+      renderFilmstrip(_currentScene);
+      await selectFilmstripImage(currentImageIndex, _currentScene);
     }
 
     async function _resortAndFocusSceneImage(targetRow, overlayActiveCrop = true) {
@@ -2304,7 +2654,7 @@
         img.alt = r.filename || '';
         img.loading = 'lazy';
         applyThumbnailExposureToImg(img, r);
-        lazyLoadImg(img, () => getBlobUrlForPath(r.export_path || r.crop_path, r.__rootPath));
+        lazyLoadImg(img, () => getBlobUrlForPath(r.export_path || getRowFallbackCropPath(r), r.__rootPath));
         th.appendChild(img);
         card.appendChild(th);
 
@@ -2341,7 +2691,8 @@
         tip.className = 'filmstrip-tooltip';
         tip.innerHTML = [
           `<b>${escapeHtml(r.filename || '')}</b>`,
-          `Species: ${escapeHtml(r.species || 'Unknown')} (${fmt3(r.species_confidence)})`,
+          _sceneTooltipSpeciesLine(r),
+          formatCaptureTime(r.capture_time) ? `Captured: ${formatCaptureTime(r.capture_time)}` : '',
           `Quality: ${fmt3(r.quality)}`,
           `Rating: ${'★'.repeat(rating)}${'☆'.repeat(5 - rating)}`,
         ].filter(Boolean).join('<br>');
@@ -2436,6 +2787,16 @@
     }
 
     function fmt3(v) { const n = parseNumber(v); return n < 0 ? '—' : n.toFixed(3); }
+
+    // Capture time as the camera recorded it, e.g. '2026-11-01 07:32:10'.
+    // capture_time is a naive isoformat() string (camera wall clock, no
+    // timezone), so format it from its own digits rather than through Date,
+    // which would reinterpret it in the viewer's timezone. '' when absent.
+    function formatCaptureTime(v) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/.exec(String(v == null ? '' : v).trim());
+      if (!m) return '';
+      return `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}${m[6] ? ':' + m[6] : ''}`;
+    }
 
     function decodeEntities(s) {
       if (!s || typeof s !== 'string') return s;

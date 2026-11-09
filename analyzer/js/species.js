@@ -1,3 +1,36 @@
+    // ── Per-folder "Ignore wildlife" (Change Settings) ──────────────────────
+    // A display filter only: wildlife crops stay in crops_json and the CSV
+    // untouched. Wildlife is recognised by the crop's ``subject: "wildlife"``
+    // (pipeline 3.0), and its species label is hidden from scene tags.
+    function rowIgnoresWildlife(row) {
+      const rp = row?.__rootPath || rootPath || '';
+      return !!(rp && _folderSettings[rp]?.ignore_wildlife);
+    }
+
+    /** Species labels of this row's wildlife crops (cached on the row). */
+    function rowWildlifeLabels(row) {
+      if (row.__wildlifeLabels) return row.__wildlifeLabels;
+      const out = new Set();
+      const raw = String(row.crops_json || '').trim();
+      if (raw.includes('wildlife')) {
+        try {
+          const arr = JSON.parse(raw);
+          if (Array.isArray(arr)) {
+            for (const c of arr) {
+              if (c && String(c.subject || '').toLowerCase() === 'wildlife' && c.species) out.add(String(c.species));
+            }
+          }
+        } catch (_) { }
+      }
+      row.__wildlifeLabels = out;
+      return out;
+    }
+
+    /** True when ``name`` is a wildlife label on this row and the row's folder ignores wildlife. */
+    function isHiddenWildlifeLabel(row, name) {
+      return rowIgnoresWildlife(row) && rowWildlifeLabels(row).has(String(name));
+    }
+
     function parseSecondarySpecies(row) {
       if (row.__secondaryCache) return row.__secondaryCache;
       const listRaw = row.secondary_species_list;

@@ -439,6 +439,31 @@
   font-style: italic;
   color: var(--muted);
 }
+/* Folder analysed on pipeline 2.x and left on "Upgrade to pipeline 3.0":
+   violet like the folder header's Upgrade button. */
+.analyze-dlg-queued-item.will-upgrade {
+  border-color: rgba(106, 79, 179, 0.6);
+  background: rgba(106, 79, 179, 0.06);
+}
+.analyze-dlg-queued-item.will-upgrade .meta-images { color: #b9a9f0; }
+.adlg-upgrade-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-left: 22px;
+}
+.adlg-upgrade-choice select.adlg-upgrade-mode {
+  height: 28px;
+  max-width: 100%;
+  padding: 0 8px;
+  font-size: 12px;
+}
+.analyze-dlg-queued-item.will-upgrade select.adlg-upgrade-mode { border-color: #6a4fb3; }
+.adlg-upgrade-hint {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--muted);
+}
 .analyze-dlg-queued-item-warning {
   margin-left: 22px;
   padding: 5px 9px;
@@ -517,6 +542,7 @@
   color: var(--muted);
   font-style: italic;
 }
+.analyze-dlg-stat-skip.analyze-dlg-stat-upgrade { color: #b9a9f0; }
 
 .analyze-dlg-warnings {
   padding: 7px 10px;
@@ -682,6 +708,13 @@
   color: #ffb37a;
   background: rgba(232, 154, 90, 0.12);
   border-color: rgba(232, 154, 90, 0.55);
+}
+
+.adlg-outdated-badge.upgrade {
+  /* Queued for the non-destructive pipeline-3 upgrade: violet, not a warning. */
+  color: #d4c6ff;
+  background: rgba(106, 79, 179, 0.18);
+  border-color: rgba(106, 79, 179, 0.7);
 }
 
 /* Queue-builder checkbox: orange-ish accent so it visually distinguishes
@@ -1118,9 +1151,8 @@
 
 /* ── Cloud destination affordances under the summary headline ─────────── */
 /* Hidden by default (destination=local); shown only when the user picks the
-   Cloud destination card. The speed-test button is the gateway from "?" to a
-   computed estimate; the beta notice + Learn more link stay visible after the
-   test so the user remembers the estimate is approximate. */
+   Cloud destination card. The speed-test button is the gateway from the best-case
+   figure to a measured estimate. */
 .analyze-dlg-cloud-est-panel {
   margin-top: 10px;
   padding: 10px 12px;
@@ -1167,24 +1199,41 @@
 .adlg-cloud-speed-status.error { color: #e07c7c; }
 .adlg-cloud-speed-status.hidden { display: none; }
 
-.adlg-cloud-beta-note {
-  font-size: 11px;
-  line-height: 1.45;
+/* Cloud card: "as fast as" estimate, actions row. */
+.dest-card-fast { font-size: 12px; color: var(--fg, #eee); margin-top: 6px; }
+.dest-card-fast.hidden, .dest-card-usage.hidden { display: none; }
+.dest-card-actions { margin-top: 8px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.dest-card-actions .adlg-cloud-speed-btn { align-self: auto; padding: 4px 10px; }
+
+/* Explanation + price list, shown only to a signed-in user who is short for the queue. */
+.adlg-cloud-pricing {
+  font-size: 12px;
+  line-height: 1.5;
   color: var(--muted);
 }
-.adlg-beta-badge {
-  display: inline-block;
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  color: #ffd57a;
-  background: rgba(255, 213, 122, 0.12);
-  border: 1px solid rgba(255, 213, 122, 0.4);
-  padding: 1px 5px;
-  border-radius: 3px;
-  margin-right: 6px;
-  vertical-align: 1px;
+.adlg-cloud-pricing.hidden { display: none; }
+.adlg-cloud-pricing-head { margin-bottom: 6px; color: #e0b86a; }
+.adlg-cloud-price-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1.2fr);
+  gap: 8px;
+  padding: 3px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
+.adlg-cloud-price-name { color: var(--fg, #eee); font-weight: 600; }
+.adlg-cloud-price-rate { text-align: right; }
+.adlg-cloud-pricing-foot {
+  margin-top: 4px;
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+.adlg-cloud-see-plans { color: #7eb8e0; text-decoration: none; font-weight: 600; }
+.adlg-cloud-see-plans:hover { text-decoration: underline; color: #cfe2ff; }
+.adlg-cloud-learn { font-size: 11px; }
+.adlg-cloud-learn:has(.hidden:only-child) { display: none; }
+
 .adlg-cloud-learn-more {
   color: #7eb8e0;
   text-decoration: none;
@@ -1257,4 +1306,205 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* "Sign in" link in the Cloud card overlay and the speed-test status. */
+.adlg-signin-link { color: #7eb8e0; font-weight: 600; text-decoration: underline; cursor: pointer; }
+.adlg-signin-link:hover { color: #cfe2ff; }
+
+/* ── Analysis queue panel: borderless, token-based (matches the scene viewer) ──
+   Scoped to #queuePanel / #queuePanelControls: the cloud panel reuses the
+   .queue-panel* base classes and keeps its own look. Grouping comes from
+   spacing and tinted surfaces (--card, --chip), not outlines. */
+#queuePanel {
+  background: var(--panel);
+  border: 0;
+}
+#queuePanel .queue-panel-header {
+  background: transparent;
+  border-bottom: 0;
+  padding: 12px 14px 6px;
+}
+#queuePanel .queue-panel-title { font-weight: 600; }
+#queuePanel .queue-overall-eta {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#queuePanel .queue-panel-badge {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--brand);
+}
+#queuePanel .queue-panel-badge.paused { color: #f5c542; }
+#queuePanel .queue-panel-badge.done { color: var(--ok); }
+
+#queuePanel .queue-panel-body { padding: 4px 8px 8px; gap: 6px; }
+#queuePanel .queue-item {
+  background: var(--card);
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: 9px 11px;
+  gap: 4px;
+}
+#queuePanel .queue-item [hidden] { display: none !important; }
+#queuePanel .queue-item { transition: background .25s, opacity .25s; }
+/* The folder being analyzed is the thing to read at a glance. */
+#queuePanel .queue-item.is-running { background: #1b2234; }
+#queuePanel .queue-item.is-running .queue-item-name { font-size: 13px; font-weight: 600; }
+#queuePanel .queue-item.is-error { background: #261619; }
+
+/* Status is plain colored text; the dot still pulses while running. */
+#queuePanel .queue-item-status {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: 11px;
+}
+#queuePanel .queue-item-status.pending { color: var(--muted); }
+#queuePanel .queue-item-status.running { color: var(--brand); }
+#queuePanel .queue-item-status.done { color: var(--ok); }
+#queuePanel .queue-item-status.error { color: var(--bad); }
+#queuePanel .queue-item-status.cancelled { color: var(--muted); }
+#queuePanel .queue-item-status.upgrade.running { color: #d4c6ff; background: transparent; border: 0; }
+
+/* Per-row actions appear on hover or keyboard focus and have no outline. */
+#queuePanel .queue-item-load-btn,
+#queuePanel .queue-item-cancel-btn {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  opacity: 0;
+  transition: opacity .12s, background .12s, color .12s;
+}
+/* Keep the status at the right edge: hidden actions sit between name and status. */
+#queuePanel .queue-item-status { order: 2; }
+#queuePanel .queue-item-load-btn,
+#queuePanel .queue-item-cancel-btn { order: 1; }
+#queuePanel .queue-item:hover .queue-item-load-btn,
+#queuePanel .queue-item:hover .queue-item-cancel-btn,
+#queuePanel .queue-item-load-btn:focus-visible,
+#queuePanel .queue-item-cancel-btn:focus-visible { opacity: 1; }
+#queuePanel .queue-item-load-btn:hover { background: var(--chip); color: var(--text); }
+#queuePanel .queue-item-cancel-btn:hover:not(:disabled) { background: #2a1414; color: #f0b4b4; border: 0; }
+
+#queuePanel .queue-item-progress { height: 4px; margin-top: 4px; }
+#queuePanel .queue-item.is-running .queue-item-progress { height: 5px; }
+#queuePanel .queue-item-eta {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  margin-top: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#queuePanel .queue-item-warning {
+  border-left: 0;
+  background: rgba(243, 156, 18, .12);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+}
+#queuePanel .queue-live-thumb { border: 0; border-radius: var(--radius-sm); }
+.queue-item-error {
+  font-size: 11px;
+  color: #f0a0a0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Controls: Pause/Resume is the only filled button; Live and Cancel are quiet. */
+#queuePanelControls {
+  align-items: center;
+  flex-wrap: nowrap;
+  border-top: 0;
+  padding: 2px 10px 10px;
+}
+#queuePanelControls .qctl {
+  flex: 0 0 auto;
+  min-width: 0;
+  height: 28px;
+  padding: 0 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  border-radius: var(--radius-sm);
+  transition: background .15s, color .15s, transform .08s;
+}
+#queuePanelControls .qctl:hover { background: var(--chip); color: var(--text); }
+#queuePanelControls .qctl:active { transform: translateY(1px); }
+#queuePanelControls .qctl:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+#queuePanelControls .qctl-ico { font-size: 12px; width: 14px; text-align: center; }
+#queuePanelControls .qctl--primary {
+  flex: 1 1 auto;
+  justify-content: center;
+  background: var(--chip);
+  color: var(--text);
+}
+#queuePanelControls .qctl--primary:hover { background: #262d3f; }
+#queuePanelControls .qctl--primary.is-paused { background: #3a2408; color: #f5c542; }
+#queuePanelControls .qctl--danger:hover,
+#queuePanelControls .qctl--danger:focus-visible { background: #2a1414; color: #f0b4b4; }
+
+.queue-item-progress-fill { transition: width .45s cubic-bezier(.22, .61, .36, 1), background-color .3s; }
+.queue-item-progress-fill.is-complete { background: #2ecc71; }
+.queue-item.is-paused .queue-item-progress-fill { background: #d9a62e; }
+/* Moving sheen on the running bar = "still working"; stops when paused. */
+.queue-item.is-running:not(.is-paused) .queue-item-progress-fill {
+  background-image: linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,.28) 50%, rgba(255,255,255,0) 100%);
+  background-size: 60px 100%;
+  background-repeat: no-repeat;
+  animation: queue-bar-sheen 1.4s linear infinite;
+}
+@keyframes queue-bar-sheen {
+  from { background-position: -60px 0; }
+  to   { background-position: calc(100% + 60px) 0; }
+}
+.queue-item-status.running::before {
+  content: '';
+  display: inline-block;
+  width: 6px; height: 6px;
+  margin-right: 5px;
+  vertical-align: 1px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: queue-dot-pulse 1.2s ease-in-out infinite;
+}
+.queue-item.is-paused .queue-item-status.running::before { animation: none; opacity: .5; }
+@keyframes queue-dot-pulse {
+  0%, 100% { opacity: .35; transform: scale(.8); }
+  50%      { opacity: 1;   transform: scale(1); }
+}
+.queue-live-thumb { object-fit: cover; display: block; }
+img.live-img-in, .queue-live-thumb.live-img-in { animation: live-img-in .22s ease-out backwards; }
+@keyframes live-img-in {
+  from { opacity: 0; transform: scale(1.015); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #queuePanelControls .qctl,
+  .queue-item,
+  .queue-item-progress-fill { transition: none; }
+  .queue-item.is-running:not(.is-paused) .queue-item-progress-fill,
+  .queue-item-status.running::before,
+  img.live-img-in { animation: none; }
 }

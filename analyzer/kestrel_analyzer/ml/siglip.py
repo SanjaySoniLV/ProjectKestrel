@@ -1,9 +1,9 @@
-"""SigLIP 2 ViT-B/16 (Apache-2.0): smart-search embeddings + the v3 default quality score.
+"""SigLIP 2 ViT-B/16 (Apache-2.0): smart-search embeddings + the optional v3 zero-shot quality score.
 
 Pipeline 3.0.0 runs the SigLIP image tower on every kept subject crop (the
 square, exposure-corrected crop written to ``crop/``) and once on the
 downscaled whole frame (the ``export/`` JPEG). From the crop embedding it also
-derives the zero-shot *sharpness* score that is the new default quality::
+derives the zero-shot *sharpness* score (the optional ``siglip`` quality scorer)::
 
     s = cos(img, T(pos)) - cos(img, T(neg))
     quality_siglip = np.interp(s, knots_raw, knots_quality)

@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import threading
 import webbrowser
 
 from settings_utils import load_persisted_settings, save_persisted_settings, debug, info, warn, error
@@ -119,6 +120,7 @@ from kestrel_analyzer.config import (
     RAW_EXTENSIONS as _RAW_EXTENSIONS,
 )
 from kestrel_analyzer.database import copy_file_atomic
+from kestrel_analyzer.pipeline_version import folder_pipeline_major, read_app_version, scan_summary
 
 # Telemetry — failsafe import (never blocks startup)
 try:
@@ -331,6 +333,29 @@ HOST = '127.0.0.1'
 # Quality feedback (see the "Quality feedback" section of Api).
 _QF_MODE_KEY = 'quality_feedback_mode'
 _QF_INSTALL_ID_KEY = 'quality_feedback_install_id'
+
+# Session / shutdown bookkeeping owned by visualizer._mark_session_start,
+# the clean-exit path and clear_recovery_state. The frontend caches a full
+# get_settings() snapshot in localStorage at startup and sends it back whole
+# on many later saves (folder recents, mergeSetting, the settings dialog), so
+# without this filter a stale copy re-adds last_unclean_shutdown_utc after the
+# user has dealt with the recovery prompt, and the same unclean shutdown is
+# offered for reporting again on a later launch.
+_SESSION_OWNED_SETTINGS_KEYS = frozenset({
+    'last_unclean_shutdown_utc',
+    'last_exit_reason',
+    'app_session_exit_reason',
+    'exit_reason_migrated_v1',
+    'app_session_started_utc',
+    'app_session_closed_cleanly',
+    'app_session_pid',
+    'last_session_closed_utc',
+})
+# Written only by Python: enhanced GPU setup turns it on, and the Settings
+# checkbox calls enhanced_gpu_set_enabled the moment it changes. Whole-object
+# frontend saves (mergeSetting, the settings dialog) carry a cached copy that
+# can predate setup, so they must not write it back.
+_ENHANCED_GPU_ENABLED_KEY = 'enhanced_gpu_enabled'
 _QF_MODES = ('ask', 'always', 'never')
 _QF_MAX_SESSIONS = 8
 _QF_PREVIEW_MAX_SIDE = 1024
@@ -1383,6 +1408,7 @@ class Api:
                     data = f.read()
 
             self._track_cache_root(parent_folder)
+            self._refresh_bird_links_async(kestrel_dir)
             
             
             return {
@@ -1478,14 +1504,25 @@ class Api:
         return {'frozen': getattr(sys, 'frozen', False)}
 
     def get_app_version(self):
-        """Return the current application version from config."""
+        """Return the app release label (VERSION.txt codename + VERSION_NUMBER.txt).
+
+        This is the shipped app, not the analysis pipeline: see
+        ``get_pipeline_version`` for the version folders record.
+        """
         try:
-            from kestrel_analyzer.config import VERSION
-            return {'success': True, 'version': VERSION}
+            return {'success': True, 'version': read_app_version() or 'unknown'}
+        except Exception:
+            return {'success': True, 'version': 'unknown'}
+
+    def get_pipeline_version(self):
+        """Return the version of the analysis pipeline this build writes."""
+        try:
+            from kestrel_analyzer.config import PIPELINE_VERSION
+            return {'success': True, 'version': PIPELINE_VERSION}
         except Exception:
             try:
-                from analyzer.kestrel_analyzer.config import VERSION
-                return {'success': True, 'version': VERSION}
+                from analyzer.kestrel_analyzer.config import PIPELINE_VERSION
+                return {'success': True, 'version': PIPELINE_VERSION}
             except Exception:
                 return {'success': True, 'version': 'unknown'}
 
@@ -1498,16 +1535,10 @@ class Api:
         the payload on ``self._probe_ready_payload`` and signals the event).
         """
         from datetime import datetime, timezone
-        try:
-            from kestrel_analyzer.config import VERSION
-        except Exception:
-            try:
-                from analyzer.kestrel_analyzer.config import VERSION
-            except Exception:
-                VERSION = 'unknown'
         payload = {
             'ok': True,
-            'version': VERSION,
+            'app_version': self.get_app_version().get('version', 'unknown'),
+            'pipeline_version': self.get_pipeline_version().get('version', 'unknown'),
             'frozen': bool(getattr(sys, 'frozen', False)),
             'timestamp': datetime.now(timezone.utc).isoformat(),
         }
@@ -1853,6 +1884,63 @@ class Api:
         except Exception:
             return {'success': True, 'is_store': False}
 
+    def record_donate_event(self, data):
+        """Count a donate-prompt / Support-button interaction. Called from JS.
+
+        Sent only when the user opted in to analytics (``analytics_opted_in``
+        is True); otherwise nothing leaves the machine. The event name is
+        checked against ``kestrel_telemetry.DONATE_EVENTS``. Fire-and-forget:
+        returns ``{'success': True, 'sent': bool}`` and never raises.
+        """
+        try:
+            if _telemetry is None or not isinstance(data, dict):
+                return {'success': True, 'sent': False}
+            settings = load_persisted_settings()
+            if settings.get('analytics_opted_in', False) is not True:
+                return {'success': True, 'sent': False}
+            sent = _telemetry.send_donate_event(
+                event=str(data.get('event') or ''),
+                milestone=data.get('milestone') or 0,
+                trigger=str(data.get('trigger') or ''),
+                donate_link=data.get('donate_link'),
+                machine_id=_telemetry.get_machine_id(settings),
+            )
+            return {'success': True, 'sent': bool(sent)}
+        except Exception:
+            return {'success': True, 'sent': False}
+
+    def record_quality_thumbs_up(self, data):
+        """Count a scene-viewer sharpness thumbs-up. Called from JS.
+
+        Same consent gate as ``record_donate_event``: sent only when
+        ``analytics_opted_in`` is True; otherwise nothing leaves the machine.
+        JS passes aggregate counts only (``scene_images``, ``scene_crops``,
+        ``has_siglip``); the active scorer is derived here from the
+        ``quality_model`` setting the same way the feedback dialog does.
+        Fire-and-forget: returns ``{'success': True, 'sent': bool}`` and
+        never raises.
+        """
+        try:
+            if _telemetry is None or not isinstance(data, dict):
+                return {'success': True, 'sent': False}
+            settings = load_persisted_settings() or {}
+            if settings.get('analytics_opted_in', False) is not True:
+                return {'success': True, 'sent': False}
+            scorer = str(settings.get('quality_model') or 'legacy').lower()
+            if scorer not in ('siglip', 'legacy'):
+                scorer = 'legacy'
+            if data.get('has_siglip') is not True:
+                scorer = 'legacy'  # scene has no SigLIP scores; legacy is what ranked it
+            sent = _telemetry.send_quality_thumbs_up(
+                scene_images=data.get('scene_images') or 0,
+                scene_crops=data.get('scene_crops') or 0,
+                scorer=scorer,
+                machine_id=_telemetry.get_machine_id(settings),
+            )
+            return {'success': True, 'sent': bool(sent)}
+        except Exception:
+            return {'success': True, 'sent': False}
+
     def inspect_folder(self, folder_path: str):
         """Return lightweight folder summary (total images, processed count)."""
         try:
@@ -1921,9 +2009,20 @@ class Api:
                     # from being inspected.
                     missing_paths.append(str(raw))
                     continue
-                validated_paths.append(root_real)
+                validated_paths.append((str(raw), root_real))
 
-            results = inspector.inspect_folders(validated_paths)
+            by_real = inspector.inspect_folders([real for _, real in validated_paths])
+            # Key each result by the path the caller sent, not by root_real.
+            # realpath rewrites a Windows mapped network drive (P:\...) to its
+            # UNC form (\\server\share\...) and resolves symlinks/junctions, so
+            # realpath keys never matched the caller's own path and a NAS folder
+            # showed 0 images in the Analyze dialog. The inspector strips
+            # trailing separators from its keys; do the same for the lookup.
+            results = {}
+            for raw, real in validated_paths:
+                key = real.rstrip('/\\')
+                if key in by_real:
+                    results[raw] = by_real[key]
             return {'success': True, 'results': results, 'missing_paths': missing_paths}
         except Exception as e:
             error(f'[API] inspect_folders error: {e}')
@@ -2015,25 +2114,20 @@ class Api:
                     node_count[0] += 1
                     full = entry.path
                     has_kestrel = os.path.isfile(os.path.join(full, '.kestrel', 'kestrel_database.csv'))
-                    kestrel_version = ''
                     has_perch_link = has_kestrel and os.path.isfile(
                         os.path.join(full, '.kestrel', 'perch_link.json')
                     )
-                    if has_kestrel:
-                        try:
-                            meta_path = os.path.join(full, '.kestrel', 'kestrel_metadata.json')
-                            if os.path.isfile(meta_path):
-                                with open(meta_path, 'r', encoding='utf-8') as mf:
-                                    kestrel_version = json.load(mf).get('version', '')
-                        except Exception:
-                            pass
+                    pipeline = Api._scan_pipeline(
+                        os.path.join(full, '.kestrel', 'kestrel_metadata.json') if has_kestrel else '')
                     children = _scan(full, depth - 1)
                     result.append({
                         'name': name,
                         'path': full,
                         'has_kestrel': has_kestrel,
                         'has_perch_link': has_perch_link,
-                        'kestrel_version': kestrel_version,
+                        'pipeline_major': pipeline['pipeline_major'],
+                        'pipeline_version': pipeline['pipeline_version'],
+                        'upgraded': pipeline['upgraded'],
                         'children': children,
                     })
                 return result
@@ -2043,21 +2137,16 @@ class Api:
             root_has_perch_link = root_has_kestrel and os.path.isfile(
                 os.path.join(root_path, '.kestrel', 'perch_link.json')
             )
-            root_kestrel_version = ''
-            if root_has_kestrel:
-                try:
-                    meta_path = os.path.join(root_path, '.kestrel', 'kestrel_metadata.json')
-                    if os.path.isfile(meta_path):
-                        with open(meta_path, 'r', encoding='utf-8') as mf:
-                            root_kestrel_version = json.load(mf).get('version', '')
-                except Exception:
-                    pass
+            root_pipeline = Api._scan_pipeline(
+                os.path.join(root_path, '.kestrel', 'kestrel_metadata.json') if root_has_kestrel else '')
             return {
                 'success': True,
                 'tree': tree,
                 'root_has_kestrel': root_has_kestrel,
                 'root_has_perch_link': root_has_perch_link,
-                'root_kestrel_version': root_kestrel_version,
+                'root_pipeline_major': root_pipeline['pipeline_major'],
+                'root_pipeline_version': root_pipeline['pipeline_version'],
+                'root_upgraded': root_pipeline['upgraded'],
                 'error': '',
                 'nodes': node_count[0],
                 'truncated': bool(limit_reached[0]),
@@ -2065,6 +2154,25 @@ class Api:
         except Exception as e:
             error(f'[API] list_subfolders error: {e}')
             return {'success': False, 'tree': [], 'error': str(e)}
+
+    @staticmethod
+    def _scan_pipeline(meta_path: str) -> dict:
+        """The pipeline a folder was analysed with, for the folder tree.
+
+        ``{pipeline_major, pipeline_version, upgraded}``, from the one pipeline
+        version the folder records (see ``kestrel_analyzer.pipeline_version``).
+        This is what the tree uses to decide whether a folder is outdated; the
+        app release that created or touched the folder plays no part. Both
+        version values are None when the metadata is missing or unreadable
+        (unknown, so the folder is never flagged).
+        """
+        try:
+            if not meta_path or not os.path.isfile(meta_path):
+                return scan_summary(None)
+            with open(meta_path, 'r', encoding='utf-8') as mf:
+                return scan_summary(json.load(mf))
+        except Exception:
+            return scan_summary(None)
 
     @staticmethod
     def _photo_still_in_folder(root_dir: str, filename) -> bool:
@@ -2306,7 +2414,7 @@ class Api:
         filename, capture_time, orientation, feature_similarity,
         feature_confidence, color_similarity, color_confidence, scene_count.
 
-        Returns {'success', 'image_count', 'scored_pairs', 'unscored_pairs',
+        Returns {'success', 'image_count', 'order', 'scored_pairs', 'unscored_pairs',
                  'analyzed_group_within', 'analyzed_split_after', 'error'}.
         The two ``analyzed_*`` values are the settings the folder was last
         analyzed with, read from kestrel_metadata.json, so the dialog can open
@@ -2355,6 +2463,8 @@ class Api:
                 'success': True,
                 'error': '',
                 'image_count': len(cleaned),
+                # Filename order the preview's scene 'ranges' index into.
+                'order': [c['filename'] for c in cleaned],
                 'scored_pairs': scored,
                 'unscored_pairs': unscored,
                 'analyzed_group_within': analyzed['group_within'],
@@ -2678,6 +2788,156 @@ class Api:
             error(f'[API] smart_search_status({folder_path!r}) error: {e}')
             return {'success': False, 'error': str(e)}
 
+    # ── Change Settings dialog (per-folder, no re-analysis) ──────────────────
+    # Read-only folder facts, the per-folder "ignore wildlife" display setting,
+    # and species-region re-scoring from the stored BioCLIP embeddings. Every
+    # method validates the folder through ``_resolve_folder_root_and_kestrel``.
+
+    @staticmethod
+    def _folder_settings_module():
+        try:
+            from kestrel_analyzer import folder_settings as _fs
+        except ImportError:  # package-style import path
+            from analyzer.kestrel_analyzer import folder_settings as _fs  # type: ignore[no-redef]
+        return _fs
+
+    def get_folder_info(self, folder_path: str) -> dict:
+        """Folder facts for the Change Settings dialog.
+
+        Returns ``{success, info: {pipeline_version, pipeline_major, analyzed_utc,
+        image_count, scene_count, species_regions, wildlife_enabled, wildlife_crops,
+        rescore_supported, rescore_reason, settings: {ignore_wildlife}}}``.
+        Review/cull counts depend on UI state and are computed by the frontend.
+        """
+        try:
+            _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path, context='get_folder_info', require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            return {'success': True, 'info': self._folder_settings_module().folder_info(kestrel_dir)}
+        except Exception as e:
+            error(f'[API] get_folder_info({folder_path!r}) error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def get_folder_settings(self, folder_path: str) -> dict:
+        """Per-folder display settings (``{ignore_wildlife}``), defaults when none are stored."""
+        try:
+            _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path, context='get_folder_settings', require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            return {'success': True, 'settings': self._folder_settings_module().read_folder_settings(kestrel_dir)}
+        except Exception as e:
+            error(f'[API] get_folder_settings({folder_path!r}) error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def set_folder_setting(self, folder_path: str, key: str, value) -> dict:
+        """Persist one per-folder display setting. Only allow-listed boolean keys are accepted."""
+        try:
+            if not isinstance(key, str) or not isinstance(value, bool):
+                return {'success': False, 'error': 'key must be a string and value a boolean'}
+            _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path, context='set_folder_setting', require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            if not os.path.isdir(kestrel_dir):
+                return {'success': False, 'error': 'This folder has no Kestrel data'}
+            return {'success': True,
+                    'settings': self._folder_settings_module().write_folder_setting(kestrel_dir, key, value)}
+        except ValueError as e:
+            return {'success': False, 'error': str(e)}
+        except Exception as e:
+            error(f'[API] set_folder_setting({folder_path!r}) error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def _region_rescore_jobs(self):
+        import threading as _t
+        if getattr(self, '_region_rescore_lock', None) is None:
+            self._region_rescore_lock = _t.Lock()
+            self._region_rescore_state = {}
+        return self._region_rescore_lock, self._region_rescore_state
+
+    def rescore_folder_species_regions(self, folder_path: str, regions) -> dict:
+        """Start re-scoring a folder's species/family predictions for new ``regions``.
+
+        Uses the stored BioCLIP embeddings only (no detection, no image decode).
+        Non-bird wildlife labels are left alone. Images in scenes with
+        user-edited or finalized tags are re-scored too, but those scenes' tags
+        in the scenedata file are not changed. Runs on a worker thread; poll
+        ``get_species_rescore_status``. Refused while an analysis or upgrade is running.
+        """
+        try:
+            regs = self._sanitize_species_regions(regions)
+            if not regs:
+                return {'success': False, 'error': 'Pick at least one region'}
+            _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path, context='rescore_folder_species_regions', require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            if _queue_manager.is_running:
+                return {'success': False, 'error': 'Wait for the analysis queue to finish, then try again.'}
+            if self._running_upgrade_job(kestrel_dir):
+                return {'success': False, 'error': 'This folder is being upgraded. Try again when that finishes.'}
+            fs = self._folder_settings_module()
+            support = fs.rescore_support(kestrel_dir)
+            if not support['supported']:
+                return {'success': False, 'error': support['reason']}
+            lock, state = self._region_rescore_jobs()
+            with lock:
+                cur = state.get(kestrel_dir)
+                if cur and cur.get('state') == 'running':
+                    return {'success': False, 'error': 'Already re-scoring this folder.'}
+                job = {'state': 'running', 'done': 0, 'total': 0, 'regions': list(regs), 'error': '', 'stats': None}
+                state[kestrel_dir] = job
+
+            def _run():
+                try:
+                    try:
+                        from kestrel_analyzer.ml.bioclip_species import BioClipSpeciesClassifier
+                        from kestrel_analyzer.config import BIOCLIP_MODELS_DIR
+                    except ImportError:
+                        from analyzer.kestrel_analyzer.ml.bioclip_species import BioClipSpeciesClassifier  # type: ignore[no-redef]
+                        from analyzer.kestrel_analyzer.config import BIOCLIP_MODELS_DIR  # type: ignore[no-redef]
+                    clf = BioClipSpeciesClassifier(str(BIOCLIP_MODELS_DIR), None, load_image_tower=False)
+
+                    def _progress(done, total):
+                        job['done'], job['total'] = done, total
+
+                    job['stats'] = fs.rescore_species_regions(kestrel_dir, regs, clf, progress_cb=_progress)
+                    job['state'] = 'done'
+                except Exception as e:  # reported through the status poll
+                    error(f'[API] species rescore failed for {kestrel_dir!r}: {e}')
+                    job['error'] = str(e)
+                    job['state'] = 'error'
+
+            import threading as _t
+            _t.Thread(target=_run, name='species-rescore', daemon=True).start()
+            return {'success': True, 'started': True, 'regions': list(regs)}
+        except Exception as e:
+            error(f'[API] rescore_folder_species_regions({folder_path!r}) error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def get_species_rescore_status(self, folder_path: str) -> dict:
+        """``{success, state: idle|running|done|error, done, total, error, stats}`` for a folder's re-score."""
+        try:
+            _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path, context='get_species_rescore_status', require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            lock, state = self._region_rescore_jobs()
+            with lock:
+                job = state.get(kestrel_dir)
+                if not job:
+                    return {'success': True, 'state': 'idle'}
+                return {'success': True, **job}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
     def classify_search_query(self, query: str, folder_species=None, folder_families=None) -> dict:
         """Route a search-box query: plain species/family filter or smart search.
 
@@ -2739,12 +2999,15 @@ class Api:
             return {'success': False, 'error': str(e)}
 
     def upgrade_folder_v3(self, folder_path: str) -> dict:
-        """Start upgrading an analysed folder to pipeline 3 (local only).
+        """Queue an analysed folder's upgrade to pipeline 3 (local only).
 
-        Returns ``{success, job_id}``; poll ``get_smart_search_index_progress``.
-        Refused while the folder is being analysed (both would write the same
-        files) and for folders that need a re-analysis; a job already running
-        for the folder is returned as is.
+        Returns ``{success, job_id, queued}``; poll
+        ``get_smart_search_index_progress``. Upgrades run one at a time in
+        request order (they share the queue's pipeline), so ``queued`` is True
+        when the job waits behind another upgrade; its phase is ``queued``
+        until it starts. Refused while the folder is being analysed (both
+        would write the same files) and for folders that need a re-analysis;
+        a job already queued or running for the folder is returned as is.
         """
         try:
             root_real, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
@@ -2769,7 +3032,9 @@ class Api:
             with lock:
                 for jid, j in jobs.items():
                     if j.get('kestrel_dir') == kestrel_dir and not j['progress'].get('done'):
-                        return {'success': True, 'job_id': jid, 'already_running': True}
+                        return {'success': True, 'job_id': jid, 'already_running': True,
+                                'queued': j['progress'].get('phase') == 'queued'}
+                queued_behind = any(not j['progress'].get('done') for j in jobs.values())
                 job_id = _uuid.uuid4().hex
                 cancel = _t.Event()
                 jobs[job_id] = {
@@ -2782,7 +3047,7 @@ class Api:
                     'root': root_real,
                     'started_at': time.time(),
                     'dismissed': False,
-                    'progress': {'done': False, 'current': 0, 'total': 0, 'phase': 'starting'},
+                    'progress': {'done': False, 'current': 0, 'total': 0, 'phase': 'queued'},
                 }
                 finished = [k for k, v in jobs.items() if v['progress'].get('done')]
                 for k in finished[:-8]:
@@ -2796,6 +3061,17 @@ class Api:
                     jobs[job_id]['progress'].update(kw)
 
             def _runner():
+                with lock:
+                    job = jobs.get(job_id)
+                    if job is None or job['progress'].get('done'):
+                        return  # cancelled while queued
+                if cancel.is_set():
+                    _set(phase='canceled', done=True, finished_at=time.time())
+                    return
+                if _queue_manager.has_running_writer(root_real):
+                    # Analysis of this folder started while the upgrade waited.
+                    _set(phase='stopped', done=True, finished_at=time.time())
+                    return
                 try:
                     _set(phase='loading_model')
                     # GPU follows the queue's current choice (the Analyze dialog's
@@ -2826,10 +3102,117 @@ class Api:
                 finally:
                     _set(done=True, finished_at=time.time())
 
-            _t.Thread(target=_runner, name=f'UpgradeV3-{job_id[:8]}', daemon=True).start()
-            return {'success': True, 'job_id': job_id}
+            self._enqueue_upgrade(job_id, _runner)
+            return {'success': True, 'job_id': job_id, 'queued': queued_behind}
         except Exception as e:
             error(f'[API] upgrade_folder_v3({folder_path!r}) error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def _enqueue_upgrade(self, job_id: str, runner) -> None:
+        """Run ``runner`` on the single upgrade worker, after earlier jobs.
+
+        Upgrades share the analysis queue's pipeline (one ORT session per
+        model per process), so they must not run concurrently.
+        """
+        import collections as _c
+        import threading as _t
+        lock, _ = self._smart_jobs()
+        with lock:
+            if getattr(self, '_upgrade_pending', None) is None:
+                self._upgrade_pending = _c.deque()
+            self._upgrade_pending.append((job_id, runner))
+            worker = getattr(self, '_upgrade_worker', None)
+            if worker is not None and worker.is_alive():
+                return
+
+            def _drain():
+                while True:
+                    with lock:
+                        if not self._upgrade_pending:
+                            self._upgrade_worker = None
+                            return
+                        _jid, fn = self._upgrade_pending.popleft()
+                    try:
+                        fn()
+                    except Exception as e:  # runner reports its own errors
+                        error(f'[API] upgrade worker: job {_jid[:8]} raised {e}')
+
+            self._upgrade_worker = _t.Thread(target=_drain, name='UpgradeV3-worker', daemon=True)
+            self._upgrade_worker.start()
+
+    def upgrade_folders_v3(self, folder_paths) -> dict:
+        """Queue pipeline-3 upgrades for several folders (run one at a time).
+
+        Returns ``{success, results: [{path, success, job_id?, error?,
+        reason?, queued?}]}`` in the order given. Folders that are already
+        current, need a re-analysis or are being analysed are reported per
+        entry; the rest are queued.
+        """
+        if not isinstance(folder_paths, list):
+            return {'success': False, 'error': 'folder_paths must be a list'}
+        results = []
+        for fp in folder_paths[:500]:
+            if not isinstance(fp, str) or not fp:
+                continue
+            try:
+                _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                    fp, context='upgrade_folders_v3', require_root_exists=True,
+                )
+                if not err and os.path.isdir(kestrel_dir):
+                    st = self._upgrade_module().eligibility(kestrel_dir).get('status')
+                    if st in ('current', 'not_analyzed'):
+                        results.append({'path': fp, 'success': False, 'error': st})
+                        continue
+            except Exception:
+                pass  # upgrade_folder_v3 re-validates and reports the error
+            res = self.upgrade_folder_v3(fp)
+            results.append({'path': fp, **res})
+        return {'success': True, 'results': results}
+
+    @staticmethod
+    def _primary_subject_module():
+        try:
+            from kestrel_analyzer import primary_subject as _ps
+        except ImportError:  # package-style import path
+            from analyzer.kestrel_analyzer import primary_subject as _ps  # type: ignore[no-redef]
+        return _ps
+
+    def _refresh_bird_links_async(self, kestrel_dir: str) -> None:
+        """On folder load: compute bird links for scenes that lack them (pipeline-3.0.0
+        folders, or scenes added since). Never while this app is analysing/upgrading."""
+        try:
+            if self._running_upgrade_job(kestrel_dir) or self.is_analysis_running().get('running'):
+                return
+        except Exception:
+            return
+        _ps = self._primary_subject_module()
+
+        def _run():
+            try:
+                _ps.ensure_links(kestrel_dir)
+            except Exception as e:
+                error(f'[API] bird links refresh failed: {e}')
+        import threading as _t
+        _t.Thread(target=_run, name='bird-links', daemon=True).start()
+
+    def primary_subject_links(self, folder_path: str) -> dict:
+        """Stored bird numbers for a folder (computed first if missing or stale).
+
+        Returns ``{success, scenes: {scene_count: {files, ids: {file: {crop_index: bird}},
+        margins: {file: {crop_index: margin}}}}, min_margin}``. Read-only apart from the
+        ``.kestrel/bird_links.json`` sidecar.
+        """
+        try:
+            _, kestrel_dir, _, err = self._resolve_folder_root_and_kestrel(
+                folder_path, context='primary_subject_links', require_root_exists=True,
+            )
+            if err:
+                return {'success': False, 'error': err}
+            _ps = self._primary_subject_module()
+            data = _ps.ensure_links(kestrel_dir)
+            return {'success': True, 'scenes': data.get('scenes', {}), 'min_margin': _ps.MIN_MARGIN}
+        except Exception as e:
+            error(f'[API] primary_subject_links error: {e}')
             return {'success': False, 'error': str(e)}
 
     def smart_search_index_folder(self, folder_path: str) -> dict:
@@ -2853,8 +3236,9 @@ class Api:
         Running jobs, plus finished ones the user has not dismissed with the
         panel's close button (``clear_queue_done``). Each row is ``{job_id,
         kind: 'upgrade', path, name, status, phase, current, total, error,
-        started_at, finished_at}``; ``status`` is ``running`` while the job is
-        alive, then ``done`` / ``cancelled`` / ``stopped`` / ``error``.
+        started_at, finished_at}``; ``status`` is ``pending`` while the job
+        waits its turn, ``running`` while it runs, then ``done`` /
+        ``cancelled`` / ``stopped`` / ``error``.
         """
         lock, jobs = self._smart_jobs()
         out = []
@@ -2865,7 +3249,10 @@ class Api:
                     continue
                 path = j.get('path') or j.get('root') or os.path.dirname(j.get('kestrel_dir') or '')
                 phase = str(pr.get('phase') or '')
-                status = self._UPGRADE_ROW_STATUS.get(phase, 'error') if pr.get('done') else 'running'
+                if pr.get('done'):
+                    status = self._UPGRADE_ROW_STATUS.get(phase, 'error')
+                else:
+                    status = 'pending' if phase == 'queued' else 'running'
                 out.append({
                     'job_id': jid,
                     'kind': 'upgrade',
@@ -2895,6 +3282,12 @@ class Api:
         if job is None:
             return {'success': False, 'error': 'not_found'}
         job['cancel_event'].set()
+        with lock:
+            pr = job['progress']
+            if pr.get('phase') == 'queued' and not pr.get('done'):
+                # Never started: settle it now so the panel updates at once
+                # (the worker skips it when its turn comes).
+                pr.update(phase='canceled', done=True, finished_at=time.time())
         return {'success': True}
 
     def open_folder(self, path: str):
@@ -2998,23 +3391,44 @@ class Api:
     #  Telemetry / Feedback API                                            #
     # ------------------------------------------------------------------ #
 
-    # Map dialog type values to Auth Worker report_type enum.
-    # 'liked' has no direct equivalent; fold into 'general'.
-    _FEEDBACK_TYPE_MAP: dict[str, str] = {
-        'bug':        'bug',
-        'suggestion': 'suggestion',
-        'liked':      'general',
-        'general':    'general',
-        'account':    'account',
-    }
+    def _support_import(self):
+        """Lazy import of support_client. Returns the module or raises."""
+        try:
+            import support_client as sc
+            return sc
+        except ImportError:
+            from analyzer import support_client as sc  # type: ignore[no-redef]
+            return sc
+
+    def _support_make_client(self):
+        """Build an authenticated SupportClient. Returns (client, error_dict).
+        Same Clerk token as the account calls; only the host differs."""
+        token, dev_user, token_err = self._check_auth_token()
+        if token_err:
+            return None, token_err
+        try:
+            sc = self._support_import()
+        except ImportError as e:
+            return None, {"ok": False, "error": f"support_client import failed: {e}"}
+        try:
+            client = sc.SupportClient(sc.default_support_api_base(), token, dev_user=dev_user)
+        except ValueError as e:
+            return None, {"ok": False, "error": str(e)}
+        return client, None
 
     def send_feedback(self, data):
-        """Send feedback / bug report (async, failsafe). Called from JS.
+        """Send feedback / bug report (failsafe). Called from JS.
 
-        When the user is signed in, routes to the Auth Worker
-        (POST /v1/me/feedback) so feedback lands in the unified store.
-        Falls back to the analytics-worker path when signed out or if the
-        Auth Worker call fails.  Screenshots stay on the analytics path.
+        Signed-in users who tick "Send as <account>" post to the Support host
+        (POST /v1/me/reports) with the redacted log tail and screenshot.
+        Everything else — signed out, box unticked, or the Support call
+        failing — takes the anonymous analytics path, unchanged.
+
+        Returns ``{'success': True}`` plus, on the signed-in path, ``ref`` (the
+        support case reference, when the report joined or created one) and
+        ``screenshot_dropped`` (a reason string, when the screenshot could not
+        be sent). ``sent_anonymously`` is True when the user asked to send as
+        their account but the report fell back to the anonymous path.
         """
         try:
             if _telemetry is None:
@@ -3024,52 +3438,181 @@ class Api:
                 return {'success': False, 'error': 'Invalid data'}
             settings = load_persisted_settings()
             machine_id = _telemetry.get_machine_id(settings)
+            include_logs = bool(data.get('include_logs', False))
             log_tail = ''
-            if data.get('include_logs', False):
+            if include_logs:
                 active_folder = str(settings.get('active_analysis_path', '') or '').strip()
                 log_tail = _telemetry.get_recent_log_tail(folder=active_folder or None, runtime_log_files=3)
 
             raw_type = data.get('type', 'general')
-            report_type = self._FEEDBACK_TYPE_MAP.get(str(raw_type).lower(), 'general')
             description = data.get('description', '')
+            contact = str(data.get('contact', '') or '').strip()
+            screenshot_b64 = data.get('screenshot_b64', '') or ''
+            raw_case_ref = str(data.get('case_ref', '') or '').strip()
 
-            # --- Auth Worker path (signed-in users who opted to send as self) ---
+            # --- Support path (signed-in users who opted to send as self) ---
             # Gated on the explicit `send_as_user` opt-in from the dialog: even
             # when signed in, an unchecked box means the report is anonymous and
-            # must take the analytics path below.
-            # Screenshots are out of scope for the Auth path; they stay on the
-            # analytics path only.  Any failure falls through to analytics.
-            try:
-                send_as_user = bool(data.get('send_as_user', False))
-                client, _err = (self._auth_make_client() if send_as_user else (None, None))
-                if client is not None:
-                    version = _telemetry._read_version() if _telemetry else ''
-                    os_info = _telemetry._get_os_info() if _telemetry else ''  # module-level fn
-                    client.post_feedback(
-                        report_type=report_type,
-                        message=description,
-                        version=version,
-                        os=os_info,
-                        contact=str(data.get('contact', '') or '').strip(),
-                    )
-                    return {'success': True}
-            except Exception:
-                pass  # fall through to analytics path
+            # must take the analytics path below. Any failure falls through to
+            # analytics, which also carries the logs and screenshot.
+            sent_anonymously = False
+            if bool(data.get('send_as_user', False)):
+                # Set before the attempt; cleared only by the successful return
+                # below, so every fallback tells the dialog the account was dropped.
+                sent_anonymously = True
+                try:
+                    client, _err = self._support_make_client()
+                    if client is None:
+                        warn(f'[API] send_feedback: no support client, sending anonymously: {(_err or {}).get("error")}')
+                    else:
+                        sc = self._support_import()
+                        shot, shot_drop = sc.prepare_screenshot(screenshot_b64)
+                        extra = {'logs_requested': include_logs}
+                        if shot_drop:
+                            extra['screenshot_dropped'] = shot_drop
+                        resp = client.post_report(
+                            report_type=sc.report_type_for(raw_type),
+                            message=description,
+                            app_version=_telemetry._read_version(),
+                            os=_telemetry._get_os_info(),
+                            platform=sc.platform_name(),
+                            contact_email=contact,
+                            case_ref=sc.normalize_case_ref(raw_case_ref),
+                            # Redaction must run here: the analytics path does
+                            # it inside kestrel_telemetry, this path does not.
+                            log_tail=sc.prepare_log_tail(log_tail),
+                            screenshot_b64=shot,
+                            extra=extra,
+                        )
+                        result = {'success': True}
+                        ref = (resp or {}).get('ref') if isinstance(resp, dict) else None
+                        if ref:
+                            result['ref'] = str(ref)
+                        if shot_drop:
+                            result['screenshot_dropped'] = shot_drop
+                        return result
+                except Exception as e:
+                    warn(f'[API] send_feedback: support report failed, sending anonymously: {type(e).__name__}: {e}')
 
-            # --- Analytics-worker path (signed-out or Auth call failed) ---
+            # --- Analytics-worker path (anonymous, signed out, or Support failed) ---
+            # The analytics payload has no case-reference field, so keep the
+            # reference in the text where triage will see it.
+            if raw_case_ref:
+                description = f'[Case reference: {raw_case_ref[:40]}]\n{description}'
             _telemetry.send_feedback(
                 report_type=raw_type,
                 description=description,
                 contact=data.get('contact', ''),
-                screenshot_b64=data.get('screenshot_b64', ''),
+                screenshot_b64=screenshot_b64,
                 log_tail=log_tail,
                 machine_id=machine_id,
                 version=_telemetry._read_version(),
             )
+            if sent_anonymously:
+                return {'success': True, 'sent_anonymously': True}
             return {'success': True}
         except Exception as e:
             error(f'[API] send_feedback error: {e}')
             return {'success': False, 'error': str(e)}
+
+    # ── Enhanced GPU performance (opt-in vendor GPU execution providers; Windows only) ──
+    # Setup runs on a worker thread; the UI polls enhanced_gpu_status() for progress. Nothing here
+    # touches Windows ML unless the user starts setup, so macOS and unsupported Windows are unaffected.
+    _eg_lock = threading.Lock()
+    _eg_job: dict = {'running': False, 'stage': '', 'message': '', 'cancel': False, 'result': None}
+
+    def _eg_module(self):
+        from kestrel_analyzer.ml import enhanced_gpu
+        return enhanced_gpu
+
+    def enhanced_gpu_status(self):
+        """Settings-dialog state: availability, whether set up / enabled, per-model results, setup progress."""
+        try:
+            eg = self._eg_module()
+            st = eg.status()
+            st['runtime'] = dict(eg.runtime_summary(), cpu_components=[f.get('kind') for f in _queue_manager.cpu_fallbacks()])
+            with self._eg_lock:
+                job = {k: v for k, v in self._eg_job.items() if k != 'cancel'}
+            st['job'] = job
+            return {'success': True, 'status': st}
+        except Exception as e:
+            return {'success': False, 'error': str(e), 'status': {'available': False}}
+
+    def enhanced_gpu_start_setup(self):
+        """Start the set-up worker (platform check, EP download, validation). Returns at once."""
+        try:
+            eg = self._eg_module()
+            if not eg.platform_status().get('available'):
+                return {'success': False, 'error': eg.platform_status().get('reason', 'Not available')}
+            with self._eg_lock:
+                if self._eg_job.get('running'):
+                    return {'success': False, 'error': 'Setup is already running.'}
+                self._eg_job.update(running=True, stage='platform', message='Starting...', cancel=False, result=None)
+
+            def _progress(stage, message):
+                with self._eg_lock:
+                    self._eg_job.update(stage=stage, message=message)
+
+            def _work():
+                result = None
+                try:
+                    result = eg.run_setup(_progress, lambda: bool(self._eg_job.get('cancel')))
+                    if result.get('ok'):
+                        # Turn the mode on once it has been validated; the user can switch it off.
+                        s = load_persisted_settings()
+                        s['enhanced_gpu_enabled'] = True
+                        save_persisted_settings(s)
+                        eg.reset_cache()
+                except Exception as e:  # run_setup should not raise, but never leave 'running' stuck
+                    result = {'ok': False, 'reason': f'{type(e).__name__}: {e}'}
+                finally:
+                    with self._eg_lock:
+                        self._eg_job.update(running=False, stage='done', message='',
+                                            result={'ok': bool(result and result.get('ok')),
+                                                    'reason': (result or {}).get('reason', '')})
+
+            threading.Thread(target=_work, name='enhanced-gpu-setup', daemon=True).start()
+            return {'success': True}
+        except Exception as e:
+            error(f'[API] enhanced_gpu_start_setup error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def enhanced_gpu_cancel_setup(self):
+        with self._eg_lock:
+            self._eg_job['cancel'] = True
+        return {'success': True}
+
+    def enhanced_gpu_set_enabled(self, enabled):
+        """Turn the mode on or off (off returns every model to DirectML on the next analysis)."""
+        try:
+            s = load_persisted_settings()
+            s['enhanced_gpu_enabled'] = bool(enabled)
+            save_persisted_settings(s)
+            self._eg_module().reset_cache()
+            return {'success': True}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def enhanced_gpu_report_text(self):
+        """Plain-text summary for a bug report about the setup (the log tail is attached separately)."""
+        try:
+            eg = self._eg_module()
+            st = eg.load_state() or {}
+            lines = ['Enhanced GPU performance setup did not work.', '',
+                     f"Result: {st.get('reason') or 'see log'}",
+                     f"Vendor EP tried: {st.get('ep_name') or 'none'}",
+                     f"Models: {json.dumps(st.get('models', {}))}",
+                     f"Hardware: {json.dumps(st.get('hardware', {}))}"]
+            return {'success': True, 'text': '\n'.join(lines)[:6000]}
+        except Exception as e:
+            return {'success': False, 'error': str(e), 'text': ''}
+
+    def gpu_mode_report_text(self):
+        """Plain-text summary for a bug report about the GPU mode (enhanced / standard / CPU fallback)."""
+        try:
+            return {'success': True, 'text': self._eg_module().report_text(_queue_manager.cpu_fallbacks())}
+        except Exception as e:
+            return {'success': False, 'error': str(e), 'text': ''}
 
     def get_settings(self):
         """Return persisted settings, ensuring machine_id and version exist."""
@@ -3141,7 +3684,11 @@ class Api:
             if not isinstance(existing, dict):
                 existing = {}
             # Python-owned keys the frontend must never overwrite.
-            settings_dict = {k: v for k, v in settings_dict.items() if k != _QF_INSTALL_ID_KEY}
+            settings_dict = {
+                k: v for k, v in settings_dict.items()
+                if k != _QF_INSTALL_ID_KEY and k != _ENHANCED_GPU_ENABLED_KEY
+                and k not in _SESSION_OWNED_SETTINGS_KEYS
+            }
             merged = {**existing, **settings_dict}
 
             # Keep cumulative impact counters monotonic so stale UI payloads cannot
@@ -3302,13 +3849,13 @@ class Api:
             for r in usable:
                 if not str(r.get('quality_siglip') or '').strip() and not str(r.get('quality_legacy') or '').strip():
                     r['quality_legacy'] = r.get('quality')
-            active = str(settings.get('quality_model') or 'siglip').lower()
-            active = active if active in qf.SCORERS else 'siglip'
+            active = str(settings.get('quality_model') or 'legacy').lower()
+            active = active if active in qf.SCORERS else 'legacy'
             if not any(str(r.get('quality_siglip') or '').strip() for r in usable):
                 active = 'legacy'
             try:
                 with open(os.path.join(kestrel_dir, 'kestrel_metadata.json'), 'r', encoding='utf-8') as _mf:
-                    folder_major = int((json.load(_mf) or {}).get('pipeline_major') or 2)
+                    folder_major = folder_pipeline_major(json.load(_mf) or {})
             except Exception:
                 folder_major = 2
             sel = qf.select_feedback_frames(usable, k=qf.MAX_FRAMES, active_scorer=active)
@@ -3882,7 +4429,7 @@ class Api:
                         }
 
             sett = load_persisted_settings()
-            detection_threshold = float(sett.get('detection_threshold', 0.25))
+            detection_threshold = float(sett.get('detection_threshold', 0.15))
             detection_threshold = max(0.1, min(0.99, detection_threshold))
             scene_time_threshold = float(sett.get('scene_time_threshold', 1.0))
             scene_time_threshold = max(0.0, scene_time_threshold)
@@ -5828,6 +6375,29 @@ class Api:
             return {"ok": False, "error": "auth worker returned non-object"}
         body["ok"] = True
         return body
+
+    def cloud_compute_get_pricing(self) -> dict:
+        """Prices and links for the Analyze dialog's Cloud card.
+
+        The Mac App Store gate lives here, not in the page: on the ``'appstore'``
+        channel this returns ``{'ok': False, 'reason': 'unavailable'}`` before
+        any network call, so no price, link or free-image offer reaches the
+        frontend on that build. Elsewhere it fetches the service's public price
+        catalog (no sign-in, short timeout) and returns display fields only;
+        ``catalog`` is ``None`` if the fetch failed, and the page then shows no
+        prices. Never raises. Runs on a pywebview worker thread, so a slow
+        network cannot block the UI. See ``cloud_pricing.py``.
+        """
+        try:
+            try:
+                import cloud_pricing as cp
+            except ImportError:
+                from analyzer import cloud_pricing as cp  # type: ignore[no-redef]
+            api_base = self._auth_import().default_auth_api_base()
+            return cp.get_pricing(api_base)
+        except Exception as e:
+            warn(f'[API] cloud_compute_get_pricing failed: {e}')
+            return {"ok": False, "reason": "unavailable"}
 
     def cloud_compute_clear_done(self) -> dict:
         """Legacy bridge hook — does **not** touch the persistent job ledger.
@@ -9183,22 +9753,27 @@ class Api:
 
             # 4. Give the destination an audit trail of its own.
             try:
-                from kestrel_analyzer.config import VERSION as _KVERSION
-            except ImportError:
-                _KVERSION = self.get_app_version().get('version', '')
-            try:
                 meta_path = os.path.join(dest_kestrel, 'kestrel_metadata.json')
                 if not os.path.exists(meta_path):
                     staged_files.append(meta_path)
                     from datetime import datetime, timezone
-                    write_json_atomic(meta_path, {
-                        'version': _KVERSION,
+                    # The rows were produced by whatever pipeline analysed the
+                    # source, not by this build, so carry the source's pipeline
+                    # version rather than stamping the current one.
+                    dest_meta = {
                         'analyzer': 'repair-relocate',
                         'created_utc': datetime.now(timezone.utc)
                             .replace(tzinfo=None).isoformat() + 'Z',
                         'database_file': 'kestrel_database.csv',
                         'relocated_from': src_real,
-                    })
+                    }
+                    src_pipeline = Api._scan_pipeline(
+                        os.path.join(src_kestrel, 'kestrel_metadata.json'))
+                    if src_pipeline['pipeline_version']:
+                        dest_meta['pipeline_version'] = src_pipeline['pipeline_version']
+                    if src_pipeline['pipeline_major']:
+                        dest_meta['pipeline_major'] = src_pipeline['pipeline_major']
+                    write_json_atomic(meta_path, dest_meta)
             except Exception as e:
                 warn(f'[repair] Could not write destination metadata: {e}')
 
@@ -9675,22 +10250,29 @@ class Api:
         try:
             with rawpy.imread(full_path) as raw:
                 thumb = raw.extract_thumb()
+            if thumb is None or not getattr(thumb, 'data', None):
+                return None, None
+            if thumb.format != rawpy.ThumbFormat.JPEG:
+                return None, None
+            jpeg_data = thumb.data
+        except rawpy.LibRawFileUnsupportedError:
+            # Body newer than the bundled LibRaw: imread() itself refuses the
+            # file, so read the preview straight out of the TIFF container.
+            from kestrel_analyzer.image_utils import extract_tiff_container_jpeg
+            jpeg_data = extract_tiff_container_jpeg(full_path)
+            if jpeg_data is None:
+                return None, None
         except (rawpy.LibRawNoThumbnailError,
                 rawpy.LibRawUnsupportedThumbnailError,
-                rawpy.LibRawFileUnsupportedError,
                 rawpy.LibRawIOError):
             return None, None
         except Exception:
             return None, None
-        if thumb is None or not getattr(thumb, 'data', None):
-            return None, None
-        if thumb.format != rawpy.ThumbFormat.JPEG:
-            return None, None
         try:
-            with Image.open(BytesIO(thumb.data)) as prev_img:
+            with Image.open(BytesIO(jpeg_data)) as prev_img:
                 exif_orient = prev_img.getexif().get(0x0112, 1)
                 if exif_orient in (None, 1):
-                    return thumb.data, (int(prev_img.width), int(prev_img.height))
+                    return jpeg_data, (int(prev_img.width), int(prev_img.height))
                 oriented = ImageOps.exif_transpose(prev_img)
                 if oriented.mode != 'RGB':
                     oriented = oriented.convert('RGB')

@@ -1,0 +1,123 @@
+/* Folder "Change Settings" dialog (js/folder-settings.js).
+   Sizing and flex shell come from .kdlg (kdlg--md kdlg--flex); this file holds
+   the inner sections. */
+
+.fset-dlg { max-height: 90vh; }
+
+.fset-head {
+  flex: 0 0 auto;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid #1d2230;
+}
+.fset-head h3 { margin: 0 0 2px; font-size: 16px; }
+.fset-sub {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fset-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 18px 14px;
+}
+
+.fset-sec {
+  padding: 12px 0;
+  border-bottom: 1px solid #1d2230;
+}
+.fset-sec:last-child { border-bottom: 0; }
+.fset-sec h4 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #7a90b8;
+}
+.fset-sec--row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.fset-sec--row h4 { margin-bottom: 2px; }
+.fset-sec--row button { flex: 0 0 auto; }
+
+.fset-hint { font-size: 12px; line-height: 1.45; margin-top: 4px; }
+.fset-hint--warn { color: #d9a45a; }
+
+/* Folder info: two-column key/value list */
+.fset-grid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 14px;
+  font-size: 13px;
+}
+.fset-k { color: var(--muted); }
+.fset-v { min-width: 0; }
+.fset-path { word-break: break-all; user-select: text; }
+.fset-link {
+  margin-left: 6px;
+  padding: 1px 8px;
+  font-size: 12px;
+}
+
+.fset-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.fset-toggle input:disabled + span { opacity: 0.55; }
+
+/* Species region */
+.fset-region { display: grid; gap: 8px; margin-top: 8px; }
+.fset-region select { width: 100%; }
+.fset-region.is-disabled { opacity: 0.5; }
+.fset-region-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 4px 12px;
+  padding: 8px 10px;
+  background: #0a0d12;
+  border: 1px solid #2a3040;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.fset-region-grid.hidden { display: none; }
+.fset-region-grid label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.fset-region-actions { display: flex; justify-content: flex-end; }
+.fset-progress {
+  height: 6px;
+  border-radius: 999px;
+  background: #1d2230;
+  overflow: hidden;
+}
+.fset-progress.hidden { display: none; }
+.fset-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--brand);
+  transition: width 0.2s;
+}
+
+/* Destructive section: tinted and set apart from the rest */
+.fset-sec--danger {
+  margin-top: 6px;
+  padding: 12px 12px 14px;
+  border: 1px solid #3f2020;
+  border-radius: 8px;
+  background: #1c1416;
+}
+.fset-sec--danger h4 { color: #d08888; }
+.fset-danger-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.fset-danger-btn {
+  border-color: #7f3f3f;
+  color: #ffc8c8;
+  background: #361818;
+}
+.fset-danger-btn:hover:not([disabled]) { background: #4a2020; }

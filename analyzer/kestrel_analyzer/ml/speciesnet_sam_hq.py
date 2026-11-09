@@ -618,6 +618,13 @@ class OnnxMDv1000CedarDetector:
         return {"filepath": filepath, "detections": detections}
 
 
+# Batched prompt decoding is switched off: every box is decoded in its own decoder run. A batched
+# run on DirectML failed with a device-lost error (887A0005) on frames with many boxes, and one box
+# per run keeps a failure attributable to a single run that can be retried on the CPU. The batching
+# code below is kept; set this to True to use it again on decoders whose graph supports it.
+_BATCH_DECODE_ENABLED = False
+
+
 class OnnxSamPredictor:
     """
     SAM-HQ ViT-Tiny via ONNX Runtime (split encoder + decoder).
@@ -661,6 +668,8 @@ class OnnxSamPredictor:
         input tensor batch dimensions. If any prompt-related input has a fixed
         first dimension of 1, treat batching as unsupported.
         """
+        if not _BATCH_DECODE_ENABLED:
+            return False
         try:
             inputs = {inp.name: inp.shape for inp in self._dec_session.get_inputs()}
         except Exception:
@@ -1135,36 +1144,17 @@ class DetectorSAMHQWrapper:
                 "detector_confidence": float(det.get("conf", 0.0)),
             })
 
-        sam_results: list[tuple[np.ndarray, float]] = []
-        try:
-            sam_results = self.predictor.decode_boxes(
-                image_embeddings,
-                interm_embeddings,
-                [c["prompt_box"] for c in candidates],
-                resized_hw,
-                original_hw,
-            )
-        except Exception as e:
-            if not getattr(self.predictor, "_batch_decode_runtime_failed", False):
-                warn(
-                    f"[SAM-HQ] batch decode failed at runtime; downgrading to "
-                    f"per-box decode for the rest of this session: {e}"
-                )
-                try:
-                    self.predictor._batch_decode_runtime_failed = True
-                except Exception:
-                    pass
-            sam_results = []
-            for c in candidates:
-                try:
-                    sam_results.append(
-                        self.predictor.decode_box(
-                            image_embeddings, interm_embeddings, c["prompt_box"], resized_hw, original_hw,
-                        )
-                    )
-                except Exception as e2:
-                    warn(f"[SAM-HQ] mask failed for one box: {e2}")
-                    sam_results.append((None, 0.0))
+        # A decoder failure raises: the session retries a lost DirectML device on the CPU itself
+        # (ResilientOnnxSession.run), and anything else reaches the pipeline's per-image error
+        # handling (an Error row, re-analysed later). Dropping a box here would save the frame as
+        # "Unknown" with no detections and no error.
+        sam_results = self.predictor.decode_boxes(
+            image_embeddings,
+            interm_embeddings,
+            [c["prompt_box"] for c in candidates],
+            resized_hw,
+            original_hw,
+        )
 
         rows = [
             (sam_out[0], c) for c, sam_out in zip(candidates, sam_results) if sam_out[0] is not None

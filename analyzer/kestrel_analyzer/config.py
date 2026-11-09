@@ -2,14 +2,22 @@ import os
 from pathlib import Path
 from typing import Iterable
 
-VERSION = "3.0.0"
+# Version of the analysis pipeline (photos -> ``.kestrel/`` data). Bump it when the
+# output a folder holds changes. The major number is the compatibility boundary
+# (PIPELINE_MAJOR below, ``upgrade_v3``); minor/patch never invalidate a folder.
+# Stored per folder as ``pipeline_version`` in kestrel_metadata.json. This is NOT
+# the app release: that lives in VERSION.txt / VERSION_NUMBER.txt.
+PIPELINE_VERSION = "3.0.0"
+# Deprecated name for PIPELINE_VERSION, kept so code that imports it (including
+# the vendored copy used by Cloud Compute) keeps working. Do not use in new code.
+VERSION = PIPELINE_VERSION
 
 # Analysis pipeline generation. 3 = MegaDetector + SAM-HQ + BioCLIP 2 (species,
 # false-positive gate, bird/wildlife routing) + SigLIP 2 (search embeddings and
 # the default quality score), SpeciesNet classifier removed. Recorded in
 # kestrel_metadata.json as ``pipeline_major`` once every row of a folder was
 # produced (or upgraded) by this generation; absent = older rows present.
-PIPELINE_MAJOR = 3
+PIPELINE_MAJOR = int(PIPELINE_VERSION.split(".")[0])
 
 # First pipeline version that wrote MegaDetector + SAM-HQ square subject crops
 # (``crop/<base>_crop_<i>.jpg`` with ``crops_json``) and downscaled ``export/``
@@ -43,6 +51,11 @@ SIGLIP_MODELS_DIR = MODELS_DIR / "siglip"
 # exporter path is also what makes cedar DirectML-compatible — the dynamo-exported
 # mdv1000 variants hit a Reshape op DML rejects.
 DEFAULT_DETECTOR_NAME = "mdv5a"
+
+# Callers that opt in (the CLI and the desktop queue) stop a run after this many
+# consecutive frames that ended as Error rows: a healthy run has isolated bad
+# photos, a run where every frame fails has a broken session or device.
+DEFAULT_MAX_CONSECUTIVE_ERRORS = 10
 DETECTOR_ONNX_PATHS = {
     "mdv5a":         SPECIESNET_MODEL_DIR / "mdv5a.onnx",
     "mdv1000-cedar": SPECIESNET_MODEL_DIR / "mdv1000-cedar.onnx",

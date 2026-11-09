@@ -85,11 +85,15 @@ _ALLOWED_WILDLIFE_MODEL_MODES = {'fast', 'accurate'}
 # kestrel_analyzer/quality_model.py), and where the int8 BioCLIP / SigLIP
 # image towers run (kestrel_analyzer/ml/providers.py).
 _ALLOWED_QUALITY_MODELS = {'siglip', 'legacy'}
+# Keep in sync with kestrel_analyzer/quality_model.py (DEFAULT_QUALITY_MODEL).
+DEFAULT_QUALITY_MODEL = 'legacy'
+QUALITY_MODEL_MIGRATED_KEY = 'quality_model_legacy_migrated'
 _ALLOWED_TOWER_DEVICES = {'auto', 'cpu', 'gpu'}
 # Quality feedback (scene viewer "sort these by sharpness" prompt): whether to
 # ask before sharing, always share, or never show the prompt. Default "ask";
 # nothing is ever sent without the user's say-so.
 _ALLOWED_QUALITY_FEEDBACK_MODES = {'ask', 'always', 'never'}
+_ALLOWED_SCENE_FILMSTRIP_ORDERS = {'quality', 'time'}
 _QUALITY_FEEDBACK_INSTALL_ID_RE = re.compile(r'^qfi_[0-9a-f]{32}$')
 _ALLOWED_QUEUE_DETECTOR_NAMES = {'mdv5a', 'mdv1000-cedar'}
 # Biogeographic region codes for the species combobox. Sourced from the
@@ -519,7 +523,7 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
         out['rating_thresholds_custom'] = normalize_custom_thresholds(
             data.get('rating_thresholds_custom')
         )
-    _set_float('detection_threshold', default=0.25, min_value=0.1, max_value=0.99, digits=4)
+    _set_float('detection_threshold', default=0.15, min_value=0.1, max_value=0.99, digits=4)
     _set_float('scene_time_threshold', default=1.0, min_value=0.0, max_value=60.0, digits=4)
     # Long-gap scene break, in seconds. 0 = disabled (the historical behaviour:
     # scene boundaries come from AKAZE visual similarity alone, which chains
@@ -542,14 +546,22 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     # Analysis-mode feature toggles persisted so cloud-compute settings snapshot
     # (_cc_analysis_settings_snapshot) can read them without needing the UI to
     # pass them as runtime parameters.
-    _set_bool('wildlife_enabled', default=False)
+    _set_bool('wildlife_enabled', default=True)
     _set_bool('species_detection_enabled', default=True)
     # Smart search: also embed each image's downscaled whole frame with SigLIP
     # at analysis time (one extra tower run per photo) for context queries.
-    # The per-crop SigLIP embedding always runs (it is the default quality).
+    # The per-crop SigLIP embedding always runs (smart search and the optional siglip scorer).
     _set_bool('smart_search_enabled', default=True)
+    # Analyse each RAW's embedded JPEG preview instead of decoding the sensor
+    # data (much cheaper; no highlight recovery). Desktop queue only: the CLI
+    # (and so Cloud Compute) stays on RAW decode unless asked explicitly.
+    _set_bool('raw_use_embedded_preview', default=False)
     if 'quality_model' in data:
-        out['quality_model'] = _coerce_enum(data.get('quality_model'), _ALLOWED_QUALITY_MODELS, default='siglip')
+        out['quality_model'] = _coerce_enum(data.get('quality_model'), _ALLOWED_QUALITY_MODELS, default=DEFAULT_QUALITY_MODEL)
+    # One-time marker: set when the default scorer was switched back to the legacy
+    # CNN for existing users (see ``_migrate_quality_model_default``). After it is
+    # set, a user's own choice of 'siglip' is kept.
+    _set_bool(QUALITY_MODEL_MIGRATED_KEY, default=False)
     if 'tower_device' in data:
         out['tower_device'] = _coerce_enum(data.get('tower_device'), _ALLOWED_TOWER_DEVICES, default='auto')
     if 'quality_feedback_mode' in data:
@@ -568,6 +580,9 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     # pre-resilience behavior (single GPU session, no recovery).
     _set_bool('gpu_resilience_enabled', default=True)
     _set_bool('gpu_aggressive_recreate', default=False)
+    # Opt-in enhanced GPU mode (vendor execution providers via Windows ML; Windows only,
+    # ml/enhanced_gpu.py). Off until the user runs the setup action in Settings.
+    _set_bool('enhanced_gpu_enabled', default=False)
     if 'wildlife_model_mode' in data:
         out['wildlife_model_mode'] = _coerce_enum(
             data.get('wildlife_model_mode'),
@@ -626,6 +641,10 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     _set_bool('showBirdThumbs', default=False)
     _set_bool('onlyManualRatedScenes', default=False)
     _set_float('scene_preview_split_ratio', default=0.68, min_value=0.25, max_value=0.85, digits=4)
+    if 'scene_filmstrip_order' in data:
+        out['scene_filmstrip_order'] = _coerce_enum(
+            data.get('scene_filmstrip_order'), _ALLOWED_SCENE_FILMSTRIP_ORDERS, default='quality',
+        )
 
     if 'sortBy' in data:
         sort_by = _coerce_string(data.get('sortBy'), default='captureTime', max_len=64)
@@ -846,13 +865,54 @@ def load_persisted_settings() -> dict:
     """
     data, status = _load_settings_raw()
     if status == 'ok':
-        return _sanitize_settings_payload(data, emit_log=False)
+        return _migrate_quality_model_default(_sanitize_settings_payload(data, emit_log=False))
     if status == 'corrupt':
         bak_data = _load_backup_if_valid()
         if bak_data is not None:
             warn('[settings] Main settings file is corrupt; serving from .bak.')
-            return _sanitize_settings_payload(bak_data, emit_log=False)
+            return _migrate_quality_model_default(_sanitize_settings_payload(bak_data, emit_log=False))
     return {}
+
+
+_QM_MIGRATION_PERSIST_TRIED = False
+
+
+def _migrate_quality_model_default(settings: dict) -> dict:
+    """One-time switch of existing users to the legacy quality scorer.
+
+    The shipped 3.0 release defaulted to SigLIP and the settings dialog stored
+    ``quality_model`` on every save, so a stored ``siglip`` usually is not a
+    choice. The first time settings are loaded without the marker, set
+    ``quality_model='legacy'`` and the marker, in memory and (best effort, once
+    per process) on disk. Afterwards a deliberate switch back to SigLIP is kept.
+    Never raises; the in-memory result is returned even if the write fails.
+    A missing settings file (new install) needs no migration: the default is
+    already legacy and ``save_persisted_settings`` stamps the marker on the
+    first write.
+    """
+    global _QM_MIGRATION_PERSIST_TRIED
+    if settings.get(QUALITY_MODEL_MIGRATED_KEY):
+        return settings
+    out = dict(settings)
+    out['quality_model'] = DEFAULT_QUALITY_MODEL
+    out[QUALITY_MODEL_MIGRATED_KEY] = True
+    if _QM_MIGRATION_PERSIST_TRIED:
+        return out
+    _QM_MIGRATION_PERSIST_TRIED = True
+    try:
+        with _SAVE_LOCK:
+            raw, status = _load_settings_raw()
+            if status == 'corrupt':
+                raw = _load_backup_if_valid()
+            if isinstance(raw, dict) and not raw.get(QUALITY_MODEL_MIGRATED_KEY):
+                updated = dict(raw)
+                updated['quality_model'] = DEFAULT_QUALITY_MODEL
+                updated[QUALITY_MODEL_MIGRATED_KEY] = True
+                save_persisted_settings(updated)
+                info('[settings] quality_model set to legacy (one-time default change).')
+    except Exception as exc:
+        warn(f'[settings] quality_model migration not persisted: {exc}')
+    return out
 
 
 def _reap_orphan_tmp_files(directory: str) -> None:
@@ -901,6 +961,7 @@ def save_persisted_settings(data: dict) -> None:
         path = _get_settings_path()
         directory = os.path.dirname(path)
         existing_raw, status = _load_settings_raw()
+        first_write = status == 'missing'
 
         if status == 'corrupt':
             bak_data = _load_backup_if_valid()
@@ -922,6 +983,12 @@ def save_persisted_settings(data: dict) -> None:
             status = 'missing'
 
         data = _apply_monotonic_guard(data, existing_raw)
+
+        # The quality-model migration marker never regresses (a caller that omits
+        # it must not re-arm the migration), and a brand-new settings file is
+        # stamped as already migrated so the user's first choice is kept.
+        if first_write or (isinstance(existing_raw, dict) and existing_raw.get(QUALITY_MODEL_MIGRATED_KEY) is True):
+            data[QUALITY_MODEL_MIGRATED_KEY] = True
 
         # Re-sanitize while preserving forward-compatible keys so merges from the UI
         # cannot strip unknown keys that were loaded from disk.

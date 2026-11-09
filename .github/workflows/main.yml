@@ -93,7 +93,7 @@ jobs:
           python -m venv .venv2
           .\.venv2\Scripts\Activate.ps1
           python -m pip install --upgrade pip
-          # Windows build uses onnxruntime-directml (DirectML GPU acceleration).
+          # Windows build uses onnxruntime-windowsml (DirectML GPU acceleration + optional Windows ML vendor EPs).
           # See requirements-windows.txt.
           pip install -r requirements-windows.txt
           pip install pyinstaller pytest
@@ -364,6 +364,8 @@ jobs:
         with:
           name: windows-bundle
           path: analyzer/dist/ProjectKestrel/
+          # The bundled sample sets only contain .kestrel/ (hidden) folders, which upload-artifact@v4 skips by default.
+          include-hidden-files: true
 
       - name: Register build with worker
         if: ${{ always() && steps.attestation.outputs.sha != '' }}

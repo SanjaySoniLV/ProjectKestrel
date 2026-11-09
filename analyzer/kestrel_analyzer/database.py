@@ -6,7 +6,13 @@ import time
 
 import pandas as pd
 
-from .config import DATABASE_NAME, METADATA_FILENAME, SCENEDATA_FILENAME, VERSION
+from .config import (
+    DATABASE_NAME,
+    METADATA_FILENAME,
+    PIPELINE_MAJOR,
+    PIPELINE_VERSION,
+    SCENEDATA_FILENAME,
+)
 from .logging_utils import log_warning, utc_now_naive
 
 # Leveled console logging — kestrel_analyzer is sometimes imported standalone
@@ -120,7 +126,8 @@ def load_database(kestrel_dir: str, analyzer_name: str, log_path: str = None):
         try:
             if not os.path.exists(metadata_path):
                 metadata = {
-                    "version": VERSION,
+                    "pipeline_version": PIPELINE_VERSION,
+                    "pipeline_major": PIPELINE_MAJOR,
                     "schema_version": DATABASE_SCHEMA_VERSION,
                     "analyzer": analyzer_name,
                     "created_utc": utc_now_naive().isoformat() + "Z",

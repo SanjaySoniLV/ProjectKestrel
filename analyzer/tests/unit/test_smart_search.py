@@ -458,7 +458,7 @@ def test_settings_are_sanitised():
     assert settings_utils._sanitize_settings_payload({"smart_search_enabled": True})["smart_search_enabled"] is True
     s = settings_utils._sanitize_settings_payload
     assert s({"quality_model": "legacy"})["quality_model"] == "legacy"
-    assert s({"quality_model": "bogus"})["quality_model"] == "siglip"
+    assert s({"quality_model": "bogus"})["quality_model"] == "legacy"
     assert s({"tower_device": "cpu"})["tower_device"] == "cpu"
     assert s({"tower_device": 7})["tower_device"] == "auto"
 
@@ -480,3 +480,127 @@ def test_read_kestrel_csv_applies_the_quality_model_lazily(api, folder, monkeypa
     api.read_kestrel_csv(str(folder))
     df2 = pd.read_csv(os.path.join(kdir, "kestrel_database.csv"))
     assert (df2["quality"] - df2["quality_legacy"]).abs().max() < 1e-6
+
+
+def test_first_read_under_the_default_scorer_switches_to_legacy_and_keeps_user_edits(api, folder, monkeypatch):
+    import pandas as pd
+    from kestrel_analyzer.ratings import quality_to_rating
+
+    kdir = folder / ".kestrel"
+    _upgrade(str(kdir))  # written by the 3.0 release: SigLIP effective
+    df = pd.read_csv(kdir / "kestrel_database.csv")
+    n = len(df)
+    df["culled"] = (["reject", "", "accept", ""] + [""] * n)[:n]
+    df["culled_origin"] = (["manual", "", "manual", ""] + [""] * n)[:n]
+    df.to_csv(kdir / "kestrel_database.csv", index=False)
+    sd = kdir / "kestrel_scenedata.json"
+    sd.write_text(json.dumps({"version": "2.0", "image_ratings": {"A.CR3": {"rating": 5, "origin": "manual"}}, "scenes": {}}))
+    sd_before = sd.read_bytes()
+
+    monkeypatch.setattr(api_bridge, "load_persisted_settings", lambda: {})  # no stored choice -> default
+    assert api.read_kestrel_csv(str(folder))["success"]
+
+    after = pd.read_csv(kdir / "kestrel_database.csv")
+    assert (after["quality"] - after["quality_legacy"]).abs().max() < 1e-6
+    for cj in after["crops_json"]:
+        for c in json.loads(cj):
+            if c.get("quality_legacy", -1) < 0:
+                continue  # no legacy score for this crop: keeps its fallback value
+            assert c["quality"] == pytest.approx(c["quality_legacy"])
+            assert c["rating"] == quality_to_rating(c["quality_legacy"])
+    assert after["culled"].fillna("").tolist() == df["culled"].fillna("").tolist()
+    assert after["culled_origin"].fillna("").tolist() == df["culled_origin"].fillna("").tolist()
+    assert sd.read_bytes() == sd_before                       # manual ratings and tags untouched
+    assert json.loads((kdir / "kestrel_metadata.json").read_text())["quality_model"] == "legacy"
+
+
+def test_failed_quality_rewrite_only_warns(api, folder, monkeypatch):
+    kdir = folder / ".kestrel"
+    _upgrade(str(kdir))
+    before = (kdir / "kestrel_database.csv").read_bytes()
+    from kestrel_analyzer import quality_model as qm
+
+    def denied(*a, **k):
+        raise PermissionError("read-only volume")
+
+    monkeypatch.setattr(qm, "apply_quality_model", denied)
+    monkeypatch.setattr(api_bridge, "load_persisted_settings", lambda: {})
+    r = api.read_kestrel_csv(str(folder))
+    assert r["success"] and r["data"]
+    assert (kdir / "kestrel_database.csv").read_bytes() == before
+
+
+def _second_folder(tmp_path):
+    root = tmp_path / "shoot2"
+    _make_folder(root, [("E.CR3", 1, "Song Sparrow", [(250, 0, 0)])])
+    return root
+
+
+def test_upgrades_run_one_at_a_time_in_request_order(api, folder, tmp_path, monkeypatch):
+    import threading
+
+    second = _second_folder(tmp_path)
+    order, release = [], threading.Event()
+    running = {"now": 0, "max": 0}
+    lock = threading.Lock()
+
+    def fake(kestrel_dir, pipeline, progress_cb=None, cancel_event=None, should_stop=None, log_path=None):
+        with lock:
+            running["now"] += 1
+            running["max"] = max(running["max"], running["now"])
+        order.append(os.path.basename(os.path.dirname(kestrel_dir)))
+        release.wait(5)
+        with lock:
+            running["now"] -= 1
+        return {}
+
+    monkeypatch.setattr(upgrade_v3, "upgrade_folder", fake)
+    j1 = api.upgrade_folder_v3(str(folder))
+    j2 = api.upgrade_folder_v3(str(second))
+    assert j1["success"] and j2["success"] and j2["queued"] is True
+    for _ in range(200):
+        if order:
+            break
+        time.sleep(0.01)
+    rows = {r["job_id"]: r for r in _upgrade_rows(api)}
+    assert rows[j1["job_id"]]["status"] == "running"
+    assert rows[j2["job_id"]]["status"] == "pending" and rows[j2["job_id"]]["phase"] == "queued"
+    again = api.upgrade_folder_v3(str(second))  # re-queueing a waiting folder returns the same job
+    assert again["job_id"] == j2["job_id"] and again["already_running"] and again["queued"]
+    release.set()
+    assert _wait(api, j1["job_id"])["phase"] == "complete"
+    assert _wait(api, j2["job_id"])["phase"] == "complete"
+    assert order == ["shoot", "shoot2"] and running["max"] == 1
+
+
+def test_cancelling_a_queued_upgrade_skips_it(api, folder, tmp_path, monkeypatch):
+    started = _blocking_upgrade(monkeypatch, {"canceled": True})
+    second = _second_folder(tmp_path)
+    j1 = api.upgrade_folder_v3(str(folder))
+    assert started.wait(5)
+    j2 = api.upgrade_folder_v3(str(second))
+    assert api.cancel_smart_search_index(j2["job_id"]) == {"success": True}
+    p2 = api.get_smart_search_index_progress(j2["job_id"])["progress"]
+    assert p2["done"] and p2["phase"] == "canceled"  # settled at once, never started
+    rows = {r["job_id"]: r for r in _upgrade_rows(api)}
+    assert rows[j2["job_id"]]["status"] == "cancelled"
+    assert rows[j1["job_id"]]["status"] == "running"
+    api.cancel_smart_search_index(j1["job_id"])
+    assert _wait(api, j1["job_id"])["phase"] == "canceled"
+
+
+def test_upgrade_folders_v3_queues_eligible_and_reports_the_rest(api, folder, tmp_path):
+    old = tmp_path / "old"
+    _make_folder(old, [("A.CR3", 1, "Song Sparrow", [(250, 0, 0)])], version="1.7.0")
+    second = _second_folder(tmp_path)
+    r = api.upgrade_folders_v3([str(folder), str(old), str(second), str(tmp_path / "missing"), 7])
+    assert r["success"]
+    by_path = {x["path"]: x for x in r["results"]}
+    assert by_path[str(folder)]["success"] and by_path[str(second)]["success"]
+    assert by_path[str(old)]["error"] == "reanalyze_required"
+    assert by_path[str(tmp_path / "missing")]["success"] is False
+    for p in (folder, second):
+        assert _wait(api, by_path[str(p)]["job_id"])["phase"] == "complete"
+    again = api.upgrade_folders_v3([str(folder)])["results"][0]
+    assert again["success"] is False and again["error"] == "current"
+    assert api.upgrade_folders_v3("nope")["success"] is False

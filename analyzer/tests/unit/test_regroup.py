@@ -30,8 +30,13 @@ from kestrel_analyzer.regroup import (
     REASON_FIRST,
     REASON_ORIENTATION,
     REASON_TIME_GAP,
+    CHANGE_MERGED,
+    CHANGE_SAME,
+    CHANGE_SPLIT,
     capture_gap_seconds,
+    classify_changes,
     compute_groups,
+    current_assignment,
     count_scored_pairs,
     map_similarity_threshold,
     parse_capture_time,
@@ -518,3 +523,157 @@ class TestPipelineParity:
 
         out = compute_groups(rows, group_within_seconds=3600, split_after_seconds=0)
         assert out[1]["reason"] == ""  # burst-merge swallowed the appearance break
+
+
+# ---------------------------------------------------------------------------
+# Boundary detail: which threshold fired and the measured value
+# ---------------------------------------------------------------------------
+
+class TestBoundaryDetail:
+    def test_time_gap_break_reports_gap_and_threshold(self):
+        out = compute_groups(one_pond_folder(), split_after_seconds=600)
+        breaks = [a for a in out if a["reason"] == REASON_TIME_GAP]
+        assert len(breaks) == 2
+        assert breaks[0]["detail"]["kind"] == "time"
+        assert breaks[0]["detail"]["value"] == pytest.approx(1199.7)
+        assert breaks[0]["detail"]["threshold"] == 600
+
+    def test_appearance_break_reports_score_and_the_cut_used(self):
+        # Control 1.0 -> feature cut 0.60; the stored 0.40 is below it.
+        out = compute_groups(one_pond_folder(), similarity_threshold=1.0)
+        hit = next(a for a in out if a["reason"] == REASON_APPEARANCE)
+        assert hit["detail"] == {
+            "kind": "feature", "value": 0.40, "threshold": MAX_FEATURE_CUT,
+        }
+
+    def test_colour_fallback_break_is_labelled_colour(self):
+        rows = [
+            burst_row("a.jpg", "2026-05-01T09:00:00"),
+            color_row("b.jpg", "2026-05-01T09:30:00", 0.30),
+        ]
+        out = compute_groups(rows)
+        assert out[1]["reason"] == REASON_APPEARANCE
+        assert out[1]["detail"]["kind"] == "color"
+        assert out[1]["detail"]["value"] == pytest.approx(0.30)
+        assert out[1]["detail"]["threshold"] == pytest.approx(DEFAULT_COLOR_CUT)
+
+    def test_orientation_break_reports_both_orientations(self):
+        rows = [
+            burst_row("a.jpg", "2026-05-01T09:00:00", "landscape"),
+            burst_row("b.jpg", "2026-05-01T09:00:00.1", "portrait"),
+        ]
+        out = compute_groups(rows)
+        assert out[1]["detail"] == {
+            "kind": "orientation", "from": "landscape", "to": "portrait",
+        }
+
+    def test_continuing_rows_and_the_first_row_have_no_detail(self):
+        out = compute_groups(one_pond_folder())
+        assert all("detail" not in a for a in out)
+
+    def test_detail_names_the_rule_that_won_not_a_lower_one(self):
+        # Orientation outranks the time gap, so the reported cause is the
+        # rotation even though the gap also exceeds the setting.
+        rows = [
+            burst_row("a.jpg", "2026-05-01T09:00:00", "landscape"),
+            burst_row("b.jpg", "2026-05-01T10:00:00", "portrait"),
+        ]
+        out = compute_groups(rows, split_after_seconds=60)
+        assert out[1]["reason"] == REASON_ORIENTATION
+        assert out[1]["detail"]["kind"] == "orientation"
+
+
+# ---------------------------------------------------------------------------
+# Index ranges (how the UI finds a scene's photos)
+# ---------------------------------------------------------------------------
+
+class TestSceneRanges:
+    def test_contiguous_scenes_are_one_range_each(self):
+        rows = sort_items(one_pond_folder())
+        out = summarize(rows, compute_groups(rows, split_after_seconds=600))
+        assert [s["ranges"] for s in out] == [[[0, 3]], [[4, 7]], [[8, 11]]]
+
+    def test_non_contiguous_scene_gets_several_ranges(self):
+        rows = [
+            {**burst_row(f"{i}.jpg", "2026-05-01T09:00:00"), "scene_count": sc}
+            for i, sc in enumerate(["1", "1", "2", "1"])
+        ]
+        out = summarize_current(rows)
+        assert out[0]["ranges"] == [[0, 1], [3, 3]]
+        assert out[1]["ranges"] == [[2, 2]]
+
+    def test_ranges_cover_every_image_exactly_once(self):
+        rows = sort_items(one_pond_folder())
+        for entries in (summarize_current(rows),
+                        summarize(rows, compute_groups(rows, split_after_seconds=60))):
+            covered = [i for s in entries for a, b in s["ranges"] for i in range(a, b + 1)]
+            assert sorted(covered) == list(range(len(rows)))
+
+    def test_summary_carries_the_boundary_detail(self):
+        rows = sort_items(one_pond_folder())
+        out = summarize(rows, compute_groups(rows, split_after_seconds=600))
+        assert "detail" not in out[0]
+        assert out[1]["detail"]["kind"] == "time"
+
+
+# ---------------------------------------------------------------------------
+# Unchanged / merged / split versus the current grouping
+# ---------------------------------------------------------------------------
+
+def _rows_with_scenes(scene_ids):
+    return [
+        {**burst_row(f"IMG_{i:04d}.jpg", "2026-05-01T09:00:00"), "scene_count": str(sc)}
+        for i, sc in enumerate(scene_ids)
+    ]
+
+
+def _classify(current_ids, proposed_ids):
+    rows = _rows_with_scenes(current_ids)
+    cur_assign = current_assignment(rows)
+    new_assign = [
+        {"filename": r["filename"], "scene": sc} for r, sc in zip(rows, proposed_ids)
+    ]
+    current = summarize(rows, cur_assign)
+    proposed = summarize(rows, new_assign)
+    classify_changes(current, proposed, cur_assign, new_assign)
+    return current, proposed
+
+
+class TestClassifyChanges:
+    def test_identical_grouping_is_all_same(self):
+        current, proposed = _classify([1, 1, 2, 2], [1, 1, 2, 2])
+        assert [s["change"] for s in current + proposed] == [CHANGE_SAME] * 4
+
+    def test_a_split_marks_the_pieces_split_and_the_original_split(self):
+        current, proposed = _classify([1, 1, 1, 1], [1, 1, 2, 2])
+        assert current[0]["change"] == CHANGE_SPLIT
+        assert current[0]["change_count"] == 2
+        assert [s["change"] for s in proposed] == [CHANGE_SPLIT, CHANGE_SPLIT]
+
+    def test_a_merge_marks_the_result_merged_and_the_originals_merged(self):
+        current, proposed = _classify([1, 1, 2, 2], [1, 1, 1, 1])
+        assert proposed[0]["change"] == CHANGE_MERGED
+        assert proposed[0]["change_count"] == 2
+        assert [s["change"] for s in current] == [CHANGE_MERGED, CHANGE_MERGED]
+
+    def test_untouched_scenes_stay_same_beside_a_changed_one(self):
+        # Current: A A | B B B | C.  Proposed splits B in two and keeps A, C.
+        current, proposed = _classify([1, 1, 2, 2, 2, 3], [1, 1, 2, 2, 3, 4])
+        assert [s["change"] for s in current] == [CHANGE_SAME, CHANGE_SPLIT, CHANGE_SAME]
+        assert [s["change"] for s in proposed] == [
+            CHANGE_SAME, CHANGE_SPLIT, CHANGE_SPLIT, CHANGE_SAME]
+
+    def test_plan_reports_change_counts(self):
+        plan = plan_regroup(one_pond_folder(), split_after_seconds=600)
+        stats = plan["stats"]
+        assert stats["proposed_scene_count"] == 3
+        assert stats["split_scenes"] == 3
+        assert stats["merged_scenes"] == 0
+        assert stats["unchanged_scenes"] == 0
+        assert all(s["change"] == CHANGE_SPLIT for s in plan["proposed"])
+        assert plan["current"][0]["change"] == CHANGE_SPLIT
+
+    def test_as_analyzed_settings_report_no_change(self):
+        plan = plan_regroup(one_pond_folder())
+        assert plan["stats"]["unchanged_scenes"] == plan["stats"]["proposed_scene_count"]
+        assert all(s["change"] == CHANGE_SAME for s in plan["current"] + plan["proposed"])

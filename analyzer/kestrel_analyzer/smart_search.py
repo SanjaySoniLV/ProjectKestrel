@@ -199,7 +199,14 @@ def folder_regions(kestrel_dir: str) -> List[str]:
 
 _cache_lock = threading.Lock()
 _index_cache: "OrderedDict[str, tuple]" = OrderedDict()
-_INDEX_CACHE_SIZE = 4
+# Bounded by memory, not folder count: a library of many day-folders searched
+# together (one smart_search call per folder) used to cycle through a 4-entry
+# LRU and re-read every folder's embeddings, CSV and scenedata on each query.
+# Matrices are cached as float16 (the on-disk precision), ~1.5 KB per vector,
+# so 80k photos with a crop + a frame vector each is roughly 0.3 GB.
+_INDEX_CACHE_BYTES = 768 * 1024 * 1024
+_INDEX_CACHE_MAX_ENTRIES = 256
+_ROW_OVERHEAD_BYTES = 512   # rough per-key Python overhead (keys, row maps)
 
 
 def _stat_sig(path: str) -> Tuple[float, int]:
@@ -211,7 +218,12 @@ def _stat_sig(path: str) -> Tuple[float, int]:
 
 
 class FolderIndex:
-    __slots__ = ("crop_keys", "crop_mat", "frame_keys", "frame_mat", "rows", "scenes", "regions")
+    __slots__ = ("crop_keys", "crop_mat", "frame_keys", "frame_mat", "rows", "scenes", "regions", "cov")
+
+
+def _index_nbytes(fi: "FolderIndex") -> int:
+    n = int(fi.crop_mat.nbytes) + int(fi.frame_mat.nbytes)
+    return n + _ROW_OVERHEAD_BYTES * (len(fi.crop_keys) + len(fi.frame_keys) + len(fi.rows.scene_of))
 
 
 def load_folder_index(kestrel_dir: str) -> FolderIndex:
@@ -232,22 +244,35 @@ def load_folder_index(kestrel_dir: str) -> FolderIndex:
             _index_cache.move_to_end(key)
             return hit[1]
     fi = FolderIndex()
-    fi.crop_keys, fi.crop_mat, _ = siglip.load_store(kestrel_dir, siglip.MODEL_ID)
-    fi.frame_keys, fi.frame_mat, _ = siglip.load_store(kestrel_dir, siglip.FRAME_SLOT)
+    fi.crop_keys, crop_mat, _ = siglip.load_store(kestrel_dir, siglip.MODEL_ID)
+    fi.frame_keys, frame_mat, _ = siglip.load_store(kestrel_dir, siglip.FRAME_SLOT)
+    # Stored as float16 on disk, so this round-trip is exact; scoring upcasts.
+    fi.crop_mat = crop_mat.astype(np.float16)
+    fi.frame_mat = frame_mat.astype(np.float16)
     fi.rows = read_folder_rows(kestrel_dir)
     fi.scenes = read_scene_tags(kestrel_dir)
     fi.regions = folder_regions(kestrel_dir)
+    # Both embedding index files are in the cache signature, so coverage is
+    # computed once per entry instead of re-parsing them on every query.
+    fi.cov = None
+    fi.cov = coverage(kestrel_dir, fi)
     with _cache_lock:
         _index_cache[key] = (sig, fi)
         _index_cache.move_to_end(key)
-        while len(_index_cache) > _INDEX_CACHE_SIZE:
-            _index_cache.popitem(last=False)
+        total = sum(_index_nbytes(v[1]) for v in _index_cache.values())
+        # Always keep the newest entry, even when it alone exceeds the budget.
+        while len(_index_cache) > 1 and (total > _INDEX_CACHE_BYTES
+                                         or len(_index_cache) > _INDEX_CACHE_MAX_ENTRIES):
+            _, (_, old) = _index_cache.popitem(last=False)
+            total -= _index_nbytes(old)
     return fi
 
 
 def coverage(kestrel_dir: str, fi: Optional[FolderIndex] = None) -> dict:
     """SigLIP coverage: crops (images with subjects) and whole frames (analysed images)."""
     from . import embedding_store
+    if fi is not None and getattr(fi, "cov", None) is not None:
+        return dict(fi.cov)
     rows = fi.rows if fi is not None else read_folder_rows(kestrel_dir)
     indexable = rows.indexable
     crop_live = embedding_store.live_filenames(kestrel_dir, slot=siglip.MODEL_ID, model=siglip.MODEL_ID)
@@ -412,7 +437,7 @@ def search_folder(kestrel_dir: str, query: str, limit: int = DEFAULT_LIMIT, enco
         t = np.asarray(enc.encode(sem), dtype=np.float32)
         crop_best: Dict[str, float] = {}
         if fi.crop_mat.shape[0]:
-            cs = fi.crop_mat @ t
+            cs = fi.crop_mat.astype(np.float32) @ t
             for (fn, ci), s in zip(fi.crop_keys, cs.tolist()):
                 if fn not in fi.rows.scene_of:
                     continue
@@ -420,7 +445,7 @@ def search_folder(kestrel_dir: str, query: str, limit: int = DEFAULT_LIMIT, enco
                     crop_best[fn], best_crop[fn] = float(s), int(ci)
         frame: Dict[str, float] = {}
         if fi.frame_mat.shape[0]:
-            fs = fi.frame_mat @ t
+            fs = fi.frame_mat.astype(np.float32) @ t
             for (fn, _ci), s in zip(fi.frame_keys, fs.tolist()):
                 if fn in fi.rows.scene_of:
                     frame[fn] = float(s)

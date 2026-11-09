@@ -270,6 +270,7 @@
       try { await hydrateSettingsFromServer(); } catch (_) { }
 
       const dlg = document.getElementById('settingsDlg');
+      if (window.egRefreshSettings) { try { window.egRefreshSettings(); } catch (_) { } }
       const editor = getSetting('editor', 'darktable');
       const editorSelect = document.getElementById('editorChoice');
       const customRow = document.getElementById('customEditorRow');
@@ -340,8 +341,10 @@
       if (autoSaveCb) autoSaveCb.checked = getSetting('auto_save_enabled', true);
       const smartSearchCb = document.getElementById('settingsSmartSearch');
       if (smartSearchCb) smartSearchCb.checked = getSetting('smart_search_enabled', true) !== false;
+      const rawPreviewCb = document.getElementById('settingsRawEmbeddedPreview');
+      if (rawPreviewCb) rawPreviewCb.checked = getSetting('raw_use_embedded_preview', false) === true;
       const qualityModelSel = document.getElementById('settingsQualityModel');
-      if (qualityModelSel) qualityModelSel.value = getSetting('quality_model', 'siglip') === 'legacy' ? 'legacy' : 'siglip';
+      if (qualityModelSel) qualityModelSel.value = getSetting('quality_model', 'legacy') === 'siglip' ? 'siglip' : 'legacy';
       const qfModeSel = document.getElementById('settingsQualityFeedbackMode');
       if (qfModeSel) {
         const qm = String(getSetting('quality_feedback_mode', 'ask') || 'ask');
@@ -416,8 +419,10 @@
       const autoSaveEnabled = autoSaveCb ? autoSaveCb.checked : true;
       const smartSearchCb2 = document.getElementById('settingsSmartSearch');
       const smartSearchEnabled = smartSearchCb2 ? smartSearchCb2.checked : true;
+      const rawPreviewCb2 = document.getElementById('settingsRawEmbeddedPreview');
+      const rawUseEmbeddedPreview = rawPreviewCb2 ? rawPreviewCb2.checked : getSetting('raw_use_embedded_preview', false) === true;
       const qualityModelEl = document.getElementById('settingsQualityModel');
-      const qualityModel = qualityModelEl && qualityModelEl.value === 'legacy' ? 'legacy' : 'siglip';
+      const qualityModel = qualityModelEl && qualityModelEl.value === 'siglip' ? 'siglip' : 'legacy';
       const qfModeEl = document.getElementById('settingsQualityFeedbackMode');
       const qualityFeedbackMode = qfModeEl && ['ask', 'always', 'never'].includes(qfModeEl.value) ? qfModeEl.value : 'ask';
       const towerEl = document.getElementById('settingsTowerDevice');
@@ -458,8 +463,10 @@
         raw_preview_cache_enabled: rawPreviewCacheEnabled,
         auto_save_enabled: autoSaveEnabled,
         smart_search_enabled: smartSearchEnabled,
+        raw_use_embedded_preview: rawUseEmbeddedPreview,
         quality_model: qualityModel,
         tower_device: towerDevice,
+        enhanced_gpu_enabled: (() => { const el = document.getElementById('settingsEnhancedGpu'); return el && !el.disabled ? !!el.checked : !!existing.enhanced_gpu_enabled; })(),
         quality_feedback_mode: qualityFeedbackMode,
         bird_regions: finalRegions,
         show_scientific_names: showScientificNames,
@@ -483,12 +490,12 @@
       // Quality scorer switch: the backend rewrites each folder's effective
       // `quality` from the stored scores when its CSV is next read, so save
       // pending edits and reload what is open (no re-analysis).
-      const qualityModelChanged = (existing.quality_model === 'legacy' ? 'legacy' : 'siglip') !== qualityModel;
+      const qualityModelChanged = (existing.quality_model === 'siglip' ? 'siglip' : 'legacy') !== qualityModel;
       if (qualityModelChanged && rows.length > 0) {
         try {
           if (dirty && typeof saveCsv === 'function') await saveCsv();
           if (typeof reloadCurrentFolders === 'function') await reloadCurrentFolders();
-          showToast(`Quality scorer: ${qualityModel === 'legacy' ? 'legacy model' : 'SigLIP 2 sharpness'}`, 3000);
+          showToast(`Quality scorer: ${qualityModel === 'legacy' ? 'older sharpness model' : 'newer sharpness model'}`, 3000);
         } catch (e) {
           console.warn('[quality_model] reload failed', e);
         }

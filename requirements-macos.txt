@@ -52,7 +52,7 @@ pyinstaller==6.20.0
 
 # EXIF reading
 exifread
-pillow==12.3.0
+pillow==13.0.0
 
 # speciesnet, segment-anything-hq, timm removed:
 # pipeline 3.0 no longer uses the SpeciesNet classifier; SAM-HQ runs via ONNX Runtime.

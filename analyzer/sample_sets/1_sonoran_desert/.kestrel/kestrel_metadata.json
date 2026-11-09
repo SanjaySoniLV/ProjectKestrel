@@ -1,0 +1,51 @@
+{
+  "pipeline_version": "3.0.0",
+  "pipeline_major": 3,
+  "schema_version": 3,
+  "analyzer": "cli",
+  "created_utc": "2026-11-09T15:56:25.349008Z",
+  "database_file": "kestrel_database.csv",
+  "exposure_pipeline_version": 3,
+  "exposure_render_mode": "numpy_linear_v2",
+  "exposure_quality": "balanced",
+  "analyzed_utc": "2026-11-09T15:59:41.493740Z",
+  "app_version": "Arctic Tern (FP 1) 7.1.0.0",
+  "analysis_settings": {
+    "detector_name": "mdv5a",
+    "use_gpu": true,
+    "wildlife_enabled": true,
+    "species_detection_enabled": true,
+    "detection_threshold": 0.15,
+    "scene_time_threshold": 1.0,
+    "scene_break_gap_seconds": 0.0,
+    "mask_threshold": 0.5,
+    "max_bird_crops": 10,
+    "parallel_prefetch": 3,
+    "rating_profile": "balanced",
+    "exposure_quality": "balanced",
+    "exposure_render_mode": "numpy_linear_v2",
+    "exposure_pipeline_version": 3,
+    "thumbnail_max_width": 2000,
+    "thumbnail_jpeg_compression": 0.8,
+    "thumbnail_jpeg_quality": 80,
+    "species_model": "bioclip-2",
+    "species_regions": [
+      "NA"
+    ],
+    "quality_model": "legacy",
+    "animal_gate": "linear_probe",
+    "smart_search_frames": true
+  },
+  "species_model": "bioclip-2",
+  "species_regions": [
+    "NA"
+  ],
+  "models": {
+    "detector": "mdv5a",
+    "species": "bioclip-2",
+    "siglip": "siglip2-b16",
+    "legacy_quality": "kestrel-quality-cnn-v1",
+    "animal_gate": "linear_probe"
+  },
+  "quality_model": "legacy"
+}

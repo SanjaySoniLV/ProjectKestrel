@@ -7,8 +7,16 @@ Two jobs:
    and how many graph nodes landed on each EP. ORT only reports node
    placement in its VERBOSE session log (``session_state.cc ... Node
    placements`` / ``Node(s) placed on [XExecutionProvider]. Number of nodes:
-   N``), which goes to the C stderr stream, so the build is wrapped in an
-   fd-level capture of stderr and the summary lines are parsed. For EPs that
+   N``), which goes to the C stderr stream, so a throwaway *probe* session is
+   built at VERBOSE inside an fd-level capture of stderr and the summary lines
+   are parsed. The session that actually runs is built separately at the
+   default severity: ORT fixes a session's log level at construction (neither
+   ``RunOptions`` nor ``set_default_logger_severity`` lowers it later), and a
+   VERBOSE session logs on every ``run()`` -- e.g. one ``execution_frame.cc``
+   "fall back to default allocation" line per dynamically-sized tensor, ~200
+   per image for SAM-HQ. Placement is cached per (model, providers, config) so
+   a recreate does not probe again, and a CPU-only list is not probed at all
+   (every node is on CPU by definition). For EPs that
    compile subgraphs (CoreML, DirectML partitions) a count is the number of
    *fused partitions* plus any loose nodes ORT assigned to that EP, so "many
    nodes on CPU next to a GPU EP" is the signature of a split graph that
@@ -74,7 +82,11 @@ _MIN_GRAPH_BYTES = 100_000  # LFS pointer stubs are ~130 bytes
 _PLACED_RE = re.compile(r"placed on \[(\w+)\]\. Number of nodes: (\d+)")
 
 _lock = threading.Lock()
+# Set when a probe captured no placement lines at all: the onnxruntime-windowsml build (ORT 1.25.2)
+# writes no log text to stdout/stderr, so probing would only build every model twice for nothing.
+_probe_unsupported = False
 _records: List[dict] = []
+_placement_cache: Dict[tuple, Dict[str, int]] = {}
 
 
 def _diag_enabled() -> bool:
@@ -149,22 +161,26 @@ def _is_ort_log_line(line: str) -> bool:
     return ":onnxruntime:" in line and ("[V:" in line or "[I:" in line)
 
 
-def build_session(model_path: str, providers: List[str], kind: str = "",
-                  config: Optional[Dict[str, str]] = None):
-    """``ort.InferenceSession`` + placement record. Falls back to a plain build
-    whenever the stderr capture cannot be set up (no fd 2, frozen GUI app...).
-    ``config`` = session config entries (``SessionOptions.add_session_config_entry``)."""
-    import onnxruntime as ort
-
+def _session_options(ort, config: Optional[Dict[str, str]]):
     so = ort.SessionOptions()
     for k, v in (config or {}).items():
         so.add_session_config_entry(str(k), str(v))
-    if not _diag_enabled():
-        return ort.InferenceSession(model_path, sess_options=so, providers=providers)
+    return so
+
+
+def _needs_probe(providers: List[str]) -> bool:
+    return any(_ep_name(p) != "CPUExecutionProvider" for p in providers)
+
+
+def _probe_placement(ort, model_path: str, providers: List[str],
+                     config: Optional[Dict[str, str]]) -> Optional[Dict[str, int]]:
+    """Build a throwaway VERBOSE session with fd 2 captured and return its per-EP
+    node counts, or None when the capture cannot be set up (no fd 2, frozen GUI
+    app...). A build error propagates: the real build would fail the same way."""
+    so = _session_options(ort, config)
     so.log_severity_level = 0
     so.log_verbosity_level = 0
     captured = ""
-    sess = None
     with _lock:
         saved = None
         tmp = None
@@ -183,26 +199,31 @@ def build_session(model_path: str, providers: List[str], kind: str = "",
                     os.close(saved)
                 except Exception:
                     pass
-            saved = None
-        try:
-            sess = ort.InferenceSession(model_path, sess_options=so, providers=providers)
-        finally:
-            if saved is not None:
-                try:
-                    os.dup2(saved, 2)
-                    os.close(saved)
-                except Exception:
-                    pass
-                try:
-                    tmp.seek(0)
-                    captured = _decode_ort_log(tmp.read())
-                except Exception:
-                    captured = ""
             if tmp is not None:
                 try:
                     tmp.close()
                 except Exception:
                     pass
+            return None
+        try:
+            probe = ort.InferenceSession(model_path, sess_options=so, providers=providers)
+            # Release before the real build so a GPU EP never holds two copies.
+            del probe
+        finally:
+            try:
+                os.dup2(saved, 2)
+                os.close(saved)
+            except Exception:
+                pass
+            try:
+                tmp.seek(0)
+                captured = _decode_ort_log(tmp.read())
+            except Exception:
+                captured = ""
+            try:
+                tmp.close()
+            except Exception:
+                pass
     # Re-emit anything that is not ORT's verbose/info chatter (warnings, other
     # threads' prints that landed in the capture window).
     if captured:
@@ -212,16 +233,17 @@ def build_session(model_path: str, providers: List[str], kind: str = "",
                 sys.stderr.write("\n".join(rest) + "\n")
             except Exception:
                 pass
-    try:
-        actual = [str(p) for p in sess.get_providers()]
-    except Exception:
-        actual = []
+    return parse_placement(captured)
+
+
+def _record_session(kind: str, model_path: str, requested: list, actual: list, nodes: Optional[Dict[str, int]],
+                    config: Optional[Dict[str, str]]) -> None:
     record = {
         "kind": str(kind),
         "model": os.path.basename(str(model_path)),
-        "requested": list(providers),
+        "requested": list(requested),
         "actual": actual,
-        "nodes": parse_placement(captured),
+        "nodes": nodes or {},
     }
     if config:
         record["config"] = dict(config)
@@ -230,7 +252,9 @@ def build_session(model_path: str, providers: List[str], kind: str = "",
         del _records[:-64]
     try:
         from ..logging_utils import debug
-        nodes = ", ".join(f"{k.replace('ExecutionProvider', '')}={v}" for k, v in record["nodes"].items()) or "n/a"
+        nodes = ", ".join(f"{k.replace('ExecutionProvider', '')}={v}" for k, v in record["nodes"].items())
+        if not nodes:
+            nodes = "all CPU (not probed)" if actual == ["CPUExecutionProvider"] else "n/a"
         debug(
             f"[providers] {record['kind'] or record['model']} ({record['model']}): "
             f"requested={record['requested']} actual={record['actual']} nodes: {nodes}"
@@ -238,6 +262,45 @@ def build_session(model_path: str, providers: List[str], kind: str = "",
         )
     except Exception:
         pass
+
+
+def build_session(model_path: str, providers: List[str], kind: str = "",
+                  config: Optional[Dict[str, str]] = None, vendor=None):
+    """``ort.InferenceSession`` + placement record (see the module docstring).
+    The returned session always logs at ORT's default severity.
+    ``config`` = session config entries (``SessionOptions.add_session_config_entry``).
+    ``vendor`` = an ``enhanced_gpu.VendorSpec``: build on that vendor EP's GPU device instead of
+    ``providers`` (enhanced GPU mode; raises if it cannot, the caller falls back)."""
+    import onnxruntime as ort
+
+    if vendor is not None:
+        from . import enhanced_gpu
+        sess = enhanced_gpu.build_vendor_session(ort, model_path, _session_options(ort, config), vendor)
+        try:
+            actual = [str(p) for p in sess.get_providers()]
+        except Exception:
+            actual = []
+        _record_session(kind, model_path, [f"{vendor.ep_name} (enhanced GPU)"], actual, None, config)
+        return sess
+    if not _diag_enabled():
+        return ort.InferenceSession(model_path, sess_options=_session_options(ort, config), providers=providers)
+    key = (str(model_path), repr(list(providers)), tuple(sorted((config or {}).items())))
+    with _lock:
+        nodes = _placement_cache.get(key)
+    global _probe_unsupported
+    if nodes is None and not _probe_unsupported and _needs_probe(providers):
+        nodes = _probe_placement(ort, model_path, providers, config)
+        if nodes is not None:
+            with _lock:
+                _placement_cache[key] = nodes
+            if not nodes:
+                _probe_unsupported = True
+    sess = ort.InferenceSession(model_path, sess_options=_session_options(ort, config), providers=providers)
+    try:
+        actual = [str(p) for p in sess.get_providers()]
+    except Exception:
+        actual = []
+    _record_session(kind, model_path, providers, actual, nodes, config)
     return sess
 
 
@@ -247,5 +310,8 @@ def placement_summary() -> List[dict]:
 
 
 def clear() -> None:
+    global _probe_unsupported
     with _lock:
+        _probe_unsupported = False
         _records.clear()
+        _placement_cache.clear()

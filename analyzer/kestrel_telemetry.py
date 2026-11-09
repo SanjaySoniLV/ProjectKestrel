@@ -483,6 +483,143 @@ def send_folder_analytics(
         pass  # failsafe
 
 
+# Donate-prompt and Support-button interactions, counted so the prompt's
+# conversion can be measured. The worker keeps the same allowlist and drops
+# anything else.
+DONATE_EVENTS = frozenset({
+    'donate_prompt_shown',
+    'donate_prompt_support',
+    'donate_prompt_feedback',
+    'donate_prompt_close',
+    'support_button_click',
+})
+DONATE_TRIGGERS = frozenset({'analysis', 'startup'})
+
+
+def get_build_label() -> str:
+    """Finer-grained build label than the dist channel (failsafe).
+
+    One of 'mac_appstore', 'mac_dmg', 'windows_store', 'windows_installer',
+    'source' (not frozen) or 'other'.
+    """
+    try:
+        if not is_frozen():
+            return 'source'
+        if _get_dist_channel() == 'appstore':
+            return 'mac_appstore'
+        if sys.platform == 'darwin':
+            return 'mac_dmg'
+        if sys.platform == 'win32':
+            exe_dir = os.path.dirname(sys.executable)
+            if 'WindowsApps' in exe_dir or os.environ.get('APPX_PACKAGE_ROOT') is not None:
+                return 'windows_store'
+            return 'windows_installer'
+        return 'other'
+    except Exception:
+        return 'other'
+
+
+def send_donate_event(
+    event: str,
+    milestone: int = 0,
+    trigger: str = '',
+    donate_link: Optional[bool] = None,
+    machine_id: str = '',
+    version: str = '',
+) -> bool:
+    """Record one donate-prompt / Support-button interaction (async, failsafe).
+
+    Only called when the user has opted in to analytics. Returns True when an
+    event was queued, False when it was rejected (unknown event name) or
+    failed to build.
+
+    Parameters
+    ----------
+    event : str
+        One of ``DONATE_EVENTS``.
+    milestone : int
+        Lifetime-photos milestone the prompt was shown for (0 for the
+        top-strip button).
+    trigger : str
+        'analysis' (after a folder finished) or 'startup'; '' for the button.
+    donate_link : bool, optional
+        Whether this build's Support link includes a payment path
+        (``get_support_url()['donate']``).
+    """
+    try:
+        if event not in DONATE_EVENTS:
+            return False
+        try:
+            milestone = max(0, min(int(milestone or 0), 1_000_000_000))
+        except (TypeError, ValueError):
+            milestone = 0
+        payload = {
+            'machine_id': machine_id,
+            'version': version or _read_version(),
+            'os': _get_os_info(),
+            'build': get_build_label(),
+            'event': event,
+            'milestone': milestone,
+            'trigger': trigger if trigger in DONATE_TRIGGERS else '',
+            'donate_link': donate_link if isinstance(donate_link, bool) else None,
+        }
+        _post_json_async('/api/ui_event', payload)
+        return True
+    except Exception:
+        return False
+
+
+# "Did Kestrel sort by sharpness well?" thumbs-up in the scene viewer. Sent as
+# one /api/ui_event with only aggregate counts and the active scorer name:
+# no filenames, paths, species, image data or scene ids. The worker keeps the
+# same allowlist and rejects anything else.
+QUALITY_THUMBS_UP_EVENT = 'quality_thumbs_up'
+QUALITY_THUMBS_SCORERS = frozenset({'siglip', 'legacy'})
+
+
+def send_quality_thumbs_up(
+    scene_images: int,
+    scene_crops: int = 0,
+    scorer: str = '',
+    machine_id: str = '',
+    version: str = '',
+) -> bool:
+    """Record one scene-viewer thumbs-up (async, failsafe).
+
+    Only called when the user has opted in to analytics. Returns True when an
+    event was queued, False when building it failed.
+
+    Parameters
+    ----------
+    scene_images : int
+        Number of images in the scene.
+    scene_crops : int
+        How many of them have a bird crop.
+    scorer : str
+        Active sharpness scorer, ``'siglip'`` or ``'legacy'`` ('' if unknown).
+    """
+    try:
+        def _count(v) -> int:
+            try:
+                return max(0, min(int(v or 0), 100_000))
+            except (TypeError, ValueError):
+                return 0
+        payload = {
+            'machine_id': machine_id,
+            'version': version or _read_version(),
+            'os': _get_os_info(),
+            'build': get_build_label(),
+            'event': QUALITY_THUMBS_UP_EVENT,
+            'scene_images': _count(scene_images),
+            'scene_crops': _count(scene_crops),
+            'scorer': scorer if scorer in QUALITY_THUMBS_SCORERS else '',
+        }
+        _post_json_async('/api/ui_event', payload)
+        return True
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Public API: Log Tail
 # ---------------------------------------------------------------------------
