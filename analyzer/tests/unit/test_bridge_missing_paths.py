@@ -136,3 +136,44 @@ class TestStartAnalysisQueue:
         assert res['success'] is False
         assert res['invalid_paths'] == [str(outside)]
         assert self.qm.calls == []
+
+
+class TestInspectFoldersKeysByInputPath:
+    """Results must be keyed by the path the caller sent, not its realpath.
+
+    ``_validate_root_dir`` canonicalises with ``os.path.realpath``. On Windows
+    that turns a mapped network drive (``P:\\Birds``) into its UNC form
+    (``\\\\server\\share\\Birds``), so a caller looking its own path up in
+    ``results`` found nothing and the Analyze dialog showed 0 images for a NAS
+    folder that analysed fine. A symlink reproduces the same rewrite on any OS.
+    """
+
+    @pytest.fixture
+    def linked_dir(self, real_dir, tmp_path):
+        (real_dir / 'IMG_0001.JPG').write_bytes(b'\xff\xd8\xff\xd9')
+        link = tmp_path / 'mapped-drive'
+        try:
+            link.symlink_to(real_dir, target_is_directory=True)
+        except (OSError, NotImplementedError):  # pragma: no cover - Windows without symlink rights
+            pytest.skip('symlinks unavailable')
+        return link
+
+    def test_result_is_found_under_the_path_the_caller_sent(self, api, linked_dir):
+        res = api.inspect_folders([str(linked_dir)])
+
+        assert res['success'] is True
+        assert list(res['results']) == [str(linked_dir)]
+        assert res['results'][str(linked_dir)]['total'] == 1
+
+    def test_plain_path_is_still_keyed_by_itself(self, api, real_dir):
+        (real_dir / 'IMG_0001.JPG').write_bytes(b'\xff\xd8\xff\xd9')
+
+        res = api.inspect_folders([str(real_dir)])
+
+        assert res['results'][str(real_dir)]['total'] == 1
+
+    def test_two_spellings_of_one_folder_each_get_a_result(self, api, real_dir, linked_dir):
+        res = api.inspect_folders([str(linked_dir), str(real_dir)])
+
+        assert set(res['results']) == {str(linked_dir), str(real_dir)}
+        assert res['results'][str(linked_dir)] == res['results'][str(real_dir)]

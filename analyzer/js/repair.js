@@ -61,8 +61,18 @@
         return null;
     }
 
+    /**
+     * The bundled demo sets (and their per-session temp mirrors) ship only
+     * their .kestrel data, never the photos, so every photo would count as
+     * missing. Never offer a repair for them.
+     */
+    function _repairIsSampleSet(rootPath) {
+        return /\/sample_sets\/[^/]+$/i.test(_repairNorm(rootPath));
+    }
+
     /** True if this folder has drift worth showing the user. */
     function folderHasDrift(rootPath) {
+        if (_repairIsSampleSet(rootPath)) return false;
         const hit = _repairLookup(rootPath);
         if (!hit || hit.diff.scan_status !== 'ok') return false;
         if (_repairDismissed.has(hit.key)) return false;

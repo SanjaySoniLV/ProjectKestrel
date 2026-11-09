@@ -159,6 +159,27 @@ def test_unclean_exits_switch_the_mode_off(monkeypatch):
     assert eg.vendor_spec_for("detector", "mdv5a.onnx") is None
 
 
+def test_clean_exit_resets_the_unclean_exit_count(monkeypatch):
+    """One unclean exit, then a clean run: the count resets, so a later unclean exit is the
+    first again and does not switch the mode off."""
+    _good_state()
+    monkeypatch.setattr(eg, "_pid_alive", lambda pid: False)
+    eg._write_json(eg._marker_path(), {"pid": 99999999, "at": 1})
+    eg.reset_cache()
+    eg.current_spec()
+    assert eg.load_state().get("unclean_exits") == 1
+    monkeypatch.setattr(eg.atexit, "register", lambda fn: None)
+    eg.mark_run_started()
+    eg.mark_run_finished()
+    assert not eg._marker_path().exists()
+    assert not eg.load_state().get("unclean_exits")
+    for _ in range(eg.MAX_UNCLEAN_EXITS - 1):
+        eg._write_json(eg._marker_path(), {"pid": 99999999, "at": 1})
+        eg.reset_cache()
+        eg.current_spec()
+    assert not eg.load_state().get("disabled")
+
+
 def test_live_marker_owner_is_not_counted(monkeypatch):
     _good_state()
     monkeypatch.setattr(eg, "_pid_alive", lambda pid: True)
@@ -391,6 +412,15 @@ def test_setup_skips_directml_cpu_webgpu_and_npu_only_eps(monkeypatch):
                lambda ep, progress, cancel, timeout=0: called.append(ep))
     st = eg.run_setup()
     assert not st["ok"] and called == [] and "did not offer" in st["reason"]
+    assert st["no_provider"] is True and eg.status()["no_provider"] is True
+
+
+def test_setup_offered_package_that_failed_to_install_is_a_real_failure(monkeypatch):
+    _setup_env(monkeypatch, [_dev("DmlExecutionProvider")], lambda ep, progress, cancel, timeout=0: None)
+    monkeypatch.setattr(eg, "_rt_install_failures", ["MIGraphXExecutionProvider"])
+    st = eg.run_setup()
+    assert not st["ok"] and "could not be installed" in st["reason"]
+    assert "no_provider" not in st and eg.status()["no_provider"] is False
 
 
 def test_setup_windows_ml_failure_is_reported_not_raised(monkeypatch):

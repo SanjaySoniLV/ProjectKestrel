@@ -45,7 +45,7 @@ def model_file(kind: str) -> str:
 
 def _sample_images(source: str) -> List[Path]:
     from ..config import ANALYZER_DIR
-    base = Path(ANALYZER_DIR) / "sample_sets" / "backyard_birds" / ".kestrel" / source
+    base = Path(ANALYZER_DIR) / "sample_sets" / "1_sonoran_desert" / ".kestrel" / source
     files = sorted(base.glob("*.jpg"))
     if not files:
         raise FileNotFoundError(f"no bundled sample images in {base}")

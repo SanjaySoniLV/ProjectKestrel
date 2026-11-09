@@ -333,6 +333,29 @@ HOST = '127.0.0.1'
 # Quality feedback (see the "Quality feedback" section of Api).
 _QF_MODE_KEY = 'quality_feedback_mode'
 _QF_INSTALL_ID_KEY = 'quality_feedback_install_id'
+
+# Session / shutdown bookkeeping owned by visualizer._mark_session_start,
+# the clean-exit path and clear_recovery_state. The frontend caches a full
+# get_settings() snapshot in localStorage at startup and sends it back whole
+# on many later saves (folder recents, mergeSetting, the settings dialog), so
+# without this filter a stale copy re-adds last_unclean_shutdown_utc after the
+# user has dealt with the recovery prompt, and the same unclean shutdown is
+# offered for reporting again on a later launch.
+_SESSION_OWNED_SETTINGS_KEYS = frozenset({
+    'last_unclean_shutdown_utc',
+    'last_exit_reason',
+    'app_session_exit_reason',
+    'exit_reason_migrated_v1',
+    'app_session_started_utc',
+    'app_session_closed_cleanly',
+    'app_session_pid',
+    'last_session_closed_utc',
+})
+# Written only by Python: enhanced GPU setup turns it on, and the Settings
+# checkbox calls enhanced_gpu_set_enabled the moment it changes. Whole-object
+# frontend saves (mergeSetting, the settings dialog) carry a cached copy that
+# can predate setup, so they must not write it back.
+_ENHANCED_GPU_ENABLED_KEY = 'enhanced_gpu_enabled'
 _QF_MODES = ('ask', 'always', 'never')
 _QF_MAX_SESSIONS = 8
 _QF_PREVIEW_MAX_SIDE = 1024
@@ -1886,6 +1909,38 @@ class Api:
         except Exception:
             return {'success': True, 'sent': False}
 
+    def record_quality_thumbs_up(self, data):
+        """Count a scene-viewer sharpness thumbs-up. Called from JS.
+
+        Same consent gate as ``record_donate_event``: sent only when
+        ``analytics_opted_in`` is True; otherwise nothing leaves the machine.
+        JS passes aggregate counts only (``scene_images``, ``scene_crops``,
+        ``has_siglip``); the active scorer is derived here from the
+        ``quality_model`` setting the same way the feedback dialog does.
+        Fire-and-forget: returns ``{'success': True, 'sent': bool}`` and
+        never raises.
+        """
+        try:
+            if _telemetry is None or not isinstance(data, dict):
+                return {'success': True, 'sent': False}
+            settings = load_persisted_settings() or {}
+            if settings.get('analytics_opted_in', False) is not True:
+                return {'success': True, 'sent': False}
+            scorer = str(settings.get('quality_model') or 'legacy').lower()
+            if scorer not in ('siglip', 'legacy'):
+                scorer = 'legacy'
+            if data.get('has_siglip') is not True:
+                scorer = 'legacy'  # scene has no SigLIP scores; legacy is what ranked it
+            sent = _telemetry.send_quality_thumbs_up(
+                scene_images=data.get('scene_images') or 0,
+                scene_crops=data.get('scene_crops') or 0,
+                scorer=scorer,
+                machine_id=_telemetry.get_machine_id(settings),
+            )
+            return {'success': True, 'sent': bool(sent)}
+        except Exception:
+            return {'success': True, 'sent': False}
+
     def inspect_folder(self, folder_path: str):
         """Return lightweight folder summary (total images, processed count)."""
         try:
@@ -1954,9 +2009,20 @@ class Api:
                     # from being inspected.
                     missing_paths.append(str(raw))
                     continue
-                validated_paths.append(root_real)
+                validated_paths.append((str(raw), root_real))
 
-            results = inspector.inspect_folders(validated_paths)
+            by_real = inspector.inspect_folders([real for _, real in validated_paths])
+            # Key each result by the path the caller sent, not by root_real.
+            # realpath rewrites a Windows mapped network drive (P:\...) to its
+            # UNC form (\\server\share\...) and resolves symlinks/junctions, so
+            # realpath keys never matched the caller's own path and a NAS folder
+            # showed 0 images in the Analyze dialog. The inspector strips
+            # trailing separators from its keys; do the same for the lookup.
+            results = {}
+            for raw, real in validated_paths:
+                key = real.rstrip('/\\')
+                if key in by_real:
+                    results[raw] = by_real[key]
             return {'success': True, 'results': results, 'missing_paths': missing_paths}
         except Exception as e:
             error(f'[API] inspect_folders error: {e}')
@@ -2798,8 +2864,9 @@ class Api:
         """Start re-scoring a folder's species/family predictions for new ``regions``.
 
         Uses the stored BioCLIP embeddings only (no detection, no image decode).
-        Species in scenes with user-edited or finalized tags and non-bird
-        wildlife labels are left alone. Runs on a worker thread; poll
+        Non-bird wildlife labels are left alone. Images in scenes with
+        user-edited or finalized tags are re-scored too, but those scenes' tags
+        in the scenedata file are not changed. Runs on a worker thread; poll
         ``get_species_rescore_status``. Refused while an analysis or upgrade is running.
         """
         try:
@@ -3324,23 +3391,44 @@ class Api:
     #  Telemetry / Feedback API                                            #
     # ------------------------------------------------------------------ #
 
-    # Map dialog type values to Auth Worker report_type enum.
-    # 'liked' has no direct equivalent; fold into 'general'.
-    _FEEDBACK_TYPE_MAP: dict[str, str] = {
-        'bug':        'bug',
-        'suggestion': 'suggestion',
-        'liked':      'general',
-        'general':    'general',
-        'account':    'account',
-    }
+    def _support_import(self):
+        """Lazy import of support_client. Returns the module or raises."""
+        try:
+            import support_client as sc
+            return sc
+        except ImportError:
+            from analyzer import support_client as sc  # type: ignore[no-redef]
+            return sc
+
+    def _support_make_client(self):
+        """Build an authenticated SupportClient. Returns (client, error_dict).
+        Same Clerk token as the account calls; only the host differs."""
+        token, dev_user, token_err = self._check_auth_token()
+        if token_err:
+            return None, token_err
+        try:
+            sc = self._support_import()
+        except ImportError as e:
+            return None, {"ok": False, "error": f"support_client import failed: {e}"}
+        try:
+            client = sc.SupportClient(sc.default_support_api_base(), token, dev_user=dev_user)
+        except ValueError as e:
+            return None, {"ok": False, "error": str(e)}
+        return client, None
 
     def send_feedback(self, data):
-        """Send feedback / bug report (async, failsafe). Called from JS.
+        """Send feedback / bug report (failsafe). Called from JS.
 
-        When the user is signed in, routes to the Auth Worker
-        (POST /v1/me/feedback) so feedback lands in the unified store.
-        Falls back to the analytics-worker path when signed out or if the
-        Auth Worker call fails.  Screenshots stay on the analytics path.
+        Signed-in users who tick "Send as <account>" post to the Support host
+        (POST /v1/me/reports) with the redacted log tail and screenshot.
+        Everything else — signed out, box unticked, or the Support call
+        failing — takes the anonymous analytics path, unchanged.
+
+        Returns ``{'success': True}`` plus, on the signed-in path, ``ref`` (the
+        support case reference, when the report joined or created one) and
+        ``screenshot_dropped`` (a reason string, when the screenshot could not
+        be sent). ``sent_anonymously`` is True when the user asked to send as
+        their account but the report fell back to the anonymous path.
         """
         try:
             if _telemetry is None:
@@ -3350,48 +3438,78 @@ class Api:
                 return {'success': False, 'error': 'Invalid data'}
             settings = load_persisted_settings()
             machine_id = _telemetry.get_machine_id(settings)
+            include_logs = bool(data.get('include_logs', False))
             log_tail = ''
-            if data.get('include_logs', False):
+            if include_logs:
                 active_folder = str(settings.get('active_analysis_path', '') or '').strip()
                 log_tail = _telemetry.get_recent_log_tail(folder=active_folder or None, runtime_log_files=3)
 
             raw_type = data.get('type', 'general')
-            report_type = self._FEEDBACK_TYPE_MAP.get(str(raw_type).lower(), 'general')
             description = data.get('description', '')
+            contact = str(data.get('contact', '') or '').strip()
+            screenshot_b64 = data.get('screenshot_b64', '') or ''
+            raw_case_ref = str(data.get('case_ref', '') or '').strip()
 
-            # --- Auth Worker path (signed-in users who opted to send as self) ---
+            # --- Support path (signed-in users who opted to send as self) ---
             # Gated on the explicit `send_as_user` opt-in from the dialog: even
             # when signed in, an unchecked box means the report is anonymous and
-            # must take the analytics path below.
-            # Screenshots are out of scope for the Auth path; they stay on the
-            # analytics path only.  Any failure falls through to analytics.
-            try:
-                send_as_user = bool(data.get('send_as_user', False))
-                client, _err = (self._auth_make_client() if send_as_user else (None, None))
-                if client is not None:
-                    version = _telemetry._read_version() if _telemetry else ''
-                    os_info = _telemetry._get_os_info() if _telemetry else ''  # module-level fn
-                    client.post_feedback(
-                        report_type=report_type,
-                        message=description,
-                        version=version,
-                        os=os_info,
-                        contact=str(data.get('contact', '') or '').strip(),
-                    )
-                    return {'success': True}
-            except Exception:
-                pass  # fall through to analytics path
+            # must take the analytics path below. Any failure falls through to
+            # analytics, which also carries the logs and screenshot.
+            sent_anonymously = False
+            if bool(data.get('send_as_user', False)):
+                # Set before the attempt; cleared only by the successful return
+                # below, so every fallback tells the dialog the account was dropped.
+                sent_anonymously = True
+                try:
+                    client, _err = self._support_make_client()
+                    if client is None:
+                        warn(f'[API] send_feedback: no support client, sending anonymously: {(_err or {}).get("error")}')
+                    else:
+                        sc = self._support_import()
+                        shot, shot_drop = sc.prepare_screenshot(screenshot_b64)
+                        extra = {'logs_requested': include_logs}
+                        if shot_drop:
+                            extra['screenshot_dropped'] = shot_drop
+                        resp = client.post_report(
+                            report_type=sc.report_type_for(raw_type),
+                            message=description,
+                            app_version=_telemetry._read_version(),
+                            os=_telemetry._get_os_info(),
+                            platform=sc.platform_name(),
+                            contact_email=contact,
+                            case_ref=sc.normalize_case_ref(raw_case_ref),
+                            # Redaction must run here: the analytics path does
+                            # it inside kestrel_telemetry, this path does not.
+                            log_tail=sc.prepare_log_tail(log_tail),
+                            screenshot_b64=shot,
+                            extra=extra,
+                        )
+                        result = {'success': True}
+                        ref = (resp or {}).get('ref') if isinstance(resp, dict) else None
+                        if ref:
+                            result['ref'] = str(ref)
+                        if shot_drop:
+                            result['screenshot_dropped'] = shot_drop
+                        return result
+                except Exception as e:
+                    warn(f'[API] send_feedback: support report failed, sending anonymously: {type(e).__name__}: {e}')
 
-            # --- Analytics-worker path (signed-out or Auth call failed) ---
+            # --- Analytics-worker path (anonymous, signed out, or Support failed) ---
+            # The analytics payload has no case-reference field, so keep the
+            # reference in the text where triage will see it.
+            if raw_case_ref:
+                description = f'[Case reference: {raw_case_ref[:40]}]\n{description}'
             _telemetry.send_feedback(
                 report_type=raw_type,
                 description=description,
                 contact=data.get('contact', ''),
-                screenshot_b64=data.get('screenshot_b64', ''),
+                screenshot_b64=screenshot_b64,
                 log_tail=log_tail,
                 machine_id=machine_id,
                 version=_telemetry._read_version(),
             )
+            if sent_anonymously:
+                return {'success': True, 'sent_anonymously': True}
             return {'success': True}
         except Exception as e:
             error(f'[API] send_feedback error: {e}')
@@ -3566,7 +3684,11 @@ class Api:
             if not isinstance(existing, dict):
                 existing = {}
             # Python-owned keys the frontend must never overwrite.
-            settings_dict = {k: v for k, v in settings_dict.items() if k != _QF_INSTALL_ID_KEY}
+            settings_dict = {
+                k: v for k, v in settings_dict.items()
+                if k != _QF_INSTALL_ID_KEY and k != _ENHANCED_GPU_ENABLED_KEY
+                and k not in _SESSION_OWNED_SETTINGS_KEYS
+            }
             merged = {**existing, **settings_dict}
 
             # Keep cumulative impact counters monotonic so stale UI payloads cannot
@@ -3727,8 +3849,8 @@ class Api:
             for r in usable:
                 if not str(r.get('quality_siglip') or '').strip() and not str(r.get('quality_legacy') or '').strip():
                     r['quality_legacy'] = r.get('quality')
-            active = str(settings.get('quality_model') or 'siglip').lower()
-            active = active if active in qf.SCORERS else 'siglip'
+            active = str(settings.get('quality_model') or 'legacy').lower()
+            active = active if active in qf.SCORERS else 'legacy'
             if not any(str(r.get('quality_siglip') or '').strip() for r in usable):
                 active = 'legacy'
             try:

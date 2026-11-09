@@ -458,7 +458,7 @@ def test_settings_are_sanitised():
     assert settings_utils._sanitize_settings_payload({"smart_search_enabled": True})["smart_search_enabled"] is True
     s = settings_utils._sanitize_settings_payload
     assert s({"quality_model": "legacy"})["quality_model"] == "legacy"
-    assert s({"quality_model": "bogus"})["quality_model"] == "siglip"
+    assert s({"quality_model": "bogus"})["quality_model"] == "legacy"
     assert s({"tower_device": "cpu"})["tower_device"] == "cpu"
     assert s({"tower_device": 7})["tower_device"] == "auto"
 
@@ -480,6 +480,54 @@ def test_read_kestrel_csv_applies_the_quality_model_lazily(api, folder, monkeypa
     api.read_kestrel_csv(str(folder))
     df2 = pd.read_csv(os.path.join(kdir, "kestrel_database.csv"))
     assert (df2["quality"] - df2["quality_legacy"]).abs().max() < 1e-6
+
+
+def test_first_read_under_the_default_scorer_switches_to_legacy_and_keeps_user_edits(api, folder, monkeypatch):
+    import pandas as pd
+    from kestrel_analyzer.ratings import quality_to_rating
+
+    kdir = folder / ".kestrel"
+    _upgrade(str(kdir))  # written by the 3.0 release: SigLIP effective
+    df = pd.read_csv(kdir / "kestrel_database.csv")
+    n = len(df)
+    df["culled"] = (["reject", "", "accept", ""] + [""] * n)[:n]
+    df["culled_origin"] = (["manual", "", "manual", ""] + [""] * n)[:n]
+    df.to_csv(kdir / "kestrel_database.csv", index=False)
+    sd = kdir / "kestrel_scenedata.json"
+    sd.write_text(json.dumps({"version": "2.0", "image_ratings": {"A.CR3": {"rating": 5, "origin": "manual"}}, "scenes": {}}))
+    sd_before = sd.read_bytes()
+
+    monkeypatch.setattr(api_bridge, "load_persisted_settings", lambda: {})  # no stored choice -> default
+    assert api.read_kestrel_csv(str(folder))["success"]
+
+    after = pd.read_csv(kdir / "kestrel_database.csv")
+    assert (after["quality"] - after["quality_legacy"]).abs().max() < 1e-6
+    for cj in after["crops_json"]:
+        for c in json.loads(cj):
+            if c.get("quality_legacy", -1) < 0:
+                continue  # no legacy score for this crop: keeps its fallback value
+            assert c["quality"] == pytest.approx(c["quality_legacy"])
+            assert c["rating"] == quality_to_rating(c["quality_legacy"])
+    assert after["culled"].fillna("").tolist() == df["culled"].fillna("").tolist()
+    assert after["culled_origin"].fillna("").tolist() == df["culled_origin"].fillna("").tolist()
+    assert sd.read_bytes() == sd_before                       # manual ratings and tags untouched
+    assert json.loads((kdir / "kestrel_metadata.json").read_text())["quality_model"] == "legacy"
+
+
+def test_failed_quality_rewrite_only_warns(api, folder, monkeypatch):
+    kdir = folder / ".kestrel"
+    _upgrade(str(kdir))
+    before = (kdir / "kestrel_database.csv").read_bytes()
+    from kestrel_analyzer import quality_model as qm
+
+    def denied(*a, **k):
+        raise PermissionError("read-only volume")
+
+    monkeypatch.setattr(qm, "apply_quality_model", denied)
+    monkeypatch.setattr(api_bridge, "load_persisted_settings", lambda: {})
+    r = api.read_kestrel_csv(str(folder))
+    assert r["success"] and r["data"]
+    assert (kdir / "kestrel_database.csv").read_bytes() == before
 
 
 def _second_folder(tmp_path):

@@ -208,6 +208,7 @@ _rt_lock = threading.RLock()
 _boot_ctx: Any = None
 _registered: Optional[Dict[str, str]] = None  # EP name -> library path (None = not attempted)
 _rt_error: Optional[str] = None
+_rt_install_failures: List[str] = []  # vendor EPs Windows offered that the last setup could not install or register
 
 
 def _import_winml():
@@ -249,6 +250,8 @@ def ensure_runtime(download: bool = False, progress: Optional[ProgressFn] = None
         _bootstrap(bootstrap)
         catalog = winml.ExecutionProviderCatalog.get_default()
         out: Dict[str, str] = dict(_registered or {})
+        if download:
+            _rt_install_failures.clear()
         for p in catalog.find_all_providers():
             name = str(p.name)
             if name in out:
@@ -262,6 +265,8 @@ def ensure_runtime(download: bool = False, progress: Optional[ProgressFn] = None
                 r = p.ensure_ready_async().get()
                 if r.status != winml.ExecutionProviderReadyResultState.SUCCESS:
                     _log("warn", f"catalog EP {name}: ensure_ready failed: {r.status} {getattr(r, 'diagnostic_text', '')}")
+                    if name not in _NON_VENDOR_EPS:
+                        _rt_install_failures.append(name)
                     continue
             try:
                 ort.register_execution_provider_library(name, str(p.library_path))
@@ -271,6 +276,8 @@ def ensure_runtime(download: bool = False, progress: Optional[ProgressFn] = None
                     out[name] = str(p.library_path)
                 else:
                     _log("warn", f"register {name} failed: {e}")
+                    if name not in _NON_VENDOR_EPS:
+                        _rt_install_failures.append(name)
         _registered = out
         _rt_error = None
         return dict(out)
@@ -485,6 +492,8 @@ def mark_run_started() -> None:
 
 
 def mark_run_finished() -> None:
+    """Clean exit of a process that ran vendor sessions: remove the marker and reset the
+    unclean-exit count, so only consecutive unclean exits switch the mode off."""
     global _marker_active
     if _marker_active:
         try:
@@ -492,6 +501,10 @@ def mark_run_finished() -> None:
         except OSError:
             pass
         _marker_active = False
+        try:
+            clear_unclean_exits()
+        except Exception:
+            pass
 
 
 def _pid_alive(pid: int) -> bool:
@@ -687,8 +700,12 @@ def run_setup(progress: Optional[ProgressFn] = None, cancel: Optional[Callable[[
         _log("info", f"setup: hardware {json.dumps(hw)}")
         cands = vendor_candidates(ort, reg)
         if not cands:
-            state["reason"] = ("Windows did not offer a GPU acceleration package for this computer "
-                               "(or it could not be installed).")
+            if _rt_install_failures:
+                state["reason"] = "Windows offered a GPU acceleration package for this computer, but it could not be installed."
+            else:
+                # An expected result on older GPUs, not a failure: the UI offers no bug report for it.
+                state["reason"] = "Windows did not offer a GPU acceleration package for this computer."
+                state["no_provider"] = True
             return _finish(state)
         best: Optional[dict] = None
         for ep in cands:
@@ -740,6 +757,7 @@ def status() -> Dict[str, Any]:
         "available": ps["available"], "unavailable_reason": ps["reason"], "packaged": ps.get("packaged", False),
         "enabled": user_enabled(), "set_up": bool(st.get("ok")), "disabled": bool(st.get("disabled")),
         "disabled_reason": st.get("disabled_reason", ""), "reason": st.get("reason", ""),
+        "no_provider": bool(st.get("no_provider")),
         "stale": bool(st) and not _state_is_current(st),
         "ep": st.get("ep_name", ""), "ep_label": _VENDOR_LABELS.get(st.get("ep_name", ""), st.get("ep_name", "")),
         "measured": bool(st.get("measured", False)), "finished": st.get("finished"),

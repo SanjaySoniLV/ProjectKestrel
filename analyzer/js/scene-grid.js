@@ -42,7 +42,7 @@
         { icon: '⚙', label: 'Change Settings…',
           run: () => openFolderSettingsDialog(folderPath) },
         ...(_isUpgradableTo3(pipelineStatus) ? [
-          { icon: '✨', label: 'Upgrade to Analysis Pipeline 3.0…',
+          { icon: '✨', label: 'Upgrade to Analysis Version 3.0…',
             run: () => upgradeFolderToV3(folderPath) },
         ] : []),
         { divider: true },
@@ -83,17 +83,17 @@
       const up = st?.upgrade || {};
       const name = (folderPath || '').split(/[\\/]/).filter(Boolean).pop() || folderPath;
       if (up.status === 'current') {
-        showToast(`${name} is already on analysis pipeline 3.0.`, 4000);
+        showToast(`${name} is already on analysis version 3.0.`, 4000);
         return;
       }
       if (up.status === 'reanalyze' || up.status === 'not_analyzed') {
-        showToast(`${name}: ${up.reason || 're-analyse this folder to use pipeline 3.0.'}`, 7000);
+        showToast(`${name}: ${up.reason || 're-analyse this folder to use analysis version 3.0.'}`, 7000);
         return;
       }
       const ok = window.confirm(
-        `Upgrade “${name}” to analysis pipeline 3.0?\n\n` +
+        `Upgrade “${name}” to analysis version 3.0?\n\n` +
         'Kestrel re-reads the bird crops and preview images it already saved (no RAW decoding) to ' +
-        'update species IDs, add the new SigLIP sharpness score and build the smart-search index. ' +
+        'update species IDs, add the new sharpness score and build the smart-search index. ' +
         'Your culling decisions, star ratings and edited tags are not changed, and the database is ' +
         'backed up first. Runs on this computer only (uses the GPU when enabled).'
       );
@@ -125,8 +125,8 @@
     /** Header label for a folder's analysis pipeline ("Pipeline 2.0.4"). */
     function _pipelineVersionLabel(up) {
       if (!up || up.status === 'not_analyzed') return '';
-      if ((Number(up.pipeline_major) || 0) >= 3) return 'Pipeline 3.0';
-      return up.version ? `Pipeline ${up.version}` : 'Pipeline < 2.0';
+      if ((Number(up.pipeline_major) || 0) >= 3) return 'Analysis version 3.0';
+      return up.version ? `Analysis version ${up.version}` : 'Analysis version < 2.0';
     }
 
     /** Show/hide every header Upgrade button from its folder's status and the
@@ -168,11 +168,11 @@
       if (!targets.length) {
         showToast(needReanalysis
           ? `No loaded folder can be upgraded in place; ${needReanalysis} need${needReanalysis === 1 ? 's' : ''} a re-analysis.`
-          : 'All loaded folders are already on analysis pipeline 3.0.', 6000);
+          : 'All loaded folders are already on analysis version 3.0.', 6000);
         return;
       }
       const ok = window.confirm(
-        `Upgrade ${targets.length} loaded folder${targets.length === 1 ? '' : 's'} to analysis pipeline 3.0?\n\n` +
+        `Upgrade ${targets.length} loaded folder${targets.length === 1 ? '' : 's'} to analysis version 3.0?\n\n` +
         'They are queued and upgraded one after another; follow progress in the analysis queue panel. ' +
         'Kestrel re-reads the bird crops and preview images it already saved (no RAW decoding). ' +
         'Culling decisions, star ratings and edited tags are not changed, and each database is backed up first.' +
@@ -832,7 +832,7 @@
           upgradeBtn.className = 'action-btn folder-upgrade-btn hidden';
           upgradeBtn.dataset.folderPath = fd.folderPath;
           upgradeBtn.innerHTML = '<i>✨</i> Upgrade to 3.0';
-          upgradeBtn.title = 'Upgrade to analysis pipeline 3.0 from the crops Kestrel already saved: new species IDs, the SigLIP sharpness score and smart search. No re-analysis; ratings, culls and tags are kept.';
+          upgradeBtn.title = 'Upgrade to analysis version 3.0 from the crops Kestrel already saved: new species IDs, the sharpness score and smart search. No re-analysis; ratings, culls and tags are kept.';
           upgradeBtn.addEventListener('click', (ev) => { ev.stopPropagation(); upgradeFolderToV3(fd.folderPath); });
           rightActions.appendChild(upgradeBtn);
           folderPipelineStatus(fd.folderPath).then((up) => {
@@ -1130,7 +1130,12 @@
     /** Selection bar: mark every selected scene as reviewed with the tags it shows. */
     function executeSelectionReview() {
       let n = 0;
-      for (const id of selectedSceneIds) if (_finalizeSceneReview(id)) n += 1;
+      for (const id of selectedSceneIds) {
+        // An already-reviewed scene keeps its tags: _finalizeSceneReview rebuilds them
+        // from the model's visible tags, which would undo the user's corrections.
+        if (_getSceneScenedataEntry(id, false)?.user_tags?.finalized) continue;
+        if (_finalizeSceneReview(id)) n += 1;
+      }
       if (!n) return;
       setStatus(`Marked ${n} scene${n === 1 ? '' : 's'} as reviewed.`);
       renderScenes();

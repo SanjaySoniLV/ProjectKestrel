@@ -198,7 +198,7 @@ def test_effective_quality_selection():
     assert qm.effective(-1, 0.3, "siglip") == 0.3            # falls back to the other scorer
     assert qm.effective("", -1.0, "legacy") == -1.0
     assert qm.effective(float("nan"), 0.4, "siglip") == 0.4
-    assert qm.resolve("LEGACY") == "legacy" and qm.resolve(None) == "siglip"
+    assert qm.resolve("LEGACY") == "legacy" and qm.resolve(None) == "legacy"
 
 
 def test_preprocess_shape_and_range():

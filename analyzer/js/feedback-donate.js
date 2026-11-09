@@ -32,11 +32,35 @@
       if (sendBtn) {
         sendBtn.textContent = (signedIn && cb?.checked) ? `Send as ${who}` : 'Send anonymously';
       }
+      const hint = document.getElementById('feedbackSignInHint');
+      if (hint) {
+        if (!signedIn) {
+          hint.textContent = 'Sign in to send this from your account, so we can follow up with you and keep your logs and screenshot with your report.';
+        } else if (!cb?.checked) {
+          hint.textContent = 'Tick the box above so we can follow up with you and keep your logs and screenshot with your report.';
+        } else {
+          hint.textContent = '';
+        }
+      }
     }
+
+    /** Normalise what the user typed in the case-reference box to "K-<digits>".
+     *  Returns '' for an empty box and null for something that isn't a
+     *  reference. The backend applies the same rule. */
+    function _normalizeFeedbackCaseRef(raw) {
+      const text = String(raw || '').replace(/\s+/g, '');
+      if (!text) return '';
+      const m = /^K?-?(\d{1,9})$/i.exec(text);
+      return m ? `K-${parseInt(m[1], 10)}` : null;
+    }
+
+    // Must match MAX_SCREENSHOT_BYTES in support_client.py.
+    const _FEEDBACK_MAX_SCREENSHOT_BYTES = 10 * 1024 * 1024;
 
     function openFeedbackDialog() {
       document.getElementById('feedbackDesc').value = '';
       document.getElementById('feedbackContact').value = '';
+      document.getElementById('feedbackCaseRef').value = '';
       document.getElementById('feedbackStatus').textContent = '';
       document.getElementById('feedbackIncludeLogs').checked = false;
       document.getElementById('feedbackIncludeScreenshot').checked = false;
@@ -77,6 +101,12 @@
     document.getElementById('feedbackScreenshotFile').addEventListener('change', function () {
       const file = this.files[0];
       if (!file) { document.getElementById('feedbackIncludeScreenshot').checked = false; return; }
+      if (file.size > _FEEDBACK_MAX_SCREENSHOT_BYTES) {
+        document.getElementById('feedbackStatus').textContent = '⚠ That image is over 10 MB. Please choose a smaller screenshot.';
+        document.getElementById('feedbackIncludeScreenshot').checked = false;
+        this.value = '';
+        return;
+      }
       const reader = new FileReader();
       reader.onload = (e) => {
         const b64 = (e.target.result || '').split(',')[1] || '';
@@ -96,6 +126,12 @@
         document.getElementById('feedbackDesc').focus();
         return;
       }
+      const caseRef = _normalizeFeedbackCaseRef(document.getElementById('feedbackCaseRef').value);
+      if (caseRef === null) {
+        document.getElementById('feedbackStatus').textContent = '⚠ Case references look like K-1042. Leave the box empty if you don\'t have one.';
+        document.getElementById('feedbackCaseRef').focus();
+        return;
+      }
       const sendBtn = document.getElementById('feedbackSend');
       sendBtn.disabled = true;
       document.getElementById('feedbackStatus').textContent = 'Sending…';
@@ -103,6 +139,7 @@
         type: document.getElementById('feedbackType').value,
         description: desc,
         contact: document.getElementById('feedbackContact').value.trim(),
+        case_ref: caseRef,
         include_logs: document.getElementById('feedbackIncludeLogs').checked,
         screenshot_b64: document.getElementById('feedbackSsPreview').dataset.b64 || '',
         send_as_user: document.getElementById('feedbackSendAsUser').checked
@@ -114,8 +151,14 @@
         }
         const result = await window.pywebview.api.send_feedback(data);
         if (result && result.success !== false) {
-          document.getElementById('feedbackStatus').textContent = '✓ Feedback sent — thank you!';
-          setTimeout(() => { try { document.getElementById('feedbackDlg').close(); } catch (_) { } }, 1200);
+          let msg = '✓ Feedback sent — thank you!';
+          if (result.ref) msg += ` Your case reference is ${result.ref}.`;
+          if (result.screenshot_dropped) msg += ' The screenshot could not be attached (it must be a PNG, JPEG or WebP under 10 MB).';
+          if (result.sent_anonymously) msg += ' It was sent without your account, so we can’t reply to you through it. Add an email above if you’d like a reply.';
+          document.getElementById('feedbackStatus').textContent = msg;
+          // Leave the dialog open longer when there is something to read.
+          const delay = (result.ref || result.screenshot_dropped || result.sent_anonymously) ? 5000 : 1200;
+          setTimeout(() => { try { document.getElementById('feedbackDlg').close(); } catch (_) { } }, delay);
         } else {
           document.getElementById('feedbackStatus').textContent = '⚠ Could not send — please try again later.';
         }
