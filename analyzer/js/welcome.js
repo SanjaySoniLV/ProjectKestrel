@@ -57,7 +57,8 @@
           tag: 'What’s new',
           bullets: [
             'Cloud Compute has been updated to <b>analysis version 3.0</b>.',
-            'Cloud Compute <b>timing and pricing</b> options are now available in the app.',
+            // The Mac App Store build hides in-app prices, so it doesn't get this bullet.
+            { html: 'Cloud Compute <b>timing and pricing</b> options are now available in the app.', hideOnChannel: 'appstore' },
           ],
           hint: 'Find it in the Analyze Folders dialog.',
         },
@@ -182,8 +183,10 @@
       return /^[a-z0-9][a-z0-9._-]*\.(png|svg|webp|jpe?g)$/i.test(s) ? s : null;
     }
 
-    // Build the note's inner HTML from the baked-in WHATS_NEW shape.
-    function buildNoteHTML(note) {
+    // Build the note's inner HTML from the baked-in WHATS_NEW shape. A bullet is
+    // either an HTML string or {html, hideOnChannel}, which is left out on that
+    // distribution channel ('appstore' = the Mac App Store build).
+    function buildNoteHTML(note, channel) {
       var cards = (note.cards || []).map(function(c) {
         var cta = '';
         // A card may carry a single `link` or a `links[]` array (one or more CTAs).
@@ -199,7 +202,9 @@
         var bodyHtml = '';
         if (Array.isArray(c.bullets) && c.bullets.length) {
           bodyHtml = '<ul class="wln-card-list">' +
-            c.bullets.map(function(b) { return '<li>' + sr(b) + '</li>'; }).join('') +
+            c.bullets
+              .filter(function(b) { return !(b && typeof b === 'object' && b.hideOnChannel && b.hideOnChannel === channel); })
+              .map(function(b) { return '<li>' + sr(b && typeof b === 'object' ? b.html : b) + '</li>'; }).join('') +
             '</ul>';
         } else if (c.body) {
           bodyHtml = '<p class="wln-card-body">' + sr(c.body) + '</p>';
@@ -256,8 +261,8 @@
       var banner = document.getElementById('welcomeWhatsNew');
       if (!banner) return;
 
-      function showNote(note) {
-        banner.innerHTML = buildNoteHTML(note);
+      function showNote(note, channel) {
+        banner.innerHTML = buildNoteHTML(note, channel);
         banner.classList.remove('hidden');
         var dismiss = banner.querySelector('#wwnDismiss');
         if (dismiss) dismiss.addEventListener('click', async function() {
@@ -283,7 +288,15 @@
             lastSeen = res && res.settings && res.settings.last_seen_whats_new_version;
           } catch (_) {}
         }
-        if (WHATS_NEW.version !== lastSeen) showNote(WHATS_NEW);
+        if (WHATS_NEW.version === lastSeen) return;
+        var channel = 'direct';
+        if (hasPywebviewApi && window.pywebview?.api?.get_dist_channel) {
+          try {
+            var ch = await window.pywebview.api.get_dist_channel();
+            channel = (ch && ch.channel) || 'direct';
+          } catch (_) {}
+        }
+        showNote(WHATS_NEW, channel);
       })();
     })();
 
