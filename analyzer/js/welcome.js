@@ -33,7 +33,7 @@
             'One of the most significant updates to date, v(Arctic Tern) introduces analysis v3.0, with several major improvements.',
             'Kestrel can now accurately identify bird species worldwide, not just in North America. Accuracy for bird species recognition is significantly improved.',
             'New <b>Smart Search</b>: find your photos by simply describing what you remember, ex. “herons in a marsh” or “flock of doves in flight”. Works on all folders analyzed with analysis version 3.0. Results show a % match and can jump to the scene in your timeline.',
-            'Improved sharpness scoring: Kestrel should more accurately sort your photos from sharpest to blurriest within a burst.',
+            'We are temporarily changing the default quality scoring model to the previous version, while we evaluate possible options to improve quality scoring. You can change the default in Settings.',
             '<b>Help improve sharpness scoring</b> (optional): sort a burst from sharpest to blurriest and choose whether to share the crops. The sort dialog now has larger thumbnails and a zoom button.',
             '<b>Regroup Scenes</b> and many stability and data-safety fixes.',
             'Important: Folders analyzed on previous versions of Kestrel can be upgraded to v3.0 without requiring full re-analysis.',
@@ -48,7 +48,6 @@
             'Changes to Perch are coming soon. There’s a new <b>feedback button</b> in Perch, and I’d love to hear your feedback on how we can make Perch better!',
           ],
           links: [
-            { label: 'See your Following feed →', href: 'https://perch.projectkestrel.org/following.html' },
             { label: 'Learn about Perch →', href: 'https://perch.projectkestrel.org/' },
           ],
         },

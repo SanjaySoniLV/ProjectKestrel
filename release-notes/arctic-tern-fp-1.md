@@ -66,7 +66,9 @@ Applied on the integration branch. These three go in front of the existing Arcti
 - 'Polish and fixes: a cleaner scene viewer and analysis queue, capture time in the scene viewer, an updated tutorial and demo set, plainer wording in settings, and a fix for network (NAS) folders showing 0 images.'
 
 Perch card: 'Changes to Perch are coming soon. There’s a new <b>feedback button</b> in Perch, and I’d love to hear your feedback on how we can make Perch better!'
-Cloud Compute card: adds 'Cloud Compute is upgraded to <b>analysis 3.0</b>.' in front of the existing bullets.
+Perch card links: only 'Learn about Perch →' (the Following feed link is removed).
+Cloud Compute card: replaced by 'Cloud Compute has been updated to <b>analysis version 3.0</b>.' and 'Cloud Compute <b>timing and pricing</b> options are now available in the app.'
+Project Kestrel card, Arctic Tern bullets: 'Improved sharpness scoring…' is replaced by 'We are temporarily changing the default quality scoring model to the previous version, while we evaluate possible options to improve quality scoring. You can change the default in Settings.' The Regroup Scenes bullet no longer mentions Cloud Compute.
 
 ## Field Notes changelog draft
 
