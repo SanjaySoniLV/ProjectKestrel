@@ -2,7 +2,7 @@
     // Tutorial System  (Basics = short onboarding, Advanced = full tour)
     // Interactive: some steps require user action before advancing.
     // Engine supports: waitFor, waitForChain, inDialog, setupAction,
-    // highlightAlso[], customBody, loadSamplesOnNext, inlineFooter.
+    // highlightAlso[], customBody, loadSamplesOnNext, inlineFooter, clearSearch.
     // ====================================================================
 
     const _tutWelcomeStep = {
@@ -19,6 +19,8 @@
       position: 'bottom',
       customBody: 'workflowCard',
       highlightAlso: ['.culling-assistant-btn'],
+      // Follows the search step: show every scene again, not the last search's results.
+      clearSearch: true,
     };
 
     const _tutTryYourOwnStepBase = {
@@ -177,7 +179,9 @@
         title: 'Options',
         body: 'Click <b>Settings</b> to choose your preferred <b>photo editor</b> (Lightroom, Darktable, or system default). Opening a photo with <kbd>Space</kbd> will launch it there. You can also tweak a few other options here. (Analysis choices — like detecting <b>non-bird wildlife</b> — are made per run in the <b>Analyze Folders</b> dialog, under “Review settings”.)',
         target: '#openSettings',
-        position: 'bottom',
+        // The button is at the bottom of the sidebar: a card placed below it is
+        // pushed back up on top of it.
+        position: 'top',
       },
       {
         title: 'You’re all set!',
@@ -415,6 +419,21 @@
       _tutCleanup();
       var step = _tutSteps[idx];
       if (!step) { _closeMainTutorial(); return; }
+
+      // Clear a leftover search first, then show the step once the full grid has
+      // re-rendered, so its highlight lands on the real folder header.
+      if (step.clearSearch) {
+        var searchIn = document.getElementById('search');
+        if (searchIn && searchIn.value.trim()) {
+          searchIn.value = '';
+          searchIn.blur();
+          var cleared = (typeof smartSearchOnInput === 'function') ? smartSearchOnInput() : null;
+          Promise.resolve(cleared).catch(function() {}).then(function() {
+            setTimeout(function() { if (_tutStep === idx) _showMainTutStep(idx); }, 150);
+          });
+          return;
+        }
+      }
 
       var overlay = _tutEl('#tutorialOverlay');
       var hl      = _tutEl('#tutorialHighlight');
