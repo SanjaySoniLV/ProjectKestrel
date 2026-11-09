@@ -977,11 +977,11 @@
       <div class="row">
         <label for="settingsQualityModel" style="flex:1">Quality scorer</label>
         <select id="settingsQualityModel">
-          <option value="siglip">Newer sharpness model (default)</option>
-          <option value="legacy">Older sharpness model (before Arctic Tern)</option>
+          <option value="legacy">Original sharpness model (default)</option>
+          <option value="siglip">Newer sharpness model (added in Arctic Tern)</option>
         </select>
       </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Both scores are computed during analysis (analysis version 3.0) and stored, so switching is instant &mdash; no re-analysis. Both judge focus/sharpness only, not whether a photo is "good". The SigLIP score is the new default; the legacy model is kept for this major version for comparison. Folders analysed before 3.0 only have the legacy score until upgraded.</div>
+      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Both scores are computed during analysis (analysis version 3.0) and stored, so switching is instant &mdash; no re-analysis. Both judge focus/sharpness only, not whether a photo is "good". The original model is the default again from Arctic Tern (FP 1); the newer model is kept so you can compare. Folders analysed before 3.0 only have the legacy score until upgraded.</div>
 
       <div class="row">
         <label for="settingsSmartSearch" style="flex:1">Smart search: index whole frames</label>

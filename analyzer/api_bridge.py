@@ -1926,9 +1926,9 @@ class Api:
             settings = load_persisted_settings() or {}
             if settings.get('analytics_opted_in', False) is not True:
                 return {'success': True, 'sent': False}
-            scorer = str(settings.get('quality_model') or 'siglip').lower()
+            scorer = str(settings.get('quality_model') or 'legacy').lower()
             if scorer not in ('siglip', 'legacy'):
-                scorer = 'siglip'
+                scorer = 'legacy'
             if data.get('has_siglip') is not True:
                 scorer = 'legacy'  # scene has no SigLIP scores; legacy is what ranked it
             sent = _telemetry.send_quality_thumbs_up(
@@ -3849,8 +3849,8 @@ class Api:
             for r in usable:
                 if not str(r.get('quality_siglip') or '').strip() and not str(r.get('quality_legacy') or '').strip():
                     r['quality_legacy'] = r.get('quality')
-            active = str(settings.get('quality_model') or 'siglip').lower()
-            active = active if active in qf.SCORERS else 'siglip'
+            active = str(settings.get('quality_model') or 'legacy').lower()
+            active = active if active in qf.SCORERS else 'legacy'
             if not any(str(r.get('quality_siglip') or '').strip() for r in usable):
                 active = 'legacy'
             try:
