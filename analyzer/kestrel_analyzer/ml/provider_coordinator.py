@@ -163,6 +163,16 @@ def is_device_lost(exc_or_text: object) -> bool:
     return any(sig in msg for sig in _GPU_OUT_OF_MEMORY_SIGNATURES)
 
 
+def _lockout_means_gpu_lost() -> bool:
+    """Whether a GPU lock-out (repeated failures, whatever the error text) counts as a lost GPU,
+    so the run stops and continues in a fresh process. Only on DirectML: there a lost device
+    makes every in-process rebuild fail, and a restart gets the GPU back. On CoreML the same
+    model fails the same way in a new process, so stopping would only stall the folder; the
+    lock-out keeps the run going on the CPU instead."""
+    from . import GPU_EP
+    return GPU_EP == "DmlExecutionProvider"
+
+
 _RecreateFn = Callable[[bool], None]
 _StatusFn = Callable[[str], None]
 
@@ -288,7 +298,7 @@ class ProviderCoordinator:
     def _flag_gpu_lost(self, reason: str, *, locked_out: bool) -> None:
         if not self._user_gpu_enabled or self._gpu_lost_reason is not None:
             return
-        if locked_out or is_device_lost(reason):
+        if is_device_lost(reason) or (locked_out and _lockout_means_gpu_lost()):
             self._gpu_lost_reason = (reason or "repeated GPU failures")[:500]
 
     # ---- wiring ----

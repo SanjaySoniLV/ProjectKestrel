@@ -79,13 +79,46 @@ def test_failed_promotion_with_887A0020_flags_gpu_lost():
     assert coord.gpu_lost
 
 
-def test_lockout_flags_gpu_lost_even_for_unclassified_reasons():
+def test_lockout_flags_gpu_lost_even_for_unclassified_reasons(monkeypatch):
+    import kestrel_analyzer.ml as ml
+    monkeypatch.setattr(ml, "GPU_EP", "DmlExecutionProvider")
     coord = ProviderCoordinator(
         user_gpu_enabled=True, cfg=ResilienceConfig(max_demotions_before_lockout=1)
     )
     coord.on_run_failure(RuntimeError("model_path must not be empty"))
     assert coord.state is ProviderState.GPU_LOCKED_OUT
     assert coord.gpu_lost
+
+
+def test_coreml_lockout_keeps_running_on_cpu(monkeypatch):
+    # On macOS a CoreML session that keeps failing fails the same way in a new process, so a
+    # lock-out must not stop the run: it stays on the CPU for the rest of the session.
+    import kestrel_analyzer.ml as ml
+    monkeypatch.setattr(ml, "GPU_EP", "CoreMLExecutionProvider")
+    coord = ProviderCoordinator(
+        user_gpu_enabled=True, cfg=ResilienceConfig(max_demotions_before_lockout=1)
+    )
+    coord.on_run_failure(RuntimeError("model_path must not be empty"))
+    assert coord.state is ProviderState.GPU_LOCKED_OUT
+    assert not coord.gpu_lost
+
+
+def test_coreml_failed_promotions_reach_lockout_without_gpu_lost(monkeypatch):
+    import kestrel_analyzer.ml as ml
+    monkeypatch.setattr(ml, "GPU_EP", "CoreMLExecutionProvider")
+    coord = ProviderCoordinator(user_gpu_enabled=True)  # default: lock-out after 3 demotions
+    err = RuntimeError("[ONNXRuntimeError] : 6 : RUNTIME_EXCEPTION : !model_path.empty() was false.")
+
+    def recreate(gpu):
+        if gpu:
+            raise err
+
+    coord.register_recreate_callback(recreate)
+    assert coord.on_run_failure(err) is FailureAction.RECREATE_AND_RETRY
+    assert coord.attempt_promotion() is False
+    assert coord.attempt_promotion() is False
+    assert coord.state is ProviderState.GPU_LOCKED_OUT
+    assert not coord.gpu_lost
 
 
 def test_cpu_only_run_never_reports_gpu_lost():
