@@ -5,10 +5,15 @@
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
   IgnorableNamespaces="uap rescap">
 
+  <!-- ProcessorArchitecture must stay x64: the PyInstaller build inside is x64, and the Windows App
+       Runtime framework below ships only per architecture (x86/x64/arm64). A package with no
+       architecture is "neutral", and the Store rejects it at commit with "Declared package
+       dependency unavailable: Microsoft.WindowsAppRuntime.2, Neutral, Universal". -->
   <Identity
     Name="47873DoveVision.DoveEyeImageCullingAccelerated"
     Publisher="CN=3068A254-E666-49EB-8E3B-BB19CAE3D346"
-    Version="7.1.0.0" />
+    Version="7.1.0.0"
+    ProcessorArchitecture="x64" />
 
   <Properties>
     <DisplayName>Project Kestrel</DisplayName>
@@ -24,8 +29,9 @@
       MaxVersionTested="10.0.22621.0" />
     <!-- Windows App SDK 2.x runtime framework. Used only by the opt-in "enhanced GPU performance"
          mode (Windows ML, analyzer/kestrel_analyzer/ml/enhanced_gpu.py): a packaged process cannot
-         bootstrap the runtime dynamically, so it must be a package dependency. The Store installs it
-         automatically. MinVersion matches the version the Python bindings request. -->
+         bootstrap the runtime dynamically, so it must be a package dependency. The Store installs the
+         framework matching the package's ProcessorArchitecture (see <Identity>) automatically.
+         MinVersion matches the version the Python bindings request. -->
     <PackageDependency
       Name="Microsoft.WindowsAppRuntime.2"
       MinVersion="2.3.0.0"
