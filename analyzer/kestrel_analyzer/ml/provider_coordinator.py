@@ -96,6 +96,44 @@ _SESSION_DEAD_SIGNATURES: tuple[str, ...] = (
 )
 
 
+def error_text(exc_or_text: object) -> str:
+    """``str(exc)``, except when ONNX Runtime's own message could not be decoded.
+
+    ONNX Runtime passes its C++ error text to Python, which decodes it as UTF-8.
+    On Windows that text can include the system's description of an HRESULT in the
+    ANSI code page (cp1252 on a Spanish or French install). An accented letter
+    there makes ``session.run`` raise ``UnicodeDecodeError: 'utf-8' codec can't
+    decode byte ...`` instead of the real error, so ``str(exc)`` names neither
+    the HRESULT nor the failing component. The undecodable message is still in
+    the exception's ``object``; decode it leniently so the signatures below (all
+    ASCII) can match and the logged reason is readable.
+    """
+    if isinstance(exc_or_text, str):
+        return exc_or_text
+    if exc_or_text is None:
+        return ""
+    if isinstance(exc_or_text, UnicodeDecodeError):
+        raw = exc_or_text.object
+        if isinstance(raw, (bytes, bytearray, memoryview)):
+            raw = bytes(raw)
+            try:
+                import locale
+                enc = locale.getpreferredencoding(False) or "utf-8"
+                return raw.decode(enc, errors="replace")
+            except (LookupError, ValueError):
+                return raw.decode("utf-8", errors="replace")
+    return str(exc_or_text)
+
+
+def readable_error(exc: BaseException) -> BaseException:
+    """Return ``exc``, or a ``RuntimeError`` carrying its real text if ONNX Runtime's
+    message failed to decode (see ``error_text``). Callers raise the result
+    ``from exc`` so the original stays in the chain."""
+    if isinstance(exc, UnicodeDecodeError) and isinstance(exc.object, (bytes, bytearray, memoryview)):
+        return RuntimeError(f"ONNX Runtime error (message not UTF-8): {error_text(exc)}")
+    return exc
+
+
 def is_session_dead(exc: BaseException, *, aggressive: bool = False) -> bool:
     """Return True if ``exc`` indicates the ONNX session needs to be recreated.
 
@@ -103,7 +141,7 @@ def is_session_dead(exc: BaseException, *, aggressive: bool = False) -> bool:
     ``aggressive=True``, any ``onnxruntime`` Fail/RuntimeException matches —
     useful as a triage flag when a new failure mode appears in the wild.
     """
-    msg = str(exc) if exc is not None else ""
+    msg = error_text(exc)
     type_name = type(exc).__name__ if exc is not None else ""
 
     if any(sig in msg for sig in _SESSION_DEAD_SIGNATURES) or is_device_lost(msg):
@@ -155,7 +193,7 @@ _GPU_OUT_OF_MEMORY_SIGNATURES: tuple[str, ...] = (
 def is_device_lost(exc_or_text: object) -> bool:
     """True if the error (or its text) says the GPU device was removed, reset
     or poisoned, so that only a new process will get a working GPU back."""
-    msg = exc_or_text if isinstance(exc_or_text, str) else str(exc_or_text or "")
+    msg = error_text(exc_or_text)
     if any(sig in msg for sig in _DEVICE_LOST_SIGNATURES):
         return True
     if _DML_COMMAND_RECORDER in msg and _E_FAIL in msg:
@@ -378,7 +416,7 @@ class ProviderCoordinator:
             # Already on CPU; recreating won't help. Let the per-image catcher
             # in pipeline.py mark this image errored.
             return FailureAction.PROPAGATE
-        self._demote(reason=str(exc))
+        self._demote(reason=error_text(exc))
         return FailureAction.RECREATE_AND_RETRY
 
     def should_try_promote(self) -> bool:
@@ -469,6 +507,8 @@ __all__ = [
     "ProviderCoordinator",
     "ProviderState",
     "ResilienceConfig",
+    "error_text",
     "is_device_lost",
     "is_session_dead",
+    "readable_error",
 ]
