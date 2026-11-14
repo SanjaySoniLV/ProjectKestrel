@@ -181,17 +181,23 @@ class ResilientOnnxSession:
         try:
             return self._session.run(output_names, input_feed, run_options)
         except Exception as e:
-            from .provider_coordinator import is_device_lost
-            if not self._force_cpu and is_device_lost(e):
+            from .provider_coordinator import is_device_lost, readable_error
+            # An ONNX Runtime message in a non-UTF-8 Windows code page arrives as
+            # UnicodeDecodeError; recover its text so it can be classified and logged.
+            err = readable_error(e)
+            if not self._force_cpu and is_device_lost(err):
                 # DirectML device lost: this session (and the other DirectML sessions) continue on the
                 # CPU, and the same run is retried here, so the frame is neither lost nor saved empty.
-                self._coord.handle_device_lost(self, e)
+                self._coord.handle_device_lost(self, err)
                 return self._session.run(output_names, input_feed, run_options)
-            if self._vendor_active and self._vendor_fallback(e):
+            if self._vendor_active and self._vendor_fallback(err):
                 return self._session.run(output_names, input_feed, run_options)
-            # Re-raise unchanged. The coordinator is consulted at the wrapper /
-            # per-image-retry level, NOT here, so we don't double-handle.
-            raise
+            # Re-raise (unchanged unless its message had to be decoded). The coordinator
+            # is consulted at the wrapper / per-image-retry level, NOT here, so we don't
+            # double-handle.
+            if err is e:
+                raise
+            raise err from e
 
     def _vendor_fallback(self, exc: BaseException) -> bool:
         """A vendor-EP run failed: rebuild this session on DirectML and let the caller retry once.
