@@ -149,6 +149,28 @@ def test_siglip_tower_is_pinned_to_cpu_even_on_gpu(monkeypatch):
     assert "siglip_image" in prov.CPU_PINNED_KINDS and "bird_species" not in prov.CPU_PINNED_KINDS
 
 
+@pytest.mark.parametrize("gpu_ep, sam_on_gpu", [
+    ("CoreMLExecutionProvider", False),
+    ("DmlExecutionProvider", True),
+])
+def test_sam_is_pinned_to_cpu_only_on_coreml(monkeypatch, gpu_ep, sam_on_gpu):
+    """SAM-HQ splits into many CoreML/CPU partitions and is ~12x slower on CoreML than
+    on the CPU, so it runs on CPU on macOS; the detector and quality model keep CoreML.
+    DirectML is unaffected."""
+    from kestrel_analyzer.ml import provider_coordinator as pc
+    from kestrel_analyzer.ml import providers as prov
+    monkeypatch.setattr(prov, "tower_device_setting", lambda: "auto")
+    coord = pc.ProviderCoordinator(user_gpu_enabled=True)
+    coord._state = pc.ProviderState.GPU
+    gpu = [gpu_ep, "CPUExecutionProvider"]
+    monkeypatch.setattr("kestrel_analyzer.ml.GPU_EP", gpu_ep)
+    monkeypatch.setattr(pc, "gpu_providers", lambda: gpu)
+    for kind in ("sam_enc", "sam_dec"):
+        assert coord.providers_for(kind) == (gpu if sam_on_gpu else ["CPUExecutionProvider"])
+    assert coord.providers_for("detector") == gpu
+    assert coord.providers_for("quality") == gpu
+
+
 def test_placement_parses_utf16_ort_log():
     # ORT logs to fd 2 as UTF-16LE on Windows; the captured bytes must still parse.
     line = "[V:onnxruntime:, session_state.cc:1310] All nodes placed on [DmlExecutionProvider]. Number of nodes: 1"
