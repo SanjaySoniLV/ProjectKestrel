@@ -48,12 +48,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-latest
             ort_pkg: onnxruntime
             ort_ver: "1.23.2"      # the Intel pin and the pre-1.28 baseline
-          - os: macos-14
+          - os: macos-latest
             ort_pkg: onnxruntime
-            ort_ver: latest
+            ort_ver: "1.28.0"      # the Apple Silicon pin in requirements-macos.txt
           # Windows is deliberately absent: GitHub's hosted Windows runners have no
           # D3D12 adapter, so DirectML fails with "No devices detected that match
           # the filter criteria" (run 39778820229). Probe DirectML on real hardware:
@@ -131,7 +131,7 @@ jobs:
     # workflow_dispatch only appears once this file is on the default branch, so on
     # exp/pipeline-v3 the push trigger runs it too.
     if: github.event_name == 'push' || inputs.full_suite
-    runs-on: macos-14
+    runs-on: macos-latest
     name: pytest -m "not ui" (macOS)
     steps:
       - uses: actions/checkout@v4
