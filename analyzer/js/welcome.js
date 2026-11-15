@@ -9,8 +9,8 @@
     // projectkestrel.org/whats-new.json; that remote-override path was removed —
     // the note now lives entirely in the app.)
     const WHATS_NEW = {
-      version: 'arctic-tern-fp-1',
-      eyebrow: 'v(Arctic Tern (FP 1))',
+      version: 'arctic-tern-fp-2',
+      eyebrow: 'v(Arctic Tern (FP 2))',
       // The release's namesake bird. `whatsnew-bird.jpg` is a STABLE filename
       // whose contents are replaced each release, so the three PyInstaller
       // specs list it once and never need touching again. Update `heroAlt`
@@ -24,8 +24,10 @@
           // Desktop app logo — bundled at the static-server root (see .spec datas).
           iconImg: 'logo.png',
           name: 'Project Kestrel',
-          tag: 'New in v(Arctic Tern (FP 1))',
+          tag: 'New in v(Arctic Tern (FP 2))',
           bullets: [
+            // v(Arctic Tern (FP 2)) hotfix.
+            '<b>Mac GPU fix</b>: on Apple Silicon Macs, analysis with GPU acceleration no longer fails on the first photo or stops the folder. Apple Silicon Macs now need macOS 14 (Sonoma) or later.',
             // v(Arctic Tern (FP 1)) additions; the Arctic Tern bullets below stay.
             '<b>Enhanced GPU Performance</b> (Windows 11 24H2 or later, experimental): set it up in Settings to use extra GPU software made for your graphics hardware. If it fails, Kestrel falls back to standard GPU acceleration or the CPU, and a lost GPU no longer saves empty results.',
             'Folders from analysis version 2.x now default to a fast <b>upgrade to 3.0</b> that keeps your culls, and upgrades can be queued from each folder’s header. New <b>Reject Undecided</b> speeds up bulk culling.',
@@ -65,7 +67,7 @@
       ],
       note: 'Thank you for supporting the solo dev of Project Kestrel.',
       sign: '— Sanjay',
-      blogLink: { label: 'Read the full v(Arctic Tern (FP 1)) release notes →', href: 'https://projectkestrel.org/notes/arctic-tern-fp-1/' },
+      blogLink: { label: 'Read the full v(Arctic Tern (FP 2)) release notes →', href: 'https://projectkestrel.org/notes/arctic-tern-fp-2/' },
     };
 
     const WELCOME_TIPS = [
