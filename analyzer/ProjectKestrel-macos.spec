@@ -113,9 +113,17 @@ coll = COLLECT(
     icon='../assets/logo.ico',
 )
 
+# Apple Silicon builds bundle onnxruntime 1.28 (requirements-macos.txt), whose
+# wheel is built for macOS 14.0. Say so in Info.plist so older macOS refuses to
+# open the app cleanly instead of failing to load the library. The Intel build
+# keeps onnxruntime 1.23.2 and no minimum.
+import platform as _platform
+_info_plist = {'LSMinimumSystemVersion': '14.0'} if _platform.machine() == 'arm64' else {}
+
 app = BUNDLE(
     coll,
     name='Project Kestrel.app',
     icon='../assets/logo.ico',
     bundle_identifier='org.ProjectKestrel',
+    info_plist=_info_plist,
 )

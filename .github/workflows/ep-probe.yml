@@ -50,7 +50,7 @@ jobs:
         include:
           - os: macos-14
             ort_pkg: onnxruntime
-            ort_ver: "1.23.2"      # the app's pin (requirements-macos.txt)
+            ort_ver: "1.23.2"      # the Intel pin and the pre-1.28 baseline
           - os: macos-14
             ort_pkg: onnxruntime
             ort_ver: latest
