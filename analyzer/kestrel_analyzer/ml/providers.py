@@ -70,6 +70,12 @@ TOWER_KINDS = frozenset({"bird_species", "siglip_image"})
 # and between analysis and upgrade; SigLIP is ~44 ms/crop on CPU, small next to the
 # detector. BioCLIP keeps its GPU graph (13 s -> 52 ms on DirectML; top-1 agrees 39/40).
 CPU_PINNED_KINDS = frozenset({"siglip_image"})
+# Kinds kept on the CPU when the GPU EP is CoreML (macOS). CoreML cannot run most of the
+# SAM-HQ graph, so ORT splits the encoder into ~80 CoreML nodes interleaved with ~195 CPU
+# nodes and copies tensors at every boundary: on an Apple Silicon runner the encoder took
+# ~18.7 s per image on CoreML against ~1.6 s on the CPU (tools/ep_probe.py, ORT 1.23.2 and
+# 1.28.0 alike, output identical). The detector and the quality CNN stay on CoreML.
+COREML_CPU_PINNED_KINDS = frozenset({"sam_enc", "sam_dec"})
 TOWER_DEVICES = ("auto", "cpu", "gpu")
 
 # EPs that get the fp16 "wdq16" tower graph instead of the dynamic-int8 one.
