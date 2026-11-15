@@ -380,12 +380,12 @@ class ProviderCoordinator:
             # quality score must not depend on the machine's GPU.
             return ["CPUExecutionProvider"]
         if self._state is ProviderState.GPU:
-            if kind in COREML_CPU_PINNED_KINDS:
-                from . import GPU_EP
-                if GPU_EP == "CoreMLExecutionProvider":
-                    # SAM-HQ splits into many CoreML/CPU partitions and runs ~12x
-                    # slower than on the CPU (see providers.COREML_CPU_PINNED_KINDS).
-                    return ["CPUExecutionProvider"]
+            if kind in COREML_CPU_PINNED_KINDS and any(
+                    (p[0] if isinstance(p, (tuple, list)) else p) == "CoreMLExecutionProvider"
+                    for p in gpu_providers()):
+                # SAM-HQ splits into many CoreML/CPU partitions and runs ~12x
+                # slower than on the CPU (see providers.COREML_CPU_PINNED_KINDS).
+                return ["CPUExecutionProvider"]
             # The int8 transformer towers (BioCLIP / SigLIP) follow their own
             # device policy: on CoreML they would split into many CPU/ANE
             # partitions, so ``auto`` keeps them on CPU there (ml/providers.py).
