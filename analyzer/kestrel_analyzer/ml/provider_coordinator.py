@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
 from . import gpu_providers
-from .providers import CPU_PINNED_KINDS, TOWER_KINDS, tower_use_gpu
+from .providers import COREML_CPU_PINNED_KINDS, CPU_PINNED_KINDS, TOWER_KINDS, tower_use_gpu
 
 if TYPE_CHECKING:
     from .resilient_session import ResilientOnnxSession
@@ -369,8 +369,9 @@ class ProviderCoordinator:
         ``kind`` is a free-form string ("detector"/"sam_enc"/"sam_dec"/"quality"/
         "bird_species"/"siglip_image"). Every kind follows the coordinator's
         GPU/CPU state, except the transformer towers (``TOWER_KINDS``), which
-        also honour the tower device policy, and ``CPU_PINNED_KINDS`` (the SigLIP
-        quality tower), which always run on CPU.
+        also honour the tower device policy, ``CPU_PINNED_KINDS`` (the SigLIP
+        quality tower), which always run on CPU, and ``COREML_CPU_PINNED_KINDS``
+        (SAM-HQ), which run on CPU when the GPU EP is CoreML.
         """
         if self._dml_lost and kind not in CPU_PINNED_KINDS:
             return ["CPUExecutionProvider"]  # the device is gone; a new session must not touch it
@@ -379,6 +380,12 @@ class ProviderCoordinator:
             # quality score must not depend on the machine's GPU.
             return ["CPUExecutionProvider"]
         if self._state is ProviderState.GPU:
+            if kind in COREML_CPU_PINNED_KINDS:
+                from . import GPU_EP
+                if GPU_EP == "CoreMLExecutionProvider":
+                    # SAM-HQ splits into many CoreML/CPU partitions and runs ~12x
+                    # slower than on the CPU (see providers.COREML_CPU_PINNED_KINDS).
+                    return ["CPUExecutionProvider"]
             # The int8 transformer towers (BioCLIP / SigLIP) follow their own
             # device policy: on CoreML they would split into many CPU/ANE
             # partitions, so ``auto`` keeps them on CPU there (ml/providers.py).
