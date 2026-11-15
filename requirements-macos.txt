@@ -2,7 +2,15 @@
 # torch, torchvision, tensorflow removed: all ML inference uses ONNX Runtime.
 # onnxruntime on macOS includes CoreMLExecutionProvider for GPU/Neural Engine
 # acceleration via Apple Core ML. No separate package needed (unlike DirectML on Windows).
-onnxruntime==1.23.2
+# Apple Silicon: 1.28.0 is the first release whose CoreML EP passes the model
+# path when it copies weights stored as external data (MegaDetector mdv5a keeps
+# its weights in mdv5a.onnx.data). 1.23.2 to 1.27.x fail that session with
+# "model_path must not be empty". The 1.28 arm64 wheels need macOS 14.0, so the
+# App Store spec's LSMinimumSystemVersion is 14.0 to match.
+# Intel: PyPI has no macOS x86_64 wheel after 1.23.2, so the Intel build stays
+# there. Intel Macs are deprecated after this release.
+onnxruntime==1.28.0; platform_machine == "arm64"
+onnxruntime==1.23.2; platform_machine == "x86_64"
 
 numpy==2.4.4
 

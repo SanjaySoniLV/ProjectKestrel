@@ -22,7 +22,8 @@
 #   KESTREL_APPSTORE_VERSION  -> CFBundleShortVersionString (default "1.0")
 #   KESTREL_APPSTORE_BUILD    -> CFBundleVersion            (default "1")
 #   KESTREL_BUNDLE_ID         -> bundle identifier (default "org.projectkestrel.desktop")
-#   KESTREL_MIN_MACOS         -> LSMinimumSystemVersion     (default "12.0")
+#   KESTREL_MIN_MACOS         -> LSMinimumSystemVersion     (default "14.0": the
+#                                onnxruntime 1.28 arm64 wheel is built for macOS 14.0)
 #   KESTREL_TARGET_ARCH       -> PyInstaller target_arch (default native; e.g. "universal2")
 import os
 
@@ -53,7 +54,7 @@ except Exception:
 _appstore_version = os.environ.get("KESTREL_APPSTORE_VERSION", "1.0").strip() or "1.0"
 _appstore_build = os.environ.get("KESTREL_APPSTORE_BUILD", "1").strip() or "1"
 _bundle_id = os.environ.get("KESTREL_BUNDLE_ID", "org.projectkestrel.desktop").strip() or "org.projectkestrel.desktop"
-_min_macos = os.environ.get("KESTREL_MIN_MACOS", "12.0").strip() or "12.0"
+_min_macos = os.environ.get("KESTREL_MIN_MACOS", "14.0").strip() or "14.0"
 _target_arch = os.environ.get("KESTREL_TARGET_ARCH", "").strip() or None
 
 # App Store needs an .icns. Generated in CI from assets/logo.png (sips+iconutil);
