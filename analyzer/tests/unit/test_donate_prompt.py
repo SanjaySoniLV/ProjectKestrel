@@ -16,11 +16,13 @@ for the wiring in ``queue.js`` and ``welcome.js``.
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -352,6 +354,9 @@ class TestBuildLabel:
         monkeypatch.setattr(kestrel_telemetry.sys, "platform", platform)
         monkeypatch.setattr(kestrel_telemetry.sys, "executable", exe, raising=False)
         monkeypatch.delenv("APPX_PACKAGE_ROOT", raising=False)
+        if platform == "win32":
+            # Parse the Windows exe path with Windows rules even when the suite runs on macOS.
+            monkeypatch.setattr(kestrel_telemetry, "os", SimpleNamespace(path=ntpath, environ=os.environ))
 
     def test_source(self, monkeypatch):
         self._set(monkeypatch, False, "direct", "win32")
