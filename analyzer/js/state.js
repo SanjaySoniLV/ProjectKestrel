@@ -234,7 +234,7 @@
     (async function() {
       const apiReady = !hasPywebviewApi ? await waitForPywebview() : true;
       if (!apiReady) {
-        setStatus('Error: Desktop API unavailable. Please relaunch Project Kestrel.');
+        setStatus(t('status.apiUnavailable'));
         const compat = el('#compat');
         if (compat) compat.classList.remove('hidden');
         return;

@@ -28,10 +28,11 @@ sys.path.insert(0, str(REPO_ROOT / 'tools'))
 import settings_utils
 from kestrel_analyzer import bird_catalog
 
-bni = pytest.importorskip("build_bird_names_i18n", reason="tools/ must be importable")
-openpyxl = pytest.importorskip("openpyxl", reason="converter tests need openpyxl")
-
 pytestmark = pytest.mark.unit
+
+# The converter tests need openpyxl + tools/ importable; the skip is applied
+# per-fixture/per-test (not at module level) so the settings and dictionary
+# consistency tests below always run.
 
 
 # ----------------------------------------------------------------------------
@@ -49,6 +50,7 @@ def _write_catalog(tmp_path: Path) -> Path:
 
 
 def _write_workbook(tmp_path: Path) -> Path:
+    openpyxl = pytest.importorskip("openpyxl", reason="converter tests need openpyxl")
     wb_path = tmp_path / 'multiling.xlsx'
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -70,6 +72,7 @@ def _write_workbook(tmp_path: Path) -> Path:
 @pytest.fixture()
 def built(tmp_path):
     """Run the converter on tiny fixtures; return (out_dir, index)."""
+    bni = pytest.importorskip("build_bird_names_i18n", reason="tools/ must be importable")
     catalog = _write_catalog(tmp_path)
     wb_path = _write_workbook(tmp_path)
     out_dir = tmp_path / 'out'
@@ -96,6 +99,7 @@ class TestConverter:
         assert de['Common Ostrich'] == 'Strauß'
 
     def test_empty_cells_dropped(self, tmp_path):
+        bni = pytest.importorskip("build_bird_names_i18n", reason="tools/ must be importable")
         catalog = _write_catalog(tmp_path)
         wb_path = _write_workbook(tmp_path)
         out_dir = tmp_path / 'out'
@@ -114,6 +118,7 @@ class TestConverter:
         assert all(l['code'] != 'ml' for l in index['languages'])
 
     def test_include_forces_sparse_language(self, tmp_path):
+        bni = pytest.importorskip("build_bird_names_i18n", reason="tools/ must be importable")
         catalog = _write_catalog(tmp_path)
         wb_path = _write_workbook(tmp_path)
         out_dir = tmp_path / 'out'
@@ -136,6 +141,7 @@ class TestConverter:
         assert 0.0 <= de['coverage'] <= 1.0
 
     def test_stale_files_removed(self, tmp_path):
+        bni = pytest.importorskip("build_bird_names_i18n", reason="tools/ must be importable")
         catalog = _write_catalog(tmp_path)
         wb_path = _write_workbook(tmp_path)
         out_dir = tmp_path / 'out'
@@ -245,21 +251,118 @@ class TestLanguageSetting:
         out = settings_utils._sanitize_settings_payload({'language': raw})
         assert out['language'] == expected
 
+    @pytest.mark.parametrize('raw,expected', [
+        ('de', 'de'), ('fr', 'fr'), ('pt-pt', 'pt-pt'),
+        ('EN', 'en'), ('de-DE', 'en'), ('x', 'en'), ('', 'en'),
+        (123, 'en'), (None, 'en'), ('../x', 'en'),
+    ])
+    def test_sanitize_bird_name_language(self, raw, expected):
+        out = settings_utils._sanitize_settings_payload({'bird_name_language': raw})
+        assert out['bird_name_language'] == expected
+
     def test_absent_key_not_added(self):
         assert 'language' not in settings_utils._sanitize_settings_payload({})
+        assert 'bird_name_language' not in settings_utils._sanitize_settings_payload({})
+
+    def test_settings_are_independent(self):
+        out = settings_utils._sanitize_settings_payload({'language': 'de', 'bird_name_language': 'fr'})
+        assert out['language'] == 'de'
+        assert out['bird_name_language'] == 'fr'
 
 
 # ----------------------------------------------------------------------------
 # Dictionary / markup consistency
 # ----------------------------------------------------------------------------
 
+_I18N_ATTRS = ('data-i18n', 'data-i18n-title', 'data-i18n-aria',
+               'data-i18n-placeholder', 'data-i18n-html', 'data-i18n-data-tip')
+
+# UI languages shipped as analyzer/i18n/<lang>.json. Kept in sync with
+# UI_LANGUAGES in analyzer/js/i18n.js.
+SHIPPED_UI_LANGS = ('ru', 'de', 'fr')
+
+_PLACEHOLDER_RE = re.compile(r'\{(\w+)\}')
+_TAG_RE = re.compile(r'<[^>]+>')
+_ID_ATTR_RE = re.compile(r'id="([^"]+)"')
+# t('key') / t("key") with a string literal — must not be preceded by a word
+# char or dot so member calls like ``foo.t('x')`` are not matched.
+_T_CALL_RE = re.compile(r'(?<![.\w$])t\(\s*[\'"]([a-z][a-zA-Z0-9_.]*)[\'"]')
+
+
+def _used_markup_keys():
+    html = (ANALYZER_DIR / 'visualizer.html').read_text(encoding='utf-8')
+    used = set()
+    for attr in _I18N_ATTRS:
+        used |= set(re.findall(attr + r'="([^"]+)"', html))
+    return used
+
+
+def _used_t_call_keys():
+    used = set()
+    for js in (ANALYZER_DIR / 'js').glob('*.js'):
+        if js.name == 'i18n.js':
+            continue
+        src = js.read_text(encoding='utf-8')
+        used |= set(_T_CALL_RE.findall(src))
+    return used
+
+
 class TestDictionaryConsistency:
 
     def test_all_markup_keys_exist_in_en_dict(self):
-        html = (ANALYZER_DIR / 'visualizer.html').read_text(encoding='utf-8')
         en = json.loads((ANALYZER_DIR / 'i18n' / 'en.json').read_text(encoding='utf-8'))
-        used = set()
-        for attr in ('data-i18n', 'data-i18n-title', 'data-i18n-aria'):
-            used |= set(re.findall(attr + r'="([^"]+)"', html))
-        missing = sorted(k for k in used if k not in en)
+        missing = sorted(k for k in _used_markup_keys() if k not in en)
         assert not missing, f"data-i18n keys missing from i18n/en.json: {missing}"
+
+    def test_all_t_call_keys_exist_in_en_dict(self):
+        en = json.loads((ANALYZER_DIR / 'i18n' / 'en.json').read_text(encoding='utf-8'))
+        missing = sorted(k for k in _used_t_call_keys() if k not in en)
+        assert not missing, f"t('...') keys missing from i18n/en.json: {missing}"
+
+    def test_no_orphan_keys_in_en_dict(self):
+        en = json.loads((ANALYZER_DIR / 'i18n' / 'en.json').read_text(encoding='utf-8'))
+        used = _used_markup_keys() | _used_t_call_keys()
+        orphan = sorted(k for k in en if k not in used)
+        assert not orphan, f"en.json keys not used anywhere: {orphan}"
+
+
+class TestShippedUiDictionaries:
+
+    @pytest.fixture(scope='class')
+    def en_dict(self):
+        return json.loads((ANALYZER_DIR / 'i18n' / 'en.json').read_text(encoding='utf-8'))
+
+    @pytest.mark.parametrize('lang', SHIPPED_UI_LANGS)
+    def test_matches_en_key_set(self, lang, en_dict):
+        d = json.loads((ANALYZER_DIR / 'i18n' / f'{lang}.json').read_text(encoding='utf-8'))
+        assert set(d) == set(en_dict), (
+            f"{lang}.json key drift: missing={sorted(set(en_dict) - set(d))[:8]} "
+            f"extra={sorted(set(d) - set(en_dict))[:8]}"
+        )
+
+    @pytest.mark.parametrize('lang', SHIPPED_UI_LANGS)
+    def test_values_nonempty_strings(self, lang):
+        d = json.loads((ANALYZER_DIR / 'i18n' / f'{lang}.json').read_text(encoding='utf-8'))
+        bad = sorted(k for k, v in d.items() if not isinstance(v, str) or not v.strip())
+        assert not bad, f"{lang}.json empty/non-string values: {bad[:8]}"
+
+    @pytest.mark.parametrize('lang', SHIPPED_UI_LANGS)
+    def test_placeholders_match_en(self, lang, en_dict):
+        d = json.loads((ANALYZER_DIR / 'i18n' / f'{lang}.json').read_text(encoding='utf-8'))
+        bad = sorted(k for k in d
+                     if sorted(_PLACEHOLDER_RE.findall(en_dict[k])) != sorted(_PLACEHOLDER_RE.findall(d[k])))
+        assert not bad, f"{lang}.json placeholder drift: {bad[:8]}"
+
+    @pytest.mark.parametrize('lang', SHIPPED_UI_LANGS)
+    def test_markup_matches_en(self, lang, en_dict):
+        # Tag/id sets must match exactly; ORDER may differ where grammar
+        # forces it (e.g. "the <code>.kestrel/</code> folder of <b id=...>"
+        # vs "le dossier <b id=...> et son répertoire <code>...").
+        d = json.loads((ANALYZER_DIR / 'i18n' / f'{lang}.json').read_text(encoding='utf-8'))
+        bad = []
+        for k in d:
+            if sorted(_TAG_RE.findall(en_dict[k])) != sorted(_TAG_RE.findall(d[k])):
+                bad.append(k)
+            elif sorted(_ID_ATTR_RE.findall(en_dict[k])) != sorted(_ID_ATTR_RE.findall(d[k])):
+                bad.append(k)
+        assert not bad, f"{lang}.json markup drift (tags/ids): {bad[:8]}"

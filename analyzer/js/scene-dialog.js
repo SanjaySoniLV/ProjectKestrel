@@ -739,7 +739,7 @@
         const total = cropState.crops.length;
         if (total > 1) {
           cropNavEl.classList.remove('hidden');
-          cropLabelEl.textContent = `Crop ${cropState.activeIndex + 1}/${total}`;
+          cropLabelEl.textContent = t('sceneDlg.cropLabel', { index: cropState.activeIndex + 1, total });
           cropPrevBtn.disabled = false;
           cropNextBtn.disabled = false;
           const cycleCrop = (step) => {
@@ -765,8 +765,8 @@
       const editorLabelEl = el('#sceneInfoEditorLabel');
       if (editorBtn && editorLabelEl) {
         const editorKey = getSetting('editor', 'darktable');
-        editorLabelEl.textContent = `Open in ${_editorDisplayName(editorKey)}`;
-        editorBtn.title = `Open original in ${_editorDisplayName(editorKey)} (Space)`;
+        editorLabelEl.textContent = t('sceneDlg.openInEditor', { editor: _editorDisplayName(editorKey) });
+        editorBtn.title = t('sceneDlg.editorTitleNamed', { editor: _editorDisplayName(editorKey) });
         editorBtn.onclick = (ev) => {
           ev.stopPropagation();
           openInEditor(r);
@@ -1510,8 +1510,8 @@
       const reviewSlot = el('#sceneReviewSlot');
       if (reviewSlot) {
         reviewSlot.innerHTML = approved
-          ? '<span class="approval-note">✓ Reviewed</span>'
-          : '<button class="mark-reviewed-btn" id="markReviewedBtn" title="Confirm that Kestrel\'s tags are correct and mark this scene as reviewed (Ctrl/Cmd+R)">✓ Mark as Reviewed</button>';
+          ? `<span class="approval-note">✓ ${t('sceneDlg.reviewed')}</span>`
+          : `<button class="mark-reviewed-btn" id="markReviewedBtn" title="${t('sceneDlg.markReviewedTitle')}">✓ ${t('sceneDlg.markReviewed')}</button>`;
       }
 
       // Wire remove buttons
@@ -1625,7 +1625,7 @@
           const updatedScene = reloadScene(scene.id) || scene;
           renderTopbarTags(updatedScene);
           renderScenes();
-          showToast('Scene tags marked as reviewed', 2000);
+          showToast(t('sceneDlg.tagsReviewedToast'), 2000);
         };
       }
 
@@ -1865,7 +1865,7 @@
       // ── Top bar: title ──
       const localNum = String(scene.id).split(':').pop();
       const folderName = folderBaseName(scene.representative?.__rootPath || '');
-      let titleText = folderName || ('Scene ' + scene.id);
+      let titleText = folderName || t('sceneDlg.sceneTitle', { id: scene.id });
       titleText += ' — #' + localNum;
       if (scene.sceneName) titleText += ' — ' + scene.sceneName;
       titleText += ` (${scene.images.length} images)`;
@@ -1887,11 +1887,11 @@
           // Update title
           const updScene = reloadScene(scene.id) || scene;
           const nm = updScene.sceneName || '';
-          let t = folderName || ('Scene ' + scene.id);
-          t += ' — #' + localNum;
-          if (nm) t += ' — ' + nm;
-          t += ` (${scene.images.length} images)`;
-          titleEl.textContent = t;
+          let title = folderName || t('sceneDlg.sceneTitle', { id: scene.id });
+          title += ' — #' + localNum;
+          if (nm) title += ' — ' + nm;
+          title += ` (${scene.images.length} images)`;
+          titleEl.textContent = title;
           renderScenes();
         } else {
           renameRow.classList.remove('hidden');
@@ -2077,7 +2077,7 @@
       const updated = reloadScene(_currentScene.id) || _currentScene;
       renderTopbarTags(updated);
       renderScenes();
-      showToast('Scene tags marked as reviewed', 1800);
+      showToast(t('sceneDlg.tagsReviewedToast'), 1800);
     }
 
     /** Open the inline species/family tag input on the current scene and focus it. */
@@ -3033,12 +3033,18 @@
       });
     })();
 
-    // Repaint the scene dialog's species pills when the display language
-    // changes while the dialog is open (Settings → Language).
-    document.addEventListener('kestrel:language-changed', () => {
-      if (sceneDlg?.open && _currentScene && typeof renderTopbarTags === 'function') {
-        renderTopbarTags(_currentScene);
-      }
-    });
+    // Repaint the scene dialog when a language changes while the dialog is
+    // open (Settings → language dropdowns): topbar species pills follow the
+    // bird-name language; marked-up chrome follows the interface language.
+    const _repaintSceneDialogLang = () => {
+      if (!sceneDlg?.open || !_currentScene) return;
+      if (typeof renderTopbarTags === 'function') renderTopbarTags(_currentScene);
+      try {
+        if (typeof applyStaticI18n === 'function') applyStaticI18n(sceneDlg);
+      } catch (_) { }
+    };
+    document.addEventListener('kestrel:language-changed', _repaintSceneDialogLang);
+    document.addEventListener('kestrel:species-lang-changed', _repaintSceneDialogLang);
+    document.addEventListener('kestrel:species-lang-ready', _repaintSceneDialogLang);
 
     // Settings storage

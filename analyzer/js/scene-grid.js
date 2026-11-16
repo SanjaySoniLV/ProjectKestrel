@@ -4,15 +4,19 @@
     let _openFolderActionsMenu = null;
     let _openFolderActionsTrigger = null;
 
-    // Repaint species pills when the display language changes. The species
-    // map is loaded before 'kestrel:language-changed' fires, so trSpecies()
-    // resolves against the new language during the re-render.
-    document.addEventListener('kestrel:language-changed', () => {
+    // Repaint when a language changes: 'language-changed' swaps UI strings
+    // (t()), the species events swap species pills (trSpecies()). Dictionaries
+    // and maps are loaded before these events fire, so the resolvers pick up
+    // the new language during the re-render.
+    const _repaintGridLang = () => {
       if (typeof rows !== 'undefined' && Array.isArray(rows) && rows.length &&
           typeof renderScenes === 'function') {
         renderScenes();
       }
-    });
+    };
+    document.addEventListener('kestrel:language-changed', _repaintGridLang);
+    document.addEventListener('kestrel:species-lang-changed', _repaintGridLang);
+    document.addEventListener('kestrel:species-lang-ready', _repaintGridLang);
 
     function _closeFolderActionsMenu() {
       if (_openFolderActionsMenu && _openFolderActionsMenu.parentNode) {
@@ -45,18 +49,18 @@
       menu.className = 'folder-group-actions-menu';
 
       const items = [
-        { icon: '📂', label: 'Open in File Explorer',
+        { icon: '📂', label: t('folderActions.openInExplorer'),
           run: () => window.pywebview.api.open_file_explorer(folderPath) },
-        { icon: '📝', label: 'Write Photo Metadata',
+        { icon: '📝', label: t('folderActions.writeMetadata'),
           run: () => writeMetadataForFolder(folderPath) },
-        { icon: '⚙', label: 'Change Settings…',
+        { icon: '⚙', label: t('folderActions.changeSettings'),
           run: () => openFolderSettingsDialog(folderPath) },
         ...(_isUpgradableTo3(pipelineStatus) ? [
-          { icon: '✨', label: 'Upgrade to Analysis Version 3.0…',
+          { icon: '✨', label: t('folderActions.upgradeV3'),
             run: () => upgradeFolderToV3(folderPath) },
         ] : []),
         { divider: true },
-        { icon: '🗑', label: 'Clear Kestrel Analysis Data', danger: true,
+        { icon: '🗑', label: t('folderActions.clearData'), danger: true,
           run: () => {
             const folderName = (folderPath || '').split(/[\\/]/).filter(Boolean).pop() || folderPath;
             clearKestrelDataForFolder(folderPath, folderName, refreshCallback);
@@ -93,19 +97,15 @@
       const up = st?.upgrade || {};
       const name = (folderPath || '').split(/[\\/]/).filter(Boolean).pop() || folderPath;
       if (up.status === 'current') {
-        showToast(`${name} is already on analysis version 3.0.`, 4000);
+        showToast(t('folderActions.upgradeAlreadyCurrent', { name }), 4000);
         return;
       }
       if (up.status === 'reanalyze' || up.status === 'not_analyzed') {
-        showToast(`${name}: ${up.reason || 're-analyse this folder to use analysis version 3.0.'}`, 7000);
+        showToast(t('folderActions.upgradeReanalyze', { name, reason: up.reason || t('folderActions.upgradeReanalyzeDefault') }), 7000);
         return;
       }
       const ok = window.confirm(
-        `Upgrade “${name}” to analysis version 3.0?\n\n` +
-        'Kestrel re-reads the bird crops and preview images it already saved (no RAW decoding) to ' +
-        'update species IDs, add the new sharpness score and build the smart-search index. ' +
-        'Your culling decisions, star ratings and edited tags are not changed, and the database is ' +
-        'backed up first. Runs on this computer only (uses the GPU when enabled).'
+        t('folderActions.upgradeConfirm', { name })
       );
       if (!ok) return;
       if (typeof smartSearchUpgradeFolder === 'function') await smartSearchUpgradeFolder(folderPath);
@@ -135,8 +135,8 @@
     /** Header label for a folder's analysis pipeline ("Pipeline 2.0.4"). */
     function _pipelineVersionLabel(up) {
       if (!up || up.status === 'not_analyzed') return '';
-      if ((Number(up.pipeline_major) || 0) >= 3) return 'Analysis version 3.0';
-      return up.version ? `Analysis version ${up.version}` : 'Analysis version < 2.0';
+      if ((Number(up.pipeline_major) || 0) >= 3) return t('folderActions.version3');
+      return up.version ? t('folderActions.versionNumbered', { version: up.version }) : t('folderActions.versionLegacy');
     }
 
     /** Show/hide every header Upgrade button from its folder's status and the
@@ -149,7 +149,7 @@
         const fp = btn.dataset.folderPath;
         const queued = busy.has(String(fp).replace(/\\/g, '/'));
         btn.disabled = queued;
-        btn.innerHTML = queued ? '<i>⏳</i> In upgrade queue' : '<i>✨</i> Upgrade to 3.0';
+        btn.innerHTML = queued ? `<i>⏳</i> ${t('folderActions.upgradeQueued')}` : `<i>✨</i> ${t('folderActions.upgradeButton')}`;
         btn.classList.toggle('hidden', !(queued || btn.dataset.upgradable === '1'));
       }
       syncUpgradeAllButton();
@@ -555,8 +555,8 @@
           // overloading the '+' affordance that other parts of the UI
           // (scene-chip-add, chip-add-btn) use for "create new tag".
           plus.textContent = '▾';
-          plus.title = `Show ${overflowCount} more`;
-          plus.setAttribute('aria-label', `Show ${overflowCount} more tags`);
+          plus.title = t('grid.morePillsTitle', { count: overflowCount });
+          plus.setAttribute('aria-label', t('grid.morePillsAria', { count: overflowCount }));
           plus.addEventListener('click', (ev) => {
             ev.stopPropagation();
             _openMorePillsPopover(plus, cardPills.slice(1), _showSciOnCards, cardPills);
@@ -711,7 +711,9 @@
           dot.style.width = dotSize + 'px';
           dot.style.height = dotSize + 'px';
           // Title gives a fallback tooltip for folks who want the raw number.
-          dot.title = `${cluster.scenes.length} scene${cluster.scenes.length === 1 ? '' : 's'} · ${imgCount} image${imgCount === 1 ? '' : 's'}`;
+          const sc = cluster.scenes.length === 1 ? t('grid.oneScene', { count: cluster.scenes.length }) : t('grid.manyScenes', { count: cluster.scenes.length });
+          const im = imgCount === 1 ? t('grid.oneImage', { count: imgCount }) : t('grid.manyImages', { count: imgCount });
+          dot.title = `${sc} · ${im}`;
           const line = document.createElement('div');
           line.className = 'timeline-line' + (isLast ? ' last' : '');
           railCol.appendChild(dot);
@@ -727,7 +729,7 @@
           const timeSpan = document.createElement('span');
           timeSpan.className = 'timeline-node-time';
           if (cluster.untimed) {
-            timeSpan.textContent = 'Unknown time';
+            timeSpan.textContent = t('grid.unknownTime');
           } else {
             const spanMs = cluster.endMs - cluster.startMs;
             // Collapse clusters that span less than two minutes to a single
@@ -740,8 +742,9 @@
 
           const countSpan = document.createElement('span');
           countSpan.className = 'timeline-node-count muted';
-          countSpan.textContent =
-            `${cluster.scenes.length} scene${cluster.scenes.length === 1 ? '' : 's'} · ${imgCount} image${imgCount === 1 ? '' : 's'}`;
+          const scTxt = cluster.scenes.length === 1 ? t('grid.oneScene', { count: cluster.scenes.length }) : t('grid.manyScenes', { count: cluster.scenes.length });
+          const imTxt = imgCount === 1 ? t('grid.oneImage', { count: imgCount }) : t('grid.manyImages', { count: imgCount });
+          countSpan.textContent = `${scTxt} · ${imTxt}`;
           hdr.appendChild(countSpan);
 
           contentCol.appendChild(hdr);
@@ -780,7 +783,10 @@
 
           const hdr = document.createElement('div');
           hdr.className = 'folder-group-header' + (collapsed ? ' collapsed' : '');
-          hdr.innerHTML = `<span class="folder-group-toggle">▼</span><span class="folder-group-name">${escapeHtml(folderName)}</span><span class="folder-group-count muted">${allScenesInFolder.length} scene${allScenesInFolder.length === 1 ? '' : 's'}</span>`;
+          const folderCountTxt = allScenesInFolder.length === 1
+            ? t('grid.oneScene', { count: allScenesInFolder.length })
+            : t('grid.manyScenes', { count: allScenesInFolder.length });
+          hdr.innerHTML = `<span class="folder-group-toggle">▼</span><span class="folder-group-name">${escapeHtml(folderName)}</span><span class="folder-group-count muted">${folderCountTxt}</span>`;
 
           // Spacer pushes the action group to the right
           const spacer = document.createElement('div');
@@ -802,7 +808,7 @@
 
           const actionsTrigger = document.createElement('button');
           actionsTrigger.className = 'action-btn folder-group-actions-trigger';
-          actionsTrigger.innerHTML = '<i>⋯</i> Folder Actions <span class="caret">▾</span>';
+          actionsTrigger.innerHTML = `<i>⋯</i> ${t('folderActions.trigger')} <span class="caret">▾</span>`;
           actionsTrigger.title = 'More actions for this folder';
           const _folderPathForMenu = fd.folderPath;
           actionsTrigger.addEventListener('click', (ev) => {
@@ -841,8 +847,8 @@
           upgradeBtn.type = 'button';
           upgradeBtn.className = 'action-btn folder-upgrade-btn hidden';
           upgradeBtn.dataset.folderPath = fd.folderPath;
-          upgradeBtn.innerHTML = '<i>✨</i> Upgrade to 3.0';
-          upgradeBtn.title = 'Upgrade to analysis version 3.0 from the crops Kestrel already saved: new species IDs, the sharpness score and smart search. No re-analysis; ratings, culls and tags are kept.';
+          upgradeBtn.innerHTML = `<i>✨</i> ${t('folderActions.upgradeButton')}`;
+          upgradeBtn.title = t('folderActions.upgradeButtonTitle');
           upgradeBtn.addEventListener('click', (ev) => { ev.stopPropagation(); upgradeFolderToV3(fd.folderPath); });
           rightActions.appendChild(upgradeBtn);
           folderPipelineStatus(fd.folderPath).then((up) => {
@@ -865,8 +871,8 @@
           repairBtn.type = 'button';
           repairBtn.className = 'action-btn folder-repair-btn hidden';
           repairBtn.dataset.repairRoot = fd.folderPath;
-          repairBtn.innerHTML = '<i>⚠</i> Repair Kestrel Data';
-          repairBtn.title = 'Kestrel data and photos no longer match';
+          repairBtn.innerHTML = `<i>⚠</i> ${t('folderActions.repair')}`;
+          repairBtn.title = t('folderActions.repairTitle');
           repairBtn.addEventListener('click', (ev) => {
             ev.stopPropagation();
             if (typeof openRepairDialog === 'function') openRepairDialog(fd.folderPath);
@@ -875,8 +881,8 @@
 
           const cullingBtn = document.createElement('button');
           cullingBtn.className = 'action-btn culling-assistant-btn';
-          cullingBtn.innerHTML = '<i>✂</i> Open Culling Assistant';
-          cullingBtn.title = 'Open the AI-assisted culling workflow for this folder';
+          cullingBtn.innerHTML = `<i>✂</i> ${t('folderActions.culling')}`;
+          cullingBtn.title = t('folderActions.cullingTitle');
           cullingBtn.addEventListener('click', (ev) => { ev.stopPropagation(); openCullingAssistant(fd.folderPath); });
           rightActions.appendChild(cullingBtn);
 
@@ -884,8 +890,8 @@
           perchBtn.type = 'button';
           perchBtn.className = 'action-btn folder-perch-btn';
           perchBtn.dataset.folderPath = fd.folderPath;
-          perchBtn.innerHTML = '<i>\u{1FAB6}</i> <span class="folder-perch-btn-label">Share with Perch</span>';
-          perchBtn.title = 'Share this folder to Perch (or manage existing perch)';
+          perchBtn.innerHTML = `<i>🪶</i> <span class="folder-perch-btn-label">${t('folderActions.sharePerch')}</span>`;
+          perchBtn.title = t('folderActions.sharePerchTitle');
           perchBtn.addEventListener('click', (ev) => {
             ev.stopPropagation();
             openPerchDialog(fd.folderPath);
@@ -900,7 +906,7 @@
               if (res && res.present && res.link) {
                 perchBtn.classList.add('is-linked');
                 const lbl = perchBtn.querySelector('.folder-perch-btn-label');
-                if (lbl) lbl.textContent = 'On Perch';
+                if (lbl) lbl.textContent = t('folderActions.onPerch');
                 perchBtn.dataset.perchUrl = String(res.link.perch_url || '');
                 perchBtn.title = 'This folder is published to Perch (click to manage)';
               }
@@ -981,7 +987,7 @@
       if (n >= 2) {
         bar.classList.remove('hidden');
         const lbl = document.getElementById('selectActionLabel');
-        if (lbl) lbl.textContent = `${n} scene${n === 1 ? '' : 's'} selected`;
+        if (lbl) lbl.textContent = t('selectBar.label', { count: n });
       } else {
         bar.classList.add('hidden');
       }

@@ -189,7 +189,7 @@ class TestCustomEditorMarkup(unittest.TestCase):
         self.css = _read("css", "dialogs", "settings.css")
 
     def test_custom_option_is_offered(self):
-        self.assertRegex(self.html, r'<option value="custom">')
+        self.assertRegex(self.html, r'<option value="custom"[^>]*>')
 
     def test_editor_elements_exist(self):
         for eid in (

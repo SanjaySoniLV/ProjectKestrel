@@ -355,8 +355,8 @@
       const upgrading = _smartUpgradeRunning();
       idxBtn?.classList.toggle('hidden', upgrading || _smart.unavailable || upgradable.length === 0);
       if (idxBtn) {
-        idxBtn.textContent = upgradable.length > 1 ? `Upgrade ${upgradable.length} folders` : 'Upgrade folder';
-        idxBtn.title = 'Upgrade to analysis version 3.0 using the crops Kestrel already saved: new species IDs, the sharpness score and the smart-search index. No re-analysis, never changes your ratings, culls or tags. Runs on this computer only.';
+        idxBtn.textContent = upgradable.length > 1 ? t('search.upgradeCount', { count: upgradable.length }) : t('filterBar.upgradeFolder');
+        idxBtn.title = t('search.upgradeTitle');
       }
 
       // The status sits right-aligned inside the search box, so each message is short;
@@ -614,10 +614,10 @@
     function smartSearchOnUpgradeFinished(u) {
       try { window.invalidateFolderPipelineStatus?.(); } catch (_) { }
       const name = u?.name || _smartFolderName(u?.path || '');
-      if (u.status === 'error') showToast(`Upgrade of ${name} failed: ${u.error || 'unknown error'}`, 6000);
-      else if (u.status === 'stopped') showToast(`Upgrade of ${name} paused because analysis started. Try again when it finishes.`, 6000);
-      else if (u.status === 'cancelled') showToast(`Upgrade of ${name} stopped — run it again to resume.`, 5000);
-      else if (u.status === 'done') showToast(`Upgraded ${name} to analysis version 3.0 — species, quality and smart search are up to date.`, 5000);
+      if (u.status === 'error') showToast(t('search.upgradeFailed', { name, error: u.error || t('common.unknownError') }), 6000);
+      else if (u.status === 'stopped') showToast(t('search.upgradeStopped', { name }), 6000);
+      else if (u.status === 'cancelled') showToast(t('search.upgradeCancelled', { name }), 5000);
+      else if (u.status === 'done') showToast(t('search.upgradeDone', { name }), 5000);
       if (u.status !== 'done' && u.status !== 'cancelled') { _smartUpdateUi(); return; }
       // The upgrade rewrote species / quality columns: reload what is open so
       // the grid shows them (and so a later save cannot write the old values back).
@@ -643,6 +643,34 @@
     }
     window.smartSearchUpgradeFolder = smartSearchUpgradeFolder;
 
+    // Example queries: "Try:" links inside the empty bar. Built (and rebuilt
+    // on language change) after the dictionaries load — building at module
+    // parse time would bake in raw keys, since the dicts load later.
+    function _renderSmartSearchExamples() {
+      const box = el('#smartSearchExamples');
+      if (!box) return;
+      box.textContent = '';
+      const inputEl = el('#search');
+      const lead = document.createElement('span');
+      lead.className = 'smart-search-muted';
+      lead.textContent = t('search.tryPrefix');
+      box.appendChild(lead);
+      for (const ex of SMART_SEARCH_EXAMPLES) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'smart-example-link';
+        b.textContent = ex;
+        b.title = t('search.exampleTitle', { query: ex });
+        b.addEventListener('mousedown', (e) => e.preventDefault()); // keep focus, avoid blur race
+        b.addEventListener('click', () => {
+          inputEl.value = ex;
+          inputEl.focus();
+          smartSearchOnInput();
+        });
+        box.appendChild(b);
+      }
+    }
+
     (function _wireSmartSearch() {
       const input = el('#search');
       if (!input) return;
@@ -652,29 +680,10 @@
         input.focus();
       });
       el('#smartSearchIndexBtn')?.addEventListener('click', () => { _smartIndexMissing(); });
-
-      // Example queries: "Try:" links inside the empty bar.
-      const box = el('#smartSearchExamples');
-      if (box) {
-        const lead = document.createElement('span');
-        lead.className = 'smart-search-muted';
-        lead.textContent = 'Try:';
-        box.appendChild(lead);
-        for (const ex of SMART_SEARCH_EXAMPLES) {
-          const b = document.createElement('button');
-          b.type = 'button';
-          b.className = 'smart-example-link';
-          b.textContent = ex;
-          b.title = `Search for “${ex}”`;
-          b.addEventListener('mousedown', (e) => e.preventDefault()); // keep focus, avoid blur race
-          b.addEventListener('click', () => {
-            input.value = ex;
-            input.focus();
-            smartSearchOnInput();
-          });
-          box.appendChild(b);
-        }
-      }
+      _renderSmartSearchExamples();
+      // Rebuild when the interface language changes (guarded: the unit-test
+      // DOM stub has no document.addEventListener).
+      document.addEventListener?.('kestrel:language-changed', () => { _renderSmartSearchExamples(); });
 
       // Any edit drops stale pills at once (the search itself stays debounced).
       input.addEventListener('input', () => { _smartUpdateUi(); });

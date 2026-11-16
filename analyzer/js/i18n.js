@@ -1,19 +1,22 @@
 // ── i18n engine ─────────────────────────────────────────────────────────────
-// Display-language support for Project Kestrel. Two layers:
+// Display-language support for Project Kestrel. Two layers, two independent
+// settings:
 //
 //   UI strings  — static chrome marked with data-i18n / data-i18n-title /
-//                 data-i18n-aria attributes, translated by applyStaticI18n()
-//                 from dictionaries at analyzer/i18n/<lang>.json. 'en' is the
-//                 source of truth; other languages override keys on top of it.
-//                 Only English ships today — adding a UI language is a pure
-//                 data drop (one JSON file), no code change.
+//                 data-i18n-aria / data-i18n-placeholder attributes,
+//                 translated by applyStaticI18n() from dictionaries at
+//                 analyzer/i18n/<lang>.json. 'en' is the source of truth;
+//                 other languages override keys on top of it and fall back to
+//                 English for keys they lack. The interface language is the
+//                 'language' setting (UI_LANGUAGES lists the shipped ones).
 //
 //   Bird names  — species labels stay stored in canonical English everywhere
 //                 (CSV, scene JSON, XMP, search). trSpecies() resolves a label
 //                 to the active language at render time, falling back to
-//                 English for names the language file lacks. The maps are
-//                 built by tools/build_bird_names_i18n.py from Multiling IOC
-//                 and served through get_bird_name_translations().
+//                 English for names the language file lacks. The bird-name
+//                 language is the separate 'bird_name_language' setting; the
+//                 maps are built by tools/build_bird_names_i18n.py from
+//                 Multiling IOC and served through get_bird_name_translations().
 //
 // This file must stay load-order independent: it is included before
 // settings.js/state.js in visualizer.html and in culling.html (where only the
@@ -93,6 +96,34 @@
     scope.querySelectorAll('[data-i18n-aria]').forEach((node) => {
       node.setAttribute('aria-label', t(node.getAttribute('data-i18n-aria')));
     });
+    scope.querySelectorAll('[data-i18n-placeholder]').forEach((node) => {
+      node.setAttribute('placeholder', t(node.getAttribute('data-i18n-placeholder')));
+    });
+    // InnerHTML variant for strings that carry their own inline markup
+    // (<b>, <br/>, <a>). Dictionary values are shipped with the app and are
+    // exactly as trusted as this HTML file.
+    scope.querySelectorAll('[data-i18n-html]').forEach((node) => {
+      node.innerHTML = t(node.getAttribute('data-i18n-html'));
+    });
+    // Custom tooltip attribute used by .help-tip elements.
+    scope.querySelectorAll('[data-i18n-data-tip]').forEach((node) => {
+      node.setAttribute('data-tip', t(node.getAttribute('data-i18n-data-tip')));
+    });
+  }
+
+  // ── Shipped interface languages ───────────────────────────────────────────
+  // Hand-maintained list (en.json is the source of truth for the strings
+  // themselves). Adding a language here + a <lang>.json file is a pure data
+  // drop. Native names so every language labels itself in itself.
+  const UI_LANGUAGES = [
+    { code: 'en', name_native: 'English' },
+    { code: 'de', name_native: 'Deutsch' },
+    { code: 'fr', name_native: 'Français' },
+    { code: 'ru', name_native: 'Русский' },
+  ];
+
+  function getUiLanguages() {
+    return UI_LANGUAGES.slice();
   }
 
   // ── Bird-name translations ────────────────────────────────────────────────
@@ -141,35 +172,61 @@
   }
 
   // ── Language state ─────────────────────────────────────────────────────────
+  // Two independent settings: 'language' = interface (UI strings),
+  // 'bird_name_language' = species labels.
 
-  /** Active display language ('en' when unset/invalid). */
+  /** Active interface language ('en' when unset/invalid). */
   function getLanguage() {
     const lang = _readSetting('language', 'en');
     return (typeof lang === 'string' && /^[a-z]{2}(-[a-z]{2})?$/.test(lang)) ? lang : 'en';
   }
 
-  /** Called once after settings hydrate: load dictionaries + species map. */
+  /** Active bird-name language ('en' when unset/invalid). */
+  function getBirdNameLanguage() {
+    const lang = _readSetting('bird_name_language', 'en');
+    return (typeof lang === 'string' && /^[a-z]{2}(-[a-z]{2})?$/.test(lang)) ? lang : 'en';
+  }
+
+  async function _persistLanguageSetting(key, code) {
+    if (typeof mergeSetting === 'function') {
+      mergeSetting(key, code);
+    } else {
+      await _writeSetting(key, code);
+    }
+  }
+
+  /** Called once after settings hydrate: load dictionary + species map. */
   async function initI18n() {
     const lang = getLanguage();
     await _loadDicts(lang);
     applyStaticI18n();
-    await loadSpeciesTranslations(lang);
+    // First apply is done — let dynamic panels repaint in the active language.
+    try {
+      document.dispatchEvent(new CustomEvent('kestrel:language-changed', { detail: { lang } }));
+    } catch (_) { }
+    await loadSpeciesTranslations(getBirdNameLanguage());
   }
 
-  /** Change the display language: persist, reload, re-apply, notify. */
+  /** Change the interface language: persist, reload, re-apply, notify. */
   async function setLanguage(lang) {
     const code = (lang || 'en').toString().trim().toLowerCase();
     if (!/^[a-z]{2}(-[a-z]{2})?$/.test(code)) return;
-    if (typeof mergeSetting === 'function') {
-      mergeSetting('language', code);
-    } else {
-      await _writeSetting('language', code);
-    }
+    await _persistLanguageSetting('language', code);
     await _loadDicts(code);
     applyStaticI18n();
-    await loadSpeciesTranslations(code);
     try {
       document.dispatchEvent(new CustomEvent('kestrel:language-changed', { detail: { lang: code } }));
+    } catch (_) { }
+  }
+
+  /** Change the bird-name language: persist, reload the map, notify. */
+  async function setBirdNameLanguage(lang) {
+    const code = (lang || 'en').toString().trim().toLowerCase();
+    if (!/^[a-z]{2}(-[a-z]{2})?$/.test(code)) return;
+    await _persistLanguageSetting('bird_name_language', code);
+    await loadSpeciesTranslations(code);
+    try {
+      document.dispatchEvent(new CustomEvent('kestrel:species-lang-changed', { detail: { lang: code } }));
     } catch (_) { }
   }
 
@@ -179,6 +236,9 @@
   window.trSpecies = trSpecies;
   window.getLanguage = getLanguage;
   window.setLanguage = setLanguage;
+  window.getBirdNameLanguage = getBirdNameLanguage;
+  window.setBirdNameLanguage = setBirdNameLanguage;
+  window.getUiLanguages = getUiLanguages;
   window.initI18n = initI18n;
   window.loadSpeciesTranslations = loadSpeciesTranslations;
 })();
