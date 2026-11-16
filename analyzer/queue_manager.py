@@ -166,7 +166,7 @@ except Exception:  # pragma: no cover - config import must never block the queue
     _DEFAULT_MAX_CONSECUTIVE_ERRORS = 10
 
 _GPU_LOST_MESSAGE = (
-    'The GPU stopped responding (a Windows GPU reset). Progress is saved. '
+    'The GPU stopped responding. Progress is saved. '
     'Restart Kestrel, then analyze this folder again to continue on the GPU.'
 )
 
