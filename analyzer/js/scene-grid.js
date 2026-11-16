@@ -4,6 +4,16 @@
     let _openFolderActionsMenu = null;
     let _openFolderActionsTrigger = null;
 
+    // Repaint species pills when the display language changes. The species
+    // map is loaded before 'kestrel:language-changed' fires, so trSpecies()
+    // resolves against the new language during the re-render.
+    document.addEventListener('kestrel:language-changed', () => {
+      if (typeof rows !== 'undefined' && Array.isArray(rows) && rows.length &&
+          typeof renderScenes === 'function') {
+        renderScenes();
+      }
+    });
+
     function _closeFolderActionsMenu() {
       if (_openFolderActionsMenu && _openFolderActionsMenu.parentNode) {
         _openFolderActionsMenu.parentNode.removeChild(_openFolderActionsMenu);
@@ -519,7 +529,7 @@
           if (_showSciOnCards) c.classList.add('chip--with-sci');
           const primary = document.createElement('span');
           primary.className = 'chip-primary';
-          primary.textContent = firstPill;
+          primary.textContent = typeof trSpecies === 'function' ? trSpecies(firstPill) : firstPill;
           c.appendChild(primary);
           let titleStr = firstPill;
           if (_showSciOnCards) {

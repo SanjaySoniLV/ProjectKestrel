@@ -15,6 +15,8 @@ curated list of established introductions such as House Sparrow).
 from __future__ import annotations
 
 import csv
+import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -22,6 +24,13 @@ from typing import Iterable
 from .config import MODELS_DIR
 
 CATALOG_PATH = MODELS_DIR / "birds" / "birds_global.csv"
+BIRDS_DIR = MODELS_DIR / "birds"
+NAME_TRANSLATIONS_INDEX = BIRDS_DIR / "bird_names_index.json"
+
+# Language codes emitted by ``tools/build_bird_names_i18n.py`` — the settings
+# sanitizer accepts exactly this shape, so a code the converter cannot emit
+# is rejected there too.
+_LANGUAGE_CODE_RE = re.compile(r"^[a-z]{2}(-[a-z]{2})?$")
 
 # Region codes that ``Settings`` may legally store. Kept here -- not in
 # ``settings_utils`` -- so the data layer owns the vocabulary and the
@@ -490,3 +499,80 @@ def family_entry_to_dict(entry: FamilyEntry) -> dict:
         "order": entry.order,
         "regions": sorted(entry.regions),
     }
+
+
+# ----------------------------------------------------------------------------
+# Bird-name translations (Multiling IOC, display-only)
+# ----------------------------------------------------------------------------
+#
+# ``tools/build_bird_names_i18n.py`` emits one ``bird_names.<lang>.json`` per
+# language: a flat {english_name: translated_name} map keyed by every English
+# form the UI can display a species under (canonical common name plus catalog
+# aliases). The frontend resolves a label at render time and falls back to
+# the stored English name when the active language has no entry. Translated
+# names never enter the CSV, scene JSON, or XMP sidecars.
+
+_name_translations_cache: dict[str, dict[str, str]] = {}
+_name_languages_cache: list[dict] | None = None
+
+
+def is_valid_language_code(code: str) -> bool:
+    """True when ``code`` matches the shape the converter can emit."""
+    return isinstance(code, str) and bool(_LANGUAGE_CODE_RE.match(code))
+
+
+def load_name_translations(code: str, base_dir: Path | None = None) -> dict[str, str]:
+    """Return the {english_name: translated_name} map for ``code``.
+
+    Cached per process; a missing file or invalid code yields ``{}`` so the
+    UI simply falls back to English. Reads only the fixed per-language file
+    inside ``base_dir`` — never a caller-supplied path.
+    """
+    if not is_valid_language_code(code):
+        return {}
+    cached = _name_translations_cache.get(code)
+    if cached is not None:
+        return cached
+    d = Path(base_dir) if base_dir is not None else BIRDS_DIR
+    path = d / f"bird_names.{code}.json"
+    out: dict[str, str] = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+        if isinstance(raw, dict):
+            out = {str(k): str(v) for k, v in raw.items() if str(k) and str(v)}
+    except (OSError, ValueError):
+        out = {}
+    _name_translations_cache[code] = out
+    return out
+
+
+def available_name_languages(base_dir: Path | None = None) -> list[dict]:
+    """Return the manifest's language list (cached), or ``[]`` when absent.
+
+    Each entry is ``{code, name_native, species_count, coverage}`` — exactly
+    what the Settings language dropdown renders. ``'en'`` is not listed: it
+    is the identity language, so the UI prepends it to the dropdown itself.
+    """
+    global _name_languages_cache
+    if _name_languages_cache is not None:
+        return _name_languages_cache
+    d = Path(base_dir) if base_dir is not None else BIRDS_DIR
+    out: list[dict] = []
+    try:
+        with open(d / NAME_TRANSLATIONS_INDEX.name, encoding="utf-8") as f:
+            raw = json.load(f)
+        langs = raw.get("languages")
+        if isinstance(langs, list):
+            for item in langs:
+                if isinstance(item, dict) and is_valid_language_code(item.get("code", "")):
+                    out.append({
+                        "code": item["code"],
+                        "name_native": str(item.get("name_native") or item["code"]),
+                        "species_count": int(item.get("species_count") or 0),
+                        "coverage": float(item.get("coverage") or 0.0),
+                    })
+    except (OSError, ValueError, AttributeError):
+        out = []
+    _name_languages_cache = out
+    return out

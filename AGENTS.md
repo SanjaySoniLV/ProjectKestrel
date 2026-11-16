@@ -58,6 +58,30 @@ pipeline 3.0 (`config.PIPELINE_MAJOR`, CSV `schema_version` 3) the CSV's
 embeddings smart search uses. The app scores objective photo characteristics
 only (focus/sharpness), never "is this a good photo".
 
+## Internationalization (i18n)
+
+Two layers, both display-only — stored data (CSV, scene JSON, XMP sidecars,
+smart-search index) stays in canonical English names forever:
+
+* **Bird names** — species-label translation maps built from the Multiling
+  IOC workbook by `tools/build_bird_names_i18n.py` into
+  `analyzer/models/birds/bird_names.<lang>.json` (committed; runtime only
+  reads them). Served to the frontend via
+  `Api.get_bird_name_translations(lang)`; render paths resolve labels through
+  `trSpecies(name)` (`analyzer/js/i18n.js`), falling back to English.
+* **UI strings** — `analyzer/js/i18n.js` (`t()`, `applyStaticI18n()`) reads
+  dictionaries from `analyzer/i18n/<lang>.json`. Static markup carries
+  `data-i18n` / `data-i18n-title` / `data-i18n-aria` attributes. Only English
+  ships today; **adding a UI language is a pure data drop** (one JSON file),
+  no code change.
+
+The active language is the `language` setting (sanitized in
+`settings_utils.py`, strict `^[a-z]{2}(-[a-z]{2})?$`, default `en`), chosen in
+Settings → "Language (bird names)". Changing it fires
+`kestrel:language-changed` after the new map loads; grids/dialogs listen and
+re-render their pills. When adding a language column to the converter, keep
+the code in that same shape.
+
 ## Setting up and running
 
 ```bash

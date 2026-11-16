@@ -1,0 +1,8 @@
+{
+  "settings.title": "Settings",
+  "settings.open": "⚙ Settings",
+  "settings.language.label": "Language (bird names)",
+  "settings.language.hint": "Species names are shown in this language when a translation exists. Files, tags, and search keep the English names, so nothing you save changes.",
+  "settings.showScientificNames.label": "Show scientific names",
+  "settings.showScientificNames.hint": "When on, the Latin binomial appears in italics under each species pill (scene dialog and timeline cards), and family pills show the scientific family name."
+}

@@ -251,6 +251,9 @@
       await new Promise(function(r) { setTimeout(r, 500); });
       // Hydrate settings from server to ensure localStorage has the latest data
       await hydrateSettingsFromServer();
+      // Load the display language (UI dictionaries + bird-name translations)
+      // now that settings are hydrated; repaints on 'kestrel:language-changed'.
+      if (typeof initI18n === 'function') { try { await initI18n(); } catch (_) { } }
       // Load species→family taxonomy map (used for auto-link, cascade, and autocomplete)
       loadSpeciesFamilyMap();
       // Then check donation threshold (after settings are loaded into localStorage)

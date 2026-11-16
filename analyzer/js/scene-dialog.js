@@ -722,10 +722,11 @@
           metaTextEl.textContent = position;
         } else {
           const sp = decodeEntities(activeSpecies);
+          const spDisp = typeof trSpecies === 'function' ? trSpecies(sp) : sp;
           const spConf = fmt3(activeSpeciesConf);
           const fam = decodeEntities(activeFamily);
           const famConf = fmt3(activeFamilyConf);
-          metaTextEl.textContent = `${sp} (${spConf}) | ${fam} (${famConf}) · ${position}`;
+          metaTextEl.textContent = `${spDisp} (${spConf}) | ${fam} (${famConf}) · ${position}`;
         }
       }
 
@@ -938,7 +939,11 @@
       const escapedName = escapeHtml(suggestion.name);
       const pct = Math.round((suggestion.share || 0) * 100);
       const readableType = tagType === 'species' ? 'species' : 'family';
-      return `<button class="scene-chip-suggested" data-suggest-type="${readableType}" data-suggest-value="${escapedName}" title="Suggested ${readableType} (${pct}% confidence-weighted vote)">+ <em>${escapedName}</em></button>`;
+      // Display-only translation for species suggestions; the data attribute
+      // keeps the canonical English name that applying the tag stores.
+      const display = (tagType === 'species' && typeof trSpecies === 'function')
+        ? escapeHtml(trSpecies(suggestion.name)) : escapedName;
+      return `<button class="scene-chip-suggested" data-suggest-type="${readableType}" data-suggest-value="${escapedName}" title="Suggested ${readableType} (${pct}% confidence-weighted vote)">+ <em>${display}</em></button>`;
     }
 
     let _activeTagInputType = null; // 'species' or 'family'
@@ -1141,7 +1146,7 @@
         if (showSci) c.classList.add('chip--with-sci');
         const primary = document.createElement('span');
         primary.className = 'chip-primary';
-        primary.textContent = name;
+        primary.textContent = typeof trSpecies === 'function' ? trSpecies(name) : name;
         c.appendChild(primary);
         let titleStr = name;
         if (showSci) {
@@ -1382,13 +1387,16 @@
       const chipClass = opts.chipClass || 'chip';
       const removeAttr = opts.removeAttr || '';
       const showSci = !!opts.showSci && !!sci;
+      // Display-only translation: data-* attributes and matching stay on the
+      // canonical English name; only the visible label is translated.
+      const display = typeof trSpecies === 'function' ? trSpecies(primary) : primary;
       const removeBtn = removeAttr
         ? `<span class="chip-x" data-${removeAttr}="${escapeHtml(primary)}" title="Remove '${escapeHtml(primary)}'">×</span>`
         : '';
       const sciHtml = showSci
         ? `<span class="chip-sci"><em>${escapeHtml(sci)}</em></span>` : '';
       const cls = showSci ? `${chipClass} chip--with-sci` : chipClass;
-      return `<span class="${cls}"><span class="chip-primary">${escapeHtml(primary)}</span>${sciHtml}${removeBtn}</span>`;
+      return `<span class="${cls}"><span class="chip-primary">${escapeHtml(display)}</span>${sciHtml}${removeBtn}</span>`;
     }
 
     /** Add a species to the draft and, if the species is in the taxonomy map,
@@ -3024,5 +3032,13 @@
         _applyScenePreviewSplit(_scenePreviewSplitRatio);
       });
     })();
+
+    // Repaint the scene dialog's species pills when the display language
+    // changes while the dialog is open (Settings → Language).
+    document.addEventListener('kestrel:language-changed', () => {
+      if (sceneDlg?.open && _currentScene && typeof renderTopbarTags === 'function') {
+        renderTopbarTags(_currentScene);
+      }
+    });
 
     // Settings storage

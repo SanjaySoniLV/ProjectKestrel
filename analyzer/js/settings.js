@@ -7,6 +7,9 @@
     }
     function saveSettings(obj) { localStorage.setItem(SETTINGS_KEY, JSON.stringify(obj || {})); }
     function getSetting(k, def) { const s = loadSettings(); return (k in s) ? s[k] : def; }
+    function escapeHtml(s) {
+      return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
 
     // ── Custom rating profile ─────────────────────────────────────────────────
     // The 'custom' profile's cutoffs live in the rating_thresholds_custom
@@ -378,6 +381,30 @@
       const showSciCb = document.getElementById('showScientificNames');
       if (showSciCb) showSciCb.checked = !!getSetting('show_scientific_names', false);
 
+      // Language (bird names): English (identity) + languages from the
+      // translation manifest. A stored code that is no longer shipped keeps
+      // its option so the dropdown never silently drops the user's value.
+      const langSel = document.getElementById('settingsLanguage');
+      if (langSel) {
+        let langs = [];
+        try {
+          const res = await window.pywebview?.api?.get_bird_name_languages?.();
+          if (res && res.success && Array.isArray(res.languages)) langs = res.languages;
+        } catch (_) { /* non-fatal: English only */ }
+        const current = String(getSetting('language', 'en') || 'en');
+        let options = [`<option value="en">English</option>`];
+        for (const l of langs) {
+          if (!l || typeof l.code !== 'string') continue;
+          const label = `${escapeHtml(l.name_native || l.code)} — ${escapeHtml(l.code)}`;
+          options.push(`<option value="${escapeHtml(l.code)}">${label}</option>`);
+        }
+        if (current !== 'en' && !langs.some(l => l && l.code === current)) {
+          options.push(`<option value="${escapeHtml(current)}">${escapeHtml(current)}</option>`);
+        }
+        langSel.innerHTML = options.join('');
+        langSel.value = current;
+      }
+
       const regionsPicker = document.getElementById('birdRegionsPicker');
       if (regionsPicker) {
         // Make sure catalog meta is loaded before we paint checkboxes -- the
@@ -449,6 +476,11 @@
       const finalRegions = birdRegions.length > 0 ? birdRegions : ['NA'];
       const showSciCbEl = document.getElementById('showScientificNames');
       const showScientificNames = showSciCbEl ? !!showSciCbEl.checked : !!existing.show_scientific_names;
+      const langSelEl = document.getElementById('settingsLanguage');
+      const language = langSelEl && /^[a-z]{2}(-[a-z]{2})?$/.test(langSelEl.value || '')
+        ? langSelEl.value
+        : 'en';
+      const languageChanged = String(existing.language || 'en') !== language;
       const prevRegions = Array.isArray(existing.bird_regions) ? existing.bird_regions.slice().sort().join(',') : '';
       const nextRegions = finalRegions.slice().sort().join(',');
       const regionsChanged = prevRegions !== nextRegions;
@@ -470,6 +502,7 @@
         quality_feedback_mode: qualityFeedbackMode,
         bird_regions: finalRegions,
         show_scientific_names: showScientificNames,
+        language,
       };
       _autoSaveEnabled = autoSaveEnabled;
       if (!_autoSaveEnabled) {
@@ -483,6 +516,12 @@
         try { await window.pywebview.api.save_settings_data(settings); } catch (_) { }
       }
       document.getElementById('settingsDlg').close();
+      // Bird-name language: reload translations and repaint species labels.
+      // setLanguage dispatches 'kestrel:language-changed' after the map loads;
+      // the grid/dialog listen and re-render their pills.
+      if (languageChanged && typeof setLanguage === 'function') {
+        try { await setLanguage(language); } catch (e) { console.warn('[language] apply failed', e); }
+      }
       // If rating profile changed and folders are loaded, reapply immediately
       const thresholdsChanged =
         ratingProfile !== prevProfile ||
