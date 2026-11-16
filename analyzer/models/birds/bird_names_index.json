@@ -1,0 +1,168 @@
+{
+  "generated_from": "Multiling IOC 15.2",
+  "catalog_species": 11251,
+  "languages": [
+    {
+      "code": "ca",
+      "name_native": "Català",
+      "species_count": 10228,
+      "coverage": 0.9091
+    },
+    {
+      "code": "cs",
+      "name_native": "Čeština",
+      "species_count": 10333,
+      "coverage": 0.9184
+    },
+    {
+      "code": "da",
+      "name_native": "Dansk",
+      "species_count": 11156,
+      "coverage": 0.9916
+    },
+    {
+      "code": "de",
+      "name_native": "Deutsch",
+      "species_count": 11000,
+      "coverage": 0.9777
+    },
+    {
+      "code": "eo",
+      "name_native": "Esperanto",
+      "species_count": 11202,
+      "coverage": 0.9956
+    },
+    {
+      "code": "es",
+      "name_native": "Español",
+      "species_count": 11022,
+      "coverage": 0.9796
+    },
+    {
+      "code": "et",
+      "name_native": "Eesti",
+      "species_count": 5737,
+      "coverage": 0.5099
+    },
+    {
+      "code": "fi",
+      "name_native": "Suomi",
+      "species_count": 10173,
+      "coverage": 0.9042
+    },
+    {
+      "code": "fr",
+      "name_native": "Français",
+      "species_count": 11202,
+      "coverage": 0.9956
+    },
+    {
+      "code": "hr",
+      "name_native": "Hrvatski",
+      "species_count": 10785,
+      "coverage": 0.9586
+    },
+    {
+      "code": "hu",
+      "name_native": "Magyar",
+      "species_count": 6608,
+      "coverage": 0.5873
+    },
+    {
+      "code": "it",
+      "name_native": "Italiano",
+      "species_count": 10165,
+      "coverage": 0.9035
+    },
+    {
+      "code": "ja",
+      "name_native": "日本語",
+      "species_count": 10719,
+      "coverage": 0.9527
+    },
+    {
+      "code": "lt",
+      "name_native": "Lietuvių",
+      "species_count": 9987,
+      "coverage": 0.8877
+    },
+    {
+      "code": "nl",
+      "name_native": "Nederlands",
+      "species_count": 11202,
+      "coverage": 0.9956
+    },
+    {
+      "code": "no",
+      "name_native": "Norsk",
+      "species_count": 11192,
+      "coverage": 0.9948
+    },
+    {
+      "code": "pl",
+      "name_native": "Polski",
+      "species_count": 11138,
+      "coverage": 0.99
+    },
+    {
+      "code": "pt",
+      "name_native": "Português",
+      "species_count": 11200,
+      "coverage": 0.9955
+    },
+    {
+      "code": "pt-pt",
+      "name_native": "Português europeu",
+      "species_count": 11052,
+      "coverage": 0.9823
+    },
+    {
+      "code": "ru",
+      "name_native": "Русский",
+      "species_count": 10762,
+      "coverage": 0.9565
+    },
+    {
+      "code": "sk",
+      "name_native": "Slovenčina",
+      "species_count": 11202,
+      "coverage": 0.9956
+    },
+    {
+      "code": "sr",
+      "name_native": "Српски",
+      "species_count": 8150,
+      "coverage": 0.7244
+    },
+    {
+      "code": "sv",
+      "name_native": "Svenska",
+      "species_count": 11202,
+      "coverage": 0.9956
+    },
+    {
+      "code": "tr",
+      "name_native": "Türkçe",
+      "species_count": 10728,
+      "coverage": 0.9535
+    },
+    {
+      "code": "uk",
+      "name_native": "Українська",
+      "species_count": 10955,
+      "coverage": 0.9737
+    },
+    {
+      "code": "zh",
+      "name_native": "中文",
+      "species_count": 11202,
+      "coverage": 0.9956
+    },
+    {
+      "code": "zh-tw",
+      "name_native": "繁體中文",
+      "species_count": 10692,
+      "coverage": 0.9503
+    }
+  ]
+}

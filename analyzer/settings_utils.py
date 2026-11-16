@@ -634,6 +634,19 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
         else:
             out['bird_regions'] = list(_DEFAULT_BIRD_REGIONS)
     _set_bool('show_scientific_names', default=False)
+    if 'language' in data:
+        language = _coerce_string(data.get('language'), default='en', max_len=16)
+        if not re.fullmatch(r'[a-z]{2}(-[a-z]{2})?', language or ''):
+            language = 'en'
+        out['language'] = language
+    # Bird-name (species label) language — independent of the interface
+    # language above; same strict code shape as the bird_names.<lang>.json
+    # files shipped under analyzer/models/birds/.
+    if 'bird_name_language' in data:
+        bird_name_language = _coerce_string(data.get('bird_name_language'), default='en', max_len=16)
+        if not re.fullmatch(r'[a-z]{2}(-[a-z]{2})?', bird_name_language or ''):
+            bird_name_language = 'en'
+        out['bird_name_language'] = bird_name_language
 
     _set_bool('includeSecondarySpecies', default=False)
     _set_bool('groupByFolder', default=True)

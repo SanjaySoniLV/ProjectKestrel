@@ -1178,10 +1178,10 @@
       const done = jobs.filter(j => j.status === 'done' || j.status === 'incomplete').length;
       const failed = jobs.filter(j => j.status === 'failed' || j.status === 'cancelled').length;
       const parts = [];
-      if (active > 0) parts.push(`${active} active`);
-      if (pendingCount > 0) parts.push(`${pendingCount} queued`);
-      if (parts.length === 0 && (done > 0 || failed > 0)) parts.push(`${done + failed} done`);
-      return parts.length === 0 ? 'Idle' : parts.join(' · ');
+      if (active > 0) parts.push(t('cloudQueue.activeCount', { count: active }));
+      if (pendingCount > 0) parts.push(t('cloudQueue.queuedCount', { count: pendingCount }));
+      if (parts.length === 0 && (done > 0 || failed > 0)) parts.push(t('cloudQueue.doneCount', { count: done + failed }));
+      return parts.length === 0 ? t('common.idle') : parts.join(' · ');
     }
 
     function _ccRenderPendingItem(entry) {

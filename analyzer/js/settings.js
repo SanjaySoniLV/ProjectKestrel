@@ -7,6 +7,9 @@
     }
     function saveSettings(obj) { localStorage.setItem(SETTINGS_KEY, JSON.stringify(obj || {})); }
     function getSetting(k, def) { const s = loadSettings(); return (k in s) ? s[k] : def; }
+    function escapeHtml(s) {
+      return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
 
     // ── Custom rating profile ─────────────────────────────────────────────────
     // The 'custom' profile's cutoffs live in the rating_thresholds_custom
@@ -378,6 +381,52 @@
       const showSciCb = document.getElementById('showScientificNames');
       if (showSciCb) showSciCb.checked = !!getSetting('show_scientific_names', false);
 
+      // Interface language: shipped UI dictionaries (getUiLanguages()).
+      // A stored code that is no longer shipped keeps its option so the
+      // dropdown never silently drops the user's value.
+      const uiLangSel = document.getElementById('settingsUiLanguage');
+      if (uiLangSel) {
+        const uiLangs = (typeof getUiLanguages === 'function')
+          ? getUiLanguages()
+          : [{ code: 'en', name_native: 'English' }];
+        const current = String(getSetting('language', 'en') || 'en');
+        const options = [];
+        for (const l of uiLangs) {
+          if (!l || typeof l.code !== 'string') continue;
+          const label = `${escapeHtml(l.name_native || l.code)} — ${escapeHtml(l.code)}`;
+          options.push(`<option value="${escapeHtml(l.code)}">${label}</option>`);
+        }
+        if (current !== 'en' && !uiLangs.some(l => l && l.code === current)) {
+          options.push(`<option value="${escapeHtml(current)}">${escapeHtml(current)}</option>`);
+        }
+        uiLangSel.innerHTML = options.join('');
+        uiLangSel.value = current;
+      }
+
+      // Language (bird names): English (identity) + languages from the
+      // translation manifest. A stored code that is no longer shipped keeps
+      // its option so the dropdown never silently drops the user's value.
+      const langSel = document.getElementById('settingsLanguage');
+      if (langSel) {
+        let langs = [];
+        try {
+          const res = await window.pywebview?.api?.get_bird_name_languages?.();
+          if (res && res.success && Array.isArray(res.languages)) langs = res.languages;
+        } catch (_) { /* non-fatal: English only */ }
+        const current = String(getSetting('bird_name_language', 'en') || 'en');
+        let options = [`<option value="en">English</option>`];
+        for (const l of langs) {
+          if (!l || typeof l.code !== 'string') continue;
+          const label = `${escapeHtml(l.name_native || l.code)} — ${escapeHtml(l.code)}`;
+          options.push(`<option value="${escapeHtml(l.code)}">${label}</option>`);
+        }
+        if (current !== 'en' && !langs.some(l => l && l.code === current)) {
+          options.push(`<option value="${escapeHtml(current)}">${escapeHtml(current)}</option>`);
+        }
+        langSel.innerHTML = options.join('');
+        langSel.value = current;
+      }
+
       const regionsPicker = document.getElementById('birdRegionsPicker');
       if (regionsPicker) {
         // Make sure catalog meta is loaded before we paint checkboxes -- the
@@ -449,6 +498,16 @@
       const finalRegions = birdRegions.length > 0 ? birdRegions : ['NA'];
       const showSciCbEl = document.getElementById('showScientificNames');
       const showScientificNames = showSciCbEl ? !!showSciCbEl.checked : !!existing.show_scientific_names;
+      const uiLangSelEl = document.getElementById('settingsUiLanguage');
+      const language = uiLangSelEl && /^[a-z]{2}(-[a-z]{2})?$/.test(uiLangSelEl.value || '')
+        ? uiLangSelEl.value
+        : 'en';
+      const languageChanged = String(existing.language || 'en') !== language;
+      const langSelEl = document.getElementById('settingsLanguage');
+      const birdNameLanguage = langSelEl && /^[a-z]{2}(-[a-z]{2})?$/.test(langSelEl.value || '')
+        ? langSelEl.value
+        : 'en';
+      const birdNameLanguageChanged = String(existing.bird_name_language || 'en') !== birdNameLanguage;
       const prevRegions = Array.isArray(existing.bird_regions) ? existing.bird_regions.slice().sort().join(',') : '';
       const nextRegions = finalRegions.slice().sort().join(',');
       const regionsChanged = prevRegions !== nextRegions;
@@ -470,6 +529,8 @@
         quality_feedback_mode: qualityFeedbackMode,
         bird_regions: finalRegions,
         show_scientific_names: showScientificNames,
+        language,
+        bird_name_language: birdNameLanguage,
       };
       _autoSaveEnabled = autoSaveEnabled;
       if (!_autoSaveEnabled) {
@@ -483,6 +544,18 @@
         try { await window.pywebview.api.save_settings_data(settings); } catch (_) { }
       }
       document.getElementById('settingsDlg').close();
+      // Interface language: reload UI dictionaries and repaint. setLanguage
+      // dispatches 'kestrel:language-changed' after the dictionaries load;
+      // panels that render t()-wrapped strings listen and re-render.
+      if (languageChanged && typeof setLanguage === 'function') {
+        try { await setLanguage(language); } catch (e) { console.warn('[language] apply failed', e); }
+      }
+      // Bird-name language: reload the species map and repaint species labels.
+      // setBirdNameLanguage dispatches 'kestrel:species-lang-changed' after the
+      // map loads; the grid/dialog listen and re-render their pills.
+      if (birdNameLanguageChanged && typeof setBirdNameLanguage === 'function') {
+        try { await setBirdNameLanguage(birdNameLanguage); } catch (e) { console.warn('[bird-name language] apply failed', e); }
+      }
       // If rating profile changed and folders are loaded, reapply immediately
       const thresholdsChanged =
         ratingProfile !== prevProfile ||
@@ -495,7 +568,7 @@
         try {
           if (dirty && typeof saveCsv === 'function') await saveCsv();
           if (typeof reloadCurrentFolders === 'function') await reloadCurrentFolders();
-          showToast(`Quality scorer: ${qualityModel === 'legacy' ? 'older sharpness model' : 'newer sharpness model'}`, 3000);
+          showToast(qualityModel === 'legacy' ? t('settings.qualityModel.toast.legacy') : t('settings.qualityModel.toast.siglip'), 3000);
         } catch (e) {
           console.warn('[quality_model] reload failed', e);
         }

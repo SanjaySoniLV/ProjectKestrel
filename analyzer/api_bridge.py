@@ -1763,6 +1763,48 @@ class Api:
             error(f'[API] get_family_sci_map error: {e}')
             return {'success': False, 'error': str(e), 'map': {}}
 
+    def get_bird_name_languages(self):
+        """Return the bird-name translation manifest for the Settings dropdown.
+
+        Each entry is ``{code, name_native, species_count, coverage}`` from
+        ``bird_names_index.json``. English is the identity language (species
+        are stored in English) and is not listed — the UI offers it as the
+        default on top of this list. Tolerates a missing manifest -> [].
+        """
+        try:
+            try:
+                from kestrel_analyzer.bird_catalog import available_name_languages
+            except ImportError:
+                from analyzer.kestrel_analyzer.bird_catalog import available_name_languages
+            return {'success': True, 'languages': available_name_languages()}
+        except Exception as e:
+            error(f'[API] get_bird_name_languages error: {e}')
+            return {'success': False, 'error': str(e), 'languages': []}
+
+    def get_bird_name_translations(self, lang=None):
+        """Return the {english_name: translated_name} map for ``lang``.
+
+        Display-only bird-name translations built from Multiling IOC (see
+        ``tools/build_bird_names_i18n.py``). The frontend resolves species
+        labels at render time and falls back to English for names missing
+        from the map. ``lang`` is validated against the emitted-code shape
+        before touching the filesystem; no caller-supplied path is accepted.
+        """
+        try:
+            try:
+                from kestrel_analyzer.bird_catalog import is_valid_language_code, load_name_translations
+            except ImportError:
+                from analyzer.kestrel_analyzer.bird_catalog import (  # type: ignore
+                    is_valid_language_code, load_name_translations,
+                )
+            code = str(lang or '').strip().lower()
+            if not is_valid_language_code(code):
+                return {'success': False, 'error': 'invalid language code', 'lang': '', 'map': {}}
+            return {'success': True, 'lang': code, 'map': load_name_translations(code)}
+        except Exception as e:
+            error(f'[API] get_bird_name_translations error: {e}')
+            return {'success': False, 'error': str(e), 'lang': '', 'map': {}}
+
     def fetch_remote_version(self):
         """Fetch the release manifest from projectkestrel.org to bypass CORS in JS.
 

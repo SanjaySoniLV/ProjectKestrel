@@ -211,24 +211,24 @@
       const pendingItems = items.filter(i => i.status === 'pending');
       const doneItems = items.filter(i => i.status === 'done');
       if (paused) {
-        badge.textContent = 'Paused'; badge.className = 'queue-panel-badge paused';
+        badge.textContent = t('queue.badge.paused'); badge.className = 'queue-panel-badge paused';
       } else if (running) {
         const cur = runningItems[0];
         if (cur && cur.total > 0) {
           badge.textContent = `${cur.processed} / ${cur.total}`; badge.className = 'queue-panel-badge';
         } else {
-          badge.textContent = `${pendingItems.length + runningItems.length} pending`; badge.className = 'queue-panel-badge';
+          badge.textContent = t('queue.badge.pendingCount', { count: pendingItems.length + runningItems.length }); badge.className = 'queue-panel-badge';
         }
       } else if (runningUpgrades.length) {
         const u = runningUpgrades.find(x => x.status === 'running') || runningUpgrades[0];
         const waiting = runningUpgrades.filter(x => x.status === 'pending').length;
         badge.textContent = u.status === 'running' && u.total > 0 ? `${u.current} / ${u.total}`
-          : u.status === 'running' ? 'Upgrading' : `${waiting} queued`;
+          : u.status === 'running' ? t('queue.badge.upgrading') : t('queue.badge.queuedCount', { count: waiting });
         badge.className = 'queue-panel-badge';
       } else if (pendingItems.length === 0 && doneItems.length === items.length) {
-        badge.textContent = 'Done'; badge.className = 'queue-panel-badge done';
+        badge.textContent = t('queue.badge.done'); badge.className = 'queue-panel-badge done';
       } else {
-        badge.textContent = `${pendingItems.length} pending`; badge.className = 'queue-panel-badge';
+        badge.textContent = t('queue.badge.pendingCount', { count: pendingItems.length }); badge.className = 'queue-panel-badge';
       }
 
       // Pause/resume is one toggle that changes state (icon, label, tooltip, aria).
@@ -453,18 +453,20 @@
       const ico = btn.querySelector('.qctl-ico');
       const lbl = btn.querySelector('.qctl-lbl');
       if (ico) ico.textContent = paused ? '▶' : '⏸';
-      if (lbl) lbl.textContent = paused ? 'Resume' : 'Pause';
-      btn.title = paused ? 'Resume analysis' : 'Pause analysis';
+      if (lbl) lbl.textContent = paused ? t('queue.resume') : t('queue.pause');
+      btn.title = paused ? t('queue.resumeTitle') : t('queue.pauseTitle');
       btn.setAttribute('aria-pressed', paused ? 'true' : 'false');
       btn.classList.toggle('is-paused', !!paused);
     }
 
+    // Getter-based so t() resolves at render time — module parse happens
+    // before the dictionaries load, so plain values would freeze as keys.
     const _ANALYSIS_STATUS_LABELS = {
-      pending: '⏳ In Queue',
-      running: '⚙ Analyzing',
-      done: '✓ Done',
-      error: '✗ Error',
-      cancelled: '— Cancelled',
+      get pending() { return t('queue.status.pending'); },
+      get running() { return t('queue.status.running'); },
+      get done() { return t('queue.status.done'); },
+      get error() { return t('queue.status.error'); },
+      get cancelled() { return t('queue.status.cancelled'); },
     };
 
     /** Sync the analysis rows in `box` with status.items (keyed by folder path, updated in place). */
@@ -501,7 +503,7 @@
         + '<div class="queue-item-eta" hidden></div>'
         + '<div class="queue-live-preview" hidden><img class="queue-live-thumb" alt="" /></div>';
       const loadBtn = div.querySelector('.queue-item-load-btn');
-      loadBtn.title = 'Open this folder to browse results';
+      loadBtn.title = t('queue.loadFolderTitle');
       loadBtn.addEventListener('click', (ev) => {
         ev.stopPropagation();
         if (typeof loadFolderIntoBrowser === 'function') loadFolderIntoBrowser(div.dataset.path);
@@ -526,7 +528,7 @@
 
       const statusEl = div.querySelector('.queue-item-status');
       const labels = Object.assign({}, _ANALYSIS_STATUS_LABELS,
-        { done: isAlreadyAnalyzed ? '✓ Already analyzed' : '✓ Done' });
+        { done: isAlreadyAnalyzed ? t('queue.status.alreadyAnalyzed') : t('queue.status.done') });
       statusEl.className = `queue-item-status ${item.status}`;
       statusEl.textContent = labels[item.status] || item.status;
       statusEl.title = (item.status === 'error' && item.error) ? item.error : '';
@@ -567,8 +569,8 @@
       if (showRunning) {
         // One muted line: count, paused state, current file. The ETA lives in the
         // panel header (queueOverallEta).
-        let line = `${item.processed} of ${item.total}`;
-        if (item.is_paused) line += ' · Paused';
+        let line = t('queue.progressOf', { processed: item.processed, total: item.total });
+        if (item.is_paused) line += ' · ' + t('queue.badge.paused');
         if (item.current_filename) line += ` · ${item.current_filename}`;
         etaEl.textContent = line;
         if (item.current_export_path) {
@@ -580,13 +582,14 @@
       }
     }
 
+    // Getter-based so t() resolves at render time (see _ANALYSIS_STATUS_LABELS).
     const _UPGRADE_LABELS = {
-      pending: '⏳ Queued for analysis version 3',
-      running: '✨ Upgrading to analysis version 3',
-      done: '✓ Upgraded to analysis version 3',
-      cancelled: '— Upgrade stopped',
-      stopped: '⏸ Upgrade paused',
-      error: '✗ Upgrade failed',
+      get pending() { return t('queue.upgrade.pending'); },
+      get running() { return t('queue.upgrade.running'); },
+      get done() { return t('queue.upgrade.done'); },
+      get cancelled() { return t('queue.upgrade.cancelled'); },
+      get stopped() { return t('queue.upgrade.stopped'); },
+      get error() { return t('queue.upgrade.error'); },
     };
 
     /** Sync the upgrade rows in `box` with status.upgrades (keyed by job id, updated in place). */
@@ -1013,7 +1016,7 @@
       if (statusEl) {
         const msg = item ? (item.current_status_msg || '') : '';
         const paused = item && item.is_paused;
-        statusEl.textContent = paused ? '⏸ Paused — ' + msg : msg;
+        statusEl.textContent = paused ? t('queue.pausedPrefix') + msg : msg;
       }
       // Subtle "working" indicator: pulses while the item is analyzing, still when paused.
       const working = !!item && item.status === 'running';
@@ -1059,7 +1062,7 @@
       }
       // Empty stages show a calm placeholder (spinner only while actually working);
       // once a frame exists the placeholder is gone and nothing is dimmed.
-      const waitLabel = !working ? 'No frame yet' : (item.is_paused ? 'Paused' : 'Waiting for first frame…');
+      const waitLabel = !working ? t('queue.noFrameYet') : (item.is_paused ? t('queue.badge.paused') : t('live.waiting'));
       for (const [stageId, imgId] of [['liveDlgThumbStage', 'liveDlgThumb'], ['liveDlgOverlayStage', 'liveDlgOverlay']]) {
         const stage = document.getElementById(stageId);
         const img = document.getElementById(imgId);

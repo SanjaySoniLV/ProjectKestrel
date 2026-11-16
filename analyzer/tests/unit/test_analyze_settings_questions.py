@@ -73,7 +73,7 @@ class TestQuestionMarkup(unittest.TestCase):
         on a shoot with no non-bird animals. Claiming a flat per-image
         cost tells users to disable it for a speedup they will not get.
         """
-        help_texts = re.findall(r'<div class="adlg-question-help muted">(.*?)</div>', self.html, re.S)
+        help_texts = re.findall(r'<div class="adlg-question-help muted"[^>]*>(.*?)</div>', self.html, re.S)
         wildlife_help = next((h for h in help_texts if "non-bird species" in h), None)
         self.assertIsNotNone(wildlife_help, "wildlife help text not found")
         self.assertNotIn("per image", wildlife_help.lower())

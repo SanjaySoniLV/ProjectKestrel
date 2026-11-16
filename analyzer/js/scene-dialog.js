@@ -722,10 +722,11 @@
           metaTextEl.textContent = position;
         } else {
           const sp = decodeEntities(activeSpecies);
+          const spDisp = typeof trSpecies === 'function' ? trSpecies(sp) : sp;
           const spConf = fmt3(activeSpeciesConf);
           const fam = decodeEntities(activeFamily);
           const famConf = fmt3(activeFamilyConf);
-          metaTextEl.textContent = `${sp} (${spConf}) | ${fam} (${famConf}) · ${position}`;
+          metaTextEl.textContent = `${spDisp} (${spConf}) | ${fam} (${famConf}) · ${position}`;
         }
       }
 
@@ -738,7 +739,7 @@
         const total = cropState.crops.length;
         if (total > 1) {
           cropNavEl.classList.remove('hidden');
-          cropLabelEl.textContent = `Crop ${cropState.activeIndex + 1}/${total}`;
+          cropLabelEl.textContent = t('sceneDlg.cropLabel', { index: cropState.activeIndex + 1, total });
           cropPrevBtn.disabled = false;
           cropNextBtn.disabled = false;
           const cycleCrop = (step) => {
@@ -764,8 +765,8 @@
       const editorLabelEl = el('#sceneInfoEditorLabel');
       if (editorBtn && editorLabelEl) {
         const editorKey = getSetting('editor', 'darktable');
-        editorLabelEl.textContent = `Open in ${_editorDisplayName(editorKey)}`;
-        editorBtn.title = `Open original in ${_editorDisplayName(editorKey)} (Space)`;
+        editorLabelEl.textContent = t('sceneDlg.openInEditor', { editor: _editorDisplayName(editorKey) });
+        editorBtn.title = t('sceneDlg.editorTitleNamed', { editor: _editorDisplayName(editorKey) });
         editorBtn.onclick = (ev) => {
           ev.stopPropagation();
           openInEditor(r);
@@ -938,7 +939,11 @@
       const escapedName = escapeHtml(suggestion.name);
       const pct = Math.round((suggestion.share || 0) * 100);
       const readableType = tagType === 'species' ? 'species' : 'family';
-      return `<button class="scene-chip-suggested" data-suggest-type="${readableType}" data-suggest-value="${escapedName}" title="Suggested ${readableType} (${pct}% confidence-weighted vote)">+ <em>${escapedName}</em></button>`;
+      // Display-only translation for species suggestions; the data attribute
+      // keeps the canonical English name that applying the tag stores.
+      const display = (tagType === 'species' && typeof trSpecies === 'function')
+        ? escapeHtml(trSpecies(suggestion.name)) : escapedName;
+      return `<button class="scene-chip-suggested" data-suggest-type="${readableType}" data-suggest-value="${escapedName}" title="Suggested ${readableType} (${pct}% confidence-weighted vote)">+ <em>${display}</em></button>`;
     }
 
     let _activeTagInputType = null; // 'species' or 'family'
@@ -1141,7 +1146,7 @@
         if (showSci) c.classList.add('chip--with-sci');
         const primary = document.createElement('span');
         primary.className = 'chip-primary';
-        primary.textContent = name;
+        primary.textContent = typeof trSpecies === 'function' ? trSpecies(name) : name;
         c.appendChild(primary);
         let titleStr = name;
         if (showSci) {
@@ -1382,13 +1387,16 @@
       const chipClass = opts.chipClass || 'chip';
       const removeAttr = opts.removeAttr || '';
       const showSci = !!opts.showSci && !!sci;
+      // Display-only translation: data-* attributes and matching stay on the
+      // canonical English name; only the visible label is translated.
+      const display = typeof trSpecies === 'function' ? trSpecies(primary) : primary;
       const removeBtn = removeAttr
         ? `<span class="chip-x" data-${removeAttr}="${escapeHtml(primary)}" title="Remove '${escapeHtml(primary)}'">×</span>`
         : '';
       const sciHtml = showSci
         ? `<span class="chip-sci"><em>${escapeHtml(sci)}</em></span>` : '';
       const cls = showSci ? `${chipClass} chip--with-sci` : chipClass;
-      return `<span class="${cls}"><span class="chip-primary">${escapeHtml(primary)}</span>${sciHtml}${removeBtn}</span>`;
+      return `<span class="${cls}"><span class="chip-primary">${escapeHtml(display)}</span>${sciHtml}${removeBtn}</span>`;
     }
 
     /** Add a species to the draft and, if the species is in the taxonomy map,
@@ -1502,8 +1510,8 @@
       const reviewSlot = el('#sceneReviewSlot');
       if (reviewSlot) {
         reviewSlot.innerHTML = approved
-          ? '<span class="approval-note">✓ Reviewed</span>'
-          : '<button class="mark-reviewed-btn" id="markReviewedBtn" title="Confirm that Kestrel\'s tags are correct and mark this scene as reviewed (Ctrl/Cmd+R)">✓ Mark as Reviewed</button>';
+          ? `<span class="approval-note">✓ ${t('sceneDlg.reviewed')}</span>`
+          : `<button class="mark-reviewed-btn" id="markReviewedBtn" title="${t('sceneDlg.markReviewedTitle')}">✓ ${t('sceneDlg.markReviewed')}</button>`;
       }
 
       // Wire remove buttons
@@ -1617,7 +1625,7 @@
           const updatedScene = reloadScene(scene.id) || scene;
           renderTopbarTags(updatedScene);
           renderScenes();
-          showToast('Scene tags marked as reviewed', 2000);
+          showToast(t('sceneDlg.tagsReviewedToast'), 2000);
         };
       }
 
@@ -1857,7 +1865,7 @@
       // ── Top bar: title ──
       const localNum = String(scene.id).split(':').pop();
       const folderName = folderBaseName(scene.representative?.__rootPath || '');
-      let titleText = folderName || ('Scene ' + scene.id);
+      let titleText = folderName || t('sceneDlg.sceneTitle', { id: scene.id });
       titleText += ' — #' + localNum;
       if (scene.sceneName) titleText += ' — ' + scene.sceneName;
       titleText += ` (${scene.images.length} images)`;
@@ -1879,11 +1887,11 @@
           // Update title
           const updScene = reloadScene(scene.id) || scene;
           const nm = updScene.sceneName || '';
-          let t = folderName || ('Scene ' + scene.id);
-          t += ' — #' + localNum;
-          if (nm) t += ' — ' + nm;
-          t += ` (${scene.images.length} images)`;
-          titleEl.textContent = t;
+          let title = folderName || t('sceneDlg.sceneTitle', { id: scene.id });
+          title += ' — #' + localNum;
+          if (nm) title += ' — ' + nm;
+          title += ` (${scene.images.length} images)`;
+          titleEl.textContent = title;
           renderScenes();
         } else {
           renameRow.classList.remove('hidden');
@@ -2069,7 +2077,7 @@
       const updated = reloadScene(_currentScene.id) || _currentScene;
       renderTopbarTags(updated);
       renderScenes();
-      showToast('Scene tags marked as reviewed', 1800);
+      showToast(t('sceneDlg.tagsReviewedToast'), 1800);
     }
 
     /** Open the inline species/family tag input on the current scene and focus it. */
@@ -3024,5 +3032,19 @@
         _applyScenePreviewSplit(_scenePreviewSplitRatio);
       });
     })();
+
+    // Repaint the scene dialog when a language changes while the dialog is
+    // open (Settings → language dropdowns): topbar species pills follow the
+    // bird-name language; marked-up chrome follows the interface language.
+    const _repaintSceneDialogLang = () => {
+      if (!sceneDlg?.open || !_currentScene) return;
+      if (typeof renderTopbarTags === 'function') renderTopbarTags(_currentScene);
+      try {
+        if (typeof applyStaticI18n === 'function') applyStaticI18n(sceneDlg);
+      } catch (_) { }
+    };
+    document.addEventListener('kestrel:language-changed', _repaintSceneDialogLang);
+    document.addEventListener('kestrel:species-lang-changed', _repaintSceneDialogLang);
+    document.addEventListener('kestrel:species-lang-ready', _repaintSceneDialogLang);
 
     // Settings storage
