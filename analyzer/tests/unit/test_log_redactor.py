@@ -235,3 +235,20 @@ class TestRedactUserPathsInObj:
         assert log_redactor.redact_user_paths_in_obj(
             r'C:\Users\Sanja\x'
         ) == r'C:\Users\[REDACTED]\x'
+
+
+class TestEscapedWindowsPaths:
+    """Log lines that print a path with ``repr()`` double every backslash
+    (e.g. ``[security] Reject ...: (root='C:\\\\Users\\\\Sanja\\\\Pictures')``).
+    The username must be redacted there too."""
+
+    def test_repr_escaped_path_redacted(self, fake_user):
+        text = "Reject inspect_folders: (root=" + repr(r'C:\Users\Sanja\Pictures\Birds') + ")"
+        assert 'Sanja' in text  # sanity: repr kept the name, with doubled backslashes
+        result = log_redactor.redact_user_paths(text)
+        assert 'Sanja' not in result
+        assert r'C:\\Users\\[REDACTED]\\Pictures\\Birds' in result
+
+    def test_escaped_sibling_user_not_redacted(self, fake_user):
+        text = repr(r'C:\Users\Sanjay\Pictures')
+        assert log_redactor.redact_user_paths(text) == text
