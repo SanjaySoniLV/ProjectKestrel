@@ -915,15 +915,29 @@ def _migrate_quality_model_default(settings: dict) -> dict:
     return out
 
 
+# A temp file younger than this may belong to a save that is still in flight
+# in ANOTHER process (``_SAVE_LOCK`` only serializes saves within one
+# process). Two app instances launched together (e.g. a double-click) share
+# one settings directory; reaping every ``*.tmp`` after a successful save
+# deleted the other instance's temp file between its write and its
+# ``os.replace``, which then failed with ``WinError 2`` and dropped that save.
+_ORPHAN_TMP_MIN_AGE_SEC = 300.0
+
+
 def _reap_orphan_tmp_files(directory: str) -> None:
     """Best-effort cleanup of ``settings.json.*.tmp`` orphans from crashed
-    or racing saves. Silent on any error — these files are harmless; they
-    just waste a few bytes until next startup.
+    saves. Only files older than ``_ORPHAN_TMP_MIN_AGE_SEC`` are removed, so a
+    save still in flight in another process keeps its temp file. Silent on any
+    error — these files are harmless; they just waste a few bytes until a later
+    save reaps them.
     """
     try:
         pattern = os.path.join(directory, _TMP_FILE_PREFIX + '*' + _TMP_FILE_SUFFIX)
+        cutoff = time.time() - _ORPHAN_TMP_MIN_AGE_SEC
         for orphan in glob.glob(pattern):
             try:
+                if os.path.getmtime(orphan) > cutoff:
+                    continue
                 os.remove(orphan)
             except OSError:
                 pass
@@ -938,7 +952,8 @@ def save_persisted_settings(data: dict) -> None:
       * Serialized in-process by ``_SAVE_LOCK`` so concurrent callers (JS
         bridge, queue worker, startup) cannot race on the temp file.
       * Each save writes to a **unique** temp file via ``tempfile.mkstemp``
-        so two racing saves never overwrite or delete each other's tmp —
+        so two racing saves never overwrite each other's tmp (and the orphan
+        reaper skips recent tmp files, so another process's save keeps its own) —
         this is the fix for the ``WinError 2`` we hit when the old code
         hardcoded ``settings.json.tmp``.
       * If the on-disk file is corrupt and a valid ``.bak`` exists, the corrupt
