@@ -2628,6 +2628,17 @@
     }
 
     // ---- Stats ----
+    // While an earlier reject move can still be undone, "Done Culling" stays off
+    // (a second move would overwrite the backup Undo restores from). Say so on the
+    // button and in the status bar, so the disabled button isn't a mystery.
+    const DONE_LOCKED_HINT = 'Done Culling is off until the earlier reject move is undone (rejects are still in _KESTREL_Rejects).';
+    function setDoneLocked(locked) {
+      const doneBtn = el('#doneCullingBtn');
+      if (!doneBtn) return;
+      doneBtn.disabled = locked;
+      doneBtn.title = locked ? DONE_LOCKED_HINT : '';
+    }
+
     function updateStats() {
       let acceptCount = 0, rejectCount = 0;
       for (const [, side] of cullingState) {
@@ -2635,10 +2646,10 @@
         else rejectCount++;
       }
       el('#statsLabel').textContent = `${acceptCount} accept · ${rejectCount} reject · ${rows.length} total`;
-      el('#statusLabel').textContent = `${acceptCount} images accepted, ${rejectCount} to reject`;
+      el('#statusLabel').textContent = `${acceptCount} images accepted, ${rejectCount} to reject`
+        + (moveCompleted ? ' \u00B7 ' + DONE_LOCKED_HINT : '');
 
-      const doneBtn = el('#doneCullingBtn');
-      if (doneBtn) doneBtn.disabled = moveCompleted;
+      setDoneLocked(moveCompleted);
     }
 
     // ---- Auto-save (debounced) ----
@@ -3096,7 +3107,7 @@
         moveCompleted = false;
         rejectFilenames = [];
         el('#undoBtn').style.display = 'none';
-        el('#doneCullingBtn').disabled = false;
+        setDoneLocked(false);
 
         showToast(`Restored ${undoRes.restored} file${undoRes.restored===1?'':'s'}.`, 4000);
         el('#statusLabel').textContent = 'Move undone. Continue culling or click Done Culling when ready.';
@@ -3196,8 +3207,7 @@
         undoBtn.style.display = '';
         undoBtn.disabled = false;
 
-        const doneBtn = el('#doneCullingBtn');
-        if (doneBtn) doneBtn.disabled = true;
+        setDoneLocked(true);
 
         const parsedCount = parseInt(state.reject_count, 10);
         const count = Number.isFinite(parsedCount) && parsedCount >= 0 ? parsedCount : rejectFilenames.length;
