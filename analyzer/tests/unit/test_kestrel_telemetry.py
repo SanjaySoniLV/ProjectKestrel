@@ -89,6 +89,31 @@ class TestCrashReportOptOut:
         assert posts == []
 
 
+class TestCrashReportSessionAnalyticsRedaction:
+    """session_analytics (e.g. the active analysis folder) is redacted too."""
+
+    def test_active_analysis_path_redacted(self, pinned_user, monkeypatch):
+        posts = []
+        monkeypatch.setattr(kestrel_telemetry, 'is_frozen', lambda: True)
+        monkeypatch.setattr(
+            kestrel_telemetry,
+            '_post_json_async',
+            lambda endpoint, payload: posts.append((endpoint, payload)),
+        )
+        kestrel_telemetry.send_crash_report(
+            exc=None,
+            tb_str='Recovered unclean shutdown report requested by user.',
+            session_analytics={
+                'recovery_report': True,
+                'active_analysis_path': r'C:\Users\Sanja\Desktop\Birds',
+            },
+        )
+        assert len(posts) == 1
+        sa = posts[0][1]['session_analytics']
+        assert sa['active_analysis_path'] == r'C:\Users\[REDACTED]\Desktop\Birds'
+        assert sa['recovery_report'] is True
+
+
 class TestGetRecentLogTailRedaction:
     """Integration: planted log files should come back through
     get_recent_log_tail() with username PII stripped."""

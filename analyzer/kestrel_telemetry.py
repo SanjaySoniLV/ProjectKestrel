@@ -351,6 +351,9 @@ def send_crash_report(
         exc_msg = redact_user_paths(exc_msg)
         tb_str = redact_user_paths(tb_str)
         log_tail = redact_user_paths(log_tail)
+        # session_analytics carries settings values such as the active
+        # analysis folder, which usually sits under the user's home directory.
+        session_analytics = redact_user_paths_in_obj(session_analytics)
         payload = {
             'exception_type': exc_type,
             'exception_message': exc_msg,
