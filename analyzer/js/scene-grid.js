@@ -87,7 +87,7 @@
         return;
       }
       if (up.status === 'reanalyze' || up.status === 'not_analyzed') {
-        showToast(`${name}: ${up.reason || 're-analyse this folder to use analysis version 3.0.'}`, 7000);
+        showToast(`${name}: ${up.reason || 'analyze this folder again to use analysis version 3.0.'}`, 7000);
         return;
       }
       const ok = await KestrelDialog.confirm('upgradeFolder', { name, skipped: '' });
@@ -161,7 +161,7 @@
       const needReanalysis = statuses.filter(u => u?.status === 'reanalyze').length;
       if (!targets.length) {
         showToast(needReanalysis
-          ? `No loaded folder can be upgraded in place; ${needReanalysis} need${needReanalysis === 1 ? 's' : ''} a re-analysis.`
+          ? `No loaded folder can be upgraded in place; ${needReanalysis} need${needReanalysis === 1 ? 's' : ''} to be analyzed again.`
           : 'All loaded folders are already on analysis version 3.0.', 6000);
         return;
       }
