@@ -2547,7 +2547,7 @@ class Api(SettingsBridgeMixin, EnhancedGpuBridgeMixin, BirdCatalogBridgeMixin):
             error(f'[API] smart_search_status({folder_path!r}) error: {e}')
             return {'success': False, 'error': str(e)}
 
-    # ── Change Settings dialog (per-folder, no re-analysis) ──────────────────
+    # ── Folder settings dialog (per-folder, no re-analysis) ──────────────────
     # Read-only folder facts, the per-folder "ignore wildlife" display setting,
     # and species-region re-scoring from the stored BioCLIP embeddings. Every
     # method validates the folder through ``_resolve_folder_root_and_kestrel``.
@@ -2561,7 +2561,7 @@ class Api(SettingsBridgeMixin, EnhancedGpuBridgeMixin, BirdCatalogBridgeMixin):
         return _fs
 
     def get_folder_info(self, folder_path: str) -> dict:
-        """Folder facts for the Change Settings dialog.
+        """Folder facts for the Folder settings dialog.
 
         Returns ``{success, info: {pipeline_version, pipeline_major, analyzed_utc,
         image_count, scene_count, species_regions, wildlife_enabled, wildlife_crops,

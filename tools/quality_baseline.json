@@ -11,10 +11,10 @@
     "analyzer/js/queue.js": 1662,
     "analyzer/js/scene-dialog.js": 3018,
     "analyzer/kestrel_analyzer/pipeline.py": 2459,
-    "analyzer/visualizer.html": 1924,
+    "analyzer/visualizer.html": 1921,
     "analyzer/visualizer.py": 1650
   },
-  "css_hex_outside_tokens": 836,
+  "css_hex_outside_tokens": 822,
   "css_important": 30,
   "js_empty_catch": 191,
   "py_dual_import_fallbacks": 103,
