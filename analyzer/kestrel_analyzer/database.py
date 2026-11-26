@@ -546,7 +546,7 @@ def ensure_columns(database: pd.DataFrame) -> pd.DataFrame:
 
 # Columns the UI writes to the CSV that the pipeline should preserve.
 # These are NOT in BASE_COLUMNS but may be added by the UI's saveCsv().
-_UI_PRESERVE_COLUMNS = ["culled", "culled_origin"]
+_UI_PRESERVE_COLUMNS = ["culled", "culled_origin", "favorite"]
 
 # Retry ceiling for the preserve-read inside ``save_database``.
 #
@@ -815,7 +815,7 @@ def save_database(database: pd.DataFrame, db_path: str) -> None:
     """Save database to CSV, preserving UI-written columns from disk.
 
     The analysis pipeline only writes BASE_COLUMNS. The UI may have saved
-    user-editable columns (culled, culled_origin) to the same CSV between
+    user-editable columns (culled, culled_origin, favorite) to the same CSV between
     pipeline saves. This function reads those columns from the existing CSV
     and merges them back into the pipeline's DataFrame before writing, so
     user decisions made during analysis are not lost.

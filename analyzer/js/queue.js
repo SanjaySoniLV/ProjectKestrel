@@ -1215,7 +1215,7 @@
     // Pipeline-written columns are updated from disk; these are kept from memory.
     const _USER_EDITABLE_FIELDS = [
       'rating', 'rating_origin', 'normalized_rating',
-      'culled', 'culled_origin',
+      'culled', 'culled_origin', 'favorite',
       'scene_name',
     ];
 

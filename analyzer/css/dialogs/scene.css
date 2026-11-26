@@ -994,3 +994,44 @@
   color: var(--warn);
   pointer-events: none;
 }
+
+/* ── Favorites (js/favorites.js): hover heart on thumbnails, pink when set ── */
+.fav-heart {
+  position: absolute;
+  top: var(--space-1);
+  right: var(--space-1);
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: rgba(0, 0, 0, .55);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .12s ease;
+}
+.filmstrip-card:hover .fav-heart,
+.cm-thumb:hover .fav-heart,
+.fav-heart.is-favorite { opacity: 1; }
+.fav-heart.is-favorite { color: var(--favorite); }
+.fav-heart:focus-visible { opacity: 1; outline: 2px solid var(--focus); }
+
+.scene-info-fav-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.scene-info-fav-btn:hover { background: var(--hover); }
+.scene-info-fav-btn.is-favorite { color: var(--favorite); border-color: var(--favorite); }

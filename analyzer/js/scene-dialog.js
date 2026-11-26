@@ -520,6 +520,7 @@
         card.addEventListener('dblclick', (ev) => { ev.stopPropagation(); openInEditor(r); });
 
         if (typeof psDecorateCard === 'function') psDecorateCard(card, r);
+        KestrelFavorites.decorateCard(card, r, KestrelFavorites.syncSceneViewerButton);
         frag.appendChild(card);
       }
       grid.appendChild(frag);
@@ -691,6 +692,7 @@
       const fnEl = el('#sceneInfoFilename');
       if (fnEl) { fnEl.textContent = r.filename || '—'; fnEl.title = r.filename || ''; }
 
+      KestrelFavorites.syncSceneViewerButton();
       const qEl = el('#sceneInfoQuality');
       if (qEl) qEl.textContent = `Quality ${fmt3(activeQuality)}`;
 
@@ -2154,27 +2156,11 @@
 
       switch (e.key) {
         case 'ArrowRight':
-          e.preventDefault();
-          if (hasSceneModifier) {
-            // Jump to end of scene, or next scene's start if already at end
-            if (currentImageIndex < len - 1) {
-              selectFilmstripImage(len - 1, _currentScene);
-            } else {
-              navigateToScene(1, 0);
-            }
-          } else {
-            if (currentImageIndex < len - 1) {
-              selectFilmstripImage(currentImageIndex + 1, _currentScene);
-            } else {
-              navigateToScene(1, 0);
-            }
-          }
-          break;
         case 'End':
+          // End is Ctrl/Cmd+→: last photo, or the next scene from the last photo.
           e.preventDefault();
-          // Same behavior as Ctrl/Cmd+ArrowRight.
           if (currentImageIndex < len - 1) {
-            selectFilmstripImage(len - 1, _currentScene);
+            selectFilmstripImage((hasSceneModifier || e.key === 'End') ? len - 1 : currentImageIndex + 1, _currentScene);
           } else {
             navigateToScene(1, 0);
           }
@@ -2287,9 +2273,15 @@
           e.preventDefault();
           if (images[currentImageIndex]) openInEditor(images[currentImageIndex]);
           break;
-        // Primary subject (prototype): focus the scene on the active crop's bird / bird numbers.
         case 'f':
         case 'F':
+          if (hasSceneModifier) break;
+          e.preventDefault();
+          KestrelFavorites.toggleSceneViewerCurrent();
+          break;
+        // Primary subject (prototype): focus the scene on the active crop's bird / bird numbers.
+        case 's':
+        case 'S':
           if (hasSceneModifier || typeof psFocusActive !== 'function') break;
           e.preventDefault();
           psFocusActive();
