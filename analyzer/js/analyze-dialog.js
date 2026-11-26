@@ -8,40 +8,17 @@
     // (dialog) two cleanly-separable mental models.
 
     // ── Time estimation ────────────────────────────────────────────────────────
-    // Baseline rates for fresh installs (release-tunable). Local samples from
-    // the queue worker (perf_samples_gpu / perf_samples_cpu in settings.json)
-    // override these once the per-mode total crosses _EST_MIN_SAMPLED_IMAGES_FOR_LOCAL.
-    const _EST_BASELINE_SECS_PER_IMG_GPU = 4.0;
-    const _EST_BASELINE_SECS_PER_IMG_CPU = 10.0;
-    const _EST_MIN_IMAGES_TO_ESTIMATE = 50;       // min queued imgs before any estimate is shown
-    const _EST_MIN_SAMPLED_IMAGES_FOR_LOCAL = 100; // switchover threshold for local rate
+    // The maths lives in analyze-estimate.js; these wrappers feed it the
+    // settings and the last speed test result.
+    const _EST = window.KestrelAnalyzeEstimate;
+    const _EST_MIN_IMAGES_TO_ESTIMATE = _EST.MIN_IMAGES_TO_ESTIMATE;
+    const _EST_MIN_SAMPLED_IMAGES_FOR_LOCAL = _EST.MIN_SAMPLED_FOR_LOCAL;
 
     // Returns { rate, source, sampledImgs } where source is 'local' or 'baseline'.
     function _getEstRate(useGpu) {
-      try {
-        const key = useGpu ? 'perf_samples_gpu' : 'perf_samples_cpu';
-        const samples = (typeof getSetting === 'function' ? getSetting(key, []) : []) || [];
-        let totalImgs = 0, totalSecs = 0;
-        for (const s of samples) {
-          const i = Number(s && s.imgs);
-          const t = Number(s && s.secs);
-          if (i > 0 && t > 0) { totalImgs += i; totalSecs += t; }
-        }
-        if (totalImgs >= _EST_MIN_SAMPLED_IMAGES_FOR_LOCAL) {
-          return { rate: totalSecs / totalImgs, source: 'local', sampledImgs: totalImgs };
-        }
-        return {
-          rate: useGpu ? _EST_BASELINE_SECS_PER_IMG_GPU : _EST_BASELINE_SECS_PER_IMG_CPU,
-          source: 'baseline',
-          sampledImgs: totalImgs,
-        };
-      } catch (_e) {
-        return {
-          rate: useGpu ? _EST_BASELINE_SECS_PER_IMG_GPU : _EST_BASELINE_SECS_PER_IMG_CPU,
-          source: 'baseline',
-          sampledImgs: 0,
-        };
-      }
+      const key = useGpu ? 'perf_samples_gpu' : 'perf_samples_cpu';
+      const samples = typeof getSetting === 'function' ? getSetting(key, []) : [];
+      return _EST.localRate(samples, useGpu);
     }
 
     function _buildUncertainBadge(sampledImgs) {
@@ -57,147 +34,15 @@
       return el;
     }
 
-    // ── Cloud destination est. time ────────────────────────────────────────────
-    //
-    // A fixed per-image floor is badly pessimistic once a job scales out, so the
-    // model below simulates the server pipeline instead:
-    //   1. Nothing is analyzed until CLOUDCOMPUTE_DISPATCH_THRESHOLD images
-    //      (or the whole job, if smaller) have landed in R2 staging.
-    //   2. One Modal container starts, after a cold-start delay.
-    //   3. Whenever the un-analyzed uploaded backlog reaches SCALE_THRESHOLD,
-    //      the worker splits the range and spawns another container — up to
-    //      maxContainersPerJob, subject to a spawn cooldown.
-    //   4. Each container sustains ~1 img/sec.
-    // Analysis can never run ahead of the bytes, so the two phases interleave;
-    // simulating them together is what makes the estimate track reality on both
-    // slow and fast connections.
-    //
-    // The pipeline parameters are SERVED BY THE WORKER, in the `pipeline` block
-    // of the POST /api/upload-test response — the same speed test that gives us
-    // the transfer rate. They are read from the module the scheduler itself
-    // reads, so they cannot drift the way a hardcoded copy would.
-    //
-    // The values below are FALLBACKS ONLY, for an older Worker that doesn't
-    // serve the block, or a malformed response. They match the deployed values
-    // as of 2026-08; if they're ever what's actually in use, the estimate is
-    // still reasonable — just not authoritative.
-    const _CLOUD_FALLBACK_PIPELINE = {
-      containerImagesPerSec:   1.0,   // one Modal container, sustained
-      maxContainers:           3,     // limits.maxContainersPerJob
-      dispatchThreshold:       100,   // CLOUDCOMPUTE_DISPATCH_THRESHOLD
-      scaleThreshold:          200,   // SCALE_THRESHOLD (backlog to split)
-      spawnCooldownSeconds:    20,    // SPAWN_COOLDOWN_SEC
-      containerStartupSeconds: 22,    // measured Modal cold start
-    };
-    // Was effectively +50% (via the 0.5 s/img floor). The simulation models the
-    // ramp explicitly, so the residual margin only needs to cover jitter.
-    const _CLOUD_EST_MARGIN = 1.05;
-
-    // Merge the served descriptor over the fallbacks, field by field, so a
-    // Worker that grows/drops one key doesn't invalidate the rest. Every value
-    // must be a finite positive number to be taken.
+    function _cloudSpeedTest() {
+      return (typeof _cloudSpeedTestResult !== 'undefined') ? _cloudSpeedTestResult : null;
+    }
     function _cloudPipelineParams() {
-      const served = (typeof _cloudSpeedTestResult !== 'undefined' && _cloudSpeedTestResult)
-        ? _cloudSpeedTestResult.pipeline
-        : null;
-      const out = Object.assign({}, _CLOUD_FALLBACK_PIPELINE);
-      if (served && typeof served === 'object') {
-        for (const key of Object.keys(_CLOUD_FALLBACK_PIPELINE)) {
-          const v = Number(served[key]);
-          if (isFinite(v) && v > 0) out[key] = v;
-        }
-      }
-      return out;
+      return _EST.cloudParams(_cloudSpeedTest()?.pipeline);
     }
-
-    // Simulate the upload/analysis pipeline. `uploadRate` is images/sec, or
-    // Infinity to model "bytes are already there" (used to isolate the
-    // compute-bound completion time). Returns seconds to the last analyzed image.
-    function _simulateCloudJob(totalImages, uploadRate, params) {
-      const p = params || _cloudPipelineParams();
-      const n = Math.max(0, Math.floor(totalImages));
-      if (n === 0) return 0;
-      const instant = !(uploadRate > 0) || !isFinite(uploadRate);
-      // Aim for ~2000 steps regardless of job size: fine enough to resolve the
-      // spawn cooldown on short jobs, coarse enough that a 20k-image job on a
-      // slow line doesn't stall the UI thread. This runs on every summary
-      // refresh and once per queued folder.
-      const horizon = instant
-        ? n / (p.maxContainers * p.containerImagesPerSec)
-        : n / uploadRate + n / p.containerImagesPerSec;
-      const dt = Math.min(60, Math.max(0.25, (horizon + p.containerStartupSeconds) / 2000));
-      const firstDispatchAt = Math.min(n, p.dispatchThreshold);
-
-      let t = 0;
-      let analyzed = 0;
-      let spawned = 0;          // containers spawned so far
-      let lastSpawnAt = -Infinity;
-      const readyAt = [];       // wall-clock time each container starts working
-      // Hard iteration bound: a stalled model must not spin the UI thread.
-      const maxSteps = 200000;
-
-      for (let step = 0; step < maxSteps && analyzed < n; step++) {
-        const uploaded = instant ? n : Math.min(n, uploadRate * t);
-        const backlog = uploaded - analyzed;
-
-        // Spawn decisions. The first container waits for the dispatch
-        // threshold; later ones wait for the backlog to justify a split.
-        const canSpawn = spawned < p.maxContainers
-          && (t - lastSpawnAt) >= p.spawnCooldownSeconds;
-        if (canSpawn) {
-          const trigger = spawned === 0
-            ? uploaded >= firstDispatchAt
-            : backlog >= p.scaleThreshold;
-          if (trigger) {
-            readyAt.push(t + p.containerStartupSeconds);
-            spawned++;
-            lastSpawnAt = t;
-          }
-        }
-
-        let active = 0;
-        for (let i = 0; i < readyAt.length; i++) if (readyAt[i] <= t) active++;
-        if (active > 0) {
-          // Analysis is clamped by what has actually been uploaded.
-          const capacity = active * p.containerImagesPerSec * dt;
-          analyzed = Math.min(n, analyzed + Math.min(capacity, Math.max(0, backlog)));
-        }
-        t += dt;
-      }
-      return t;
-    }
-
-    // Returns:
-    //   secs        — modelled wall-clock estimate (null before a speed test)
-    //   uploadSecs  — pure transfer time for the bytes
-    //   analysisSecs— pure compute time if the bytes were already staged
-    //   regime      — 'upload' | 'balanced' | 'compute' (null without a test)
+    // { secs, analysisSecs, uploadSecs, regime, hasTest }; secs is null before a speed test.
     function _getCloudEstSeconds(totalImages) {
-      const result = (typeof _cloudSpeedTestResult !== 'undefined') ? _cloudSpeedTestResult : null;
-      const p = _cloudPipelineParams();
-      const computeSecs = _simulateCloudJob(totalImages, Infinity, p);
-      if (!result || !(result.mbps > 0) || !(result.samples_uploaded > 0)) {
-        return { secs: null, analysisSecs: computeSecs, uploadSecs: null, regime: null, hasTest: false };
-      }
-      const avgBytes = Number(result.total_bytes || 0) / Number(result.samples_uploaded || 1);
-      if (!(avgBytes > 0)) {
-        return { secs: null, analysisSecs: computeSecs, uploadSecs: null, regime: null, hasTest: true };
-      }
-      const avgMB = avgBytes / 1_048_576;
-      const uploadRate = Number(result.mbps) / avgMB;             // images/sec
-      const uploadSecs = totalImages / uploadRate;
-      const secs = _simulateCloudJob(totalImages, uploadRate, p) * _CLOUD_EST_MARGIN;
-
-      // Which side is the binding constraint? Both reference times come out of
-      // the same model, so the comparison is apples-to-apples. The dead band
-      // keeps the label from flickering when the two are within noise.
-      let regime = 'balanced';
-      if (computeSecs > 0) {
-        const ratio = uploadSecs / computeSecs;
-        if (ratio > 1.15) regime = 'upload';
-        else if (ratio < 0.87) regime = 'compute';
-      }
-      return { secs, analysisSecs: computeSecs, uploadSecs, regime, hasTest: true };
+      return _EST.cloudEstimate(totalImages, _cloudSpeedTest());
     }
 
     const _CLOUD_REGIME_TEXT = {
@@ -568,7 +413,7 @@ ${node.path}` : node.path);
       const countSpan = document.createElement('span');
       countSpan.className = 'tree-count';
       if (info && info.total > 0) {
-        const erroredFrag = info.errored > 0 ? ` (${info.errored} errored)` : '';
+        const erroredFrag = info.errored > 0 ? ` · ${info.errored} failed` : '';
         countSpan.textContent = ` ${info.processed}/${info.total}${erroredFrag}`;
       } else {
         countSpan.textContent = '';
@@ -883,303 +728,168 @@ ${node.path}` : node.path);
     //   - estimated time (hardcoded baseline; "—" if too few images)
     //   - warning summary if any folders will lose user data
     //   - shows/hides the "Re-analyze fully-analyzed" unlock row
-    function refreshAnalyzeDlgSummary() {
-      const headline = document.getElementById('analyzeDlgSummaryHeadline');
-      const warningsEl = document.getElementById('analyzeDlgWarnings');
-      const listEl = document.getElementById('analyzeDlgQueuedList');
-      const unlockRow = document.getElementById('analyzeDlgReanalyzeUnlockRow');
-      const startBtn = document.getElementById('analyzeDlgAdd');
-      if (!headline || !listEl || !startBtn) return;
-
-      const useGpu = !!document.getElementById('analyzeUseGpu')?.checked;
-      const retryErrored = !!document.getElementById('adlgRetryErrored')?.checked;
+    // ── Step 3: job list, destination times, footer totals ─────────────────────
+    // Classify each checked folder with the shared plan (the Start handler in
+    // event-wiring.js uses the same one, so the preview can't disagree).
+    function _adlgClassifyChecked(retryErrored) {
       const checkedNorms = Array.from(analyzeDlgCheckedPaths);
-      const checkedCount = checkedNorms.length;
-
-      // Classify each checked folder.
-      let totalImagesToProcess = 0;
-      let fullyAnalyzedSkipCount = 0;       // would skip-silently
-      let fullyAnalyzedWillReanalyzeCount = 0; // will lose data (unlock ON)
-      let outdatedReanalyzeCount = 0;       // will lose data (outdated → always re-analyze)
-      let upgradeCount = 0;                 // pipeline-3 upgrade chosen (no re-analysis)
-      let chosenReanalyzeCount = 0;         // upgradable, but user picked "re-analyze"
+      const t = { folders: checkedNorms.length, images: 0, skip: 0, upgrade: 0, loss: 0, unlockable: 0 };
       const perFolder = [];
-      // Look up upgrade eligibility for newly checked folders (async; the
-      // summary re-renders when each answer arrives).
-      _adlgEnsureUpgradeStatus(checkedNorms).catch(() => {});
+      // Upgrade eligibility for newly checked folders arrives async and
+      // re-renders the summary.
+      _adlgEnsureUpgradeStatus(checkedNorms).catch(e => console.warn('[adlg] upgrade status failed', e));
       for (const norm of checkedNorms) {
         const node = _adlgFindNode(norm);
         const info = analyzeDlgInspectionCache.get(norm);
-        const name = node ? node.name : (norm.split('/').filter(Boolean).pop() || norm);
         const total = (info && info.total) || 0;
-        const processed = (info && info.processed) || 0;
         const errored = (info && info.errored) || 0;
-        const outdated = node ? _isOutdatedNode(node) : false;
-        const isFullyAnalyzed = total > 0 && processed >= total && errored === 0;
-        let willSkip = false;
-        let willReanalyze = false;
-        let warningMsg = '';
-        let warningKind = ''; // '' | 'warn' | 'error'
-        let imagesThisFolder = 0;
         const upgradeMode = analyzeDlgUpgradeModeFor(norm);
-        if (upgradeMode === 'upgrade') {
-          // Analysed on pipeline 2.x: the default is the in-place upgrade,
-          // which is queued separately and adds nothing to the analysis
-          // image count or time estimate.
-          upgradeCount++;
-        } else if (upgradeMode === 'reanalyze') {
-          willReanalyze = true;
-          chosenReanalyzeCount++;
-          imagesThisFolder = total;
-          warningMsg = `Will erase .kestrel data (ratings, decisions, scene names) and re-analyze all ${total.toLocaleString()} images.`;
+        const plan = _EST.planFolder({
+          total, processed: (info && info.processed) || 0, errored,
+          outdated: node ? _isOutdatedNode(node) : false, upgradeMode,
+        }, { reanalyzeUnlocked: analyzeDlgReanalyzeUnlocked, retryErrored });
+        const all = total.toLocaleString();
+        let warningMsg = '';
+        let warningKind = '';
+        if (plan.kind === 'upgrade') t.upgrade++;
+        else if (plan.kind === 'skip') { t.skip++; t.unlockable++; }
+        else t.images += plan.images;
+        if (plan.kind === 'reanalyze') {
+          t.loss++;
           warningKind = 'warn';
-        } else if (outdated) {
-          willReanalyze = true;
-          outdatedReanalyzeCount++;
-          imagesThisFolder = total;
-          warningMsg = `Analyzed with analysis version ${folderPipelineLabel(node)} (current: ${CURRENT_PIPELINE_MAJOR}.0). Will erase .kestrel data and re-analyze all ${total.toLocaleString()} images.`;
-          warningKind = 'warn';
-        } else if (isFullyAnalyzed) {
-          if (analyzeDlgReanalyzeUnlocked) {
-            willReanalyze = true;
-            fullyAnalyzedWillReanalyzeCount++;
-            imagesThisFolder = total;
-            warningMsg = `Already fully analyzed. Will erase user data (ratings, decisions, scene names) and re-analyze all ${total.toLocaleString()} images.`;
-            warningKind = 'warn';
-          } else {
-            willSkip = true;
-            fullyAnalyzedSkipCount++;
-          }
-        } else if (errored > 0 && retryErrored) {
-          imagesThisFolder = errored;
-          warningMsg = `Re-attempting ${errored} previously-errored image${errored === 1 ? '' : 's'}.`;
+          if (plan.reason === 'unlocked') t.unlockable++;
+          warningMsg = plan.reason === 'outdated'
+            ? `Analyzed with analysis version ${folderPipelineLabel(node)} (current: ${CURRENT_PIPELINE_MAJOR}.0). Kestrel data will be erased and all ${all} photos analyzed again.`
+            : `Kestrel data (ratings, decisions, scene names) will be erased and all ${all} photos analyzed again.`;
+        } else if (plan.retriedErrored) {
+          warningMsg = `Retrying ${errored} failed ${errored === 1 ? 'photo' : 'photos'}.`;
           warningKind = 'error';
-        } else if (errored > 0 && !retryErrored) {
-          imagesThisFolder = Math.max(0, total - processed - errored);
-          warningMsg = `${errored} image${errored === 1 ? '' : 's'} previously errored — enable "Re-attempt errored images" to retry them.`;
+        } else if (plan.skippedErrored) {
+          warningMsg = `${errored} ${errored === 1 ? 'photo' : 'photos'} failed last time. Turn on "Retry failed photos" in All settings to try again.`;
           warningKind = 'error';
-        } else {
-          imagesThisFolder = Math.max(0, total - processed);
         }
-        if (!willSkip) totalImagesToProcess += imagesThisFolder;
-        const pillSpec = _computeAnalyzeDlgPill(node || { path: norm }, info, true);
-        perFolder.push({ name, path: norm, info, pillSpec, willSkip, willReanalyze, imagesThisFolder, warningMsg, warningKind, upgradeMode, total });
+        perFolder.push({
+          name: node ? node.name : (norm.split('/').filter(Boolean).pop() || norm),
+          path: norm, plan, total, upgradeMode, warningMsg, warningKind,
+          pillSpec: _computeAnalyzeDlgPill(node || { path: norm }, info, true),
+        });
+      }
+      return { perFolder, t };
+    }
+
+    function _adlgJobRow(f, useGpu) {
+      const row = document.createElement('div');
+      row.className = 'adlg-job-row' + (f.plan.kind === 'skip' ? ' is-skip' : '');
+      row.title = f.path;
+      const pill = document.createElement('span');
+      pill.className = `state-pill state-pill--${f.pillSpec.color} state-pill--${f.pillSpec.shape}`;
+      const name = document.createElement('span');
+      name.className = 'adlg-job-name';
+      name.textContent = f.name;
+      const count = document.createElement('span');
+      count.className = 'adlg-job-count';
+      const time = document.createElement('span');
+      time.className = 'adlg-job-time';
+      const n = f.plan.kind === 'upgrade' ? f.total : f.plan.images;
+      count.textContent = f.plan.kind === 'skip' ? 'already analyzed'
+        : `${n.toLocaleString()} ${n === 1 ? 'photo' : 'photos'}`;
+      if (f.plan.kind !== 'skip' && f.plan.kind !== 'upgrade' && !_isCloudDestination()
+          && f.plan.images >= _EST_MIN_IMAGES_TO_ESTIMATE) {
+        time.textContent = `~${KestrelUtil.formatDuration(f.plan.images * _getEstRate(useGpu).rate)}`;
+      }
+      row.append(pill, name, count, time);
+      const sub = document.createElement('div');
+      sub.className = 'adlg-job-sub';
+      if (f.plan.kind === 'skip') {
+        const skip = document.createElement('span');
+        skip.className = 'adlg-job-skip';
+        skip.append(KestrelIcon.el('ban'), 'Will be skipped');
+        sub.appendChild(skip);
+      }
+      if (f.upgradeMode) sub.appendChild(_adlgBuildUpgradeChoice(f));
+      if (f.warningMsg) {
+        const warn = document.createElement('div');
+        warn.className = 'adlg-job-warn' + (f.warningKind === 'error' ? ' is-error' : '');
+        warn.append(KestrelIcon.el('warning'), ' ' + f.warningMsg);
+        sub.appendChild(warn);
+      }
+      if (sub.childNodes.length) row.appendChild(sub);
+      return row;
+    }
+
+    // "about 1 h 10 min on your GPU" in the This computer card.
+    function _adlgRenderLocalTime(images, useGpu) {
+      const el = document.getElementById('adlgLocalTime');
+      if (!el) return null;
+      el.textContent = '';
+      if (images === 0) { el.textContent = 'Nothing to analyze'; return null; }
+      if (images < _EST_MIN_IMAGES_TO_ESTIMATE) return null;
+      const { rate, source, sampledImgs } = _getEstRate(useGpu);
+      const secs = images * rate;
+      const big = document.createElement('b');
+      big.textContent = `about ${KestrelUtil.formatDuration(secs)}`;
+      el.append(big, ` ${useGpu ? 'on your GPU' : 'on the CPU'}`);
+      if (source === 'baseline') el.appendChild(_buildUncertainBadge(sampledImgs));
+      return secs;
+    }
+
+    // Bottleneck chip in the Cloud Compute card; returns the footer estimate.
+    function _adlgRenderCloudTime(images) {
+      const regimeEl = document.getElementById('adlgCloudRegime');
+      if (regimeEl) regimeEl.textContent = '';
+      if (images < _EST_MIN_IMAGES_TO_ESTIMATE) return null;
+      const { secs, regime, uploadSecs, analysisSecs } = _getCloudEstSeconds(images);
+      if (regimeEl) {
+        regimeEl.appendChild(_buildCloudUncertainBadge());
+        const chip = secs != null ? _buildCloudRegimeChip(regime, uploadSecs, analysisSecs) : null;
+        if (chip) regimeEl.appendChild(chip);
+      }
+      return secs != null ? { secs, bestCase: false } : { secs: analysisSecs, bestCase: true };
+    }
+
+    function refreshAnalyzeDlgSummary() {
+      const listEl = document.getElementById('analyzeDlgQueuedList');
+      if (!listEl) return;
+      const useGpu = !!document.getElementById('analyzeUseGpu')?.checked;
+      const retryErrored = !!document.getElementById('adlgRetryErrored')?.checked;
+      const { perFolder, t } = _adlgClassifyChecked(retryErrored);
+
+      listEl.textContent = '';
+      for (const f of perFolder) listEl.appendChild(_adlgJobRow(f, useGpu));
+
+      const localSecs = _adlgRenderLocalTime(t.images, useGpu);
+      const cloudEta = _adlgRenderCloudTime(t.images);
+      // The cloud card compares the queue with the images left on the plan.
+      if (typeof _ccUpdateCloudPricing === 'function') _ccUpdateCloudPricing(t.images);
+
+      const runBtn = document.getElementById('analyzeDlgRunSpeedTest');
+      const statusEl = document.getElementById('analyzeDlgCloudSpeedStatus');
+      const test = _cloudSpeedTest();
+      if (runBtn) {
+        runBtn.disabled = t.folders === 0;
+        runBtn.replaceChildren(KestrelIcon.el('bolt'), test ? ' Test again' : ' Test my upload speed');
+      }
+      if (statusEl && test) {
+        statusEl.textContent = `Measured upload: ${Number(test.mbps || 0).toFixed(1)} MB/s`;
+        statusEl.classList.remove('hidden', 'error');
+        statusEl.classList.add('success');
       }
 
-      // Per-folder list
-      listEl.innerHTML = '';
-      if (perFolder.length === 0) {
-        const empty = document.createElement('div');
-        empty.className = 'analyze-dlg-queued-list-empty';
-        empty.textContent = 'No folders queued yet. Check folders in the queue builder to add them here.';
-        listEl.appendChild(empty);
-      } else {
-        for (const f of perFolder) {
-          const item = document.createElement('div');
-          let itemCls = 'analyze-dlg-queued-item';
-          if (f.willSkip) itemCls += ' will-skip';
-          if (f.warningKind === 'warn') itemCls += ' has-warning';
-          if (f.warningKind === 'error') itemCls += ' has-error';
-          if (f.upgradeMode === 'upgrade') itemCls += ' will-upgrade';
-          item.className = itemCls;
-          item.title = f.path;
-
-          const head = document.createElement('div');
-          head.className = 'analyze-dlg-queued-item-head';
-          const pill = document.createElement('span');
-          pill.className = `state-pill state-pill--${f.pillSpec.color} state-pill--${f.pillSpec.shape}`;
-          const name = document.createElement('span');
-          name.className = 'analyze-dlg-queued-item-name';
-          name.textContent = f.name;
-          head.appendChild(pill);
-          head.appendChild(name);
-          item.appendChild(head);
-
-          const meta = document.createElement('div');
-          meta.className = 'analyze-dlg-queued-item-meta';
-          if (f.upgradeMode === 'upgrade') {
-            const imgSpan = document.createElement('span');
-            imgSpan.className = 'meta-images';
-            imgSpan.textContent = `${f.total.toLocaleString()} image${f.total === 1 ? '' : 's'} · upgrade to analysis version 3.0`;
-            meta.appendChild(imgSpan);
-          } else if (f.willSkip) {
-            const skip = document.createElement('span');
-            skip.className = 'meta-skip';
-            skip.textContent = 'Already analyzed — will be skipped';
-            meta.appendChild(skip);
-          } else {
-            const imgSpan = document.createElement('span');
-            imgSpan.className = 'meta-images';
-            const imgs = f.imagesThisFolder.toLocaleString();
-            imgSpan.textContent = `${imgs} image${f.imagesThisFolder === 1 ? '' : 's'}`;
-            if (f.willReanalyze) imgSpan.textContent += ' (re-analyze)';
-            meta.appendChild(imgSpan);
-            // Per-folder time estimate
-            if (f.imagesThisFolder >= _EST_MIN_IMAGES_TO_ESTIMATE) {
-              if (_isCloudDestination()) {
-                const { secs } = _getCloudEstSeconds(f.imagesThisFolder);
-                if (secs != null) {
-                  const timeSpan = document.createElement('span');
-                  timeSpan.className = 'meta-time';
-                  timeSpan.textContent = `· ~${KestrelUtil.formatDuration(secs)}`;
-                  meta.appendChild(timeSpan);
-                  meta.appendChild(_buildCloudUncertainBadge());
-                }
-                // Pre-speed-test cloud: no per-folder estimate; the panel
-                // below the headline carries the "?" + run-test affordance.
-              } else {
-                const { rate, source, sampledImgs } = _getEstRate(useGpu);
-                const sec = f.imagesThisFolder * rate;
-                const timeSpan = document.createElement('span');
-                timeSpan.className = 'meta-time';
-                timeSpan.textContent = `· ~${KestrelUtil.formatDuration(sec)}`;
-                meta.appendChild(timeSpan);
-                if (source === 'baseline') meta.appendChild(_buildUncertainBadge(sampledImgs));
-              }
-            }
-          }
-          item.appendChild(meta);
-          if (f.upgradeMode) item.appendChild(_adlgBuildUpgradeChoice(f));
-
-          if (f.warningMsg) {
-            const warn = document.createElement('div');
-            warn.className = 'analyze-dlg-queued-item-warning' + (f.warningKind === 'error' ? ' error' : '');
-            warn.append(KestrelIcon.el('warning'), ' ' + f.warningMsg);
-            item.appendChild(warn);
-          }
-          listEl.appendChild(item);
+      const warningsEl = document.getElementById('analyzeDlgWarnings');
+      if (warningsEl) {
+        warningsEl.textContent = '';
+        if (t.loss > 0) {
+          warningsEl.append(KestrelIcon.el('warning'), ` ${t.loss} ${t.loss === 1 ? 'folder' : 'folders'} will lose ratings, decisions and scene names. You'll be asked to confirm.`);
         }
+        warningsEl.classList.toggle('hidden', t.loss === 0);
       }
+      document.getElementById('analyzeDlgReanalyzeUnlockRow')?.classList.toggle('hidden', t.unlockable === 0);
 
-      // Headline — horizontal 3-stat layout (images | folders | est. time).
-      // Each stat is a number-on-top, label-below block separated by thin
-      // vertical dividers. Reads at a glance without parsing a sentence.
-      if (checkedCount === 0) {
-        headline.innerHTML = '<span class="analyze-dlg-summary-empty">Check folders in the queue builder to add them.</span>';
-      } else {
-        const imgCount = totalImagesToProcess.toLocaleString();
-        const folderWord = checkedCount === 1 ? 'folder' : 'folders';
-        let imgLabel = totalImagesToProcess === 1 ? 'image' : 'images';
-        if (upgradeCount > 0) imgLabel += ' to analyze';
-        const skipFrag = fullyAnalyzedSkipCount > 0
-          ? `<span class="analyze-dlg-stat-skip">${fullyAnalyzedSkipCount} skipped</span>`
-          : '';
-        const upgradeFrag = upgradeCount > 0
-          ? `<span class="analyze-dlg-stat-skip analyze-dlg-stat-upgrade">${upgradeCount} to upgrade</span>`
-          : '';
-        // Time stat — destination-dependent.
-        //   Local: existing baseline-or-local logic with optional "?" badge.
-        //   Cloud: best-case "as fast as" figure until a speed test has run, then
-        //          the modelled time at the measured upload speed; permanent "?" tooltip.
-        let timeValue = '—';
-        let timeLabel = 'estimated time';
-        let timeDim = true;
-        let timeBadgeKind = null; // null | 'local-baseline' | 'cloud'
-        let timeBadgeSampledImgs = 0;
-        let cloudRegimeChip = null;
-        const isCloud = _isCloudDestination();
-        if (isCloud) {
-          if (totalImagesToProcess >= _EST_MIN_IMAGES_TO_ESTIMATE) {
-            const { secs, hasTest, regime, uploadSecs, analysisSecs } =
-              _getCloudEstSeconds(totalImagesToProcess);
-            if (secs != null) {
-              timeValue = `~${KestrelUtil.formatDuration(secs)}`;
-              timeLabel = 'est. time (cloud)';
-              timeDim = false;
-              timeBadgeKind = 'cloud';
-              cloudRegimeChip = _buildCloudRegimeChip(regime, uploadSecs, analysisSecs);
-            } else {
-              // No speed test yet: show the compute-limited best case, labelled
-              // as such. The speed test replaces it with a measured figure.
-              timeValue = `~${KestrelUtil.formatDuration(analysisSecs)}`;
-              timeLabel = 'as fast as (cloud)';
-              timeDim = false;
-              timeBadgeKind = 'cloud';
-            }
-          }
-        } else if (totalImagesToProcess >= _EST_MIN_IMAGES_TO_ESTIMATE) {
-          const { rate, source, sampledImgs } = _getEstRate(useGpu);
-          const seconds = totalImagesToProcess * rate;
-          timeValue = `~${KestrelUtil.formatDuration(seconds)}`;
-          timeLabel = `estimated time (${useGpu ? 'GPU' : 'CPU'}${source === 'local' ? ' · this computer' : ''})`;
-          timeDim = false;
-          if (source === 'baseline') {
-            timeBadgeKind = 'local-baseline';
-            timeBadgeSampledImgs = sampledImgs;
-          }
-        }
-        headline.innerHTML =
-          `<div class="analyze-dlg-stat">` +
-            `<div class="analyze-dlg-stat-value">${imgCount}</div>` +
-            `<div class="analyze-dlg-stat-label">${imgLabel}</div>` +
-          `</div>` +
-          `<div class="analyze-dlg-stat">` +
-            `<div class="analyze-dlg-stat-value">${checkedCount}</div>` +
-            `<div class="analyze-dlg-stat-label">${folderWord}</div>` +
-            skipFrag + upgradeFrag +
-          `</div>` +
-          `<div class="analyze-dlg-stat">` +
-            `<div class="analyze-dlg-stat-value${timeDim ? ' dim' : ''}" id="_analyzeDlgTimeStatValue">${timeValue}</div>` +
-            `<div class="analyze-dlg-stat-label">${timeLabel}</div>` +
-          `</div>`;
-        if (timeBadgeKind === 'local-baseline') {
-          const valueEl = headline.querySelector('#_analyzeDlgTimeStatValue');
-          if (valueEl) valueEl.appendChild(_buildUncertainBadge(timeBadgeSampledImgs));
-        } else if (timeBadgeKind === 'cloud') {
-          const valueEl = headline.querySelector('#_analyzeDlgTimeStatValue');
-          if (valueEl) valueEl.appendChild(_buildCloudUncertainBadge());
-        }
-        // Which side of the pipeline is the bottleneck — sits under the
-        // est. time stat so the number and its explanation read together.
-        if (cloudRegimeChip) {
-          const statEl = headline.querySelector('#_analyzeDlgTimeStatValue')?.parentElement;
-          if (statEl) statEl.appendChild(cloudRegimeChip);
-        }
-      }
-
-      // Tell the cloud card how many images are queued so it can decide whether
-      // to show prices (a comparison against the remaining count, nothing more).
-      if (typeof _ccUpdateCloudPricing === 'function') {
-        try { _ccUpdateCloudPricing(totalImagesToProcess); } catch (e) { /* failsafe */ }
-      }
-
-      // Speed-test button + measured-upload status live in the Cloud card. The button is enabled iff at least one
-      // folder is checked; after a test it reads "Re-test" and the status shows
-      // the measured rate. (The price panel is driven by cloud-compute.js.)
-      {
-        const runBtn = document.getElementById('analyzeDlgRunSpeedTest');
-        const statusEl = document.getElementById('analyzeDlgCloudSpeedStatus');
-        const hasResult = !!(typeof _cloudSpeedTestResult !== 'undefined' && _cloudSpeedTestResult);
-        if (runBtn) {
-          runBtn.disabled = checkedCount === 0;
-          // Keep the leading lightning icon span intact.
-          runBtn.innerHTML = `<i class="adlg-cloud-speed-btn-icon k-icon k-icon--bolt" aria-hidden="true"></i>`
-            + (hasResult ? ' Re-run upload speed test' : ' Run upload speed test');
-        }
-        if (statusEl && hasResult) {
-          const mbps = Number(_cloudSpeedTestResult.mbps || 0).toFixed(1);
-          statusEl.textContent = `Measured upload: ${mbps} MB/s`;
-          statusEl.classList.remove('hidden', 'error');
-          statusEl.classList.add('success');
-        }
-      }
-
-      // Aggregate warning row (above the unlock checkbox)
-      const reanalyzeWithUnlockCount = fullyAnalyzedWillReanalyzeCount + outdatedReanalyzeCount + chosenReanalyzeCount;
-      if (reanalyzeWithUnlockCount > 0) {
-        const word = reanalyzeWithUnlockCount === 1 ? 'folder' : 'folders';
-        warningsEl.innerHTML = `${KestrelIcon('warning')} ${reanalyzeWithUnlockCount} ${word} will lose user data on re-analysis (ratings, decisions, scene names).`;
-        warningsEl.classList.remove('hidden');
-      } else {
-        warningsEl.classList.add('hidden');
-        warningsEl.innerHTML = '';
-      }
-
-      // Unlock row visible only when fully-analyzed-current-version folder(s) are checked.
-      const showUnlockRow = fullyAnalyzedSkipCount > 0 || fullyAnalyzedWillReanalyzeCount > 0;
-      if (unlockRow) unlockRow.classList.toggle('hidden', !showUnlockRow);
-
-      startBtn.disabled = checkedCount === 0;
+      const cloud = _isCloudDestination();
+      const eta = cloud
+        ? (cloudEta && { secs: cloudEta.secs, cloud: true, bestCase: cloudEta.bestCase })
+        : (localSecs != null ? { secs: localSecs, cloud: false, bestCase: false } : null);
+      window.KestrelAnalyzeSteps.setSummary({ folders: t.folders, images: t.images, upgrade: t.upgrade, skip: t.skip, eta });
     }
 
     /** Per-folder "Upgrade to 3.0 / Re-analyze" dropdown for a folder that
@@ -1196,8 +906,8 @@ ${node.path}` : node.path);
       const opts = [
         ['upgrade', 'Upgrade to analysis version 3.0 (fast, keeps your culls)'],
         ['reanalyze', cloud
-          ? 'Re-analyze from scratch on Cloud Compute (clears Kestrel data)'
-          : 'Re-analyze from scratch (clears Kestrel data)'],
+          ? 'Analyze again from scratch on Cloud Compute (erases Kestrel data)'
+          : 'Analyze again from scratch (erases Kestrel data)'],
       ];
       for (const [value, text] of opts) {
         const o = document.createElement('option');
@@ -1217,7 +927,7 @@ ${node.path}` : node.path);
         hint.className = 'adlg-upgrade-hint';
         hint.textContent = 'Re-reads the saved crops to update species IDs, add the sharpness score '
           + 'and smart search. Ratings, decisions and edited tags are kept.'
-          + (cloud ? ' Runs on this computer — upgrades don\u2019t use Cloud Compute.' : '');
+          + (cloud ? ' Runs on this computer; upgrades don\u2019t use Cloud Compute.' : '');
         wrap.appendChild(hint);
       }
       return wrap;
@@ -1463,28 +1173,11 @@ ${node.path}` : node.path);
         _gpuBox.dataset.wiredSummary = '1';
         _gpuBox.addEventListener('change', refreshAnalyzeDlgSummary);
       }
-      // Retry-errored has TWO instances (one in critical settings, one in
-      // More options). Keep them in sync so users see consistent state.
-      // Both refresh the queue summary (errored counts change per-folder).
-      const _retryBoxCritical = document.getElementById('adlgRetryErrored');
-      const _retryBoxMore = document.getElementById('adlgRetryErroredMore');
-      function _syncRetryBoxes(src) {
-        const checked = !!src.checked;
-        if (_retryBoxCritical && _retryBoxCritical !== src) _retryBoxCritical.checked = checked;
-        if (_retryBoxMore && _retryBoxMore !== src) _retryBoxMore.checked = checked;
-        refreshAnalyzeDlgSummary();
-      }
-      if (_retryBoxCritical && !_retryBoxCritical.dataset.wiredSummary) {
-        _retryBoxCritical.dataset.wiredSummary = '1';
-        _retryBoxCritical.addEventListener('change', () => _syncRetryBoxes(_retryBoxCritical));
-      }
-      if (_retryBoxMore && !_retryBoxMore.dataset.wiredSummary) {
-        _retryBoxMore.dataset.wiredSummary = '1';
-        _retryBoxMore.addEventListener('change', () => _syncRetryBoxes(_retryBoxMore));
-      }
-      // Mirror initial state in case settings hydration only touched one.
-      if (_retryBoxCritical && _retryBoxMore) {
-        _retryBoxMore.checked = _retryBoxCritical.checked;
+      // Retry changes which photos each folder will analyze.
+      const _retryBox = document.getElementById('adlgRetryErrored');
+      if (_retryBox && !_retryBox.dataset.wiredSummary) {
+        _retryBox.dataset.wiredSummary = '1';
+        _retryBox.addEventListener('change', refreshAnalyzeDlgSummary);
       }
 
       // Detection confidence warning — wildlife detection models are quite
@@ -1515,6 +1208,7 @@ ${node.path}` : node.path);
       // immediately. Background tasks below refine the data when ready.
       _renderAnalyzeDlgRecentsChipsSync();
       renderAnalyzeDlgTree();
+      window.KestrelAnalyzeSteps.reset();
       refreshAnalyzeDlgSummary();
 
       // Open the dialog NOW. Everything below is background work that
