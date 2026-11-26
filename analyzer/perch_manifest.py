@@ -59,12 +59,3 @@ class PerchManifestScene:
     user_tags_finalized: bool
     exports: List[PerchManifestExport] = field(default_factory=list)
 
-
-@dataclass
-class PerchManifest:
-    manifest_version: int
-    perch_id: str
-    owner_id: str
-    created_at_ms: int
-    updated_at_ms: int
-    scenes: List[PerchManifestScene] = field(default_factory=list)

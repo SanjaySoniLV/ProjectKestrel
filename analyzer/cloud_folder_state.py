@@ -157,10 +157,6 @@ def list_merged_packs(folder: Path | str, job_id: str) -> list[str]:
     return [str(p) for p in packs if isinstance(p, str)]
 
 
-def is_pack_merged(folder: Path | str, job_id: str, pack_name: str) -> bool:
-    return pack_name in list_merged_packs(folder, job_id)
-
-
 def mark_pack_merged(folder: Path | str, job_id: str, pack_name: str) -> None:
     """Record that ``pack_name`` has been successfully merged into the kestrel
     database for ``folder`` under ``job_id``. Idempotent."""

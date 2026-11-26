@@ -664,10 +664,6 @@ class Api:
         # folder rescan so the gallery refreshes as packs land — same UX as
         # local-analysis live updates. Drained-and-cleared each poll.
         self._cc_pack_events: list = []
-        # 5-minute TTL cache for /api/usage so the Cloud destination card in
-        # the analyze dialog doesn't hit the Worker on every keystroke.
-        self._cc_usage_cache: dict | None = None
-        self._cc_usage_cache_at: float = 0.0
 
         # macOS App Sandbox: re-acquire access to every previously-chosen photo
         # folder via its stored security-scoped bookmark, held for the whole
@@ -698,8 +694,6 @@ class Api:
         self._perch_account_cache_at = 0.0
         self._perch_usage_cache = None
         self._perch_usage_cache_at = 0.0
-        self._cc_usage_cache = None
-        self._cc_usage_cache_at = 0.0
 
     def notify_dirty(self, is_dirty: bool) -> dict:
         """Called from JS whenever the dirty flag changes."""
@@ -3772,13 +3766,6 @@ class Api:
             return 'macos'
         return 'linux'
 
-    def get_quality_feedback_mode(self):
-        """``{'success', 'mode'}`` -- ``ask`` (default) | ``always`` | ``never``."""
-        try:
-            return {'success': True, 'mode': self._qf_mode()}
-        except Exception as e:
-            return {'success': False, 'mode': 'ask', 'error': str(e)}
-
     def set_quality_feedback_mode(self, mode):
         """Persist the quality-feedback sharing mode (Settings / "Remember my choice")."""
         try:
@@ -4520,24 +4507,6 @@ class Api:
             error(f'[API] clear_queue_done upgrades error: {e}')
         return _queue_manager.clear_done()
 
-    def remove_queue_item(self, path: str):
-        """Remove a single pending item from the queue by path."""
-        try:
-            return _queue_manager.remove_pending_item(str(path))
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
-
-    def reorder_queue(self, ordered_paths):
-        """Reorder pending queue items. ordered_paths is a JSON string or list of paths."""
-        try:
-            if isinstance(ordered_paths, str):
-                ordered_paths = json.loads(ordered_paths)
-            if not isinstance(ordered_paths, list):
-                return {'success': False, 'error': 'ordered_paths must be a list'}
-            return _queue_manager.reorder_pending(ordered_paths)
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
-
     def is_analysis_running(self):
         """Return True if the analysis queue is actively running."""
         return {'running': _queue_manager.is_running}
@@ -4553,7 +4522,6 @@ class Api:
         """
         try:
             settings = load_persisted_settings()
-            queue_state = _queue_manager.get_persisted_recovery_state()
             unclean_utc = str(settings.get('last_unclean_shutdown_utc', '') or '').strip()
             raw_reason = str(settings.get('last_exit_reason', '') or '').strip().lower()
             exit_reason = raw_reason
@@ -4578,7 +4546,6 @@ class Api:
                 'unclean_shutdown': bool(unclean_utc),
                 'unclean_shutdown_utc': unclean_utc,
                 'exit_reason': exit_reason,
-                'queue_recovery': queue_state,
             }
         except Exception as e:
             error(f'[shutdown] recovery_status: failed to read recovery state: {e}')
@@ -6290,70 +6257,6 @@ class Api:
             ]
         return {"ok": True, "jobs": jobs}
 
-    # ─── Stage 5E — dashboard-feeding bridge methods ────────────────────
-    # Thin proxies over the Worker's user-facing endpoints. The primary
-    # consumer is the external online dashboard; the desktop UI keeps a
-    # single "View cloud usage online →" link in Settings rather than
-    # mirroring the full history table.
-
-    def cloud_compute_list_history(self, filters: dict | None = None) -> dict:
-        """Proxy GET /api/jobs (Stage 5C). ``filters`` is a dict matching the
-        query params: ``status`` (str/csv, supports `'running'`), ``from`` /
-        ``to`` (ISO datetimes), ``limit`` (int), ``cursor`` (opaque)."""
-        client, client_err = self._cc_make_client()
-        if client is None:
-            return client_err or {"ok": False, "error": "no client"}
-        f = filters or {}
-        try:
-            body = client.list_jobs(
-                status=f.get("status"),
-                from_iso=f.get("from"),
-                to_iso=f.get("to"),
-                limit=f.get("limit"),
-                cursor=f.get("cursor"),
-            )
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-        body["ok"] = True
-        return body
-
-    def cloud_compute_get_job_events(self, job_id: str, order: str = "desc") -> dict:
-        """Proxy GET /api/jobs/:jobId/events (Stage 5C)."""
-        client, client_err = self._cc_make_client()
-        if client is None:
-            return client_err or {"ok": False, "error": "no client"}
-        try:
-            body = client.get_job_events(job_id, order=order)
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-        body["ok"] = True
-        return body
-
-    def cloud_compute_get_job_timing_stats(self, job_id: str) -> dict:
-        """Proxy GET /api/jobs/:jobId/timing-stats (Stage 5C)."""
-        client, client_err = self._cc_make_client()
-        if client is None:
-            return client_err or {"ok": False, "error": "no client"}
-        try:
-            body = client.get_job_timing_stats(job_id)
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-        body["ok"] = True
-        return body
-
-    def cloud_compute_get_usage_summary(self, period: str = "monthly") -> dict:
-        """Proxy GET /api/usage (Stage 5D). Returns aggregate totals for the
-        current month or all-time. Used by the panel badge / Settings link."""
-        client, client_err = self._cc_make_client()
-        if client is None:
-            return client_err or {"ok": False, "error": "no client"}
-        try:
-            body = client.get_usage(period=period)
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-        body["ok"] = True
-        return body
-
     def cloud_compute_get_entitlements(self) -> dict:
         """Proxy GET /v1/me/entitlements on the Auth Worker. Returns the
         user's tier, plan limits, current-period usage, and active-job slots
@@ -6398,16 +6301,6 @@ class Api:
         except Exception as e:
             warn(f'[API] cloud_compute_get_pricing failed: {e}')
             return {"ok": False, "reason": "unavailable"}
-
-    def cloud_compute_clear_done(self) -> dict:
-        """Legacy bridge hook — does **not** touch the persistent job ledger.
-
-        The desktop's "Clear done" control only hides finished rows in the
-        cloud-analysis pill (``cloud-compute.js`` client-side filter). Job
-        history for the Account panel and startup resume still read the full
-        on-disk manifest via ``cloud_jobs_store``.
-        """
-        return {"ok": True, "removed": []}
 
     def cloud_compute_cancel_job(self, job_id: str) -> dict:
         """Terminal cancel. Tells the Worker to stop the job, then — ONLY if the
@@ -7161,25 +7054,6 @@ class Api:
             events = self._cc_pack_events
             self._cc_pack_events = []
         return {"ok": True, "events": events}
-
-    def cloud_compute_get_usage(self) -> dict:
-        """Cached fetch of ``/api/usage``. 5-minute TTL. Used by the Cloud
-        destination card to display ``Remaining cloud analysis images: N``.
-        Stub-shaped today (Stage 3 fleshes it out)."""
-        import time as _t
-        now = _t.time()
-        if self._cc_usage_cache is not None and (now - self._cc_usage_cache_at) < 300:
-            return {"ok": True, "usage": self._cc_usage_cache, "cached": True}
-        client, client_err = self._cc_make_client()
-        if client is None:
-            return client_err or {"ok": False, "error": "no client"}
-        try:
-            usage = client.get_usage()
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-        self._cc_usage_cache = usage
-        self._cc_usage_cache_at = now
-        return {"ok": True, "usage": usage, "cached": False}
 
     def share_with_perch(
         self,
@@ -8240,14 +8114,6 @@ class Api:
             )
         except Exception as e:
             print(f"[API] _notify_js_sign_out() -> Error: {e}", flush=True)
-
-    def get_oauth_flow_status(self) -> dict:
-        """Diagnostic — JS-callable. Mostly useful for surfacing 'stuck' flows."""
-        return {
-            "success": True,
-            "in_flight": bool(self._oauth_in_flight),
-            "status": str(self._oauth_status or "idle"),
-        }
 
     def sign_out(self) -> dict:
         """Clear keychain credentials, best-effort revoke at Clerk, notify JS."""
