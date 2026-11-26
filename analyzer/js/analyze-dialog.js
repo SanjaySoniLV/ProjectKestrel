@@ -8,40 +8,17 @@
     // (dialog) two cleanly-separable mental models.
 
     // ── Time estimation ────────────────────────────────────────────────────────
-    // Baseline rates for fresh installs (release-tunable). Local samples from
-    // the queue worker (perf_samples_gpu / perf_samples_cpu in settings.json)
-    // override these once the per-mode total crosses _EST_MIN_SAMPLED_IMAGES_FOR_LOCAL.
-    const _EST_BASELINE_SECS_PER_IMG_GPU = 4.0;
-    const _EST_BASELINE_SECS_PER_IMG_CPU = 10.0;
-    const _EST_MIN_IMAGES_TO_ESTIMATE = 50;       // min queued imgs before any estimate is shown
-    const _EST_MIN_SAMPLED_IMAGES_FOR_LOCAL = 100; // switchover threshold for local rate
+    // The maths lives in analyze-estimate.js; these wrappers feed it the
+    // settings and the last speed test result.
+    const _EST = window.KestrelAnalyzeEstimate;
+    const _EST_MIN_IMAGES_TO_ESTIMATE = _EST.MIN_IMAGES_TO_ESTIMATE;
+    const _EST_MIN_SAMPLED_IMAGES_FOR_LOCAL = _EST.MIN_SAMPLED_FOR_LOCAL;
 
     // Returns { rate, source, sampledImgs } where source is 'local' or 'baseline'.
     function _getEstRate(useGpu) {
-      try {
-        const key = useGpu ? 'perf_samples_gpu' : 'perf_samples_cpu';
-        const samples = (typeof getSetting === 'function' ? getSetting(key, []) : []) || [];
-        let totalImgs = 0, totalSecs = 0;
-        for (const s of samples) {
-          const i = Number(s && s.imgs);
-          const t = Number(s && s.secs);
-          if (i > 0 && t > 0) { totalImgs += i; totalSecs += t; }
-        }
-        if (totalImgs >= _EST_MIN_SAMPLED_IMAGES_FOR_LOCAL) {
-          return { rate: totalSecs / totalImgs, source: 'local', sampledImgs: totalImgs };
-        }
-        return {
-          rate: useGpu ? _EST_BASELINE_SECS_PER_IMG_GPU : _EST_BASELINE_SECS_PER_IMG_CPU,
-          source: 'baseline',
-          sampledImgs: totalImgs,
-        };
-      } catch (_e) {
-        return {
-          rate: useGpu ? _EST_BASELINE_SECS_PER_IMG_GPU : _EST_BASELINE_SECS_PER_IMG_CPU,
-          source: 'baseline',
-          sampledImgs: 0,
-        };
-      }
+      const key = useGpu ? 'perf_samples_gpu' : 'perf_samples_cpu';
+      const samples = typeof getSetting === 'function' ? getSetting(key, []) : [];
+      return _EST.localRate(samples, useGpu);
     }
 
     function _buildUncertainBadge(sampledImgs) {
@@ -57,147 +34,15 @@
       return el;
     }
 
-    // ── Cloud destination est. time ────────────────────────────────────────────
-    //
-    // A fixed per-image floor is badly pessimistic once a job scales out, so the
-    // model below simulates the server pipeline instead:
-    //   1. Nothing is analyzed until CLOUDCOMPUTE_DISPATCH_THRESHOLD images
-    //      (or the whole job, if smaller) have landed in R2 staging.
-    //   2. One Modal container starts, after a cold-start delay.
-    //   3. Whenever the un-analyzed uploaded backlog reaches SCALE_THRESHOLD,
-    //      the worker splits the range and spawns another container — up to
-    //      maxContainersPerJob, subject to a spawn cooldown.
-    //   4. Each container sustains ~1 img/sec.
-    // Analysis can never run ahead of the bytes, so the two phases interleave;
-    // simulating them together is what makes the estimate track reality on both
-    // slow and fast connections.
-    //
-    // The pipeline parameters are SERVED BY THE WORKER, in the `pipeline` block
-    // of the POST /api/upload-test response — the same speed test that gives us
-    // the transfer rate. They are read from the module the scheduler itself
-    // reads, so they cannot drift the way a hardcoded copy would.
-    //
-    // The values below are FALLBACKS ONLY, for an older Worker that doesn't
-    // serve the block, or a malformed response. They match the deployed values
-    // as of 2026-08; if they're ever what's actually in use, the estimate is
-    // still reasonable — just not authoritative.
-    const _CLOUD_FALLBACK_PIPELINE = {
-      containerImagesPerSec:   1.0,   // one Modal container, sustained
-      maxContainers:           3,     // limits.maxContainersPerJob
-      dispatchThreshold:       100,   // CLOUDCOMPUTE_DISPATCH_THRESHOLD
-      scaleThreshold:          200,   // SCALE_THRESHOLD (backlog to split)
-      spawnCooldownSeconds:    20,    // SPAWN_COOLDOWN_SEC
-      containerStartupSeconds: 22,    // measured Modal cold start
-    };
-    // Was effectively +50% (via the 0.5 s/img floor). The simulation models the
-    // ramp explicitly, so the residual margin only needs to cover jitter.
-    const _CLOUD_EST_MARGIN = 1.05;
-
-    // Merge the served descriptor over the fallbacks, field by field, so a
-    // Worker that grows/drops one key doesn't invalidate the rest. Every value
-    // must be a finite positive number to be taken.
+    function _cloudSpeedTest() {
+      return (typeof _cloudSpeedTestResult !== 'undefined') ? _cloudSpeedTestResult : null;
+    }
     function _cloudPipelineParams() {
-      const served = (typeof _cloudSpeedTestResult !== 'undefined' && _cloudSpeedTestResult)
-        ? _cloudSpeedTestResult.pipeline
-        : null;
-      const out = Object.assign({}, _CLOUD_FALLBACK_PIPELINE);
-      if (served && typeof served === 'object') {
-        for (const key of Object.keys(_CLOUD_FALLBACK_PIPELINE)) {
-          const v = Number(served[key]);
-          if (isFinite(v) && v > 0) out[key] = v;
-        }
-      }
-      return out;
+      return _EST.cloudParams(_cloudSpeedTest()?.pipeline);
     }
-
-    // Simulate the upload/analysis pipeline. `uploadRate` is images/sec, or
-    // Infinity to model "bytes are already there" (used to isolate the
-    // compute-bound completion time). Returns seconds to the last analyzed image.
-    function _simulateCloudJob(totalImages, uploadRate, params) {
-      const p = params || _cloudPipelineParams();
-      const n = Math.max(0, Math.floor(totalImages));
-      if (n === 0) return 0;
-      const instant = !(uploadRate > 0) || !isFinite(uploadRate);
-      // Aim for ~2000 steps regardless of job size: fine enough to resolve the
-      // spawn cooldown on short jobs, coarse enough that a 20k-image job on a
-      // slow line doesn't stall the UI thread. This runs on every summary
-      // refresh and once per queued folder.
-      const horizon = instant
-        ? n / (p.maxContainers * p.containerImagesPerSec)
-        : n / uploadRate + n / p.containerImagesPerSec;
-      const dt = Math.min(60, Math.max(0.25, (horizon + p.containerStartupSeconds) / 2000));
-      const firstDispatchAt = Math.min(n, p.dispatchThreshold);
-
-      let t = 0;
-      let analyzed = 0;
-      let spawned = 0;          // containers spawned so far
-      let lastSpawnAt = -Infinity;
-      const readyAt = [];       // wall-clock time each container starts working
-      // Hard iteration bound: a stalled model must not spin the UI thread.
-      const maxSteps = 200000;
-
-      for (let step = 0; step < maxSteps && analyzed < n; step++) {
-        const uploaded = instant ? n : Math.min(n, uploadRate * t);
-        const backlog = uploaded - analyzed;
-
-        // Spawn decisions. The first container waits for the dispatch
-        // threshold; later ones wait for the backlog to justify a split.
-        const canSpawn = spawned < p.maxContainers
-          && (t - lastSpawnAt) >= p.spawnCooldownSeconds;
-        if (canSpawn) {
-          const trigger = spawned === 0
-            ? uploaded >= firstDispatchAt
-            : backlog >= p.scaleThreshold;
-          if (trigger) {
-            readyAt.push(t + p.containerStartupSeconds);
-            spawned++;
-            lastSpawnAt = t;
-          }
-        }
-
-        let active = 0;
-        for (let i = 0; i < readyAt.length; i++) if (readyAt[i] <= t) active++;
-        if (active > 0) {
-          // Analysis is clamped by what has actually been uploaded.
-          const capacity = active * p.containerImagesPerSec * dt;
-          analyzed = Math.min(n, analyzed + Math.min(capacity, Math.max(0, backlog)));
-        }
-        t += dt;
-      }
-      return t;
-    }
-
-    // Returns:
-    //   secs        — modelled wall-clock estimate (null before a speed test)
-    //   uploadSecs  — pure transfer time for the bytes
-    //   analysisSecs— pure compute time if the bytes were already staged
-    //   regime      — 'upload' | 'balanced' | 'compute' (null without a test)
+    // { secs, analysisSecs, uploadSecs, regime, hasTest }; secs is null before a speed test.
     function _getCloudEstSeconds(totalImages) {
-      const result = (typeof _cloudSpeedTestResult !== 'undefined') ? _cloudSpeedTestResult : null;
-      const p = _cloudPipelineParams();
-      const computeSecs = _simulateCloudJob(totalImages, Infinity, p);
-      if (!result || !(result.mbps > 0) || !(result.samples_uploaded > 0)) {
-        return { secs: null, analysisSecs: computeSecs, uploadSecs: null, regime: null, hasTest: false };
-      }
-      const avgBytes = Number(result.total_bytes || 0) / Number(result.samples_uploaded || 1);
-      if (!(avgBytes > 0)) {
-        return { secs: null, analysisSecs: computeSecs, uploadSecs: null, regime: null, hasTest: true };
-      }
-      const avgMB = avgBytes / 1_048_576;
-      const uploadRate = Number(result.mbps) / avgMB;             // images/sec
-      const uploadSecs = totalImages / uploadRate;
-      const secs = _simulateCloudJob(totalImages, uploadRate, p) * _CLOUD_EST_MARGIN;
-
-      // Which side is the binding constraint? Both reference times come out of
-      // the same model, so the comparison is apples-to-apples. The dead band
-      // keeps the label from flickering when the two are within noise.
-      let regime = 'balanced';
-      if (computeSecs > 0) {
-        const ratio = uploadSecs / computeSecs;
-        if (ratio > 1.15) regime = 'upload';
-        else if (ratio < 0.87) regime = 'compute';
-      }
-      return { secs, analysisSecs: computeSecs, uploadSecs, regime, hasTest: true };
+      return _EST.cloudEstimate(totalImages, _cloudSpeedTest());
     }
 
     const _CLOUD_REGIME_TEXT = {
@@ -915,51 +760,39 @@ ${node.path}` : node.path);
         const processed = (info && info.processed) || 0;
         const errored = (info && info.errored) || 0;
         const outdated = node ? _isOutdatedNode(node) : false;
-        const isFullyAnalyzed = total > 0 && processed >= total && errored === 0;
-        let willSkip = false;
-        let willReanalyze = false;
+        const upgradeMode = analyzeDlgUpgradeModeFor(norm);
+        const plan = _EST.planFolder({ total, processed, errored, outdated, upgradeMode },
+          { reanalyzeUnlocked: analyzeDlgReanalyzeUnlocked, retryErrored });
+        const willSkip = plan.kind === 'skip';
+        const willReanalyze = plan.kind === 'reanalyze';
+        const imagesThisFolder = plan.images;
         let warningMsg = '';
         let warningKind = ''; // '' | 'warn' | 'error'
-        let imagesThisFolder = 0;
-        const upgradeMode = analyzeDlgUpgradeModeFor(norm);
-        if (upgradeMode === 'upgrade') {
-          // Analysed on pipeline 2.x: the default is the in-place upgrade,
-          // which is queued separately and adds nothing to the analysis
-          // image count or time estimate.
+        const all = total.toLocaleString();
+        if (plan.kind === 'upgrade') {
+          // The in-place upgrade is queued separately and adds nothing to the
+          // analysis image count or time estimate.
           upgradeCount++;
-        } else if (upgradeMode === 'reanalyze') {
-          willReanalyze = true;
+        } else if (plan.reason === 'chosen') {
           chosenReanalyzeCount++;
-          imagesThisFolder = total;
-          warningMsg = `Will erase .kestrel data (ratings, decisions, scene names) and re-analyze all ${total.toLocaleString()} images.`;
+          warningMsg = `Will erase .kestrel data (ratings, decisions, scene names) and re-analyze all ${all} images.`;
           warningKind = 'warn';
-        } else if (outdated) {
-          willReanalyze = true;
+        } else if (plan.reason === 'outdated') {
           outdatedReanalyzeCount++;
-          imagesThisFolder = total;
-          warningMsg = `Analyzed with analysis version ${folderPipelineLabel(node)} (current: ${CURRENT_PIPELINE_MAJOR}.0). Will erase .kestrel data and re-analyze all ${total.toLocaleString()} images.`;
+          warningMsg = `Analyzed with analysis version ${folderPipelineLabel(node)} (current: ${CURRENT_PIPELINE_MAJOR}.0). Will erase .kestrel data and re-analyze all ${all} images.`;
           warningKind = 'warn';
-        } else if (isFullyAnalyzed) {
-          if (analyzeDlgReanalyzeUnlocked) {
-            willReanalyze = true;
-            fullyAnalyzedWillReanalyzeCount++;
-            imagesThisFolder = total;
-            warningMsg = `Already fully analyzed. Will erase user data (ratings, decisions, scene names) and re-analyze all ${total.toLocaleString()} images.`;
-            warningKind = 'warn';
-          } else {
-            willSkip = true;
-            fullyAnalyzedSkipCount++;
-          }
-        } else if (errored > 0 && retryErrored) {
-          imagesThisFolder = errored;
+        } else if (plan.reason === 'unlocked') {
+          fullyAnalyzedWillReanalyzeCount++;
+          warningMsg = `Already fully analyzed. Will erase user data (ratings, decisions, scene names) and re-analyze all ${all} images.`;
+          warningKind = 'warn';
+        } else if (willSkip) {
+          fullyAnalyzedSkipCount++;
+        } else if (plan.retriedErrored) {
           warningMsg = `Re-attempting ${errored} previously-errored image${errored === 1 ? '' : 's'}.`;
           warningKind = 'error';
-        } else if (errored > 0 && !retryErrored) {
-          imagesThisFolder = Math.max(0, total - processed - errored);
+        } else if (plan.skippedErrored) {
           warningMsg = `${errored} image${errored === 1 ? '' : 's'} previously errored — enable "Re-attempt errored images" to retry them.`;
           warningKind = 'error';
-        } else {
-          imagesThisFolder = Math.max(0, total - processed);
         }
         if (!willSkip) totalImagesToProcess += imagesThisFolder;
         const pillSpec = _computeAnalyzeDlgPill(node || { path: norm }, info, true);

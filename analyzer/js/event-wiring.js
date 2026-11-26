@@ -83,37 +83,31 @@
           const node = _adlgFindNode(norm);
           const info = analyzeDlgInspectionCache.get(norm);
           const name = node ? node.name : (norm.split('/').filter(Boolean).pop() || norm);
-          const total = (info && info.total) || 0;
-          const processed = (info && info.processed) || 0;
-          const errored = (info && info.errored) || 0;
           const outdated = node ? (typeof isVersionOutdated === 'function' && isVersionOutdated(node)) : false;
-          const isFullyAnalyzed = total > 0 && processed >= total && errored === 0;
-
           const upgradeMode = (typeof analyzeDlgUpgradeModeFor === 'function')
             ? analyzeDlgUpgradeModeFor(norm) : null;
-          if (upgradeMode === 'upgrade') {
+          const plan = window.KestrelAnalyzeEstimate.planFolder(
+            { total: info?.total, processed: info?.processed, errored: info?.errored, outdated, upgradeMode },
+            { reanalyzeUnlocked: analyzeDlgReanalyzeUnlocked, retryErrored });
+          if (plan.kind === 'upgrade') {
             upgradeNorms.push(norm);
             continue;
           }
           analysisNorms.push(norm);
           const opts = {};
-          if (upgradeMode === 'reanalyze') {
+          // An outdated folder can't be resumed from its old .kestrel data, so
+          // re-analysis always starts by erasing it.
+          if (plan.kind === 'reanalyze') {
             opts.delete_kestrel_on_start = true;
-            destructive.push({ path: norm, name, reason: 're-analyze from scratch instead of upgrading to analysis version 3.0' });
-          } else if (outdated) {
-            // Outdated always wipes + re-analyzes (the user picked a folder
-            // analyzed on an older Kestrel; the new pipeline can't safely
-            // resume from old artifacts).
-            opts.delete_kestrel_on_start = true;
-            destructive.push({ path: norm, name, reason: `outdated (pipeline ${folderPipelineLabel(node)} → ${CURRENT_PIPELINE_MAJOR}.0)` });
-          } else if (isFullyAnalyzed) {
-            if (analyzeDlgReanalyzeUnlocked) {
-              opts.delete_kestrel_on_start = true;
-              destructive.push({ path: norm, name, reason: 'fully analyzed — will erase data' });
-            } else {
-              // Worker re-inspects + silently marks done with no .kestrel touch.
-              opts.skip_if_already_done = true;
-            }
+            const reason = plan.reason === 'chosen'
+              ? 're-analyze from scratch instead of upgrading to analysis version 3.0'
+              : plan.reason === 'outdated'
+                ? `outdated (pipeline ${folderPipelineLabel(node)} → ${CURRENT_PIPELINE_MAJOR}.0)`
+                : 'fully analyzed — will erase data';
+            destructive.push({ path: norm, name, reason });
+          } else if (plan.kind === 'skip') {
+            // Worker re-inspects + silently marks done with no .kestrel touch.
+            opts.skip_if_already_done = true;
           }
           // Errored-only folders (partial + errored > 0) don't need wipe;
           // the pipeline's retry_errored logic handles them in-place.
