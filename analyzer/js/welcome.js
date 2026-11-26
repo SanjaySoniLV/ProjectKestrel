@@ -155,14 +155,9 @@
     var sr = sanitizeRichText;
 
     // Escape a string for use inside a DOUBLE-QUOTED HTML attribute. sr()/
-    // sanitizeRichText is a *content* sanitizer (it does NOT escape quotes), so
-    // it must never be used for attribute values — that would allow a remote
-    // href like `https://x" onmouseover="..."` to inject an event handler.
-    function escapeAttr(s) {
-      return String(s == null ? '' : s)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-    }
+    // Attribute values go through escapeHtml (it escapes quotes), never through
+    // sanitizeRichText, which is a content sanitizer and leaves quotes alone: a
+    // remote href like `https://x" onmouseover="..."` would inject a handler.
 
     // Return a normalized https:// URL, or null if it is not valid https.
     // Parsing with URL() (not a prefix regex) rejects embedded quotes,
@@ -194,7 +189,7 @@
         var linkHtml = linkList.map(function(lk) {
           var href = lk && lk.href ? safeHttpsUrl(lk.href) : null;
           if (!href) return '';
-          return '<a class="wln-card-link" href="' + escapeAttr(href) +
+          return '<a class="wln-card-link" href="' + escapeHtml(href) +
             '" target="_blank" rel="noopener noreferrer">' + sr(lk.label || 'Learn more →') + '</a>';
         }).filter(Boolean).join('');
         cta = (c.hint ? '<div class="wln-card-hint">' + sr(c.hint) + '</div>' : '') +
@@ -211,7 +206,7 @@
         }
         var iconFile = safeAssetFile(c.iconImg);
         var iconHtml = iconFile
-          ? '<span class="wln-card-icon wln-card-icon-img"><img src="' + escapeAttr(iconFile) + '" alt="" /></span>'
+          ? '<span class="wln-card-icon wln-card-icon-img"><img src="' + escapeHtml(iconFile) + '" alt="" /></span>'
           : '<span class="wln-card-icon">' + sr(c.icon || '•') + '</span>';
         return '' +
           '<div class="wln-card">' +
@@ -229,14 +224,14 @@
 
       var heroFile = safeAssetFile(note.heroImg);
       var heroHtml = heroFile
-        ? '<div class="wln-banner"><img src="' + escapeAttr(heroFile) +
-            '" alt="' + escapeAttr(note.heroAlt || '') + '" /></div>'
+        ? '<div class="wln-banner"><img src="' + escapeHtml(heroFile) +
+            '" alt="' + escapeHtml(note.heroAlt || '') + '" /></div>'
         : '';
 
       var blogBtn = '';
       var blogHref = note.blogLink && note.blogLink.href ? safeHttpsUrl(note.blogLink.href) : null;
       if (blogHref) {
-        blogBtn = '<a class="wln-blog-link" href="' + escapeAttr(blogHref) +
+        blogBtn = '<a class="wln-blog-link" href="' + escapeHtml(blogHref) +
           '" target="_blank" rel="noopener noreferrer">' + sr(note.blogLink.label || 'Read more →') + '</a>';
       }
 

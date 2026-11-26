@@ -2804,7 +2804,6 @@
       txt.innerHTML = s;
       return txt.value;
     }
-    function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': '&#39;' }[c])); }
     function folderBaseName(path) { if (!path) return ''; return path.replace(/\\/g, '/').split('/').filter(Boolean).pop() || path; }
 
     // Snapshot helpers for revert

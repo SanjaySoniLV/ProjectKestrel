@@ -13,15 +13,6 @@
     let _perchActiveJobId = null;
     let _perchActivePollTimer = null;
 
-    function formatPerchBytes(n) {
-      const x = Number(n) || 0;
-      if (x <= 0) return '0 KB';
-      if (x < 1024) return x + ' B';
-      if (x < 1024 * 1024) return (x / 1024).toFixed(1) + ' KB';
-      if (x < 1024 * 1024 * 1024) return (x / (1024 * 1024)).toFixed(1) + ' MB';
-      return (x / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
-    }
-
     function _perchFormatTimestamp(ms) {
       if (!Number.isFinite(ms)) return '';
       try {
@@ -225,7 +216,7 @@
       const skipped = Number(scene.rejectedSkipped || 0);
       const parts = [
         `${photos.toLocaleString()} photo${photos === 1 ? '' : 's'}`,
-        formatPerchBytes(scene.totalBytes),
+        KestrelUtil.formatBytes(scene.totalBytes),
       ];
       if (skipped > 0 && _perchDlgState.skipRejected) {
         parts.push(`${skipped.toLocaleString()} hidden`);
@@ -349,7 +340,7 @@
           : `${t.scenes.toLocaleString()} / ${totalScenes.toLocaleString()}`;
       }
       if (elPhotos) elPhotos.textContent = `${t.photos.toLocaleString()} / ${totalPhotos.toLocaleString()}`;
-      if (elBytes) elBytes.textContent = formatPerchBytes(t.bytes);
+      if (elBytes) elBytes.textContent = KestrelUtil.formatBytes(t.bytes);
       // Compute % of plan storage if we have entitlements.
       const limitMB = Number(_perchEntitlements?.limits?.maxTotalStorageMB || 0);
       if (elPct) {
@@ -383,8 +374,8 @@
         if (barPending) barPending.style.width = '0%';
         if (txtEl) {
           txtEl.textContent = pendingBytes > 0
-            ? `${formatPerchBytes(usedBytes)} used · +${formatPerchBytes(pendingBytes)} this perch`
-            : `${formatPerchBytes(usedBytes)} used`;
+            ? `${KestrelUtil.formatBytes(usedBytes)} used · +${KestrelUtil.formatBytes(pendingBytes)} this perch`
+            : `${KestrelUtil.formatBytes(usedBytes)} used`;
         }
         return;
       }
@@ -397,15 +388,15 @@
         barPending.style.left = usedPct + '%';
       }
       if (txtEl) {
-        const usedTxt = formatPerchBytes(usedBytes);
-        const limitTxt = formatPerchBytes(limitBytes);
+        const usedTxt = KestrelUtil.formatBytes(usedBytes);
+        const limitTxt = KestrelUtil.formatBytes(limitBytes);
         txtEl.textContent = pendingBytes > 0
-          ? `${usedTxt} used · +${formatPerchBytes(pendingBytes)} this perch · ${limitTxt} total`
+          ? `${usedTxt} used · +${KestrelUtil.formatBytes(pendingBytes)} this perch · ${limitTxt} total`
           : `${usedTxt} of ${limitTxt} used`;
       }
       if (barEl) {
-        barEl.title = `${formatPerchBytes(usedBytes)} used of ${formatPerchBytes(limitBytes)} plan limit`
-          + (pendingBytes > 0 ? ` · +${formatPerchBytes(pendingBytes)} pending this upload` : '');
+        barEl.title = `${KestrelUtil.formatBytes(usedBytes)} used of ${KestrelUtil.formatBytes(limitBytes)} plan limit`
+          + (pendingBytes > 0 ? ` · +${KestrelUtil.formatBytes(pendingBytes)} pending this upload` : '');
       }
     }
 
@@ -734,15 +725,14 @@
       // 3.1.3(f) IAP exemption, which requires no purchase calls-to-action.
       const manageUrl = (prog && (prog.manageUrl || prog.upgradeUrl))
         || 'https://myaccount.projectkestrel.org/perch';
-      const esc = (s) => String(s).replace(/[<>&"']/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]));
       card.className = 'perch-upload-card is-error';
       card.innerHTML = `
         <div class="perch-upload-card-header">
-          <span class="perch-upload-card-title">${esc(copy.title)}</span>
+          <span class="perch-upload-card-title">${escapeHtml(copy.title)}</span>
           <button type="button" class="perch-upload-card-dismiss" data-role="dismiss" title="Dismiss">✕</button>
         </div>
         <div class="perch-upload-card-body">
-          <div class="perch-upload-card-err">${esc(copy.body)}</div>
+          <div class="perch-upload-card-err">${escapeHtml(copy.body)}</div>
           <button type="button" class="perch-upload-card-cta" data-role="manage">Manage my account →</button>
         </div>
       `;
@@ -1041,7 +1031,7 @@
           const photos = Number(preflight.imageCount || 0);
           const scenes = Number(preflight.sceneCount || 0);
           if (photos > 0) {
-            ready.textContent = `Ready to share: ${scenes.toLocaleString()} scene${scenes === 1 ? '' : 's'}, ${photos.toLocaleString()} photo${photos === 1 ? '' : 's'}, ${formatPerchBytes(preflight.totalBytes)}.`;
+            ready.textContent = `Ready to share: ${scenes.toLocaleString()} scene${scenes === 1 ? '' : 's'}, ${photos.toLocaleString()} photo${photos === 1 ? '' : 's'}, ${KestrelUtil.formatBytes(preflight.totalBytes)}.`;
           }
         }
       }
@@ -1296,20 +1286,6 @@
     }
 
     // ── Re-link: associate this folder with an EXISTING perch (no re-upload) ──
-    function _perchEsc(s) {
-      return String(s == null ? '' : s)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-    }
-    function _perchFmtBytes(n) {
-      n = Number(n) || 0;
-      if (n < 1024) return n + ' B';
-      const u = ['KB', 'MB', 'GB', 'TB'];
-      let v = n / 1024, i = 0;
-      while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
-      return v.toFixed(v >= 100 ? 0 : 1) + ' ' + u[i];
-    }
-
     /** Open the picker listing the user's existing perches to re-link to. */
     async function _perchOpenRelinkPicker() {
       const dlg = document.getElementById('perchRelinkDlg');
@@ -1324,7 +1300,7 @@
           perches = r.perches;
         } else {
           list.innerHTML = '<div class="perch-relink-empty">Could not load your perches'
-            + (r && r.error ? ' (' + _perchEsc(r.error) + ')' : '') + '.</div>';
+            + (r && r.error ? ' (' + escapeHtml(r.error) + ')' : '') + '.</div>';
           return;
         }
       } catch {
@@ -1336,11 +1312,11 @@
         return;
       }
       list.innerHTML = perches.map((p) => {
-        const id = _perchEsc(p.id || '');
-        const title = _perchEsc(p.title || '(untitled)');
+        const id = escapeHtml(p.id || '');
+        const title = escapeHtml(p.title || '(untitled)');
         const imgs = (Number(p.imageCount) || 0).toLocaleString();
-        const bytes = _perchFmtBytes(p.actualBytes);
-        const state = _perchEsc(String(p.uploadState || p.status || ''));
+        const bytes = KestrelUtil.formatBytes(p.actualBytes);
+        const state = escapeHtml(String(p.uploadState || p.status || ''));
         return '<button type="button" class="perch-relink-row" data-perch-id="' + id + '">'
           + '<span class="perch-relink-row-title">' + title + '</span>'
           + '<span class="perch-relink-row-meta">' + imgs + ' photos · ' + bytes
@@ -1476,7 +1452,7 @@
       const bytesEl = document.getElementById('perchStatusBytes');
       if (bytesEl) {
         bytesEl.textContent = (status.actualBytes != null)
-          ? formatPerchBytes(Number(status.actualBytes))
+          ? KestrelUtil.formatBytes(Number(status.actualBytes))
           : '—';
       }
       const photosEl = document.getElementById('perchStatusPhotos');

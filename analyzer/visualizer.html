@@ -1878,10 +1878,9 @@
     <button id="versionUpdateDownloadBtn" style="width:100%;padding:10px 16px;margin-top:12px;background:#1a4a1a;color:#6ec16e;border:1px solid #6ec16e;border-radius:6px;cursor:pointer;font-size:14px;font-weight:600;text-decoration:none;display:block;text-align:center;">Download Update</button>
   </div>
 
-  <!-- JS modules split by feature. Order matters: state/utils first, then leaf modules,
-       then features, then event-wiring/init. Each file is a classic <script> (not type=module)
-       so top-level let/const/function declarations are shared across the "Script" lexical
-       environment — equivalent to the old single visualizer.js, just split for readability. -->
+  <!-- Order matters: util/state first, then leaf modules, features, event-wiring/init. Each file
+       is a classic <script> (not type=module), so top-level declarations share one scope. -->
+  <script src="js/util.js"></script>
   <script src="js/reviewed-tags.js"></script>
   <script src="js/state.js"></script>
   <script src="js/image-loader.js"></script>

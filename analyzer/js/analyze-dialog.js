@@ -213,14 +213,14 @@
       el.className = `adlg-cloud-regime adlg-cloud-regime--${spec.cls}`;
       el.textContent = spec.label;
       const tip = regime === 'upload'
-        ? `Your connection needs ~${_formatDuration(uploadSecs)} to send these images; `
-          + `Cloud Compute could analyze them in ~${_formatDuration(computeSecs)}. `
+        ? `Your connection needs ~${KestrelUtil.formatDuration(uploadSecs)} to send these images; `
+          + `Cloud Compute could analyze them in ~${KestrelUtil.formatDuration(computeSecs)}. `
           + 'A faster upload would finish sooner.'
         : regime === 'compute'
-          ? `These images upload in ~${_formatDuration(uploadSecs)} but take `
-            + `~${_formatDuration(computeSecs)} to analyze — Cloud Compute is the bottleneck.`
-          : `Upload (~${_formatDuration(uploadSecs)}) and analysis `
-            + `(~${_formatDuration(computeSecs)}) take about the same time.`;
+          ? `These images upload in ~${KestrelUtil.formatDuration(uploadSecs)} but take `
+            + `~${KestrelUtil.formatDuration(computeSecs)} to analyze — Cloud Compute is the bottleneck.`
+          : `Upload (~${KestrelUtil.formatDuration(uploadSecs)}) and analysis `
+            + `(~${KestrelUtil.formatDuration(computeSecs)}) take about the same time.`;
       el.setAttribute('title', tip);
       el.setAttribute('aria-label', tip);
       return el;
@@ -1022,7 +1022,7 @@ ${node.path}` : node.path);
                 if (secs != null) {
                   const timeSpan = document.createElement('span');
                   timeSpan.className = 'meta-time';
-                  timeSpan.textContent = `· ~${_formatDuration(secs)}`;
+                  timeSpan.textContent = `· ~${KestrelUtil.formatDuration(secs)}`;
                   meta.appendChild(timeSpan);
                   meta.appendChild(_buildCloudUncertainBadge());
                 }
@@ -1033,7 +1033,7 @@ ${node.path}` : node.path);
                 const sec = f.imagesThisFolder * rate;
                 const timeSpan = document.createElement('span');
                 timeSpan.className = 'meta-time';
-                timeSpan.textContent = `· ~${_formatDuration(sec)}`;
+                timeSpan.textContent = `· ~${KestrelUtil.formatDuration(sec)}`;
                 meta.appendChild(timeSpan);
                 if (source === 'baseline') meta.appendChild(_buildUncertainBadge(sampledImgs));
               }
@@ -1084,7 +1084,7 @@ ${node.path}` : node.path);
             const { secs, hasTest, regime, uploadSecs, analysisSecs } =
               _getCloudEstSeconds(totalImagesToProcess);
             if (secs != null) {
-              timeValue = `~${_formatDuration(secs)}`;
+              timeValue = `~${KestrelUtil.formatDuration(secs)}`;
               timeLabel = 'est. time (cloud)';
               timeDim = false;
               timeBadgeKind = 'cloud';
@@ -1092,7 +1092,7 @@ ${node.path}` : node.path);
             } else {
               // No speed test yet: show the compute-limited best case, labelled
               // as such. The speed test replaces it with a measured figure.
-              timeValue = `~${_formatDuration(analysisSecs)}`;
+              timeValue = `~${KestrelUtil.formatDuration(analysisSecs)}`;
               timeLabel = 'as fast as (cloud)';
               timeDim = false;
               timeBadgeKind = 'cloud';
@@ -1101,7 +1101,7 @@ ${node.path}` : node.path);
         } else if (totalImagesToProcess >= _EST_MIN_IMAGES_TO_ESTIMATE) {
           const { rate, source, sampledImgs } = _getEstRate(useGpu);
           const seconds = totalImagesToProcess * rate;
-          timeValue = `~${_formatDuration(seconds)}`;
+          timeValue = `~${KestrelUtil.formatDuration(seconds)}`;
           timeLabel = `estimated time (${useGpu ? 'GPU' : 'CPU'}${source === 'local' ? ' · this computer' : ''})`;
           timeDim = false;
           if (source === 'baseline') {
@@ -1222,16 +1222,6 @@ ${node.path}` : node.path);
         wrap.appendChild(hint);
       }
       return wrap;
-    }
-
-    function _formatDuration(seconds) {
-      if (!isFinite(seconds) || seconds <= 0) return '—';
-      const h = Math.floor(seconds / 3600);
-      const m = Math.floor((seconds % 3600) / 60);
-      const s = Math.round(seconds % 60);
-      if (h > 0) return `${h}h ${m}m`;
-      if (m > 0) return `${m}m ${s}s`;
-      return `${s}s`;
     }
 
     // ── Dialog open / settings hydration ────────────────────────────────────────
