@@ -83,9 +83,9 @@
     document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && !document.querySelector('dialog[open]')) { if (selectedSceneIds.size > 0) { selectedSceneIds.clear(); _lastSelectedIdx = -1; updateSelectionUI(); } _clearGridFocus(); } });
     // Revert button
     const revertBtn = el('#revertCsv');
-    if (revertBtn) revertBtn.addEventListener('click', () => {
+    if (revertBtn) revertBtn.addEventListener('click', async () => {
       if (!_cleanSnapshot) return;
-      if (!confirm('Discard all unsaved changes and revert to the last saved state?')) return;
+      if (!(await KestrelDialog.confirm('revertChanges'))) return;
       applySnapshot();
     });
 

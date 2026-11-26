@@ -163,6 +163,7 @@ kbd {
      <button class="primary"> primary: one per view
      .k-btn--quiet            no fill or border until hover (Cancel, Close)
      .k-btn--danger           destructive: red text, not a red box
+     .k-btn--danger-solid     confirm button of a destructive dialog
      .k-btn--icon             square, icon only (needs aria-label)
      .k-btn--sm               compact height for toolbars and rows        */
 button,
@@ -226,6 +227,19 @@ button.k-btn--danger {
 button.k-btn--danger:hover {
   background: rgba(231, 76, 60, .14);
   color: var(--danger-text);
+}
+
+/* The confirm button of a destructive dialog: the one place danger is filled. */
+button.k-btn--danger-solid {
+  background: #6e1f1a;
+  border-color: #a33028;
+  color: #fff5f4;
+}
+
+button.k-btn--danger-solid:hover {
+  background: #8c2a22;
+  border-color: #c43d32;
+  color: #fff;
 }
 
 button.k-btn--sm {

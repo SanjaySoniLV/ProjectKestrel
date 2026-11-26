@@ -12,5 +12,7 @@ export default [{
     "no-dupe-keys": "error",
     "no-unreachable": "error",
     "no-self-assign": "error",
+    // Use KestrelDialog.confirm / notice (js/k-dialog.js) instead of the native boxes.
+    "no-alert": "error",
   },
 }];
