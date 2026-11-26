@@ -24,7 +24,7 @@
       const accountBtn = document.getElementById('accountBtn');
       const signedIn = !!_perchToken || !!accountBtn?.classList.contains('signed-in');
       const who = _feedbackAccountLabel();
-      if (cbLabel) cbLabel.textContent = signedIn ? `Send as ${who}` : 'Send as my account (sign in to enable)';
+      if (cbLabel) cbLabel.textContent = signedIn ? `Send as ${who}` : 'Send as my account';
       if (cb) {
         cb.disabled = !signedIn;
         if (!signedIn) cb.checked = false;
@@ -35,11 +35,9 @@
       const hint = document.getElementById('feedbackSignInHint');
       if (hint) {
         if (!signedIn) {
-          hint.textContent = 'Sign in to send this from your account, so we can follow up with you and keep your logs and screenshot with your report.';
-        } else if (!cb?.checked) {
-          hint.textContent = 'Tick the box above so we can follow up with you and keep your logs and screenshot with your report.';
+          hint.textContent = 'Sign in first. Sent from your account, we can follow up with you and keep your logs and screenshot with your report.';
         } else {
-          hint.textContent = '';
+          hint.textContent = 'So we can follow up with you and keep your logs and screenshot with your report.';
         }
       }
     }
@@ -57,7 +55,31 @@
     // Must match MAX_SCREENSHOT_BYTES in support_client.py.
     const _FEEDBACK_MAX_SCREENSHOT_BYTES = 10 * 1024 * 1024;
 
+    const FEEDBACK_PLACEHOLDERS = {
+      bug: 'What happened, and what did you expect? Steps to make it happen again help a lot.',
+      suggestion: 'What would you like Kestrel to do?',
+      liked: 'What do you like? It helps to know what to keep.',
+      general: 'What would you like to tell us?',
+    };
+
+    /** Select a feedback type: the hidden #feedbackType input holds the value the send reads. */
+    function _setFeedbackType(type, fromUser) {
+      const sel = document.getElementById('feedbackType');
+      sel.value = FEEDBACK_PLACEHOLDERS[type] ? type : 'general';
+      document.querySelectorAll('#feedbackDlg [data-feedback-type]').forEach(b => {
+        const on = b.dataset.feedbackType === sel.value;
+        b.classList.toggle('on', on);
+        b.setAttribute('aria-checked', on ? 'true' : 'false');
+      });
+      document.getElementById('feedbackDesc').placeholder = FEEDBACK_PLACEHOLDERS[sel.value];
+      if (fromUser) sel.dispatchEvent(new Event('change'));
+    }
+    document.querySelectorAll('#feedbackDlg [data-feedback-type]').forEach(b => {
+      b.addEventListener('click', () => _setFeedbackType(b.dataset.feedbackType, true));
+    });
+
     function openFeedbackDialog() {
+      _setFeedbackType('general', false);
       document.getElementById('feedbackDesc').value = '';
       document.getElementById('feedbackContact').value = '';
       document.getElementById('feedbackCaseRef').value = '';
@@ -76,14 +98,14 @@
     // (used by the enhanced GPU setup to offer a bug report when it fails).
     window.openFeedbackWithPrefill = function (type, description, includeLogs) {
       openFeedbackDialog();
-      document.getElementById('feedbackType').value = type || 'bug';
+      _setFeedbackType(type || 'bug', false);
       document.getElementById('feedbackDesc').value = description || '';
       document.getElementById('feedbackIncludeLogs').checked = !!includeLogs;
     };
 
     document.getElementById('feedbackSendAsUser').addEventListener('change', _syncFeedbackSendAs);
 
-    // Auto-check logs when Bug Report type is selected
+    // Logs go with bug reports by default.
     document.getElementById('feedbackType').addEventListener('change', function () {
       document.getElementById('feedbackIncludeLogs').checked = (this.value === 'bug');
     });
@@ -122,7 +144,7 @@
     async function submitFeedback() {
       const desc = document.getElementById('feedbackDesc').value.trim();
       if (!desc) {
-        document.getElementById('feedbackStatus').textContent = 'Please enter a description.';
+        document.getElementById('feedbackStatus').textContent = 'Please tell us a little more first.';
         document.getElementById('feedbackDesc').focus();
         return;
       }
@@ -151,19 +173,19 @@
         }
         const result = await window.pywebview.api.send_feedback(data);
         if (result && result.success !== false) {
-          let msg = '✓ Feedback sent — thank you!';
+          let msg = 'Sent. Thank you!';
           if (result.ref) msg += ` Your case reference is ${result.ref}.`;
           if (result.screenshot_dropped) msg += ' The screenshot could not be attached (it must be a PNG, JPEG or WebP under 10 MB).';
-          if (result.sent_anonymously) msg += ' It was sent without your account, so we can’t reply to you through it. Add an email above if you’d like a reply.';
+          if (result.sent_anonymously) msg += ' It was sent without your account, so we can’t reply to you through it. Add an email if you’d like a reply.';
           document.getElementById('feedbackStatus').textContent = msg;
           // Leave the dialog open longer when there is something to read.
           const delay = (result.ref || result.screenshot_dropped || result.sent_anonymously) ? 5000 : 1200;
           setTimeout(() => { try { document.getElementById('feedbackDlg').close(); } catch (_) { } }, delay);
         } else {
-          document.getElementById('feedbackStatus').textContent = 'Could not send — please try again later.';
+          document.getElementById('feedbackStatus').textContent = 'Could not send. Please try again later.';
         }
       } catch (e) {
-        document.getElementById('feedbackStatus').textContent = 'Send failed: ' + (e.message || e);
+        document.getElementById('feedbackStatus').textContent = 'Could not send: ' + (e.message || e);
       } finally {
         sendBtn.disabled = false;
       }

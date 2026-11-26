@@ -936,10 +936,8 @@
         <div class="k-row">
           <label class="k-row-label" for="settingsExpStrengthSlider">Exposure adjustment
             <span class="k-row-hint">How much of Kestrel's exposure adjustment previews get. 0% shows the photo as exported; 100% matches the bird crop. The scene viewer has the same slider.</span></label>
-          <div class="settings-slider">
-            <input type="range" id="settingsExpStrengthSlider" min="0" max="100" value="70" step="5" />
-            <span id="settingsExpStrengthVal">70%</span>
-          </div>
+          <div class="settings-slider"><input type="range" id="settingsExpStrengthSlider" min="0" max="100" value="70" step="5" />
+            <span id="settingsExpStrengthVal">70%</span></div>
         </div>
         <div class="k-row">
           <label class="k-row-label" for="rawPreviewCacheEnabled">Save RAW previews for faster loading
@@ -1675,56 +1673,55 @@
     </div>
   </dialog>
 
-  <dialog id="feedbackDlg" class="kdlg kdlg--md kdlg--flex">
-    <div class="feedback-dlg">
-      <h3>Send Feedback</h3>
+  <dialog id="feedbackDlg" class="kdlg kdlg--md kdlg--flex" aria-labelledby="feedbackTitle">
+    <div class="kdlg-body feedback-dlg">
+      <h3 id="feedbackTitle" class="k-dialog-title">Send feedback</h3>
       <div>
-        <label class="f-label" for="feedbackType">Type</label>
-        <select id="feedbackType">
-          <option value="bug">Bug Report</option>
-          <option value="suggestion">Suggestion</option>
-          <option value="liked">Something I Liked</option>
-          <option value="general" selected>General Feedback</option>
-        </select>
-      </div>
-      <div>
-        <label class="f-label" for="feedbackDesc">Description <span style="color:#e74c3c">*</span></label>
-        <textarea id="feedbackDesc"
-          placeholder="Describe your feedback, what happened, or what you'd like to see…"></textarea>
+        <div class="f-label" id="feedbackTypeLabel">What is it about?</div>
+        <div class="feedback-types" role="radiogroup" aria-labelledby="feedbackTypeLabel">
+          <button type="button" role="radio" data-feedback-type="bug"><i class="k-icon k-icon--bug" aria-hidden="true"></i>Something's wrong</button>
+          <button type="button" role="radio" data-feedback-type="suggestion"><i class="k-icon k-icon--lightbulb" aria-hidden="true"></i>An idea</button>
+          <button type="button" role="radio" data-feedback-type="liked"><i class="k-icon k-icon--heart" aria-hidden="true"></i>Something I like</button>
+          <button type="button" role="radio" data-feedback-type="general"><i class="k-icon k-icon--message" aria-hidden="true"></i>Something else</button>
+        </div>
+        <input type="hidden" id="feedbackType" value="general" />
       </div>
       <div>
-        <label class="f-label" for="feedbackContact">Contact email (optional)</label>
-        <input type="email" id="feedbackContact" placeholder="your@email.com" />
+        <label class="f-label" for="feedbackDesc">Tell us more</label>
+        <textarea id="feedbackDesc" placeholder="What happened, or what you'd like to see…"></textarea>
       </div>
-      <div>
-        <label class="f-label" for="feedbackCaseRef">Case reference (if we gave you one)</label>
-        <input type="text" id="feedbackCaseRef" placeholder="K-1042" maxlength="20" autocomplete="off" spellcheck="false" />
+      <div class="feedback-group">
+        <div class="k-row">
+          <label class="k-row-label" for="feedbackIncludeLogs">Include recent logs
+            <span class="k-row-hint">The analysis logs from your last 3 sessions. They help track down bugs.</span></label>
+          <input type="checkbox" class="k-switch" id="feedbackIncludeLogs" />
+        </div>
+        <div class="k-row">
+          <label class="k-row-label" for="feedbackIncludeScreenshot">Attach a screenshot
+            <span class="k-row-hint">Choose an image file, up to 10 MB.</span></label>
+          <input type="checkbox" class="k-switch" id="feedbackIncludeScreenshot" />
+          <input type="file" id="feedbackScreenshotFile" accept="image/*" class="hidden" />
+        </div>
+        <img id="feedbackSsPreview" class="feedback-ss-preview" alt="Screenshot preview" style="display:none" />
+        <div class="k-row">
+          <label class="k-row-label" for="feedbackSendAsUser"><span id="feedbackSendAsUserLabel">Send as my account</span>
+            <span class="k-row-hint feedback-signin-hint" id="feedbackSignInHint"></span></label>
+          <input type="checkbox" class="k-switch" id="feedbackSendAsUser" />
+        </div>
       </div>
-      <div style="display:flex; gap:14px; align-items:center; flex-wrap:wrap">
-        <label class="inline" style="font-size:13px">
-          <input type="checkbox" id="feedbackIncludeLogs" />
-          <span class="muted">Include recent analysis logs (last 3 runtime sessions)</span>
-        </label>
-        <label class="inline" style="font-size:13px">
-          <input type="checkbox" id="feedbackIncludeScreenshot" />
-          <span class="muted">Attach screenshot</span>
-        </label>
-        <input type="file" id="feedbackScreenshotFile" accept="image/*" style="display:none" />
-      </div>
-      <div>
-        <label class="inline" style="font-size:13px">
-          <input type="checkbox" id="feedbackSendAsUser" />
-          <span class="muted" id="feedbackSendAsUserLabel">Send as my account</span>
-        </label>
-        <div class="feedback-signin-hint" id="feedbackSignInHint"></div>
-      </div>
-      <img id="feedbackSsPreview" class="feedback-ss-preview" alt="screenshot preview" style="display:none" />
-      <div id="feedbackStatus" style="font-size:13px; color:var(--muted); min-height:18px"></div>
-      <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:4px">
-        <button id="feedbackCancel" class="k-btn--quiet">Cancel</button>
-        <button id="feedbackSend" class="primary">Send anonymously</button>
+      <div class="feedback-pair">
+        <div>
+          <label class="f-label" for="feedbackContact">Email for a reply (optional)</label>
+          <input type="email" id="feedbackContact" placeholder="you@example.com" />
+        </div>
+        <div>
+          <label class="f-label" for="feedbackCaseRef">Case reference, if any</label>
+          <input type="text" id="feedbackCaseRef" placeholder="K-1042" maxlength="20" autocomplete="off" spellcheck="false" />
+        </div>
       </div>
     </div>
+    <div class="kdlg-footer"><div id="feedbackStatus" class="feedback-status" role="status"></div>
+      <button id="feedbackCancel" type="button" class="k-btn--quiet">Cancel</button><button id="feedbackSend" type="button" class="primary">Send anonymously</button></div>
   </dialog>
 
   <!-- Analytics Consent dialog (shown once after first successful analysis) -->

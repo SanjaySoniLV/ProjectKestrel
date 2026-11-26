@@ -1,86 +1,89 @@
-/* ── Feedback Dialog ───────────────────────────────────────────── */
+/* ── Feedback dialog ───────────────────────────────────────────── */
 .feedback-dlg {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-4);
   padding: 20px;
-  width: 100%;
-  box-sizing: border-box;
-}
-
-.feedback-dlg h3 {
-  margin: 0;
-  font-size: var(--fs-lg);
 }
 
 .feedback-dlg .f-label {
+  display: block;
+  margin-bottom: 6px;
   font-size: var(--fs-sm);
   color: var(--muted);
-  margin-bottom: 3px;
-  display: block;
 }
 
-.feedback-dlg textarea {
-  width: 100%;
-  min-height: 100px;
-  resize: vertical;
-  background: #0a0d12;
-  border: 1px solid var(--chip);
+/* What the feedback is about: four tiles, one selected. */
+.feedback-types {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+.feedback-types > button {
+  height: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 6px;
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
+  background: var(--input-bg);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  line-height: 1.25;
+}
+.feedback-types > button .k-icon { font-size: var(--fs-xl); color: var(--muted); }
+.feedback-types > button:hover { background: var(--chip); color: var(--text); }
+.feedback-types > button.on {
+  border-color: var(--primary-border);
+  background: var(--hover);
   color: var(--text);
-  padding: 8px 10px;
-  font-size: var(--fs-md);
-  font-family: inherit;
-  box-sizing: border-box;
 }
+.feedback-types > button.on .k-icon { color: var(--brand); }
 
-.feedback-dlg textarea:focus {
-  outline: none;
-  border-color: var(--brand);
-}
-
+.feedback-dlg textarea,
 .feedback-dlg input[type="email"],
 .feedback-dlg input[type="text"] {
   width: 100%;
-  background: #0a0d12;
-  border: 1px solid var(--chip);
-  border-radius: var(--radius-md);
-  color: var(--text);
-  padding: 7px 10px;
-  font-size: var(--fs-md);
   box-sizing: border-box;
-}
-
-.feedback-dlg input[type="email"]:focus,
-.feedback-dlg input[type="text"]:focus {
-  outline: none;
-  border-color: var(--brand);
-}
-
-.feedback-dlg select {
-  width: 100%;
-  background: #0a0d12;
-  border: 1px solid var(--chip);
-  border-radius: var(--radius-md);
-  color: var(--text);
   padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--input-bg);
+  color: var(--text);
   font-size: var(--fs-md);
-  box-sizing: border-box;
+  font-family: inherit;
 }
+.feedback-dlg textarea { min-height: 110px; resize: vertical; padding: 8px 10px; }
+.feedback-dlg textarea:focus,
+.feedback-dlg input:focus { outline: none; border-color: var(--focus); }
 
-.feedback-dlg select:focus {
-  outline: none;
-  border-color: var(--brand);
+.feedback-group .k-row { padding: 8px 0; }
+.feedback-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 12em);
+  gap: var(--space-3);
 }
 
 .feedback-ss-preview {
   max-width: 100%;
   max-height: 120px;
   object-fit: contain;
+  margin: 4px 0;
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  border: 1px solid var(--chip);
-  background: #0a0d12;
-  margin-top: 4px;
+  background: var(--input-bg);
+}
+
+.feedback-signin-hint:empty { display: none; }
+
+.feedback-status {
+  margin-right: auto;
+  align-self: center;
+  font-size: var(--fs-sm);
+  color: var(--muted);
 }
 
 /* ── Analytics Consent Dialog ─────────────────────────────────── */
@@ -123,15 +126,4 @@
   gap: 8px;
   justify-content: flex-end;
   margin-top: 4px;
-}
-
-/* Line under "Send as …" nudging sign-in so we can reply and keep logs with the report. */
-.feedback-signin-hint {
-  font-size: var(--fs-sm);
-  color: var(--muted);
-  margin-top: 4px;
-}
-
-.feedback-signin-hint:empty {
-  display: none;
 }
