@@ -8,7 +8,6 @@
 
 import base64
 
-import pytest
 
 import dist_channel
 import settings_utils

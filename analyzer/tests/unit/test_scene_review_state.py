@@ -15,7 +15,6 @@ the reviewed/unreviewed predicate — was verified by evaluating the real
 from __future__ import annotations
 
 import os
-import re
 import sys
 import unittest
 from pathlib import Path

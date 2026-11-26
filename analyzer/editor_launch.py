@@ -11,7 +11,7 @@ import re
 import subprocess
 import sys
 
-from settings_utils import load_persisted_settings, debug, info, warn, log
+from settings_utils import load_persisted_settings, debug, info, warn
 
 # macOS App Sandbox helper (import-safe no-op everywhere else). Under the
 # sandbox we cannot Popen /usr/bin/open or third-party editor binaries; opening
@@ -204,7 +204,7 @@ def launch(path: str, editor: str):
                 warn(f'Custom editor launch failed ({custom_exe}): {e}, falling back to system default')
         else:
             if raw_custom:
-                warn(f'[security] customEditorPath failed validation; falling back to system default.')
+                warn('[security] customEditorPath failed validation; falling back to system default.')
         editor = 'system'
 
     # Editor name -> (Windows exe candidates, macOS app name, Linux commands)

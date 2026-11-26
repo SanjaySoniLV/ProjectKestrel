@@ -105,6 +105,10 @@ python analyzer/cli.py --validate --validate-images test_imgs --validate-output 
 
 # Build the Windows installer (PyInstaller → Inno Setup)
 packaging\build_installer_headless.bat
+
+# Lint (CI runs both on every PR; both block a merge)
+ruff check analyzer tools            # Python: pyflakes + bugbear rules, config in pyproject.toml
+npm ci && npm run lint:js            # JS: ESLint, warnings capped in package.json; lower the cap as counts drop
 ```
 
 - The full lane (`pytest analyzer/tests -m "not ui"`) needs the Git LFS model files downloaded, not LFS

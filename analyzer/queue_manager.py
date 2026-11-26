@@ -14,7 +14,7 @@ import threading
 import time as _time_mod
 from datetime import datetime, timezone
 
-from settings_utils import load_persisted_settings, save_persisted_settings, debug, info, warn, error, log
+from settings_utils import load_persisted_settings, save_persisted_settings, debug, info, warn, error
 
 # Telemetry — failsafe import (never blocks startup)
 try:

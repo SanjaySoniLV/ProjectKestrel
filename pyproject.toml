@@ -1,0 +1,18 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+extend-exclude = ["analyzer/models", "experiments"]
+
+[tool.ruff.lint]
+# Pyflakes (unused/undefined names), syntax errors, bugbear (likely bugs).
+select = ["F", "E9", "B"]
+ignore = ["B905"]  # zip() strict= is noise for this codebase
+
+[tool.ruff.lint.per-file-ignores]
+# process_folder's del-at-bottom pattern and closures in its loop defeat static
+# analysis. Remove these ignores when that function is split into stages.
+"analyzer/kestrel_analyzer/pipeline.py" = ["F821", "B023"]
+"analyzer/kestrel_analyzer/regroup.py" = ["B023"]
+"analyzer/tests/**" = ["B017"]
+# These tests check how warnings are reported, so they call warnings.warn without stacklevel on purpose.
+"analyzer/tests/unit/test_utc_showwarning.py" = ["B028"]

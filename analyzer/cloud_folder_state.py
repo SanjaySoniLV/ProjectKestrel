@@ -35,7 +35,6 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Any
 
 CLOUD_FOLDER_STATE_FILENAME = "kestrel_cloudcompute.json"
 SCHEMA_VERSION = 1

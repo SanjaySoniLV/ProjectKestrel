@@ -251,8 +251,7 @@ def _fuse_matmul_add(m) -> int:
     ORT 1.23.2 and 1.31). Doing it here with unique names sidesteps the bug, and Gemm with a
     constant B/C is what the CoreML EP wants anyway.
     """
-    import onnx
-    from onnx import TensorProto as TP, helper, numpy_helper
+    from onnx import helper, numpy_helper
     g = m.graph
     light = _light_infer(m)
     shp = {}

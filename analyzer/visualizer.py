@@ -40,7 +40,7 @@ from typing import Optional, TextIO
 from settings_utils import (
     load_persisted_settings,
     save_persisted_settings,
-    debug, info, warn, error, log,
+    info, warn, error, log,
 )
 from queue_manager import _queue_manager
 from api_bridge import Api

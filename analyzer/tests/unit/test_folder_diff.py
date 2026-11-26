@@ -5,7 +5,6 @@ never present as "every photo was deleted", because that is the state in which
 the repair UI would offer to destroy a perfectly good database.
 """
 
-import os
 import sys
 from pathlib import Path
 
@@ -15,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import folder_diff
 from folder_diff import compute_folder_diff
-from folder_inspector import scan_folder_images, SIZE_UNKNOWN
+from folder_inspector import scan_folder_images
 
 pytestmark = pytest.mark.unit
 

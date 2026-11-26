@@ -136,7 +136,7 @@ _DEFAULT_FIELDS = {
 }
 
 
-from settings_utils import debug, info, warn, error
+from settings_utils import info, warn, error
 
 # ``os.replace`` is not collision-free on Windows: while any handle is open on
 # the destination, MoveFileEx fails with ERROR_ACCESS_DENIED / SHARING_VIOLATION,
@@ -517,7 +517,7 @@ def _load_pyexiv2():
         import pyexiv2  # type: ignore
     except Exception as e:  # pragma: no cover - import environment specific
         _pyexiv2_err = e
-        raise RuntimeError(f'pyexiv2 unavailable: {e}')
+        raise RuntimeError(f'pyexiv2 unavailable: {e}') from e
     _pyexiv2_mod = pyexiv2
     # Register the Kestrel XMP namespace once so ``kestrel:*`` properties
     # serialise with our prefix. Safe to attempt once; ignore if the runtime
