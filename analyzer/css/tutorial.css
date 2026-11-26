@@ -148,7 +148,8 @@
 #tutorialCard.tut-card-workflow {
   width: 560px;
 }
-#tutorialCard.tut-card-editor {
+#tutorialCard.tut-card-editor,
+#tutorialCard.tut-card-region {
   width: 480px;
 }
 
@@ -324,6 +325,34 @@
   font-size: 11px;
   color: var(--muted);
   text-align: center;
+}
+
+/* Region picker inside tutorial card (same setting as Settings → Species & Region) */
+.tut-region-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 10px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  background: #10141c;
+  border: 1px solid #2a3040;
+  border-radius: 8px;
+}
+.tut-region-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  min-width: 0;
+}
+.tut-region-opt span { overflow-wrap: anywhere; }
+.tut-region-empty {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: var(--muted);
 }
 
 /* Loading indicator inside a tutorial card (shown while samples load) */

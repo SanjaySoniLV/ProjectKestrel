@@ -72,6 +72,12 @@
         target: null,
         customBody: 'editorPicker',
       },
+      {
+        title: 'Where do you usually photograph birds?',
+        body: '',
+        target: null,
+        customBody: 'regionPicker',
+      },
       Object.assign({}, _tutTryYourOwnStepBase, {
         inlineFooter: 'advancedLink',
       }),
@@ -415,6 +421,94 @@
       } catch (e) { console.warn('[tutorial] apply editor failed', e); }
     }
 
+    // Region picker: the same ``bird_regions`` setting as Settings → Species &
+    // Region. Species identification only chooses from birds in these regions,
+    // so photographers outside the default (North America) should set it.
+    function _renderTutRegionPicker(bodyEl, idx) {
+      bodyEl.innerHTML = '';
+      var intro = document.createElement('div');
+      intro.className = 'tut-editor-intro';
+      intro.innerHTML = 'Kestrel names each bird from the species found in your chosen regions. Pick where you usually photograph birds so the names are right. You can still choose a different region each time you analyze a folder.';
+      bodyEl.appendChild(intro);
+
+      var grid = document.createElement('div');
+      grid.className = 'tut-region-grid';
+      grid.setAttribute('role', 'group');
+      grid.setAttribute('aria-label', 'Bird regions');
+      grid.innerHTML = '<span class="tut-region-empty">Loading regions…</span>';
+      bodyEl.appendChild(grid);
+
+      var foot = document.createElement('div');
+      foot.className = 'tut-editor-foot';
+      foot.innerHTML = 'You can change this later in <b>Settings → Species &amp; Region</b>.';
+      bodyEl.appendChild(foot);
+
+      Promise.resolve()
+        .then(function() { return (typeof loadSpeciesFamilyMap === 'function') ? loadSpeciesFamilyMap() : null; })
+        .catch(function() {})
+        .then(function() {
+          if (_tutStep !== idx || !grid.isConnected) return;
+          var meta = (typeof _birdCatalogMeta !== 'undefined' && _birdCatalogMeta) || null;
+          // "Worldwide" only covers cosmopolitan species, which every region
+          // already includes, so it is not offered as a home region here.
+          var regions = (meta && Array.isArray(meta.regions) ? meta.regions : [])
+            .filter(function(r) { return r && r.code && r.code !== 'Worldwide'; });
+          if (!regions.length) {
+            grid.innerHTML = '<span class="tut-region-empty">Region list unavailable — Kestrel will use North America for now.</span>';
+            return;
+          }
+          var current = (typeof _getCurrentBirdRegions === 'function') ? _getCurrentBirdRegions() : ['NA'];
+          var selected = new Set(current);
+          grid.innerHTML = '';
+          regions.forEach(function(r) {
+            var lab = document.createElement('label');
+            lab.className = 'tut-region-opt';
+            var cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.className = 'tut-region-cb';
+            cb.setAttribute('data-region-code', r.code);
+            cb.checked = selected.has(r.code);
+            var span = document.createElement('span');
+            span.textContent = r.label || r.code;
+            lab.appendChild(cb);
+            lab.appendChild(span);
+            grid.appendChild(lab);
+          });
+        });
+    }
+
+    async function _applyChosenRegions(bodyEl) {
+      try {
+        var boxes = bodyEl ? bodyEl.querySelectorAll('input.tut-region-cb') : [];
+        if (!boxes.length) return;  // list never loaded: leave the setting alone
+        var shown = new Set();
+        var picked = [];
+        boxes.forEach(function(cb) {
+          var code = cb.getAttribute('data-region-code');
+          if (!code) return;
+          shown.add(code);
+          if (cb.checked) picked.push(code);
+        });
+        // Nothing ticked falls back to North America, as Settings does.
+        if (!picked.length) picked.push('NA');
+        var s = loadSettings();
+        var prev = (typeof _getCurrentBirdRegions === 'function') ? _getCurrentBirdRegions() : (s.bird_regions || ['NA']);
+        // Keep any stored codes this step does not show (e.g. Worldwide).
+        prev.forEach(function(code) { if (!shown.has(code) && picked.indexOf(code) < 0) picked.push(code); });
+        var finalRegions = picked;
+        var changed = prev.slice().sort().join(',') !== finalRegions.slice().sort().join(',');
+        s.bird_regions = finalRegions;
+        saveSettings(s);
+        if (hasPywebviewApi && window.pywebview?.api?.save_settings_data) {
+          try { await window.pywebview.api.save_settings_data(s); } catch (_) {}
+        }
+        // Same repaint as Settings: species pills and the combobox follow the region.
+        if (changed && typeof rows !== 'undefined' && rows.length > 0 && typeof renderScenes === 'function') {
+          try { await renderScenes(); } catch (_) {}
+        }
+      } catch (e) { console.warn('[tutorial] apply regions failed', e); }
+    }
+
     function _showMainTutStep(idx) {
       _tutCleanup();
       var step = _tutSteps[idx];
@@ -442,7 +536,7 @@
       var nextBtn = _tutEl('#tutorialNext');
       var bodyEl  = _tutEl('#tutorialBody');
 
-      card.classList.remove('tut-card-workflow', 'tut-card-editor');
+      card.classList.remove('tut-card-workflow', 'tut-card-editor', 'tut-card-region');
 
       if (step.setupAction === 'expandShortcuts') {
         var legend = document.getElementById('sceneShortcutLegend');
@@ -479,6 +573,9 @@
             setTimeout(function() { _tutAdvance(); }, 350);
           }
         });
+      } else if (step.customBody === 'regionPicker') {
+        card.classList.add('tut-card-region');
+        _renderTutRegionPicker(bodyEl, idx);
       } else {
         bodyEl.innerHTML = step.body || '';
       }
@@ -631,6 +728,19 @@
       var cur = _tutSteps[_tutStep];
       if (cur && cur.loadSamplesOnNext && !_tutSampleLoaded) {
         _handleLoadSamplesOnNext();
+        return;
+      }
+      if (cur && cur.customBody === 'regionPicker') {
+        var fromStep = _tutStep;
+        var nb = _tutEl('#tutorialNext');
+        if (nb) nb.disabled = true;
+        _applyChosenRegions(_tutEl('#tutorialBody')).then(function() {
+          if (nb) nb.disabled = false;
+          if (_tutStep !== fromStep || !_tutBranch) return;
+          _tutStep++;
+          if (_tutStep >= _tutSteps.length) _closeMainTutorial();
+          else _showMainTutStep(_tutStep);
+        });
         return;
       }
       _tutStep++;
