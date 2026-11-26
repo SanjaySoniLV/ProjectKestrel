@@ -397,15 +397,15 @@
       return `Species: ${escapeHtml(labels.species)} (${fmt3(labels.speciesConf)})`;
     }
 
-    async function copyRowImageToClipboard(row, relPathOverride, copyLabel = 'image') {
+    async function copyRowImageToClipboard(row, relPathOverride, copyKind = 'image') {
       const relPath = relPathOverride || row?.export_path || getRowFallbackCropPath(row);
       if (!relPath) {
-        showToast('No image available to copy', 2500);
+        showToast(t('sceneDlg.copy.noImage'), 2500);
         return;
       }
       if (!navigator.clipboard || typeof navigator.clipboard.write !== 'function' || typeof window.ClipboardItem === 'undefined') {
-        setStatus('Clipboard image copy is not supported on this system');
-        showToast('Clipboard image copy is not supported on this system', 3500);
+        setStatus(t('sceneDlg.copy.unsupported'));
+        showToast(t('sceneDlg.copy.unsupported'), 3500);
         return;
       }
       try {
@@ -421,13 +421,14 @@
           new window.ClipboardItem({ 'image/png': pngBlobPromise })
         ]);
 
-        const label = row.filename ? `Copied ${copyLabel} (${row.filename})` : `Copied ${copyLabel}`;
-        setStatus('Image copied to clipboard');
-        showToast(`${label} to clipboard`, 2200);
+        setStatus(t('sceneDlg.copy.done'));
+        showToast(row.filename
+          ? t('sceneDlg.copy.doneNamed', { kind: copyKind, file: row.filename })
+          : t('sceneDlg.copy.doneKind', { kind: copyKind }), 2200);
       } catch (e) {
         console.error('copyRowImageToClipboard failed:', e);
-        setStatus('Failed to copy image to clipboard');
-        showToast('Failed to copy image to clipboard', 3500);
+        setStatus(t('sceneDlg.copy.failed'));
+        showToast(t('sceneDlg.copy.failed'), 3500);
       }
     }
 
@@ -612,7 +613,7 @@
         } else {
           const muted = document.createElement('span');
           muted.className = 'muted';
-          muted.textContent = 'No export preview';
+          muted.textContent = t('sceneDlg.noExportPreview');
           exportBox.appendChild(muted);
           _setOverexposedReadout(NaN);
         }
@@ -634,7 +635,7 @@
         } else {
           const muted = document.createElement('span');
           muted.className = 'muted';
-          muted.textContent = 'No crop preview';
+          muted.textContent = t('sceneDlg.noCropPreview');
           cropBox.appendChild(muted);
         }
       }
@@ -654,7 +655,7 @@
         copyExportBtn.onclick = async (ev) => {
           ev.stopPropagation();
           ev.preventDefault();
-          await copyRowImageToClipboard(r, r.export_path, 'full image');
+          await copyRowImageToClipboard(r, r.export_path, 'full');
         };
       }
 
@@ -672,7 +673,7 @@
         copyCropBtn.onclick = async (ev) => {
           ev.stopPropagation();
           ev.preventDefault();
-          await copyRowImageToClipboard(r, activeCropPath, 'bird crop');
+          await copyRowImageToClipboard(r, activeCropPath, 'crop');
         };
       }
 
@@ -1510,8 +1511,8 @@
       const reviewSlot = el('#sceneReviewSlot');
       if (reviewSlot) {
         reviewSlot.innerHTML = approved
-          ? `<span class="approval-note">✓ ${t('sceneDlg.reviewed')}</span>`
-          : `<button class="mark-reviewed-btn" id="markReviewedBtn" title="${t('sceneDlg.markReviewedTitle')}">✓ ${t('sceneDlg.markReviewed')}</button>`;
+          ? `<span class="approval-note">✓ ${tHtml('sceneDlg.reviewed')}</span>`
+          : `<button class="mark-reviewed-btn" id="markReviewedBtn" title="${tHtml('sceneDlg.markReviewedTitle')}">✓ ${tHtml('sceneDlg.markReviewed')}</button>`;
       }
 
       // Wire remove buttons
@@ -1555,7 +1556,7 @@
           renderTopbarTags(updatedScene);
           renderScenes();
           if (cascaded > 0) {
-            showToast(`Removed family "${removedFamily}" and ${cascaded} associated ${cascaded === 1 ? 'species' : 'species tags'}`, 2200);
+            showToast(t('sceneDlg.tags.removedFamilyCascade', { family: (typeof trSpecies === 'function' ? trSpecies(removedFamily) : removedFamily), count: cascaded }), 2200);
           }
         };
       });
@@ -1586,14 +1587,14 @@
             const result = _applySpeciesAutoLink(_sceneEditDraft, suggestValue);
             if (result.speciesAdded || result.familyAdded) {
               toastMsg = result.familyAdded
-                ? `Added suggested species "${result.speciesValue}" (family: ${result.familyAdded})`
-                : `Added suggested species "${result.speciesValue}"`;
+                ? t('sceneDlg.tags.addedSuggestedSpeciesFamily', { species: (typeof trSpecies === 'function' ? trSpecies(result.speciesValue) : result.speciesValue), family: (typeof trSpecies === 'function' ? trSpecies(result.familyAdded) : result.familyAdded) })
+                : t('sceneDlg.tags.addedSuggestedSpecies', { species: (typeof trSpecies === 'function' ? trSpecies(result.speciesValue) : result.speciesValue) });
             }
           } else {
             const before = _sceneEditDraft.families.length;
             _sceneEditDraft.families = Array.from(new Set([..._sceneEditDraft.families, suggestValue])).sort();
             if (_sceneEditDraft.families.length !== before) {
-              toastMsg = `Added suggested family "${suggestValue}"`;
+              toastMsg = t('sceneDlg.tags.addedSuggestedFamily', { family: (typeof trSpecies === 'function' ? trSpecies(suggestValue) : suggestValue) });
             }
           }
 
@@ -1704,14 +1705,14 @@
               _sceneEditDraft = null;
               if (result.matched) {
                 if (result.familyAdded) {
-                  showToast(`Added species "${result.speciesValue}" (family: ${result.familyAdded})`, 2200);
+                  showToast(t('sceneDlg.tags.addedSpeciesFamily', { species: (typeof trSpecies === 'function' ? trSpecies(result.speciesValue) : result.speciesValue), family: (typeof trSpecies === 'function' ? trSpecies(result.familyAdded) : result.familyAdded) }), 2200);
                 } else {
-                  showToast(`Added species "${result.speciesValue}"`, 2000);
+                  showToast(t('sceneDlg.tags.addedSpecies', { species: (typeof trSpecies === 'function' ? trSpecies(result.speciesValue) : result.speciesValue) }), 2000);
                 }
               } else {
                 // Free-form species (not in taxonomy map). Per design, advance
                 // focus to the family input so the user can add it next.
-                showToast(`Added "${result.speciesValue}" — type family next`, 2200);
+                showToast(t('sceneDlg.tags.addedTypeFamily', { species: (typeof trSpecies === 'function' ? trSpecies(result.speciesValue) : result.speciesValue) }), 2200);
                 reopenFamilyInput = true;
               }
             } else {
@@ -1719,7 +1720,7 @@
               _finalizeSceneReview(scene.id);
               _sceneEditMode = false;
               _sceneEditDraft = null;
-              showToast(`Added family "${val}"`, 2000);
+              showToast(t('sceneDlg.tags.addedFamily', { family: (typeof trSpecies === 'function' ? trSpecies(val) : val) }), 2000);
             }
           }
           if (reopenFamilyInput) {
@@ -1981,8 +1982,8 @@
         const n = rejectUndecidedRows(_currentScene.images);
         _refreshCurrentFilmstripCard();
         showToast(n
-          ? `Rejected ${n} undecided photo${n === 1 ? '' : 's'}. Press Z (or 7) on a photo to accept it.`
-          : 'Every photo in this scene already has a decision.', 4000);
+          ? t('sceneDlg.rejectedUndecided', { count: n })
+          : t('sceneDlg.allDecided'), 4000);
       };
 
       // ── Split Scene ──
@@ -2048,7 +2049,7 @@
       while (newIdx >= 0 && newIdx < scenes.length && !inFilter(scenes[newIdx])) newIdx += direction;
       if (newIdx < 0 || newIdx >= scenes.length) {
         if (reviewFilter === 'unreviewed' && typeof showToast === 'function') {
-          showToast(direction > 0 ? 'No more unreviewed scenes after this one' : 'No unreviewed scenes before this one', 1800);
+          showToast(direction > 0 ? t('sceneDlg.noUnreviewedAfter') : t('sceneDlg.noUnreviewedBefore'), 1800);
         }
         return;
       }
@@ -2255,7 +2256,7 @@
               } else {
                 selectFilmstripImage(currentImageIndex, _currentScene, true, true);
               }
-              showToast(`Primary crop set to ${stateBefore.activeIndex + 1}/${stateBefore.crops.length}`, 1800);
+              showToast(t('sceneDlg.primaryCropSet', { index: stateBefore.activeIndex + 1, total: stateBefore.crops.length }), 1800);
             }
           }
           break;
@@ -2447,7 +2448,7 @@
         if (updatedScene) {
           renderSceneMetaChips(updatedScene, _sceneEditMode);
         }
-        showToast(`Removed "${speciesName}" from reviewed scene tags`, 2000);
+        showToast(t('sceneDlg.tags.removedSpeciesReviewed', { species: (typeof trSpecies === 'function' ? trSpecies(speciesName) : speciesName) }), 2000);
       }
     }
 
@@ -2461,7 +2462,7 @@
         if (updatedScene) {
           renderSceneMetaChips(updatedScene, _sceneEditMode);
         }
-        showToast(`Removed family "${familyName}" from reviewed scene tags`, 2000);
+        showToast(t('sceneDlg.tags.removedFamilyReviewed', { family: (typeof trSpecies === 'function' ? trSpecies(familyName) : familyName) }), 2000);
       }
     }
 
@@ -2484,7 +2485,7 @@
         const updatedScene = reloadScene(scene.id) || scene;
         renderTopbarTags(updatedScene);
         renderScenes();
-        showToast(`Added species "${name}" to reviewed scene tags`, 2000);
+        showToast(t('sceneDlg.tags.addedSpeciesReviewed', { species: (typeof trSpecies === 'function' ? trSpecies(name) : name) }), 2000);
       }
       
       if (!wasEdit) {
@@ -2513,7 +2514,7 @@
         const updatedScene = reloadScene(scene.id) || scene;
         renderTopbarTags(updatedScene);
         renderScenes();
-        showToast(`Added family "${name}" to reviewed scene tags`, 2000);
+        showToast(t('sceneDlg.tags.addedFamilyReviewed', { family: (typeof trSpecies === 'function' ? trSpecies(name) : name) }), 2000);
       }
       
       if (!wasEdit) {
@@ -2544,7 +2545,7 @@
       const btn = el('#splitSceneBtn');
       if (!btn) return;
       if (!_splitMode) {
-        btn.textContent = 'Split Scene…';
+        btn.textContent = t('sceneDlg.split.button');
         return;
       }
       btn.textContent = _splitSelected.size > 0
@@ -2565,7 +2566,7 @@
       _splitSelected.clear();
       _splitLastSelectedIndex = -1;
       _updateSplitSceneButtonLabel();
-      showToast('Click images to select them for the new scene. Use Shift+Click for ranges, or click "Cancel Scene Split" to exit.', 4500);
+      showToast(t('sceneDlg.split.help'), 4500);
       // Re-render images with checkboxes
       renderSceneImagesWithSplit(scene);
     }
@@ -2720,11 +2721,11 @@
 
     function applySplitScene(scene) {
       if (_splitSelected.size === 0) {
-        showToast('Select at least one image to split into a new scene', 3000);
+        showToast(t('sceneDlg.split.selectOne'), 3000);
         return;
       }
       if (_splitSelected.size === scene.images.length) {
-        showToast('Cannot move all images — at least one must remain in the original scene', 3000);
+        showToast(t('sceneDlg.split.cannotMoveAll'), 3000);
         return;
       }
       // Find next available scene_count across the same folder slot
@@ -2790,7 +2791,7 @@
           selectFilmstripImage(0, updatedScene);
           el('#sceneName').value = updatedScene.sceneName || '';
         }
-        showToast(`Split ${moved} image(s) into new scene #${newSceneCount}`, 3000);
+        showToast(t('sceneDlg.split.done', { count: moved, scene: newSceneCount }), 3000);
       }
     }
 
@@ -2834,7 +2835,7 @@
       _setDirtyUi(false);
       blobUrlCache.clear();
       renderScenes();
-      setStatus('Reverted to last saved state.');
+      setStatus(t('sceneDlg.save.reverted'));
     }
 
     function csvEscape(val) {
@@ -2883,7 +2884,7 @@
           rootsToSave = [];
         }
         if (!rootsToSave.length) {
-          setStatus(dirty ? 'No folder changes to save.' : 'No unsaved changes.');
+          setStatus(dirty ? t('sceneDlg.save.noFolderChanges') : t('sceneDlg.save.noChanges'));
           return;
         }
 
@@ -2918,17 +2919,17 @@
           _dirtyRoots = failedRoots;
           _dirtyRootsUnknown = false;
           _setDirtyUi(true);
-          setStatus(`Saved ${saved} folder(s), ${failed} failed`);
+          setStatus(t('sceneDlg.save.partial', { saved, failed }));
         } else {
           _clearDirtyRoots();
           _setDirtyUi(false);
           takeSnapshot();
-          setStatus(`Saved changes to ${saved} folder(s)`);
+          setStatus(t('sceneDlg.save.done', { count: saved }));
         }
         return;
       }
 
-      setStatus('Save unavailable: Desktop API not detected.');
+      setStatus(t('sceneDlg.save.unavailable'));
     }
 
     // Warn user on unsaved changes when attempting to close/refresh

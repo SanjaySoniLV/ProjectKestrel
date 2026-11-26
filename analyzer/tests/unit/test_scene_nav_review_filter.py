@@ -46,7 +46,7 @@ def test_arrow_left_wrap_lets_navigate_pick_the_last_image():
 _HARNESS = r"""
 const vm = require('vm');
 const [src, payload] = process.argv.slice(1);
-const { filter, scenes, current, direction, startIndex, splitMode } = JSON.parse(payload);
+const { filter, scenes, current, direction, startIndex, splitMode, en } = JSON.parse(payload);
 const opened = [], toasts = [];
 const ctx = vm.createContext({
   console, JSON, Array, String, Math,
@@ -61,6 +61,7 @@ const ctx = vm.createContext({
   getSetting: (_k, d) => d,
   isManuallyReviewedScene: (s) => !!s.reviewed,
   showToast: (m) => toasts.push(m),
+  t: (k) => en[k] || k,
   _flashSplitSceneButton: () => {},
   _sceneKeyHandler: () => {},
   sceneDlg: { close: () => {} },
@@ -71,6 +72,9 @@ ctx.__args = [direction, startIndex];
 vm.runInContext('navigateToScene(...__args)', ctx);
 process.stdout.write(JSON.stringify({ opened, toasts }));
 """
+
+
+_EN = json.loads((Path(__file__).resolve().parents[2] / 'i18n' / 'en.json').read_text(encoding='utf-8'))
 
 
 def _scenes():
@@ -87,6 +91,7 @@ def _nav(filter, current, direction, start=0, split=False):
     payload = json.dumps({
         "filter": filter, "scenes": _scenes(), "current": current,
         "direction": direction, "startIndex": start, "splitMode": split,
+        "en": _EN,
     })
     out = subprocess.run(
         [NODE, "-e", _HARNESS, NAV_SRC, payload],

@@ -262,18 +262,18 @@
     function _openAnalyzeConfirmModal(destructive, onProceed) {
       const dlg = document.getElementById('analyzeConfirmDlg');
       const list = document.getElementById('analyzeConfirmFolderList');
-      const plural = document.getElementById('analyzeConfirmFolderPlural');
+      const bodyEl = document.getElementById('analyzeConfirmBody');
       const cancelBtn = document.getElementById('analyzeConfirmCancel');
       const proceedBtn = document.getElementById('analyzeConfirmProceed');
       if (!dlg || !list || !proceedBtn || !cancelBtn) {
         // Modal missing — fall back to a native confirm so the user isn't
         // silently bypassed past the destructive gate.
         const names = destructive.map(d => `  • ${d.name} (${d.reason})`).join('\n');
-        if (!confirm(`The following folder(s) will lose all user data:\n\n${names}\n\nContinue?`)) return;
+        if (!confirm(t('analyzeConfirm.fallbackPrompt', { count: destructive.length, names }))) return;
         onProceed();
         return;
       }
-      if (plural) plural.textContent = destructive.length === 1 ? '' : 's';
+      if (bodyEl) tRich(bodyEl, 'analyzeConfirm.body', { count: destructive.length });
       list.innerHTML = '';
       for (const d of destructive) {
         const li = document.createElement('li');

@@ -427,7 +427,7 @@
         && Number(s.captureTimeMs) > 0
       );
       if (!firstIncluded) {
-        if (timeEl) timeEl.textContent = 'an unknown time';
+        if (timeEl) timeEl.textContent = t('perch.check.captureTime.unknown');
         if (thumbEl) { thumbEl.removeAttribute('src'); thumbEl.classList.add('no-image'); }
         return;
       }
@@ -445,10 +445,10 @@
       const countEl = document.getElementById('perchReviewCount');
       if (!countEl) return;
       const pre = _perchDlgState.preflight;
-      if (!pre || !pre.scenes) { countEl.textContent = '— of — scenes reviewed.'; return; }
+      if (!pre || !pre.scenes) { countEl.textContent = t('perch.check.reviewTags.countUnknown'); return; }
       const included = pre.scenes.filter(s => !_perchDlgState.deselected.has(String(s.sceneId)));
       const reviewed = included.filter(s => !!s.reviewed).length;
-      countEl.textContent = `${reviewed.toLocaleString()} of ${included.length.toLocaleString()} scene${included.length === 1 ? '' : 's'} reviewed.`;
+      countEl.textContent = t('perch.check.reviewTags.count', { reviewed: reviewed.toLocaleString(), total: included.length });
     }
 
     async function _perchLoadAccountAndUsage() {

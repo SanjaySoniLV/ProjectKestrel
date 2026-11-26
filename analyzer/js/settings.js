@@ -393,7 +393,9 @@
         const options = [];
         for (const l of uiLangs) {
           if (!l || typeof l.code !== 'string') continue;
-          const label = `${escapeHtml(l.name_native || l.code)} — ${escapeHtml(l.code)}`;
+          // Machine-translated, not yet reviewed dictionaries say so in the list.
+          const mt = (l.machine_translated && !l.reviewed) ? ` (${tHtml('settings.uiLanguage.machineTranslated')})` : '';
+          const label = `${escapeHtml(l.name_native || l.code)} — ${escapeHtml(l.code)}${mt}`;
           options.push(`<option value="${escapeHtml(l.code)}">${label}</option>`);
         }
         if (current !== 'en' && !uiLangs.some(l => l && l.code === current)) {
@@ -499,14 +501,11 @@
       const showSciCbEl = document.getElementById('showScientificNames');
       const showScientificNames = showSciCbEl ? !!showSciCbEl.checked : !!existing.show_scientific_names;
       const uiLangSelEl = document.getElementById('settingsUiLanguage');
-      const language = uiLangSelEl && /^[a-z]{2}(-[a-z]{2})?$/.test(uiLangSelEl.value || '')
-        ? uiLangSelEl.value
-        : 'en';
+      const _canonLang = (v) => (typeof canonicalizeLang === 'function' ? canonicalizeLang(v) : null) || 'en';
+      const language = uiLangSelEl ? _canonLang(uiLangSelEl.value || '') : 'en';
       const languageChanged = String(existing.language || 'en') !== language;
       const langSelEl = document.getElementById('settingsLanguage');
-      const birdNameLanguage = langSelEl && /^[a-z]{2}(-[a-z]{2})?$/.test(langSelEl.value || '')
-        ? langSelEl.value
-        : 'en';
+      const birdNameLanguage = langSelEl ? _canonLang(langSelEl.value || '') : 'en';
       const birdNameLanguageChanged = String(existing.bird_name_language || 'en') !== birdNameLanguage;
       const prevRegions = Array.isArray(existing.bird_regions) ? existing.bird_regions.slice().sort().join(',') : '';
       const nextRegions = finalRegions.slice().sort().join(',');

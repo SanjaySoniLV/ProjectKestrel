@@ -704,6 +704,7 @@
       if (searchBox && typeof ResizeObserver === 'function') {
         const ro = new ResizeObserver(() => { _smartSyncExamples(); _smartSyncTokens(); });
         ro.observe(searchBox);
+        const box = el('#smartSearchExamples');
         if (box) ro.observe(box); // its width also changes when the status / clear button toggle
         const field = input.closest('.smart-bar-field');
         if (field) ro.observe(field);

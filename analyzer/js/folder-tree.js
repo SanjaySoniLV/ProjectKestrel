@@ -322,7 +322,7 @@
         return;
       }
 
-      if (nameEl) nameEl.textContent = folderName || folderPath || 'this folder';
+      if (nameEl) nameEl.textContent = folderName || folderPath || t('clearKestrel.thisFolder');
       if (pathEl) pathEl.textContent = folderPath || '';
 
       // Bind one-shot handlers so we don't accumulate listeners across calls.

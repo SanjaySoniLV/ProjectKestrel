@@ -149,7 +149,7 @@
         const fp = btn.dataset.folderPath;
         const queued = busy.has(String(fp).replace(/\\/g, '/'));
         btn.disabled = queued;
-        btn.innerHTML = queued ? `<i>⏳</i> ${t('folderActions.upgradeQueued')}` : `<i>✨</i> ${t('folderActions.upgradeButton')}`;
+        btn.innerHTML = queued ? `<i>⏳</i> ${tHtml('folderActions.upgradeQueued')}` : `<i>✨</i> ${tHtml('folderActions.upgradeButton')}`;
         btn.classList.toggle('hidden', !(queued || btn.dataset.upgradable === '1'));
       }
       syncUpgradeAllButton();
@@ -420,14 +420,13 @@
           const rank = document.createElement('span');
           rank.className = 'smart-search-rank';
           rank.textContent = `#${s.smartRank}`;
-          rank.title = `Smart search rank ${s.smartRank} (score ${Number(s.smartScore).toFixed(3)})`;
+          rank.title = t('grid.smartRankTitle', { rank: s.smartRank, score: Number(s.smartScore).toFixed(3) });
           th.appendChild(rank);
           if (s.smartPercent != null) {
             const pct = document.createElement('span');
             pct.className = 'smart-search-pct';
-            pct.textContent = `${s.smartPercent}% match`;
-            pct.title = 'How far this photo sits above the typical photo in its folder for this search, '
-              + 'scaled to 0-100%. A relative match strength, not a probability.';
+            pct.textContent = t('grid.smartPercent', { percent: s.smartPercent });
+            pct.title = t('grid.smartPercentTitle');
             th.appendChild(pct);
           }
           const nImgs = (s.images || []).length;
@@ -435,7 +434,7 @@
             const m = document.createElement('span');
             m.className = 'smart-search-matches';
             m.textContent = `${s.smartMatchCount}/${nImgs}`;
-            m.title = `${s.smartMatchCount} of ${nImgs} photos in this scene match; the card shows the best match`;
+            m.title = t('grid.smartMatchesTitle', { matches: s.smartMatchCount, total: nImgs });
             th.appendChild(m);
           }
         }
@@ -445,8 +444,8 @@
           goBtn.type = 'button';
           goBtn.className = 'card-goto-btn';
           goBtn.textContent = '🕒';
-          goBtn.title = 'Show in timeline';
-          goBtn.setAttribute('aria-label', 'Show in timeline');
+          goBtn.title = t('grid.showInTimeline');
+          goBtn.setAttribute('aria-label', t('grid.showInTimeline'));
           goBtn.addEventListener('click', (ev) => { ev.stopPropagation(); goToSceneInTimeline(s.id); });
           th.appendChild(goBtn);
         }
@@ -711,8 +710,8 @@
           dot.style.width = dotSize + 'px';
           dot.style.height = dotSize + 'px';
           // Title gives a fallback tooltip for folks who want the raw number.
-          const sc = cluster.scenes.length === 1 ? t('grid.oneScene', { count: cluster.scenes.length }) : t('grid.manyScenes', { count: cluster.scenes.length });
-          const im = imgCount === 1 ? t('grid.oneImage', { count: imgCount }) : t('grid.manyImages', { count: imgCount });
+          const sc = t('grid.scenes', { count: cluster.scenes.length });
+          const im = t('grid.images', { count: imgCount });
           dot.title = `${sc} · ${im}`;
           const line = document.createElement('div');
           line.className = 'timeline-line' + (isLast ? ' last' : '');
@@ -742,8 +741,8 @@
 
           const countSpan = document.createElement('span');
           countSpan.className = 'timeline-node-count muted';
-          const scTxt = cluster.scenes.length === 1 ? t('grid.oneScene', { count: cluster.scenes.length }) : t('grid.manyScenes', { count: cluster.scenes.length });
-          const imTxt = imgCount === 1 ? t('grid.oneImage', { count: imgCount }) : t('grid.manyImages', { count: imgCount });
+          const scTxt = t('grid.scenes', { count: cluster.scenes.length });
+          const imTxt = t('grid.images', { count: imgCount });
           countSpan.textContent = `${scTxt} · ${imTxt}`;
           hdr.appendChild(countSpan);
 
@@ -783,10 +782,7 @@
 
           const hdr = document.createElement('div');
           hdr.className = 'folder-group-header' + (collapsed ? ' collapsed' : '');
-          const folderCountTxt = allScenesInFolder.length === 1
-            ? t('grid.oneScene', { count: allScenesInFolder.length })
-            : t('grid.manyScenes', { count: allScenesInFolder.length });
-          hdr.innerHTML = `<span class="folder-group-toggle">▼</span><span class="folder-group-name">${escapeHtml(folderName)}</span><span class="folder-group-count muted">${folderCountTxt}</span>`;
+          hdr.innerHTML = `<span class="folder-group-toggle">▼</span><span class="folder-group-name">${escapeHtml(folderName)}</span><span class="folder-group-count muted">${tHtml('grid.scenes', { count: allScenesInFolder.length })}</span>`;
 
           // Spacer pushes the action group to the right
           const spacer = document.createElement('div');
@@ -808,8 +804,8 @@
 
           const actionsTrigger = document.createElement('button');
           actionsTrigger.className = 'action-btn folder-group-actions-trigger';
-          actionsTrigger.innerHTML = `<i>⋯</i> ${t('folderActions.trigger')} <span class="caret">▾</span>`;
-          actionsTrigger.title = 'More actions for this folder';
+          actionsTrigger.innerHTML = `<i>⋯</i> ${tHtml('folderActions.trigger')} <span class="caret">▾</span>`;
+          actionsTrigger.title = t('folderActions.triggerTitle');
           const _folderPathForMenu = fd.folderPath;
           actionsTrigger.addEventListener('click', (ev) => {
             ev.stopPropagation();
@@ -847,7 +843,7 @@
           upgradeBtn.type = 'button';
           upgradeBtn.className = 'action-btn folder-upgrade-btn hidden';
           upgradeBtn.dataset.folderPath = fd.folderPath;
-          upgradeBtn.innerHTML = `<i>✨</i> ${t('folderActions.upgradeButton')}`;
+          upgradeBtn.innerHTML = `<i>✨</i> ${tHtml('folderActions.upgradeButton')}`;
           upgradeBtn.title = t('folderActions.upgradeButtonTitle');
           upgradeBtn.addEventListener('click', (ev) => { ev.stopPropagation(); upgradeFolderToV3(fd.folderPath); });
           rightActions.appendChild(upgradeBtn);
@@ -871,7 +867,7 @@
           repairBtn.type = 'button';
           repairBtn.className = 'action-btn folder-repair-btn hidden';
           repairBtn.dataset.repairRoot = fd.folderPath;
-          repairBtn.innerHTML = `<i>⚠</i> ${t('folderActions.repair')}`;
+          repairBtn.innerHTML = `<i>⚠</i> ${tHtml('folderActions.repair')}`;
           repairBtn.title = t('folderActions.repairTitle');
           repairBtn.addEventListener('click', (ev) => {
             ev.stopPropagation();
@@ -881,7 +877,7 @@
 
           const cullingBtn = document.createElement('button');
           cullingBtn.className = 'action-btn culling-assistant-btn';
-          cullingBtn.innerHTML = `<i>✂</i> ${t('folderActions.culling')}`;
+          cullingBtn.innerHTML = `<i>✂</i> ${tHtml('folderActions.culling')}`;
           cullingBtn.title = t('folderActions.cullingTitle');
           cullingBtn.addEventListener('click', (ev) => { ev.stopPropagation(); openCullingAssistant(fd.folderPath); });
           rightActions.appendChild(cullingBtn);
@@ -890,7 +886,7 @@
           perchBtn.type = 'button';
           perchBtn.className = 'action-btn folder-perch-btn';
           perchBtn.dataset.folderPath = fd.folderPath;
-          perchBtn.innerHTML = `<i>🪶</i> <span class="folder-perch-btn-label">${t('folderActions.sharePerch')}</span>`;
+          perchBtn.innerHTML = `<i>🪶</i> <span class="folder-perch-btn-label">${tHtml('folderActions.sharePerch')}</span>`;
           perchBtn.title = t('folderActions.sharePerchTitle');
           perchBtn.addEventListener('click', (ev) => {
             ev.stopPropagation();
@@ -908,7 +904,7 @@
                 const lbl = perchBtn.querySelector('.folder-perch-btn-label');
                 if (lbl) lbl.textContent = t('folderActions.onPerch');
                 perchBtn.dataset.perchUrl = String(res.link.perch_url || '');
-                perchBtn.title = 'This folder is published to Perch (click to manage)';
+                perchBtn.title = t('folderActions.perchPublishedTitle');
               }
             } catch {}
           })();
@@ -924,7 +920,7 @@
               || (window._ccInProgressFolderPaths && window._ccInProgressFolderPaths.has(_np));
             if (_analyzing) {
               perchBtn.disabled = true;
-              perchBtn.title = 'Wait for analysis to finish before uploading to Perch.';
+              perchBtn.title = t('folderActions.perchWaitTitle');
             }
           } catch {}
 
@@ -1056,7 +1052,7 @@
       if (typeof smartSearchOnInput === 'function') await smartSearchOnInput(); else await renderScenes();
       const card = sceneGrid.querySelector(`.card[data-scene-id="${CSS.escape(sid)}"]`);
       if (!card) {
-        showToast('That scene is hidden by the review-state filter.', 4000);
+        showToast(t('grid.sceneHiddenByFilter'), 4000);
         return;
       }
       _lastSelectedIdx = _visibleSceneOrder.indexOf(sid);
@@ -1178,7 +1174,7 @@
       });
       const slots = new Set(parsed.map(p => p.slot));
       if (slots.size > 1) {
-        alert('Cannot merge scenes from different folders.\nSelect scenes from the same folder only.');
+        alert(t('merge.differentFolders'));
         return;
       }
       const target = parsed.slice().sort((a, b) => parseNumber(a.count) - parseNumber(b.count))[0];
@@ -1214,7 +1210,7 @@
       }
       if (changed) {
         markDirty(rpForMerge);
-        setStatus(`Merged ${ids.length} scenes into #${targetCount}. ${changed} rows updated.`);
+        setStatus(t('merge.done', { count: ids.length, target: targetCount, rows: changed }));
       }
       selectedSceneIds.clear();
       _lastSelectedIdx = -1;

@@ -60,41 +60,26 @@ only (focus/sharpness), never "is this a good photo".
 
 ## Internationalization (i18n)
 
-Two layers, both display-only — stored data (CSV, scene JSON, XMP sidecars,
-smart-search index) stays in canonical English names forever:
+Full guide: [`docs/i18n.md`](docs/i18n.md). The rules agents most often need:
 
-* **UI strings** — `analyzer/js/i18n.js` (`t()`, `applyStaticI18n()`) reads
-  dictionaries from `analyzer/i18n/<lang>.json`; `en.json` is the source of
-  truth and other languages override keys on top of it, falling back to
-  English for anything untranslated. Static markup carries `data-i18n` /
-  `data-i18n-title` / `data-i18n-aria` / `data-i18n-placeholder` /
-  `data-i18n-html` (inline markup, e.g. `<b>`/`<br/>`) / `data-i18n-data-tip`
-  attributes; dynamic strings are wrapped in `t()` at render time — never at
-  module parse time (dictionaries load after the modules parse; label maps
-  that must exist at parse time use getter objects, see
-  `_ANALYSIS_STATUS_LABELS` in `analyzer/js/queue.js`). Keys follow
-  `<area>.<camelCasePurpose>` (e.g. `settings.showScientificNames.label`);
-  shared buttons live under `common.*`. Shipped interface languages are the
-  `UI_LANGUAGES` constant in `i18n.js` — **adding one is a pure data drop**
-  (one `<lang>.json` plus one entry in the constant). `culling.html` is still
-  English-only (identity fallback).
-* **Bird names** — species-label translation maps built from the Multiling
-  IOC workbook by `tools/build_bird_names_i18n.py` into
-  `analyzer/models/birds/bird_names.<lang>.json` (committed; runtime only
-  reads them). Served to the frontend via
-  `Api.get_bird_name_translations(lang)`; render paths resolve labels through
-  `trSpecies(name)` (`analyzer/js/i18n.js`), falling back to English.
-
-The two layers have **independent settings**, both sanitized in
-`settings_utils.py` (strict `^[a-z]{2}(-[a-z]{2})?$`, default `en`) and chosen
-in Settings: `language` = interface language, `bird_name_language` = species
-labels. Changing the interface language fires `kestrel:language-changed` and
-changing the bird-name language fires `kestrel:species-lang-changed`
-(`initI18n` fires both once after the first load) so grids/dialogs repaint.
-`analyzer/tests/unit/test_bird_name_i18n.py` enforces that every
-`data-i18n*`/`t()` key exists in `en.json` and that shipped dictionaries keep
-exact key/placeholder/markup parity with it — when adding a language column
-to the converter, keep the code in that same shape.
+* Two display-only layers with independent settings: interface strings
+  (`language`) and bird names (`bird_name_language`). Stored data (CSV, scene
+  JSON, XMP sidecars, smart-search index) stays in canonical English.
+* `analyzer/i18n/en.json` is the source of truth. Every user-visible string in
+  converted UI goes through a key: `data-i18n*` attributes in HTML, `t()` in JS.
+  Call `t()` at render time, never at module parse time.
+* **Translations are untrusted text.** `t()` returns plain text for
+  `textContent`/attributes; inside an HTML template use `tHtml()`; strings that
+  need inline markup use `data-i18n-rich` / `tRich()` (only `<b> <strong> <em>
+  <i> <code> <br>`, no attributes; links and ids go in `data-i18n-slot`
+  elements). There is no raw-HTML path.
+* Counts use ICU plurals (`{count, plural, one {# scene} other {# scenes}}`),
+  never `n === 1 ? … : …`.
+* Language codes are canonical BCP-47 (`pt-BR`, `zh-Hans`) and fall back
+  `pt-BR` → `pt` → `en`.
+* `analyzer/tests/unit/test_ui_i18n.py` enforces key/placeholder/plural/markup
+  parity and runs `tools/i18n_lint.py`, which fails on unsafe sinks and on new
+  hard-coded English (ratcheting baseline in `tools/i18n_untranslated_baseline.json`).
 
 ## Setting up and running
 

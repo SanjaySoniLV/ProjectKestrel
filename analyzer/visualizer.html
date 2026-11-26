@@ -76,8 +76,8 @@
     <div class="wrap">
       <h1 style="display:flex;align-items:center;justify-content:space-between;margin:0 0 8px;">
         <span style="display:flex;align-items:center;gap:8px;">
-          <img src="logo.png" alt="Project Kestrel" style="height:32px;" />
-          <span>Project Kestrel</span>
+          <img src="logo.png" alt="Project Kestrel" translate="no" style="height:32px;" />
+          <span translate="no">Project Kestrel</span>
         </span>
         <span style="display:flex;align-items:center;gap:8px;">
           <div id="notifWrap" class="notif-wrap hidden">
@@ -134,7 +134,7 @@
             </div>
           </div>
           <!-- Empty-state hint: shown only when no folders are loaded -->
-          <div id="folderTreeEmptyHint" class="folder-tree-empty-hint" data-i18n-html="folderTree.emptyHint">
+          <div id="folderTreeEmptyHint" class="folder-tree-empty-hint" data-i18n-rich="folderTree.emptyHint">
             No folders loaded.<br />Click <b>+ Load Folder</b> to get started.
           </div>
           <div id="folderTree"></div>
@@ -176,7 +176,7 @@
   <main>
     <div id="mainZoom">
       <!-- Sticky top filter/sort bar — sits above the timeline, hidden when welcome panel is shown -->
-      <div id="timelineFilterBar" class="timeline-filter-bar hidden" role="region" aria-label="Filter and sort options">
+      <div id="timelineFilterBar" class="timeline-filter-bar hidden" role="region" aria-label="Filter and sort options" data-i18n-aria="filterBar.aria">
         <!-- Smart search bar: ✨ icon, the real <input> under a token overlay that turns
              detected species / family phrases into pills, and a right-aligned status area
              ("Try:" examples when empty, result count / upgrade prompt otherwise). -->
@@ -245,7 +245,7 @@
         </div>
       </div>
       <div id="compat" class="wrap hidden">
-        <div class="notice" data-i18n-html="compat.notice">
+        <div class="notice" data-i18n-rich="compat.notice">
           Desktop bridge unavailable. Project Kestrel now runs in desktop-only mode.<br />
           Please close this window and relaunch from the Project Kestrel app.
         </div>
@@ -256,7 +256,7 @@
       <!-- Welcome / Quick-Start panel — visible only when no folder is loaded -->
       <div id="welcomePanel">
         <div class="welcome-hero">
-          <img src="logo.png" alt="Kestrel Logo" class="welcome-hero-logo" style="height:150px; opacity:0.9;">
+          <img src="logo.png" alt="Kestrel Logo" data-i18n-alt="common.logoAlt" class="welcome-hero-logo" style="height:150px; opacity:0.9;">
           <div class="welcome-hero-text">
             <h2 data-i18n="welcome.heading">Welcome to Project Kestrel</h2>
             <button class="welcome-action-btn" style="margin:0; font-size:14px; padding:10px 16px;" onclick="openTutorialChooser()" data-i18n="welcome.startTutorial">📖 Start Tutorial</button>
@@ -285,10 +285,10 @@
         </div>
 
         <div class="welcome-footer">
-          <div style="font-size:11px; opacity:0.8;">
+          <div style="font-size:11px; opacity:0.8;" data-i18n-rich="welcome.legalFooter">
             By using Project Kestrel, you agree to the <a href="https://projectkestrel.org/terms-of-use"
-              target="_blank">Terms of Use</a> and <a href="https://projectkestrel.org/privacy-policy"
-              target="_blank">Privacy Policy</a>.
+              target="_blank" data-i18n-slot="terms" data-i18n="welcome.termsLink">Terms of Use</a> and <a href="https://projectkestrel.org/privacy-policy"
+              target="_blank" data-i18n-slot="privacy" data-i18n="welcome.privacyLink">Privacy Policy</a>.
           </div>
         </div>
       </div>
@@ -370,10 +370,10 @@
   </div><!-- /.app-body -->
 
   <footer class="app-status-bar">
-    <div id="status" class="status">Idle</div>
+    <div id="status" class="status" data-i18n="common.idle">Idle</div>
     <div class="hidden" id="loadProgressRow">
       <div class="load-progress">
-        <div id="loadProgressLabel" class="load-progress-label">Loading…</div>
+        <div id="loadProgressLabel" class="load-progress-label" data-i18n="common.loading">Loading…</div>
         <div class="load-progress-track">
           <div id="loadProgressFill" class="load-progress-fill"></div>
         </div>
@@ -467,7 +467,7 @@
             id="scenePreviewDivider"
             role="separator"
             aria-orientation="vertical"
-            aria-label="Resize scene previews"
+            aria-label="Resize scene previews" data-i18n-aria="grid.resizePreviewsAria"
             tabindex="0"></div>
           <div class="scene-preview-panel" id="scenePreviewCrop">
             <div class="scene-preview-label" data-i18n="sceneDlg.birdCrop">Bird Crop</div>
@@ -552,7 +552,7 @@
   <dialog id="tutorialChooserDlg" class="kdlg kdlg--md kdlg--flex tut-chooser-dlg">
     <div class="tut-chooser-body">
       <h3 class="tut-chooser-title" data-i18n="tutChooser.title">Which version of the tutorial would you like?</h3>
-      <p class="tut-chooser-sub" data-i18n-html="tutChooser.sub">You can replay either one anytime from the <b>&#x1F4D6; Tutorial</b> button.</p>
+      <p class="tut-chooser-sub" data-i18n-rich="tutChooser.sub">You can replay either one anytime from the <b>&#x1F4D6; Tutorial</b> button.</p>
       <div class="tut-chooser-choices">
         <button type="button" class="tut-chooser-choice" id="tutChooseBasics">
           <span class="tut-chooser-icon">&#x1F331;</span>
@@ -636,7 +636,7 @@
           <button type="button" id="perchLinkedOpenBtn" class="perch-cta" data-i18n="perch.openInBrowser">Open in browser →</button>
           <button type="button" id="perchLinkedUnlinkBtn" class="perch-cta-secondary" data-i18n="perch.unlink">Unlink</button>
         </div>
-        <div class="perch-linked-note" data-i18n-html="perch.unlinkNote">
+        <div class="perch-linked-note" data-i18n-rich="perch.unlinkNote">
           Unlink removes the local link between this folder and the perch. The perch
           on projectkestrel.org is <strong>not deleted</strong> — manage or delete it there.
         </div>
@@ -666,9 +666,9 @@
         <p class="perch-explainer-lead" data-i18n="perch.signedOut.lead">Perch is the hosted home for your Kestrel-curated bird outings.</p>
         <p class="perch-explainer-sub" data-i18n="perch.signedOut.sub">Publish a perch from this folder and share a link with friends, family, or co-photographers — no Kestrel install required on their end.</p>
         <ul class="perch-explainer-list">
-          <li data-i18n-html="perch.signedOut.point1"><b>Merged timelines</b> — combine your outing with co-photographers' perches into one shared view.</li>
-          <li data-i18n-html="perch.signedOut.point2"><b>Quality-sorted scenes</b> — Kestrel's ranking carries through; the best photo of each scene leads.</li>
-          <li data-i18n-html="perch.signedOut.point3"><b>Likes, comments, favorites</b> — viewers can react and you can curate picks.</li>
+          <li data-i18n-rich="perch.signedOut.point1"><b>Merged timelines</b> — combine your outing with co-photographers' perches into one shared view.</li>
+          <li data-i18n-rich="perch.signedOut.point2"><b>Quality-sorted scenes</b> — Kestrel's ranking carries through; the best photo of each scene leads.</li>
+          <li data-i18n-rich="perch.signedOut.point3"><b>Likes, comments, favorites</b> — viewers can react and you can curate picks.</li>
         </ul>
         <p class="perch-explainer-ready" id="perchDlgReadyLine"></p>
       </div>
@@ -713,7 +713,7 @@
           <div class="perch-check-panel" id="perchCheckFirstPhoto">
             <div class="perch-check-body">
               <div class="perch-check-title" data-i18n="perch.check.captureTime.title">Check photo capture time</div>
-              <div class="perch-check-text" data-i18n-html="perch.check.captureTime.text">The first photo was captured at <strong id="perchFirstPhotoTime">—</strong>. If this is not correct, adjust the capture time for this folder.</div>
+              <div class="perch-check-text" data-i18n-rich="perch.check.captureTime.text">The first photo was captured at <strong id="perchFirstPhotoTime" data-i18n-slot="time">—</strong>. If this is not correct, adjust the capture time for this folder.</div>
               <button type="button" class="perch-check-btn perch-check-btn--inline" id="perchAdjustTimeBtn" data-i18n="perch.check.captureTime.button">Adjust Capture Time</button>
             </div>
             <img class="perch-check-thumb perch-check-thumb--big" id="perchFirstPhotoThumb" alt="">
@@ -722,7 +722,7 @@
           <div class="perch-check-panel" id="perchCheckReview">
             <div class="perch-check-body">
               <div class="perch-check-title" data-i18n="perch.check.reviewTags.title">Review Species Tags</div>
-              <div class="perch-check-text" data-i18n="perch.check.reviewTags.text">Review each scene's species and family so viewers can search your perch by what you saw. Reviewed scenes appear with a gold border in the timeline. <strong id="perchReviewCount">— of — scenes reviewed.</strong></div>
+              <div class="perch-check-text" data-i18n-rich="perch.check.reviewTags.text">Review each scene's species and family so viewers can search your perch by what you saw. Reviewed scenes appear with a gold border in the timeline. <strong id="perchReviewCount" data-i18n-slot="count">— of — scenes reviewed.</strong></div>
             </div>
           </div>
 
@@ -830,7 +830,7 @@
            detection confidence, GPU) live in the Analyze dialog's "Review
            settings" column, not here — they are chosen per analysis run. Users
            reasonably look for them in Settings first, so point the way. -->
-      <div class="muted" style="font-size:12px;margin:6px 0 0" data-i18n-html="settings.lookingForAnalysis">
+      <div class="muted" style="font-size:12px;margin:6px 0 0" data-i18n-rich="settings.lookingForAnalysis">
         Looking for analysis options — species identification, non-bird wildlife
         detection, detection confidence, or GPU use? Those are chosen per run in
         the <b>Analyze</b> dialog, under &ldquo;Review settings&rdquo;.
@@ -842,25 +842,25 @@
         <label for="editorChoice" data-i18n="settings.editor.label">Preferred Editor</label>
         <select id="editorChoice">
           <option value="system" data-i18n="settings.editor.systemDefault">System Default</option>
-          <option value="darktable" selected>Darktable</option>
-          <option value="lightroom">Adobe Lightroom Classic</option>
-          <option value="photoshop">Adobe Photoshop</option>
-          <option value="capture_one">Capture One</option>
-          <option value="affinity">Affinity Photo</option>
-          <option value="gimp">GIMP</option>
-          <option value="rawtherapee">RawTherapee</option>
-          <option value="luminar">Luminar Neo</option>
-          <option value="dxo">DxO PhotoLab</option>
-          <option value="on1">ON1 Photo RAW</option>
-          <option value="acdsee">ACDSee</option>
-          <option value="paintshop">PaintShop Pro</option>
-          <option value="faststone">FastStone Image Viewer</option>
-          <option value="xnview">XnView MP</option>
-          <option value="irfanview">IrfanView</option>
+          <option value="darktable" selected translate="no">Darktable</option>
+          <option value="lightroom" translate="no">Adobe Lightroom Classic</option>
+          <option value="photoshop" translate="no">Adobe Photoshop</option>
+          <option value="capture_one" translate="no">Capture One</option>
+          <option value="affinity" translate="no">Affinity Photo</option>
+          <option value="gimp" translate="no">GIMP</option>
+          <option value="rawtherapee" translate="no">RawTherapee</option>
+          <option value="luminar" translate="no">Luminar Neo</option>
+          <option value="dxo" translate="no">DxO PhotoLab</option>
+          <option value="on1" translate="no">ON1 Photo RAW</option>
+          <option value="acdsee" translate="no">ACDSee</option>
+          <option value="paintshop" translate="no">PaintShop Pro</option>
+          <option value="faststone" translate="no">FastStone Image Viewer</option>
+          <option value="xnview" translate="no">XnView MP</option>
+          <option value="irfanview" translate="no">IrfanView</option>
           <option value="custom" data-i18n="settings.editor.custom">Custom Application…</option>
         </select>
       </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px" data-i18n-html="settings.editor.hint">Choose which editor Kestrel should use
+      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px" data-i18n="settings.editor.hint">Choose which editor Kestrel should use
         when opening originals. &ldquo;System Default&rdquo; will use your OS default application.</div>
       <div class="row hidden" id="customEditorRow">
         <label for="customEditorPath" data-i18n="settings.editor.pathLabel">Application Path</label>
@@ -1037,7 +1037,7 @@
 
       <div id="egSection">
         <div class="row">
-          <label for="settingsEnhancedGpu" style="flex:1" data-i18n-html="settings.eg.label">Enhanced GPU performance <span class="muted">(experimental)</span></label>
+          <label for="settingsEnhancedGpu" style="flex:1" data-i18n-rich="settings.eg.label">Enhanced GPU performance <span class="muted" data-i18n-slot="tag" data-i18n="settings.eg.experimental">(experimental)</span></label>
           <label class="inline" style="gap:6px">
             <input type="checkbox" id="settingsEnhancedGpu" disabled />
             <span class="muted" data-i18n="settings.eg.use">Use</span>
@@ -1123,7 +1123,7 @@
           <label class="inline"><input type="radio" name="mergeTargetMode" value="min" checked> <span
               class="muted" data-i18n="merge.smallestId">Smallest selected ID</span></label>
           <label class="inline"><input type="radio" name="mergeTargetMode" value="manual"> <span
-              class="muted">ID:</span>
+              class="muted" data-i18n="merge.idLabel">ID:</span>
             <input id="mergeTargetId" type="number" style="width:120px" />
           </label>
         </div>
@@ -1263,7 +1263,7 @@
               <span class="folder-load-btn-label" data-i18n="analyze.addFolders">Add Folders…</span>
             </button>
             <div id="analyzeDlgRecentsRow" class="folder-recents-row hidden" aria-label="Recently queued folders" data-i18n-aria="analyze.recentsAria"></div>
-            <div id="analyzeDlgTreeEmptyHint" class="folder-tree-empty-hint" data-i18n-html="analyze.emptyHint">
+            <div id="analyzeDlgTreeEmptyHint" class="folder-tree-empty-hint" data-i18n-rich="analyze.emptyHint">
               No folders added.<br />Click <b>+ 📂 Add Folders…</b> or pick a recent above.
             </div>
             <div id="analyzeDlgTree"></div>
@@ -1338,7 +1338,7 @@
                   </select>
                 </div>
                 <div id="adlgSpeciesRegionCustom" class="adlg-species-region-custom hidden" role="group" aria-label="Species regions" data-i18n-aria="analyze.q.species.regionsAria"></div>
-                <div id="adlgSpeciesRegionHint" class="adlg-hint muted" data-i18n-html="analyze.q.species.regionHint">A narrower region list makes identification more accurate. Change your default regions in Settings → Species &amp; Region.</div>
+                <div id="adlgSpeciesRegionHint" class="adlg-hint muted" data-i18n="analyze.q.species.regionHint">A narrower region list makes identification more accurate. Change your default regions in Settings → Species &amp; Region.</div>
               </div>
             </div>
             <input id="analyzeSpeciesDetection" type="checkbox" class="hidden" aria-hidden="true" tabindex="-1" checked />
@@ -1411,7 +1411,7 @@
                 <!-- Live warning when the user picks a value much above the
                      recommended baseline. Wildlife detection models are quite
                      accurate, so high thresholds tend to miss real subjects. -->
-                <div id="adlgDetectionConfidenceWarning" class="adlg-inline-warning hidden" data-i18n-html="analyze.detectionConfidence.warning">
+                <div id="adlgDetectionConfidenceWarning" class="adlg-inline-warning hidden" data-i18n-rich="analyze.detectionConfidence.warning">
                   ⚠ Kestrel suggests <b>0.15</b>. Higher values miss real subjects.
                 </div>
               </div>
@@ -1485,7 +1485,7 @@
               <input id="analyzeDlgReanalyzeUnlock" type="checkbox" />
               <div class="adlg-toggle-text">
                 <span class="adlg-toggle-label" data-i18n="analyze.reanalyze.label">Re-analyze fully-analyzed folders</span>
-                <span class="adlg-toggle-hint muted" data-i18n-html="analyze.reanalyze.hint">Will <b>erase user data</b> (ratings, decisions, scene names) for those folders.</span>
+                <span class="adlg-toggle-hint muted" data-i18n-rich="analyze.reanalyze.hint">Will <b>erase user data</b> (ratings, decisions, scene names) for those folders.</span>
               </div>
             </label>
             <!-- Destination cards. Default = Local. Selecting Cloud activates
@@ -1680,8 +1680,8 @@
   <dialog id="analyzeConfirmDlg" class="kdlg kdlg--sm kdlg--flex analyze-confirm-dlg">
     <div class="analyze-confirm-body">
       <h3 style="margin:0 0 8px;color:var(--warn);" data-i18n="analyzeConfirm.title">⚠ Confirm destructive re-analysis</h3>
-      <p style="margin:0 0 10px;font-size:13px;line-height:1.45;" data-i18n-html="analyzeConfirm.body">
-        The following folder<span id="analyzeConfirmFolderPlural">s</span> will have
+      <p style="margin:0 0 10px;font-size:13px;line-height:1.45;" id="analyzeConfirmBody" data-i18n-rich="analyzeConfirm.body">
+        The following folders will have
         <b>.kestrel data permanently deleted</b> before re-analysis. This wipes all
         user-written data (ratings, accept/reject decisions, scene names) for
         the affected folders.
@@ -1705,9 +1705,9 @@
   <dialog id="clearKestrelConfirmDlg" class="kdlg kdlg--sm kdlg--flex analyze-confirm-dlg">
     <div class="analyze-confirm-body">
       <h3 style="margin:0 0 8px;color:var(--warn);" data-i18n="clearKestrel.title">⚠ Delete Kestrel analysis data?</h3>
-      <p style="margin:0 0 10px;font-size:13px;line-height:1.45;" data-i18n-html="clearKestrel.body">
+      <p style="margin:0 0 10px;font-size:13px;line-height:1.45;" data-i18n-rich="clearKestrel.body">
         The following data will be permanently deleted from
-        <b id="clearKestrelFolderName">this folder</b>'s
+        <b id="clearKestrelFolderName" data-i18n-slot="folder">this folder</b>'s
         <code>.kestrel/</code> directory:
       </p>
       <ul class="analyze-confirm-list" style="margin:0 0 10px;">
@@ -1792,7 +1792,7 @@
         </label>
         <div class="feedback-signin-hint" id="feedbackSignInHint"></div>
       </div>
-      <img id="feedbackSsPreview" class="feedback-ss-preview" alt="screenshot preview" style="display:none" />
+      <img id="feedbackSsPreview" class="feedback-ss-preview" alt="screenshot preview" data-i18n-alt="feedback.screenshotAlt" style="display:none" />
       <div id="feedbackStatus" style="font-size:13px; color:var(--muted); min-height:18px"></div>
       <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:4px">
         <button id="feedbackCancel" data-i18n="common.cancel">Cancel</button>
@@ -1873,12 +1873,12 @@
   <!-- Donation / Support dialog -->
   <dialog id="donateDlg" class="kdlg kdlg--sm kdlg--flex">
     <div class="donate-dlg">
-      <div class="donate-dlg-icon"><img src="logo.png" alt="Kestrel Logo" /></div>
+      <div class="donate-dlg-icon"><img src="logo.png" alt="Kestrel Logo" data-i18n-alt="common.logoAlt" /></div>
       <!-- Heading and subline are filled in by showDonatePrompt() (js/feedback-donate.js). -->
       <h3 id="donateDlgHeading">You’ve organized over 1,000 photos with Kestrel!</h3>
       <p id="donateDlgSubline" class="donate-dlg-subline" hidden></p>
       <p data-i18n="donate.pitch">I’m a student and birder building Kestrel on my own. It stays free, local and open source because the people who find it useful chip in. If it saved you time, please consider supporting me, or tell me what to improve.</p>
-      <p style="font-size:12px;color:#607080;" data-i18n-html="donate.footnote">Project Kestrel is free &amp; open-source. Every <a href="https://github.com/SanjaySoniLV/ProjectKestrel" target="_blank">contribution</a> helps keep it growing.</p>
+      <p style="font-size:12px;color:#607080;" data-i18n-rich="donate.footnote">Project Kestrel is free &amp; open-source. Every <a href="https://github.com/SanjaySoniLV/ProjectKestrel" target="_blank" data-i18n-slot="link" data-i18n="donate.footnoteLink">contribution</a> helps keep it growing.</p>
       <div class="donate-dlg-btns">
         <button class="donate-main-btn" id="donateDlgGoBtn" data-i18n="donate.support">💛 Support Project Kestrel</button>
         <button class="primary" id="donateDlgFeedbackBtn" style="font-size:13px;padding:13px 20px;height:auto;" data-i18n="donate.feedback">💬 Send Feedback</button>

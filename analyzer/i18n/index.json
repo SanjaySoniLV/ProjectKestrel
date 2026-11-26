@@ -1,0 +1,61 @@
+{
+  "_comment": "Shipped interface languages. Each code is a canonical BCP-47 tag with a matching <code>.json dictionary; see docs/i18n.md.",
+  "languages": [
+    {
+      "code": "en",
+      "name_native": "English",
+      "dir": "ltr",
+      "machine_translated": false,
+      "reviewed": true
+    },
+    {
+      "code": "de",
+      "name_native": "Deutsch",
+      "dir": "ltr",
+      "machine_translated": true,
+      "reviewed": false
+    },
+    {
+      "code": "es",
+      "name_native": "Español",
+      "dir": "ltr",
+      "machine_translated": true,
+      "reviewed": false
+    },
+    {
+      "code": "fr",
+      "name_native": "Français",
+      "dir": "ltr",
+      "machine_translated": true,
+      "reviewed": false
+    },
+    {
+      "code": "ja",
+      "name_native": "日本語",
+      "dir": "ltr",
+      "machine_translated": true,
+      "reviewed": false
+    },
+    {
+      "code": "pt-BR",
+      "name_native": "Português (Brasil)",
+      "dir": "ltr",
+      "machine_translated": true,
+      "reviewed": false
+    },
+    {
+      "code": "ru",
+      "name_native": "Русский",
+      "dir": "ltr",
+      "machine_translated": true,
+      "reviewed": false
+    },
+    {
+      "code": "zh-Hans",
+      "name_native": "简体中文",
+      "dir": "ltr",
+      "machine_translated": true,
+      "reviewed": false
+    }
+  ]
+}
