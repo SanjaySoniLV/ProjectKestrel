@@ -10,11 +10,11 @@
 
 .feedback-dlg h3 {
   margin: 0;
-  font-size: 16px;
+  font-size: var(--fs-lg);
 }
 
 .feedback-dlg .f-label {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
   margin-bottom: 3px;
   display: block;
@@ -25,11 +25,11 @@
   min-height: 100px;
   resize: vertical;
   background: #0a0d12;
-  border: 1px solid #1d2230;
-  border-radius: 8px;
+  border: 1px solid var(--chip);
+  border-radius: var(--radius-md);
   color: var(--text);
   padding: 8px 10px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-family: inherit;
   box-sizing: border-box;
 }
@@ -43,11 +43,11 @@
 .feedback-dlg input[type="text"] {
   width: 100%;
   background: #0a0d12;
-  border: 1px solid #1d2230;
-  border-radius: 8px;
+  border: 1px solid var(--chip);
+  border-radius: var(--radius-md);
   color: var(--text);
   padding: 7px 10px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   box-sizing: border-box;
 }
 
@@ -60,11 +60,11 @@
 .feedback-dlg select {
   width: 100%;
   background: #0a0d12;
-  border: 1px solid #1d2230;
-  border-radius: 8px;
+  border: 1px solid var(--chip);
+  border-radius: var(--radius-md);
   color: var(--text);
   padding: 7px 10px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   box-sizing: border-box;
 }
 
@@ -77,8 +77,8 @@
   max-width: 100%;
   max-height: 120px;
   object-fit: contain;
-  border-radius: 6px;
-  border: 1px solid #1d2230;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--chip);
   background: #0a0d12;
   margin-top: 4px;
 }
@@ -100,7 +100,7 @@
 
 .analytics-dlg p {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-md);
   color: var(--muted);
   line-height: 1.6;
 }
@@ -108,13 +108,13 @@
 .analytics-dlg ul {
   margin: 4px 0 0;
   padding-left: 18px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   color: var(--muted);
   line-height: 1.75;
 }
 
 .analytics-dlg .analytics-note {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: #607080;
 }
 
@@ -127,7 +127,7 @@
 
 /* Line under "Send as …" nudging sign-in so we can reply and keep logs with the report. */
 .feedback-signin-hint {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
   margin-top: 4px;
 }

@@ -14,7 +14,7 @@
 .notif-badge {
   position: absolute; top: -5px; right: -5px; min-width: 17px; height: 17px;
   padding: 0 4px; box-sizing: border-box; border-radius: var(--radius-pill);
-  background: #e0533b; color: #fff; font-size: 10px; font-weight: 700;
+  background: #e0533b; color: #fff; font-size: var(--fs-2xs); font-weight: 700;
   line-height: 17px; text-align: center; border: 2px solid var(--bg);
 }
 .notif-badge.hidden { display: none; }
@@ -35,15 +35,15 @@
   display: flex; align-items: center; justify-content: space-between;
   padding: 11px 13px; border-bottom: 1px solid var(--card-border);
 }
-.notif-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.notif-title { font-size: var(--fs-md); font-weight: 600; color: var(--text); }
 .notif-readall {
-  font-size: 11px; color: var(--brand); background: none; border: 0; cursor: pointer;
+  font-size: var(--fs-xs); color: var(--brand); background: none; border: 0; cursor: pointer;
   padding: 2px 4px; border-radius: var(--radius-sm);
 }
 .notif-readall:hover { background: var(--chip); }
 
 .notif-list { max-height: 380px; overflow-y: auto; }
-.notif-empty { padding: 26px 14px; text-align: center; color: var(--muted); font-size: 12px; }
+.notif-empty { padding: 26px 14px; text-align: center; color: var(--muted); font-size: var(--fs-sm); }
 
 .notif-item {
   display: flex; align-items: flex-start; gap: 8px;
@@ -68,7 +68,41 @@
 
 .notif-hide {
   flex: 0 0 auto; width: 20px; height: 20px; line-height: 18px; text-align: center;
-  border: 0; background: none; color: var(--muted); font-size: 16px;
+  border: 0; background: none; color: var(--muted); font-size: var(--fs-lg);
   border-radius: var(--radius-sm); cursor: pointer;
 }
 .notif-hide:hover { background: rgba(224, 83, 59, 0.15); color: #e0533b; }
+
+/* New-version toast. auth.js shows and hides it by setting style.display. */
+#versionUpdateToast {
+  display: none;
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  max-width: 380px;
+  background: #1a2a1a;
+  border: 2px solid #4a7a4a;
+  border-radius: var(--radius-md);
+  padding: 16px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  z-index: 9999;
+  font-family: var(--font-family);
+}
+#versionUpdateToast .vu-head { display: flex; justify-content: space-between; align-items: start; margin-bottom: 12px; }
+#versionUpdateToast h3 { margin: 0; display: flex; align-items: center; gap: 8px; font-size: var(--fs-lg); color: #6ec16e; }
+#versionUpdatePriority { font-size: var(--fs-xl); }
+#versionUpdateTitle { flex: 1; }
+#versionUpdateClose {
+  background: none; border: none; color: #7ca3d9; cursor: pointer; font-size: var(--fs-xl);
+  padding: 0; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;
+}
+#versionUpdateNotes { margin: 12px 0; padding-left: 20px; font-size: var(--fs-md); color: #c0c0c0; line-height: 1.5; }
+#versionUpdateWindowsNote {
+  font-size: var(--fs-sm); color: #999; margin: 12px 0; padding: 8px;
+  background: rgba(255,255,255,0.05); border-radius: var(--radius-xs); display: none;
+}
+#versionUpdateDownloadBtn {
+  width: 100%; padding: 10px 16px; margin-top: 12px; background: #1a4a1a; color: #6ec16e;
+  border: 1px solid #6ec16e; border-radius: var(--radius-sm); cursor: pointer; font-size: var(--fs-base);
+  font-weight: 600; text-decoration: none; display: block; text-align: center;
+}

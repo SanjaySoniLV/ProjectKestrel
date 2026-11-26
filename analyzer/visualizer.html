@@ -834,7 +834,7 @@
         the <b>Analyze</b> dialog, under &ldquo;Review settings&rdquo;.
       </div>
 
-      <h4 style="margin:12px 0 8px;padding-top:8px;border-top:1px solid #1d2230;color:#a0a8b8;font-size:13px;text-transform:uppercase;letter-spacing:0.5px">UI &amp; Editor</h4>
+      <h4 class="settings-group-title">UI &amp; Editor</h4>
 
       <div class="row">
         <label for="editorChoice">Preferred Editor</label>
@@ -858,14 +858,14 @@
           <option value="custom">Custom Application…</option>
         </select>
       </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Choose which editor Kestrel should use
+      <div class="muted settings-hint">Choose which editor Kestrel should use
         when opening originals. &ldquo;System Default&rdquo; will use your OS default application.</div>
       <div class="row hidden" id="customEditorRow">
         <label for="customEditorPath">Application Path</label>
         <input id="customEditorPath" type="text" placeholder="Path to application executable…" style="flex:1" />
         <button id="customEditorBrowse" style="flex-shrink:0" title="Browse for application">Browse…</button>
       </div>
-      <div class="muted hidden" id="customEditorHint" style="font-size:12px;margin-top:-6px;margin-bottom:8px">
+      <div class="muted hidden settings-hint" id="customEditorHint">
         Full path to an application executable (e.g. C:\Program Files\MyEditor\editor.exe or /Applications/MyEditor.app).
       </div>
 
@@ -874,10 +874,10 @@
         <input id="treeScanDepth" type="number" min="1" max="6" step="1" value="3" style="width:80px"
           title="How many folder levels to scan when building the folder tree (1–6)" />
       </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">How many subfolder levels to scan when
+      <div class="muted settings-hint">How many subfolder levels to scan when
         building the folder tree (1–6). Higher values may increase scan time.</div>
 
-      <h4 style="margin:12px 0 8px;padding-top:8px;border-top:1px solid #1d2230;color:#a0a8b8;font-size:13px;text-transform:uppercase;letter-spacing:0.5px">Species &amp; Region</h4>
+      <h4 class="settings-group-title">Species &amp; Region</h4>
 
       <div class="row" style="align-items:flex-start">
         <label for="birdRegionsPicker" style="flex:1">Bird Regions</label>
@@ -886,7 +886,7 @@
           <span class="muted" style="font-size:11px">Loading regions…</span>
         </div>
       </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">
+      <div class="muted settings-hint">
         Selects which biogeographic regions to include in the species
         autocomplete (Ctrl+Shift+R), and the default list of species Kestrel
         identifies from when you analyze a folder (you can override it per
@@ -901,13 +901,13 @@
           <span class="muted">Enable</span>
         </label>
       </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">
+      <div class="muted settings-hint">
         When on, the Latin binomial appears in italics under each species
         pill (scene dialog and timeline cards), and family pills show the
         scientific family name.
       </div>
 
-      <h4 style="margin:12px 0 8px;padding-top:8px;border-top:1px solid #1d2230;color:#a0a8b8;font-size:13px;text-transform:uppercase;letter-spacing:0.5px">Star Rating System</h4>
+      <h4 class="settings-group-title">Star Rating System</h4>
 
       <div class="row">
         <label for="ratingProfile">Rating Profile</label>
@@ -920,7 +920,7 @@
           <option value="custom">Custom &mdash; set your own thresholds</option>
         </select>
       </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Controls how quality scores are
+      <div class="muted settings-hint">Controls how quality scores are
         converted to star ratings. Each profile uses fixed quality-score thresholds — stricter profiles require
         a higher score to earn 4 or 5 stars. Changes take effect immediately for loaded folders.</div>
 
@@ -943,7 +943,7 @@
         </div>
       </div>
 
-      <h4 style="margin:12px 0 8px;padding-top:8px;border-top:1px solid #1d2230;color:#a0a8b8;font-size:13px;text-transform:uppercase;letter-spacing:0.5px">Data &amp; Preview</h4>
+      <h4 class="settings-group-title">Data &amp; Preview</h4>
 
       <div class="row">
         <label for="rawPreviewCacheEnabled" style="flex:1">Save RAW previews for faster loading</label>
@@ -952,7 +952,7 @@
           <span class="muted">Enable</span>
         </label>
       </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Keep full-size RAW previews
+      <div class="muted settings-hint">Keep full-size RAW previews
         in the .kestrel/culling_TMP folder so later loads are faster. Turn off to save disk space; previews are then made again each time.</div>
 
       <div class="row">
@@ -962,7 +962,7 @@
           <span class="muted" id="settingsExpStrengthVal" style="min-width:34px;text-align:right;font-variant-numeric:tabular-nums">70%</span>
         </label>
       </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Display only: how strongly Kestrel's calculated exposure boost is applied to preview imagery (grid &amp; scene-dialog export thumbnails and the RAW zoom). 0% shows the uncorrected export; 100% matches the processed bird crop. The same slider is in the scene viewer. Does not affect analysis or the baked crop.</div>
+      <div class="muted settings-hint">Display only: how strongly Kestrel's calculated exposure boost is applied to preview imagery (grid &amp; scene-dialog export thumbnails and the RAW zoom). 0% shows the uncorrected export; 100% matches the processed bird crop. The same slider is in the scene viewer. Does not affect analysis or the baked crop.</div>
 
       <div class="row">
         <label for="settingsAutoSave" style="flex:1">Auto-Save Changes</label>
@@ -971,7 +971,7 @@
           <span class="muted">Enable</span>
         </label>
       </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Automatically save ratings, tags, and scene changes. When disabled, you'll see a Save/Revert workflow.</div>
+      <div class="muted settings-hint">Automatically save ratings, tags, and scene changes. When disabled, you'll see a Save/Revert workflow.</div>
 
       <div class="row">
         <label for="settingsQualityModel" style="flex:1">Quality scorer</label>
@@ -980,7 +980,7 @@
           <option value="siglip">Newer sharpness model (added in Arctic Tern)</option>
         </select>
       </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Both scores are computed during analysis (analysis version 3.0) and stored, so switching is instant &mdash; no re-analysis. Both judge focus/sharpness only, not whether a photo is "good". The original model is the default again from Arctic Tern (FP 1); the newer model is kept so you can compare. Folders analysed before 3.0 only have the legacy score until upgraded.</div>
+      <div class="muted settings-hint">Both scores are computed during analysis (analysis version 3.0) and stored, so switching is instant &mdash; no re-analysis. Both judge focus/sharpness only, not whether a photo is "good". The original model is the default again from Arctic Tern (FP 1); the newer model is kept so you can compare. Folders analysed before 3.0 only have the legacy score until upgraded.</div>
 
       <div class="row">
         <label for="settingsSmartSearch" style="flex:1">Smart search: index whole frames</label>
@@ -989,7 +989,7 @@
           <span class="muted">Enable</span>
         </label>
       </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Bird crops are always indexed for smart search. This also indexes each photo's whole frame so scene queries work ("bird on a wire", "two birds", "wide landscape"). Adds about 0.1&ndash;0.2 seconds per photo on the CPU.</div>
+      <div class="muted settings-hint">Bird crops are always indexed for smart search. This also indexes each photo's whole frame so scene queries work ("bird on a wire", "two birds", "wide landscape"). Adds about 0.1&ndash;0.2 seconds per photo on the CPU.</div>
 
       <div class="row">
         <label for="settingsRawEmbeddedPreview" style="flex:1">Fast RAW analysis: use the camera&rsquo;s embedded JPEG</label>
@@ -998,7 +998,7 @@
           <span class="muted">Enable</span>
         </label>
       </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Analyses the JPEG preview stored inside each RAW file instead of decoding the sensor data. Much faster per photo; the sharpness score is largely unaffected, but exposure/highlight recovery is skipped and quality depends on the preview size your camera writes (some older bodies embed only a small one). RAWs without a usable preview are still decoded. Applies to analyses started after you change it, on this computer only &mdash; Cloud Compute always decodes RAW.</div>
+      <div class="muted settings-hint">Analyses the JPEG preview stored inside each RAW file instead of decoding the sensor data. Much faster per photo; the sharpness score is largely unaffected, but exposure/highlight recovery is skipped and quality depends on the preview size your camera writes (some older bodies embed only a small one). RAWs without a usable preview are still decoded. Applies to analyses started after you change it, on this computer only &mdash; Cloud Compute always decodes RAW.</div>
 
       <div class="row">
         <label for="settingsTowerDevice" style="flex:1">Species model device (advanced)</label>
@@ -1008,7 +1008,7 @@
           <option value="gpu">GPU</option>
         </select>
       </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Where the species and search models run when GPU analysis is on. Auto: GPU on Windows, CPU on macOS, where the GPU path does not support these models. Applies to the next analysis.</div>
+      <div class="muted settings-hint">Where the species and search models run when GPU analysis is on. Auto: GPU on Windows, CPU on macOS, where the GPU path does not support these models. Applies to the next analysis.</div>
 
       <div id="egSection">
         <div class="row">
@@ -1018,7 +1018,7 @@
             <span class="muted">Use</span>
           </label>
         </div>
-        <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Enhanced GPU Performance uses extra GPU software made for your graphics hardware to speed up analysis. Setup downloads that software from Windows and tests Kestrel&rsquo;s models on your computer. If it fails, Kestrel uses standard GPU acceleration.</div>
+        <div class="muted settings-hint">Enhanced GPU Performance uses extra GPU software made for your graphics hardware to speed up analysis. Setup downloads that software from Windows and tests Kestrel&rsquo;s models on your computer. If it fails, Kestrel uses standard GPU acceleration.</div>
         <div class="muted" id="egStatus" style="font-size:12px;margin-bottom:8px;white-space:pre-line"></div>
         <div class="row" style="gap:8px;justify-content:flex-start">
           <button id="egSetupBtn" type="button">Set up enhanced GPU performance</button>
@@ -1031,13 +1031,13 @@
         </div>
       </div>
 
-      <h4 style="margin:12px 0 8px;padding-top:8px;border-top:1px solid #1d2230;color:#a0a8b8;font-size:13px;text-transform:uppercase;letter-spacing:0.5px">Analytics &amp; Privacy</h4>
+      <h4 class="settings-group-title">Analytics &amp; Privacy</h4>
 
       <div class="row">
         <label style="flex:1">Kestrel's Impact</label>
         <span class="muted" id="settingsTotalImpact">—</span>
       </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Total number of photos analyzed by Kestrel
+      <div class="muted settings-hint">Total number of photos analyzed by Kestrel
         on this computer.</div>
 
       <div style="border-top:1px solid #1d2230;margin:4px 0 2px"></div>
@@ -1048,7 +1048,7 @@
           <span class="muted" id="settingsAnalyticsLabel">Opt in</span>
         </label>
       </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Helps improve Kestrel. No filenames,
+      <div class="muted settings-hint">Helps improve Kestrel. No filenames,
         paths, or images are ever shared. You can change this at any time.</div>
 
       <div class="row">
@@ -1057,7 +1057,7 @@
           <input type="checkbox" id="settingsCrashReports" />
         </label>
       </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Automatically send a report if Kestrel
+      <div class="muted settings-hint">Automatically send a report if Kestrel
         crashes, so we can find and fix the problem. No filenames, paths, or images are ever shared.</div>
 
       <div class="row">
@@ -1068,7 +1068,7 @@
           <option value="never">Never</option>
         </select>
       </div>
-      <div class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:8px">Sort a few bird crops by sharpness
+      <div class="muted settings-hint">Sort a few bird crops by sharpness
         to help improve Kestrel. Anonymous.
         <a href="#" class="qf-link" id="settingsQfViewLog">View what I've shared</a> &middot;
         <a href="#" class="qf-link" id="settingsQfForget">Forget my shared feedback</a></div>
@@ -1862,17 +1862,17 @@
   </dialog>
 
   <!-- Version Update Toast Notification -->
-  <div id="versionUpdateToast" style="display:none;position:fixed;bottom:20px;right:20px;max-width:380px;background:#1a2a1a;border:2px solid #4a7a4a;border-radius:8px;padding:16px;box-shadow:0 4px 16px rgba(0,0,0,0.4);z-index:9999;font-family:var(--font-family);">
-    <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:12px;">
-      <h3 style="margin:0;display:flex;align-items:center;gap:8px;font-size:16px;color:#6ec16e;">
-        <span id="versionUpdatePriority" style="font-size:18px;"></span>
-        <span id="versionUpdateTitle" style="flex:1;">New Version Available</span>
+  <div id="versionUpdateToast">
+    <div class="vu-head">
+      <h3>
+        <span id="versionUpdatePriority"></span>
+        <span id="versionUpdateTitle">New Version Available</span>
       </h3>
-      <button id="versionUpdateClose" style="background:none;border:none;color:#7ca3d9;cursor:pointer;font-size:18px;padding:0;width:24px;height:24px;display:flex;align-items:center;justify-content:center;">&times;</button>
+      <button id="versionUpdateClose">&times;</button>
     </div>
-    <ul id="versionUpdateNotes" style="margin:12px 0;padding-left:20px;font-size:13px;color:#c0c0c0;line-height:1.5;"></ul>
-    <div id="versionUpdateWindowsNote" style="font-size:12px;color:#999;margin:12px 0;padding:8px;background:rgba(255,255,255,0.05);border-radius:4px;display:none;"></div>
-    <button id="versionUpdateDownloadBtn" style="width:100%;padding:10px 16px;margin-top:12px;background:#1a4a1a;color:#6ec16e;border:1px solid #6ec16e;border-radius:6px;cursor:pointer;font-size:14px;font-weight:600;text-decoration:none;display:block;text-align:center;">Download Update</button>
+    <ul id="versionUpdateNotes"></ul>
+    <div id="versionUpdateWindowsNote"></div>
+    <button id="versionUpdateDownloadBtn">Download Update</button>
   </div>
 
   <!-- JS modules split by feature. Order matters: state/utils first, then leaf modules,

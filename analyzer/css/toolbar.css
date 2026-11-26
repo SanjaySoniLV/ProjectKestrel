@@ -27,7 +27,7 @@
 }
 .actions-secondary-row button {
   white-space: nowrap;
-  font-size: 13px;
+  font-size: var(--fs-md);
 }
 
 .toolbar-row.status {
@@ -35,7 +35,7 @@
 }
 
 #saveCsv:not([disabled]) {
-  background: #f5c542;
+  background: var(--star);
   border-color: #d1a735;
   color: #1a1a1a;
 }
@@ -54,10 +54,10 @@
   height: 18px;
   margin-left: 8px;
   border-radius: 50%;
-  background: #0e1117;
-  border: 1px solid #2a3040;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
   color: #a9c9ee;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1;
 }
 
@@ -65,12 +65,12 @@
   position: fixed;
   min-width: 220px;
   max-width: 320px;
-  background: #0e1117;
-  border: 1px solid #2a3040;
-  color: #cbd2dc;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  color: var(--text-2);
   padding: 8px 10px;
-  border-radius: 8px;
-  font-size: 12px;
+  border-radius: var(--radius-md);
+  font-size: var(--fs-sm);
   white-space: normal;
   opacity: 0;
   pointer-events: none;
@@ -112,9 +112,9 @@
 .sidebar-cta {
   width: 100%;
   height: 42px;
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 400;
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   letter-spacing: 0.1px;
 }
 
@@ -125,9 +125,9 @@
 .segmented-strip {
   display: flex;
   align-items: stretch;
-  background: #0e1117;
-  border: 1px solid #2a3040;
-  border-radius: 10px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
   overflow: hidden;
   flex-wrap: nowrap;
   min-height: 30px;
@@ -141,7 +141,7 @@
   border: none;
   border-radius: 0;
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -149,7 +149,7 @@
   gap: 5px;
   transition: background .12s ease, color .12s ease, box-shadow .12s ease;
   /* Vertical divider between siblings — kept subtle. */
-  border-left: 1px solid #1d2230;
+  border-left: 1px solid var(--chip);
   /* All four footer labels are text (Settings, Feedback, Tutorial,
      Support), totalling ~279px of intrinsic width. That clears the default
      400px sidebar easily, but the user can drag the sidebar down to 260px,
@@ -172,13 +172,13 @@
 .segmented-strip-item:hover:not([disabled]) {
   background: #1a2030;
   color: #fff;
-  border-left-color: #2b6ec8;
-  box-shadow: inset -1px 0 0 #2b6ec8;
+  border-left-color: var(--primary-border);
+  box-shadow: inset -1px 0 0 var(--primary-border);
 }
 /* First-of-type has no border-left to recolour — give it an inset blue
    highlight on the left side for symmetry. */
 .segmented-strip-item:first-of-type:hover:not([disabled]) {
-  box-shadow: inset 1px 0 0 #2b6ec8, inset -1px 0 0 #2b6ec8;
+  box-shadow: inset 1px 0 0 var(--primary-border), inset -1px 0 0 var(--primary-border);
 }
 .segmented-strip-item[disabled] {
   opacity: 0.45;
@@ -190,7 +190,7 @@
 
 /* Donate variant: tinted to remain visually distinct without breaking the strip */
 .segmented-strip-item.donate-item {
-  color: #f5c542;
+  color: var(--star);
 }
 .segmented-strip-item.donate-item:hover:not([disabled]) {
   background: rgba(245, 197, 66, 0.08);
@@ -213,13 +213,13 @@
 .folder-tree-footer {
   flex: 0 0 auto;
   border: none;
-  border-top: 1px solid #2a3040;
+  border-top: 1px solid var(--border);
   border-radius: 0 0 10px 10px;
   background: transparent;
   overflow: hidden;
 }
 .folder-tree-footer .segmented-strip-item {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 7px 10px;
   min-height: 32px;
   line-height: 1.2;
@@ -255,7 +255,7 @@
 .tree-select-toggle-label {
   /* Explicit font-size so the label matches Clear exactly (avoids any
      inherited rendering quirks that made the toggle look heavier). */
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.2;
   letter-spacing: 0.1px;
 }

@@ -5,7 +5,7 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 .scene-qf.hidden { display: none; }
@@ -16,7 +16,7 @@
   border-radius: var(--radius-sm);
   padding: 1px 7px;
   height: auto;
-  font-size: 13px;
+  font-size: var(--fs-md);
   line-height: 1.5;
   cursor: pointer;
   color: var(--text);
@@ -59,8 +59,8 @@ dialog.kdlg.qf-dlg[data-step="sort"] .qf-body { flex: 1 1 auto; min-height: 0; d
   dialog.kdlg.qf-dlg { transition: none; }
 }
 dialog.kdlg.qf-dlg .kdlg-body { padding: 20px 22px 18px; }
-.qf-title { margin: 0 0 4px; font-size: 16px; line-height: 1.35; font-weight: 600; }
-.qf-subtitle { font-size: 13px; margin-bottom: 14px; }
+.qf-title { margin: 0 0 4px; font-size: var(--fs-lg); line-height: 1.35; font-weight: 600; }
+.qf-subtitle { font-size: var(--fs-md); margin-bottom: 14px; }
 .qf-subtitle:empty { display: none; }
 .qf-dlg .qf-title:has(+ .qf-subtitle:empty) { margin-bottom: 14px; }
 .qf-spacer { flex: 1; }
@@ -83,7 +83,7 @@ dialog.kdlg.qf-dlg .kdlg-body { padding: 20px 22px 18px; }
 }
 .qf-end {
   flex: 0 0 auto;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 700;
   letter-spacing: .04em;
   text-transform: uppercase;
@@ -129,7 +129,7 @@ dialog.kdlg.qf-dlg .kdlg-body { padding: 20px 22px 18px; }
   align-items: center;
   padding: 0 2px 0 6px;
   color: var(--muted);
-  font-size: 16px;
+  font-size: var(--fs-lg);
 }
 .qf-rank {
   flex: 0 0 auto;
@@ -178,7 +178,7 @@ dialog.kdlg.qf-dlg .kdlg-body { padding: 20px 22px 18px; }
   border-radius: var(--radius-pill);
   background: var(--chip);
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
 }
 
@@ -194,9 +194,9 @@ dialog.kdlg.qf-dlg .kdlg-body { padding: 20px 22px 18px; }
 }
 
 /* Consent + thank-you steps */
-.qf-consent-text { font-size: 13px; margin: 0 0 12px; line-height: 1.5; }
+.qf-consent-text { font-size: var(--fs-md); margin: 0 0 12px; line-height: 1.5; }
 .qf-consent-links { margin-bottom: 10px; }
-.qf-remember { font-size: 13px; gap: 6px; margin: 0; }
+.qf-remember { font-size: var(--fs-md); gap: 6px; margin: 0; }
 .qf-thanks-text { margin: 0; }
 
 /* Shared-log viewer */
@@ -209,10 +209,10 @@ dialog.kdlg.qf-dlg .kdlg-body { padding: 20px 22px 18px; }
   border: 1px solid var(--card-border);
   border-radius: var(--radius-md);
   background: var(--card);
-  font-size: 13px;
+  font-size: var(--fs-md);
 }
-.qf-log-time { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.qf-consent-lists { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 0 0 14px; font-size: 13px; line-height: 1.45; }
+.qf-log-time { font-size: var(--fs-xs); color: var(--muted); font-variant-numeric: tabular-nums; }
+.qf-consent-lists { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 0 0 14px; font-size: var(--fs-md); line-height: 1.45; }
 .qf-consent-col { padding: 10px 12px; border: 1px solid var(--card-border); border-radius: var(--radius-md); background: var(--card); }
 .qf-consent-head { font-weight: 600; margin-bottom: 4px; }
 @media (max-width: 480px) { .qf-consent-lists { grid-template-columns: 1fr; } }

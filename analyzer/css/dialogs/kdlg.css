@@ -106,7 +106,7 @@ dialog.kdlg.kdlg--grid[open] {
   justify-content: flex-end;
   gap: 8px;
   padding: 10px 16px;
-  border-top: 1px solid #1d2230;
+  border-top: 1px solid var(--chip);
   background: #0f1219;
   box-sizing: border-box;
 }

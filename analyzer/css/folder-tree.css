@@ -1,6 +1,6 @@
 /* Folder tree panel: a single bordered container that visually swallows the
    Load Folder button (top bar) and the Select/Clear strip (bottom bar).
-   Border color matches the Analyze Folders primary CTA (#2b6ec8) so the
+   Border color matches the Analyze Folders primary CTA (var(--primary-border)) so the
    sidebar reads as one cohesive blue-accented unit. */
 .folder-tree-wrap {
   display: flex;
@@ -11,8 +11,8 @@
   overflow: hidden;
   padding: 0;
   background: #0a0d12;
-  border: 1px solid #2b6ec8;
-  border-radius: 10px;
+  border: 1px solid var(--primary-border);
+  border-radius: var(--radius-lg);
 }
 
 /* Empty state: only the tree contents are dimmed/disabled, NOT the whole
@@ -27,7 +27,7 @@
    No own border — it sits inside the unified container. */
 .folder-tree-empty-hint {
   padding: 18px 14px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
   text-align: center;
   font-style: italic;
@@ -57,12 +57,12 @@
   width: 100%;
   height: 38px;
   padding: 0 12px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 400;
-  background: #1d5aa8;
+  background: var(--primary-bg);
   border: none;
   /* Divider matches the wrap's outer blue border for visual continuity */
-  border-bottom: 1px solid #2b6ec8;
+  border-bottom: 1px solid var(--primary-border);
   border-radius: 10px 10px 0 0;
   color: #e6eef9;
   cursor: pointer;
@@ -70,11 +70,11 @@
   flex: 0 0 auto;
 }
 .folder-load-btn:hover {
-  background: #1f63b8;
+  background: var(--primary-bg-hover);
   color: #fff;
 }
 .folder-load-btn-plus {
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 500;
   line-height: 1;
   color: #cfe2ff;
@@ -106,14 +106,14 @@
   gap: 6px;
   padding: 8px 8px 10px;
   margin: 0 0 2px;
-  border-bottom: 1px solid var(--card-border, #222634);
+  border-bottom: 1px solid var(--card-border);
 }
 .folder-recents-header {
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--muted, #8a9099);
+  color: var(--muted);
 }
 .folder-recents-chips {
   display: flex;
@@ -128,7 +128,7 @@
   font-size: 10.5px;
   background: #14202f;
   border: 1px solid #25394e;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   color: #cbd6e2;
   cursor: pointer;
   max-width: 100%;
@@ -169,7 +169,7 @@
   align-items: center;
   gap: 3px;
   padding: 2px 5px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   cursor: pointer;            /* every row is clickable (expand / load) */
   min-height: 22px;
 }
@@ -190,7 +190,7 @@
 .tree-arrow.open { transform: rotate(90deg); }
 .tree-arrow.leaf { visibility: hidden; cursor: default; }
 /* Folder icon: alignment anchor */
-.tree-icon { flex: 0 0 18px; font-size: 14px; text-align: center; color: var(--folder-icon); }
+.tree-icon { flex: 0 0 18px; font-size: var(--fs-base); text-align: center; color: var(--folder-icon); }
 
 /* ── Right-side checkbox column ───────────────────────────────────────────────
    Pinned at the right edge of every row; present unconditionally so the right
@@ -275,13 +275,13 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .tree-count {
   margin-left: 8px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   flex-shrink: 0;
 }
 
@@ -340,7 +340,7 @@
 }
 
 .tree-in-progress-hourglass {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   margin-left: 1px;
   margin-right: 3px;
   display: inline-block;
@@ -354,7 +354,7 @@
    in-progress hourglass). Amber rather than red: drift is a "look at this",
    not an error, and every fix behind it is user-confirmed. */
 .tree-repair-warn {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   margin-left: 1px;
   margin-right: 3px;
   display: inline-block;
@@ -380,7 +380,7 @@
   border-radius: 50%;
   background: transparent;
   color: var(--muted, #889);
-  font-size: 14px;
+  font-size: var(--fs-base);
   line-height: 1;
   cursor: pointer;
 }
@@ -395,7 +395,7 @@
   z-index: 9999;
   background: #23272e;
   border: 1px solid #444;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 4px 0;
   min-width: 220px;
   box-shadow: 0 4px 16px rgba(0,0,0,0.5);
@@ -403,7 +403,7 @@
 .kestrel-ctx-menu-item {
   padding: 7px 16px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--fs-md);
   color: #ddd;
   white-space: nowrap;
 }
@@ -412,7 +412,7 @@
   color: #fff;
 }
 .kestrel-ctx-menu-item.danger {
-  color: #e74c3c;
+  color: var(--bad);
 }
 .kestrel-ctx-menu-item.danger:hover {
   background: #5a2020;
@@ -428,7 +428,7 @@
   opacity: 0.5;
 }
 .tree-node-row.no-kestrel .tree-label {
-  color: #cbd2dc;
+  color: var(--text-2);
 }
 
 .tree-node-row.active .tree-label {
@@ -451,7 +451,7 @@
 #folderTree > .tree-node + .tree-node {
   margin-top: 10px;
   padding-top: 8px;
-  border-top: 1px solid #1d2230;
+  border-top: 1px solid var(--chip);
 }
 
 .tree-cb {
@@ -460,7 +460,7 @@
   height: 13px;
   margin: 0;
   cursor: pointer;
-  accent-color: #3a84e6;
+  accent-color: var(--focus);
 }
 
 /* ── "Upgrade All to 3.0" row: sits directly above the Clear / Select strip.
@@ -471,11 +471,11 @@
 .tree-upgrade-all-row {
   flex: 0 0 auto;
   padding: 6px 8px;
-  border-top: 1px solid #2a3040;
+  border-top: 1px solid var(--border);
 }
 .tree-upgrade-all-row.hidden { display: none; }
 .tree-upgrade-all-btn {
   width: 100%;
   padding: 6px 10px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }

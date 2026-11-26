@@ -14,7 +14,7 @@
 }
 .tut-chooser-sub {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 .tut-chooser-choices {
@@ -31,8 +31,8 @@
   height: auto;
   padding: 14px 16px;
   background: #10141c;
-  border: 1px solid #2a3040;
-  border-radius: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
   text-align: left;
   color: var(--text);
   cursor: pointer;
@@ -73,12 +73,12 @@
 .tut-chooser-label {
   display: block;
   font-weight: 700;
-  font-size: 14px;
+  font-size: var(--fs-base);
   color: var(--text);
 }
 .tut-chooser-hint {
   display: block;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
   line-height: 1.5;
   font-weight: 400;
@@ -93,9 +93,9 @@
   background: none;
   border: 1px solid #333;
   color: var(--muted);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 6px 14px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   cursor: pointer;
 }
 .tut-chooser-cancel:hover { border-color: #555; color: var(--text); }

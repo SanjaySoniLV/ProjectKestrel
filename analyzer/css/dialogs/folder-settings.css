@@ -7,11 +7,11 @@
 .fset-head {
   flex: 0 0 auto;
   padding: 16px 18px 12px;
-  border-bottom: 1px solid #1d2230;
+  border-bottom: 1px solid var(--chip);
 }
-.fset-head h3 { margin: 0 0 2px; font-size: 16px; }
+.fset-head h3 { margin: 0 0 2px; font-size: var(--fs-lg); }
 .fset-sub {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -26,12 +26,12 @@
 
 .fset-sec {
   padding: 12px 0;
-  border-bottom: 1px solid #1d2230;
+  border-bottom: 1px solid var(--chip);
 }
 .fset-sec:last-child { border-bottom: 0; }
 .fset-sec h4 {
   margin: 0 0 6px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -46,7 +46,7 @@
 .fset-sec--row h4 { margin-bottom: 2px; }
 .fset-sec--row button { flex: 0 0 auto; }
 
-.fset-hint { font-size: 12px; line-height: 1.45; margin-top: 4px; }
+.fset-hint { font-size: var(--fs-sm); line-height: 1.45; margin-top: 4px; }
 .fset-hint--warn { color: #d9a45a; }
 
 /* Folder info: two-column key/value list */
@@ -54,7 +54,7 @@
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
   gap: 4px 14px;
-  font-size: 13px;
+  font-size: var(--fs-md);
 }
 .fset-k { color: var(--muted); }
 .fset-v { min-width: 0; }
@@ -62,14 +62,14 @@
 .fset-link {
   margin-left: 6px;
   padding: 1px 8px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .fset-toggle {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   cursor: pointer;
 }
 .fset-toggle input:disabled + span { opacity: 0.55; }
@@ -84,17 +84,17 @@
   gap: 4px 12px;
   padding: 8px 10px;
   background: #0a0d12;
-  border: 1px solid #2a3040;
-  border-radius: 6px;
-  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
 }
 .fset-region-grid.hidden { display: none; }
 .fset-region-grid label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 .fset-region-actions { display: flex; justify-content: flex-end; }
 .fset-progress {
   height: 6px;
-  border-radius: 999px;
-  background: #1d2230;
+  border-radius: var(--radius-pill);
+  background: var(--chip);
   overflow: hidden;
 }
 .fset-progress.hidden { display: none; }
@@ -110,7 +110,7 @@
   margin-top: 6px;
   padding: 12px 12px 14px;
   border: 1px solid #3f2020;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: #1c1416;
 }
 .fset-sec--danger h4 { color: #d08888; }

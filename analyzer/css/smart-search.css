@@ -24,8 +24,8 @@
   left: 6px;
   z-index: 2;
   padding: 1px 6px;
-  border-radius: 8px;
-  font-size: 11px;
+  border-radius: var(--radius-md);
+  font-size: var(--fs-xs);
   background: rgba(42, 33, 64, 0.88);
   color: #e7dcff;
   pointer-events: none;
@@ -39,10 +39,10 @@
   right: 6px;
   top: 6px;
   padding: 0 6px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: rgba(42, 33, 64, 0.85);
   color: #e7dcff;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 18px;
 }
 .filmstrip-card.smart-match .filmstrip-thumb,
@@ -58,10 +58,10 @@
   bottom: 6px;
   z-index: 2;
   padding: 0 6px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: rgba(42, 33, 64, 0.88);
   color: #e7dcff;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 18px;
   pointer-events: none;
 }
@@ -78,11 +78,11 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   border: 1px solid #3a4a6a;
   background: rgba(14, 17, 23, 0.9);
-  color: #cbd2dc;
-  font-size: 14px;
+  color: var(--text-2);
+  font-size: var(--fs-base);
   line-height: 1;
   cursor: pointer;
   opacity: 0;
@@ -99,11 +99,11 @@
   min-width: 200px;
   padding: 4px 0;
   background: #181c26;
-  border: 1px solid #2a3040;
-  border-radius: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
-  color: #cbd2dc;
-  font-size: 13px;
+  color: var(--text-2);
+  font-size: var(--fs-md);
 }
 
 /* The smart search box. One bordered bar (#smartSearchBox) holds the ✨ icon, the
@@ -120,8 +120,8 @@
   gap: 6px;
   padding: 0 6px 0 10px;
   border: 1px solid #6a4fb3;
-  border-radius: 8px;
-  background: #0e1117;
+  border-radius: var(--radius-md);
+  background: var(--input-bg);
   box-shadow: 0 0 0 1px rgba(106, 79, 179, 0.25);
   transition: border-color .15s ease, box-shadow .15s ease;
 }
@@ -131,7 +131,7 @@
 }
 .smart-bar-icon {
   flex: 0 0 auto;
-  font-size: 14px;
+  font-size: var(--fs-base);
   line-height: 1;
 }
 .smart-bar-field {
@@ -190,7 +190,7 @@
   position: relative;
   pointer-events: auto;
   cursor: default;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   background: #2f2450;
   color: #ece4ff;
   box-shadow: 0 0 0 1px #2f2450, 0 0 0 2px #7a5fd0;
@@ -221,7 +221,7 @@
   border: 1px solid #5a6178;
   background: #22273a;
   color: #fff;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 1;
   cursor: pointer;
 }
@@ -237,17 +237,17 @@
   z-index: 60;
   max-width: 340px;
   padding: 7px 10px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   border: 1px solid #3a3f52;
   background: #181c26;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
-  color: #cbd2dc;
-  font-size: 12px;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
   line-height: 1.45;
   white-space: normal;
   pointer-events: none;
 }
-.smart-chip-tip-head { color: #e7e9ee; }
+.smart-chip-tip-head { color: var(--text); }
 .smart-chip-tip-kind { font-weight: 600; color: #c9b8ff; }
 .smart-chip-tip-kind--family,
 .smart-chip-tip-kind--group { color: #8fdc9f; }
@@ -264,7 +264,7 @@
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: #b9c0d0;
 }
 .smart-search-bar.hidden { display: none; }
@@ -277,7 +277,7 @@
 .smart-search-warn { color: #e0b070; }
 .smart-search-btn {
   height: 22px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   padding: 0 8px;
   border-radius: 11px;
   background: #2a2140;
@@ -299,10 +299,10 @@
   border-radius: 50%;
   background: transparent;
   color: #8a93a6;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1;
 }
-.smart-search-clear:hover { background: #2a3040; border: 0; color: #fff; }
+.smart-search-clear:hover { background: var(--border); border: 0; color: #fff; }
 .smart-search-clear.hidden { display: none; }
 
 /* "Try:" example links. One line: links that do not fit wrap onto a clipped
@@ -317,7 +317,7 @@
   justify-content: flex-end;
   column-gap: 8px;
   overflow: hidden;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 22px;
 }
 .smart-search-examples.hidden { display: none; }
@@ -329,7 +329,7 @@
   border-radius: 0;
   background: transparent;
   color: #b9a7e8;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   white-space: nowrap;
   text-decoration: underline dotted rgba(185, 167, 232, 0.6);
   text-underline-offset: 3px;

@@ -17,7 +17,7 @@
   justify-content: flex-end;
   gap: 8px;
   padding: 10px 16px;
-  border-top: 1px solid #1d2230;
+  border-top: 1px solid var(--chip);
   background: var(--panel);
 }
 
@@ -53,7 +53,7 @@
 .row label {
   min-width: 160px;
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--fs-md);
 }
 
 .row input[type="text"] {
@@ -80,10 +80,10 @@
 }
 
 .star {
-  font-size: 16px;
+  font-size: var(--fs-lg);
   line-height: 1;
   cursor: pointer;
-  color: #2a3040;
+  color: var(--border);
   /* No color transition — firing a transition on 5 stars × N cards during
      mouse movement adds up quickly */
 }
@@ -92,7 +92,7 @@
   color: #6aa0ff;
 }
 
-.stars .star.manual.filled { color: #f5c542; }
+.stars .star.manual.filled { color: var(--star); }
 .stars .star.auto.filled { color: #6aa0ff; }
 
 /* ── Custom rating profile editor ──────────────────────────────────────────
@@ -105,8 +105,8 @@
   padding: 14px 14px 12px;
   margin: -2px 0 12px;
   background: #0a0d12;
-  border: 1px solid #2a3040;
-  border-radius: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
 }
 .rating-custom-editor.hidden { display: none; }
 
@@ -125,7 +125,7 @@
 .rating-custom-bands {
   position: absolute;
   inset: 0;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   overflow: hidden;
 }
 .rating-custom-band {
@@ -135,7 +135,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: #8492a8;
   white-space: nowrap;
   border-right: 1px solid #2a3445;
@@ -146,7 +146,7 @@
 .rating-custom-band[data-star="2"] { background: rgba(120, 150, 190, 0.09); }
 .rating-custom-band[data-star="3"] { background: rgba(106, 160, 255, 0.11); }
 .rating-custom-band[data-star="4"] { background: rgba(190, 170, 90, 0.13); }
-.rating-custom-band[data-star="5"] { background: rgba(245, 197, 66, 0.17); color: #f5c542; }
+.rating-custom-band[data-star="5"] { background: rgba(245, 197, 66, 0.17); color: var(--star); }
 /* A band squeezed to almost nothing can't show its label. */
 .rating-custom-band.narrow { font-size: 0; }
 
@@ -168,8 +168,8 @@
   border: none;
   padding: 0;
   cursor: ew-resize;
-  color: #f5c542;
-  font-size: 13px;
+  color: var(--star);
+  font-size: var(--fs-md);
   line-height: 1;
   touch-action: none;
 }
@@ -181,7 +181,7 @@
   left: 50%;
   width: 2px;
   margin-left: -1px;
-  background: #f5c542;
+  background: var(--star);
   border-radius: 1px;
 }
 .rating-custom-handle span {
@@ -195,7 +195,7 @@
 .rating-custom-handle:hover::before,
 .rating-custom-handle.dragging::before { background: #ffd968; }
 .rating-custom-handle:focus-visible {
-  outline: 2px solid #2b6ec8;
+  outline: 2px solid var(--primary-border);
   outline-offset: 2px;
   border-radius: 3px;
 }
@@ -223,5 +223,17 @@
 .rating-custom-actions .btn {
   height: 26px;
   padding: 2px 10px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
+
+/* Section headings and hint lines inside the Settings dialog. */
+.settings-group-title {
+  margin: 12px 0 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--chip);
+  color: #a0a8b8;
+  font-size: var(--fs-md);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.settings-hint { font-size: var(--fs-sm); margin-top: -6px; margin-bottom: 8px; }

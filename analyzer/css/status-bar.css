@@ -1,13 +1,13 @@
 .status {
   color: var(--muted);
   padding: 8px 2px;
-  font-size: 13px;
+  font-size: var(--fs-md);
 }
 
 .version-badge {
   color: var(--muted);
   padding: 4px 2px 8px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 /* Folder-load progress bar */
@@ -19,7 +19,7 @@
 }
 
 .load-progress-label {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
@@ -28,16 +28,16 @@
 
 .load-progress-track {
   height: 4px;
-  background: #1d2230;
-  border-radius: 999px;
+  background: var(--chip);
+  border-radius: var(--radius-pill);
   overflow: hidden;
 }
 
 .load-progress-fill {
   height: 100%;
   width: 0%;
-  background: #3a84e6;
-  border-radius: 999px;
+  background: var(--focus);
+  border-radius: var(--radius-pill);
   transition: width .18s ease;
 }
 
@@ -48,9 +48,9 @@
   align-items: center;
   gap: 12px;
   padding: 3px 14px;
-  background: #111318;
-  border-top: 1px solid #1d2230;
-  font-size: 12px;
+  background: var(--panel);
+  border-top: 1px solid var(--chip);
+  font-size: var(--fs-sm);
   color: var(--muted);
   z-index: 10;
   min-height: 26px;
@@ -58,7 +58,7 @@
 
 .app-status-bar .status {
   padding: 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -73,7 +73,7 @@
 }
 
 .app-status-bar .load-progress-label {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   white-space: nowrap;
 }
 
@@ -84,7 +84,7 @@
 
 .app-status-bar .version-badge {
   padding: 0;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   margin-left: auto;
   white-space: nowrap;
 }
@@ -111,12 +111,12 @@
   height: 20px;
   min-width: 22px;
   padding: 0;
-  font-size: 13px;
+  font-size: var(--fs-md);
   line-height: 1;
   border-radius: 5px;
   background: transparent;
-  border: 1px solid #2a3040;
-  color: #cbd2dc;
+  border: 1px solid var(--border);
+  color: var(--text-2);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -132,8 +132,8 @@
   appearance: none;
   width: 90px;
   height: 4px;
-  background: #1d2230;
-  border-radius: 999px;
+  background: var(--chip);
+  border-radius: var(--radius-pill);
   outline: none;
   cursor: pointer;
   padding: 0;
@@ -145,7 +145,7 @@
   appearance: none;
   width: 12px;
   height: 12px;
-  background: #3a84e6;
+  background: var(--focus);
   border-radius: 50%;
   cursor: pointer;
   border: none;
@@ -153,7 +153,7 @@
 .status-zoom-slider::-moz-range-thumb {
   width: 12px;
   height: 12px;
-  background: #3a84e6;
+  background: var(--focus);
   border-radius: 50%;
   cursor: pointer;
   border: none;
