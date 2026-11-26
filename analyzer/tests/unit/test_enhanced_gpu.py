@@ -390,6 +390,26 @@ def test_setup_success_saves_per_model_results(monkeypatch):
     assert eg.status()["set_up"] and eg.status()["models"]["detector"]["enabled"]
 
 
+@pytest.mark.parametrize("where", ["before_validation", "during_validation"])
+def test_cancelled_rerun_keeps_the_working_setup(monkeypatch, where):
+    _good_state()
+    prior = eg.load_state()
+    _setup_env(monkeypatch, [_dev("OpenVINOExecutionProvider")],
+               lambda ep, progress, cancel, timeout=0: {"models": [], "cancelled": True})
+    st = eg.run_setup(cancel=lambda: where == "before_validation")
+    assert not st["ok"] and st.get("cancelled") and st["reason"] == "Cancelled."
+    assert eg.load_state() == prior
+    assert eg.status()["set_up"]
+    assert eg.vendor_spec_for("detector", "mdv5a.onnx") is not None
+
+
+def test_cancelled_first_setup_saves_nothing(monkeypatch):
+    _setup_env(monkeypatch, [_dev("OpenVINOExecutionProvider")],
+               lambda ep, progress, cancel, timeout=0: {"models": [], "cancelled": True})
+    st = eg.run_setup()
+    assert st.get("cancelled") and eg.load_state() is None and not eg.status()["set_up"]
+
+
 def test_setup_no_model_passes_is_not_ok(monkeypatch):
     _setup_env(monkeypatch, [_dev("OpenVINOExecutionProvider")],
                lambda ep, progress, cancel, timeout=0: {"models": [_res("detector", False)], "exit_code": 0})
