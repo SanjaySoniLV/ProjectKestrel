@@ -445,7 +445,7 @@
 
       Promise.resolve()
         .then(function() { return (typeof loadSpeciesFamilyMap === 'function') ? loadSpeciesFamilyMap() : null; })
-        .catch(function() {})
+        .catch(function(e) { console.warn('[tutorial] species map load failed', e); })
         .then(function() {
           if (_tutStep !== idx || !grid.isConnected) return;
           var meta = (typeof _birdCatalogMeta !== 'undefined' && _birdCatalogMeta) || null;
@@ -500,11 +500,11 @@
         s.bird_regions = finalRegions;
         saveSettings(s);
         if (hasPywebviewApi && window.pywebview?.api?.save_settings_data) {
-          try { await window.pywebview.api.save_settings_data(s); } catch (_) {}
+          try { await window.pywebview.api.save_settings_data(s); } catch (e) { console.warn('[tutorial] save regions failed', e); }
         }
         // Same repaint as Settings: species pills and the combobox follow the region.
         if (changed && typeof rows !== 'undefined' && rows.length > 0 && typeof renderScenes === 'function') {
-          try { await renderScenes(); } catch (_) {}
+          try { await renderScenes(); } catch (e) { console.warn('[tutorial] repaint failed', e); }
         }
       } catch (e) { console.warn('[tutorial] apply regions failed', e); }
     }

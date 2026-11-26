@@ -1,24 +1,24 @@
 {
   "big_file_lines": {
-    "analyzer/api_bridge.py": 10335,
-    "analyzer/cloud_compute_client.py": 1765,
-    "analyzer/css/dialogs/analyze.css": 1510,
+    "analyzer/api_bridge.py": 10515,
+    "analyzer/cloud_compute_client.py": 1763,
+    "analyzer/css/dialogs/analyze.css": 1512,
     "analyzer/css/perch.css": 1795,
-    "analyzer/culling.html": 3972,
-    "analyzer/js/analyze-dialog.js": 1552,
-    "analyzer/js/cloud-compute.js": 2348,
+    "analyzer/culling.html": 4044,
+    "analyzer/js/analyze-dialog.js": 1546,
+    "analyzer/js/cloud-compute.js": 2345,
     "analyzer/js/perch.js": 1732,
-    "analyzer/js/queue.js": 1679,
+    "analyzer/js/queue.js": 1676,
     "analyzer/js/scene-dialog.js": 3028,
-    "analyzer/kestrel_analyzer/pipeline.py": 2460,
-    "analyzer/visualizer.html": 1973,
-    "analyzer/visualizer.py": 1667
+    "analyzer/kestrel_analyzer/pipeline.py": 2459,
+    "analyzer/visualizer.html": 1975,
+    "analyzer/visualizer.py": 1650
   },
-  "css_hex_outside_tokens": 1124,
+  "css_hex_outside_tokens": 1123,
   "css_important": 30,
   "js_empty_catch": 197,
   "py_dual_import_fallbacks": 103,
   "py_except_exception_pass": 163,
   "py_long_functions": 21,
-  "tombstone_comments": 116
+  "tombstone_comments": 37
 }
