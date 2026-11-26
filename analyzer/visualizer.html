@@ -1216,6 +1216,7 @@
     <div class="analyze-dlg">
       <div class="analyze-dlg-header">
         <h3 style="margin:0;flex:1;">🔬 Analyze Folders</h3>
+        <button id="analyzeDlgCancel" type="button" class="analyze-dlg-close" title="Cancel and close" aria-label="Close">✕</button>
       </div>
       <div class="analyze-dlg-grid">
 
@@ -1503,10 +1504,10 @@
           </div>
 
           <!-- Compact action row. No more "1 folder selected" text — the
-               per-folder list above shows what's queued. Cancel becomes a
-               small X icon button so Start Analysis is the visual primary. -->
+               per-folder list above shows what's queued. Cancel is the ✕ in
+               the dialog header (top-right, like the other dialogs), so Start
+               Analysis is the only button here. -->
           <div class="analyze-dlg-action-row">
-            <button id="analyzeDlgCancel" class="analyze-dlg-cancel-icon" title="Cancel and close">✕</button>
             <button id="analyzeDlgAdd" class="primary analyze-dlg-start-btn" disabled><span class="start-btn-icon">▶</span><span class="start-btn-text">Start Analysis</span></button>
           </div>
           <!-- Hidden span retained as no-op so any code paths that still
