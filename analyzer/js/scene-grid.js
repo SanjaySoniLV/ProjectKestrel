@@ -466,10 +466,10 @@
         // Secondary title row -- only shown when the scene has a folder
         // prefix (sub-folder name visible because group-by-folder header is
         // off) or a user-set scene name. Otherwise the body collapses to
-        // just the chip/meta strip. ``#N`` is no longer rendered: the
-        // image and grid position carry the identity.
+        // just the chip/meta strip. The image and grid position identify the
+        // scene, so no ``#N`` is shown.
         // Build any user-controlled substring with textContent only, never
-        // innerHTML, per FINDING-01.
+        // innerHTML: a crafted scene name must not be able to inject script.
         const needTitleRow = !!(s.sceneName || (_folderName && !showFolderHeaders));
         const title = needTitleRow ? document.createElement('div') : null;
         if (title) {

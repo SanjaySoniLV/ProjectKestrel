@@ -555,7 +555,7 @@ _UI_PRESERVE_COLUMNS = ["culled", "culled_origin"]
 # 3.8s. The pipeline saves after every image while the UI's auto-refresh timer
 # reads the same file, and on Windows those collide by design -- see
 # ``retry_on_file_lock``, which describes the window as "wide open in practice".
-# Losing that race used to abort the run, so the writer is given a longer ceiling
+# Losing that race would abort the run, so the writer is given a longer ceiling
 # than the shared default. It stays local to the writer: the UI's readers must
 # stay responsive and are better off failing fast and retrying on the next tick.
 _SAVE_PRESERVE_READ_ATTEMPTS = 20

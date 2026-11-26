@@ -385,12 +385,11 @@ def _is_safe_external_url(url) -> bool:
     or forward-slash ``//host``), and any URL containing control characters —
     is rejected.
 
-    Rationale (FINDING-01): ``webbrowser.open`` ultimately calls
-    ``ShellExecute`` on Windows, which happily launches local executables when
-    given a ``file://`` URL or a custom URI scheme bound to an installed
-    handler. Combined with the stored DOM-XSS formerly present in the scene
-    renderer, that was a clean stored-XSS-to-RCE chain. The allowlist closes
-    the browser side of that chain.
+    Rationale: ``webbrowser.open`` ultimately calls ``ShellExecute`` on
+    Windows, which happily launches local executables when given a ``file://``
+    URL or a custom URI scheme bound to an installed handler. Any script
+    injected into the page (for example through a crafted scene name) could
+    turn that into code execution. The allowlist closes that path.
     """
     if not isinstance(url, str):
         return False
@@ -676,20 +675,15 @@ class Api:
             except Exception as e:
                 warn(f'[sandbox] bookmark activation failed: {e}')
 
-        # (StoreKit priming used to run here: the storefront decided the
-        # Support-link destination, and SKPaymentQueue.storefront stays nil
-        # until an observer is attached, so we warmed it at launch to avoid a
-        # fail-closed on the first click. get_support_url no longer consults the
-        # storefront — see its docstring — so the App Store build now opens no
-        # StoreKit connection at all. Restore this alongside the gate if that
-        # ever changes; mac_storefront.prime() is still there.)
+        # The App Store build opens no StoreKit connection at launch. If the
+        # Support link ever goes back to depending on the storefront, call
+        # mac_storefront.prime() here: SKPaymentQueue.storefront stays nil
+        # until an observer is attached, so the first click would fail closed.
 
     def _invalidate_account_caches(self) -> None:
-        """Drop every identity-scoped cache (Perch account, Perch usage, and
-        Cloud Compute usage) so a sign-out / account-switch / token rotation
-        can't surface the previous user's numbers. The CC usage cache in
-        particular was previously left untouched on sign-out, so the account
-        panel kept showing the prior account's "images analyzed this period"."""
+        """Drop every identity-scoped cache (Perch account and Perch usage) so a
+        sign-out / account-switch / token rotation can't surface the previous
+        user's numbers."""
         self._perch_account_cache = None
         self._perch_account_cache_at = 0.0
         self._perch_usage_cache = None
@@ -3356,7 +3350,7 @@ class Api:
         Gated by ``_is_safe_external_url``: only plain ``http``, ``https``,
         and ``mailto`` schemes are passed through. Everything else (``file``,
         ``javascript``, ``data``, custom URI handlers, UNC paths, control
-        characters) is rejected. See FINDING-01.
+        characters) is rejected.
         """
         try:
             if not _is_safe_external_url(url):
@@ -4550,9 +4544,6 @@ class Api:
         except Exception as e:
             error(f'[shutdown] recovery_status: failed to read recovery state: {e}')
             return {'success': False, 'error': str(e)}
-
-    # Phase 3: restore_analysis_queue removed — feature replaced by the
-    # analyze dialog's analyze_recents chip row.
 
     def clear_recovery_state(self, clear_queue_state: bool = True):
         """Clear persisted unclean-shutdown flag and optionally queue recovery snapshot."""
@@ -5807,9 +5798,8 @@ class Api:
                     else:
                         remote = client.get_status(job_id)
                         self._cc_apply_remote_snapshot(job_id, remote)
-                        # Client-side pause was removed — the only client-driven
-                        # job control left is cancel. The poller just refreshes
-                        # the remote snapshot.
+                        # Cancel is the only client-driven job control; the
+                        # poller just refreshes the remote snapshot.
                 except Exception as e:
                     self._cc_record_remote_failure(job_id, str(e))
                     # Log every 5th consecutive failure so the journal doesn't
@@ -5921,7 +5911,7 @@ class Api:
         try:
             submit = client.submit_job(files, analysis_settings=analysis_settings)
         except ccc.JobInProgressError as e:
-            # Stage 6 concurrency gate: a Cloud Compute job is already in
+            # Concurrency gate: a Cloud Compute job is already in
             # flight for this user. Not a fault — surface to JS with a
             # MyAccount deep-link instead of an error toast. ``activeJobIds`` /
             # ``current`` / ``limit`` are passed through from the Worker's
@@ -7175,7 +7165,7 @@ class Api:
                     "currentEffectiveDate": e.current_effective_date,
                 })
             except PerchPlanLimitExceeded as e:
-                # Stage 7: plan-tier cap denial. Surface a typed error so JS
+                # Plan-tier cap denial. Surface a typed error so JS
                 # renders an upgrade card with a clickable "Upgrade" button
                 # to myaccount.projectkestrel.org/perch. The presigning
                 # spinner unwinds because we end the job here.
@@ -7239,9 +7229,9 @@ class Api:
     def open_perch_url(self, url: str) -> dict:
         """Open a Perch gallery URL in the user's default browser.
 
-        Gated by ``_is_safe_external_url`` (same allowlist as ``open_url`` /
-        FINDING-01). A prefix check of ``http://`` / ``https://`` still lets
-        ``http://\\\\attacker\\share`` and CRLF-injected URLs through (S1-05).
+        Gated by ``_is_safe_external_url`` (same allowlist as ``open_url``).
+        A prefix check of ``http://`` / ``https://`` would still let
+        ``http://\\\\attacker\\share`` and CRLF-injected URLs through.
         """
         try:
             if not _is_safe_external_url(url):
@@ -7255,7 +7245,7 @@ class Api:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    # ─── Perch link persistence (Phase 1: per-folder perch_link.json) ──
+    # ─── Perch link persistence (per-folder perch_link.json) ──
 
     @staticmethod
     def _perch_link_path(folder_path: str) -> "Path":
@@ -9645,7 +9635,7 @@ class Api:
 
             # 5. COMMIT. The destination is complete; drop the rows from the
             #    source. Past this line the relocate has happened and failures
-            #    must no longer unwind the destination.
+            #    must not unwind the destination.
             if src_scenedata:
                 self._scenedata_drop_filenames(src_scenedata, move_set)
                 self._write_scenedata_for_repair(src_kestrel, src_scenedata)

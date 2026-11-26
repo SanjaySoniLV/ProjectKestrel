@@ -289,8 +289,8 @@
         const ready = await waitForPywebview();
         kdebug('[pickFolder] Pywebview API ready:', ready);
       }
-      // Phase 2 (additive multi-root): clicking "+ 📂 Load Folders…" no longer
-      // wipes existing checked folders — it ADDS to the tree. Each picked root
+      // Additive multi-root: clicking "+ 📂 Load Folders…" ADDS to the tree
+      // and keeps existing checked folders. Each picked root
       // scans and auto-checks its analyzed descendants. Multi-select picker
       // (choose_directories) returns N paths; fall back to single-select if
       // the multi method isn't exposed by the bridge.

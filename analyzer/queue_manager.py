@@ -219,7 +219,7 @@ class _QueueItem:
                  # Live-preview change counters: bumped each time the matching
                  # preview image is rewritten, so the UI refetches only on change.
                  'live_frame_ver', 'live_overlay_ver', 'live_crops_ver',
-                 # Phase 3 per-item options (set at enqueue time by the analyze
+                 # Per-item options (set at enqueue time by the analyze
                  # dialog; honored by the worker just-before processing).
                  'delete_kestrel_on_start', 'skip_if_already_done',
                  # Species geofence for this folder: list of bird_catalog
@@ -256,8 +256,8 @@ class _QueueItem:
         # Distinct scenes in the folder after a successful run (None until then
         # or when unknown). Feeds the donate prompt's "this run" copy.
         self.scene_total: int | None = None
-        # Phase 3: per-item flags set by the analyze dialog via enqueue's
-        # per_item_options. Default False so legacy callers behave unchanged.
+        # Per-item flags set by the analyze dialog via enqueue's
+        # per_item_options. Default False for callers that don't pass them.
         self.delete_kestrel_on_start: bool = False
         self.skip_if_already_done: bool = False
         self.species_regions: list | None = None
@@ -413,7 +413,7 @@ class QueueManager:
         max_bird_crops: int = 10,
         parallel_prefetch: int = 3,
         retry_errored: bool = False,
-        # Phase 3: per-path option map. Keys: path. Values: dict with optional
+        # Per-path option map. Keys: path. Values: dict with optional
         # 'delete_kestrel_on_start' and 'skip_if_already_done' booleans, and
         # 'species_regions' (list of region codes or ["global"]).
         # Used by the analyze dialog to defer .kestrel deletion to just-before
@@ -633,7 +633,7 @@ class QueueManager:
                     item.error = _GPU_LOST_MESSAGE
                 continue
 
-            # ── Phase 3: per-item gates BEFORE marking running / pipeline ──
+            # ── Per-item gates BEFORE marking running / pipeline ──
             # 1. skip_if_already_done — silently mark done without touching
             #    .kestrel if the folder is still fully analyzed with no errors.
             #    Re-inspect now (not at queue-build time) because state might

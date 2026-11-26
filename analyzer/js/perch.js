@@ -760,7 +760,7 @@
 
     function _perchSwapToErrorState(card, prog, rootPath) {
       if (!card) return;
-      // Stage 7: tier-cap denials get their own card with an account CTA
+      // Tier-cap denials get their own card with an account CTA
       // (no Retry — retrying against the same cap would just 403 again).
       if (prog && prog.message === 'plan_limit_exceeded') {
         _perchSwapToPlanLimitState(card, prog);
@@ -924,7 +924,7 @@
       _perchUpdateDialogTotals();
     }
 
-    /** Phase 2: ask the bridge whether a partial upload exists for this folder.
+    /** Ask the bridge whether a partial upload exists for this folder.
      *  On "resumable" → populate the resume banner and show it. On "complete"
      *  → quietly clean up the manifest by treating it as a normal fresh open
      *  (the bridge has already converted to no-op state on the server). On any
@@ -1031,7 +1031,7 @@
         _perchUpdateRejectToggleHint();
         _perchUpdateDialogTotals();
         _perchLoadAccountAndUsage();
-        // Phase 2: detect a resumable upload and surface a banner if found.
+        // Detect a resumable upload and surface a banner if found.
         // Fire-and-forget; user can interact with the dialog meanwhile.
         _perchCheckResumable(rootPath);
       } else {
@@ -1134,7 +1134,7 @@
       if (tagSyncClose) tagSyncClose.addEventListener('click', _perchCloseTagSyncDlg);
       if (tagSyncCancel) tagSyncCancel.addEventListener('click', _perchCloseTagSyncDlg);
       if (tagSyncConfirm) tagSyncConfirm.addEventListener('click', _perchDoTagSync);
-      // Phase 2 resumable-upload banner buttons.
+      // Resumable-upload banner buttons.
       const resumeBtn = document.getElementById('perchResumableResumeBtn');
       const startOverBtn = document.getElementById('perchResumableStartOverBtn');
       if (resumeBtn) resumeBtn.addEventListener('click', () => {
@@ -1678,8 +1678,8 @@
      *  linked    -> linked-state takeover view (live status probed async)
      *  unlinked  -> upload form (existing _perchOpenDialog flow)
      *
-     *  Also handles the upload-already-running gate + dirty-CSV save prompt
-     *  that the previous shareWithPerchFolder used to handle. */
+     *  Also handles the upload-already-running gate and the dirty-CSV save
+     *  prompt. */
     async function openPerchDialog(rootPath) {
       if (!window.pywebview?.api) {
         showToast('Share with Perch requires desktop mode', 4000);

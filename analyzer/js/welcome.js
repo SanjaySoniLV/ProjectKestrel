@@ -4,10 +4,8 @@
 
     // The in-app "What's New" note shown on the welcome screen. It ships baked
     // into the build: bump `version` to re-surface it to everyone, and it is
-    // dismissed per-version via the `last_seen_whats_new_version` setting.
-    // (A previous version also fetched an editable copy from
-    // projectkestrel.org/whats-new.json; that remote-override path was removed —
-    // the note now lives entirely in the app.)
+    // dismissed per-version via the `last_seen_whats_new_version` setting. It
+    // is never fetched from the network.
     const WHATS_NEW = {
       version: 'arctic-tern-fp-2',
       eyebrow: 'v(Arctic Tern (FP 2))',

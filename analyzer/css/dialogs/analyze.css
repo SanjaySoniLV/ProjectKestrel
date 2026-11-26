@@ -1,4 +1,4 @@
-/* ── Analyze Folders dialog (Phase 3: 3-column layout) ─────────────────────── */
+/* ── Analyze Folders dialog (3-column layout) ─────────────────────────────── */
 .analyze-dlg {
   /* Sizing comes from .kdlg--lg on the parent <dialog>; this is the inner
      layout container so it just fills the available flex slot. */
@@ -619,7 +619,7 @@
   letter-spacing: 0.2px;
 }
 
-/* ── State pills (Phase 3F) ──────────────────────────────────────────────────
+/* ── State pills ─────────────────────────────────────────────────────────────
    Two orthogonal CSS axes encode folder status in the queue builder:
      color = relationship to queue (blue/orange/gray/red/dim)
      shape = work progress (solid/half/outline/dot/warn)
@@ -749,7 +749,7 @@
   opacity: 1 !important;
 }
 
-/* ── Pre-queue confirmation modal (Phase 3H) ──────────────────────────────
+/* ── Pre-queue confirmation modal ─────────────────────────────────────────
    Sizing comes from .kdlg--sm on the parent <dialog>. */
 .analyze-confirm-dlg {
   border: 2px solid var(--warn);

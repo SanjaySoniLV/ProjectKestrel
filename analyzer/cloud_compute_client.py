@@ -370,7 +370,7 @@ class CloudComputeClient:
         try:
             return self._request("POST", "/api/jobs", body)
         except CloudComputeError as e:
-            # Stage 6 concurrency gate: Auth Worker rejects a second concurrent
+            # Concurrency gate: Auth Worker rejects a second concurrent
             # job per user. The cloud-compute Worker propagates this as a 403
             # with JSON body {error:'job_in_progress', activeJobId, message}.
             # Surface it as a typed exception so api_bridge can show a
@@ -484,9 +484,7 @@ class CloudComputeClient:
             body["failed"] = failed
         return self._request("POST", f"/api/jobs/{job_id}/complete", body)
 
-    # The cloud-compute pause feature was removed entirely — there are no
-    # /pause or /resume endpoints and the desktop no longer holds an upload
-    # pause. Cancel is the only client-driven job control.
+    # Cancel is the only client-driven job control (there is no pause/resume).
 
     def cancel_job_remote(self, job_id: str, *, origin: str = "user") -> dict:
         """POST /api/jobs/{jobId}/cancel — terminal cancellation. Worker marks
@@ -519,7 +517,7 @@ class CloudComputeClient:
         return self._request("POST", "/api/upload-test", body)
 
     def get_usage(self, period: str = "monthly") -> dict:
-        """GET /api/usage — Stage 5D. Returns the caller's aggregate cloud
+        """GET /api/usage. Returns the caller's aggregate cloud
         activity (totalJobs, totalImagesAnalyzed, byTerminalReason). Pass
         ``period='all'`` for lifetime totals; default is current UTC month.
 
@@ -536,7 +534,7 @@ class CloudComputeClient:
         limit: int | None = None,
         cursor: str | None = None,
     ) -> dict:
-        """GET /api/jobs — Stage 5C. Paginated list of the caller's jobs with
+        """GET /api/jobs. Paginated list of the caller's jobs with
         live counters baked in (uploaded/dispatched/downloaded/analyzed). For
         the dashboard's "my jobs" tab. ``status`` accepts a csv (`'running'`
         is shorthand for `'uploading,processing'`)."""
@@ -550,14 +548,14 @@ class CloudComputeClient:
         return self._request("GET", f"/api/jobs{suffix}")
 
     def get_job_events(self, job_id: str, *, order: str = "desc") -> dict:
-        """GET /api/jobs/:jobId/events — Stage 5C. Full audit timeline for one
+        """GET /api/jobs/:jobId/events. Full audit timeline for one
         job. ``order='asc'`` for chronological replay; default `'desc'`
         (newest first) for the dashboard's "recent activity" view."""
         suffix = "?order=asc" if order == "asc" else ""
         return self._request("GET", f"/api/jobs/{job_id}/events{suffix}")
 
     def get_job_timing_stats(self, job_id: str) -> dict:
-        """GET /api/jobs/:jobId/timing-stats — Stage 5C. Derived throughput +
+        """GET /api/jobs/:jobId/timing-stats. Derived throughput +
         latency aggregates (p50/p95) from job_images timestamps. Returns null
         fields when not enough samples exist (e.g. analyze stats mid-upload)."""
         return self._request("GET", f"/api/jobs/{job_id}/timing-stats")
@@ -1198,7 +1196,7 @@ def merge_pack_into_kestrel(
             # Some pack layouts place files at archive root.
             src_kestrel = tmp_path
 
-        # Copy crops + exports. Stage 4C: skip if a destination file already
+        # Copy crops + exports. Skip if a destination file already
         # exists — local artifacts are authoritative. This generalises the
         # protected_filenames check (which only covered anchor files) to all
         # local artifacts, matching the CSV append-only semantics from 4A.
@@ -1438,7 +1436,7 @@ def _merge_database_csv(
 ) -> None:
     """Merge ``src`` into ``dst``, deduping on the ``filename`` column.
 
-    **Append-new-rows-only semantics (Stage 4A).** Any filename already
+    **Append-new-rows-only semantics.** Any filename already
     present locally is preserved verbatim — the cloud row is dropped. This
     is stricter than the previous "protected_filenames only" gate: it
     protects every row from being clobbered by cloud-derived data, including
@@ -1681,7 +1679,7 @@ def _rebuild_scenedata_from_csv(
 
 
 def _merge_scenedata_additive(src: Path, dst: Path) -> None:
-    """Merge ``src`` scenedata JSON into ``dst`` additively (Stage 4B).
+    """Merge ``src`` scenedata JSON into ``dst`` additively.
 
     Mirrors the safety semantics of `database.update_scenedata_with_database`
     (line 265 in `kestrel_analyzer/database.py`) but operates JSON-to-JSON

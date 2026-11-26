@@ -362,13 +362,6 @@ def _sanitize_pending_analytics(value: Any) -> dict | None:
     return payload
 
 
-# Phase 3: _sanitize_queue_recovery_state removed — queue-restore feature
-# replaced by the analyze dialog's analyze_recents chip row. Existing user
-# settings files may still contain a 'queue_recovery_state' key; it falls
-# through to the passthrough handler at the end of _sanitize_settings_payload
-# and is silently dropped on next save since the explicit allowlist no
-# longer mentions it.
-
 
 def _passthrough_setting_value(value: Any, depth: int = 0) -> Any | None:
     """Copy a JSON-like value for persisting unknown settings keys.
@@ -653,16 +646,12 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
         out['sortBy'] = sort_by
 
     _set_path('rootHint')
-    # Phase 3: lastQueueState removed — was used by the dialog's "Restore Queue?"
-    # button to persist the user's most-recent selection. Replaced by the
-    # analyze_recents settings key (separate timestamp-based history per the
-    # Phase 3 dialog redesign). Existing values fall through to passthrough.
     if 'folder_recents' in data:
         # Persistent most-recently-loaded root folders. Cap matches the visible
         # chip count in the sidebar so backend and frontend stay aligned.
         out['folder_recents'] = _sanitize_path_list(data.get('folder_recents'), max_items=8)
     if 'analyze_recents' in data:
-        # Phase 3: Analyze Folders dialog's own recents (list of {path, timestamp}).
+        # Analyze Folders dialog's own recents (list of {path, timestamp}).
         # Separate from folder_recents — the dialog's mental model is "recently
         # queued but not yet fully analyzed", independent of the main tree.
         out['analyze_recents'] = _sanitize_analyze_recents(data.get('analyze_recents'), max_items=8)
@@ -715,10 +704,6 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     _set_int('app_session_pid', default=0, min_value=0, max_value=2_147_483_647)
     _set_str('last_session_closed_utc', max_len=64)
     _set_str('last_unclean_shutdown_utc', max_len=64)
-
-    # Phase 3: queue_recovery_state allowlist entry removed. Any pre-existing
-    # value in user settings files falls through to passthrough and is dropped
-    # on the next save (the analyze_recents mechanism replaces this feature).
 
     if 'pending_analytics' in data:
         pending = _sanitize_pending_analytics(data.get('pending_analytics'))

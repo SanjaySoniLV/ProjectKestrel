@@ -14,7 +14,7 @@ VERSION = PIPELINE_VERSION
 
 # Analysis pipeline generation. 3 = MegaDetector + SAM-HQ + BioCLIP 2 (species,
 # false-positive gate, bird/wildlife routing) + SigLIP 2 (search embeddings and
-# the default quality score), SpeciesNet classifier removed. Recorded in
+# the default quality score), with no SpeciesNet classifier. Recorded in
 # kestrel_metadata.json as ``pipeline_major`` once every row of a folder was
 # produced (or upgraded) by this generation; absent = older rows present.
 PIPELINE_MAJOR = int(PIPELINE_VERSION.split(".")[0])
@@ -38,8 +38,8 @@ BIOCLIP_IMAGE_MODEL_PATH = BIOCLIP_MODELS_DIR / "bioclip2_image_int8.onnx"
 QUALITYCLASSIFIER_PATH = MODELS_DIR / "quality.onnx"
 QUALITY_NORMALIZATION_DATA_PATH = MODELS_DIR / "quality_normalization_data.csv"
 
-# MegaDetector + SAM-HQ ONNX files. The folder keeps its historical name; the
-# SpeciesNet classifier that used to live here was removed in pipeline 3.0.0.
+# MegaDetector + SAM-HQ ONNX files. The folder name is historical; it holds no
+# SpeciesNet classifier.
 SPECIESNET_MODEL_DIR = MODELS_DIR / "speciesnet"
 SIGLIP_MODELS_DIR = MODELS_DIR / "siglip"
 
