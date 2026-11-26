@@ -1,0 +1,12 @@
+{
+  "name": "projectkestrel-dev-tools",
+  "private": true,
+  "description": "Development tooling only (lint). Nothing here ships to users.",
+  "scripts": {
+    "lint:js": "eslint --max-warnings 197 analyzer/js analyzer/csv_parser.js"
+  },
+  "devDependencies": {
+    "eslint": "10.14.0",
+    "globals": "17.13.0"
+  }
+}

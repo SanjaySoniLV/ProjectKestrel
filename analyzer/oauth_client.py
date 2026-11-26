@@ -128,11 +128,9 @@ MAC_REDIRECT_URI    = f"{MAC_CALLBACK_SCHEME}://callback"
 #
 # Why this matters beyond cleanliness: **native mode is CAPTCHA-exempt.** Clerk
 # applies Smart CAPTCHA (Turnstile) only to *browser* clients; a native client
-# bypasses it, so account creation (the sign-up transfer) no longer needs a
-# Turnstile token our headless client can't render — which lets Clerk Bot
-# Protection be turned back ON in the dashboard (protecting the web MyAccount
-# sign-up) without breaking this flow. See Perch Docs "Desktop App/macOS App
-# Store Build.md".
+# bypasses it, so account creation (the sign-up transfer) does not need a
+# Turnstile token our headless client can't render, and Clerk Bot Protection
+# can stay on for web sign-up without breaking this flow.
 #
 # ``oauth_token_apple`` is confirmed enabled on the production Clerk instance
 # (it appears in the sign-in attempt's supported_first_factors). Clerk validates
@@ -154,8 +152,7 @@ CLERK_FAPI_SESSIONS_URL = "https://clerk.projectkestrel.org/v1/client/sessions"
 # from (Clerk Dashboard). It carries the audience the Workers enforce once
 # CLERK_AUDIENCE is provisioned; without it a default session token has no aud
 # and would break the day that's flipped on. We fall back to the default token
-# if the template is unavailable, mirroring the other token-fetch sites. See
-# Perch Docs "Auth & Identity/Auth System.md".
+# if the template is unavailable, mirroring the other token-fetch sites.
 CLERK_JWT_TEMPLATE      = "kestrel_api"
 CLERK_APPLE_STRATEGY    = "oauth_token_apple"
 # Query flag that puts a Frontend-API request in *native mode* — the surface

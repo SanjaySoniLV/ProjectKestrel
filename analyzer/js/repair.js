@@ -3,8 +3,7 @@
     // Kestrel keys a database row to a photo by name and location, and the
     // filesystem lets the user change both without telling the app. Moving
     // images out of a folder leaves their analysis behind; renaming one orphans
-    // its row. None of that used to be visible — the folder simply showed the
-    // wrong thing, silently.
+    // its row. Without a check, the folder would silently show the wrong thing.
     //
     // This module runs a diff after every folder load (off the critical path:
     // the CSV renders first, the diff arrives later), badges the affected

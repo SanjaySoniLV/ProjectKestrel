@@ -20,6 +20,7 @@ import tempfile
 import time
 import threading
 import webbrowser
+from pathlib import Path
 
 from settings_utils import load_persisted_settings, save_persisted_settings, debug, info, warn, error
 # Several long-standing call sites use `log(...)` as a catch-all logger.
@@ -385,12 +386,11 @@ def _is_safe_external_url(url) -> bool:
     or forward-slash ``//host``), and any URL containing control characters —
     is rejected.
 
-    Rationale (FINDING-01): ``webbrowser.open`` ultimately calls
-    ``ShellExecute`` on Windows, which happily launches local executables when
-    given a ``file://`` URL or a custom URI scheme bound to an installed
-    handler. Combined with the stored DOM-XSS formerly present in the scene
-    renderer, that was a clean stored-XSS-to-RCE chain. The allowlist closes
-    the browser side of that chain.
+    Rationale: ``webbrowser.open`` ultimately calls ``ShellExecute`` on
+    Windows, which happily launches local executables when given a ``file://``
+    URL or a custom URI scheme bound to an installed handler. Any script
+    injected into the page (for example through a crafted scene name) could
+    turn that into code execution. The allowlist closes that path.
     """
     if not isinstance(url, str):
         return False
@@ -664,10 +664,6 @@ class Api:
         # folder rescan so the gallery refreshes as packs land — same UX as
         # local-analysis live updates. Drained-and-cleared each poll.
         self._cc_pack_events: list = []
-        # 5-minute TTL cache for /api/usage so the Cloud destination card in
-        # the analyze dialog doesn't hit the Worker on every keystroke.
-        self._cc_usage_cache: dict | None = None
-        self._cc_usage_cache_at: float = 0.0
 
         # macOS App Sandbox: re-acquire access to every previously-chosen photo
         # folder via its stored security-scoped bookmark, held for the whole
@@ -680,26 +676,19 @@ class Api:
             except Exception as e:
                 warn(f'[sandbox] bookmark activation failed: {e}')
 
-        # (StoreKit priming used to run here: the storefront decided the
-        # Support-link destination, and SKPaymentQueue.storefront stays nil
-        # until an observer is attached, so we warmed it at launch to avoid a
-        # fail-closed on the first click. get_support_url no longer consults the
-        # storefront — see its docstring — so the App Store build now opens no
-        # StoreKit connection at all. Restore this alongside the gate if that
-        # ever changes; mac_storefront.prime() is still there.)
+        # The App Store build opens no StoreKit connection at launch. If the
+        # Support link ever goes back to depending on the storefront, call
+        # mac_storefront.prime() here: SKPaymentQueue.storefront stays nil
+        # until an observer is attached, so the first click would fail closed.
 
     def _invalidate_account_caches(self) -> None:
-        """Drop every identity-scoped cache (Perch account, Perch usage, and
-        Cloud Compute usage) so a sign-out / account-switch / token rotation
-        can't surface the previous user's numbers. The CC usage cache in
-        particular was previously left untouched on sign-out, so the account
-        panel kept showing the prior account's "images analyzed this period"."""
+        """Drop every identity-scoped cache (Perch account and Perch usage) so a
+        sign-out / account-switch / token rotation can't surface the previous
+        user's numbers."""
         self._perch_account_cache = None
         self._perch_account_cache_at = 0.0
         self._perch_usage_cache = None
         self._perch_usage_cache_at = 0.0
-        self._cc_usage_cache = None
-        self._cc_usage_cache_at = 0.0
 
     def notify_dirty(self, is_dirty: bool) -> dict:
         """Called from JS whenever the dirty flag changes."""
@@ -3362,7 +3351,7 @@ class Api:
         Gated by ``_is_safe_external_url``: only plain ``http``, ``https``,
         and ``mailto`` schemes are passed through. Everything else (``file``,
         ``javascript``, ``data``, custom URI handlers, UNC paths, control
-        characters) is rejected. See FINDING-01.
+        characters) is rejected.
         """
         try:
             if not _is_safe_external_url(url):
@@ -3772,13 +3761,6 @@ class Api:
             return 'macos'
         return 'linux'
 
-    def get_quality_feedback_mode(self):
-        """``{'success', 'mode'}`` -- ``ask`` (default) | ``always`` | ``never``."""
-        try:
-            return {'success': True, 'mode': self._qf_mode()}
-        except Exception as e:
-            return {'success': False, 'mode': 'ask', 'error': str(e)}
-
     def set_quality_feedback_mode(self, mode):
         """Persist the quality-feedback sharing mode (Settings / "Remember my choice")."""
         try:
@@ -4185,7 +4167,7 @@ class Api:
                         start_dir = os.path.abspath(os.path.join(exe_dir, '..', '..'))
                         if not os.path.isdir(start_dir):
                             start_dir = exe_dir
-                        for root, dirs, files in os.walk(start_dir):
+                        for root, dirs, _files in os.walk(start_dir):
                             depth = root[len(exe_dir):].count(os.sep)
                             if depth > 5:
                                 del dirs[:]
@@ -4520,24 +4502,6 @@ class Api:
             error(f'[API] clear_queue_done upgrades error: {e}')
         return _queue_manager.clear_done()
 
-    def remove_queue_item(self, path: str):
-        """Remove a single pending item from the queue by path."""
-        try:
-            return _queue_manager.remove_pending_item(str(path))
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
-
-    def reorder_queue(self, ordered_paths):
-        """Reorder pending queue items. ordered_paths is a JSON string or list of paths."""
-        try:
-            if isinstance(ordered_paths, str):
-                ordered_paths = json.loads(ordered_paths)
-            if not isinstance(ordered_paths, list):
-                return {'success': False, 'error': 'ordered_paths must be a list'}
-            return _queue_manager.reorder_pending(ordered_paths)
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
-
     def is_analysis_running(self):
         """Return True if the analysis queue is actively running."""
         return {'running': _queue_manager.is_running}
@@ -4553,7 +4517,6 @@ class Api:
         """
         try:
             settings = load_persisted_settings()
-            queue_state = _queue_manager.get_persisted_recovery_state()
             unclean_utc = str(settings.get('last_unclean_shutdown_utc', '') or '').strip()
             raw_reason = str(settings.get('last_exit_reason', '') or '').strip().lower()
             exit_reason = raw_reason
@@ -4578,14 +4541,10 @@ class Api:
                 'unclean_shutdown': bool(unclean_utc),
                 'unclean_shutdown_utc': unclean_utc,
                 'exit_reason': exit_reason,
-                'queue_recovery': queue_state,
             }
         except Exception as e:
             error(f'[shutdown] recovery_status: failed to read recovery state: {e}')
             return {'success': False, 'error': str(e)}
-
-    # Phase 3: restore_analysis_queue removed — feature replaced by the
-    # analyze dialog's analyze_recents chip row.
 
     def clear_recovery_state(self, clear_queue_state: bool = True):
         """Clear persisted unclean-shutdown flag and optionally queue recovery snapshot."""
@@ -5840,9 +5799,8 @@ class Api:
                     else:
                         remote = client.get_status(job_id)
                         self._cc_apply_remote_snapshot(job_id, remote)
-                        # Client-side pause was removed — the only client-driven
-                        # job control left is cancel. The poller just refreshes
-                        # the remote snapshot.
+                        # Cancel is the only client-driven job control; the
+                        # poller just refreshes the remote snapshot.
                 except Exception as e:
                     self._cc_record_remote_failure(job_id, str(e))
                     # Log every 5th consecutive failure so the journal doesn't
@@ -5954,7 +5912,7 @@ class Api:
         try:
             submit = client.submit_job(files, analysis_settings=analysis_settings)
         except ccc.JobInProgressError as e:
-            # Stage 6 concurrency gate: a Cloud Compute job is already in
+            # Concurrency gate: a Cloud Compute job is already in
             # flight for this user. Not a fault — surface to JS with a
             # MyAccount deep-link instead of an error toast. ``activeJobIds`` /
             # ``current`` / ``limit`` are passed through from the Worker's
@@ -6290,70 +6248,6 @@ class Api:
             ]
         return {"ok": True, "jobs": jobs}
 
-    # ─── Stage 5E — dashboard-feeding bridge methods ────────────────────
-    # Thin proxies over the Worker's user-facing endpoints. The primary
-    # consumer is the external online dashboard; the desktop UI keeps a
-    # single "View cloud usage online →" link in Settings rather than
-    # mirroring the full history table.
-
-    def cloud_compute_list_history(self, filters: dict | None = None) -> dict:
-        """Proxy GET /api/jobs (Stage 5C). ``filters`` is a dict matching the
-        query params: ``status`` (str/csv, supports `'running'`), ``from`` /
-        ``to`` (ISO datetimes), ``limit`` (int), ``cursor`` (opaque)."""
-        client, client_err = self._cc_make_client()
-        if client is None:
-            return client_err or {"ok": False, "error": "no client"}
-        f = filters or {}
-        try:
-            body = client.list_jobs(
-                status=f.get("status"),
-                from_iso=f.get("from"),
-                to_iso=f.get("to"),
-                limit=f.get("limit"),
-                cursor=f.get("cursor"),
-            )
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-        body["ok"] = True
-        return body
-
-    def cloud_compute_get_job_events(self, job_id: str, order: str = "desc") -> dict:
-        """Proxy GET /api/jobs/:jobId/events (Stage 5C)."""
-        client, client_err = self._cc_make_client()
-        if client is None:
-            return client_err or {"ok": False, "error": "no client"}
-        try:
-            body = client.get_job_events(job_id, order=order)
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-        body["ok"] = True
-        return body
-
-    def cloud_compute_get_job_timing_stats(self, job_id: str) -> dict:
-        """Proxy GET /api/jobs/:jobId/timing-stats (Stage 5C)."""
-        client, client_err = self._cc_make_client()
-        if client is None:
-            return client_err or {"ok": False, "error": "no client"}
-        try:
-            body = client.get_job_timing_stats(job_id)
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-        body["ok"] = True
-        return body
-
-    def cloud_compute_get_usage_summary(self, period: str = "monthly") -> dict:
-        """Proxy GET /api/usage (Stage 5D). Returns aggregate totals for the
-        current month or all-time. Used by the panel badge / Settings link."""
-        client, client_err = self._cc_make_client()
-        if client is None:
-            return client_err or {"ok": False, "error": "no client"}
-        try:
-            body = client.get_usage(period=period)
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-        body["ok"] = True
-        return body
-
     def cloud_compute_get_entitlements(self) -> dict:
         """Proxy GET /v1/me/entitlements on the Auth Worker. Returns the
         user's tier, plan limits, current-period usage, and active-job slots
@@ -6398,16 +6292,6 @@ class Api:
         except Exception as e:
             warn(f'[API] cloud_compute_get_pricing failed: {e}')
             return {"ok": False, "reason": "unavailable"}
-
-    def cloud_compute_clear_done(self) -> dict:
-        """Legacy bridge hook — does **not** touch the persistent job ledger.
-
-        The desktop's "Clear done" control only hides finished rows in the
-        cloud-analysis pill (``cloud-compute.js`` client-side filter). Job
-        history for the Account panel and startup resume still read the full
-        on-disk manifest via ``cloud_jobs_store``.
-        """
-        return {"ok": True, "removed": []}
 
     def cloud_compute_cancel_job(self, job_id: str) -> dict:
         """Terminal cancel. Tells the Worker to stop the job, then — ONLY if the
@@ -7162,25 +7046,6 @@ class Api:
             self._cc_pack_events = []
         return {"ok": True, "events": events}
 
-    def cloud_compute_get_usage(self) -> dict:
-        """Cached fetch of ``/api/usage``. 5-minute TTL. Used by the Cloud
-        destination card to display ``Remaining cloud analysis images: N``.
-        Stub-shaped today (Stage 3 fleshes it out)."""
-        import time as _t
-        now = _t.time()
-        if self._cc_usage_cache is not None and (now - self._cc_usage_cache_at) < 300:
-            return {"ok": True, "usage": self._cc_usage_cache, "cached": True}
-        client, client_err = self._cc_make_client()
-        if client is None:
-            return client_err or {"ok": False, "error": "no client"}
-        try:
-            usage = client.get_usage()
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-        self._cc_usage_cache = usage
-        self._cc_usage_cache_at = now
-        return {"ok": True, "usage": usage, "cached": False}
-
     def share_with_perch(
         self,
         root_path: str,
@@ -7301,7 +7166,7 @@ class Api:
                     "currentEffectiveDate": e.current_effective_date,
                 })
             except PerchPlanLimitExceeded as e:
-                # Stage 7: plan-tier cap denial. Surface a typed error so JS
+                # Plan-tier cap denial. Surface a typed error so JS
                 # renders an upgrade card with a clickable "Upgrade" button
                 # to myaccount.projectkestrel.org/perch. The presigning
                 # spinner unwinds because we end the job here.
@@ -7365,9 +7230,9 @@ class Api:
     def open_perch_url(self, url: str) -> dict:
         """Open a Perch gallery URL in the user's default browser.
 
-        Gated by ``_is_safe_external_url`` (same allowlist as ``open_url`` /
-        FINDING-01). A prefix check of ``http://`` / ``https://`` still lets
-        ``http://\\\\attacker\\share`` and CRLF-injected URLs through (S1-05).
+        Gated by ``_is_safe_external_url`` (same allowlist as ``open_url``).
+        A prefix check of ``http://`` / ``https://`` would still let
+        ``http://\\\\attacker\\share`` and CRLF-injected URLs through.
         """
         try:
             if not _is_safe_external_url(url):
@@ -7381,12 +7246,11 @@ class Api:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    # ─── Perch link persistence (Phase 1: per-folder perch_link.json) ──
+    # ─── Perch link persistence (per-folder perch_link.json) ──
 
     @staticmethod
-    def _perch_link_path(folder_path: str) -> "Path":
-        from pathlib import Path as _P
-        return _P(folder_path) / ".kestrel" / "perch_link.json"
+    def _perch_link_path(folder_path: str) -> Path:
+        return Path(folder_path) / ".kestrel" / "perch_link.json"
 
     @staticmethod
     def _hash_kestrel_state(folder_path: str) -> str | None:
@@ -7799,7 +7663,7 @@ class Api:
                 headers=headers,
                 timeout=15,
             )
-        except Exception as e:
+        except Exception:
             return None, "unreachable"
         if r.status_code == 404:
             return None, "not_found"
@@ -8240,14 +8104,6 @@ class Api:
             )
         except Exception as e:
             print(f"[API] _notify_js_sign_out() -> Error: {e}", flush=True)
-
-    def get_oauth_flow_status(self) -> dict:
-        """Diagnostic — JS-callable. Mostly useful for surfacing 'stuck' flows."""
-        return {
-            "success": True,
-            "in_flight": bool(self._oauth_in_flight),
-            "status": str(self._oauth_status or "idle"),
-        }
 
     def sign_out(self) -> dict:
         """Clear keychain credentials, best-effort revoke at Clerk, notify JS."""
@@ -9123,6 +8979,331 @@ class Api:
             error(f"[API] restore_kestrel_db_backup error: {e}")
             return {"success": False, "error": str(e)}
 
+    # ── Culling pass history (multi-pass culling with nested undo) ───────────
+    #
+    # The Culling Assistant can move rejects into ``_KESTREL_Rejects`` more than
+    # once on the same folder. Each "Done Culling" move is a *pass*, recorded in
+    # ``.kestrel/cull_history.json`` with the main files it moved and its own
+    # copy of the database/scenedata taken just before the move. Undo works as a
+    # stack: ``undo_last_cull_pass`` restores the newest pass's files and its
+    # snapshot, which leaves the folder exactly as it was before that pass, and
+    # the pass below it becomes undoable next.
+    #
+    # The canonical ``kestrel_database_old.csv`` slot is kept in step with the
+    # newest pass, so builds that only know the single-slot undo still restore
+    # the right state.
+    #
+    # Folders culled by older builds have a ``_KESTREL_Rejects`` folder but no
+    # history. Those files become a "legacy" pass at the bottom of the stack,
+    # backed by the ``_old`` slot (or, once a new pass has rotated that slot
+    # aside, by the newest ``OLD_precull_*`` archive).
+
+    _CULL_HISTORY_NAME = 'cull_history.json'
+    _CULL_PASS_DB_STEM = 'cullpass_{pid}_kestrel_database.csv'
+    _CULL_PASS_SD_STEM = 'cullpass_{pid}_kestrel_scenedata.json'
+    #: Upper bound on undoable passes kept per folder. Each pass keeps a full
+    #: database copy, so an endlessly re-culled folder must not grow forever.
+    #: Dropping the oldest pass only loses its *undo*; its files stay in
+    #: ``_KESTREL_Rejects``.
+    _CULL_HISTORY_MAX_PASSES = 10
+
+    def _cull_paths(self, root_real: str):
+        kestrel_dir = os.path.join(root_real, '.kestrel')
+        kestrel_real = os.path.realpath(kestrel_dir)
+        if not self._is_within_root(kestrel_real, root_real):
+            raise ValueError('Invalid .kestrel path')
+        reject_dir = os.path.join(root_real, '_KESTREL_Rejects')
+        reject_real = os.path.realpath(reject_dir)
+        if os.path.exists(reject_dir) and not self._is_within_root(reject_real, root_real):
+            raise ValueError('Invalid reject folder path')
+        return kestrel_dir, reject_dir
+
+    def _read_cull_history(self, kestrel_dir: str) -> list:
+        """Return the recorded passes, oldest first. Unreadable → empty."""
+        path = os.path.join(kestrel_dir, self._CULL_HISTORY_NAME)
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            return []
+        except Exception as e:
+            warn(f'[cull-history] unreadable history, ignoring: {e}')
+            return []
+        passes = data.get('passes') if isinstance(data, dict) else None
+        if not isinstance(passes, list):
+            return []
+        clean = []
+        for p in passes:
+            if not isinstance(p, dict):
+                continue
+            pid = str(p.get('id') or '')
+            if not re.fullmatch(r'[A-Za-z0-9_]{1,40}', pid):
+                continue
+            files = [str(f) for f in (p.get('files') or []) if isinstance(f, str)]
+            clean.append({
+                'id': pid,
+                'created_at': str(p.get('created_at') or ''),
+                'files': files,
+                'legacy': bool(p.get('legacy')),
+            })
+        return clean
+
+    def _write_cull_history(self, kestrel_dir: str, passes: list) -> None:
+        path = os.path.join(kestrel_dir, self._CULL_HISTORY_NAME)
+        if not passes:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            return
+        write_json_atomic(path, {'version': 1, 'passes': passes}, indent=2)
+
+    def _cull_pass_snapshot_paths(self, kestrel_dir: str, pid: str):
+        return (
+            os.path.join(kestrel_dir, self._CULL_PASS_DB_STEM.format(pid=pid)),
+            os.path.join(kestrel_dir, self._CULL_PASS_SD_STEM.format(pid=pid)),
+        )
+
+    def _remove_cull_pass_snapshots(self, kestrel_dir: str, pid: str) -> None:
+        for p in self._cull_pass_snapshot_paths(kestrel_dir, pid):
+            try:
+                os.remove(p)
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                warn(f'[cull-history] could not remove {os.path.basename(p)}: {e}')
+
+    def _reject_primary_names(self, reject_dir: str) -> list:
+        """Primary image names in the rejects folder (companions folded in)."""
+        if not os.path.isdir(reject_dir):
+            return []
+        names = [n for n in os.listdir(reject_dir) if os.path.isfile(os.path.join(reject_dir, n))]
+        candidates = [n for n in names if os.path.splitext(n)[1].lower() in _CULLING_PRIMARY_IMAGE_EXTENSIONS]
+        candidates.sort(key=lambda n: (0 if os.path.splitext(n)[1].lower() in _RAW_EXTENSION_SET else 1, n.lower()))
+        index = self._build_dir_index(reject_dir)
+        out, excluded = [], set()
+        for name in candidates:
+            if name.lower() in excluded:
+                continue
+            out.append(name)
+            for comp in self._find_companion_files(reject_dir, name, dir_index=index):
+                excluded.add(comp.lower())
+        return out
+
+    def _cull_pass_view(self, kestrel_dir: str, reject_names_cf: set, p: dict, number: int) -> dict:
+        db_snap, _sd = self._cull_pass_snapshot_paths(kestrel_dir, p['id'])
+        restorable = [f for f in p['files'] if f.casefold() in reject_names_cf]
+        return {
+            'id': p['id'],
+            'number': number,
+            'created_at': p['created_at'],
+            'legacy': p['legacy'],
+            'file_count': len(p['files']),
+            'restorable_count': len(restorable),
+            'has_db_backup': os.path.isfile(db_snap),
+        }
+
+    def record_cull_pass(self, root_path: str, moved_filenames):
+        """Record a completed reject move as a culling pass.
+
+        Call right after ``move_rejects_to_folder`` with the requested main
+        files that actually moved. The pass's undo point is the
+        ``kestrel_database_old.csv`` / ``kestrel_scenedata_old.json`` pair
+        that ``backup_kestrel_db`` wrote just before the move; it is copied to
+        a per-pass snapshot so a later pass cannot overwrite it.
+        """
+        try:
+            root_real, err = self._validate_root_dir(root_path, context='record_cull_pass', require_exists=True)
+            if err:
+                return {'success': False, 'error': err}
+            kestrel_dir, reject_dir = self._cull_paths(root_real)
+            if not os.path.isdir(kestrel_dir):
+                return {'success': False, 'error': '.kestrel folder not found'}
+
+            raw = moved_filenames if isinstance(moved_filenames, (list, tuple, set)) else ([moved_filenames] if moved_filenames else [])
+            files = []
+            for r in raw:
+                clean = self._sanitize_plain_filename(r, context='record_cull_pass')
+                if clean:
+                    files.append(clean)
+            if not files:
+                return {'success': True, 'recorded': False, 'reason': 'nothing moved'}
+
+            passes = self._read_cull_history(kestrel_dir)
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc)
+
+            # First pass recorded on a folder an older build already culled:
+            # keep those earlier rejects undoable as a legacy pass underneath.
+            if not passes:
+                this_pass_cf = {f.casefold() for f in files}
+                legacy_files = [n for n in self._reject_primary_names(reject_dir) if n.casefold() not in this_pass_cf]
+                if legacy_files:
+                    archives = sorted(
+                        n for n in os.listdir(kestrel_dir)
+                        if n.startswith('OLD_precull_kestrel_database_') and n.endswith('.csv')
+                    )
+                    lid = 'legacy'
+                    ldb, lsd = self._cull_pass_snapshot_paths(kestrel_dir, lid)
+                    if archives:
+                        newest = archives[-1]
+                        copy_file_atomic(os.path.join(kestrel_dir, newest), ldb)
+                        sd_name = newest.replace('OLD_precull_kestrel_database_', 'OLD_precull_kestrel_scenedata_')[:-4] + '.json'
+                        if os.path.isfile(os.path.join(kestrel_dir, sd_name)):
+                            copy_file_atomic(os.path.join(kestrel_dir, sd_name), lsd)
+                    passes.append({'id': lid, 'created_at': '', 'files': legacy_files, 'legacy': True})
+
+            pid = now.strftime('%Y%m%d_%H%M%S_%f')
+            db_snap, sd_snap = self._cull_pass_snapshot_paths(kestrel_dir, pid)
+            csv_slot = os.path.join(kestrel_dir, 'kestrel_database_old.csv')
+            sd_slot = os.path.join(kestrel_dir, 'kestrel_scenedata_old.json')
+            has_backup = os.path.isfile(csv_slot)
+            if has_backup:
+                copy_file_atomic(csv_slot, db_snap)
+                if os.path.isfile(sd_slot):
+                    copy_file_atomic(sd_slot, sd_snap)
+            passes.append({'id': pid, 'created_at': now.isoformat(), 'files': files, 'legacy': False})
+
+            dropped = 0
+            while len(passes) > self._CULL_HISTORY_MAX_PASSES:
+                old = passes.pop(0)
+                self._remove_cull_pass_snapshots(kestrel_dir, old['id'])
+                dropped += 1
+            self._write_cull_history(kestrel_dir, passes)
+            info(f'[cull-history] recorded pass {pid}: {len(files)} file(s), {len(passes)} pass(es) undoable')
+            return {'success': True, 'recorded': True, 'pass_id': pid, 'pass_count': len(passes),
+                    'has_db_backup': has_backup, 'dropped_oldest': dropped}
+        except Exception as e:
+            error(f'[API] record_cull_pass error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def get_cull_history(self, root_path: str):
+        """Describe the undoable culling passes for this folder, newest last.
+
+        Each pass reports how many of its files are still in
+        ``_KESTREL_Rejects`` (``restorable_count``): a user may have deleted or
+        moved some by hand. A folder culled by an older build, with no history
+        file, shows its rejects as one legacy pass.
+        """
+        try:
+            root_real, err = self._validate_root_dir(root_path, context='get_cull_history', require_exists=True)
+            if err:
+                return {'success': False, 'error': err}
+            kestrel_dir, reject_dir = self._cull_paths(root_real)
+            reject_names = self._reject_primary_names(reject_dir)
+            reject_cf = {n.casefold() for n in reject_names}
+            passes = self._read_cull_history(kestrel_dir)
+            views = [self._cull_pass_view(kestrel_dir, reject_cf, p, i + 1) for i, p in enumerate(passes)]
+            if not passes and reject_names:
+                views = [{
+                    'id': 'legacy', 'number': 1, 'created_at': '', 'legacy': True,
+                    'file_count': len(reject_names), 'restorable_count': len(reject_names),
+                    'has_db_backup': os.path.isfile(os.path.join(kestrel_dir, 'kestrel_database_old.csv')),
+                }]
+            # Passes whose files are all gone can't be undone; skip past them so
+            # the newest pass with something left is what Undo acts on.
+            undoable = [v for v in views if v['restorable_count'] > 0]
+            return {
+                'success': True,
+                'passes': views,
+                'undoable_count': len(undoable),
+                'next_undo': undoable[-1] if undoable else None,
+                'reject_count': len(reject_names),
+            }
+        except Exception as e:
+            error(f'[API] get_cull_history error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def undo_last_cull_pass(self, root_path: str):
+        """Undo the newest culling pass that still has files to restore.
+
+        Moves that pass's files (and sidecars) back from ``_KESTREL_Rejects``
+        and restores the database and scenedata snapshot taken just before it.
+        Passes above it whose files are all gone are dropped from the history
+        first. Returns the ``undo_reject_move`` result fields plus
+        ``pass_id``, ``db_restored`` and ``remaining_passes``.
+        """
+        try:
+            root_real, err = self._validate_root_dir(root_path, context='undo_last_cull_pass', require_exists=True)
+            if err:
+                return {'success': False, 'error': err}
+            kestrel_dir, reject_dir = self._cull_paths(root_real)
+            reject_names = self._reject_primary_names(reject_dir)
+            reject_cf = {n.casefold() for n in reject_names}
+            passes = self._read_cull_history(kestrel_dir)
+
+            if not passes:
+                # Older build's single move: same behaviour as before.
+                if not reject_names:
+                    return {'success': False, 'error': 'nothing to undo'}
+                res = self.undo_reject_move(root_real, reject_names)
+                if res.get('success'):
+                    rr = self.restore_kestrel_db_backup(root_real)
+                    res['db_restored'] = bool(rr.get('success'))
+                    if not rr.get('success'):
+                        res['db_restore_error'] = rr.get('error', '')
+                res['pass_id'] = 'legacy'
+                res['remaining_passes'] = 0
+                return res
+
+            while passes and not any(f.casefold() in reject_cf for f in passes[-1]['files']):
+                gone = passes.pop()
+                self._remove_cull_pass_snapshots(kestrel_dir, gone['id'])
+            if not passes:
+                self._write_cull_history(kestrel_dir, passes)
+                return {'success': False, 'error': 'nothing to undo (files already removed from _KESTREL_Rejects)'}
+
+            target = passes[-1]
+            restorable = [f for f in target['files'] if f.casefold() in reject_cf]
+            res = self.undo_reject_move(root_real, restorable)
+            if not res.get('success'):
+                # Keep the pass so the user can retry after fixing conflicts.
+                self._write_cull_history(kestrel_dir, passes)
+                res['pass_id'] = target['id']
+                res['remaining_passes'] = len(passes)
+                return res
+
+            db_snap, sd_snap = self._cull_pass_snapshot_paths(kestrel_dir, target['id'])
+            db_restored = False
+            if os.path.isfile(db_snap):
+                copy_file_atomic(db_snap, os.path.join(kestrel_dir, 'kestrel_database.csv'))
+                if os.path.isfile(sd_snap):
+                    copy_file_atomic(sd_snap, os.path.join(kestrel_dir, 'kestrel_scenedata.json'))
+                db_restored = True
+
+            passes.pop()
+            self._remove_cull_pass_snapshots(kestrel_dir, target['id'])
+            self._write_cull_history(kestrel_dir, passes)
+
+            # Keep the single ``_old`` slot pointing at the newest remaining
+            # pass, so an older build's Undo restores the right state.
+            csv_slot = os.path.join(kestrel_dir, 'kestrel_database_old.csv')
+            sd_slot = os.path.join(kestrel_dir, 'kestrel_scenedata_old.json')
+            prev_db, prev_sd = (self._cull_pass_snapshot_paths(kestrel_dir, passes[-1]['id']) if passes else (None, None))
+            if prev_db and os.path.isfile(prev_db):
+                copy_file_atomic(prev_db, csv_slot)
+                if os.path.isfile(prev_sd):
+                    copy_file_atomic(prev_sd, sd_slot)
+                elif os.path.isfile(sd_slot):
+                    os.remove(sd_slot)
+            else:
+                # No snapshot below (history exhausted, or a legacy pass whose
+                # backup was never captured): move the slot aside rather than
+                # leave the just-undone pass's backup where Undo would find it.
+                self._rotate_existing_backups(kestrel_dir, [
+                    (csv_slot, 'precull_kestrel_database', '.csv'),
+                    (sd_slot, 'precull_kestrel_scenedata', '.json'),
+                ])
+
+            res['pass_id'] = target['id']
+            res['db_restored'] = db_restored
+            res['remaining_passes'] = len(passes)
+            info(f"[cull-history] undid pass {target['id']}: {res.get('restored', 0)} file(s), {len(passes)} pass(es) left")
+            return res
+        except Exception as e:
+            error(f'[API] undo_last_cull_pass error: {e}')
+            return {'success': False, 'error': str(e)}
+
     # ── Folder drift detection & repair ──────────────────────────────────────
     #
     # Kestrel keys a database row to a photo by name and location, both of which
@@ -9626,7 +9807,6 @@ class Api:
                 }
 
             # What is actually at the destination, and how big.
-            fdiff = self._repair_import()
             try:
                 from folder_inspector import scan_folder_images  # type: ignore
             except ImportError:
@@ -9779,7 +9959,7 @@ class Api:
 
             # 5. COMMIT. The destination is complete; drop the rows from the
             #    source. Past this line the relocate has happened and failures
-            #    must no longer unwind the destination.
+            #    must not unwind the destination.
             if src_scenedata:
                 self._scenedata_drop_filenames(src_scenedata, move_set)
                 self._write_scenedata_for_repair(src_kestrel, src_scenedata)

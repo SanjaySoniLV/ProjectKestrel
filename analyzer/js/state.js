@@ -146,8 +146,8 @@
     // Fire report_bridge_ready() the instant the JS bridge wires up, however
     // late — independent of waitForPywebview() below, which gives up early to
     // show a desktop compat error. WKWebView on macOS can inject the bridge well
-    // after the page's heavy module init, so the bounded wait used to miss it and
-    // the --api-probe smoke test never saw window.pywebview.api. report_bridge_ready
+    // after the page's heavy module init, past the bounded wait, and the
+    // --api-probe smoke test must still see window.pywebview.api. report_bridge_ready
     // is a no-op outside --api-probe mode, so this beacon is side-effect-free in
     // normal desktop use.
     (function probeBridgeBeacon() {

@@ -108,11 +108,11 @@ def _extract_xmp_datetime(xmp_bytes: bytes) -> str | None:
 def _read_pillow_exif(filepath: Path) -> str | None:
     try:
         from PIL import Image
-    except ImportError:
+    except ImportError as err:
         raise RuntimeError(
             f"Pillow is required to read {filepath.suffix} files. "
             "Install it with: pip install Pillow"
-        )
+        ) from err
     with Image.open(filepath) as img:
         exif = img._getexif()
     if not exif:

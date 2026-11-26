@@ -7,7 +7,6 @@ to @integration because this is the slow, full-stack test.
 """
 
 import json
-import os
 import shutil
 import sys
 from pathlib import Path
@@ -31,7 +30,7 @@ from kestrel_analyzer.config import (
     SIGLIP_MODELS_DIR,
 )
 from kestrel_analyzer.bird_catalog import get_catalog
-from kestrel_analyzer.database import BASE_COLUMNS, load_database, load_scenedata
+from kestrel_analyzer.database import BASE_COLUMNS, load_database
 from kestrel_analyzer.embedding_store import load_embeddings
 from kestrel_analyzer.pipeline import AnalysisPipeline
 

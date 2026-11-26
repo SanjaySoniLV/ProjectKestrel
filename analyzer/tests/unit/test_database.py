@@ -1,7 +1,6 @@
 """Unit tests for database.py - CSV and JSON database layer."""
 
 import pytest
-import json
 import pandas as pd
 from pathlib import Path
 import sys
@@ -11,13 +10,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from kestrel_analyzer.database import (
     load_database,
     save_database,
-    ensure_columns,
     load_scenedata,
     save_scenedata,
     build_scenedata_from_database,
     update_scenedata_with_database,
     BASE_COLUMNS,
-    REQUIRED_COLUMNS,
 )
 
 

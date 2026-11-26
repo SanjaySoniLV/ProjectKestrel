@@ -14,7 +14,7 @@ import threading
 import time as _time_mod
 from datetime import datetime, timezone
 
-from settings_utils import load_persisted_settings, save_persisted_settings, debug, info, warn, error, log
+from settings_utils import load_persisted_settings, save_persisted_settings, debug, info, warn, error
 
 # Telemetry — failsafe import (never blocks startup)
 try:
@@ -166,7 +166,7 @@ except Exception:  # pragma: no cover - config import must never block the queue
     _DEFAULT_MAX_CONSECUTIVE_ERRORS = 10
 
 _GPU_LOST_MESSAGE = (
-    'The GPU stopped responding (a Windows GPU reset). Progress is saved. '
+    'The GPU stopped responding. Progress is saved. '
     'Restart Kestrel, then analyze this folder again to continue on the GPU.'
 )
 
@@ -219,7 +219,7 @@ class _QueueItem:
                  # Live-preview change counters: bumped each time the matching
                  # preview image is rewritten, so the UI refetches only on change.
                  'live_frame_ver', 'live_overlay_ver', 'live_crops_ver',
-                 # Phase 3 per-item options (set at enqueue time by the analyze
+                 # Per-item options (set at enqueue time by the analyze
                  # dialog; honored by the worker just-before processing).
                  'delete_kestrel_on_start', 'skip_if_already_done',
                  # Species geofence for this folder: list of bird_catalog
@@ -256,8 +256,8 @@ class _QueueItem:
         # Distinct scenes in the folder after a successful run (None until then
         # or when unknown). Feeds the donate prompt's "this run" copy.
         self.scene_total: int | None = None
-        # Phase 3: per-item flags set by the analyze dialog via enqueue's
-        # per_item_options. Default False so legacy callers behave unchanged.
+        # Per-item flags set by the analyze dialog via enqueue's
+        # per_item_options. Default False for callers that don't pass them.
         self.delete_kestrel_on_start: bool = False
         self.skip_if_already_done: bool = False
         self.species_regions: list | None = None
@@ -328,24 +328,6 @@ class QueueManager:
         # A lost device cannot be recovered inside this process, so it stays
         # set until the app is restarted; the UI shows a banner.
         self._gpu_lost: dict | None = None
-
-    # Phase 3: queue-restore feature deleted (replaced by analyze_recents in
-    # the dialog). _collect_restore_paths_locked, _build_recovery_state_locked,
-    # _persist_recovery_state, get_persisted_recovery_state,
-    # restore_from_persisted_state, and clear_persisted_recovery_state all
-    # removed. Their call sites in this file have been swapped for no-op
-    # `_persist_recovery_state()` placeholder (kept as a stub to minimise the
-    # diff at call sites) — see below.
-    def _persist_recovery_state(self) -> None:
-        # Intentional no-op. Kept so existing call sites compile; will be
-        # removed once those call sites are also stripped (Phase 3K).
-        return
-
-    def get_persisted_recovery_state(self) -> dict:
-        # No-op stub. Phase 3 removed the queue-restore feature; this returns
-        # an empty dict so api_bridge.get_recovery_status (which still surfaces
-        # the unclean-shutdown timestamp for telemetry) keeps working.
-        return {}
 
     # ---- public read-only properties ----
 
@@ -431,7 +413,7 @@ class QueueManager:
         max_bird_crops: int = 10,
         parallel_prefetch: int = 3,
         retry_errored: bool = False,
-        # Phase 3: per-path option map. Keys: path. Values: dict with optional
+        # Per-path option map. Keys: path. Values: dict with optional
         # 'delete_kestrel_on_start' and 'skip_if_already_done' booleans, and
         # 'species_regions' (list of region codes or ["global"]).
         # Used by the analyze dialog to defer .kestrel deletion to just-before
@@ -533,7 +515,6 @@ class QueueManager:
                     self._worker_claimed = False
                     self._thread = None
                     raise
-        self._persist_recovery_state()
         return {'success': True, 'added': added}
 
     def pause(self) -> dict:
@@ -542,7 +523,6 @@ class QueueManager:
             running = next((it for it in self._items if it.status == 'running'), None)
             if running is not None and running.pause_start_time is None:
                 running.pause_start_time = _time_mod.time()
-        self._persist_recovery_state()
         return {'success': True, 'paused': True}
 
     def resume(self) -> dict:
@@ -552,7 +532,6 @@ class QueueManager:
                 running.paused_duration += _time_mod.time() - running.pause_start_time
                 running.pause_start_time = None
         self._pause_event.set()
-        self._persist_recovery_state()
         return {'success': True, 'paused': False}
 
     def cancel(self) -> dict:
@@ -565,7 +544,6 @@ class QueueManager:
             running = next((it for it in self._items if it.status == 'running'), None)
             if running is not None:
                 running.current_status_msg = 'Cancelling\u2026'
-        self._persist_recovery_state()
         return {'success': True}
 
     def join_worker(self, timeout: float | None = 120.0) -> bool:
@@ -585,35 +563,6 @@ class QueueManager:
     def clear_done(self) -> dict:
         with self._lock:
             self._items = [it for it in self._items if it.status not in ('done', 'error', 'cancelled')]
-        self._persist_recovery_state()
-        return {'success': True}
-
-    def remove_pending_item(self, path: str) -> dict:
-        """Remove a single pending item from the queue by path."""
-        with self._lock:
-            idx = next((i for i, it in enumerate(self._items)
-                        if it.path == path and it.status == 'pending'), None)
-            if idx is None:
-                return {'success': False, 'error': 'Item not found or not pending'}
-            self._items.pop(idx)
-        self._persist_recovery_state()
-        return {'success': True}
-
-    def reorder_pending(self, ordered_paths: list) -> dict:
-        """Reorder pending items to match the given path order."""
-        with self._lock:
-            pending = [it for it in self._items if it.status == 'pending']
-            non_pending = [it for it in self._items if it.status != 'pending']
-            path_to_item = {it.path: it for it in pending}
-            reordered = []
-            for p in ordered_paths:
-                if p in path_to_item:
-                    reordered.append(path_to_item.pop(p))
-            for it in pending:
-                if it.path in path_to_item:
-                    reordered.append(it)
-            self._items = non_pending + reordered
-        self._persist_recovery_state()
         return {'success': True}
 
     # ---- internal ----
@@ -655,7 +604,6 @@ class QueueManager:
                             it.status = 'error'
                             it.error = f'Analysis could not start: {_pipeline_import_error}'
                 error('[queue] Pipeline unavailable, aborting:', _pipeline_import_error)
-                self._persist_recovery_state()
                 return
             self._pipeline = cls(use_gpu=self._use_gpu, detector_name=self._detector_name)
         else:
@@ -683,10 +631,9 @@ class QueueManager:
                     item.status = 'error'
                     item.end_time = _time_mod.time()
                     item.error = _GPU_LOST_MESSAGE
-                self._persist_recovery_state()
                 continue
 
-            # ── Phase 3: per-item gates BEFORE marking running / pipeline ──
+            # ── Per-item gates BEFORE marking running / pipeline ──
             # 1. skip_if_already_done — silently mark done without touching
             #    .kestrel if the folder is still fully analyzed with no errors.
             #    Re-inspect now (not at queue-build time) because state might
@@ -715,7 +662,6 @@ class QueueManager:
                                 item.processed = processed
                                 item.total = total
                                 item.current_status_msg = 'Already analyzed — no work to do'
-                            self._persist_recovery_state()
                             continue
                     except Exception as e:
                         warn(f'[queue] skip_if_already_done inspector failed for {item.path!r}: {e}; proceeding with analysis')
@@ -736,7 +682,6 @@ class QueueManager:
                             "running for this folder"
                         )
                     error(f"[queue] {item.error}: {item.path!r}")
-                    self._persist_recovery_state()
                     continue
                 try:
                     _wipe_kestrel_dir(item.path)
@@ -747,14 +692,12 @@ class QueueManager:
                         item.status = "error"
                         item.end_time = _time_mod.time()
                         item.error = str(e)
-                    self._persist_recovery_state()
                     continue
 
             with self._lock:
                 item.status = "running"
                 item.start_time = _time_mod.time()
                 item.initial_processed = 0
-            self._persist_recovery_state()
 
             try:
                 current_settings = load_persisted_settings()
@@ -906,7 +849,6 @@ class QueueManager:
                         item.status = 'error'
                         item.end_time = _time_mod.time()
                         item.error = _GPU_LOST_MESSAGE
-                    self._persist_recovery_state()
                     self._send_folder_analytics(item)
                     continue
                 error_stop = getattr(self._pipeline, 'error_stop', None)
@@ -923,7 +865,6 @@ class QueueManager:
                         item.status = 'error'
                         item.end_time = _time_mod.time()
                         item.error = msg
-                    self._persist_recovery_state()
                     self._send_folder_analytics(item)
                     continue
                 # Counted before the item flips to 'done' so the first status
@@ -952,7 +893,6 @@ class QueueManager:
                         if item.total > 0:
                             item.processed = item.total
                         item.scene_total = scene_total
-                self._persist_recovery_state()
                 self._send_folder_analytics(item)
             except Exception as exc:
                 error(f'[queue] Error processing {item.path!r}:', exc)
@@ -960,11 +900,9 @@ class QueueManager:
                     item.status = 'error'
                     item.end_time = _time_mod.time()
                     item.error = str(exc) or type(exc).__name__
-                self._persist_recovery_state()
                 self._send_folder_analytics(item)
 
         info('[queue] Run thread finished.')
-        self._persist_recovery_state()
 
     def _send_folder_analytics(self, item):
         """Send per-folder analytics (if opted-in) and completion telemetry (non-optional)."""

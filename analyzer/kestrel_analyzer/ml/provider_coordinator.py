@@ -29,7 +29,6 @@ from __future__ import annotations
 import gc
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
 from . import gpu_providers

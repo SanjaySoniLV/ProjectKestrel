@@ -3,7 +3,7 @@
     // queue-manager integration in v1 (per the unified-auth refactor plan,
     // C3 of the commercialization roadmap will flesh out the UX).
     // ───────────────────────────────────────────────────────────────────
-    // Cloud Compute UX (Stage 1)
+    // Cloud Compute UX
     //
     // Design:
     //   - Entry point is the unified #analyzeQueueDlg destination toggle.
@@ -12,8 +12,8 @@
     //   - Live state lives in #cloudQueuePanel, a sibling of #queuePanel.
     //     We mirror the local queue's polling shape but at 10s cadence
     //     (Worker rate limits + packs arrive in batches of 10).
-    //   - Cancel = terminal (stops Modal, deletes staging). (Client-side pause
-    //     was removed — cancel is the only per-job control.)
+    //   - Cancel = terminal (stops the job, deletes staging). Cancel is the
+    //     only per-job control.
     //   - Pack-merged events drain into rescanFolderTree + scheduleAutoRefresh
     //     so folder gallery updates as packs arrive — mirrors local live update.
     //   - Startup: list pending jobs (read-only); surface unmerged packs via
@@ -60,10 +60,9 @@
     window._ccInProgressFolderPaths = new Set();
 
     function _ccPickFirstSelectedFolder() {
-      // Pull the first checked folder from the Phase 3 dialog state (the
-      // legacy _dlgSelected was renamed to analyzeDlgCheckedPaths in the
-      // dialog redesign). Returns the first selected path (alphabetical) or
-      // null when nothing is checked.
+      // Pull the first checked folder from the Analyze dialog state
+      // (analyzeDlgCheckedPaths). Returns the first selected path
+      // (alphabetical) or null when nothing is checked.
       try {
         if (typeof analyzeDlgCheckedPaths === 'object' && analyzeDlgCheckedPaths && analyzeDlgCheckedPaths.size > 0) {
           const arr = Array.from(analyzeDlgCheckedPaths).sort();
@@ -1114,7 +1113,7 @@
         : '';
 
       // Per-row controls. Cancel is disabled exactly when the job is terminal
-      // (server `terminal` flag, robust to count skew). Pause was removed.
+      // (server `terminal` flag, robust to count skew).
       const cancelDisabled = isTerminal;
       // Load: only offer when the folder isn't already open in the browser.
       const showLoad = !!state.rootPath && !_ccIsFolderLoaded(state.rootPath);
@@ -1308,11 +1307,9 @@
           if (typeof _updateAutoRefreshTimers === 'function') _updateAutoRefreshTimers();
         }
       } catch {}
-      // NOTE: pack-event draining used to live here, coupled to this render
-      // (so it only fired when the panel had jobs and was repainting). It now
-      // runs on its own steady timer — see _ccDrainPackEvents / _ccStartPackEventDrain
-      // (§5) — so a merged pack refreshes the gallery even when the user is
-      // looking at the photos rather than the cloud panel.
+      // Pack events are drained on their own timer, not here (see
+      // _ccDrainPackEvents / _ccStartPackEventDrain, §5), so a merged pack
+      // refreshes the gallery even while this panel isn't repainting.
     }
 
     // ── §5: pack-merged → gallery refresh (decoupled from panel render) ──

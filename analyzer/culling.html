@@ -4,7 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <!-- Defense-in-depth CSP: matches the HTTP header set by visualizer.py's
-       Handler.end_headers(). See FINDING-01 for the full rationale.
+       Handler.end_headers(): even if hostile text reaches the DOM, it cannot
+       run script.
        'unsafe-eval' is required because pywebview 6.1's JS bridge generates
        window.pywebview.api stubs with `new Function(...)`; without it the
        API never materialises and every button that calls into Python
@@ -1439,8 +1440,11 @@
     let _normalizedRatings = {};   // filename -> auto rating from apply_normalization()
     let _scenedata = { version: '2.0', image_ratings: {}, scenes: {} };
     let _needsLegacyCullOriginUpgrade = false;
-    let rejectFilenames = [];    // for undo after move
-    let moveCompleted = false;
+    let rejectFilenames = [];    // legacy single-move undo (older bridge)
+    // Undoable culling passes for this folder, from get_cull_history. Culling
+    // can run any number of times on a folder; each "Done Culling" move is a
+    // pass, and Undo walks back through them newest first.
+    let cullHistory = null;
 
 
     // ---- URL param ----
@@ -2193,7 +2197,7 @@
           return rb !== ra ? rb - ra : parseNumber(b.quality) - parseNumber(a.quality);
         });
 
-        // Phase 1: quality cutoff — unrated images follow explicit default setting.
+        // Step 1: quality cutoff — unrated images follow explicit default setting.
         const qualityAcceptSet = new Set(
           sorted.filter(r => {
             const rt = getRating(r);
@@ -2203,7 +2207,7 @@
                 .map(r => r.filename)
         );
 
-        // Phase 2: min-per-scene guarantee — promote top images if below minKeep
+        // Step 2: min-per-scene guarantee — promote top images if below minKeep
         let acceptCount = qualityAcceptSet.size;
         if (acceptCount < minKeep) {
           for (const r of sorted) {
@@ -2215,7 +2219,7 @@
           }
         }
 
-        // Phase 3: max-per-scene cap (min always wins: effective cap = max(maxKeep, minKeep))
+        // Step 3: max-per-scene cap (min always wins: effective cap = max(maxKeep, minKeep))
         const effectiveCap = maxKeep === Infinity ? Infinity : Math.max(maxKeep, minKeep);
         const finalAccepts = new Set();
         let keptSoFar = 0;
@@ -2628,6 +2632,10 @@
     }
 
     // ---- Stats ----
+    function undoablePassCount() {
+      return (cullHistory && cullHistory.undoable_count) || 0;
+    }
+
     function updateStats() {
       let acceptCount = 0, rejectCount = 0;
       for (const [, side] of cullingState) {
@@ -2635,10 +2643,11 @@
         else rejectCount++;
       }
       el('#statsLabel').textContent = `${acceptCount} accept · ${rejectCount} reject · ${rows.length} total`;
-      el('#statusLabel').textContent = `${acceptCount} images accepted, ${rejectCount} to reject`;
+      const passes = undoablePassCount();
+      el('#statusLabel').textContent = `${acceptCount} images accepted, ${rejectCount} to reject`
+        + (passes ? ` \u00B7 ${passes} earlier culling pass${passes === 1 ? '' : 'es'} can be undone` : '');
 
-      const doneBtn = el('#doneCullingBtn');
-      if (doneBtn) doneBtn.disabled = moveCompleted;
+      el('#doneCullingBtn').disabled = false;
     }
 
     // ---- Auto-save (debounced) ----
@@ -2663,9 +2672,7 @@
         const scenesToRemove = [];
         for (const [sceneId, sceneData] of Object.entries(_scenedata.scenes)) {
           // Scenedata stores membership in `image_filenames` (see
-          // kestrel_analyzer/database.py). This used to read `images`, which a
-          // scenedata entry never has, so moved rejects were never removed
-          // from their scenes.
+          // kestrel_analyzer/database.py), not `images`.
           if (Array.isArray(sceneData.image_filenames)) {
             // Filter out rejected images from this scene
             sceneData.image_filenames = sceneData.image_filenames.filter(f => !rejectSet.has(f));
@@ -3016,16 +3023,25 @@
           cleanupScenedataForRejects(movedMainSet);
           await saveCullingState();
 
+          if (movedMains.length) {
+            // Record this move as a pass so it can be undone on its own,
+            // after any later passes. Older bridges lack the call and fall
+            // back to the single-move undo.
+            if (typeof window.pywebview?.api?.record_cull_pass === 'function') {
+              try {
+                const rec = await window.pywebview.api.record_cull_pass(rootPath, movedMains);
+                if (!rec || !rec.success) console.warn('record_cull_pass failed', rec && rec.error);
+              } catch (e) {
+                console.warn('record_cull_pass error', e);
+              }
+            }
+            rejectFilenames = movedMains;
+          }
+
           try { await window.pywebview.api.open_reject_folder(rootPath); } catch (_) {}
           try { await window.pywebview.api.notify_main_window_refresh(); } catch (_) {}
 
-          if (movedMains.length) {
-            moveCompleted = true;
-            rejectFilenames = movedMains;
-            const undoBtn = el('#undoBtn');
-            undoBtn.style.display = '';
-            undoBtn.disabled = false;
-          }
+          await syncUndoStateFromDisk();
           scenes = aggregateScenes();
           renderAllScenes();
           updateStats();
@@ -3034,6 +3050,7 @@
             + (movedMains.length ? ' Click \u201cUndo Move\u201d to revert.' : '');
         } else {
           try { await window.pywebview.api.notify_main_window_refresh(); } catch (_) {}
+          el('#doneCullingBtn').disabled = false;
           el('#statusLabel').textContent = 'Done!';
         }
 
@@ -3044,7 +3061,7 @@
         if (doXmp && !xmpFailed)  parts.push('XMP files written');
         if (doXmp &&  xmpFailed)  parts.push('XMP had errors \u2014 check above');
         if (doMove && moveRes && moveRes.all_moved === false) parts.push('Some rejects were skipped');
-        if (doMove && moveCompleted) parts.push('Undo available via the bottom bar');
+        if (doMove && undoablePassCount()) parts.push('Undo available via the bottom bar');
         el('#dlgProgressSubtitle').textContent = parts.join(' \u00b7 ');
         el('#dlgProgressActions').style.display = 'flex';
 
@@ -3065,45 +3082,56 @@
     }
 
     async function undoMove() {
-      el('#statusLabel').textContent = 'Undoing move…';
+      el('#statusLabel').textContent = 'Undoing move\u2026';
       el('#undoBtn').disabled = true;
+      el('#doneCullingBtn').disabled = true;
       try {
-        // 1. Move files back
-        const undoRes = await window.pywebview.api.undo_reject_move(rootPath, rejectFilenames);
-        if (!undoRes.success) {
-          showToast('Undo failed: ' + (undoRes.error || ''), 5000);
-          el('#undoBtn').disabled = false;
+        let undoRes, dbOk = true, dbErr = '';
+        if (typeof window.pywebview?.api?.undo_last_cull_pass === 'function') {
+          // Newest pass first: its files come back and the database returns
+          // to how it was just before that pass.
+          undoRes = await window.pywebview.api.undo_last_cull_pass(rootPath);
+          if (undoRes && undoRes.success && undoRes.db_restored === false) {
+            dbOk = false;
+            dbErr = undoRes.db_restore_error || 'no database backup for that pass';
+          }
+        } else {
+          undoRes = await window.pywebview.api.undo_reject_move(rootPath, rejectFilenames);
+          if (undoRes && undoRes.success) {
+            const restoreRes = await window.pywebview.api.restore_kestrel_db_backup(rootPath);
+            if (!restoreRes.success) { dbOk = false; dbErr = restoreRes.error || ''; }
+          }
+        }
+        if (!undoRes || !undoRes.success) {
+          showToast('Undo failed: ' + ((undoRes && undoRes.error) || ''), 5000);
+          await syncUndoStateFromDisk();
+          updateStats();
           return;
         }
 
         if (undoRes.errors && undoRes.errors.length > 0) {
-          console.warn('undo_reject_move errors:', undoRes.errors);
+          console.warn('undo errors:', undoRes.errors);
           showToast(`${undoRes.errors.length} file(s) could not be restored - check console`, 5000);
         }
+        if (!dbOk) showToast('Files restored, but the database backup could not be restored: ' + dbErr, 5000);
 
-        // 2. Restore backup CSV
-        const restoreRes = await window.pywebview.api.restore_kestrel_db_backup(rootPath);
-        if (!restoreRes.success) {
-          showToast('CSV restore failed: ' + (restoreRes.error || ''), 5000);
-        }
-
-        // 3. Reload data from restored CSV
+        // Reload data from the restored CSV, then refresh the pass list.
         await loadData();
-
-        // 4. Notify main window
         try { await window.pywebview.api.notify_main_window_refresh(); } catch(_) {}
-
-        moveCompleted = false;
         rejectFilenames = [];
-        el('#undoBtn').style.display = 'none';
-        el('#doneCullingBtn').disabled = false;
+        await syncUndoStateFromDisk();
+        updateStats();
 
+        const left = undoablePassCount();
         showToast(`Restored ${undoRes.restored} file${undoRes.restored===1?'':'s'}.`, 4000);
-        el('#statusLabel').textContent = 'Move undone. Continue culling or click Done Culling when ready.';
+        el('#statusLabel').textContent = 'Move undone.'
+          + (left ? ` ${left} earlier pass${left === 1 ? '' : 'es'} can still be undone.` : '')
+          + ' Continue culling or click Done Culling when ready.';
       } catch (e) {
         console.error('undoMove error', e);
         showToast('Undo error: ' + e.message, 5000);
-        el('#undoBtn').disabled = false;
+        await syncUndoStateFromDisk();
+        updateStats();
       }
     }
 
@@ -3180,34 +3208,78 @@
       }
     }
 
+    function _fmtPassTime(iso) {
+      if (!iso) return 'earlier version';
+      const d = new Date(iso);
+      return isNaN(d) ? iso : d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    }
+
+    // Show the Undo button for the newest undoable pass, and list every pass
+    // (and what can still be recovered from each) in its tooltip.
+    function renderUndoState() {
+      const undoBtn = el('#undoBtn');
+      if (!undoBtn) return;
+      const next = cullHistory && cullHistory.next_undo;
+      if (!next) {
+        undoBtn.style.display = 'none';
+        undoBtn.disabled = true;
+        undoBtn.title = '';
+        undoBtn.textContent = '\u21A9 Undo Move';
+        return;
+      }
+      const total = undoablePassCount();
+      undoBtn.style.display = '';
+      undoBtn.disabled = false;
+      undoBtn.textContent = total > 1
+        ? `\u21A9 Undo pass ${next.number} of ${total}`
+        : '\u21A9 Undo Move';
+      const lines = ['Culling history (newest first):'];
+      for (const p of (cullHistory.passes || []).slice().reverse()) {
+        const label = `Pass ${p.number} \u00B7 ${_fmtPassTime(p.created_at)} \u00B7 ${p.file_count} file${p.file_count === 1 ? '' : 's'}`;
+        let state;
+        if (p.restorable_count === 0) state = 'not recoverable (files no longer in _KESTREL_Rejects)';
+        else if (p.restorable_count < p.file_count) state = `${p.restorable_count} recoverable`;
+        else state = 'recoverable';
+        if (p.restorable_count > 0 && !p.has_db_backup) state += ', files only (no database backup)';
+        lines.push(`${label}: ${state}`);
+      }
+      lines.push('', 'Undo restores the newest pass first.');
+      undoBtn.title = lines.join('\n');
+    }
+
     async function syncUndoStateFromDisk() {
-      if (typeof window.pywebview?.api?.get_reject_restore_state !== 'function') return;
       const undoBtn = el('#undoBtn');
       if (!undoBtn) return;
 
+      if (typeof window.pywebview?.api?.get_cull_history === 'function') {
+        try {
+          const hist = await window.pywebview.api.get_cull_history(rootPath);
+          cullHistory = (hist && hist.success) ? hist : null;
+        } catch (e) {
+          console.warn('get_cull_history error', e);
+          cullHistory = null;
+        }
+        renderUndoState();
+        return;
+      }
+
+      // Older bridge: one undoable move, read from the rejects folder.
+      if (typeof window.pywebview?.api?.get_reject_restore_state !== 'function') return;
       try {
         const state = await window.pywebview.api.get_reject_restore_state(rootPath);
         if (!state?.success || !state.can_restore || !Array.isArray(state.reject_filenames) || state.reject_filenames.length === 0) {
+          cullHistory = null;
+          renderUndoState();
           return;
         }
-
         rejectFilenames = state.reject_filenames;
-        moveCompleted = true;
-        undoBtn.style.display = '';
-        undoBtn.disabled = false;
-
-        const doneBtn = el('#doneCullingBtn');
-        if (doneBtn) doneBtn.disabled = true;
-
-        const parsedCount = parseInt(state.reject_count, 10);
-        const count = Number.isFinite(parsedCount) && parsedCount >= 0 ? parsedCount : rejectFilenames.length;
-        const suffix = count === 1 ? '' : 's';
-        if (state.has_csv_backup) {
-          el('#statusLabel').textContent = `Previous reject move detected (${count} file${suffix}). Click "Undo Move" to restore.`;
-        } else {
-          el('#statusLabel').textContent = `Previous reject move detected (${count} file${suffix}). Undo can restore files, but backup CSV is missing.`;
-          showToast('Previous reject move detected. Backup CSV is missing; Undo will restore files only.', 5500);
-        }
+        const count = rejectFilenames.length;
+        cullHistory = {
+          passes: [{ number: 1, created_at: '', file_count: count, restorable_count: count, has_db_backup: !!state.has_csv_backup }],
+          undoable_count: 1,
+        };
+        cullHistory.next_undo = cullHistory.passes[0];
+        renderUndoState();
       } catch (e) {
         console.warn('syncUndoStateFromDisk error', e);
       }

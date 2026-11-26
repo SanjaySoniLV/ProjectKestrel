@@ -1,7 +1,6 @@
 """Shared test fixtures for the Kestrel test suite."""
 
 import json
-import tempfile
 from pathlib import Path
 import pytest
 import pandas as pd
@@ -10,7 +9,7 @@ import sys
 # Add analyzer to path so we can import kestrel_analyzer modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from kestrel_analyzer.database import BASE_COLUMNS, REQUIRED_COLUMNS
+from kestrel_analyzer.database import BASE_COLUMNS
 
 
 # ============================================================================

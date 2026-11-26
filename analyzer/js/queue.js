@@ -73,9 +73,6 @@
       return window.pywebview.api.get_recovery_status();
     }
 
-    // Phase 3: apiRestoreRecoveryQueue removed — queue-restore feature
-    // replaced by the analyze dialog's analyze_recents chip row.
-
     async function apiClearRecoveryState(clearQueueState = true) {
       if (!window.pywebview?.api?.clear_recovery_state) {
         throw new Error('Desktop API unavailable: clear_recovery_state');
@@ -92,10 +89,9 @@
 
     let _startupRecoveryHandled = false;
 
-    // Phase 3: queue-restore branch removed. This function now only handles
-    // the unclean-shutdown crash-report prompt. Interrupted queues now
+    // Handles the unclean-shutdown crash-report prompt. Interrupted queues
     // surface as recents in the Analyze Folders dialog (analyze_recents
-    // settings key) instead of a startup modal.
+    // settings key), not as a startup modal.
     async function maybeHandleStartupRecovery() {
       if (_startupRecoveryHandled) return;
       _startupRecoveryHandled = true;
@@ -136,8 +132,8 @@
       }
 
       try {
-        // Clear only the unclean-shutdown timestamp; we no longer persist
-        // queue recovery state so the `false` arg is a no-op there.
+        // Clear only the unclean-shutdown timestamp (queue state isn't
+        // persisted, so the `false` arg has nothing else to keep).
         await apiClearRecoveryState(false);
       } catch (_) { }
     }
@@ -156,14 +152,15 @@
     /** Render the queue panel from a status object. */
     function renderQueuePanel(status) {
       window._lastQueueStatus = status; // store for analyze dialog queue preview
-      // The GPU device was lost (Windows GPU reset). It cannot recover inside
-      // this process, so the banner stays until Kestrel is restarted.
+      // The GPU device was lost (a Windows GPU reset, or a CoreML failure on
+      // macOS). It cannot recover inside this process, so the banner stays
+      // until Kestrel is restarted. The text stays platform-neutral.
       try {
         const gpuBanner = document.getElementById('gpuLostNotice');
         const gpuMsg = document.getElementById('gpuLostMsg');
         if (gpuBanner && gpuMsg) {
           if (status && status.gpu_lost) {
-            gpuMsg.textContent = 'The GPU stopped responding (a Windows GPU reset), so analysis was stopped. '
+            gpuMsg.textContent = 'The GPU stopped responding, so analysis was stopped. '
               + 'Your progress is saved. Restart Kestrel, then analyze the folder again to continue on the GPU.';
             gpuBanner.classList.remove('hidden');
           } else {

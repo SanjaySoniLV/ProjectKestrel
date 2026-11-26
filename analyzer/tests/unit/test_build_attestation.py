@@ -8,7 +8,6 @@ These tests pin the BOM-tolerant read path and the no-BOM happy path so
 the regression cannot return through either end.
 """
 
-import importlib
 import json
 import sys
 from pathlib import Path

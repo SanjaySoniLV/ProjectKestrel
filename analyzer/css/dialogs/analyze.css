@@ -1,4 +1,4 @@
-/* ── Analyze Folders dialog (Phase 3: 3-column layout) ─────────────────────── */
+/* ── Analyze Folders dialog (3-column layout) ─────────────────────────────── */
 .analyze-dlg {
   /* Sizing comes from .kdlg--lg on the parent <dialog>; this is the inner
      layout container so it just fills the available flex slot. */
@@ -577,28 +577,30 @@
 .adlg-radio-inline.disabled { opacity: 0.45; cursor: not-allowed; }
 .analyze-dlg-soon { font-size: 10px; color: var(--muted); }
 
-/* Compact action row. Cancel is a tiny X next to the primary Start button. */
+/* Header close (✕), top-right like the other dialogs' close buttons. */
+.analyze-dlg-close {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.analyze-dlg-close:hover {
+  background: rgba(255,255,255,.06);
+  color: var(--text);
+}
+
+/* Compact action row: the primary Start button. */
 .analyze-dlg-action-row {
   display: flex;
   align-items: stretch;
   gap: 8px;
   flex: 0 0 auto;
-}
-.analyze-dlg-cancel-icon {
-  flex: 0 0 40px;
-  width: 40px;
-  height: 42px;
-  font-size: 15px;
-  padding: 0;
-  background: transparent;
-  border: 1px solid #2a3040;
-  color: var(--muted);
-  border-radius: 8px;
-}
-.analyze-dlg-cancel-icon:hover {
-  background: #1a2030;
-  color: var(--text);
-  border-color: #3a4555;
 }
 .analyze-dlg-start-btn {
   flex: 1 1 auto;
@@ -619,7 +621,7 @@
   letter-spacing: 0.2px;
 }
 
-/* ── State pills (Phase 3F) ──────────────────────────────────────────────────
+/* ── State pills ─────────────────────────────────────────────────────────────
    Two orthogonal CSS axes encode folder status in the queue builder:
      color = relationship to queue (blue/orange/gray/red/dim)
      shape = work progress (solid/half/outline/dot/warn)
@@ -749,7 +751,7 @@
   opacity: 1 !important;
 }
 
-/* ── Pre-queue confirmation modal (Phase 3H) ──────────────────────────────
+/* ── Pre-queue confirmation modal ─────────────────────────────────────────
    Sizing comes from .kdlg--sm on the parent <dialog>. */
 .analyze-confirm-dlg {
   border: 2px solid var(--warn);

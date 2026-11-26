@@ -606,7 +606,7 @@ class TestBridge:
 
     def test_set_mode(self, bridge):
         api, store, *_ = bridge
-        assert api.get_quality_feedback_mode()["mode"] == "ask"
+        assert api._qf_mode() == "ask"
         assert api.set_quality_feedback_mode("never")["success"]
         assert store["quality_feedback_mode"] == "never"
         assert not api.set_quality_feedback_mode("sometimes")["success"]

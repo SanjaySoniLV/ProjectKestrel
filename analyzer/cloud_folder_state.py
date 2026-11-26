@@ -35,7 +35,6 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Any
 
 CLOUD_FOLDER_STATE_FILENAME = "kestrel_cloudcompute.json"
 SCHEMA_VERSION = 1
@@ -155,10 +154,6 @@ def list_merged_packs(folder: Path | str, job_id: str) -> list[str]:
     block = (state.get("jobs") or {}).get(job_id) or {}
     packs = block.get("mergedPacks") or []
     return [str(p) for p in packs if isinstance(p, str)]
-
-
-def is_pack_merged(folder: Path | str, job_id: str, pack_name: str) -> bool:
-    return pack_name in list_merged_packs(folder, job_id)
 
 
 def mark_pack_merged(folder: Path | str, job_id: str, pack_name: str) -> None:

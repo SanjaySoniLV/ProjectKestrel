@@ -84,7 +84,10 @@ def _build_username_pattern(username: str) -> Optional[re.Pattern]:
         return None
     u = re.escape(username)
     parts = [
-        r"(?i)\\Users\\" + u + _BOUNDARY,    # Windows
+        # Windows. ``\\+`` also matches the doubled backslashes of an
+        # escaped path, as printed by ``repr()`` (``'C:\\\\Users\\\\x'``) in
+        # log lines such as the ``[security] Reject ...`` warnings.
+        r"(?i)\\+Users\\+" + u + _BOUNDARY,
         r"/Users/" + u + _BOUNDARY,            # macOS
         r"/home/" + u + _BOUNDARY,             # Linux
     ]
