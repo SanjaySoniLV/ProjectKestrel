@@ -413,7 +413,7 @@ ${node.path}` : node.path);
       const countSpan = document.createElement('span');
       countSpan.className = 'tree-count';
       if (info && info.total > 0) {
-        const erroredFrag = info.errored > 0 ? ` (${info.errored} errored)` : '';
+        const erroredFrag = info.errored > 0 ? ` · ${info.errored} failed` : '';
         countSpan.textContent = ` ${info.processed}/${info.total}${erroredFrag}`;
       } else {
         countSpan.textContent = '';
@@ -728,291 +728,168 @@ ${node.path}` : node.path);
     //   - estimated time (hardcoded baseline; "—" if too few images)
     //   - warning summary if any folders will lose user data
     //   - shows/hides the "Re-analyze fully-analyzed" unlock row
-    function refreshAnalyzeDlgSummary() {
-      const headline = document.getElementById('analyzeDlgSummaryHeadline');
-      const warningsEl = document.getElementById('analyzeDlgWarnings');
-      const listEl = document.getElementById('analyzeDlgQueuedList');
-      const unlockRow = document.getElementById('analyzeDlgReanalyzeUnlockRow');
-      const startBtn = document.getElementById('analyzeDlgAdd');
-      if (!headline || !listEl || !startBtn) return;
-
-      const useGpu = !!document.getElementById('analyzeUseGpu')?.checked;
-      const retryErrored = !!document.getElementById('adlgRetryErrored')?.checked;
+    // ── Step 3: job list, destination times, footer totals ─────────────────────
+    // Classify each checked folder with the shared plan (the Start handler in
+    // event-wiring.js uses the same one, so the preview can't disagree).
+    function _adlgClassifyChecked(retryErrored) {
       const checkedNorms = Array.from(analyzeDlgCheckedPaths);
-      const checkedCount = checkedNorms.length;
-
-      // Classify each checked folder.
-      let totalImagesToProcess = 0;
-      let fullyAnalyzedSkipCount = 0;       // would skip-silently
-      let fullyAnalyzedWillReanalyzeCount = 0; // will lose data (unlock ON)
-      let outdatedReanalyzeCount = 0;       // will lose data (outdated → always re-analyze)
-      let upgradeCount = 0;                 // pipeline-3 upgrade chosen (no re-analysis)
-      let chosenReanalyzeCount = 0;         // upgradable, but user picked "re-analyze"
+      const t = { folders: checkedNorms.length, images: 0, skip: 0, upgrade: 0, loss: 0, unlockable: 0 };
       const perFolder = [];
-      // Look up upgrade eligibility for newly checked folders (async; the
-      // summary re-renders when each answer arrives).
-      _adlgEnsureUpgradeStatus(checkedNorms).catch(() => {});
+      // Upgrade eligibility for newly checked folders arrives async and
+      // re-renders the summary.
+      _adlgEnsureUpgradeStatus(checkedNorms).catch(e => console.warn('[adlg] upgrade status failed', e));
       for (const norm of checkedNorms) {
         const node = _adlgFindNode(norm);
         const info = analyzeDlgInspectionCache.get(norm);
-        const name = node ? node.name : (norm.split('/').filter(Boolean).pop() || norm);
         const total = (info && info.total) || 0;
-        const processed = (info && info.processed) || 0;
         const errored = (info && info.errored) || 0;
-        const outdated = node ? _isOutdatedNode(node) : false;
         const upgradeMode = analyzeDlgUpgradeModeFor(norm);
-        const plan = _EST.planFolder({ total, processed, errored, outdated, upgradeMode },
-          { reanalyzeUnlocked: analyzeDlgReanalyzeUnlocked, retryErrored });
-        const willSkip = plan.kind === 'skip';
-        const willReanalyze = plan.kind === 'reanalyze';
-        const imagesThisFolder = plan.images;
-        let warningMsg = '';
-        let warningKind = ''; // '' | 'warn' | 'error'
+        const plan = _EST.planFolder({
+          total, processed: (info && info.processed) || 0, errored,
+          outdated: node ? _isOutdatedNode(node) : false, upgradeMode,
+        }, { reanalyzeUnlocked: analyzeDlgReanalyzeUnlocked, retryErrored });
         const all = total.toLocaleString();
-        if (plan.kind === 'upgrade') {
-          // The in-place upgrade is queued separately and adds nothing to the
-          // analysis image count or time estimate.
-          upgradeCount++;
-        } else if (plan.reason === 'chosen') {
-          chosenReanalyzeCount++;
-          warningMsg = `Will erase .kestrel data (ratings, decisions, scene names) and re-analyze all ${all} images.`;
+        let warningMsg = '';
+        let warningKind = '';
+        if (plan.kind === 'upgrade') t.upgrade++;
+        else if (plan.kind === 'skip') { t.skip++; t.unlockable++; }
+        else t.images += plan.images;
+        if (plan.kind === 'reanalyze') {
+          t.loss++;
           warningKind = 'warn';
-        } else if (plan.reason === 'outdated') {
-          outdatedReanalyzeCount++;
-          warningMsg = `Analyzed with analysis version ${folderPipelineLabel(node)} (current: ${CURRENT_PIPELINE_MAJOR}.0). Will erase .kestrel data and re-analyze all ${all} images.`;
-          warningKind = 'warn';
-        } else if (plan.reason === 'unlocked') {
-          fullyAnalyzedWillReanalyzeCount++;
-          warningMsg = `Already fully analyzed. Will erase user data (ratings, decisions, scene names) and re-analyze all ${all} images.`;
-          warningKind = 'warn';
-        } else if (willSkip) {
-          fullyAnalyzedSkipCount++;
+          if (plan.reason === 'unlocked') t.unlockable++;
+          warningMsg = plan.reason === 'outdated'
+            ? `Analyzed with analysis version ${folderPipelineLabel(node)} (current: ${CURRENT_PIPELINE_MAJOR}.0). Kestrel data will be erased and all ${all} photos analyzed again.`
+            : `Kestrel data (ratings, decisions, scene names) will be erased and all ${all} photos analyzed again.`;
         } else if (plan.retriedErrored) {
-          warningMsg = `Re-attempting ${errored} previously-errored image${errored === 1 ? '' : 's'}.`;
+          warningMsg = `Retrying ${errored} failed ${errored === 1 ? 'photo' : 'photos'}.`;
           warningKind = 'error';
         } else if (plan.skippedErrored) {
-          warningMsg = `${errored} image${errored === 1 ? '' : 's'} previously errored — enable "Re-attempt errored images" to retry them.`;
+          warningMsg = `${errored} ${errored === 1 ? 'photo' : 'photos'} failed last time. Turn on "Retry failed photos" in All settings to try again.`;
           warningKind = 'error';
         }
-        if (!willSkip) totalImagesToProcess += imagesThisFolder;
-        const pillSpec = _computeAnalyzeDlgPill(node || { path: norm }, info, true);
-        perFolder.push({ name, path: norm, info, pillSpec, willSkip, willReanalyze, imagesThisFolder, warningMsg, warningKind, upgradeMode, total });
+        perFolder.push({
+          name: node ? node.name : (norm.split('/').filter(Boolean).pop() || norm),
+          path: norm, plan, total, upgradeMode, warningMsg, warningKind,
+          pillSpec: _computeAnalyzeDlgPill(node || { path: norm }, info, true),
+        });
+      }
+      return { perFolder, t };
+    }
+
+    function _adlgJobRow(f, useGpu) {
+      const row = document.createElement('div');
+      row.className = 'adlg-job-row' + (f.plan.kind === 'skip' ? ' is-skip' : '');
+      row.title = f.path;
+      const pill = document.createElement('span');
+      pill.className = `state-pill state-pill--${f.pillSpec.color} state-pill--${f.pillSpec.shape}`;
+      const name = document.createElement('span');
+      name.className = 'adlg-job-name';
+      name.textContent = f.name;
+      const count = document.createElement('span');
+      count.className = 'adlg-job-count';
+      const time = document.createElement('span');
+      time.className = 'adlg-job-time';
+      const n = f.plan.kind === 'upgrade' ? f.total : f.plan.images;
+      count.textContent = f.plan.kind === 'skip' ? 'already analyzed'
+        : `${n.toLocaleString()} ${n === 1 ? 'photo' : 'photos'}`;
+      if (f.plan.kind !== 'skip' && f.plan.kind !== 'upgrade' && !_isCloudDestination()
+          && f.plan.images >= _EST_MIN_IMAGES_TO_ESTIMATE) {
+        time.textContent = `~${KestrelUtil.formatDuration(f.plan.images * _getEstRate(useGpu).rate)}`;
+      }
+      row.append(pill, name, count, time);
+      const sub = document.createElement('div');
+      sub.className = 'adlg-job-sub';
+      if (f.plan.kind === 'skip') {
+        const skip = document.createElement('span');
+        skip.className = 'adlg-job-skip';
+        skip.append(KestrelIcon.el('ban'), 'Will be skipped');
+        sub.appendChild(skip);
+      }
+      if (f.upgradeMode) sub.appendChild(_adlgBuildUpgradeChoice(f));
+      if (f.warningMsg) {
+        const warn = document.createElement('div');
+        warn.className = 'adlg-job-warn' + (f.warningKind === 'error' ? ' is-error' : '');
+        warn.append(KestrelIcon.el('warning'), ' ' + f.warningMsg);
+        sub.appendChild(warn);
+      }
+      if (sub.childNodes.length) row.appendChild(sub);
+      return row;
+    }
+
+    // "about 1 h 10 min on your GPU" in the This computer card.
+    function _adlgRenderLocalTime(images, useGpu) {
+      const el = document.getElementById('adlgLocalTime');
+      if (!el) return null;
+      el.textContent = '';
+      if (images === 0) { el.textContent = 'Nothing to analyze'; return null; }
+      if (images < _EST_MIN_IMAGES_TO_ESTIMATE) return null;
+      const { rate, source, sampledImgs } = _getEstRate(useGpu);
+      const secs = images * rate;
+      const big = document.createElement('b');
+      big.textContent = `about ${KestrelUtil.formatDuration(secs)}`;
+      el.append(big, ` ${useGpu ? 'on your GPU' : 'on the CPU'}`);
+      if (source === 'baseline') el.appendChild(_buildUncertainBadge(sampledImgs));
+      return secs;
+    }
+
+    // Bottleneck chip in the Cloud Compute card; returns the footer estimate.
+    function _adlgRenderCloudTime(images) {
+      const regimeEl = document.getElementById('adlgCloudRegime');
+      if (regimeEl) regimeEl.textContent = '';
+      if (images < _EST_MIN_IMAGES_TO_ESTIMATE) return null;
+      const { secs, regime, uploadSecs, analysisSecs } = _getCloudEstSeconds(images);
+      if (regimeEl) {
+        regimeEl.appendChild(_buildCloudUncertainBadge());
+        const chip = secs != null ? _buildCloudRegimeChip(regime, uploadSecs, analysisSecs) : null;
+        if (chip) regimeEl.appendChild(chip);
+      }
+      return secs != null ? { secs, bestCase: false } : { secs: analysisSecs, bestCase: true };
+    }
+
+    function refreshAnalyzeDlgSummary() {
+      const listEl = document.getElementById('analyzeDlgQueuedList');
+      if (!listEl) return;
+      const useGpu = !!document.getElementById('analyzeUseGpu')?.checked;
+      const retryErrored = !!document.getElementById('adlgRetryErrored')?.checked;
+      const { perFolder, t } = _adlgClassifyChecked(retryErrored);
+
+      listEl.textContent = '';
+      for (const f of perFolder) listEl.appendChild(_adlgJobRow(f, useGpu));
+
+      const localSecs = _adlgRenderLocalTime(t.images, useGpu);
+      const cloudEta = _adlgRenderCloudTime(t.images);
+      // The cloud card compares the queue with the images left on the plan.
+      if (typeof _ccUpdateCloudPricing === 'function') _ccUpdateCloudPricing(t.images);
+
+      const runBtn = document.getElementById('analyzeDlgRunSpeedTest');
+      const statusEl = document.getElementById('analyzeDlgCloudSpeedStatus');
+      const test = _cloudSpeedTest();
+      if (runBtn) {
+        runBtn.disabled = t.folders === 0;
+        runBtn.replaceChildren(KestrelIcon.el('bolt'), test ? ' Test again' : ' Test my upload speed');
+      }
+      if (statusEl && test) {
+        statusEl.textContent = `Measured upload: ${Number(test.mbps || 0).toFixed(1)} MB/s`;
+        statusEl.classList.remove('hidden', 'error');
+        statusEl.classList.add('success');
       }
 
-      // Per-folder list
-      listEl.innerHTML = '';
-      if (perFolder.length === 0) {
-        const empty = document.createElement('div');
-        empty.className = 'analyze-dlg-queued-list-empty';
-        empty.textContent = 'No folders queued yet. Check folders in the queue builder to add them here.';
-        listEl.appendChild(empty);
-      } else {
-        for (const f of perFolder) {
-          const item = document.createElement('div');
-          let itemCls = 'analyze-dlg-queued-item';
-          if (f.willSkip) itemCls += ' will-skip';
-          if (f.warningKind === 'warn') itemCls += ' has-warning';
-          if (f.warningKind === 'error') itemCls += ' has-error';
-          if (f.upgradeMode === 'upgrade') itemCls += ' will-upgrade';
-          item.className = itemCls;
-          item.title = f.path;
-
-          const head = document.createElement('div');
-          head.className = 'analyze-dlg-queued-item-head';
-          const pill = document.createElement('span');
-          pill.className = `state-pill state-pill--${f.pillSpec.color} state-pill--${f.pillSpec.shape}`;
-          const name = document.createElement('span');
-          name.className = 'analyze-dlg-queued-item-name';
-          name.textContent = f.name;
-          head.appendChild(pill);
-          head.appendChild(name);
-          item.appendChild(head);
-
-          const meta = document.createElement('div');
-          meta.className = 'analyze-dlg-queued-item-meta';
-          if (f.upgradeMode === 'upgrade') {
-            const imgSpan = document.createElement('span');
-            imgSpan.className = 'meta-images';
-            imgSpan.textContent = `${f.total.toLocaleString()} image${f.total === 1 ? '' : 's'} · upgrade to analysis version 3.0`;
-            meta.appendChild(imgSpan);
-          } else if (f.willSkip) {
-            const skip = document.createElement('span');
-            skip.className = 'meta-skip';
-            skip.textContent = 'Already analyzed — will be skipped';
-            meta.appendChild(skip);
-          } else {
-            const imgSpan = document.createElement('span');
-            imgSpan.className = 'meta-images';
-            const imgs = f.imagesThisFolder.toLocaleString();
-            imgSpan.textContent = `${imgs} image${f.imagesThisFolder === 1 ? '' : 's'}`;
-            if (f.willReanalyze) imgSpan.textContent += ' (re-analyze)';
-            meta.appendChild(imgSpan);
-            // Per-folder time estimate
-            if (f.imagesThisFolder >= _EST_MIN_IMAGES_TO_ESTIMATE) {
-              if (_isCloudDestination()) {
-                const { secs } = _getCloudEstSeconds(f.imagesThisFolder);
-                if (secs != null) {
-                  const timeSpan = document.createElement('span');
-                  timeSpan.className = 'meta-time';
-                  timeSpan.textContent = `· ~${KestrelUtil.formatDuration(secs)}`;
-                  meta.appendChild(timeSpan);
-                  meta.appendChild(_buildCloudUncertainBadge());
-                }
-                // Pre-speed-test cloud: no per-folder estimate; the panel
-                // below the headline carries the "?" + run-test affordance.
-              } else {
-                const { rate, source, sampledImgs } = _getEstRate(useGpu);
-                const sec = f.imagesThisFolder * rate;
-                const timeSpan = document.createElement('span');
-                timeSpan.className = 'meta-time';
-                timeSpan.textContent = `· ~${KestrelUtil.formatDuration(sec)}`;
-                meta.appendChild(timeSpan);
-                if (source === 'baseline') meta.appendChild(_buildUncertainBadge(sampledImgs));
-              }
-            }
-          }
-          item.appendChild(meta);
-          if (f.upgradeMode) item.appendChild(_adlgBuildUpgradeChoice(f));
-
-          if (f.warningMsg) {
-            const warn = document.createElement('div');
-            warn.className = 'analyze-dlg-queued-item-warning' + (f.warningKind === 'error' ? ' error' : '');
-            warn.append(KestrelIcon.el('warning'), ' ' + f.warningMsg);
-            item.appendChild(warn);
-          }
-          listEl.appendChild(item);
+      const warningsEl = document.getElementById('analyzeDlgWarnings');
+      if (warningsEl) {
+        warningsEl.textContent = '';
+        if (t.loss > 0) {
+          warningsEl.append(KestrelIcon.el('warning'), ` ${t.loss} ${t.loss === 1 ? 'folder' : 'folders'} will lose ratings, decisions and scene names. You'll be asked to confirm.`);
         }
+        warningsEl.classList.toggle('hidden', t.loss === 0);
       }
+      document.getElementById('analyzeDlgReanalyzeUnlockRow')?.classList.toggle('hidden', t.unlockable === 0);
 
-      // Headline — horizontal 3-stat layout (images | folders | est. time).
-      // Each stat is a number-on-top, label-below block separated by thin
-      // vertical dividers. Reads at a glance without parsing a sentence.
-      if (checkedCount === 0) {
-        headline.innerHTML = '<span class="analyze-dlg-summary-empty">Check folders in the queue builder to add them.</span>';
-      } else {
-        const imgCount = totalImagesToProcess.toLocaleString();
-        const folderWord = checkedCount === 1 ? 'folder' : 'folders';
-        let imgLabel = totalImagesToProcess === 1 ? 'image' : 'images';
-        if (upgradeCount > 0) imgLabel += ' to analyze';
-        const skipFrag = fullyAnalyzedSkipCount > 0
-          ? `<span class="analyze-dlg-stat-skip">${fullyAnalyzedSkipCount} skipped</span>`
-          : '';
-        const upgradeFrag = upgradeCount > 0
-          ? `<span class="analyze-dlg-stat-skip analyze-dlg-stat-upgrade">${upgradeCount} to upgrade</span>`
-          : '';
-        // Time stat — destination-dependent.
-        //   Local: existing baseline-or-local logic with optional "?" badge.
-        //   Cloud: best-case "as fast as" figure until a speed test has run, then
-        //          the modelled time at the measured upload speed; permanent "?" tooltip.
-        let timeValue = '—';
-        let timeLabel = 'estimated time';
-        let timeDim = true;
-        let timeBadgeKind = null; // null | 'local-baseline' | 'cloud'
-        let timeBadgeSampledImgs = 0;
-        let cloudRegimeChip = null;
-        const isCloud = _isCloudDestination();
-        if (isCloud) {
-          if (totalImagesToProcess >= _EST_MIN_IMAGES_TO_ESTIMATE) {
-            const { secs, hasTest, regime, uploadSecs, analysisSecs } =
-              _getCloudEstSeconds(totalImagesToProcess);
-            if (secs != null) {
-              timeValue = `~${KestrelUtil.formatDuration(secs)}`;
-              timeLabel = 'est. time (cloud)';
-              timeDim = false;
-              timeBadgeKind = 'cloud';
-              cloudRegimeChip = _buildCloudRegimeChip(regime, uploadSecs, analysisSecs);
-            } else {
-              // No speed test yet: show the compute-limited best case, labelled
-              // as such. The speed test replaces it with a measured figure.
-              timeValue = `~${KestrelUtil.formatDuration(analysisSecs)}`;
-              timeLabel = 'as fast as (cloud)';
-              timeDim = false;
-              timeBadgeKind = 'cloud';
-            }
-          }
-        } else if (totalImagesToProcess >= _EST_MIN_IMAGES_TO_ESTIMATE) {
-          const { rate, source, sampledImgs } = _getEstRate(useGpu);
-          const seconds = totalImagesToProcess * rate;
-          timeValue = `~${KestrelUtil.formatDuration(seconds)}`;
-          timeLabel = `estimated time (${useGpu ? 'GPU' : 'CPU'}${source === 'local' ? ' · this computer' : ''})`;
-          timeDim = false;
-          if (source === 'baseline') {
-            timeBadgeKind = 'local-baseline';
-            timeBadgeSampledImgs = sampledImgs;
-          }
-        }
-        headline.innerHTML =
-          `<div class="analyze-dlg-stat">` +
-            `<div class="analyze-dlg-stat-value">${imgCount}</div>` +
-            `<div class="analyze-dlg-stat-label">${imgLabel}</div>` +
-          `</div>` +
-          `<div class="analyze-dlg-stat">` +
-            `<div class="analyze-dlg-stat-value">${checkedCount}</div>` +
-            `<div class="analyze-dlg-stat-label">${folderWord}</div>` +
-            skipFrag + upgradeFrag +
-          `</div>` +
-          `<div class="analyze-dlg-stat">` +
-            `<div class="analyze-dlg-stat-value${timeDim ? ' dim' : ''}" id="_analyzeDlgTimeStatValue">${timeValue}</div>` +
-            `<div class="analyze-dlg-stat-label">${timeLabel}</div>` +
-          `</div>`;
-        if (timeBadgeKind === 'local-baseline') {
-          const valueEl = headline.querySelector('#_analyzeDlgTimeStatValue');
-          if (valueEl) valueEl.appendChild(_buildUncertainBadge(timeBadgeSampledImgs));
-        } else if (timeBadgeKind === 'cloud') {
-          const valueEl = headline.querySelector('#_analyzeDlgTimeStatValue');
-          if (valueEl) valueEl.appendChild(_buildCloudUncertainBadge());
-        }
-        // Which side of the pipeline is the bottleneck — sits under the
-        // est. time stat so the number and its explanation read together.
-        if (cloudRegimeChip) {
-          const statEl = headline.querySelector('#_analyzeDlgTimeStatValue')?.parentElement;
-          if (statEl) statEl.appendChild(cloudRegimeChip);
-        }
-      }
-
-      // Tell the cloud card how many images are queued so it can decide whether
-      // to show prices (a comparison against the remaining count, nothing more).
-      if (typeof _ccUpdateCloudPricing === 'function') {
-        try { _ccUpdateCloudPricing(totalImagesToProcess); } catch (e) { /* failsafe */ }
-      }
-
-      // Speed-test button + measured-upload status live in the Cloud card. The button is enabled iff at least one
-      // folder is checked; after a test it reads "Re-test" and the status shows
-      // the measured rate. (The price panel is driven by cloud-compute.js.)
-      {
-        const runBtn = document.getElementById('analyzeDlgRunSpeedTest');
-        const statusEl = document.getElementById('analyzeDlgCloudSpeedStatus');
-        const hasResult = !!(typeof _cloudSpeedTestResult !== 'undefined' && _cloudSpeedTestResult);
-        if (runBtn) {
-          runBtn.disabled = checkedCount === 0;
-          // Keep the leading lightning icon span intact.
-          runBtn.innerHTML = `<i class="adlg-cloud-speed-btn-icon k-icon k-icon--bolt" aria-hidden="true"></i>`
-            + (hasResult ? ' Re-run upload speed test' : ' Run upload speed test');
-        }
-        if (statusEl && hasResult) {
-          const mbps = Number(_cloudSpeedTestResult.mbps || 0).toFixed(1);
-          statusEl.textContent = `Measured upload: ${mbps} MB/s`;
-          statusEl.classList.remove('hidden', 'error');
-          statusEl.classList.add('success');
-        }
-      }
-
-      // Aggregate warning row (above the unlock checkbox)
-      const reanalyzeWithUnlockCount = fullyAnalyzedWillReanalyzeCount + outdatedReanalyzeCount + chosenReanalyzeCount;
-      if (reanalyzeWithUnlockCount > 0) {
-        const word = reanalyzeWithUnlockCount === 1 ? 'folder' : 'folders';
-        warningsEl.innerHTML = `${KestrelIcon('warning')} ${reanalyzeWithUnlockCount} ${word} will lose user data on re-analysis (ratings, decisions, scene names).`;
-        warningsEl.classList.remove('hidden');
-      } else {
-        warningsEl.classList.add('hidden');
-        warningsEl.innerHTML = '';
-      }
-
-      // Unlock row visible only when fully-analyzed-current-version folder(s) are checked.
-      const showUnlockRow = fullyAnalyzedSkipCount > 0 || fullyAnalyzedWillReanalyzeCount > 0;
-      if (unlockRow) unlockRow.classList.toggle('hidden', !showUnlockRow);
-
-      startBtn.disabled = checkedCount === 0;
+      const cloud = _isCloudDestination();
+      const eta = cloud
+        ? (cloudEta && { secs: cloudEta.secs, cloud: true, bestCase: cloudEta.bestCase })
+        : (localSecs != null ? { secs: localSecs, cloud: false, bestCase: false } : null);
+      window.KestrelAnalyzeSteps.setSummary({ folders: t.folders, images: t.images, upgrade: t.upgrade, skip: t.skip, eta });
     }
 
     /** Per-folder "Upgrade to 3.0 / Re-analyze" dropdown for a folder that
@@ -1029,8 +906,8 @@ ${node.path}` : node.path);
       const opts = [
         ['upgrade', 'Upgrade to analysis version 3.0 (fast, keeps your culls)'],
         ['reanalyze', cloud
-          ? 'Re-analyze from scratch on Cloud Compute (clears Kestrel data)'
-          : 'Re-analyze from scratch (clears Kestrel data)'],
+          ? 'Analyze again from scratch on Cloud Compute (erases Kestrel data)'
+          : 'Analyze again from scratch (erases Kestrel data)'],
       ];
       for (const [value, text] of opts) {
         const o = document.createElement('option');
@@ -1050,7 +927,7 @@ ${node.path}` : node.path);
         hint.className = 'adlg-upgrade-hint';
         hint.textContent = 'Re-reads the saved crops to update species IDs, add the sharpness score '
           + 'and smart search. Ratings, decisions and edited tags are kept.'
-          + (cloud ? ' Runs on this computer — upgrades don\u2019t use Cloud Compute.' : '');
+          + (cloud ? ' Runs on this computer; upgrades don\u2019t use Cloud Compute.' : '');
         wrap.appendChild(hint);
       }
       return wrap;
@@ -1296,28 +1173,11 @@ ${node.path}` : node.path);
         _gpuBox.dataset.wiredSummary = '1';
         _gpuBox.addEventListener('change', refreshAnalyzeDlgSummary);
       }
-      // Retry-errored has TWO instances (one in critical settings, one in
-      // More options). Keep them in sync so users see consistent state.
-      // Both refresh the queue summary (errored counts change per-folder).
-      const _retryBoxCritical = document.getElementById('adlgRetryErrored');
-      const _retryBoxMore = document.getElementById('adlgRetryErroredMore');
-      function _syncRetryBoxes(src) {
-        const checked = !!src.checked;
-        if (_retryBoxCritical && _retryBoxCritical !== src) _retryBoxCritical.checked = checked;
-        if (_retryBoxMore && _retryBoxMore !== src) _retryBoxMore.checked = checked;
-        refreshAnalyzeDlgSummary();
-      }
-      if (_retryBoxCritical && !_retryBoxCritical.dataset.wiredSummary) {
-        _retryBoxCritical.dataset.wiredSummary = '1';
-        _retryBoxCritical.addEventListener('change', () => _syncRetryBoxes(_retryBoxCritical));
-      }
-      if (_retryBoxMore && !_retryBoxMore.dataset.wiredSummary) {
-        _retryBoxMore.dataset.wiredSummary = '1';
-        _retryBoxMore.addEventListener('change', () => _syncRetryBoxes(_retryBoxMore));
-      }
-      // Mirror initial state in case settings hydration only touched one.
-      if (_retryBoxCritical && _retryBoxMore) {
-        _retryBoxMore.checked = _retryBoxCritical.checked;
+      // Retry changes which photos each folder will analyze.
+      const _retryBox = document.getElementById('adlgRetryErrored');
+      if (_retryBox && !_retryBox.dataset.wiredSummary) {
+        _retryBox.dataset.wiredSummary = '1';
+        _retryBox.addEventListener('change', refreshAnalyzeDlgSummary);
       }
 
       // Detection confidence warning — wildlife detection models are quite
@@ -1348,6 +1208,7 @@ ${node.path}` : node.path);
       // immediately. Background tasks below refine the data when ready.
       _renderAnalyzeDlgRecentsChipsSync();
       renderAnalyzeDlgTree();
+      window.KestrelAnalyzeSteps.reset();
       refreshAnalyzeDlgSummary();
 
       // Open the dialog NOW. Everything below is background work that

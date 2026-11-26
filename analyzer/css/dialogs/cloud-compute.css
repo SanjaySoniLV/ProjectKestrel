@@ -4,14 +4,6 @@
 
 /* ── Destination cards (in #analyzeQueueDlg footer area) ─────────────────── */
 
-.analyze-dlg-destination-row {
-  display: flex;
-  gap: 10px;
-  padding: 8px 0 4px 0;
-  border-top: 1px solid var(--border, #2a2a3a);
-  margin-top: 4px;
-}
-
 .analyze-dlg-destination-card {
   flex: 1;
   min-height: 88px;

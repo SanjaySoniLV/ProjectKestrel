@@ -73,7 +73,7 @@ class TestQuestionMarkup(unittest.TestCase):
         on a shoot with no non-bird animals. Claiming a flat per-image
         cost tells users to disable it for a speedup they will not get.
         """
-        help_texts = re.findall(r'<div class="adlg-question-help muted">(.*?)</div>', self.html, re.S)
+        help_texts = re.findall(r'class="adlg-help"[^>]*data-tip="([^"]*)"', self.html)
         wildlife_help = next((h for h in help_texts if "non-bird species" in h), None)
         self.assertIsNotNone(wildlife_help, "wildlife help text not found")
         self.assertNotIn("per image", wildlife_help.lower())
@@ -105,12 +105,8 @@ class TestQuestionMarkup(unittest.TestCase):
 
     def test_experimental_badge_is_retired(self):
         """The owner asked for the badge to go when wildlife became an answer."""
-        critical = re.search(
-            r'<div class="analyze-dlg-settings-critical">(.*?)\n          </div>',
-            self.html,
-            re.S,
-        )
-        self.assertIsNotNone(critical, "critical settings block not found")
+        critical = re.search(r'<div class="adlg-settings-scroll">(.*?)<div id="adlgAllSettings"', self.html, re.S)
+        self.assertIsNotNone(critical, "questions block not found")
         self.assertNotIn("adlg-tag", critical.group(1))
         self.assertNotIn("experimental", critical.group(1).lower())
 
@@ -129,16 +125,16 @@ class TestDetectionModelIsBuried(unittest.TestCase):
         self.assertIsNotNone(sel, "model select not found")
         self.assertRegex(sel.group(0), r'<option value="accurate"[^>]*selected')
 
-    def test_model_select_is_visible_and_inside_more_options(self):
+    def test_model_select_is_visible_and_inside_all_settings(self):
         sel = re.search(r'<select id="adlgWildlifeModelMode"[^>]*>', self.html)
         self.assertIsNotNone(sel)
         self.assertNotIn("hidden", sel.group(0))
 
-        more = self.html.index('<details class="analyze-dlg-more-options"')
+        more = self.html.index('<div id="adlgAllSettings"')
         self.assertGreater(
             self.html.index('id="adlgWildlifeModelMode"'),
             more,
-            "detection model should sit inside More options, not the critical block",
+            "detection model should sit under All settings, not with the questions",
         )
 
 
@@ -169,16 +165,18 @@ class TestMirrorWiring(unittest.TestCase):
 
 class TestQuestionStyles(unittest.TestCase):
     def setUp(self):
-        self.css = _read("css", "dialogs", "analyze.css")
+        self.css = _read("css", "dialogs", "analyze-steps.css")
 
     def test_question_classes_are_styled(self):
-        for cls in (".adlg-question", ".adlg-question-text", ".adlg-answer-pair", ".adlg-question-help"):
+        for cls in (".adlg-question", ".adlg-question-text", ".adlg-answer-pair", ".adlg-help"):
             with self.subTest(css_class=cls):
                 self.assertIn(cls, self.css)
 
-    def test_answers_collapse_to_one_column_when_narrow(self):
+    def test_answers_wrap_when_narrow(self):
         """Both answer labels cannot sit side by side in a narrow dialog."""
-        self.assertRegex(self.css, r"@media \(max-width: \d+px\)\s*\{\s*\.adlg-answer-pair")
+        rule = re.search(r"\.adlg-answer-pair \{(.*?)\}", self.css, re.S)
+        self.assertIsNotNone(rule)
+        self.assertIn("flex-wrap: wrap", rule.group(1))
 
 
 if __name__ == "__main__":

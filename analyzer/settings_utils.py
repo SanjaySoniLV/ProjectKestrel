@@ -94,6 +94,7 @@ _ALLOWED_TOWER_DEVICES = {'auto', 'cpu', 'gpu'}
 # nothing is ever sent without the user's say-so.
 _ALLOWED_QUALITY_FEEDBACK_MODES = {'ask', 'always', 'never'}
 _ALLOWED_SCENE_FILMSTRIP_ORDERS = {'quality', 'time'}
+_ALLOWED_ANALYZE_SETTINGS_VIEWS = {'essentials', 'all'}
 _QUALITY_FEEDBACK_INSTALL_ID_RE = re.compile(r'^qfi_[0-9a-f]{32}$')
 _ALLOWED_QUEUE_DETECTOR_NAMES = {'mdv5a', 'mdv1000-cedar'}
 # Biogeographic region codes for the species combobox. Sourced from the
@@ -637,6 +638,10 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     if 'scene_filmstrip_order' in data:
         out['scene_filmstrip_order'] = _coerce_enum(
             data.get('scene_filmstrip_order'), _ALLOWED_SCENE_FILMSTRIP_ORDERS, default='quality',
+        )
+    if 'analyze_settings_view' in data:
+        out['analyze_settings_view'] = _coerce_enum(
+            data.get('analyze_settings_view'), _ALLOWED_ANALYZE_SETTINGS_VIEWS, default='essentials',
         )
 
     if 'sortBy' in data:

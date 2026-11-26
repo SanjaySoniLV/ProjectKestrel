@@ -37,6 +37,7 @@
   <link rel="stylesheet" href="css/dialogs/folder-settings.css" />
   <link rel="stylesheet" href="css/dialogs/settings.css" />
   <link rel="stylesheet" href="css/dialogs/analyze.css" />
+  <link rel="stylesheet" href="css/dialogs/analyze-steps.css" />
   <link rel="stylesheet" href="css/dialogs/live-analysis.css" />
   <link rel="stylesheet" href="css/dialogs/cloud-compute.css" />
   <link rel="stylesheet" href="css/dialogs/feedback-consent.css" />
@@ -1206,312 +1207,213 @@
     </div>
   </dialog>
 
-  <!-- Analyze Folders dialog (3-column layout).
-       Col 1: Queue Builder — Add Folders, recents chips, dialog-local tree, Clear.
-       Col 2: Settings — critical tier always visible + collapsed "More options".
-       Col 3: Queue Summary + Start — live counts, warnings, per-folder list, Start.
-       Dialog state is FULLY INDEPENDENT from the main sidebar tree. -->
-  <dialog id="analyzeQueueDlg" class="kdlg kdlg--lg kdlg--flex">
-    <div class="analyze-dlg">
-      <div class="analyze-dlg-header">
-        <h3 style="margin:0;flex:1;">Analyze Folders</h3>
-        <button id="analyzeDlgCancel" type="button" class="analyze-dlg-close" title="Cancel and close" aria-label="Close">✕</button>
-      </div>
-      <div class="analyze-dlg-grid">
+  <!-- Analyze folders: three steps (folders, settings, where to run). The
+       steps, footer and help tips are driven by js/analyze-steps.js; the
+       folder tree, job list and cloud card keep their ids for
+       analyze-dialog.js, cloud-compute.js and event-wiring.js. -->
+  <dialog id="analyzeQueueDlg" class="kdlg kdlg--lg kdlg--flex adlg" aria-labelledby="adlgTitle">
+    <div class="adlg-top">
+      <h3 id="adlgTitle" class="k-dialog-title">Analyze folders</h3>
+      <nav class="adlg-steps" aria-label="Steps">
+        <button type="button" class="adlg-step" data-step="1"><span class="adlg-step-num">1</span>Folders</button>
+        <span class="adlg-step-line"></span>
+        <button type="button" class="adlg-step" data-step="2"><span class="adlg-step-num">2</span>Settings</button>
+        <span class="adlg-step-line"></span>
+        <button type="button" class="adlg-step" data-step="3"><span class="adlg-step-num">3</span>Run</button>
+      </nav>
+      <button id="analyzeDlgCancel" type="button" class="k-btn--icon" aria-label="Close"><i class="k-icon k-icon--x" aria-hidden="true"></i></button>
+    </div>
 
-        <!-- ═══ Column 1: Select Which Folders to Analyze ═══ -->
-        <div class="analyze-dlg-col analyze-dlg-col-builder">
-          <div class="analyze-dlg-col-title"><i class="k-icon k-icon--folder-open" aria-hidden="true"></i> Select which folders to analyze</div>
-          <!-- State pill legend: the color/shape meanings.
-               Color = queue state (orange checked / gray not); shape = work
-               progress (solid done / half partial / outline not started). -->
-          <div class="analyze-dlg-pill-legend" aria-label="Folder status legend">
-            <span class="legend-item"><span class="state-pill state-pill--orange state-pill--solid"></span>Done</span>
-            <span class="legend-item"><span class="state-pill state-pill--orange state-pill--half"></span>Partial</span>
-            <span class="legend-item"><span class="state-pill state-pill--orange state-pill--outline"></span>Not started</span>
-            <span class="legend-item"><span class="state-pill state-pill--gray state-pill--outline"></span>Not queued</span>
-            <span class="legend-item"><span class="state-pill state-pill--red state-pill--warn"></span>Errored</span>
-            <span class="legend-item"><span class="state-pill state-pill--dim state-pill--dot"></span>No photos</span>
+    <div class="adlg-body">
+      <section class="adlg-pane adlg-pane--folders" data-step="1" aria-label="Folders">
+        <div class="adlg-tools">
+          <h4 class="adlg-h">Which folders should Kestrel analyze?</h4>
+          <button id="adlgLegendBtn" type="button" class="k-btn--icon k-btn--sm" aria-label="What the dots mean" aria-expanded="false" aria-controls="adlgLegend"><i class="k-icon k-icon--info" aria-hidden="true"></i></button>
+          <span class="adlg-spacer"></span>
+          <span id="analyzeDlgFooter" class="hidden"><button id="analyzeDlgClear" type="button" class="k-btn--sm k-btn--quiet">Clear list</button></span>
+          <button id="analyzeDlgLoadFolders" type="button" class="k-btn--sm"><i class="k-icon k-icon--plus" aria-hidden="true"></i> Add folders…</button>
+        </div>
+        <div id="adlgLegend" class="adlg-legend hidden" role="note" aria-label="What the dots mean">
+          <span class="state-pill state-pill--orange state-pill--solid"></span><span>Checked, already analyzed</span>
+          <span class="state-pill state-pill--orange state-pill--half"></span><span>Checked, partly analyzed</span>
+          <span class="state-pill state-pill--orange state-pill--outline"></span><span>Checked, not analyzed yet</span>
+          <span class="state-pill state-pill--gray state-pill--outline"></span><span>Not checked (grey versions of the above)</span>
+          <span class="state-pill state-pill--red state-pill--warn"></span><span>Some photos failed last time</span>
+          <span class="state-pill state-pill--dim state-pill--dot"></span><span>No photos in this folder</span>
+        </div>
+        <div id="analyzeDlgRecentsRow" class="folder-recents-row hidden" aria-label="Recent folders"></div>
+        <div class="analyze-dlg-tree-wrap adlg-tree-wrap">
+          <div id="analyzeDlgTreeEmptyHint" class="adlg-empty">
+            <i class="k-icon k-icon--folder" aria-hidden="true"></i>
+            <b>No folders yet</b>
+            <span>Add a folder of photos. Kestrel finds every subfolder inside it.</span>
           </div>
-          <div class="analyze-dlg-tree-wrap">
-            <button id="analyzeDlgLoadFolders" class="folder-load-btn" title="Add a folder to scan for analysis">
-              <span class="folder-load-btn-plus"><i class="k-icon k-icon--folder-plus" aria-hidden="true"></i></span>
-              <span class="folder-load-btn-label">Add Folders…</span>
-            </button>
-            <div id="analyzeDlgRecentsRow" class="folder-recents-row hidden" aria-label="Recently queued folders"></div>
-            <div id="analyzeDlgTreeEmptyHint" class="folder-tree-empty-hint">
-              No folders added.<br />Click <b>Add Folders…</b> or pick a recent above.
-            </div>
-            <div id="analyzeDlgTree"></div>
-            <div id="analyzeDlgFooter" class="folder-tree-footer segmented-strip hidden">
-              <button id="analyzeDlgClear" class="segmented-strip-item danger-item tree-clear-btn" title="Unload all folders from the picker">Clear</button>
-            </div>
-          </div>
-          <div id="analyzeScanProgress" class="load-progress hidden" style="margin:6px 0 0">
-            <div class="load-progress-label" id="analyzeScanLabel">Scanning folders…</div>
-            <div class="load-progress-track">
-              <div id="analyzeScanFill" class="load-progress-fill" style="width:0%"></div>
-            </div>
+          <div id="analyzeDlgTree"></div>
+        </div>
+        <div id="analyzeScanProgress" class="load-progress hidden">
+          <div class="load-progress-label" id="analyzeScanLabel">Scanning folders…</div>
+          <div class="load-progress-track"><div id="analyzeScanFill" class="load-progress-fill" style="width:0%"></div></div>
+        </div>
+      </section>
+
+      <section class="adlg-pane adlg-pane--settings hidden" data-step="2" aria-label="Settings">
+        <div class="adlg-tools">
+          <h4 class="adlg-h">Check the settings for this run</h4>
+          <span class="adlg-spacer"></span>
+          <div class="k-seg" role="group" aria-label="Settings shown">
+            <button id="adlgViewEssentials" type="button" class="on" aria-pressed="true">Essentials</button>
+            <button id="adlgViewAll" type="button" aria-pressed="false">All settings</button>
           </div>
         </div>
-
-        <!-- ═══ Column 2: Review Settings ═══ -->
-        <div class="analyze-dlg-col analyze-dlg-col-settings">
-          <div class="analyze-dlg-col-title"><i class="k-icon k-icon--gear" aria-hidden="true"></i> Review settings</div>
-          <!-- Phrased as questions about the shoot rather than as model
-               settings: the user knows what they photographed, not which
-               classifier that implies. Each answer pair mirrors to the hidden
-               input below it, which is what the Start handler in
-               event-wiring.js reads — the read path is unchanged. -->
-          <div class="analyze-dlg-settings-critical">
-
-            <div class="adlg-question">
-              <div class="adlg-question-text">What subjects does this shoot contain?</div>
-              <div class="adlg-answer-pair" role="radiogroup" aria-label="Subjects in this shoot">
-                <label class="adlg-radio-row adlg-radio-row-horiz">
-                  <input type="radio" name="adlgSubjectScope" id="adlgSubjectScopeBirds" value="birds" checked />
-                  <div class="adlg-radio-text">
-                    <span class="adlg-radio-name">Birds only</span>
-                  </div>
-                </label>
-                <label class="adlg-radio-row adlg-radio-row-horiz">
-                  <input type="radio" name="adlgSubjectScope" id="adlgSubjectScopeWildlife" value="wildlife" />
-                  <div class="adlg-radio-text">
-                    <span class="adlg-radio-name">Birds and other wildlife</span>
-                  </div>
-                </label>
-              </div>
-              <div class="adlg-question-help muted">Including other wildlife names 1,200+ non-bird species — squirrels, deer, bears and more. This has a small impact on total processing time.</div>
-            </div>
-            <input id="analyzeWildlife" type="checkbox" class="hidden" aria-hidden="true" tabindex="-1" />
-
-            <div class="adlg-question">
-              <div class="adlg-question-text">Should Kestrel identify the bird species?</div>
-              <div class="adlg-answer-pair" role="radiogroup" aria-label="Bird species identification">
-                <label class="adlg-radio-row adlg-radio-row-horiz">
-                  <input type="radio" name="adlgSpeciesScope" id="adlgSpeciesScopeYes" value="yes" checked />
-                  <div class="adlg-radio-text">
-                    <span class="adlg-radio-name">Yes, identify species</span>
-                  </div>
-                </label>
-                <label class="adlg-radio-row adlg-radio-row-horiz">
-                  <input type="radio" name="adlgSpeciesScope" id="adlgSpeciesScopeNo" value="no" />
-                  <div class="adlg-radio-text">
-                    <span class="adlg-radio-name">No, skip species identification</span>
-                  </div>
-                </label>
-              </div>
-              <div class="adlg-question-help muted">Kestrel names each bird from the world's ~11,000 bird species, narrowed to the region below. Skipping it makes analysis faster; finding your subjects and scoring their quality work exactly the same either way.</div>
-              <!-- Species geofence for the folders being queued. Sent per item
-                   as per_item_options[path].species_regions; analyze-dialog.js
-                   populates the options from get_bird_catalog_meta. -->
-              <div id="adlgSpeciesRegionBlock" class="adlg-species-region">
-                <div class="adlg-setting-row" style="flex-wrap:wrap;gap:6px">
-                  <label for="adlgSpeciesRegionMode" style="flex:1 1 140px;min-width:0">Where were these photos taken?</label>
-                  <select id="adlgSpeciesRegionMode" style="flex:1 1 180px;min-width:0;max-width:100%">
-                    <option value="default" selected>My default regions</option>
-                    <option value="global">Global — all world birds</option>
-                  </select>
-                </div>
-                <div id="adlgSpeciesRegionCustom" class="adlg-species-region-custom hidden" role="group" aria-label="Species regions"></div>
-                <div id="adlgSpeciesRegionHint" class="adlg-hint muted">A narrower region list makes identification more accurate. Change your default regions in Settings → Species &amp; Region.</div>
-              </div>
-            </div>
-            <input id="analyzeSpeciesDetection" type="checkbox" class="hidden" aria-hidden="true" tabindex="-1" checked />
-
-            <div class="adlg-question">
-              <div class="adlg-question-text">How many subjects should Kestrel analyze in each image?</div>
-              <div class="adlg-setting-row">
-                <label for="adlgMaxBirdCrops">At most</label>
-                <input id="adlgMaxBirdCrops" type="number" min="1" max="20" step="1" value="10"
-                  style="width:80px" />
-              </div>
-              <div class="adlg-question-help muted">Every extra subject adds processing time. Lower this for flock shots where you only care about the closest few birds.</div>
+        <div class="adlg-settings-scroll">
+          <!-- Asked about the shoot rather than as model settings. Each answer
+               pair mirrors onto the hidden checkbox after it, which is what the
+               Start handler in event-wiring.js reads. -->
+          <div class="adlg-question" id="adlgQSubjects">
+            <div class="adlg-question-text">What subjects does this shoot contain?
+              <button type="button" class="adlg-help" aria-label="More about subjects" data-tip="Birds and other wildlife also names 1,200+ non-bird species, such as squirrels, deer and bears. This has a small impact on total processing time.">?</button></div>
+            <div class="adlg-answer-pair" role="radiogroup" aria-label="Subjects in this shoot">
+              <label class="adlg-answer"><input type="radio" name="adlgSubjectScope" id="adlgSubjectScopeBirds" value="birds" checked /><span>Birds only</span></label>
+              <label class="adlg-answer"><input type="radio" name="adlgSubjectScope" id="adlgSubjectScopeWildlife" value="wildlife" /><span>Birds and other wildlife</span></label>
             </div>
           </div>
+          <input id="analyzeWildlife" type="checkbox" class="hidden" aria-hidden="true" tabindex="-1" />
 
-          <!-- "More options" expanded by default. Subheadings group settings
-               by category so power users can find them by topic. -->
-          <details class="analyze-dlg-more-options" open>
-            <summary>More options ▾</summary>
-            <div class="analyze-dlg-more-body">
-
-              <div class="adlg-subgroup">
-                <div class="adlg-subgroup-title">Performance &amp; behavior</div>
-                <label class="adlg-toggle-row" id="analyzeGpuLabel">
-                  <input id="analyzeUseGpu" type="checkbox" checked />
-                  <div class="adlg-toggle-text">
-                    <span class="adlg-toggle-label">Use GPU when available</span>
-                    <span class="adlg-toggle-hint muted">Speeds up detection and species identification on your GPU. Turn off if your GPU is unstable.</span>
-                  </div>
-                </label>
-                <div class="adlg-setting-row">
-                  <label for="adlgParallelPrefetch">Photos to load ahead</label>
-                  <input id="adlgParallelPrefetch" type="number" min="1" max="5" step="1" value="3"
-                    style="width:80px" />
-                </div>
-                <div class="adlg-hint muted">How many photos to load in advance so analysis keeps moving (1–5). Lower this if your computer slows down too much during analysis.</div>
-                <label class="adlg-toggle-row" id="analyzeRetryErroredLabel">
-                  <input id="adlgRetryErrored" type="checkbox" checked />
-                  <div class="adlg-toggle-text">
-                    <span class="adlg-toggle-label">Re-attempt errored images</span>
-                    <span class="adlg-toggle-hint muted">For any queued folder containing images previously marked as errored, drop those rows and re-run analysis on them. Other already-analyzed images are not touched.</span>
-                  </div>
-                </label>
-                <!-- Hidden mirror retained for the dialog open code that sets
-                     both checkboxes' initial state; it just shadows
-                     #adlgRetryErrored above (same setting, synced). -->
-                <input id="adlgRetryErroredMore" type="checkbox" checked class="hidden" aria-hidden="true" />
-              </div>
-
-              <div class="adlg-subgroup">
-                <div class="adlg-subgroup-title">Finding subjects</div>
-                <!-- Was a prominent Fast/Accurate radio pair in the critical
-                     block. Accurate is right for essentially every shoot, so it
-                     is now the default and lives down here instead of asking
-                     every user to make the call up front. -->
-                <div class="adlg-setting-row">
-                  <label for="adlgWildlifeModelMode">Detection model</label>
-                  <select id="adlgWildlifeModelMode" style="flex:1;max-width:200px">
-                    <option value="accurate" selected>Accurate (recommended)</option>
-                    <option value="fast">Fast</option>
-                  </select>
-                </div>
-                <div class="adlg-hint muted">Accurate is the right choice for almost every shoot. Fast uses a smaller model that finishes sooner but misses distant and partly-hidden birds.</div>
-                <div class="adlg-setting-row">
-                  <label for="adlgDetectionThreshold">Detection confidence</label>
-                  <input id="adlgDetectionThreshold" type="number" min="0.1" max="0.99" step="0.05" value="0.15"
-                    style="width:80px" />
-                </div>
-                <div class="adlg-hint muted">How sure Kestrel must be that it found an animal before analyzing it (0.10–0.99). Lower values find more subjects.</div>
-                <!-- Live warning when the user picks a value much above the
-                     recommended baseline. Wildlife detection models are quite
-                     accurate, so high thresholds tend to miss real subjects. -->
-                <div id="adlgDetectionConfidenceWarning" class="adlg-inline-warning hidden">
-                  <i class="k-icon k-icon--warning" aria-hidden="true"></i> Kestrel suggests <b>0.15</b>. Higher values miss real subjects.
-                </div>
-              </div>
-
-              <div class="adlg-subgroup">
-                <div class="adlg-subgroup-title">Exposure &amp; grouping</div>
-                <div class="adlg-setting-row">
-                  <label for="adlgExposureQuality">Exposure correction</label>
-                  <select id="adlgExposureQuality" style="flex:1;max-width:200px">
-                    <option value="lenient">Lenient (±3 stops)</option>
-                    <option value="balanced" selected>Balanced (±5 stops)</option>
-                    <option value="aggressive">Aggressive (±8 stops)</option>
-                  </select>
-                </div>
-                <div class="adlg-hint muted">Controls how strongly Kestrel corrects bird exposure in the analyzed crops. Balanced is recommended for most images.</div>
-                <div class="adlg-setting-row">
-                  <label for="adlgSceneTime">Seconds between shots in one scene</label>
-                  <input id="adlgSceneTime" type="number" min="0" max="60" step="0.5" value="1.0"
-                    style="width:80px" />
-                </div>
-                <div class="adlg-hint muted">Images captured within this many seconds of each other are treated as the same burst/scene.</div>
-                <div class="adlg-setting-row">
-                  <label for="adlgSceneBreakGap">Start a new scene after a pause of (seconds)</label>
-                  <input id="adlgSceneBreakGap" type="number" min="0" max="86400" step="1" value="0"
-                    style="width:80px" />
-                </div>
-                <div class="adlg-hint muted">Forces a scene break whenever this much time passes between two shots, even if they look alike &mdash; useful when a long session against the same background would otherwise become one huge scene. 0 turns it off.</div>
-              </div>
-
-              <div class="adlg-subgroup">
-                <div class="adlg-subgroup-title">Thumbnails</div>
-                <div class="adlg-setting-row">
-                  <label for="adlgThumbnailMaxWidth">Thumbnail width (px)</label>
-                  <input id="adlgThumbnailMaxWidth" type="number" min="400" max="2400" step="100" value="1200"
-                    style="width:90px" />
-                </div>
-                <div class="adlg-hint muted">Size of the cached analysis thumbnails, in pixels on the longest side. Larger looks sharper but uses more space in the .kestrel folder.</div>
-                <div class="adlg-setting-row">
-                  <label for="adlgThumbnailJpegCompression">Thumbnail JPEG compression</label>
-                  <input id="adlgThumbnailJpegCompression" type="number" min="0.50" max="1.00" step="0.05" value="0.75"
-                    style="width:80px" />
-                </div>
-                <div class="adlg-hint muted">0.75 means 75% JPEG quality. Lower values reduce file size with more visible compression artifacts.</div>
-              </div>
-
+          <div class="adlg-question">
+            <div class="adlg-question-text">Should Kestrel identify the bird species?
+              <button type="button" class="adlg-help" aria-label="More about species" data-tip="Kestrel names each bird from the world's ~11,000 bird species, narrowed to the region below. Skipping it makes analysis faster. Finding your subjects and scoring their quality work the same either way.">?</button></div>
+            <div class="adlg-answer-pair" role="radiogroup" aria-label="Bird species identification">
+              <label class="adlg-answer"><input type="radio" name="adlgSpeciesScope" id="adlgSpeciesScopeYes" value="yes" checked /><span>Yes, identify species</span></label>
+              <label class="adlg-answer"><input type="radio" name="adlgSpeciesScope" id="adlgSpeciesScopeNo" value="no" /><span>No, skip it</span></label>
             </div>
-          </details>
+            <!-- Sent per item as per_item_options[path].species_regions;
+                 analyze-dialog.js fills the options from get_bird_catalog_meta. -->
+            <div id="adlgSpeciesRegionBlock" class="adlg-species-region">
+              <label class="adlg-sub" for="adlgSpeciesRegionMode">Where were these photos taken?
+                <button type="button" class="adlg-help" aria-label="More about regions" data-tip="Kestrel only suggests species found in these regions, which makes identification more accurate. Change your default regions in Settings, under Species &amp; Region.">?</button></label>
+              <select id="adlgSpeciesRegionMode">
+                <option value="default" selected>My default regions</option>
+                <option value="global">Global, all world birds</option>
+              </select>
+              <div id="adlgSpeciesRegionCustom" class="adlg-species-region-custom hidden" role="group" aria-label="Species regions"></div>
+            </div>
+          </div>
+          <input id="analyzeSpeciesDetection" type="checkbox" class="hidden" aria-hidden="true" tabindex="-1" checked />
+
+          <div class="adlg-question">
+            <div class="adlg-question-text">How many subjects should Kestrel analyze in each photo?
+              <button type="button" class="adlg-help" aria-label="More about subjects per photo" data-tip="Each extra subject adds processing time. Lower this for flock shots where only the closest few birds matter.">?</button></div>
+            <div class="adlg-sub"><label for="adlgMaxBirdCrops">At most</label>
+              <input id="adlgMaxBirdCrops" type="number" min="1" max="20" step="1" value="10" class="adlg-num" />
+              <span class="adlg-muted">subjects per photo</span></div>
+          </div>
+
+          <p class="adlg-more-line"><span id="adlgChangedText"></span>
+            <button id="adlgShowAll" type="button" class="adlg-link">See all settings</button></p>
+
+          <!-- Every row carries data-rec, the recommended value, so the dialog
+               can mark rows that differ from it. -->
+          <div id="adlgAllSettings" class="adlg-all hidden">
+            <h5 class="k-section-title">Speed</h5>
+            <div class="k-row"><label class="k-row-label" for="analyzeUseGpu">Use the GPU when available
+              <button type="button" class="adlg-help" aria-label="More about the GPU" data-tip="Speeds up finding subjects and naming species. Turn it off if your graphics card is unstable.">?</button></label>
+              <input id="analyzeUseGpu" type="checkbox" class="k-switch" data-rec="on" checked /></div>
+            <div class="k-row"><label class="k-row-label" for="adlgParallelPrefetch">Photos to load ahead
+              <button type="button" class="adlg-help" aria-label="More about loading ahead" data-tip="How many photos to read in advance so analysis keeps moving (1 to 5). Lower it if your computer slows down too much.">?</button></label>
+              <input id="adlgParallelPrefetch" type="number" min="1" max="5" step="1" value="3" class="adlg-num" data-rec="3" /></div>
+            <div class="k-row"><label class="k-row-label" for="adlgRetryErrored">Retry failed photos
+              <button type="button" class="adlg-help" aria-label="More about failed photos" data-tip="In folders with photos that failed last time, try those again. Photos that already worked are not touched.">?</button></label>
+              <input id="adlgRetryErrored" type="checkbox" class="k-switch" data-rec="on" checked /></div>
+
+            <h5 class="k-section-title">Finding subjects</h5>
+            <div class="k-row"><label class="k-row-label" for="adlgWildlifeModelMode">Detection model
+              <button type="button" class="adlg-help" aria-label="More about the detection model" data-tip="Accurate is right for almost every shoot. Fast uses a smaller model that finishes sooner but misses distant and partly hidden birds.">?</button></label>
+              <select id="adlgWildlifeModelMode" data-rec="accurate">
+                <option value="accurate" selected>Accurate (recommended)</option>
+                <option value="fast">Fast</option>
+              </select></div>
+            <div class="k-row"><label class="k-row-label" for="adlgDetectionThreshold">Detection confidence
+              <button type="button" class="adlg-help" aria-label="More about detection confidence" data-tip="How sure Kestrel must be that it found an animal before analyzing it (0.10 to 0.99). Lower values find more subjects.">?</button></label>
+              <input id="adlgDetectionThreshold" type="number" min="0.1" max="0.99" step="0.05" value="0.15" class="adlg-num" data-rec="0.15" /></div>
+            <div id="adlgDetectionConfidenceWarning" class="adlg-inline-warning hidden">
+              <i class="k-icon k-icon--warning" aria-hidden="true"></i> Kestrel recommends 0.15. Higher values miss real subjects.
+            </div>
+
+            <h5 class="k-section-title">Exposure and scenes</h5>
+            <div class="k-row"><label class="k-row-label" for="adlgExposureQuality">Exposure correction
+              <button type="button" class="adlg-help" aria-label="More about exposure correction" data-tip="How strongly Kestrel corrects the exposure of each bird crop. Balanced suits most photos.">?</button></label>
+              <select id="adlgExposureQuality" data-rec="balanced">
+                <option value="lenient">Lenient (±3 stops)</option>
+                <option value="balanced" selected>Balanced (±5 stops)</option>
+                <option value="aggressive">Aggressive (±8 stops)</option>
+              </select></div>
+            <div class="k-row"><label class="k-row-label" for="adlgSceneTime">Seconds between shots in one scene
+              <button type="button" class="adlg-help" aria-label="More about scenes" data-tip="Photos taken within this many seconds of each other are grouped as one scene.">?</button></label>
+              <input id="adlgSceneTime" type="number" min="0" max="60" step="0.5" value="1.0" class="adlg-num" data-rec="1" /></div>
+            <div class="k-row"><label class="k-row-label" for="adlgSceneBreakGap">Start a new scene after a pause of (seconds)
+              <button type="button" class="adlg-help" aria-label="More about scene breaks" data-tip="Forces a new scene whenever this much time passes between two shots, even if they look alike. Useful for long sessions against the same background. 0 turns it off.">?</button></label>
+              <input id="adlgSceneBreakGap" type="number" min="0" max="86400" step="1" value="0" class="adlg-num" data-rec="0" /></div>
+
+            <h5 class="k-section-title">Thumbnails</h5>
+            <div class="k-row"><label class="k-row-label" for="adlgThumbnailMaxWidth">Thumbnail size (px)
+              <button type="button" class="adlg-help" aria-label="More about thumbnail size" data-tip="Longest side of the saved previews, in pixels. Larger looks sharper but uses more space in the .kestrel folder.">?</button></label>
+              <input id="adlgThumbnailMaxWidth" type="number" min="400" max="2400" step="100" value="1200" class="adlg-num" data-rec="1200" /></div>
+            <div class="k-row"><label class="k-row-label" for="adlgThumbnailJpegCompression">Thumbnail JPEG quality
+              <button type="button" class="adlg-help" aria-label="More about JPEG quality" data-tip="0.75 means 75% JPEG quality. Lower values make smaller files with more visible compression.">?</button></label>
+              <input id="adlgThumbnailJpegCompression" type="number" min="0.50" max="1.00" step="0.05" value="0.75" class="adlg-num" data-rec="0.75" /></div>
+            <p class="adlg-more-line"><button id="adlgHideAll" type="button" class="adlg-link">Hide extra settings</button></p>
+          </div>
         </div>
+      </section>
 
-        <!-- ═══ Column 3: Queued Folders (top) + Summary card (bottom) ═══
-             Reordered per Phase 3 polish: detailed per-folder cards live on
-             top (the actionable work view); a compact summary card at the
-             bottom is what you check just before Start Analysis. Compute
-             destination lives INSIDE the summary card because it affects
-             the total-time estimate. -->
-        <div class="analyze-dlg-col analyze-dlg-col-summary">
-          <div class="analyze-dlg-col-title"><i class="k-icon k-icon--file-text" aria-hidden="true"></i> Job preview</div>
-          <div class="analyze-dlg-summary-list-wrap">
-            <div id="analyzeDlgQueuedList" class="analyze-dlg-queued-list"></div>
-          </div>
-
-          <!-- Compact summary card: the headline numbers the user double-checks
-               before clicking Start. Sits between the folder list and the
-               action row so it's the last thing read top-to-bottom. -->
-          <div class="analyze-dlg-summary-card">
-            <div id="analyzeDlgSummaryHeadline" class="analyze-dlg-summary-headline">
-              <span class="analyze-dlg-summary-empty">Check folders in the queue builder to add them.</span>
+      <section class="adlg-pane adlg-pane--run hidden" data-step="3" aria-label="Run">
+        <div class="adlg-run-col">
+          <h4 class="adlg-h">Where should it run?</h4>
+          <div id="analyzeDlgDestinationRow" class="adlg-dest" role="radiogroup" aria-label="Where to run">
+            <div class="analyze-dlg-destination-card selected" id="analyzeDestLocal" data-destination="local" role="radio" aria-checked="true" tabindex="0">
+              <div class="dest-card-title"><span class="adlg-radio" aria-hidden="true"></span><i class="k-icon k-icon--laptop" aria-hidden="true"></i> This computer</div>
+              <div class="dest-card-time" id="adlgLocalTime"></div>
+              <div class="dest-card-desc">Your computer stays busy until it finishes.</div>
             </div>
-            <div id="analyzeDlgWarnings" class="analyze-dlg-warnings hidden"></div>
-            <label id="analyzeDlgReanalyzeUnlockRow" class="adlg-toggle-row analyze-dlg-unlock-row hidden">
-              <input id="analyzeDlgReanalyzeUnlock" type="checkbox" />
-              <div class="adlg-toggle-text">
-                <span class="adlg-toggle-label">Re-analyze fully-analyzed folders</span>
-                <span class="adlg-toggle-hint muted">Will <b>erase user data</b> (ratings, decisions, scene names) for those folders.</span>
-              </div>
-            </label>
-            <!-- Destination cards. Default = Local. Selecting Cloud activates
-                 the speed-test / usage chrome and changes the Add button label.
-                 The full cloud-compute behaviour lives in cloud-compute.js;
-                 element IDs are referenced by id from there. -->
-            <div class="analyze-dlg-destination-row" id="analyzeDlgDestinationRow" role="radiogroup" aria-label="Destination">
-              <div class="analyze-dlg-destination-card selected" id="analyzeDestLocal"
-                   data-destination="local" role="radio" aria-checked="true" tabindex="0">
-                <div class="dest-card-title"><i class="k-icon k-icon--laptop" aria-hidden="true"></i> Local Analysis</div>
-                <div class="dest-card-desc">Run on this machine. Uses your GPU when available.</div>
-              </div>
-              <div class="analyze-dlg-destination-card" id="analyzeDestCloud"
-                   data-destination="cloud" role="radio" aria-checked="false" tabindex="0">
-                <div class="dest-card-title"><i class="k-icon k-icon--cloud" aria-hidden="true"></i> Cloud Analysis</div>
-                <div class="dest-card-desc">Upload to Project Kestrel's cloud and free up your machine.</div>
-                <div class="dest-card-fast hidden" id="cloudDestFast"></div>
-                <div class="dest-card-usage" id="cloudDestUsage"></div>
-                <!-- The speed test refines the "as fast as" figure. Learn more is
-                     hidden unless the bridge reports links are available (not the
-                     Mac App Store build) and opens through open_url. -->
-                <div class="dest-card-actions" id="cloudDestActions">
-                  <button id="analyzeDlgRunSpeedTest" type="button" class="adlg-cloud-speed-btn"
-                          title="Upload 10 sample images to measure how fast your uploads are.">
-                    <i class="adlg-cloud-speed-btn-icon k-icon k-icon--bolt" aria-hidden="true"></i> Run upload speed test
-                  </button>
+            <div class="analyze-dlg-destination-card" id="analyzeDestCloud" data-destination="cloud" role="radio" aria-checked="false" tabindex="0">
+              <div class="dest-card-title"><span class="adlg-radio" aria-hidden="true"></span><i class="k-icon k-icon--cloud" aria-hidden="true"></i> Cloud Compute</div>
+              <div class="dest-card-time"><span id="cloudDestFast" class="hidden"></span><span id="adlgCloudRegime"></span></div>
+              <div class="dest-card-desc">Uploads your photos and frees up your computer. <span class="dest-card-usage" id="cloudDestUsage"></span></div>
+              <!-- Shown while Cloud is selected. Clicks inside don't re-select the card. -->
+              <div class="dest-card-actions" id="cloudDestActions">
+                <div class="adlg-speed-row">
+                  <button id="analyzeDlgRunSpeedTest" type="button" class="k-btn--sm" title="Uploads 10 sample photos to measure your upload speed.">
+                    <i class="k-icon k-icon--bolt" aria-hidden="true"></i> Test my upload speed</button>
                   <span id="analyzeDlgCloudSpeedStatus" class="adlg-cloud-speed-status hidden"></span>
-                  <a id="analyzeDlgCloudLearnMore" href="#" class="adlg-cloud-learn-more hidden">Learn more</a>
+                  <a id="analyzeDlgCloudLearnMore" href="#" class="adlg-cloud-learn-more hidden">Learn more <i class="k-icon k-icon--external" aria-hidden="true"></i></a>
+                </div>
+                <!-- A signed-in user whose balance doesn't cover the run sees why,
+                     plus the service's prices (none on the Mac App Store build). -->
+                <div id="analyzeDlgCloudEstPanel" class="analyze-dlg-cloud-est-panel hidden">
+                  <div id="analyzeDlgCloudPricing" class="adlg-cloud-pricing hidden" aria-live="polite"></div>
                 </div>
               </div>
             </div>
-            <!-- Shown by cloud-compute.js only while Cloud is selected and a
-                 signed-in user's remaining images do not cover the queue: a short
-                 explanation plus the catalog prices. The prices never appear on
-                 the Mac App Store build (the bridge returns nothing there). -->
-            <div id="analyzeDlgCloudEstPanel" class="analyze-dlg-cloud-est-panel hidden">
-              <div id="analyzeDlgCloudPricing" class="adlg-cloud-pricing hidden" aria-live="polite"></div>
-            </div>
-          </div>
-
-          <!-- Compact action row. No more "1 folder selected" text — the
-               per-folder list above shows what's queued. Cancel is the ✕ in
-               the dialog header (top-right, like the other dialogs), so Start
-               Analysis is the only button here. -->
-          <div class="analyze-dlg-action-row">
-            <button id="analyzeDlgAdd" class="primary analyze-dlg-start-btn" disabled><span class="start-btn-icon">▶</span><span class="start-btn-text">Start Analysis</span></button>
           </div>
         </div>
+        <div class="adlg-run-col">
+          <h4 class="adlg-h">What will happen</h4>
+          <div id="analyzeDlgQueuedList" class="adlg-job"></div>
+          <label id="analyzeDlgReanalyzeUnlockRow" class="adlg-unlock hidden">
+            <input id="analyzeDlgReanalyzeUnlock" type="checkbox" class="k-switch" />
+            <span>Also analyze folders that are already done<span class="k-row-hint">This erases their ratings, decisions and scene names.</span></span>
+          </label>
+          <div id="analyzeDlgWarnings" class="adlg-loss hidden" role="alert"></div>
+        </div>
+      </section>
+    </div>
 
-      </div>
+    <div class="adlg-foot">
+      <div class="adlg-tot" aria-live="polite"><span id="adlgTotLine1" class="adlg-tot-l1"></span><span id="adlgTotLine2" class="adlg-tot-l2"></span></div>
+      <div id="adlgEta" class="adlg-eta hidden"><i class="k-icon k-icon--clock" aria-hidden="true"></i><span><b id="adlgEtaTime"></b><span id="adlgEtaWhere"></span></span></div>
+      <button id="adlgBack" type="button" class="k-btn--quiet">Cancel</button>
+      <button id="adlgNext" type="button" class="primary" disabled>Next: check settings</button>
+      <button id="analyzeDlgAdd" type="button" class="primary hidden" disabled>Analyze folders</button>
     </div>
   </dialog>
 
@@ -1899,6 +1801,7 @@
   <script src="js/quality-feedback.js"></script>
   <script src="js/folder-tree.js"></script>
   <script src="js/analyze-estimate.js"></script>
+  <script src="js/analyze-steps.js"></script>
   <script src="js/analyze-dialog.js"></script>
   <script src="js/queue.js"></script>
   <script src="js/raw-warn.js"></script>

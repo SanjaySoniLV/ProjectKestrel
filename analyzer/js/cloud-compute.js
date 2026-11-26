@@ -76,14 +76,11 @@
       const btn = document.getElementById('analyzeDlgAdd');
       if (!btn) return;
       // Signed-out users can pick Cloud, but Start is blocked behind sign-in.
-      const needsSignIn = _analyzeDestination === 'cloud' && _ccAuthKnown && !_ccSignedIn;
-      const label = needsSignIn
-        ? 'Sign in to use Cloud Compute'
-        : (_analyzeDestination === 'cloud'
-          ? 'Add to Cloud Analysis Queue'
-          : 'Add to Local Analysis Queue');
-      // Preserve disabled state; just rename.
-      btn.textContent = label;
+      btn.textContent = window.KestrelAnalyzeSteps.startLabel({
+        cloud: _analyzeDestination === 'cloud',
+        needsSignIn: _analyzeDestination === 'cloud' && _ccAuthKnown && !_ccSignedIn,
+        folders: (typeof analyzeDlgCheckedPaths === 'object' && analyzeDlgCheckedPaths) ? analyzeDlgCheckedPaths.size : 0,
+      });
     }
 
     function _ccSetDestination(dest) {
@@ -163,16 +160,15 @@
     function _ccRenderCard() {
       const fastEl = document.getElementById('cloudDestFast');
       if (fastEl) {
-        let text = '';
-        const minImages = (typeof _EST_MIN_IMAGES_TO_ESTIMATE !== 'undefined') ? _EST_MIN_IMAGES_TO_ESTIMATE : 50;
-        if (_ccQueuedImages >= minImages && typeof _getCloudEstSeconds === 'function') {
+        fastEl.textContent = '';
+        const show = _ccQueuedImages >= window.KestrelAnalyzeEstimate.MIN_IMAGES_TO_ESTIMATE;
+        if (show) {
           const est = _getCloudEstSeconds(_ccQueuedImages);
-          text = est.secs != null
-            ? `~${KestrelUtil.formatDuration(est.secs)} at your measured upload speed.`
-            : `As fast as ~${KestrelUtil.formatDuration(est.analysisSecs)}, depending on your upload speed.`;
+          const big = document.createElement('b');
+          big.textContent = `${est.secs != null ? 'about' : 'as fast as'} ${KestrelUtil.formatDuration(est.secs ?? est.analysisSecs)}`;
+          fastEl.append(big, est.secs != null ? ' at your measured upload speed' : ' depending on your upload speed');
         }
-        fastEl.textContent = text;
-        fastEl.classList.toggle('hidden', !text);
+        fastEl.classList.toggle('hidden', !show);
       }
       const usageEl = document.getElementById('cloudDestUsage');
       if (usageEl) {
@@ -411,7 +407,7 @@
       if (!folder) {
         status.classList.remove('hidden', 'success');
         status.classList.add('error');
-        status.textContent = 'Pick at least one folder before running the speed test.';
+        status.textContent = 'Check at least one folder before testing your upload speed.';
         return;
       }
       if (!window.pywebview?.api?.cloud_compute_upload_test) {
@@ -426,7 +422,7 @@
       if (!signedIn) {
         status.classList.remove('hidden', 'success');
         status.classList.add('error');
-        _ccFillSignInPrompt(status, ' to test upload speed.');
+        _ccFillSignInPrompt(status, ' to test your upload speed.');
         if (typeof openPerchSignInWindow === 'function') {
           try { openPerchSignInWindow(); } catch {}
         }
@@ -434,11 +430,11 @@
       }
       btn.disabled = true;
       status.classList.remove('hidden', 'success', 'error');
-      status.textContent = 'Running speed test…';
+      status.textContent = 'Uploading 10 sample photos';
       let dots = 0;
       const tick = setInterval(() => {
         dots = (dots + 1) % 4;
-        status.textContent = `Running speed test${'.'.repeat(dots).padEnd(3, ' ')}`;
+        status.textContent = `Uploading 10 sample photos${'.'.repeat(dots).padEnd(3, ' ')}`;
       }, 500);
       let r;
       try {
