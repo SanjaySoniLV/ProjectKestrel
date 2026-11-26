@@ -119,8 +119,8 @@
 }
 
 /* ── Segmented strip: a row of click targets separated by vertical dividers.
-   Used by the sidebar footer (Settings | Feedback | Tutorial | Donate) and
-   the folder-tree footer (Select All / None | Clear). One cohesive container
+   Used by the folder-tree footer (Select All / None | Clear) in the sidebar
+   and the Analyze dialog. One cohesive container
    with each child a borderless button; hover lights up the segment. */
 .segmented-strip {
   display: flex;
@@ -188,14 +188,6 @@
   display: none;
 }
 
-/* Donate variant: tinted to remain visually distinct without breaking the strip */
-.segmented-strip-item.donate-item {
-  color: var(--star);
-}
-.segmented-strip-item.donate-item:hover:not([disabled]) {
-  background: rgba(245, 197, 66, 0.08);
-  color: #ffd45f;
-}
 
 /* Danger variant (e.g. Clear): warm tint to flag a destructive action. */
 .segmented-strip-item.danger-item {

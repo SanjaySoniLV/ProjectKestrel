@@ -431,15 +431,15 @@
       }
     }
 
-    /** Refresh the Review Species Tags panel's inline count. */
+    /** Refresh the Confirm species tags panel's inline count. */
     function _perchUpdateReviewPanel() {
       const countEl = document.getElementById('perchReviewCount');
       if (!countEl) return;
       const pre = _perchDlgState.preflight;
-      if (!pre || !pre.scenes) { countEl.textContent = '— of — scenes reviewed.'; return; }
+      if (!pre || !pre.scenes) { countEl.textContent = 'Species confirmed on — of — scenes.'; return; }
       const included = pre.scenes.filter(s => !_perchDlgState.deselected.has(String(s.sceneId)));
       const reviewed = included.filter(s => !!s.reviewed).length;
-      countEl.textContent = `${reviewed.toLocaleString()} of ${included.length.toLocaleString()} scene${included.length === 1 ? '' : 's'} reviewed.`;
+      countEl.textContent = `Species confirmed on ${reviewed.toLocaleString()} of ${included.length.toLocaleString()} scene${included.length === 1 ? '' : 's'}.`;
     }
 
     async function _perchLoadAccountAndUsage() {

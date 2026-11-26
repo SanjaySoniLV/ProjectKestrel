@@ -629,8 +629,25 @@ ${node.path}` : node.path;
       return t.length <= maxLen ? t : (t.slice(0, maxLen - 1) + '…');
     }
 
-    /** Build recents chip (+ optional × dismiss). Returns a .folder-recents-chip-wrap. */
-    function buildFolderRecentsChip(path, onClick, onDismiss) {
+    /**
+     * Short chip labels for a list of recent folders: the folder's own name,
+     * or "parent/name" when two recents share a name. The full path is the
+     * chip's tooltip.
+     */
+    function recentsChipLabels(paths) {
+      const parts = paths.map(p => String(p || '').replace(/\\/g, '/').split('/').filter(Boolean));
+      const base = parts.map(ps => ps[ps.length - 1] || '');
+      return parts.map((ps, i) => {
+        const dup = base.some((b, j) => j !== i && b.toLowerCase() === base[i].toLowerCase());
+        return (dup && ps.length > 1) ? `${ps[ps.length - 2]}/${base[i]}` : (base[i] || paths[i]);
+      });
+    }
+
+    /**
+     * Build recents chip (+ optional × dismiss). Returns a .folder-recents-chip-wrap.
+     * ``label`` overrides the default middle-ellipsized path.
+     */
+    function buildFolderRecentsChip(path, onClick, onDismiss, label) {
       const wrap = document.createElement('span');
       wrap.className = 'folder-recents-chip-wrap';
       const chip = document.createElement('button');
@@ -638,20 +655,22 @@ ${node.path}` : node.path;
       chip.className = 'folder-recents-chip';
       chip.title = path;
       chip.dataset.path = path;
-      const plus = document.createElement('span');
-      plus.className = 'folder-recents-chip-plus';
-      plus.appendChild(KestrelIcon.el('folder-plus'));
-      const label = document.createElement('span');
-      label.textContent = ' ' + ellipsizeRecentsPath(path);
-      chip.appendChild(plus);
-      chip.appendChild(label);
+      const icon = document.createElement('span');
+      icon.className = 'folder-recents-chip-icon';
+      icon.appendChild(KestrelIcon.el('folder'));
+      const text = document.createElement('span');
+      text.className = 'folder-recents-chip-label';
+      text.textContent = label || ellipsizeRecentsPath(path);
+      chip.appendChild(icon);
+      chip.appendChild(text);
       chip.addEventListener('click', onClick);
       wrap.appendChild(chip);
       if (onDismiss) {
         const x = document.createElement('button');
         x.type = 'button';
         x.className = 'folder-recents-chip-dismiss';
-        x.setAttribute('aria-label', 'Remove from recents');
+        x.setAttribute('aria-label', 'Remove from recent folders');
+        x.title = 'Remove from recent folders';
         x.textContent = '\u00d7';
         x.addEventListener('click', (e) => {
           e.stopPropagation();

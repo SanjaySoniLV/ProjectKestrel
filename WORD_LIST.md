@@ -16,6 +16,8 @@ title case and change when their screen is redesigned.
 | The 0–1 score Kestrel gives each photo | **Quality**, written `Quality 0.865` (two decimals on scene cards) | Q, Q 0.86, sharpness score, max quality |
 | How sure the species ID is | **Species match**, written `Great Egret (0.79)` | Quality, confidence (in new text) |
 | 1–5 stars | **Star rating** | Rating score |
+| A scene you have worked on (any accept / reject, or a star rating you set) | **Reviewed**; the filter's other state is **To review** | Unreviewed, done |
+| Saying the species tags on a scene are right | **Confirm species**, species confirmed | Mark as reviewed, approve, finalize |
 | A burst of photos of one subject | **Scene** | Group, cluster, burst |
 | The screen that shows one scene | **Scene viewer** | Scene dialog, scene view |
 | The bulk-cull window | **Culling Assistant** | Culling mode |

@@ -89,10 +89,31 @@
   white-space: nowrap;
 }
 
-/* Sidebar footer: layout is the segmented-strip primitive (see toolbar.css).
-   This block only ensures the footer sits flush at the sidebar bottom. */
+/* Sidebar footer: a row of quiet buttons (Settings, Feedback, Tutorial,
+   Support). The sidebar can be dragged down to 260px; there the buttons
+   wrap onto a second line instead of being cut off. Support keeps its own
+   colour. */
 .sidebar-footer {
   flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 2px;
+}
+.sidebar-footer > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.sidebar-footer > button.donate-item {
+  color: #ff8fb1;
+}
+.sidebar-footer > button.donate-item:hover {
+  background: rgba(255, 143, 177, 0.10);
+  color: #ffb3c9;
 }
 
 /* ── Status bar zoom widget ───────────────────────────────────────────────────

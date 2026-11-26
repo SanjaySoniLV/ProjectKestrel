@@ -1502,8 +1502,8 @@
       const reviewSlot = el('#sceneReviewSlot');
       if (reviewSlot) {
         reviewSlot.innerHTML = approved
-          ? '<span class="approval-note">✓ Reviewed</span>'
-          : '<button class="mark-reviewed-btn" id="markReviewedBtn" title="Confirm that Kestrel\'s tags are correct and mark this scene as reviewed (Ctrl/Cmd+R)">✓ Mark as Reviewed</button>';
+          ? '<span class="approval-note">✓ Species confirmed</span>'
+          : '<button class="mark-reviewed-btn" id="markReviewedBtn" title="Confirm that the species and family tags on this scene are correct (Ctrl/Cmd+R)">✓ Confirm species</button>';
       }
 
       // Wire remove buttons
@@ -1605,7 +1605,7 @@
         };
       });
 
-      // Wire "Mark as Reviewed" button
+      // Wire the "Confirm species" button
       const markReviewedBtn = el('#markReviewedBtn');
       if (markReviewedBtn) {
         markReviewedBtn.onclick = () => {
@@ -1617,7 +1617,7 @@
           const updatedScene = reloadScene(scene.id) || scene;
           renderTopbarTags(updatedScene);
           renderScenes();
-          showToast('Scene tags marked as reviewed', 2000);
+          showToast('Species confirmed', 2000);
         };
       }
 
@@ -2060,7 +2060,7 @@
       const updated = reloadScene(_currentScene.id) || _currentScene;
       renderTopbarTags(updated);
       renderScenes();
-      showToast('Scene tags marked as reviewed', 1800);
+      showToast('Species confirmed', 1800);
     }
 
     /** Open the inline species/family tag input on the current scene and focus it. */

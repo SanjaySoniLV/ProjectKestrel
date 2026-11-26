@@ -474,7 +474,7 @@
         if (_finalizeSceneReview(id)) n += 1;
       }
       if (!n) return;
-      setStatus(`Marked ${n} scene${n === 1 ? '' : 's'} as reviewed.`);
+      setStatus(`Confirmed species on ${n} scene${n === 1 ? '' : 's'}.`);
       renderScenes();
     }
 

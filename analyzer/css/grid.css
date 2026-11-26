@@ -882,7 +882,8 @@
   outline-offset: 1px;
 }
 
-/* Right-side meta -- star/quality | camera/count, no pill background. */
+/* Right-side meta -- reviewed check, best photo's stars · photo count, no
+   pill background. */
 .card-meta {
   display: inline-flex;
   align-items: center;
@@ -891,11 +892,27 @@
   flex-shrink: 0;
   white-space: nowrap;
 }
-.card-meta .meta-score { color: #a9c9ee; }
-.card-meta .meta-sep { margin: 0 4px; color: #4a5365; }
-.card-meta .meta-count { /* slightly smaller emoji block per design */
-  font-size: var(--fs-2xs);
-  letter-spacing: -0.5px;
+.card-meta .meta-reviewed {
+  display: inline-flex;
+  margin-right: 6px;
+  color: var(--accept);
+}
+.card-meta .meta-stars {
+  color: var(--star);
+  letter-spacing: 0.5px;
+}
+.card-meta .meta-stars-off { color: #3a4152; }
+.card-meta .meta-sep {
+  width: 3px;
+  height: 3px;
+  margin: 0 6px;
+  border-radius: 50%;
+  background: #4a5365;
+}
+.card-meta .meta-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
 }
 
 /* Popover for the rest of a scene's species when the user clicks '+' */
