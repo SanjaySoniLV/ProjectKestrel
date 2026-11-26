@@ -702,11 +702,6 @@
   object-fit: cover;
   display: block;
 }
-.perch-scene-thumb.no-image::before {
-  content: '🖼';
-  font-size: 18px;
-  color: var(--muted, #8a9099);
-}
 .perch-scene-expand {
   flex-shrink: 0;
   width: 22px;

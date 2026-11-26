@@ -51,6 +51,7 @@
   --undecided: #34495e;
   --star: #f5c542;
   --danger-text: #ff8a80;
+  --folder-icon: #e3b04b;
 
   /* Type scale. Display sizes above --fs-2xl stay literal. */
   --fs-2xs: 10px;

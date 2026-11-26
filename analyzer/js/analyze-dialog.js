@@ -556,9 +556,8 @@ ${node.path}` : node.path);
       pill.setAttribute('aria-hidden', 'true');
 
       // Folder icon
-      const icon = document.createElement('span');
-      icon.className = 'tree-icon';
-      icon.textContent = node.has_kestrel ? '📂' : '📁';
+      const icon = KestrelIcon.el(node.has_kestrel ? 'folder-open' : 'folder');
+      icon.classList.add('tree-icon');
 
       // Label
       const label = document.createElement('span');
@@ -625,7 +624,7 @@ ${node.path}` : node.path);
           e.preventDefault();
           e.stopPropagation();
           showContextMenu(e.clientX, e.clientY, [{
-            label: '🗑 Clear Kestrel Analysis Data',
+            label: 'Clear Kestrel Analysis Data',
             danger: true,
             action: () => {
               clearKestrelDataForFolder(node.path, node.name, () => {
@@ -1045,7 +1044,7 @@ ${node.path}` : node.path);
           if (f.warningMsg) {
             const warn = document.createElement('div');
             warn.className = 'analyze-dlg-queued-item-warning' + (f.warningKind === 'error' ? ' error' : '');
-            warn.textContent = (f.warningKind === 'error' ? '⚠ ' : '⚠ ') + f.warningMsg;
+            warn.append(KestrelIcon.el('warning'), ' ' + f.warningMsg);
             item.appendChild(warn);
           }
           listEl.appendChild(item);
@@ -1154,7 +1153,7 @@ ${node.path}` : node.path);
         if (runBtn) {
           runBtn.disabled = checkedCount === 0;
           // Keep the leading lightning icon span intact.
-          runBtn.innerHTML = '<span class="adlg-cloud-speed-btn-icon">⚡</span>'
+          runBtn.innerHTML = `<i class="adlg-cloud-speed-btn-icon k-icon k-icon--bolt" aria-hidden="true"></i>`
             + (hasResult ? ' Re-run upload speed test' : ' Run upload speed test');
         }
         if (statusEl && hasResult) {
@@ -1169,7 +1168,7 @@ ${node.path}` : node.path);
       const reanalyzeWithUnlockCount = fullyAnalyzedWillReanalyzeCount + outdatedReanalyzeCount + chosenReanalyzeCount;
       if (reanalyzeWithUnlockCount > 0) {
         const word = reanalyzeWithUnlockCount === 1 ? 'folder' : 'folders';
-        warningsEl.innerHTML = `⚠ ${reanalyzeWithUnlockCount} ${word} will lose user data on re-analysis (ratings, decisions, scene names).`;
+        warningsEl.innerHTML = `${KestrelIcon('warning')} ${reanalyzeWithUnlockCount} ${word} will lose user data on re-analysis (ratings, decisions, scene names).`;
         warningsEl.classList.remove('hidden');
       } else {
         warningsEl.classList.add('hidden');

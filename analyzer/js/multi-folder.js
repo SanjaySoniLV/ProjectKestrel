@@ -240,7 +240,7 @@
         // If the folder tree is already visible the user may have clicked a parent folder
         // intentionally (no .kestrel there). Show a soft status message instead of an alert.
         if (_hasAnyRoots()) {
-          setStatus(`No Kestrel database in this folder — select one that shows 📂 in the tree`);
+          setStatus(`No Kestrel database in this folder — select an analyzed folder (open folder icon) in the tree`);
         } else {
           alert(`Could not load Kestrel database from this folder.\n\nMake sure:\n1. The folder has been analyzed with Kestrel Analyzer\n2. The .kestrel folder exists (it may be hidden on macOS)\n3. You selected the correct folder\n\nTip: On macOS, .kestrel folders are hidden by default. You can:\n• Press Cmd+Shift+. (period) to show hidden files in Finder\n• Or select the parent folder that contains the .kestrel folder\n\nError: ${errorMsg}`);
           setStatus('Failed to load database');

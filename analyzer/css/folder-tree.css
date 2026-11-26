@@ -190,7 +190,7 @@
 .tree-arrow.open { transform: rotate(90deg); }
 .tree-arrow.leaf { visibility: hidden; cursor: default; }
 /* Folder icon: alignment anchor */
-.tree-icon { flex: 0 0 18px; font-size: 14px; text-align: center; }
+.tree-icon { flex: 0 0 18px; font-size: 14px; text-align: center; color: var(--folder-icon); }
 
 /* ── Right-side checkbox column ───────────────────────────────────────────────
    Pinned at the right edge of every row; present unconditionally so the right

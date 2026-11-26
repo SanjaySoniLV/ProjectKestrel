@@ -444,8 +444,8 @@
       const row = document.getElementById('folderRecentsRow');
       const hasRecents = row && !row.classList.contains('hidden') && row.children.length > 0;
       hint.innerHTML = hasRecents
-        ? 'Click a recent above, or <b>+ 📂 Load Folders…</b> to pick a new one.'
-        : 'No folders loaded.<br />Click <b>+ 📂 Load Folders…</b> to get started.';
+        ? 'Click a recent above, or <b>Load Folders…</b> to pick a new one.'
+        : 'No folders loaded.<br />Click <b>Load Folders…</b> to get started.';
     }
 
     // Initial render of recents on startup.

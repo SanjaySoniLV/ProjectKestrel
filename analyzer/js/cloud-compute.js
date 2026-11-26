@@ -80,8 +80,8 @@
       const label = needsSignIn
         ? 'Sign in to use Cloud Compute'
         : (_analyzeDestination === 'cloud'
-          ? '☁ Add to Cloud Analysis Queue'
-          : '➕ Add to Local Analysis Queue');
+          ? 'Add to Cloud Analysis Queue'
+          : 'Add to Local Analysis Queue');
       // Preserve disabled state; just rename.
       btn.textContent = label;
     }
@@ -595,7 +595,7 @@
                 if (orphan) {
                   _ccOrphanWarningShown = true;
                   showToast(
-                    '⚠ You have an active Cloud Compute job running ' +
+                    'You have an active Cloud Compute job running ' +
                     '(maybe from another device or a previous session). ' +
                     'Manage it at myaccount.projectkestrel.org/cloud-compute — ' +
                     'your queue will start once that job completes.',
@@ -1127,16 +1127,16 @@
             </div>
             <div class="cloud-queue-item-controls">
               ${showLoad ? `<button class="cc-load-btn" data-cc-action="load" data-job-id="${escapeHtml(state.jobId)}" data-folder-path="${escapeHtml(state.rootPath)}" title="Open this folder to browse results">
-                + 📂 Load
+                ${KestrelIcon('folder-open')} Load
               </button>` : ''}
               <button data-cc-action="cancel" data-job-id="${escapeHtml(state.jobId)}" ${cancelDisabled ? 'disabled' : ''}>
-                ⏹ Cancel
+                ${KestrelIcon('stop')} Cancel
               </button>
             </div>
           </div>
           <div class="cloud-phase-row">
             <span class="cloud-phase-pill upload ${uploadPhase}">↑ ${_ccUploadPhaseLabel(uploadPhase)}</span>
-            <span class="cloud-phase-pill analysis ${analysisPhase}">⚙ ${_ccAnalysisPhaseLabel(analysisPhase)}</span>
+            <span class="cloud-phase-pill analysis ${analysisPhase}">${KestrelIcon('gear')} ${_ccAnalysisPhaseLabel(analysisPhase)}</span>
             ${bottleneck ? `<span class="cloud-bottleneck-pill ${bottleneck.key}" title="${escapeHtml(bottleneck.tip)}">${escapeHtml(bottleneck.label)}</span>` : ''}
           </div>
           <div class="cloud-bar-block">
@@ -1195,7 +1195,7 @@
              title="${escapeHtml(entry.path || '')}">
           <div class="queue-item-header">
             <span class="queue-item-name">${escapeHtml(name)}</span>
-            <span class="cc-pending-badge">⏳ Queued — waiting for slot</span>
+            <span class="cc-pending-badge">${KestrelIcon('hourglass')} Queued — waiting for slot</span>
           </div>
         </div>
       `;
@@ -1708,11 +1708,11 @@
         + `data-pending-packs="${unmerged.length}" `
         + `${downloadDisabled ? 'disabled' : ''} `
         + `title="${folderMissing ? 'Locate the folder first' : 'Download &amp; install the pending result(s)'}">`
-        + `⬇ Download</button>`;
+        + `${KestrelIcon('download')} Download</button>`;
       const locateBtn = folderMissing
         ? `<button type="button" class="cloud-account-locate-btn" `
           + `data-cc-action="history-locate" data-job-id="${escapeHtml(j.jobId)}" `
-          + `title="Re-point this job to the folder's new location">📁 Locate folder…</button>`
+          + `title="Re-point this job to the folder's new location">${KestrelIcon('folder')} Locate folder…</button>`
         : '';
       // For a still-running job, the continuous "Retrieve Results" loop is the
       // right affordance (downloads packs as they finish); the one-shot
@@ -1729,7 +1729,7 @@
         ? `<button type="button" class="cloud-account-load-btn" `
           + `data-cc-action="history-load" data-job-id="${escapeHtml(j.jobId)}" `
           + `data-folder-path="${escapeHtml(j.folderPath)}" `
-          + `title="Open this folder to browse results">+ 📂 Load</button>`
+          + `title="Open this folder to browse results">${KestrelIcon('folder-open')} Load</button>`
         : '';
 
       const additionalInfo = _ccRenderAdditionalInfo({

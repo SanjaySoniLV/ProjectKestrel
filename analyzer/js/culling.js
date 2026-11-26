@@ -325,7 +325,7 @@
 
         <div id="wmOptView" style="padding:16px 22px;">
           <div style="background:#1a2235;border:1px solid #263045;border-radius:8px;padding:12px 14px;margin-bottom:12px;display:flex;gap:12px;align-items:flex-start;">
-            <div style="font-size:18px;margin-top:2px;">📝</div>
+            <div style="font-size:18px;margin-top:2px;"><i class="k-icon k-icon--file-text" aria-hidden="true"></i></div>
             <div style="flex:1;min-width:0;">
               <div style="font-size:13px;font-weight:600;margin-bottom:4px;">XMP Sidecar Files</div>
               <div style="font-size:12px;color:#7a90b8;line-height:1.5;">Writes a <code style="background:#1c2438;padding:1px 4px;border-radius:3px;">.xmp</code> sidecar file next to each original. Embeds star ratings, Accept/Reject decisions, and species tags in a format readable by Lightroom, Capture One, darktable, and other editors.</div>
@@ -333,7 +333,7 @@
           </div>
           <div style="background:#15192a;border:1px solid #243043;border-radius:8px;padding:10px 14px;margin-bottom:12px;">
             <div style="font-size:12px;font-weight:600;color:#a9c9ee;margin-bottom:6px;display:flex;align-items:center;gap:6px;">
-              <span style="font-size:13px;">⚙️</span> Fields to write
+              <span style="font-size:13px;"><i class="k-icon k-icon--gear" aria-hidden="true"></i></span> Fields to write
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px;">
               ${fieldRow('rating', 'Star Rating', 'xmp:Rating (0–5 stars).')}

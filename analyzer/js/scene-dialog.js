@@ -2536,7 +2536,7 @@
       const btn = el('#splitSceneBtn');
       if (!btn) return;
       if (!_splitMode) {
-        btn.textContent = 'Split Scene…';
+        btn.replaceChildren(KestrelIcon.el('scissors'), ' Split Scene…');
         return;
       }
       btn.textContent = _splitSelected.size > 0

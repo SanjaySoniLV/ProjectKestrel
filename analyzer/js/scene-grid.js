@@ -35,18 +35,18 @@
       menu.className = 'folder-group-actions-menu';
 
       const items = [
-        { icon: '📂', label: 'Open in File Explorer',
+        { icon: 'folder-open', label: 'Open in File Explorer',
           run: () => window.pywebview.api.open_file_explorer(folderPath) },
-        { icon: '📝', label: 'Write Photo Metadata',
+        { icon: 'file-text', label: 'Write Photo Metadata',
           run: () => writeMetadataForFolder(folderPath) },
-        { icon: '⚙', label: 'Change Settings…',
+        { icon: 'gear', label: 'Change Settings…',
           run: () => openFolderSettingsDialog(folderPath) },
         ...(_isUpgradableTo3(pipelineStatus) ? [
-          { icon: '✨', label: 'Upgrade to Analysis Version 3.0…',
+          { icon: 'sparkle', label: 'Upgrade to Analysis Version 3.0…',
             run: () => upgradeFolderToV3(folderPath) },
         ] : []),
         { divider: true },
-        { icon: '🗑', label: 'Clear Kestrel Analysis Data', danger: true,
+        { icon: 'trash', label: 'Clear Kestrel Analysis Data', danger: true,
           run: () => {
             const folderName = (folderPath || '').split(/[\\/]/).filter(Boolean).pop() || folderPath;
             clearKestrelDataForFolder(folderPath, folderName, refreshCallback);
@@ -62,7 +62,7 @@
         }
         const row = document.createElement('div');
         row.className = 'folder-group-actions-item' + (it.danger ? ' folder-group-actions-item--danger' : '');
-        row.innerHTML = `<i>${it.icon}</i> ${it.label}`;
+        row.innerHTML = `${KestrelIcon(it.icon)} ${it.label}`;
         row.addEventListener('click', (ev) => {
           ev.stopPropagation();
           _closeFolderActionsMenu();
@@ -139,7 +139,7 @@
         const fp = btn.dataset.folderPath;
         const queued = busy.has(String(fp).replace(/\\/g, '/'));
         btn.disabled = queued;
-        btn.innerHTML = queued ? '<i>⏳</i> In upgrade queue' : '<i>✨</i> Upgrade to 3.0';
+        btn.innerHTML = queued ? `${KestrelIcon('hourglass')} In upgrade queue` : `${KestrelIcon('sparkle')} Upgrade to 3.0`;
         btn.classList.toggle('hidden', !(queued || btn.dataset.upgradable === '1'));
       }
       syncUpgradeAllButton();
@@ -434,7 +434,7 @@
           const goBtn = document.createElement('button');
           goBtn.type = 'button';
           goBtn.className = 'card-goto-btn';
-          goBtn.textContent = '🕒';
+          goBtn.appendChild(KestrelIcon.el('clock'));
           goBtn.title = 'Show in timeline';
           goBtn.setAttribute('aria-label', 'Show in timeline');
           goBtn.addEventListener('click', (ev) => { ev.stopPropagation(); goToSceneInTimeline(s.id); });
@@ -574,7 +574,7 @@
         meta.appendChild(metaSep);
         const countEl = document.createElement('span');
         countEl.className = 'meta-count';
-        countEl.textContent = `📸 ${s.imageCount}`;
+        countEl.append(KestrelIcon.el('camera'), ` ${s.imageCount}`);
         // Break the count down on hover rather than on the tile: the split is
         // useful when triaging but not worth the visual weight on every card.
         if (s.cullCounts) {
@@ -622,7 +622,7 @@
           card.addEventListener('contextmenu', (ev) => {
             ev.preventDefault();
             _openCardContextMenu(ev.clientX, ev.clientY, [
-              { icon: '🕒', label: 'Go to scene in timeline', run: () => goToSceneInTimeline(s.id) },
+              { icon: 'clock', label: 'Go to scene in timeline', run: () => goToSceneInTimeline(s.id) },
             ]);
           });
         }
@@ -831,7 +831,7 @@
           upgradeBtn.type = 'button';
           upgradeBtn.className = 'action-btn folder-upgrade-btn hidden';
           upgradeBtn.dataset.folderPath = fd.folderPath;
-          upgradeBtn.innerHTML = '<i>✨</i> Upgrade to 3.0';
+          upgradeBtn.innerHTML = `${KestrelIcon('sparkle')} Upgrade to 3.0`;
           upgradeBtn.title = 'Upgrade to analysis version 3.0 from the crops Kestrel already saved: new species IDs, the sharpness score and smart search. No re-analysis; ratings, culls and tags are kept.';
           upgradeBtn.addEventListener('click', (ev) => { ev.stopPropagation(); upgradeFolderToV3(fd.folderPath); });
           rightActions.appendChild(upgradeBtn);
@@ -855,7 +855,7 @@
           repairBtn.type = 'button';
           repairBtn.className = 'action-btn folder-repair-btn hidden';
           repairBtn.dataset.repairRoot = fd.folderPath;
-          repairBtn.innerHTML = '<i>⚠</i> Repair Kestrel Data';
+          repairBtn.innerHTML = `${KestrelIcon('warning')} Repair Kestrel Data`;
           repairBtn.title = 'Kestrel data and photos no longer match';
           repairBtn.addEventListener('click', (ev) => {
             ev.stopPropagation();
@@ -865,7 +865,7 @@
 
           const cullingBtn = document.createElement('button');
           cullingBtn.className = 'action-btn culling-assistant-btn';
-          cullingBtn.innerHTML = '<i>✂</i> Open Culling Assistant';
+          cullingBtn.innerHTML = `${KestrelIcon('scissors')} Open Culling Assistant`;
           cullingBtn.title = 'Open the AI-assisted culling workflow for this folder';
           cullingBtn.addEventListener('click', (ev) => { ev.stopPropagation(); openCullingAssistant(fd.folderPath); });
           rightActions.appendChild(cullingBtn);
@@ -874,7 +874,7 @@
           perchBtn.type = 'button';
           perchBtn.className = 'action-btn folder-perch-btn';
           perchBtn.dataset.folderPath = fd.folderPath;
-          perchBtn.innerHTML = '<i>\u{1FAB6}</i> <span class="folder-perch-btn-label">Share with Perch</span>';
+          perchBtn.innerHTML = `${KestrelIcon('feather')} <span class="folder-perch-btn-label">Share with Perch</span>`;
           perchBtn.title = 'Share this folder to Perch (or manage existing perch)';
           perchBtn.addEventListener('click', (ev) => {
             ev.stopPropagation();
@@ -1009,9 +1009,7 @@
       for (const it of items) {
         const row = document.createElement('div');
         row.className = 'folder-group-actions-item';
-        const icon = document.createElement('i');
-        icon.textContent = it.icon;
-        row.appendChild(icon);
+        row.appendChild(KestrelIcon.el(it.icon));
         row.appendChild(document.createTextNode(' ' + it.label));
         row.addEventListener('click', (ev) => {
           ev.stopPropagation();

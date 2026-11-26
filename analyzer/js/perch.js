@@ -51,8 +51,8 @@
       const t = _perchSelectedTotals();
       const elSubmit = document.getElementById('perchUploadSubmitBtn');
       if (elSubmit) {
-        const label = t.photos > 0 ? `📤 Upload ${t.photos.toLocaleString()} photo${t.photos === 1 ? '' : 's'}` : '📤 Upload';
-        elSubmit.textContent = label;
+        const label = t.photos > 0 ? `Upload ${t.photos.toLocaleString()} photo${t.photos === 1 ? '' : 's'}` : 'Upload';
+        elSubmit.replaceChildren(KestrelIcon.el('upload'), ' ' + label);
         elSubmit.disabled = (t.photos === 0);
       }
       // Sidebar panel updates (totals card replaces the old timeline-summary).
@@ -167,7 +167,7 @@
       thumbWrap.appendChild(img);
       const overlay = document.createElement('div');
       overlay.className = 'card-perch-overlay';
-      overlay.textContent = '\u{1F6AB} Excluded';
+      overlay.append(KestrelIcon.el('ban'), ' Excluded');
       thumbWrap.appendChild(overlay);
       card.appendChild(thumbWrap);
       if (scene.thumbnailPath && rootPath && typeof getBlobUrlForPath === 'function') {
@@ -1233,8 +1233,8 @@
       draft: 'Draft (not published)',
     };
     const _PERCH_VISIBILITY_ICONS = {
-      private: '\u{1F512}', unlisted: '\u{1F517}', restricted: '\u{1F465}',
-      public: '\u{1F310}', draft: '\u{1F4DD}',
+      private: 'lock', unlisted: 'link', restricted: 'users',
+      public: 'globe', draft: 'file-text',
     };
     const _PERCH_COMMENTS_LABELS = {
       everyone: 'Everyone',
@@ -1471,7 +1471,7 @@
         const v = String(status.visibility || status.status || '');
         const label = _PERCH_VISIBILITY_LABELS[v] || (v ? v[0].toUpperCase() + v.slice(1) : '—');
         const icon = _PERCH_VISIBILITY_ICONS[v] || '';
-        visEl.textContent = icon ? `${icon} ${label}` : label;
+        visEl.replaceChildren(...(icon ? [KestrelIcon.el(icon), ' '] : []), label);
       }
       const bytesEl = document.getElementById('perchStatusBytes');
       if (bytesEl) {
