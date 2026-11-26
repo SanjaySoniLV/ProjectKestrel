@@ -110,20 +110,20 @@
       <div class="toolbar">
         <div class="toolbar-row actions">
           <button id="analyzeQueueBtn" class="primary sidebar-cta" title="Choose folders to analyze">
-            <i class="k-icon k-icon--analyze" aria-hidden="true"></i> Analyze Folders…
+            <i class="k-icon k-icon--analyze" aria-hidden="true"></i> Analyze folders…
           </button>
           <div id="saveRevertWrap" class="hidden" style="display:flex;gap:6px">
             <button id="revertCsv" disabled title="Discard all unsaved changes" style="flex:1">Revert Changes</button>
             <button id="saveCsv" disabled style="flex:1">Save Changes</button>
           </div>
         </div>
-        <!-- Folder tree: Add Folders (top bar), recents chips, the tree, and the
+        <!-- Library panel: header with Add folders, recents chips, the tree, and the
              Select / Clear strip. treeChangeRoot stays (hidden) for csv-init.js. -->
         <div id="folderTreeWrap" class="folder-tree-wrap folder-tree-empty">
-          <button id="pickFolder" class="folder-load-btn" title="Load a folder that you've already analyzed with Kestrel">
-            <span class="folder-load-btn-plus"><i class="k-icon k-icon--folder-plus" aria-hidden="true"></i></span>
-            <span class="folder-load-btn-label">Add Folders…</span>
-          </button>
+          <div class="library-header">
+            <span class="k-section-title library-title">Library</span>
+            <button id="pickFolder" class="k-btn--quiet k-btn--sm library-add-btn" title="Add a folder you've already analyzed with Kestrel"><i class="k-icon k-icon--plus" aria-hidden="true"></i> Add folders…</button>
+          </div>
           <!-- Recents row: csv-init.js fills it with chips and shows it. -->
           <div id="folderRecentsRow" class="folder-recents-row hidden" aria-label="Recently loaded folders"></div>
           <div id="folderScanProgress" class="load-progress hidden" style="margin:6px 8px 0">
@@ -134,7 +134,7 @@
           </div>
           <!-- Empty-state hint: shown only when no folders are loaded -->
           <div id="folderTreeEmptyHint" class="folder-tree-empty-hint">
-            No folders loaded.<br />Click <b>Add Folders…</b> to get started.
+            No folders loaded.<br />Click <b>Add folders…</b> to get started.
           </div>
           <div id="folderTree"></div>
           <!-- Bottom segmented strip: [Clear] [Select All ↔ Select None].
@@ -160,13 +160,12 @@
         </div>
       </div>
       <div class="spacer"></div>
-      <!-- Segmented footer strip: Settings | Feedback | Tutorial | Donate.
-           Zoom moved to the bottom status bar. -->
-      <div class="sidebar-footer segmented-strip" aria-label="Controls">
-        <button id="openSettings" class="segmented-strip-item" title="Open Kestrel settings" aria-label="Settings"><i class="k-icon k-icon--gear" aria-hidden="true"></i> Settings</button>
-        <button id="openFeedback" class="segmented-strip-item" title="Send feedback, report a bug, or share a suggestion">Feedback</button>
-        <button id="helpBtnMain" class="segmented-strip-item" title="Start guided tutorial">Tutorial</button>
-        <button id="donateBtnMain" class="segmented-strip-item donate-item" title="Support Project Kestrel"><i class="k-icon k-icon--heart" aria-hidden="true"></i> Support</button>
+      <!-- Footer: quiet buttons; Support keeps its own colour. Zoom is in the status bar. -->
+      <div class="sidebar-footer" aria-label="Controls">
+        <button id="openSettings" class="k-btn--quiet k-btn--sm" title="Open Kestrel settings" aria-label="Settings"><i class="k-icon k-icon--gear" aria-hidden="true"></i> Settings</button>
+        <button id="openFeedback" class="k-btn--quiet k-btn--sm" title="Send feedback, report a bug, or share a suggestion"><i class="k-icon k-icon--message" aria-hidden="true"></i> Feedback</button>
+        <button id="helpBtnMain" class="k-btn--quiet k-btn--sm" title="Start guided tutorial"><i class="k-icon k-icon--help" aria-hidden="true"></i> Tutorial</button>
+        <button id="donateBtnMain" class="k-btn--quiet k-btn--sm donate-item" title="Support Project Kestrel"><i class="k-icon k-icon--heart" aria-hidden="true"></i> Support</button>
       </div>
     </div>
   </header>
@@ -194,49 +193,50 @@
           <button id="smartSearchClear" type="button" class="smart-search-clear hidden" title="Clear the search (Esc)" aria-label="Clear the search">&#x2715;</button>
           <span id="smartChipTip" class="smart-chip-tip hidden" role="tooltip"></span>
         </div>
-        <label class="tfb-field" title="Minimum confidence threshold for species classification">
-          <span class="tfb-label">Confidence</span>
-          <input id="speciesConf" type="number" min="0" max="1" step="0.05" value="0.75" class="tfb-conf" />
-        </label>
-        <label class="tfb-field">
-          <span class="tfb-label">Sort by</span>
-          <select id="sortBy" class="tfb-sort">
-            <option value="captureTime" selected>Capture Time</option>
-            <option value="sceneId">Scene ID</option>
-            <option value="maxQuality">Max Quality</option>
-            <option value="imageCount">Image Count</option>
-          </select>
-        </label>
+        <!-- The review toggle drives the hidden select, which the code reads (csv-init.js). -->
+        <div id="reviewStateSeg" class="k-seg tfb-review-seg" role="group" aria-label="Show scenes"
+             title="A scene counts as reviewed once you accept or reject a photo in it, or set a star rating yourself.">
+          <button type="button" data-value="all" class="on">All</button>
+          <button type="button" data-value="unreviewed">To review</button>
+          <button type="button" data-value="reviewed">Reviewed</button>
+        </div>
+        <select id="filterSceneReviewState" class="hidden" aria-hidden="true" tabindex="-1"><option value="all">All scenes</option><option value="reviewed">Reviewed</option><option value="unreviewed">To review</option></select>
         <div class="tfb-more-wrap">
-          <button id="tfbMoreBtn" type="button" class="tfb-more-btn" aria-haspopup="true" aria-expanded="false" title="More filter and grouping options"><i class="k-icon k-icon--gear" aria-hidden="true"></i> More ▾</button>
-          <div id="tfbMorePopover" class="tfb-more-popover hidden" role="menu" aria-label="Additional options">
-            <label class="tfb-popover-row" title="Filter by review state. A scene counts as reviewed once you have given it any user star rating, any accept/reject culling decision, reviewed scene tags, or a scene name. Unreviewed scenes are the ones that still need work.">
-              <span>Review state</span>
-              <select id="filterSceneReviewState">
-                <option value="all">All scenes</option>
-                <option value="reviewed">Reviewed only</option>
-                <option value="unreviewed">Unreviewed only</option>
+          <button id="tfbMoreBtn" type="button" class="tfb-more-btn" aria-haspopup="true" aria-expanded="false" title="Sorting, grouping and display options"><i class="k-icon k-icon--sliders" aria-hidden="true"></i> View <span class="tfb-caret" aria-hidden="true">▾</span></button>
+          <div id="tfbMorePopover" class="tfb-more-popover hidden" role="menu" aria-label="View options">
+            <div class="k-section-title tfb-popover-heading">Sort</div>
+            <label class="tfb-popover-row">
+              <span>Sort by</span>
+              <select id="sortBy" class="tfb-sort">
+                <option value="captureTime" selected>Capture time</option>
+                <option value="maxQuality">Best quality</option>
+                <option value="imageCount">Number of photos</option>
+                <option value="sceneId">Scene number</option>
               </select>
             </label>
+            <div class="k-section-title tfb-popover-heading">Group</div>
             <label class="tfb-popover-row">
-              <input id="includeSecondarySpecies" type="checkbox" />
-              <span>Multi-subject mode</span>
-              <span class="help-tip"
-                data-tip="If your photos have multiple subjects (eg. multiple birds in one photo), this option will improve searchability."
-                aria-label="Multi-subject mode help"
-                title="If your photos have multiple subjects (eg. multiple birds in one photo), this option will improve searchability.">?</span>
+              <input id="groupByFolder" type="checkbox" checked />
+              <span>By folder</span>
             </label>
             <label class="tfb-popover-row">
               <input id="groupByTime" type="checkbox" />
-              <span>Group by capture time</span>
+              <span>By capture time</span>
             </label>
-            <label class="tfb-popover-row">
-              <input id="groupByFolder" type="checkbox" checked />
-              <span>Group by folder</span>
-            </label>
+            <div class="k-section-title tfb-popover-heading">Cards</div>
             <label class="tfb-popover-row">
               <input id="showBirdThumbs" type="checkbox" />
               <span>Show bird thumbnails</span>
+            </label>
+            <div class="k-section-title tfb-popover-heading">Species</div>
+            <label class="tfb-popover-row">
+              <input id="includeSecondarySpecies" type="checkbox" />
+              <span>Multi-subject mode</span>
+              <span class="help-tip" aria-label="Multi-subject mode help" data-tip="If your photos have multiple subjects (eg. multiple birds in one photo), this option will improve searchability." title="If your photos have multiple subjects (eg. multiple birds in one photo), this option will improve searchability.">?</span>
+            </label>
+            <label class="tfb-popover-row" title="Species names below this species match score are not shown on scenes or used in search.">
+              <span>Species match threshold</span>
+              <input id="speciesConf" type="number" min="0" max="1" step="0.05" value="0.75" class="tfb-conf" />
             </label>
           </div>
         </div>
@@ -293,7 +293,7 @@
     <!-- Floating multi-select action bar -->
     <div id="selectActionBar" class="select-action-bar hidden">
       <span id="selectActionLabel" class="muted">0 scenes selected</span>
-      <button id="selectReviewBtn" class="k-btn--quiet" title="Confirm the tags Kestrel shows on each selected scene and mark them as reviewed"><i class="k-icon k-icon--check" aria-hidden="true"></i> Mark as reviewed</button>
+      <button id="selectReviewBtn" class="k-btn--quiet" title="Confirm the species and family tags Kestrel shows on each selected scene"><i class="k-icon k-icon--check" aria-hidden="true"></i> Confirm species</button>
       <button id="selectRejectBtn" class="k-btn--quiet" title="Reject every photo without a decision in the selected scenes (accepted and rejected photos are kept)"><i class="k-icon k-icon--ban" aria-hidden="true"></i> Reject undecided</button>
       <button id="selectMergeBtn" class="primary">Merge into one scene</button>
       <button id="selectClearBtn" class="k-btn--icon" title="Clear selection" aria-label="Clear selection"><i class="k-icon k-icon--x" aria-hidden="true"></i></button>
@@ -403,7 +403,7 @@
           <!-- Species/Family chips + inline (+) add rendered by JS -->
         </div>
         <div class="scene-topbar-right">
-          <!-- "Mark as Reviewed" / "Reviewed" is rendered here by renderTopbarTags() -->
+          <!-- "Confirm species" / "Species confirmed" is rendered here by renderTopbarTags() -->
           <span class="scene-review-slot" id="sceneReviewSlot"></span>
           <button class="scene-topbar-icon-btn" id="sceneShortcutBtn" title="Show keyboard shortcuts" aria-label="Show keyboard shortcuts"><i class="k-icon k-icon--keyboard" aria-hidden="true"></i></button>
           <button class="scene-topbar-icon-btn" id="closeDlg" title="Close (Escape)" aria-label="Close">✕</button>
@@ -425,7 +425,7 @@
           <span><kbd>X</kbd> or <kbd>8</kbd> Undecided</span>
           <span><kbd>C</kbd> or <kbd>9</kbd> Reject</span>
           <span><kbd>1</kbd>–<kbd>5</kbd> Star rating</span>
-          <span><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>R</kbd> Mark as reviewed</span>
+          <span><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>R</kbd> Confirm species</span>
           <span><kbd>Space</kbd> Open in editor</span>
         </div>
         <div class="ssl-col"><h4 class="k-section-title">Birds and tags</h4>
@@ -719,8 +719,8 @@
 
           <div class="perch-check-panel" id="perchCheckReview">
             <div class="perch-check-body">
-              <div class="perch-check-title">Review Species Tags</div>
-              <div class="perch-check-text">Review each scene's species and family so viewers can search your perch by what you saw. Reviewed scenes appear with a gold border in the timeline. <strong id="perchReviewCount">— of — scenes reviewed.</strong></div>
+              <div class="perch-check-title">Confirm species tags</div>
+              <div class="perch-check-text">Confirm each scene's species and family so viewers can search your perch by what you saw. Scenes with confirmed species appear with a gold border in the timeline. <strong id="perchReviewCount">Species confirmed on — of — scenes.</strong></div>
             </div>
           </div>
 

@@ -241,31 +241,45 @@
 
     const meta = document.createElement('div');
     meta.className = 'card-meta';
-    // Score + image count on one line, no background pill. Two-decimal
-    // quality matches the user-visible precision elsewhere in the UI.
+    // Reviewed check, the best photo's star rating, then the photo count, on
+    // one line with no background pill. The quality score itself stays in the
+    // scene viewer.
+    if (typeof isManuallyReviewedScene === 'function' && isManuallyReviewedScene(s)) {
+      const rv = document.createElement('span');
+      rv.className = 'meta-reviewed';
+      rv.title = 'Reviewed: you have accepted, rejected or rated photos in this scene';
+      rv.setAttribute('aria-label', 'Reviewed');
+      rv.appendChild(KestrelIcon.el('check'));
+      meta.appendChild(rv);
+    }
+    const stars = Math.max(0, Math.min(5, s.maxRating || 0));
     const scoreEl = document.createElement('span');
-    scoreEl.className = 'meta-score';
-    // Negative quality is the pipeline's sentinel for "no animal
-    // detected" (defaults to -1.00 in that case). Render as an em-dash
-    // pair instead of a misleading numeric score.
-    scoreEl.textContent = (s.maxQuality >= 0)
-      ? `★ ${s.maxQuality.toFixed(2)}`
-      : `★ --`;
+    scoreEl.className = 'meta-stars';
+    scoreEl.setAttribute('aria-label', `Best photo: ${stars} star${stars === 1 ? '' : 's'}`);
+    scoreEl.title = (s.maxQuality >= 0)
+      ? `Best photo: ${stars} star${stars === 1 ? '' : 's'} · Quality ${s.maxQuality.toFixed(2)}`
+      : `Best photo: ${stars} star${stars === 1 ? '' : 's'}`;
+    const on = document.createElement('span');
+    on.textContent = '★'.repeat(stars);
+    const off = document.createElement('span');
+    off.className = 'meta-stars-off';
+    off.textContent = '★'.repeat(5 - stars);
+    scoreEl.append(on, off);
     meta.appendChild(scoreEl);
     const metaSep = document.createElement('span');
     metaSep.className = 'meta-sep';
-    metaSep.textContent = ' | ';
+    metaSep.setAttribute('aria-hidden', 'true');
     meta.appendChild(metaSep);
     const countEl = document.createElement('span');
     countEl.className = 'meta-count';
-    countEl.append(KestrelIcon.el('camera'), ` ${s.imageCount}`);
+    countEl.append(KestrelIcon.el('stack'), `${s.imageCount}`);
     // Break the count down on hover rather than on the tile: the split is
     // useful when triaging but not worth the visual weight on every card.
     if (s.cullCounts) {
       const { accepted, rejected, undecided } = s.cullCounts;
       countEl.title = accepted || rejected
         ? `${accepted} accepted · ${undecided} undecided · ${rejected} rejected`
-        : `${s.imageCount} image${s.imageCount === 1 ? '' : 's'}, none decided yet`;
+        : `${s.imageCount} photo${s.imageCount === 1 ? '' : 's'}, none decided yet`;
     }
     meta.appendChild(countEl);
     metaRow.appendChild(meta);

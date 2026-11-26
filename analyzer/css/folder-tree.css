@@ -1,7 +1,7 @@
-/* Folder tree panel: a single bordered container that visually swallows the
-   Load Folder button (top bar) and the Select/Clear strip (bottom bar).
-   Border color matches the Analyze Folders primary CTA (var(--primary-border)) so the
-   sidebar reads as one cohesive blue-accented unit. */
+/* Library panel: one bordered container holding the Library header (with the
+   quiet Add folders button), recents, the folder tree and the Select / Clear
+   strip. Neutral border: "Analyze folders…" above is the sidebar's one
+   primary button. */
 .folder-tree-wrap {
   display: flex;
   flex-direction: column;
@@ -11,12 +11,30 @@
   overflow: hidden;
   padding: 0;
   background: #0a0d12;
-  border: 1px solid var(--primary-border);
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
 }
 
+/* Library header: section title on the left, Add folders on the right. */
+.library-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 6px 2px 12px;
+  flex: 0 0 auto;
+}
+.library-header .library-title {
+  margin: 0;
+}
+.library-header .library-add-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 /* Empty state: only the tree contents are dimmed/disabled, NOT the whole
-   wrapper — the + Load Folder button at the top must remain clickable. */
+   wrapper — the Add folders button in the header must remain clickable. */
 .folder-tree-wrap.folder-tree-empty #folderTree {
   opacity: 0.45;
   pointer-events: none;
@@ -45,10 +63,8 @@
   display: none;
 }
 
-/* ── "Add Folders…" — top bar of the unified folder-tree container. ────
-   Background matches the Analyze CTA's primary blue so the two main entry
-   points feel like a pair. Top corners rounded to match the container's outer
-   radius; bottom divider matches the container border. */
+/* ── "Add Folders…" top bar, now used only by the Analyze dialog's folder
+   list (the sidebar uses the Library header above). ───────────────────── */
 .folder-load-btn {
   display: flex;
   align-items: center;
@@ -104,47 +120,50 @@
   flex-direction: column;
   align-items: stretch;
   gap: 6px;
-  padding: 8px 8px 10px;
+  padding: 6px 12px 10px;
   margin: 0 0 2px;
   border-bottom: 1px solid var(--card-border);
 }
-.folder-recents-header {
-  font-size: var(--fs-2xs);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
+#folderRecentsRow .folder-recents-header {
+  margin: 0;
 }
 .folder-recents-chips {
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
 }
+/* Recent-folder chip: the shared chip look (as on scene cards), a folder
+   icon and the folder's name. The full path is the tooltip. */
 .folder-recents-chip {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  padding: 2px 8px;
-  font-size: 10.5px;
-  background: #14202f;
-  border: 1px solid #25394e;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  font-size: var(--fs-sm);
+  background: var(--chip);
+  border: 1px solid var(--border);
   border-radius: var(--radius-pill);
-  color: #cbd6e2;
+  color: var(--text-2);
   cursor: pointer;
   max-width: 100%;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
   transition: background .12s ease, border-color .12s ease;
 }
 .folder-recents-chip:hover {
-  background: #1c2c42;
-  border-color: #3a5573;
-  color: #fff;
+  background: var(--hover);
+  color: var(--text);
 }
-.folder-recents-chip-plus {
-  color: #8fbaf0;
-  font-weight: 700;
+.folder-recents-chip-icon {
+  display: inline-flex;
+  color: var(--muted);
+}
+.folder-recents-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 #folderTree {
@@ -364,7 +383,8 @@
   cursor: help;
 }
 
-/* Recents chip row: primary chip + dismiss control */
+/* Recents chip row: primary chip + a dismiss control that shows on hover
+   or keyboard focus, so the row reads as a list of folders, not of ×s. */
 .folder-recents-chip-wrap {
   display: inline-flex;
   align-items: center;
@@ -387,6 +407,26 @@
 .folder-recents-chip-dismiss:hover {
   background: rgba(255, 255, 255, 0.08);
   color: #fff;
+}
+/* Sidebar: the × sits over the chip's right end instead of beside it, so
+   hidden ×s don't leave gaps between chips. */
+#folderRecentsRow .folder-recents-chip-wrap {
+  position: relative;
+}
+#folderRecentsRow .folder-recents-chip-dismiss {
+  position: absolute;
+  top: 50%;
+  right: 3px;
+  transform: translateY(-50%);
+  background: var(--hover);
+}
+.folder-recents-chip-wrap .folder-recents-chip-dismiss {
+  opacity: 0;
+  transition: opacity .12s ease;
+}
+.folder-recents-chip-wrap:hover .folder-recents-chip-dismiss,
+.folder-recents-chip-dismiss:focus-visible {
+  opacity: 1;
 }
 
 /* Context menu for folder tree */

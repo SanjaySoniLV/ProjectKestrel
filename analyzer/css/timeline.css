@@ -164,28 +164,31 @@
   font-size: var(--fs-md);
 }
 
-.tfb-field {
+/* Review state: the shared segmented toggle, framed to match the View
+   button's height and border. */
+.tfb-review-seg {
+  height: 32px;
+  align-items: stretch;
+  border: 1px solid var(--border);
+}
+.tfb-review-seg > button {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  margin: 0;
-}
-
-.tfb-label {
-  font-size: var(--fs-sm);
-  color: var(--muted);
   white-space: nowrap;
 }
 
-.tfb-conf {
+/* Controls inside the View menu sit at the right end of their row. */
+.tfb-more-popover .tfb-conf {
   width: 70px;
-  height: 30px;
+  height: 28px;
+  margin-left: auto;
   font-size: var(--fs-sm);
   padding: 0 8px;
 }
 
 .tfb-sort {
-  height: 30px;
+  height: 28px;
+  margin-left: auto;
   font-size: var(--fs-sm);
   padding: 0 8px;
 }
@@ -195,16 +198,24 @@
 }
 
 .tfb-more-btn {
-  height: 30px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: var(--fs-sm);
   padding: 0 12px;
   background: var(--input-bg);
   border: 1px solid var(--border);
 }
 
+.tfb-more-btn .tfb-caret {
+  color: var(--muted);
+  font-size: var(--fs-2xs);
+}
+
 .tfb-more-btn[aria-expanded="true"] {
-  background: #173253;
-  border-color: #214c7d;
+  background: var(--hover);
+  border-color: var(--focus);
 }
 
 .tfb-more-popover {
@@ -212,8 +223,8 @@
   top: calc(100% + 6px);
   right: 0;
   z-index: 30;
-  min-width: 260px;
-  padding: 10px 12px;
+  min-width: 280px;
+  padding: 10px 14px 12px;
   background: var(--input-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -225,6 +236,14 @@
 
 .tfb-more-popover.hidden {
   display: none;
+}
+
+.tfb-more-popover .tfb-popover-heading {
+  margin: 6px 0 -2px;
+}
+
+.tfb-more-popover .tfb-popover-heading:first-child {
+  margin-top: 0;
 }
 
 .tfb-popover-row {

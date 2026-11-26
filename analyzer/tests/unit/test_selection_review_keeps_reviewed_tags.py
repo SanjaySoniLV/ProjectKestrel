@@ -1,4 +1,4 @@
-"""The selection bar's "Mark as Reviewed" leaves already-reviewed scenes alone.
+"""The selection bar's "Confirm species" leaves already-reviewed scenes alone.
 
 ``_finalizeSceneReview`` rebuilds a scene's tags from the model's visible tags,
 so running it on a scene the user had already reviewed (possibly after
@@ -58,7 +58,7 @@ def _run(selected, finalized):
 def test_already_reviewed_scenes_are_not_re_finalized():
     res = _run(["3", "5", "8"], finalized=["5"])
     assert res["finalizedCalls"] == ["3", "8"]
-    assert res["status"] == ["Marked 2 scenes as reviewed."]
+    assert res["status"] == ["Confirmed species on 2 scenes."]
 
 
 @pytest.mark.skipif(NODE is None, reason="node not installed")
