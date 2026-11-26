@@ -114,20 +114,18 @@
         && (exitReason === 'crash' || exitReason === 'unknown' || exitReason === '');
       if (!hadUncleanShutdown) return;
 
-      const promptText = exitReason === 'crash'
-        ? 'Kestrel detected that the previous session crashed.\n\nSend a crash report now?'
-        : 'Kestrel did not exit cleanly. This is sometimes caused by a system shutdown or power loss — would you still like to send a report?';
-      const sendReport = confirm(promptText);
+      const sendReport = await KestrelDialog.confirm(
+        exitReason === 'crash' ? 'crashReportAfterCrash' : 'crashReportAfterUncleanExit');
       if (sendReport) {
         try {
           const reportResult = await apiSendRecoveryCrashReport();
           if (reportResult && reportResult.success === false) {
-            alert('Could not send crash report:\n\n' + (reportResult.error || 'Unknown error'));
+            await KestrelDialog.notice('crashReportFailed', { error: reportResult.error || 'Unknown error' });
           } else {
             showToast('Crash report sent. Thank you.', 3500);
           }
         } catch (e) {
-          alert('Could not send crash report:\n\n' + (e.message || e));
+          await KestrelDialog.notice('crashReportFailed', { error: e.message || e });
         }
       }
 

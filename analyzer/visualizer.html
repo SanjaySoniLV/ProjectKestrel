@@ -325,7 +325,7 @@
         <button id="queueLiveBtn" class="qctl" type="button" title="See live analysis details">
           <i class="qctl-ico k-icon k-icon--eye" aria-hidden="true"></i><span class="qctl-lbl">Live</span>
         </button>
-        <!-- Destructive: kept visually secondary and still behind a confirm(). -->
+        <!-- Destructive: kept visually secondary and behind a confirm dialog. -->
         <button id="queueCancelBtn" class="qctl qctl--danger" type="button" title="Cancel all pending items">
           <i class="qctl-ico k-icon k-icon--stop" aria-hidden="true"></i><span class="qctl-lbl">Cancel</span>
         </button>
@@ -1672,11 +1672,8 @@
     </div>
   </dialog>
 
-  <!-- Clear Kestrel Analysis Data confirmation dialog. Reached only via the
-       Folder Actions dropdown in the scene-grid folder header. Mirrors the
-       visual language of #analyzeConfirmDlg above so the destructive flow
-       feels consistent — explicit Cancel-default + red Delete button, no
-       auto-confirm-on-Enter. -->
+  <!-- Clear Kestrel analysis data (Folder Actions menu). Like #analyzeConfirmDlg:
+       Cancel is the default and Enter never confirms. -->
   <dialog id="clearKestrelConfirmDlg" class="kdlg kdlg--sm kdlg--flex analyze-confirm-dlg">
     <div class="analyze-confirm-body">
       <h3 style="margin:0 0 8px;color:var(--warn);"><i class="k-icon k-icon--warning" aria-hidden="true"></i> Delete Kestrel analysis data?</h3>
@@ -1880,6 +1877,7 @@
   <script src="js/util.js"></script>
   <script src="js/reviewed-tags.js"></script>
   <script src="js/state.js"></script>
+  <script src="js/k-dialog.js"></script>
   <script src="js/icons.js"></script>
   <script src="js/image-loader.js"></script>
   <script src="js/auth.js"></script>

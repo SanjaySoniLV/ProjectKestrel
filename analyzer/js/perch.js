@@ -1084,11 +1084,7 @@
       if (linkedUnlink) linkedUnlink.addEventListener('click', async () => {
         const root = linkedUnlink.dataset.folderPath || _perchDlgState.rootPath;
         if (!root) return;
-        const ok = window.confirm(
-          'Unlink this folder from Perch?\n\n' +
-          'The perch on projectkestrel.org will NOT be deleted. To remove it from the web, delete it there. ' +
-          'This only removes the local connection so you can upload a fresh perch from this folder.'
-        );
+        const ok = await KestrelDialog.confirm('perchUnlink');
         if (!ok) return;
         let res = null;
         try { res = await window.pywebview.api.delete_perch_link(root); } catch (e) {
@@ -1143,9 +1139,7 @@
       if (startOverBtn) startOverBtn.addEventListener('click', async () => {
         const root = _perchDlgState.rootPath;
         if (!root) return;
-        const ok = window.confirm(
-          'Discard the partial upload?\n\nThis deletes the unfinished perch on Perch and removes the local progress file. The folder stays unchanged.'
-        );
+        const ok = await KestrelDialog.confirm('perchDiscardPartial');
         if (!ok) return;
         try { await window.pywebview.api.discard_resumable_upload(root); } catch {}
         _perchDlgState.resumable = null;

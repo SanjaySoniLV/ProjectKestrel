@@ -90,13 +90,7 @@
         showToast(`${name}: ${up.reason || 're-analyse this folder to use analysis version 3.0.'}`, 7000);
         return;
       }
-      const ok = window.confirm(
-        `Upgrade “${name}” to analysis version 3.0?\n\n` +
-        'Kestrel re-reads the bird crops and preview images it already saved (no RAW decoding) to ' +
-        'update species IDs, add the new sharpness score and build the smart-search index. ' +
-        'Your culling decisions, star ratings and edited tags are not changed, and the database is ' +
-        'backed up first. Runs on this computer only (uses the GPU when enabled).'
-      );
+      const ok = await KestrelDialog.confirm('upgradeFolder', { name, skipped: '' });
       if (!ok) return;
       if (typeof smartSearchUpgradeFolder === 'function') await smartSearchUpgradeFolder(folderPath);
     }
@@ -171,13 +165,10 @@
           : 'All loaded folders are already on analysis version 3.0.', 6000);
         return;
       }
-      const ok = window.confirm(
-        `Upgrade ${targets.length} loaded folder${targets.length === 1 ? '' : 's'} to analysis version 3.0?\n\n` +
-        'They are queued and upgraded one after another; follow progress in the analysis queue panel. ' +
-        'Kestrel re-reads the bird crops and preview images it already saved (no RAW decoding). ' +
-        'Culling decisions, star ratings and edited tags are not changed, and each database is backed up first.' +
-        (needReanalysis ? `\n\n${needReanalysis} other folder${needReanalysis === 1 ? '' : 's'} need${needReanalysis === 1 ? 's' : ''} a full re-analysis instead and ${needReanalysis === 1 ? 'is' : 'are'} skipped.` : '')
-      );
+      const skipped = needReanalysis ? KestrelDialog.text('upgradeFoldersSkipped', { count: needReanalysis }) : '';
+      const ok = targets.length === 1
+        ? await KestrelDialog.confirm('upgradeFolder', { name: folderBaseName(targets[0]), skipped })
+        : await KestrelDialog.confirm('upgradeFolders', { count: targets.length, skipped });
       if (!ok) return;
       if (typeof smartSearchQueueUpgrades === 'function') {
         await smartSearchQueueUpgrades(targets, { quietSkips: true });
@@ -508,7 +499,7 @@
       });
       const slots = new Set(parsed.map(p => p.slot));
       if (slots.size > 1) {
-        alert('Cannot merge scenes from different folders.\nSelect scenes from the same folder only.');
+        await KestrelDialog.notice('mergeDifferentFolders');
         return;
       }
       const target = parsed.slice().sort((a, b) => parseNumber(a.count) - parseNumber(b.count))[0];

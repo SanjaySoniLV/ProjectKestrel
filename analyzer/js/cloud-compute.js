@@ -1461,7 +1461,7 @@
       if (!fnName || !window.pywebview.api[fnName]) return;
       t.disabled = true;
       if (action === 'cancel') {
-        if (!window.confirm('Cancel this cloud analysis job?\n\nUploaded images will be deleted from the server. Any results already downloaded stay on disk.')) {
+        if (!(await KestrelDialog.confirm('cloudCancelJob'))) {
           t.disabled = false;
           return;
         }
@@ -1545,7 +1545,7 @@
           if (!window.pywebview?.api?.cloud_compute_cancel_job) return;
           const ids = await _activeJobIds();
           if (ids.length === 0) { showToast('No active jobs to cancel', 2500); return; }
-          if (!window.confirm(`Cancel ${ids.length} active cloud job(s)?\n\nUploaded images will be deleted from the server. Any results already downloaded stay on disk.`)) return;
+          if (!(await KestrelDialog.confirm(ids.length === 1 ? 'cloudCancelJob' : 'cloudCancelJobs', { count: ids.length }))) return;
           cancelBtn.disabled = true;
           try {
             await Promise.all(ids.map(id => window.pywebview.api.cloud_compute_cancel_job(id).catch(() => null)));

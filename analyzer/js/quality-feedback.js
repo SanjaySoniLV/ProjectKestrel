@@ -455,7 +455,7 @@
     }
 
     async function qfForget() {
-      if (!window.confirm('Delete all the quality feedback this computer has shared? This also resets your anonymous feedback id.')) return;
+      if (!(await KestrelDialog.confirm('qualityFeedbackForget'))) return;
       try {
         const r = await window.pywebview?.api?.forget_quality_feedback?.();
         if (r && r.success) showToast(`Shared feedback deleted (${r.deleted || 0} submission${r.deleted === 1 ? '' : 's'}).`, 4000);

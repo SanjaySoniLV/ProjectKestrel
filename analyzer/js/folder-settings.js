@@ -157,8 +157,8 @@
       $('#fsetResetVerified').addEventListener('click', () => {
         afterReset(resetFolderCullState(folderPath, 'verified'), 'confirmed');
       });
-      $('#fsetResetAll').addEventListener('click', () => {
-        if (!confirm(`Reset ALL manual and confirmed culling decisions for "${folderName}"?\n\nThis cannot be undone.`)) return;
+      $('#fsetResetAll').addEventListener('click', async () => {
+        if (!(await KestrelDialog.confirm('resetAllDecisions', { name: folderName }))) return;
         afterReset(resetFolderCullState(folderPath, 'all'), 'manual/confirmed');
       });
 
@@ -297,9 +297,7 @@
       const regions = _fsetSelectedRegions(dlg);
       if (!regions.length) { showToast('Pick at least one region', 3000); return; }
       const label = _fsetRegionText(regions);
-      if (!confirm(`Re-score species in "${folderName}" for: ${label}?\n\n` +
-        'Kestrel reuses the data saved during analysis, so photos are not re-analyzed. ' +
-        'Species you edited by hand and non-bird wildlife are not changed.')) return;
+      if (!(await KestrelDialog.confirm('rescoreSpecies', { name: folderName, regions: label }))) return;
 
       const btn = dlg.querySelector('#fsetRegionApply');
       const bar = dlg.querySelector('#fsetRegionProgress');

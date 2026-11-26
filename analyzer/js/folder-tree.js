@@ -304,10 +304,8 @@
       if (old) old.remove();
     }
 
-    /** Clear kestrel analysis data for a folder. Surfaces a styled WebView
-     *  confirmation dialog (#clearKestrelConfirmDlg) so the destructive flow
-     *  is visually consistent with the rest of the app and harder to misclick
-     *  than the previous native confirm()/alert() prompts. */
+    /** Clear kestrel analysis data for a folder, behind the styled
+     *  #clearKestrelConfirmDlg (it lists exactly what gets deleted). */
     async function clearKestrelDataForFolder(folderPath, folderName, refreshCallback) {
       const dlg = document.getElementById('clearKestrelConfirmDlg');
       const cancelBtn = document.getElementById('clearKestrelCancel');

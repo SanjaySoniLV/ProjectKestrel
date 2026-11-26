@@ -110,3 +110,22 @@ dialog.kdlg.kdlg--grid[open] {
   background: #0f1219;
   box-sizing: border-box;
 }
+
+/* ── Confirm / notice dialog (js/k-dialog.js) ─────────────────────────── */
+dialog.kdlg.k-ask {
+  width: min(440px, 92vw);
+  max-width: min(440px, 92vw);
+}
+
+.k-ask .kdlg-body {
+  padding: var(--space-5) var(--space-5) var(--space-4);
+}
+
+.k-ask-body {
+  margin: var(--space-3) 0 0;
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  color: var(--text-2);
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}

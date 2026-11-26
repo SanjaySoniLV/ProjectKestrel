@@ -19,7 +19,7 @@
     // Add Folders: multi-select picker → addAnalyzeDlgRoot per pick →
     // persist each to analyze_recents → re-inspect + render.
     document.getElementById('analyzeDlgLoadFolders')?.addEventListener('click', async () => {
-      if (!hasPywebviewApi) { alert('Folder picker is only available in the desktop app.'); return; }
+      if (!hasPywebviewApi) { await KestrelDialog.notice('desktopOnlyPicker'); return; }
       let pickedPaths = [];
       try {
         if (window.pywebview?.api?.choose_directories) {
@@ -247,11 +247,11 @@
           setTimeout(() => { try { hideLoadingAnalyzer(); } catch (e) { } }, 30000);
         } else {
           hideLoadingAnalyzer();
-          alert('Failed to start analysis queue:\n\n' + (result?.error || 'Unknown error'));
+          await KestrelDialog.notice('queueStartFailed', { error: result?.error || 'Unknown error' });
         }
       } catch (e) {
         hideLoadingAnalyzer();
-        alert('Failed to start analysis queue:\n\n' + (e.message || e));
+        await KestrelDialog.notice('queueStartFailed', { error: e.message || e });
       } finally {
         if (startBtn) startBtn.disabled = false;
       }
@@ -266,11 +266,9 @@
       const cancelBtn = document.getElementById('analyzeConfirmCancel');
       const proceedBtn = document.getElementById('analyzeConfirmProceed');
       if (!dlg || !list || !proceedBtn || !cancelBtn) {
-        // Modal missing — fall back to a native confirm so the user isn't
-        // silently bypassed past the destructive gate.
-        const names = destructive.map(d => `  • ${d.name} (${d.reason})`).join('\n');
-        if (!confirm(`The following folder(s) will lose all user data:\n\n${names}\n\nContinue?`)) return;
-        onProceed();
+        // Modal missing: still ask, so nobody is silently past the destructive gate.
+        const names = destructive.map(d => `• ${d.name} (${d.reason})`).join('\n');
+        KestrelDialog.confirm('reanalyzeErasesData', { names }).then(ok => { if (ok) onProceed(); });
         return;
       }
       if (plural) plural.textContent = destructive.length === 1 ? '' : 's';
@@ -447,7 +445,7 @@
     const queueCancelBtn = document.getElementById('queueCancelBtn');
     if (queueCancelBtn) {
       queueCancelBtn.addEventListener('click', async () => {
-        if (!confirm('Cancel the analysis queue? Pending folders will not be analyzed.')) return;
+        if (!(await KestrelDialog.confirm('queueCancel'))) return;
         try { await apiQueueControl('cancel'); } catch (_) { }
       });
     }

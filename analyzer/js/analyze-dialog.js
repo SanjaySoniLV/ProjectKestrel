@@ -1371,7 +1371,7 @@ ${node.path}` : node.path);
 
     async function openAnalyzeDialog() {
       if (!hasPywebviewApi) {
-        alert('The analysis queue is only available in the Kestrel desktop app.\n\nOpen Kestrel as a desktop app to use this feature.');
+        await KestrelDialog.notice('desktopOnlyQueue');
         return;
       }
       // Detection model now lives as a plain <select> in More options →
