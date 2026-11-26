@@ -109,11 +109,11 @@
   white-space: nowrap;
 }
 .sidebar-footer > button.donate-item {
-  color: #ff8fb1;
+  color: var(--support);
 }
 .sidebar-footer > button.donate-item:hover {
   background: rgba(255, 143, 177, 0.10);
-  color: #ffb3c9;
+  color: var(--support-hover);
 }
 
 /* ── Status bar zoom widget ───────────────────────────────────────────────────

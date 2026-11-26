@@ -52,6 +52,10 @@
   --star: #f5c542;
   --danger-text: #ff8a80;
   --folder-icon: #e3b04b;
+  --star-off: #3a4152;
+  /* Support keeps its own colour in the sidebar footer. */
+  --support: #ff8fb1;
+  --support-hover: #ffb3c9;
 
   /* Type scale. Display sizes above --fs-2xl stay literal. */
   --fs-2xs: 10px;

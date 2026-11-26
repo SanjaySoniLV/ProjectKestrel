@@ -901,7 +901,7 @@
   color: var(--star);
   letter-spacing: 0.5px;
 }
-.card-meta .meta-stars-off { color: #3a4152; }
+.card-meta .meta-stars-off { color: var(--star-off); }
 .card-meta .meta-sep {
   width: 3px;
   height: 3px;
