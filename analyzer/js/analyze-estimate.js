@@ -132,9 +132,12 @@
     if (total > 0 && processed >= total && errored === 0) {
       return o.reanalyzeUnlocked ? { ...base, kind: 'reanalyze', reason: 'unlocked', images: total } : { ...base, kind: 'skip' };
     }
-    if (errored > 0 && o.retryErrored) return { ...base, kind: 'analyze', images: errored, retriedErrored: errored };
-    if (errored > 0) return { ...base, kind: 'analyze', images: Math.max(0, total - processed - errored), skippedErrored: errored };
-    return { ...base, kind: 'analyze', images: Math.max(0, total - processed) };
+    // 'processed' already includes the failed rows (folder_inspector), so the
+    // photos not analyzed yet are total - processed whether or not they're retried.
+    const notDone = Math.max(0, total - processed);
+    if (errored > 0 && o.retryErrored) return { ...base, kind: 'analyze', images: notDone + errored, retriedErrored: errored };
+    if (errored > 0) return { ...base, kind: 'analyze', images: notDone, skippedErrored: errored };
+    return { ...base, kind: 'analyze', images: notDone };
   }
 
   window.KestrelAnalyzeEstimate = {

@@ -126,3 +126,11 @@ def test_plan_failed_photos_follow_the_retry_setting():
     assert retry["retriedErrored"] == 3 and retry["skippedErrored"] == 0
     skip = _plan(folder, retry=False)
     assert skip["skippedErrored"] == 3 and skip["retriedErrored"] == 0
+
+
+def test_plan_counts_failed_photos_inside_processed():
+    # folder_inspector counts failed rows in 'processed', and the pipeline
+    # retries them on top of the photos not analyzed yet.
+    folder = {"total": 1000, "processed": 600, "errored": 3}
+    assert _plan(folder, retry=True)["images"] == 403
+    assert _plan(folder, retry=False)["images"] == 400
