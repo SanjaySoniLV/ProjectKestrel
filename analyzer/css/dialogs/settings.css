@@ -1,34 +1,170 @@
-/* NOTE: sizing + flex-column layout for #settingsDlg are now driven by
-   the .kdlg classes in kdlg.css (kdlg--md + kdlg--tall + kdlg--flex).
-   This file keeps the inner-content styles (.settings-body etc.). */
+/* Settings: section list on the left, one pane of k-row settings on the right,
+   footer under the pane. Sizing comes from .kdlg--md/--tall; the width is
+   widened here because the nav takes a column. */
+dialog.kdlg.settings-dlg {
+  width: min(860px, 96vw);
+  max-width: min(860px, 96vw);
+  height: min(640px, 90vh);
+  max-height: min(640px, 90vh);
+}
+dialog.kdlg.settings-dlg[open] {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.settings-nav {
+  grid-row: 1 / 3;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-4) 10px;
+  background: var(--input-bg);
+  border-right: 1px solid var(--card-border);
+}
+.settings-nav .k-dialog-title {
+  margin: 2px var(--space-2) var(--space-3);
+  font-size: var(--fs-lg);
+}
+.settings-nav > button {
+  height: auto;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-2);
+  font-size: var(--fs-md);
+  font-weight: 400;
+  text-align: left;
+}
+.settings-nav > button:hover { background: var(--chip); color: var(--text); }
+.settings-nav > button.on { background: var(--hover); color: var(--text); font-weight: 500; }
+.settings-nav > button.settings-nav-adv { margin-top: auto; }
+.settings-nav > button.settings-nav-adv:not(.on) { color: var(--muted); }
 
 .settings-body {
-  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 16px;
+  padding: 20px var(--space-5) var(--space-3);
+}
+.settings-pane-title {
+  margin: 0 0 2px;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+.settings-pane-intro {
+  margin: 0 0 var(--space-2);
+  color: var(--muted);
+  font-size: var(--fs-md);
+  line-height: 1.45;
+}
+.settings-pane .k-row-hint { line-height: 1.4; }
+.settings-pane .k-row > select { width: 230px; flex: none; }
+.settings-row--top { align-items: flex-start; }
+.settings-row--stack { flex-wrap: wrap; }
+.settings-path { flex: 1 1 200px; min-width: 0; }
+.settings-num { width: 64px; flex: none; }
+.settings-value { color: var(--text-2); font-variant-numeric: tabular-nums; }
+
+.settings-slider { display: flex; align-items: center; gap: var(--space-2); flex: none; }
+.settings-slider input[type="range"] { width: 140px; }
+.settings-slider span {
+  min-width: 36px;
+  text-align: right;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-regions {
   display: grid;
-  gap: 10px;
+  grid-template-columns: 1fr;
+  gap: 2px;
+  width: 270px;
+  flex: none;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 6px var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+}
+.settings-regions label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 3px 0;
+  font-size: var(--fs-md);
+  cursor: pointer;
+}
+
+/* The selected rating style's star bands, ★1 on the left to ★5 on the right. */
+.settings-bands {
+  display: flex;
+  gap: 2px;
+  flex-basis: 100%;
+  height: 22px;
+}
+.settings-bands:empty { display: none; }
+.settings-band {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: var(--radius-xs);
+  font-size: var(--fs-2xs);
+  color: var(--muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.settings-band[data-star="1"] { background: var(--chip); }
+.settings-band[data-star="2"] { background: color-mix(in srgb, var(--star) 10%, var(--chip)); }
+.settings-band[data-star="3"] { background: color-mix(in srgb, var(--star) 22%, var(--chip)); }
+.settings-band[data-star="4"] { background: color-mix(in srgb, var(--star) 45%, var(--chip)); color: var(--text-2); }
+.settings-band[data-star="5"] { background: var(--star); color: var(--bg); }
+
+/* Enhanced GPU: its switch, status, setup buttons and report offer stay together. */
+.settings-card {
+  margin-top: var(--space-2);
+  padding: 2px var(--space-3) var(--space-3);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  background: var(--input-bg);
+}
+.settings-card .k-row { border-bottom: 0; }
+.settings-eg-status {
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  white-space: pre-line;
+  line-height: 1.45;
+}
+.settings-eg-status:empty { display: none; }
+.settings-eg-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); }
+.settings-eg-report {
+  margin-top: var(--space-3);
+  font-size: var(--fs-sm);
+  color: var(--muted);
 }
 
 .settings-footer {
-  flex: 0 0 auto;
+  grid-column: 2;
   display: flex;
+  align-items: center;
   justify-content: flex-end;
-  gap: 8px;
-  padding: 10px 16px;
-  border-top: 1px solid var(--chip);
+  gap: var(--space-2);
+  padding: 10px var(--space-4);
+  border-top: 1px solid var(--card-border);
   background: var(--panel);
 }
+.settings-footer-note { margin-right: auto; color: var(--muted); font-size: var(--fs-sm); }
 
-/* Yellow Save button when settings have unsaved changes */
+/* Save turns yellow while the dialog has unsaved changes. */
 #settingsSave.dirty {
-  background: #c9ae34;
-  border-color: #d4b72e;
-  color: #1a1a1a;
-}
-#settingsSave.dirty:hover {
-  background: #d4ba38;
+  background: var(--star);
+  border-color: var(--star);
+  color: var(--bg);
 }
 
 /* Reuse dialog styling for settings */
@@ -64,12 +200,6 @@
   width: 200px;
 }
 
-#ratingProfile {
-  min-width: 0;
-  width: 100%;
-  max-width: 100%;
-  flex: 1;
-}
 
 /* Rating stars */
 .stars {
@@ -103,7 +233,7 @@
   flex-direction: column;
   gap: 8px;
   padding: 14px 14px 12px;
-  margin: -2px 0 12px;
+  margin: 0 0 var(--space-2);
   background: #0a0d12;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -220,20 +350,3 @@
   gap: 10px;
   flex-wrap: wrap;
 }
-.rating-custom-actions .btn {
-  height: 26px;
-  padding: 2px 10px;
-  font-size: var(--fs-sm);
-}
-
-/* Section headings and hint lines inside the Settings dialog. */
-.settings-group-title {
-  margin: 12px 0 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--chip);
-  color: #a0a8b8;
-  font-size: var(--fs-md);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-.settings-hint { font-size: var(--fs-sm); margin-top: -6px; margin-bottom: 8px; }

@@ -821,261 +821,215 @@
   </dialog>
 
   <!-- Settings dialog -->
-  <dialog id="settingsDlg" class="kdlg kdlg--md kdlg--tall kdlg--flex">
+  <dialog id="settingsDlg" class="kdlg kdlg--md kdlg--tall settings-dlg" aria-labelledby="settingsTitle">
+    <nav class="settings-nav" aria-label="Settings sections">
+      <h3 id="settingsTitle" class="k-dialog-title">Settings</h3>
+      <button type="button" class="on" data-settings-section="general">General</button>
+      <button type="button" data-settings-section="species">Species</button>
+      <button type="button" data-settings-section="ratings">Star ratings</button>
+      <button type="button" data-settings-section="previews">Previews</button>
+      <button type="button" data-settings-section="privacy">Privacy</button>
+      <button type="button" class="settings-nav-adv" data-settings-section="advanced">Advanced</button>
+    </nav>
     <div class="settings-body">
-      <h3 style="margin:0">Settings</h3>
-      <!-- Analysis options (species identification, non-bird wildlife detection,
-           detection confidence, GPU) live in the Analyze dialog's "Review
-           settings" column, not here — they are chosen per analysis run. Users
-           reasonably look for them in Settings first, so point the way. -->
-      <div class="muted" style="font-size:12px;margin:6px 0 0">
-        Looking for analysis options — species identification, non-bird wildlife
-        detection, detection confidence, or GPU use? Those are chosen per run in
-        the <b>Analyze</b> dialog, under &ldquo;Review settings&rdquo;.
-      </div>
 
-      <h4 class="settings-group-title">UI &amp; Editor</h4>
-
-      <div class="row">
-        <label for="editorChoice">Preferred Editor</label>
-        <select id="editorChoice">
-          <option value="system">System Default</option>
-          <option value="darktable" selected>Darktable</option>
-          <option value="lightroom">Adobe Lightroom Classic</option>
-          <option value="photoshop">Adobe Photoshop</option>
-          <option value="capture_one">Capture One</option>
-          <option value="affinity">Affinity Photo</option>
-          <option value="gimp">GIMP</option>
-          <option value="rawtherapee">RawTherapee</option>
-          <option value="luminar">Luminar Neo</option>
-          <option value="dxo">DxO PhotoLab</option>
-          <option value="on1">ON1 Photo RAW</option>
-          <option value="acdsee">ACDSee</option>
-          <option value="paintshop">PaintShop Pro</option>
-          <option value="faststone">FastStone Image Viewer</option>
-          <option value="xnview">XnView MP</option>
-          <option value="irfanview">IrfanView</option>
-          <option value="custom">Custom Application…</option>
-        </select>
-      </div>
-      <div class="muted settings-hint">Choose which editor Kestrel should use
-        when opening originals. &ldquo;System Default&rdquo; will use your OS default application.</div>
-      <div class="row hidden" id="customEditorRow">
-        <label for="customEditorPath">Application Path</label>
-        <input id="customEditorPath" type="text" placeholder="Path to application executable…" style="flex:1" />
-        <button id="customEditorBrowse" style="flex-shrink:0" title="Browse for application">Browse…</button>
-      </div>
-      <div class="muted hidden settings-hint" id="customEditorHint">
-        Full path to an application executable (e.g. C:\Program Files\MyEditor\editor.exe or /Applications/MyEditor.app).
-      </div>
-
-      <div class="row">
-        <label for="treeScanDepth">Tree scan depth</label>
-        <input id="treeScanDepth" type="number" min="1" max="6" step="1" value="3" style="width:80px"
-          title="How many folder levels to scan when building the folder tree (1–6)" />
-      </div>
-      <div class="muted settings-hint">How many subfolder levels to scan when
-        building the folder tree (1–6). Higher values may increase scan time.</div>
-
-      <h4 class="settings-group-title">Species &amp; Region</h4>
-
-      <div class="row" style="align-items:flex-start">
-        <label for="birdRegionsPicker" style="flex:1">Bird Regions</label>
-        <div id="birdRegionsPicker" style="display:flex;flex-direction:column;gap:4px;min-width:280px;max-height:200px;overflow-y:auto;border:1px solid #1d2230;border-radius:6px;padding:6px 8px;background:#0e1117">
-          <!-- region checkboxes populated at runtime from get_bird_catalog_meta -->
-          <span class="muted" style="font-size:11px">Loading regions…</span>
+      <section class="settings-pane" data-settings-pane="general">
+        <h4 class="settings-pane-title">General</h4>
+        <p class="settings-pane-intro">How you browse and edit. Analysis options, such as species identification
+          and wildlife detection, are chosen each time you analyze a folder.</p>
+        <div class="k-row">
+          <label class="k-row-label" for="editorChoice">Photo editor
+            <span class="k-row-hint">Opens your originals when you press Space. System default uses the app your computer opens the file with.</span></label>
+          <select id="editorChoice">
+            <option value="system">System default</option>
+            <option value="darktable" selected>darktable</option>
+            <option value="lightroom">Adobe Lightroom Classic</option>
+            <option value="photoshop">Adobe Photoshop</option>
+            <option value="capture_one">Capture One</option>
+            <option value="affinity">Affinity Photo</option>
+            <option value="gimp">GIMP</option>
+            <option value="rawtherapee">RawTherapee</option>
+            <option value="luminar">Luminar Neo</option>
+            <option value="dxo">DxO PhotoLab</option>
+            <option value="on1">ON1 Photo RAW</option>
+            <option value="acdsee">ACDSee</option>
+            <option value="paintshop">PaintShop Pro</option>
+            <option value="faststone">FastStone Image Viewer</option>
+            <option value="xnview">XnView MP</option>
+            <option value="irfanview">IrfanView</option>
+            <option value="custom">Other app…</option>
+          </select>
         </div>
-      </div>
-      <div class="muted settings-hint">
-        Selects which biogeographic regions to include in the species
-        autocomplete (Ctrl+Shift+R), and the default list of species Kestrel
-        identifies from when you analyze a folder (you can override it per
-        analysis). Multiple regions show their union. Species outside the
-        selected regions are hidden from the combobox.
-      </div>
-
-      <div class="row">
-        <label for="showScientificNames" style="flex:1">Show scientific names</label>
-        <label class="inline" style="gap:6px">
-          <input type="checkbox" id="showScientificNames" />
-          <span class="muted">Enable</span>
-        </label>
-      </div>
-      <div class="muted settings-hint">
-        When on, the Latin binomial appears in italics under each species
-        pill (scene dialog and timeline cards), and family pills show the
-        scientific family name.
-      </div>
-
-      <h4 class="settings-group-title">Star Rating System</h4>
-
-      <div class="row">
-        <label for="ratingProfile">Rating Profile</label>
-        <select id="ratingProfile">
-          <option value="very_strict">Very Strict &mdash; only the sharpest images reach 4&ndash;5 stars</option>
-          <option value="strict">Strict</option>
-          <option value="balanced" selected>Balanced &mdash; recommended for most photographers</option>
-          <option value="lenient">Lenient</option>
-          <option value="very_lenient">Very Lenient &mdash; most rewarding; lowest bar for 4&ndash;5 stars</option>
-          <option value="custom">Custom &mdash; set your own thresholds</option>
-        </select>
-      </div>
-      <div class="muted settings-hint">Controls how quality scores are
-        converted to star ratings. Each profile uses fixed quality-score thresholds — stricter profiles require
-        a higher score to earn 4 or 5 stars. Changes take effect immediately for loaded folders.</div>
-
-      <!-- Custom thresholds editor. Only shown when the Custom profile is
-           selected; the same 0.00–1.00 number line the Culling Assistant
-           draws, except here the star markers are the draggable part. -->
-      <div class="rating-custom-editor hidden" id="ratingCustomEditor">
-        <div class="rating-custom-track" id="ratingCustomTrack" role="group"
-             aria-label="Custom star rating thresholds">
-          <div class="rating-custom-bands" id="ratingCustomBands" aria-hidden="true"></div>
-          <div class="rating-custom-handles" id="ratingCustomHandles"></div>
+        <div class="k-row hidden" id="customEditorRow">
+          <label class="k-row-label" for="customEditorPath">App location
+            <span class="k-row-hint" id="customEditorHint">The app to open, for example C:\Program Files\MyEditor\editor.exe or /Applications/MyEditor.app.</span></label>
+          <input id="customEditorPath" type="text" class="settings-path" placeholder="Path to the app…" />
+          <button id="customEditorBrowse" type="button" class="k-btn--sm">Browse…</button>
         </div>
-        <div class="rating-custom-axis" aria-hidden="true">
-          <span>0.00</span><span>0.25</span><span>0.50</span><span>0.75</span><span>1.00</span>
+        <div class="k-row">
+          <label class="k-row-label" for="settingsAutoSave">Save changes automatically
+            <span class="k-row-hint">Star ratings, tags and scene changes are saved as you go. When off, Save and Revert buttons appear instead.</span></label>
+          <input type="checkbox" class="k-switch" id="settingsAutoSave" checked />
         </div>
-        <div class="rating-custom-readout" id="ratingCustomReadout"></div>
-        <div class="rating-custom-actions">
-          <button type="button" class="btn" id="ratingCustomReset">Reset to Balanced</button>
-          <span class="muted" style="font-size:11.5px">Drag a star to move the score it needs. Arrow keys nudge by 0.01.</span>
+      </section>
+
+      <section class="settings-pane hidden" data-settings-pane="species">
+        <h4 class="settings-pane-title">Species</h4>
+        <p class="settings-pane-intro">Where you photograph birds, and how species names are shown.</p>
+        <div class="k-row settings-row--top">
+          <div class="k-row-label">Bird regions
+            <span class="k-row-hint">The species Kestrel suggests when you tag a scene, and the default species list for new analyses. You can pick other regions each time you analyze. Several regions are combined.</span></div>
+          <div id="birdRegionsPicker" class="settings-regions" role="group" aria-label="Bird regions">
+            <span class="k-row-hint">Loading regions…</span>
+          </div>
         </div>
-      </div>
-
-      <h4 class="settings-group-title">Data &amp; Preview</h4>
-
-      <div class="row">
-        <label for="rawPreviewCacheEnabled" style="flex:1">Save RAW previews for faster loading</label>
-        <label class="inline" style="gap:6px">
-          <input type="checkbox" id="rawPreviewCacheEnabled" checked />
-          <span class="muted">Enable</span>
-        </label>
-      </div>
-      <div class="muted settings-hint">Keep full-size RAW previews
-        in the .kestrel/culling_TMP folder so later loads are faster. Turn off to save disk space; previews are then made again each time.</div>
-
-      <div class="row">
-        <label for="settingsExpStrengthSlider" style="flex:1">Preview exposure compensation</label>
-        <label class="inline" style="gap:8px">
-          <input type="range" id="settingsExpStrengthSlider" min="0" max="100" value="70" step="5" style="width:130px">
-          <span class="muted" id="settingsExpStrengthVal" style="min-width:34px;text-align:right;font-variant-numeric:tabular-nums">70%</span>
-        </label>
-      </div>
-      <div class="muted settings-hint">Display only: how strongly Kestrel's calculated exposure boost is applied to preview imagery (grid &amp; scene-dialog export thumbnails and the RAW zoom). 0% shows the uncorrected export; 100% matches the processed bird crop. The same slider is in the scene viewer. Does not affect analysis or the baked crop.</div>
-
-      <div class="row">
-        <label for="settingsAutoSave" style="flex:1">Auto-Save Changes</label>
-        <label class="inline" style="gap:6px">
-          <input type="checkbox" id="settingsAutoSave" checked />
-          <span class="muted">Enable</span>
-        </label>
-      </div>
-      <div class="muted settings-hint">Automatically save ratings, tags, and scene changes. When disabled, you'll see a Save/Revert workflow.</div>
-
-      <div class="row">
-        <label for="settingsQualityModel" style="flex:1">Quality scorer</label>
-        <select id="settingsQualityModel">
-          <option value="legacy">Original sharpness model (default)</option>
-          <option value="siglip">Newer sharpness model (added in Arctic Tern)</option>
-        </select>
-      </div>
-      <div class="muted settings-hint">Both scores are computed during analysis (analysis version 3.0) and stored, so switching is instant &mdash; no re-analysis. Both judge focus/sharpness only, not whether a photo is "good". The original model is the default again from Arctic Tern (FP 1); the newer model is kept so you can compare. Folders analysed before 3.0 only have the legacy score until upgraded.</div>
-
-      <div class="row">
-        <label for="settingsSmartSearch" style="flex:1">Smart search: index whole frames</label>
-        <label class="inline" style="gap:6px">
-          <input type="checkbox" id="settingsSmartSearch" checked />
-          <span class="muted">Enable</span>
-        </label>
-      </div>
-      <div class="muted settings-hint">Bird crops are always indexed for smart search. This also indexes each photo's whole frame so scene queries work ("bird on a wire", "two birds", "wide landscape"). Adds about 0.1&ndash;0.2 seconds per photo on the CPU.</div>
-
-      <div class="row">
-        <label for="settingsRawEmbeddedPreview" style="flex:1">Fast RAW analysis: use the camera&rsquo;s embedded JPEG</label>
-        <label class="inline" style="gap:6px">
-          <input type="checkbox" id="settingsRawEmbeddedPreview" />
-          <span class="muted">Enable</span>
-        </label>
-      </div>
-      <div class="muted settings-hint">Analyses the JPEG preview stored inside each RAW file instead of decoding the sensor data. Much faster per photo; the sharpness score is largely unaffected, but exposure/highlight recovery is skipped and quality depends on the preview size your camera writes (some older bodies embed only a small one). RAWs without a usable preview are still decoded. Applies to analyses started after you change it, on this computer only &mdash; Cloud Compute always decodes RAW.</div>
-
-      <div class="row">
-        <label for="settingsTowerDevice" style="flex:1">Species model device (advanced)</label>
-        <select id="settingsTowerDevice">
-          <option value="auto">Auto</option>
-          <option value="cpu">CPU</option>
-          <option value="gpu">GPU</option>
-        </select>
-      </div>
-      <div class="muted settings-hint">Where the species and search models run when GPU analysis is on. Auto: GPU on Windows, CPU on macOS, where the GPU path does not support these models. Applies to the next analysis.</div>
-
-      <div id="egSection">
-        <div class="row">
-          <label for="settingsEnhancedGpu" style="flex:1">Enhanced GPU performance <span class="muted">(experimental)</span></label>
-          <label class="inline" style="gap:6px">
-            <input type="checkbox" id="settingsEnhancedGpu" disabled />
-            <span class="muted">Use</span>
-          </label>
+        <div class="k-row">
+          <label class="k-row-label" for="showScientificNames">Show scientific names
+            <span class="k-row-hint">The Latin name appears in italics under each species and family name.</span></label>
+          <input type="checkbox" class="k-switch" id="showScientificNames" />
         </div>
-        <div class="muted settings-hint">Enhanced GPU Performance uses extra GPU software made for your graphics hardware to speed up analysis. Setup downloads that software from Windows and tests Kestrel&rsquo;s models on your computer. If it fails, Kestrel uses standard GPU acceleration.</div>
-        <div class="muted" id="egStatus" style="font-size:12px;margin-bottom:8px;white-space:pre-line"></div>
-        <div class="row" style="gap:8px;justify-content:flex-start">
-          <button id="egSetupBtn" type="button">Set up enhanced GPU performance</button>
-          <button id="egCancelBtn" type="button" class="k-btn--quiet hidden">Cancel</button>
-          <button id="egReportNowBtn" type="button" class="hidden">Report a problem</button>
+      </section>
+
+      <section class="settings-pane hidden" data-settings-pane="ratings">
+        <h4 class="settings-pane-title">Star ratings</h4>
+        <p class="settings-pane-intro">How strict Kestrel is when it turns quality scores into stars. Stars you set yourself are never changed.</p>
+        <div class="k-row settings-row--stack">
+          <label class="k-row-label" for="ratingProfile">Rating style
+            <span class="k-row-hint" id="ratingProfileHint">Balanced suits most photographers.</span></label>
+          <select id="ratingProfile">
+            <option value="very_strict">Very strict</option>
+            <option value="strict">Strict</option>
+            <option value="balanced" selected>Balanced (recommended)</option>
+            <option value="lenient">Lenient</option>
+            <option value="very_lenient">Very lenient</option>
+            <option value="custom">Custom</option>
+          </select>
+          <div class="settings-bands" id="ratingProfileBands" aria-hidden="true"></div>
         </div>
-        <div id="egReportRow" class="muted hidden" style="font-size:12px;margin:8px 0">
-          Setup did not finish. Would you like to send a bug report? It includes your recent log, which lists the GPU options Windows offered, so we can improve support for your hardware.
-          <div style="margin-top:6px"><button id="egReportBtn" type="button">Send bug report</button> <button id="egReportDismiss" class="k-btn--quiet" type="button">Not now</button></div>
+        <div class="rating-custom-editor hidden" id="ratingCustomEditor">
+          <div class="rating-custom-track" id="ratingCustomTrack" role="group" aria-label="Custom star rating thresholds">
+            <div class="rating-custom-bands" id="ratingCustomBands" aria-hidden="true"></div>
+            <div class="rating-custom-handles" id="ratingCustomHandles"></div>
+          </div>
+          <div class="rating-custom-axis" aria-hidden="true">
+            <span>0.00</span><span>0.25</span><span>0.50</span><span>0.75</span><span>1.00</span>
+          </div>
+          <div class="rating-custom-readout" id="ratingCustomReadout"></div>
+          <div class="rating-custom-actions">
+            <button type="button" class="k-btn--sm" id="ratingCustomReset">Reset to Balanced</button>
+            <span class="k-row-hint">Drag a star to change the quality it needs. Arrow keys move it by 0.01.</span>
+          </div>
         </div>
-      </div>
+        <div class="k-row">
+          <label class="k-row-label" for="settingsQualityModel">Quality scorer
+            <span class="k-row-hint">Both judge focus and sharpness only. Both scores are saved during analysis, so switching is instant. Folders analyzed before analysis version 3.0 have only the original score until they are upgraded.</span></label>
+          <select id="settingsQualityModel">
+            <option value="legacy">Original model (default)</option>
+            <option value="siglip">Newer model (added in Arctic Tern)</option>
+          </select>
+        </div>
+      </section>
 
-      <h4 class="settings-group-title">Analytics &amp; Privacy</h4>
+      <section class="settings-pane hidden" data-settings-pane="previews">
+        <h4 class="settings-pane-title">Previews</h4>
+        <p class="settings-pane-intro">How photos are shown while you browse. Nothing here changes your files or the analysis.</p>
+        <div class="k-row">
+          <label class="k-row-label" for="settingsExpStrengthSlider">Exposure adjustment
+            <span class="k-row-hint">How much of Kestrel's exposure adjustment previews get. 0% shows the photo as exported; 100% matches the bird crop. The scene viewer has the same slider.</span></label>
+          <div class="settings-slider">
+            <input type="range" id="settingsExpStrengthSlider" min="0" max="100" value="70" step="5" />
+            <span id="settingsExpStrengthVal">70%</span>
+          </div>
+        </div>
+        <div class="k-row">
+          <label class="k-row-label" for="rawPreviewCacheEnabled">Save RAW previews for faster loading
+            <span class="k-row-hint">Keeps full-size RAW previews in each folder's .kestrel folder. Turn off to save disk space; previews are then made again each time.</span></label>
+          <input type="checkbox" class="k-switch" id="rawPreviewCacheEnabled" checked />
+        </div>
+      </section>
 
-      <div class="row">
-        <label style="flex:1">Kestrel's Impact</label>
-        <span class="muted" id="settingsTotalImpact">—</span>
-      </div>
-      <div class="muted settings-hint">Total number of photos analyzed by Kestrel
-        on this computer.</div>
+      <section class="settings-pane hidden" data-settings-pane="privacy">
+        <h4 class="settings-pane-title">Privacy</h4>
+        <p class="settings-pane-intro">What Kestrel shares to help improve the app. File names, paths and photos are never shared.</p>
+        <div class="k-row">
+          <div class="k-row-label">Photos analyzed
+            <span class="k-row-hint">Photos Kestrel has analyzed on this computer.</span></div>
+          <span class="settings-value" id="settingsTotalImpact">—</span>
+        </div>
+        <div class="k-row">
+          <label class="k-row-label" for="settingsAnalyticsOptIn">Share anonymous usage data
+            <span class="k-row-hint">Which features are used and how long analysis takes. <span id="settingsAnalyticsLabel"></span></span></label>
+          <input type="checkbox" class="k-switch" id="settingsAnalyticsOptIn" />
+        </div>
+        <div class="k-row">
+          <label class="k-row-label" for="settingsCrashReports">Send crash reports
+            <span class="k-row-hint">Sends a report if Kestrel crashes, so the problem can be found and fixed.</span></label>
+          <input type="checkbox" class="k-switch" id="settingsCrashReports" />
+        </div>
+        <div class="k-row">
+          <label class="k-row-label" for="settingsQualityFeedbackMode">Quality feedback
+            <span class="k-row-hint">Now and then the scene viewer asks you to sort a few bird crops by sharpness. Anonymous.
+              <a href="#" class="qf-link" id="settingsQfViewLog">View what I've shared</a> &middot;
+              <a href="#" class="qf-link" id="settingsQfForget">Forget my shared feedback</a></span></label>
+          <select id="settingsQualityFeedbackMode">
+            <option value="ask">Always ask</option>
+            <option value="always">Always share</option>
+            <option value="never">Never</option>
+          </select>
+        </div>
+      </section>
 
-      <div style="border-top:1px solid #1d2230;margin:4px 0 2px"></div>
-      <div class="row">
-        <label for="settingsAnalyticsOptIn" style="flex:1">Share anonymous usage analytics</label>
-        <label class="inline" style="gap:6px">
-          <input type="checkbox" id="settingsAnalyticsOptIn" />
-          <span class="muted" id="settingsAnalyticsLabel">Opt in</span>
-        </label>
-      </div>
-      <div class="muted settings-hint">Helps improve Kestrel. No filenames,
-        paths, or images are ever shared. You can change this at any time.</div>
-
-      <div class="row">
-        <label for="settingsCrashReports" style="flex:1">Send crash reports</label>
-        <label class="inline" style="gap:6px">
-          <input type="checkbox" id="settingsCrashReports" />
-        </label>
-      </div>
-      <div class="muted settings-hint">Automatically send a report if Kestrel
-        crashes, so we can find and fix the problem. No filenames, paths, or images are ever shared.</div>
-
-      <div class="row">
-        <label for="settingsQualityFeedbackMode" style="flex:1">Quality feedback</label>
-        <select id="settingsQualityFeedbackMode">
-          <option value="ask">Always ask</option>
-          <option value="always">Always share</option>
-          <option value="never">Never</option>
-        </select>
-      </div>
-      <div class="muted settings-hint">Sort a few bird crops by sharpness
-        to help improve Kestrel. Anonymous.
-        <a href="#" class="qf-link" id="settingsQfViewLog">View what I've shared</a> &middot;
-        <a href="#" class="qf-link" id="settingsQfForget">Forget my shared feedback</a></div>
+      <section class="settings-pane hidden" data-settings-pane="advanced">
+        <h4 class="settings-pane-title">Advanced</h4>
+        <p class="settings-pane-intro">Speed and indexing options. Except folder levels, these apply to the next analysis you start on this computer.</p>
+        <div class="k-row">
+          <label class="k-row-label" for="treeScanDepth">Folder levels to show
+            <span class="k-row-hint">How many levels of subfolders Kestrel looks through when you add a folder (1–6). More levels take longer.</span></label>
+          <input id="treeScanDepth" type="number" class="settings-num" min="1" max="6" step="1" value="3" />
+        </div>
+        <div class="k-row">
+          <label class="k-row-label" for="settingsSmartSearch">Search whole photos, not only birds
+            <span class="k-row-hint">Bird crops are always searchable. This also indexes each whole photo, so searches like "bird on a wire" or "wide landscape" work. Adds about 0.1–0.2 seconds per photo on the CPU.</span></label>
+          <input type="checkbox" class="k-switch" id="settingsSmartSearch" checked />
+        </div>
+        <div class="k-row">
+          <label class="k-row-label" for="settingsRawEmbeddedPreview">Fast RAW analysis
+            <span class="k-row-hint">Analyzes the JPEG your camera stores inside each RAW file. Much faster, and quality scores are largely the same, but highlight recovery is skipped and some older cameras store only a small JPEG. Cloud Compute always uses the full RAW.</span></label>
+          <input type="checkbox" class="k-switch" id="settingsRawEmbeddedPreview" />
+        </div>
+        <div class="k-row">
+          <label class="k-row-label" for="settingsTowerDevice">Species and search models run on
+            <span class="k-row-hint">Used when GPU analysis is on. Auto uses the GPU on Windows and the CPU on macOS, where the GPU can't run these models.</span></label>
+          <select id="settingsTowerDevice">
+            <option value="auto">Auto</option>
+            <option value="cpu">CPU</option>
+            <option value="gpu">GPU</option>
+          </select>
+        </div>
+        <div id="egSection" class="settings-card">
+          <div class="k-row">
+            <label class="k-row-label" for="settingsEnhancedGpu">Enhanced GPU performance <span class="k-pill">Experimental</span>
+              <span class="k-row-hint">Uses extra GPU software made for your graphics hardware to speed up analysis. Setup downloads it from Windows and tests Kestrel's models on this computer. If anything fails, Kestrel uses standard GPU acceleration.</span></label>
+            <input type="checkbox" class="k-switch" id="settingsEnhancedGpu" disabled />
+          </div>
+          <div class="settings-eg-status" id="egStatus" role="status"></div>
+          <div class="settings-eg-actions">
+            <button id="egSetupBtn" type="button" class="k-btn--sm">Set up enhanced GPU performance</button>
+            <button id="egCancelBtn" type="button" class="k-btn--quiet k-btn--sm hidden">Cancel</button>
+            <button id="egReportNowBtn" type="button" class="k-btn--quiet k-btn--sm hidden">Report a problem</button>
+          </div>
+          <div id="egReportRow" class="settings-eg-report hidden">
+            Setup did not finish. Send a bug report? It includes your recent log, which lists the GPU options Windows offered, so support for your hardware can be improved.
+            <div class="settings-eg-actions"><button id="egReportBtn" type="button" class="k-btn--sm">Send bug report</button>
+              <button id="egReportDismiss" class="k-btn--quiet k-btn--sm" type="button">Not now</button></div>
+          </div>
+        </div>
+      </section>
     </div>
     <div class="settings-footer">
-      <button id="settingsCancel" class="k-btn--quiet">Cancel</button>
-      <button id="settingsSave" class="primary">Save</button>
+      <span class="settings-footer-note">Most changes apply when you press Save.</span>
+      <button id="settingsCancel" type="button" class="k-btn--quiet">Cancel</button>
+      <button id="settingsSave" type="button" class="primary">Save</button>
     </div>
   </dialog>
 
@@ -1314,7 +1268,7 @@
                   </select>
                 </div>
                 <div id="adlgSpeciesRegionCustom" class="adlg-species-region-custom hidden" role="group" aria-label="Species regions"></div>
-                <div id="adlgSpeciesRegionHint" class="adlg-hint muted">A narrower region list makes identification more accurate. Change your default regions in Settings → Species &amp; Region.</div>
+                <div id="adlgSpeciesRegionHint" class="adlg-hint muted">A narrower region list makes identification more accurate. Change your default regions in Settings → Species.</div>
               </div>
             </div>
             <input id="analyzeSpeciesDetection" type="checkbox" class="hidden" aria-hidden="true" tabindex="-1" checked />

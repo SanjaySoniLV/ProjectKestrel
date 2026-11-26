@@ -1274,7 +1274,7 @@ ${node.path}` : node.path);
     // ── Species geofence (per queued folder) ─────────────────────────────────
     // "Where were these photos taken?" picks the species list BioCLIP chooses
     // from for the folders queued by this Start. Options: the user's default
-    // regions (Settings → Species & Region, ``bird_regions``), one region,
+    // regions (Settings → Species, ``bird_regions``), one region,
     // several regions (checkbox grid), or Global. Reset to the default on every
     // open so a one-off trip abroad doesn't silently stick.
     function _adlgRegionLabel(code) {

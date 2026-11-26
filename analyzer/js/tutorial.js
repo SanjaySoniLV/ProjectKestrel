@@ -421,8 +421,8 @@
       } catch (e) { console.warn('[tutorial] apply editor failed', e); }
     }
 
-    // Region picker: the same ``bird_regions`` setting as Settings → Species &
-    // Region. Species identification only chooses from birds in these regions,
+    // Region picker: the same ``bird_regions`` setting as Settings → Species.
+    // Species identification only chooses from birds in these regions,
     // so photographers outside the default (North America) should set it.
     function _renderTutRegionPicker(bodyEl, idx) {
       bodyEl.innerHTML = '';
@@ -440,7 +440,7 @@
 
       var foot = document.createElement('div');
       foot.className = 'tut-editor-foot';
-      foot.innerHTML = 'You can change this later in <b>Settings → Species &amp; Region</b>.';
+      foot.innerHTML = 'You can change this later in <b>Settings → Species</b>.';
       bodyEl.appendChild(foot);
 
       Promise.resolve()

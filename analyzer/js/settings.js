@@ -61,6 +61,7 @@
     function refreshRatingProfileEditor(seedFromProfile = null) {
       const editor = document.getElementById('ratingCustomEditor');
       if (!editor) return;
+      renderRatingProfileSummary();
       const custom = _isCustomProfileSelected();
       editor.classList.toggle('hidden', !custom);
       if (!custom && seedFromProfile) {
@@ -81,6 +82,39 @@
           _ratingProfileTable = res.profiles;
         }
       } catch (e) { console.warn('loadRatingProfileTable:', e); }
+    }
+
+    const RATING_PROFILE_HINTS = {
+      very_strict: 'Only the sharpest photos reach 4 or 5 stars.',
+      strict: 'A higher bar than Balanced for 4 and 5 stars.',
+      balanced: 'Balanced suits most photographers.',
+      lenient: 'A lower bar than Balanced for 4 and 5 stars.',
+      very_lenient: 'The lowest bar for 4 and 5 stars.',
+      custom: 'Set the quality each star needs yourself.',
+    };
+
+    // Hint and ★1–★5 strip for the selected rating style. Each band's width is
+    // the share of the 0–1 quality range that earns that many stars.
+    function renderRatingProfileSummary() {
+      const sel = document.getElementById('ratingProfile');
+      const hint = document.getElementById('ratingProfileHint');
+      const strip = document.getElementById('ratingProfileBands');
+      if (!sel) return;
+      if (hint) hint.textContent = RATING_PROFILE_HINTS[sel.value] || '';
+      if (!strip) return;
+      strip.innerHTML = '';
+      const t = sel.value === 'custom' ? null : _ratingProfileTable[sel.value];
+      if (!t) return;
+      const edges = [0, t.two, t.three, t.four, t.five, 1];
+      for (let star = 1; star <= 5; star++) {
+        const band = document.createElement('div');
+        band.className = 'settings-band';
+        band.dataset.star = String(star);
+        band.style.flex = String(Math.max(0.001, edges[star] - edges[star - 1]));
+        band.textContent = star === 1 ? '★1' : `★${star} ≥ ${Number(edges[star - 1]).toFixed(2)}`;
+        band.title = `${star} star${star === 1 ? '' : 's'}: quality ${Number(edges[star - 1]).toFixed(2)} to ${Number(edges[star]).toFixed(2)}`;
+        strip.appendChild(band);
+      }
     }
 
     function renderCustomThresholds() {
@@ -265,7 +299,28 @@
       } catch (_) { }
     }
 
-    async function showSettings() {
+    const SETTINGS_SECTIONS = ['general', 'species', 'ratings', 'previews', 'privacy', 'advanced'];
+
+    /** Show one Settings section (the nav on the left picks it). */
+    function showSettingsSection(section) {
+      const dlg = document.getElementById('settingsDlg');
+      if (!dlg) return;
+      const id = SETTINGS_SECTIONS.includes(section) ? section : 'general';
+      dlg.querySelectorAll('[data-settings-section]').forEach(b => {
+        const on = b.dataset.settingsSection === id;
+        b.classList.toggle('on', on);
+        if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+      });
+      dlg.querySelectorAll('[data-settings-pane]').forEach(p => {
+        p.classList.toggle('hidden', p.dataset.settingsPane !== id);
+      });
+      const body = dlg.querySelector('.settings-body');
+      if (body) body.scrollTop = 0;
+    }
+
+    /** Open Settings, optionally at one section ('general', 'species', 'ratings', 'previews', 'privacy', 'advanced'). */
+    async function showSettings(section = 'general') {
+      showSettingsSection(typeof section === 'string' ? section : 'general');
       // Refresh local cache from persisted settings before rendering values.
       try { await hydrateSettingsFromServer(); } catch (_) { }
 
@@ -274,7 +329,6 @@
       const editor = getSetting('editor', 'darktable');
       const editorSelect = document.getElementById('editorChoice');
       const customRow = document.getElementById('customEditorRow');
-      const customHint = document.getElementById('customEditorHint');
       const customPath = document.getElementById('customEditorPath');
       editorSelect.value = editor;
       // If saved editor isn't in the dropdown options, treat as custom
@@ -282,14 +336,9 @@
         editorSelect.value = 'custom';
       }
       customPath.value = getSetting('customEditorPath', '');
-      const isCustom = editorSelect.value === 'custom';
-      customRow.classList.toggle('hidden', !isCustom);
-      customHint.classList.toggle('hidden', !isCustom);
-      // Show/hide custom row when selection changes
+      customRow.classList.toggle('hidden', editorSelect.value !== 'custom');
       editorSelect.onchange = () => {
-        const c = editorSelect.value === 'custom';
-        customRow.classList.toggle('hidden', !c);
-        customHint.classList.toggle('hidden', !c);
+        customRow.classList.toggle('hidden', editorSelect.value !== 'custom');
       };
       // Browse button
       document.getElementById('customEditorBrowse').onclick = async () => {
@@ -321,9 +370,8 @@
       const cb = document.getElementById('settingsAnalyticsOptIn');
       const lbl = document.getElementById('settingsAnalyticsLabel');
       cb.checked = optedIn === true;
-      lbl.textContent = consentShown
-        ? (optedIn === true ? 'Opted in' : 'Not sharing')
-        : 'Not yet decided';
+      // The switch already shows on/off; only say so when nothing was chosen yet.
+      lbl.textContent = consentShown ? '' : 'You have not chosen yet.';
 
       // Crash reports default ON (opt-out).
       const crashCb = document.getElementById('settingsCrashReports');
@@ -386,15 +434,14 @@
         const meta = _birdCatalogMeta || { regions: [], default_regions: ['NA'] };
         const selected = new Set(_getCurrentBirdRegions());
         if (!Array.isArray(meta.regions) || meta.regions.length === 0) {
-          regionsPicker.innerHTML = '<span class="muted" style="font-size:11px">Region list unavailable — defaulting to North America.</span>';
+          regionsPicker.innerHTML = '<span class="k-row-hint">Region list unavailable. Kestrel uses North America.</span>';
         } else {
           regionsPicker.innerHTML = meta.regions.map(r => {
             const checked = selected.has(r.code) ? 'checked' : '';
             return (
-              `<label class="inline" style="gap:6px;cursor:pointer;font-size:13px">` +
+              `<label>` +
                 `<input type="checkbox" class="bird-region-cb" data-region-code="${escapeHtml(r.code)}" ${checked} />` +
                 `<span>${escapeHtml(r.label)}</span>` +
-                `<span class="muted" style="font-size:11px;margin-left:auto">${escapeHtml(r.code)}</span>` +
               `</label>`
             );
           }).join('');
@@ -564,6 +611,9 @@
     document.getElementById('settingsDlg').addEventListener('input', () => _setSettingsDirty(true));
 
     document.getElementById('openSettings').addEventListener('click', () => { void showSettings(); });
+    document.querySelectorAll('#settingsDlg [data-settings-section]').forEach(b => {
+      b.addEventListener('click', () => showSettingsSection(b.dataset.settingsSection));
+    });
     document.getElementById('settingsSave').addEventListener('click', async () => {
       await applySettings();
       _setSettingsDirty(false);
