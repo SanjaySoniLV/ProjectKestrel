@@ -4,10 +4,11 @@ v(Arctic Tern (FP 2)) is a hotfix release for v(Arctic Tern (FP 1)). It fixes a 
 
 ## Fixed in FP 2
 
-- **Apple Silicon Macs: GPU analysis works again.** With GPU acceleration on, the bird detector failed to start on the first photo of every run (the log showed "model_path must not be empty"), and in FP 1 this stopped the folder. Kestrel now ships ONNX Runtime 1.28.0 on Apple Silicon, which fixes the error.
+- **Apple Silicon Macs: GPU analysis works again.** With GPU acceleration on, the bird detector failed to start on the first photo of every run (the log showed "model_path must not be empty"), and in FP 1 this stopped the folder. Kestrel now ships ONNX Runtime 1.28.0 on Apple Silicon, which fixes the error. Object masks (SAM) run on the CPU on Macs, because on the GPU they were several times slower.
 - **macOS: repeated GPU failures fall back to the CPU.** In FP 1, a GPU that failed three times in a row on macOS stopped the folder and the rest of the queue, and showed a message about Windows resetting the GPU. On macOS the analysis now carries on using the CPU, as it did before FP 1. Windows behaviour is unchanged.
 - **Windows (non-English systems): GPU errors are recognised again.** On Windows installs set to a language such as Spanish or French, a GPU failure message containing accented letters could not be read, so a lost GPU was not detected and every later photo in the folder failed. Kestrel now reads these messages, moves the work to the CPU and records the real error in the log.
 - **Apple Silicon Macs now require macOS 14 (Sonoma) or later**, because the updated ONNX Runtime does not support older macOS versions.
+- **No Intel Mac download for this release.** The macOS download is for Apple Silicon only. Intel Macs can keep using v(Arctic Tern (FP 1)).
 
 # Included from v(Arctic Tern (FP 1))
 
