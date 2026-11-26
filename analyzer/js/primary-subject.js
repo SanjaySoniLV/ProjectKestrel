@@ -78,7 +78,7 @@
       if (!b) return null;
       const unsure = b.margin < b.minMargin ? '?' : '';
       const focused = _psFocusHere(row) && _ps.focus.key === b.key;
-      return `${focused ? '🎯 ' : ''}Bird ${b.bird}${unsure}`;
+      return `${focused ? '◎ ' : ''}Bird ${b.bird}${unsure}`;
     }
 
     // Hint under the active box (static markup only, no data): how to focus on this bird.

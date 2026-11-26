@@ -33,6 +33,9 @@ const ctx = vm.createContext({
   document: { getElementById: (id) => (id === 'welcomeWhatsNew' ? banner : null) },
 });
 ctx.window.document = ctx.document;
+// js/icons.js loads first in the page and provides KestrelIcon.
+vm.runInContext(fs.readFileSync(path.replace(/welcome\.js$/, 'icons.js'), 'utf8'), ctx);
+ctx.KestrelIcon = ctx.window.KestrelIcon;
 // The sanitizer needs a real DOM; this test only checks which bullets are included.
 const src = fs.readFileSync(path, 'utf8').replace('var sr = sanitizeRichText;', 'var sr = function (h) { return String(h); };');
 if (!src.includes('var sr = function')) throw new Error('sanitizer hook not found');

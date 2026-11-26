@@ -397,7 +397,7 @@
           try { _tempKestrelPaths.add(norm(path)); } catch (e) { }
           // Update icon
           const icon = row.querySelector('.tree-icon');
-          if (icon) icon.textContent = '📂';
+          KestrelIcon.set(icon, 'folder-open');
           // Ensure checkbox exists (do not auto-check it)
           if (!row.querySelector('.tree-cb')) {
             const cb = document.createElement('input');
@@ -488,23 +488,21 @@ ${node.path}` : node.path;
       }
 
       // Folder icon
-      const icon = document.createElement('span');
-      icon.className = 'tree-icon' + (node.has_perch_link ? ' has-perch' : '');
-      icon.textContent = node.has_kestrel ? '📂' : '📁';
+      const icon = KestrelIcon.el(node.has_kestrel ? 'folder-open' : 'folder');
+      icon.classList.add('tree-icon');
+      if (node.has_perch_link) icon.classList.add('has-perch');
 
       // Feather overlay — surfaces "this folder is on Perch" at a glance.
-      const perchFeather = node.has_perch_link ? document.createElement('span') : null;
+      const perchFeather = node.has_perch_link ? KestrelIcon.el('feather') : null;
       if (perchFeather) {
-        perchFeather.className = 'tree-perch-feather';
-        perchFeather.textContent = '\u{1FAB6}';
+        perchFeather.classList.add('tree-perch-feather');
         perchFeather.title = 'Published to Perch';
       }
 
       // Hourglass overlay — surfaces "this folder is being analyzed" at a glance.
-      const inProgressHourglass = isInProgress ? document.createElement('span') : null;
+      const inProgressHourglass = isInProgress ? KestrelIcon.el('hourglass') : null;
       if (inProgressHourglass) {
-        inProgressHourglass.className = 'tree-in-progress-hourglass';
-        inProgressHourglass.textContent = '⏳';
+        inProgressHourglass.classList.add('tree-in-progress-hourglass');
         inProgressHourglass.title = isUpgrading && !_inProgressFolderPaths.has(normPath)
           ? 'Upgrading to analysis version 3' : 'Analysis in progress';
       }
@@ -644,7 +642,7 @@ ${node.path}` : node.path;
       chip.dataset.path = path;
       const plus = document.createElement('span');
       plus.className = 'folder-recents-chip-plus';
-      plus.textContent = '+ \u{1F4C2}';
+      plus.appendChild(KestrelIcon.el('folder-plus'));
       const label = document.createElement('span');
       label.textContent = ' ' + ellipsizeRecentsPath(path);
       chip.appendChild(plus);

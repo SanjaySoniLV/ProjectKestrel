@@ -150,8 +150,8 @@
   transition: background .12s ease, color .12s ease, box-shadow .12s ease;
   /* Vertical divider between siblings — kept subtle. */
   border-left: 1px solid #1d2230;
-  /* All four footer labels are text ("⚙ Settings", Feedback, Tutorial,
-     💛 Support), totalling ~279px of intrinsic width. That clears the default
+  /* All four footer labels are text (Settings, Feedback, Tutorial,
+     Support), totalling ~279px of intrinsic width. That clears the default
      400px sidebar easily, but the user can drag the sidebar down to 260px,
      where it no longer fits. Without min-width:0 a flex item refuses to shrink
      below its content, so a segment would be cut off mid-glyph inside the

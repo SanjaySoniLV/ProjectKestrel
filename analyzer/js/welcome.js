@@ -52,7 +52,7 @@
           ],
         },
         {
-          icon: '⚡',
+          icon: 'bolt',
           name: 'Cloud Compute',
           tag: 'What’s new',
           bullets: [
@@ -70,45 +70,45 @@
 
     const WELCOME_TIPS = [
       {
-        icon: '🦋',
+        icon: 'paw',
         title: 'Try wildlife mode',
         badge: 'New!',
         body: 'Kestrel can detect squirrels, bears, and other wildlife in addition to birds. Enable it in <b>Settings &rarr; Analysis</b>.',
         action: { label: 'Open Settings', onClick: function() { try { showSettings(); } catch (_) {} } },
       },
       {
-        icon: '➕',
+        icon: 'plus',
         title: 'Merge scenes',
         body: 'Hold <kbd>Ctrl</kbd> and click scene cards to select multiple, then click <b>Merge selected scenes</b> to combine them into one.',
       },
       {
-        icon: '🖼️',
+        icon: 'image',
         title: 'Multiple birds in one scene?',
         body: 'Use the <b>◂ / ▸ crop buttons</b> in the scene info bar (or <kbd>↑</kbd> / <kbd>↓</kbd>) to flip through each bird, and press <kbd>Enter</kbd> to promote one as the scene’s primary.',
       },
       {
-        icon: '📂',
+        icon: 'folder-open',
         title: 'Open a parent folder once',
         body: 'Kestrel searches across <b>every loaded folder</b>. Open a parent folder and browse your entire library by species or family without re-loading anything.',
       },
       {
-        icon: '⌨️',
+        icon: 'keyboard',
         title: 'Space = open in editor',
         body: 'Press <kbd>Space</kbd> on any photo to open the original in your chosen photo editor. Set your preference in Settings.',
         action: { label: 'Open Settings', onClick: function() { try { showSettings(); } catch (_) {} } },
       },
       {
-        icon: '🗑️',
+        icon: 'trash',
         title: 'Cull faster with the Culling Assistant',
         body: 'Batch Accept / Reject photos by your own quality rules — and optionally move rejects into an archive folder.',
       },
       {
-        icon: '⚠️',
+        icon: 'warning',
         title: 'Write metadata before importing',
         body: '<b>Write Photo Metadata</b> before importing into Lightroom or Capture One — most catalogues ignore sidecar files added <i>after</i> import.',
       },
       {
-        icon: '⭐',
+        icon: 'star',
         title: 'Not satisfied with the star ratings?',
         body: 'Tune the rating thresholds and profile in Settings. Your manual overrides are always saved as gold stars.',
         action: { label: 'Open Settings', onClick: function() { try { showSettings(); } catch (_) {} } },
@@ -212,7 +212,7 @@
         var iconFile = safeAssetFile(c.iconImg);
         var iconHtml = iconFile
           ? '<span class="wln-card-icon wln-card-icon-img"><img src="' + escapeAttr(iconFile) + '" alt="" /></span>'
-          : '<span class="wln-card-icon">' + sr(c.icon || '•') + '</span>';
+          : '<span class="wln-card-icon">' + (/^[a-z-]+$/.test(c.icon || '') ? KestrelIcon(c.icon) : sr(c.icon || '•')) + '</span>';
         return '' +
           '<div class="wln-card">' +
             '<div class="wln-card-top">' +
@@ -244,7 +244,7 @@
         '<div class="wln">' +
           '<button type="button" class="wln-dismiss" id="wwnDismiss" aria-label="Dismiss">✕</button>' +
           heroHtml +
-          '<span class="wln-eyebrow">🎉&nbsp; ' + sr(note.eyebrow || '') + '</span>' +
+          '<span class="wln-eyebrow">' + KestrelIcon('sparkle') + '&nbsp; ' + sr(note.eyebrow || '') + '</span>' +
           '<h2 class="wln-title">' + sr(note.title || '') + '</h2>' +
           (note.subtitle ? '<div class="wln-subtitle">' + sr(note.subtitle) + '</div>' : '') +
           '<div class="wln-cards">' + cards + '</div>' +
@@ -330,7 +330,7 @@
       function render(i) {
         var t = WELCOME_TIPS[i];
         if (!t) return;
-        iconEl.textContent = t.icon || '💡';
+        KestrelIcon.set(iconEl, t.icon || 'lightbulb');
         titleEl.innerHTML = t.title || '';
         if (t.badge) { badgeEl.textContent = t.badge; badgeEl.classList.remove('hidden'); }
         else badgeEl.classList.add('hidden');

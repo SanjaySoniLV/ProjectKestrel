@@ -102,7 +102,7 @@
       const file = this.files[0];
       if (!file) { document.getElementById('feedbackIncludeScreenshot').checked = false; return; }
       if (file.size > _FEEDBACK_MAX_SCREENSHOT_BYTES) {
-        document.getElementById('feedbackStatus').textContent = '⚠ That image is over 10 MB. Please choose a smaller screenshot.';
+        document.getElementById('feedbackStatus').textContent = 'That image is over 10 MB. Please choose a smaller screenshot.';
         document.getElementById('feedbackIncludeScreenshot').checked = false;
         this.value = '';
         return;
@@ -122,13 +122,13 @@
     async function submitFeedback() {
       const desc = document.getElementById('feedbackDesc').value.trim();
       if (!desc) {
-        document.getElementById('feedbackStatus').textContent = '⚠ Please enter a description.';
+        document.getElementById('feedbackStatus').textContent = 'Please enter a description.';
         document.getElementById('feedbackDesc').focus();
         return;
       }
       const caseRef = _normalizeFeedbackCaseRef(document.getElementById('feedbackCaseRef').value);
       if (caseRef === null) {
-        document.getElementById('feedbackStatus').textContent = '⚠ Case references look like K-1042. Leave the box empty if you don\'t have one.';
+        document.getElementById('feedbackStatus').textContent = 'Case references look like K-1042. Leave the box empty if you don\'t have one.';
         document.getElementById('feedbackCaseRef').focus();
         return;
       }
@@ -160,10 +160,10 @@
           const delay = (result.ref || result.screenshot_dropped || result.sent_anonymously) ? 5000 : 1200;
           setTimeout(() => { try { document.getElementById('feedbackDlg').close(); } catch (_) { } }, delay);
         } else {
-          document.getElementById('feedbackStatus').textContent = '⚠ Could not send — please try again later.';
+          document.getElementById('feedbackStatus').textContent = 'Could not send — please try again later.';
         }
       } catch (e) {
-        document.getElementById('feedbackStatus').textContent = '⚠ Send failed: ' + (e.message || e);
+        document.getElementById('feedbackStatus').textContent = 'Send failed: ' + (e.message || e);
       } finally {
         sendBtn.disabled = false;
       }

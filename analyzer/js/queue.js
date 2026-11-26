@@ -276,7 +276,7 @@
         const overallEl = overallEtaEl;
         const loadingMsg = (cur.current_status_msg || '').toLowerCase().includes('load');
         if (loadingMsg || (cur.processed === 0 && cur.current_status_msg)) {
-          if (overallEl) { overallEl.textContent = `⏳ ${cur.current_status_msg || 'Loading analyzer... please wait'}`; overallEl.classList.remove('hidden'); }
+          if (overallEl) { overallEl.textContent = `${cur.current_status_msg || 'Loading analyzer... please wait'}`; overallEl.classList.remove('hidden'); }
           try { showLoadingAnalyzer(); } catch (e) { }
         } else {
           try { hideLoadingAnalyzer(); } catch (e) { }
@@ -449,7 +449,7 @@
     function _setPauseBtnState(btn, paused) {
       const ico = btn.querySelector('.qctl-ico');
       const lbl = btn.querySelector('.qctl-lbl');
-      if (ico) ico.textContent = paused ? '▶' : '⏸';
+      KestrelIcon.set(ico, paused ? 'play' : 'pause');
       if (lbl) lbl.textContent = paused ? 'Resume' : 'Pause';
       btn.title = paused ? 'Resume analysis' : 'Pause analysis';
       btn.setAttribute('aria-pressed', paused ? 'true' : 'false');
@@ -457,8 +457,8 @@
     }
 
     const _ANALYSIS_STATUS_LABELS = {
-      pending: '⏳ In Queue',
-      running: '⚙ Analyzing',
+      pending: 'In Queue',
+      running: 'Analyzing',
       done: '✓ Done',
       error: '✗ Error',
       cancelled: '— Cancelled',
@@ -491,7 +491,7 @@
       div.dataset.path = path;
       div.innerHTML = '<div class="queue-item-header"><span class="queue-item-name"></span>'
         + '<span class="queue-item-status"></span>'
-        + '<button type="button" class="queue-item-load-btn" hidden>📂 Load</button></div>'
+        + '<button type="button" class="queue-item-load-btn" hidden>' + KestrelIcon('folder-open') + ' Load</button></div>'
         + '<div class="queue-item-warning" role="alert" hidden></div>'
         + '<div class="queue-item-error" hidden></div>'
         + '<div class="queue-item-progress" hidden><div class="queue-item-progress-fill"></div></div>'
@@ -538,7 +538,7 @@
       // state so it outlives the run; the pipeline clears it on recovery.
       const warnEl = div.querySelector('.queue-item-warning');
       warnEl.hidden = !item.warning;
-      warnEl.textContent = item.warning ? `⚠ ${item.warning}` : '';
+      warnEl.textContent = item.warning || '';
 
       // An item that errored shows why on the row (full text in the tooltip).
       const errEl = div.querySelector('.queue-item-error');
@@ -578,11 +578,11 @@
     }
 
     const _UPGRADE_LABELS = {
-      pending: '⏳ Queued for analysis version 3',
-      running: '✨ Upgrading to analysis version 3',
+      pending: 'Queued for analysis version 3',
+      running: 'Upgrading to analysis version 3',
       done: '✓ Upgraded to analysis version 3',
       cancelled: '— Upgrade stopped',
-      stopped: '⏸ Upgrade paused',
+      stopped: 'Upgrade paused',
       error: '✗ Upgrade failed',
     };
 
@@ -678,7 +678,7 @@
         info.textContent = 'Waiting for the upgrade ahead of it to finish';
       } else if (isRunning) {
         if (total > 0) info.textContent = `${current} / ${total} photos`;
-        else info.textContent = u.phase === 'loading_model' ? '⏳ Loading models…' : '⏳ Starting…';
+        else info.textContent = u.phase === 'loading_model' ? 'Loading models…' : 'Starting…';
       } else if (u.status === 'done') {
         info.textContent = total > 0 ? `${total} photo${total === 1 ? '' : 's'} upgraded` : 'Up to date';
       } else if (u.status === 'error') {
@@ -1010,7 +1010,7 @@
       if (statusEl) {
         const msg = item ? (item.current_status_msg || '') : '';
         const paused = item && item.is_paused;
-        statusEl.textContent = paused ? '⏸ Paused — ' + msg : msg;
+        statusEl.textContent = paused ? 'Paused — ' + msg : msg;
       }
       // Subtle "working" indicator: pulses while the item is analyzing, still when paused.
       const working = !!item && item.status === 'running';
@@ -1481,9 +1481,8 @@
             _tempKestrelPaths.add(rp);
 
             if (!row.querySelector('.tree-in-progress-hourglass')) {
-              const hg = document.createElement('span');
-              hg.className = 'tree-in-progress-hourglass';
-              hg.textContent = '⏳';
+              const hg = KestrelIcon.el('hourglass');
+              hg.classList.add('tree-in-progress-hourglass');
               const featherEl = row.querySelector('.tree-perch-feather');
               const anchorEl = featherEl || row.querySelector('.tree-icon');
               if (anchorEl && anchorEl.nextSibling) anchorEl.parentNode.insertBefore(hg, anchorEl.nextSibling);

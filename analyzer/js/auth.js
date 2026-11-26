@@ -571,7 +571,7 @@
       
       // Priority symbol
       const priorityEl = document.getElementById('versionUpdatePriority');
-      if (priorityEl) priorityEl.textContent = versionInfo.highPriority ? '⭐' : '•';
+      if (priorityEl) priorityEl.replaceChildren(versionInfo.highPriority ? KestrelIcon.el('star') : '•');
       
       // Title
       const titleEl = document.getElementById('versionUpdateTitle');

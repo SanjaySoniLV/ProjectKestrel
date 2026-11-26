@@ -61,7 +61,7 @@
       },
       {
         title: 'Search and filter',
-        body: 'Use the <b>filter bar</b> above the timeline to narrow your scenes down:<br><br>• <b>Search</b> by bird species or family — the grid filters instantly.<br>• <b>Sort</b> by Capture Time, Quality, or Image Count.<br>• Open <b>⚙ More</b> to toggle <b>Group by folder</b> / <b>capture time</b> and more.<br><br>You can always tweak further from there.',
+        body: 'Use the <b>filter bar</b> above the timeline to narrow your scenes down:<br><br>• <b>Search</b> by bird species or family — the grid filters instantly.<br>• <b>Sort</b> by Capture Time, Quality, or Image Count.<br>• Open <b>More</b> to toggle <b>Group by folder</b> / <b>capture time</b> and more.<br><br>You can always tweak further from there.',
         target: '#timelineFilterBar',
         position: 'bottom',
       },
@@ -142,7 +142,7 @@
       },
       {
         title: 'A few more scene features',
-        body: 'A few more things you can do once you’re browsing your <b>own photos</b> (some won’t work on the sample images):<br><br>• Edit the <b>scene name</b> and <b>tags</b> at the top<br>• Use <b>✂ Split Scene</b> if Kestrel accidentally merged two different scenes<br>• <b>Copy</b> (clipboard) the full image or bird crop straight from the preview<br><br>Close the scene dialog to continue.',
+        body: 'A few more things you can do once you’re browsing your <b>own photos</b> (some won’t work on the sample images):<br><br>• Edit the <b>scene name</b> and <b>tags</b> at the top<br>• Use <b>Split Scene</b> if Kestrel accidentally merged two different scenes<br>• <b>Copy</b> (clipboard) the full image or bird crop straight from the preview<br><br>Close the scene dialog to continue.',
         nudge: 'Close the scene dialog to continue.',
         target: '#closeDlg',
         position: 'bottom',
@@ -151,7 +151,7 @@
       },
       {
         title: 'Filtering options',
-        body: '• <b>Search</b> for any bird species or family — the grid filters instantly as you type.<br>• Don’t see scenes after searching? Lower the <b>Confidence</b> threshold to see more results.<br>• Open <b>⚙ More</b> and enable <b>Multi-subject mode</b> if your scenes contain multiple species.<br>• <b>Sort</b> by Capture Time, Quality, Scene ID, or Image Count.<br>• Also in <b>⚙ More</b>: toggle <b>Group by folder</b> / <b>capture time</b> to reorganize the grid.',
+        body: '• <b>Search</b> for any bird species or family — the grid filters instantly as you type.<br>• Don’t see scenes after searching? Lower the <b>Confidence</b> threshold to see more results.<br>• Open <b>More</b> and enable <b>Multi-subject mode</b> if your scenes contain multiple species.<br>• <b>Sort</b> by Capture Time, Quality, Scene ID, or Image Count.<br>• Also in <b>More</b>: toggle <b>Group by folder</b> / <b>capture time</b> to reorganize the grid.',
         target: '#timelineFilterBar',
         position: 'bottom',
       },
@@ -171,7 +171,7 @@
       _tutWorkflowStep,
       {
         title: 'Write Photo Metadata',
-        body: 'Open the <b>Folder Actions</b> menu on a folder and click <b>Write Photo Metadata</b> to export Kestrel’s star ratings and Accept/Reject decisions into XMP sidecar files alongside your photos. These <code>.xmp</code> files are understood natively by <b>Adobe Lightroom</b>, <b>darktable</b>, <b>Capture One</b>, and other editors.<br><br>⚠️ <b>Write photo metadata <em>before</em> importing into your photo editor</b> — most catalogues ignore new sidecar files once a photo is already imported. If a sidecar was already created by another application, Kestrel will ask before overwriting it.',
+        body: 'Open the <b>Folder Actions</b> menu on a folder and click <b>Write Photo Metadata</b> to export Kestrel’s star ratings and Accept/Reject decisions into XMP sidecar files alongside your photos. These <code>.xmp</code> files are understood natively by <b>Adobe Lightroom</b>, <b>darktable</b>, <b>Capture One</b>, and other editors.<br><br><b>Write photo metadata <em>before</em> importing into your photo editor</b> — most catalogues ignore new sidecar files once a photo is already imported. If a sidecar was already created by another application, Kestrel will ask before overwriting it.',
         target: '.folder-group-actions-trigger',
         position: 'bottom',
       },
@@ -191,7 +191,7 @@
       },
       {
         title: 'You’re all set!',
-        body: 'That’s the full tour! Quick recap:<br><br>• <b>Analyze Folders</b> to process new photos<br>• <b>Load Folders</b> to browse analyzed photos<br>• <b>Click scenes</b> to view &amp; rate photos<br>• <b>Culling Assistant</b> for bulk Accept/Reject workflow<br>• <b>Write Photo Metadata</b> to export to Lightroom, darktable, etc.<br><br>⚠️ <b>Remember:</b> Write photo metadata <em>before</em> importing into Lightroom or Capture One for best results!<br><br>Click the <b>Tutorial</b> button anytime to replay this tour. Happy birding!',
+        body: 'That’s the full tour! Quick recap:<br><br>• <b>Analyze Folders</b> to process new photos<br>• <b>Load Folders</b> to browse analyzed photos<br>• <b>Click scenes</b> to view &amp; rate photos<br>• <b>Culling Assistant</b> for bulk Accept/Reject workflow<br>• <b>Write Photo Metadata</b> to export to Lightroom, darktable, etc.<br><br><b>Remember:</b> Write photo metadata <em>before</em> importing into Lightroom or Capture One for best results!<br><br>Click the <b>Tutorial</b> button anytime to replay this tour. Happy birding!',
         target: null,
       },
       {
