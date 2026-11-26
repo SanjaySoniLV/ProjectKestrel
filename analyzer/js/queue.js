@@ -156,14 +156,15 @@
     /** Render the queue panel from a status object. */
     function renderQueuePanel(status) {
       window._lastQueueStatus = status; // store for analyze dialog queue preview
-      // The GPU device was lost (Windows GPU reset). It cannot recover inside
-      // this process, so the banner stays until Kestrel is restarted.
+      // The GPU device was lost (a Windows GPU reset, or a CoreML failure on
+      // macOS). It cannot recover inside this process, so the banner stays
+      // until Kestrel is restarted. The text stays platform-neutral.
       try {
         const gpuBanner = document.getElementById('gpuLostNotice');
         const gpuMsg = document.getElementById('gpuLostMsg');
         if (gpuBanner && gpuMsg) {
           if (status && status.gpu_lost) {
-            gpuMsg.textContent = 'The GPU stopped responding (a Windows GPU reset), so analysis was stopped. '
+            gpuMsg.textContent = 'The GPU stopped responding, so analysis was stopped. '
               + 'Your progress is saved. Restart Kestrel, then analyze the folder again to continue on the GPU.';
             gpuBanner.classList.remove('hidden');
           } else {
