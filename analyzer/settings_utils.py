@@ -96,6 +96,15 @@ _ALLOWED_QUALITY_FEEDBACK_MODES = {'ask', 'always', 'never'}
 _ALLOWED_SCENE_FILMSTRIP_ORDERS = {'quality', 'time'}
 _QUALITY_FEEDBACK_INSTALL_ID_RE = re.compile(r'^qfi_[0-9a-f]{32}$')
 _ALLOWED_QUEUE_DETECTOR_NAMES = {'mdv5a', 'mdv1000-cedar'}
+try:
+    from kestrel_analyzer.language_codes import canonicalize_language_tag as _canonical_language_tag
+except ImportError:  # pragma: no cover - alternate import root
+    try:
+        from analyzer.kestrel_analyzer.language_codes import canonicalize_language_tag as _canonical_language_tag
+    except ImportError:
+        def _canonical_language_tag(_tag):  # English only if the helper is unavailable
+            return None
+
 # Biogeographic region codes for the species combobox. Sourced from the
 # ``bird_catalog`` module so the data layer owns the vocabulary and we only
 # import the tuple here for validation.
@@ -634,19 +643,15 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
         else:
             out['bird_regions'] = list(_DEFAULT_BIRD_REGIONS)
     _set_bool('show_scientific_names', default=False)
-    if 'language' in data:
-        language = _coerce_string(data.get('language'), default='en', max_len=16)
-        if not re.fullmatch(r'[a-z]{2}(-[a-z]{2})?', language or ''):
-            language = 'en'
-        out['language'] = language
-    # Bird-name (species label) language — independent of the interface
-    # language above; same strict code shape as the bird_names.<lang>.json
-    # files shipped under analyzer/models/birds/.
-    if 'bird_name_language' in data:
-        bird_name_language = _coerce_string(data.get('bird_name_language'), default='en', max_len=16)
-        if not re.fullmatch(r'[a-z]{2}(-[a-z]{2})?', bird_name_language or ''):
-            bird_name_language = 'en'
-        out['bird_name_language'] = bird_name_language
+    # Interface language and bird-name (species label) language are two
+    # independent BCP-47 tags (``pt-BR``, ``zh-Hans``). Case is repaired
+    # (``pt-br`` -> ``pt-BR``); anything outside the accepted subset falls
+    # back to English, so a stored value can never become a path.
+    for _lang_key in ('language', 'bird_name_language'):
+        if _lang_key in data:
+            raw_lang = data.get(_lang_key)
+            canon = _canonical_language_tag(raw_lang) if isinstance(raw_lang, str) else None
+            out[_lang_key] = canon or 'en'
 
     _set_bool('includeSecondarySpecies', default=False)
     _set_bool('groupByFolder', default=True)

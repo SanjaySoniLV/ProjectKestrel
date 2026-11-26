@@ -522,8 +522,16 @@ def build(ioc_xlsx: Path, alpha_codes_txt: Path) -> None:
     print(f"  rows with 4-letter code:       {n_alpha}")
 
     # NOTICES.md attribution.
+    # The bird-name translation section (between the bird-names-i18n marker
+    # comments) is owned by tools/build_bird_names_i18n.py; keep it.
     notices = OUT_DIR / 'NOTICES.md'
-    notices.write_text(_render_notices(), encoding='utf-8')
+    text = _render_notices()
+    if notices.exists():
+        m = re.search(r'<!-- bird-names-i18n:begin -->.*?<!-- bird-names-i18n:end -->\n?',
+                      notices.read_text(encoding='utf-8'), re.S)
+        if m:
+            text = text.rstrip('\n') + '\n\n' + m.group(0)
+    notices.write_text(text, encoding='utf-8')
     print(f"Wrote attribution -> {notices}")
 
 

@@ -305,6 +305,14 @@ italicised scientific names) is powered by data bundled in
   Birds.* The Institute for Bird Populations. [birdpop.org](https://www.birdpop.org/).
   Per the 66th AOS Supplement (2025). Provides the 4-letter banding codes
   surfaced in the combobox (e.g. typing `AMRO` → American Robin).
+- **Multiling IOC (v15.1)** — the multilingual edition of the IOC World Bird
+  List, same editors and release as above, from
+  [worldbirdnames.org](https://www.worldbirdnames.org/new/ioc-lists/master-list-2/).
+  Licensed under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/).
+  Provides the translated species names shown when a bird-name language other
+  than English is chosen (`analyzer/models/birds/bird_names.<language>.json`,
+  built by `tools/build_bird_names_i18n.py`). Display only: stored data stays in
+  English.
 
 See [`analyzer/models/birds/NOTICES.md`](analyzer/models/birds/NOTICES.md)
 for the full attribution.

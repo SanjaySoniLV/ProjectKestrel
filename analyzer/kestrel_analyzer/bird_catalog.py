@@ -16,21 +16,22 @@ from __future__ import annotations
 
 import csv
 import json
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 from .config import MODELS_DIR
+from .language_codes import is_valid_language_tag, language_fallback_chain
 
 CATALOG_PATH = MODELS_DIR / "birds" / "birds_global.csv"
 BIRDS_DIR = MODELS_DIR / "birds"
 NAME_TRANSLATIONS_INDEX = BIRDS_DIR / "bird_names_index.json"
 
-# Language codes emitted by ``tools/build_bird_names_i18n.py`` — the settings
-# sanitizer accepts exactly this shape, so a code the converter cannot emit
-# is rejected there too.
-_LANGUAGE_CODE_RE = re.compile(r"^[a-z]{2}(-[a-z]{2})?$")
+# IOC World Bird List release the catalog (``birds_global.csv``) was built
+# from. ``tools/build_bird_names_i18n.py`` refuses a Multiling workbook of a
+# different release, so species names and their translations stay on the
+# same taxonomy (scientific names are the join key).
+CATALOG_IOC_VERSION = "15.1"
 
 # Region codes that ``Settings`` may legally store. Kept here -- not in
 # ``settings_utils`` -- so the data layer owns the vocabulary and the
@@ -505,57 +506,104 @@ def family_entry_to_dict(entry: FamilyEntry) -> dict:
 # Bird-name translations (Multiling IOC, display-only)
 # ----------------------------------------------------------------------------
 #
-# ``tools/build_bird_names_i18n.py`` emits one ``bird_names.<lang>.json`` per
-# language: a flat {english_name: translated_name} map keyed by every English
-# form the UI can display a species under (canonical common name plus catalog
-# aliases). The frontend resolves a label at render time and falls back to
-# the stored English name when the active language has no entry. Translated
-# names never enter the CSV, scene JSON, or XMP sidecars.
+# ``tools/build_bird_names_i18n.py`` emits one ``bird_names.<tag>.json`` per
+# language: a flat {scientific_name: translated_name} map (``<tag>`` is a
+# canonical BCP-47 tag such as ``de``, ``pt-PT`` or ``zh-Hant``). Keying by
+# scientific name keeps the data independent of English-name churn between
+# IOC releases and of the AOS aliases the catalog keeps for legacy rows.
+#
+# The frontend still asks "how do I show the English label X?", so
+# ``load_name_translations`` joins the scientific-name map back onto the
+# catalog and returns {english_name: translated_name} for every English form
+# a species is displayed under (canonical name + aliases). Translated names
+# never enter the CSV, scene JSON, or XMP sidecars.
 
+_sci_translations_cache: dict[str, dict[str, str]] = {}
 _name_translations_cache: dict[str, dict[str, str]] = {}
 _name_languages_cache: list[dict] | None = None
 
 
 def is_valid_language_code(code: str) -> bool:
-    """True when ``code`` matches the shape the converter can emit."""
-    return isinstance(code, str) and bool(_LANGUAGE_CODE_RE.match(code))
+    """True when ``code`` is a canonical BCP-47 tag Kestrel accepts."""
+    return is_valid_language_tag(code)
 
 
-def load_name_translations(code: str, base_dir: Path | None = None) -> dict[str, str]:
-    """Return the {english_name: translated_name} map for ``code``.
+def _read_sci_map(code: str, d: Path) -> dict[str, str]:
+    """Read one ``bird_names.<code>.json`` file; ``{}`` when absent/invalid."""
+    key = f"{d}|{code}"
+    cached = _sci_translations_cache.get(key)
+    if cached is not None:
+        return cached
+    out: dict[str, str] = {}
+    try:
+        with open(d / f"bird_names.{code}.json", encoding="utf-8") as f:
+            raw = json.load(f)
+        if isinstance(raw, dict):
+            out = {str(k): str(v) for k, v in raw.items()
+                   if isinstance(v, str) and str(k) and v and not str(k).startswith("_")}
+    except (OSError, ValueError):
+        out = {}
+    _sci_translations_cache[key] = out
+    return out
 
-    Cached per process; a missing file or invalid code yields ``{}`` so the
-    UI simply falls back to English. Reads only the fixed per-language file
-    inside ``base_dir`` — never a caller-supplied path.
+
+def load_name_translations_by_sci(code: str, base_dir: Path | None = None) -> dict[str, str]:
+    """Return {scientific_name: translated_name} for ``code``.
+
+    Walks the BCP-47 fallback chain (``pt-BR`` -> ``pt``), so a regional tag
+    picks up its base language's names; more specific files win. English is
+    the identity language and has no file. An invalid tag yields ``{}``
+    without touching the filesystem.
     """
     if not is_valid_language_code(code):
         return {}
-    cached = _name_translations_cache.get(code)
+    d = Path(base_dir) if base_dir is not None else BIRDS_DIR
+    merged: dict[str, str] = {}
+    for tag in reversed(language_fallback_chain(code)):
+        if tag == "en":
+            continue
+        merged.update(_read_sci_map(tag, d))
+    return merged
+
+
+def load_name_translations(code: str, base_dir: Path | None = None,
+                           catalog: Iterable[BirdRecord] | None = None) -> dict[str, str]:
+    """Return the {english_name: translated_name} map the UI renders with.
+
+    Cached per process and per language. A missing file or invalid tag yields
+    ``{}`` so the UI falls back to English. Reads only the fixed per-language
+    files inside ``base_dir`` -- never a caller-supplied path.
+    """
+    if not is_valid_language_code(code):
+        return {}
+    cache_key = f"{base_dir}|{code}" if (base_dir is not None or catalog is not None) else code
+    cached = _name_translations_cache.get(cache_key)
     if cached is not None:
         return cached
-    d = Path(base_dir) if base_dir is not None else BIRDS_DIR
-    path = d / f"bird_names.{code}.json"
+    by_sci = load_name_translations_by_sci(code, base_dir=base_dir)
     out: dict[str, str] = {}
-    try:
-        with open(path, encoding="utf-8") as f:
-            raw = json.load(f)
-        if isinstance(raw, dict):
-            out = {str(k): str(v) for k, v in raw.items() if str(k) and str(v)}
-    except (OSError, ValueError):
-        out = {}
-    _name_translations_cache[code] = out
+    if by_sci:
+        records = catalog if catalog is not None else get_catalog().records
+        for rec in records:
+            name = by_sci.get(rec.scientific_name)
+            if not name:
+                continue
+            out.setdefault(rec.canonical_common_name, name)
+            for alias in rec.aliases:
+                out.setdefault(alias, name)
+    _name_translations_cache[cache_key] = out
     return out
 
 
 def available_name_languages(base_dir: Path | None = None) -> list[dict]:
     """Return the manifest's language list (cached), or ``[]`` when absent.
 
-    Each entry is ``{code, name_native, species_count, coverage}`` — exactly
+    Each entry is ``{code, name_native, species_count, coverage}`` -- exactly
     what the Settings language dropdown renders. ``'en'`` is not listed: it
     is the identity language, so the UI prepends it to the dropdown itself.
     """
     global _name_languages_cache
-    if _name_languages_cache is not None:
+    if _name_languages_cache is not None and base_dir is None:
         return _name_languages_cache
     d = Path(base_dir) if base_dir is not None else BIRDS_DIR
     out: list[dict] = []
@@ -574,5 +622,6 @@ def available_name_languages(base_dir: Path | None = None) -> list[dict]:
                     })
     except (OSError, ValueError, AttributeError):
         out = []
-    _name_languages_cache = out
+    if base_dir is None:
+        _name_languages_cache = out
     return out

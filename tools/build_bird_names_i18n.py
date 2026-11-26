@@ -20,24 +20,29 @@ Inputs read from the repository (committed):
 
 Outputs (committed):
 
-  * analyzer/models/birds/bird_names.<lang>.json
-        { "canonical_common_name": "translated name", ... } -- includes the
-        catalog's AOS alias names as extra keys so legacy rows translate too.
-        English is NOT emitted: it is the identity language (absent map ==
-        fallback to the stored English name).
+  * analyzer/models/birds/bird_names.<tag>.json
+        { "Scientific name": "translated name", ... } keyed by the catalog's
+        scientific name. ``<tag>`` is a canonical BCP-47 tag (``de``,
+        ``pt-PT``, ``zh-Hans``). The runtime joins these back onto the
+        catalog's English names and aliases, so legacy AOS-labelled rows
+        translate too. English is NOT emitted: it is the identity language
+        (absent map == fallback to the stored English name).
   * analyzer/models/birds/bird_names_index.json
         Manifest for the Settings language dropdown: shipped languages with
         native names and coverage. Coverage = share of catalog species that
         have a translation in that language.
 
-Join key: workbook scientific name (``IOC_15.2`` column) -> catalog
-``scientific_name``; exact IOC English name match is the fallback. Languages
+Join key: workbook scientific name (``IOC_<version>`` column) -> catalog
+``scientific_name``; exact IOC English name match is the fallback. The
+workbook's IOC release must equal the catalog's (``CATALOG_IOC_VERSION`` in
+``analyzer/kestrel_analyzer/bird_catalog.py``) so both use one taxonomy; a
+mismatch aborts unless ``--allow-version-mismatch`` is given. Languages
 below ``--min-coverage`` are skipped (listed in the log) unless named in
-``--include`` -- Russian and English are guaranteed by policy, not by luck.
+``--include``.
 
-Run:
+Run (the workbook release must match the catalog, currently 15.1):
   python tools/build_bird_names_i18n.py \\
-      --xlsx "/tmp/Multiling IOC 15.2.xlsx"
+      --xlsx "/path/to/Multiling IOC 15.1_d.xlsx"
 """
 
 from __future__ import annotations
@@ -54,20 +59,29 @@ MODELS_DIR = REPO_ROOT / 'analyzer' / 'models'
 OUT_DIR = MODELS_DIR / 'birds'
 CATALOG_PATH = OUT_DIR / 'birds_global.csv'
 
+sys.path.insert(0, str(REPO_ROOT / 'analyzer'))
+from kestrel_analyzer.bird_catalog import CATALOG_IOC_VERSION  # noqa: E402
+from kestrel_analyzer.language_codes import is_valid_language_tag  # noqa: E402
+
+_IOC_COLUMN_RE = re.compile(r'^IOC_(\d+\.\d+)$')
+
 # Workbook "List"-sheet column -> (language code, native name).
 #
-# Codes are lowercase BCP-47-ish slugs; the settings sanitizer accepts
-# exactly ^[a-z]{2}(-[a-z]{2})?$, so every code added here must stay in that
-# shape. "French (Gaudin)" is an alternate French nomenclature, not a
-# separate language: it is deliberately absent and logged as skipped.
+# Codes are canonical BCP-47 tags (``language[-Script][-REGION]``, checked by
+# kestrel_analyzer.language_codes). Chinese is split by script, not region
+# (zh-Hans / zh-Hant); "Portuguese (Lusophone)" is the general ``pt`` list
+# and "Portuguese (Portuguese)" the European ``pt-PT`` one, so ``pt-BR``
+# falls back to ``pt``. The Serbian column is written in Latin script.
+# "French (Gaudin)" is an alternate French nomenclature, not a separate
+# language: it is deliberately absent and logged as skipped.
 LANGUAGE_COLUMNS: dict[str, tuple[str, str]] = {
     'Afrikaans':                 ('af', 'Afrikaans'),
     'Arabic':                    ('ar', 'العربية'),
     'Belarusian':                ('be', 'Беларуская'),
     'Bulgarian':                 ('bg', 'Български'),
     'Catalan':                   ('ca', 'Català'),
-    'Chinese':                   ('zh', '中文'),
-    'Chinese (Traditional)':     ('zh-tw', '繁體中文'),
+    'Chinese':                   ('zh-Hans', '简体中文'),
+    'Chinese (Traditional)':     ('zh-Hant', '繁體中文'),
     'Croatian':                  ('hr', 'Hrvatski'),
     'Czech':                     ('cs', 'Čeština'),
     'Danish':                    ('da', 'Dansk'),
@@ -94,10 +108,10 @@ LANGUAGE_COLUMNS: dict[str, tuple[str, str]] = {
     'Persian':                   ('fa', 'فارسی'),
     'Polish':                    ('pl', 'Polski'),
     'Portuguese (Lusophone)':    ('pt', 'Português'),
-    'Portuguese (Portuguese)':   ('pt-pt', 'Português europeu'),
+    'Portuguese (Portuguese)':   ('pt-PT', 'Português (Portugal)'),
     'Romanian':                  ('ro', 'Română'),
     'Russian':                   ('ru', 'Русский'),
-    'Serbian':                   ('sr', 'Српски'),
+    'Serbian':                   ('sr-Latn', 'Srpski (latinica)'),
     'Slovak':                    ('sk', 'Slovenčina'),
     'Slovenian':                 ('sl', 'Slovenščina'),
     'Spanish':                   ('es', 'Español'),
@@ -123,26 +137,26 @@ def _norm(s) -> str:
 def load_catalog_index(catalog_path: Path):
     """Index the bundled catalog by scientific name and by every English name.
 
-    Returns ``(by_sci, by_english, total)`` where ``by_english`` covers both
-    canonical common names and AOS alias names (lowercased keys).
+    Returns ``(by_sci, by_english, total)``. ``by_sci`` maps a scientific
+    name to itself (the set of catalog species); ``by_english`` maps every
+    canonical common name and AOS alias (lowercased) to the catalog's
+    scientific name, for the English-name fallback join.
     """
-    by_sci: dict[str, tuple[str, tuple[str, ...]]] = {}
-    by_english: dict[str, tuple[str, tuple[str, ...]]] = {}
+    by_sci: dict[str, str] = {}
+    by_english: dict[str, str] = {}
     total = 0
     with open(catalog_path, encoding='utf-8', newline='') as f:
         for row in csv.DictReader(f):
             canonical = _norm(row.get('canonical_common_name'))
-            if not canonical:
+            sci = _norm(row.get('scientific_name'))
+            if not canonical or not sci:
                 continue
             total += 1
             aliases = tuple(a for a in (_norm(x) for x in (row.get('aliases') or '').split('|')) if a)
-            entry = (canonical, aliases)
-            sci = _norm(row.get('scientific_name'))
-            if sci:
-                by_sci.setdefault(sci, entry)
-            by_english.setdefault(canonical.lower(), entry)
+            by_sci.setdefault(sci, sci)
+            by_english.setdefault(canonical.lower(), sci)
             for a in aliases:
-                by_english.setdefault(a.lower(), entry)
+                by_english.setdefault(a.lower(), sci)
     return by_sci, by_english, total
 
 
@@ -162,7 +176,10 @@ def parse_multiling(xlsx_path: Path):
     rows_iter = ws.iter_rows(values_only=True)
     header = [_norm(h) for h in next(rows_iter)]
 
-    col_sci = header.index('IOC_15.2')
+    ioc_cols = [(i, m.group(1)) for i, h in enumerate(header) if (m := _IOC_COLUMN_RE.match(h))]
+    if len(ioc_cols) != 1:
+        sys.exit(f"expected exactly one IOC_<version> column, found {[header[i] for i, _ in ioc_cols]}")
+    col_sci, ioc_version = ioc_cols[0]
     col_english = header.index('English')
     languages: dict[int, tuple[str, str]] = {}
     for i, h in enumerate(header):
@@ -172,7 +189,7 @@ def parse_multiling(xlsx_path: Path):
             print(f"Skipping column '{h}': {SKIPPED_COLUMNS[h]}")
 
     unknown = [h for h in header
-               if h not in ('seq', 'Order', 'Family', 'IOC_15.2', 'English')
+               if h not in ('seq', 'Order', 'Family', 'English') and not _IOC_COLUMN_RE.match(h)
                and h not in LANGUAGE_COLUMNS and h not in SKIPPED_COLUMNS]
     if unknown:
         print(f"WARNING: unmapped workbook columns ignored: {', '.join(unknown)}")
@@ -189,60 +206,60 @@ def parse_multiling(xlsx_path: Path):
             if name:
                 names[code] = name
         rows.append({'sci': sci, 'english': english, 'names': names})
-    return languages, rows
+    return languages, rows, ioc_version
 
 
 def build(xlsx_path: Path, out_dir: Path, catalog_path: Path,
-          min_coverage: float, include: set[str]) -> dict:
+          min_coverage: float, include: set[str],
+          expected_ioc_version: str | None = CATALOG_IOC_VERSION) -> dict:
     print(f"Reading catalog from {catalog_path}")
     by_sci, by_english, total = load_catalog_index(catalog_path)
     print(f"  -> {total} species")
 
     print(f"Reading Multiling IOC from {xlsx_path}")
-    languages, rows = parse_multiling(xlsx_path)
-    print(f"  -> {len(rows)} workbook rows, {len(languages)} language columns")
+    languages, rows, ioc_version = parse_multiling(xlsx_path)
+    print(f"  -> IOC {ioc_version}: {len(rows)} workbook rows, {len(languages)} language columns")
+    if expected_ioc_version and ioc_version != expected_ioc_version:
+        sys.exit(f"Multiling workbook is IOC {ioc_version} but the catalog is IOC "
+                 f"{expected_ioc_version}. Use the matching workbook (or rebuild the "
+                 f"catalog first); --allow-version-mismatch overrides.")
+    bad_codes = [c for c, _ in languages.values() if not is_valid_language_tag(c)]
+    if bad_codes:
+        sys.exit(f"non-canonical language tags in LANGUAGE_COLUMNS: {bad_codes}")
 
-    # translations[code][english_name] = translated name. Keys are every
-    # English form the app can display a species under: canonical common name
-    # plus catalog aliases (legacy AOS names on old rows). Coverage is tracked
-    # per species (not per key) so aliases don't inflate it past 100%.
+    # translations[code][scientific_name] = translated name, keyed by the
+    # catalog's scientific name (the workbook's English name is only a
+    # fallback join for a row whose binomial the catalog spells differently).
     translations: dict[str, dict[str, str]] = {code: {} for code, _ in languages.values()}
-    covered: dict[str, set[str]] = {code: set() for code, _ in languages.values()}
     unmatched = 0
     for row in rows:
-        entry = by_sci.get(row['sci']) if row['sci'] else None
-        if entry is None and row['english']:
-            entry = by_english.get(row['english'].lower())
-        if entry is None:
+        sci = by_sci.get(row['sci']) if row['sci'] else None
+        if sci is None and row['english']:
+            sci = by_english.get(row['english'].lower())
+        if sci is None:
             unmatched += 1
             continue
-        canonical, aliases = entry
         for code, name in row['names'].items():
-            t = translations[code]
-            t.setdefault(canonical, name)
-            covered[code].add(canonical)
-            for a in aliases:
-                t.setdefault(a, name)
+            translations[code].setdefault(sci, name)
     if unmatched:
-        print(f"  workbook rows with no catalog match: {unmatched} "
-              f"(IOC version drift; English fallback covers most)")
+        print(f"  workbook rows with no catalog match: {unmatched}")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     emitted: dict[str, dict] = {}
     skipped: list[str] = []
     for i, (code, native) in languages.items():
         t = translations[code]
-        coverage = len(covered[code]) / total if total else 0.0
+        coverage = len(t) / total if total else 0.0
         if coverage < min_coverage and code not in include:
             skipped.append(f"{code} ({native}): coverage {coverage:.1%} < {min_coverage:.0%}")
             continue
         out = out_dir / f'bird_names.{code}.json'
         with open(out, 'w', encoding='utf-8') as f:
-            json.dump(dict(sorted(t.items(), key=lambda kv: kv[0].lower())), f,
+            json.dump(dict(sorted(t.items())), f,
                       ensure_ascii=False, indent=0)
             f.write('\n')
         emitted[code] = {'code': code, 'name_native': native,
-                         'species_count': len(covered[code]), 'coverage': round(coverage, 4)}
+                         'species_count': len(t), 'coverage': round(coverage, 4)}
         print(f"Wrote {len(t):6d} names ({coverage:6.1%} of species) -> {out.name}")
 
     for s in skipped:
@@ -257,7 +274,9 @@ def build(xlsx_path: Path, out_dir: Path, catalog_path: Path,
             print(f"Removed stale {stale.name}")
 
     index = {
-        'generated_from': 'Multiling IOC 15.2',
+        'generated_from': f'Multiling IOC {ioc_version}',
+        'ioc_version': ioc_version,
+        'keyed_by': 'scientific_name',
         'catalog_species': total,
         'languages': [emitted[c] for c in sorted(emitted)],
     }
@@ -267,7 +286,7 @@ def build(xlsx_path: Path, out_dir: Path, catalog_path: Path,
         f.write('\n')
     print(f"Wrote manifest ({len(emitted)} languages) -> {index_path.name}")
 
-    _update_notices(out_dir / 'NOTICES.md')
+    _update_notices(out_dir / 'NOTICES.md', ioc_version)
     return index
 
 
@@ -275,23 +294,26 @@ _NOTICES_BEGIN = '<!-- bird-names-i18n:begin -->'
 _NOTICES_END = '<!-- bird-names-i18n:end -->'
 
 
-def _update_notices(path: Path) -> None:
+def _update_notices(path: Path, ioc_version: str) -> None:
     """Insert/replace this script's attribution section in NOTICES.md.
 
     The section is delimited by marker comments so the script only owns its
     own block; the catalog builder rewrites the rest of the file wholesale.
     """
+    major_minor = ioc_version
     section = (
         f"{_NOTICES_BEGIN}\n"
-        "## IOC Multiling — bird-name translations\n\n"
-        "Frank Gill, David Donsker & Pamela Rasmussen (Eds). 2026. "
-        "*IOC World Bird List* — Multiling IOC 15.2. "
+        f"## Multiling IOC (v{major_minor}) — bird-name translations\n\n"
+        "Frank Gill, David Donsker & Pamela Rasmussen (Eds). "
+        f"*IOC World Bird List* — Multiling IOC {major_minor}. "
         "https://www.worldbirdnames.org/new/ioc-lists/master-list-2/\n\n"
         "Licensed under "
         "[Creative Commons Attribution 3.0 Unported](https://creativecommons.org/licenses/by/3.0/).\n"
-        "Translated common names in ``bird_names.<lang>.json`` are derived from this\n"
-        "source (joined to the catalog on scientific name). Generated by\n"
-        "``tools/build_bird_names_i18n.py``.\n"
+        "The translated common names in ``bird_names.<tag>.json`` are taken from\n"
+        "this source, keyed by scientific name and joined to the catalog (same IOC\n"
+        "release as ``birds_global.csv``). Names are reproduced unchanged; Kestrel\n"
+        "only selects the languages it ships and drops species outside its catalog.\n"
+        "Generated by ``tools/build_bird_names_i18n.py``.\n"
         f"{_NOTICES_END}\n"
     )
     existing = path.read_text(encoding='utf-8') if path.exists() else ''
@@ -316,10 +338,13 @@ if __name__ == '__main__':
     p.add_argument('--include', default='',
                    help='Comma-separated language codes to emit even when below '
                         'the coverage threshold (e.g. "ru,de").')
+    p.add_argument('--allow-version-mismatch', action='store_true',
+                   help='Accept a workbook whose IOC release differs from the catalog.')
     p.add_argument('--out-dir', type=Path, default=OUT_DIR,
                    help=argparse.SUPPRESS)
     p.add_argument('--catalog', type=Path, default=CATALOG_PATH,
                    help=argparse.SUPPRESS)
     args = p.parse_args()
-    include = {c.strip().lower() for c in args.include.split(',') if c.strip()}
-    build(args.xlsx, args.out_dir, args.catalog, args.min_coverage, include)
+    include = {c.strip() for c in args.include.split(',') if c.strip()}
+    build(args.xlsx, args.out_dir, args.catalog, args.min_coverage, include,
+          expected_ioc_version=None if args.allow_version_mismatch else CATALOG_IOC_VERSION)

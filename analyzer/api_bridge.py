@@ -1785,20 +1785,22 @@ class Api:
         """Return the {english_name: translated_name} map for ``lang``.
 
         Display-only bird-name translations built from Multiling IOC (see
-        ``tools/build_bird_names_i18n.py``). The frontend resolves species
-        labels at render time and falls back to English for names missing
-        from the map. ``lang`` is validated against the emitted-code shape
+        ``tools/build_bird_names_i18n.py``). The files are keyed by scientific
+        name; the loader joins them back onto the catalog's English names and
+        walks the BCP-47 fallback chain (``pt-BR`` -> ``pt``). The frontend
+        resolves species labels at render time and falls back to English for
+        names missing from the map. ``lang`` is canonicalized and validated
         before touching the filesystem; no caller-supplied path is accepted.
         """
         try:
             try:
-                from kestrel_analyzer.bird_catalog import is_valid_language_code, load_name_translations
+                from kestrel_analyzer.bird_catalog import load_name_translations
+                from kestrel_analyzer.language_codes import canonicalize_language_tag
             except ImportError:
-                from analyzer.kestrel_analyzer.bird_catalog import (  # type: ignore
-                    is_valid_language_code, load_name_translations,
-                )
-            code = str(lang or '').strip().lower()
-            if not is_valid_language_code(code):
+                from analyzer.kestrel_analyzer.bird_catalog import load_name_translations  # type: ignore
+                from analyzer.kestrel_analyzer.language_codes import canonicalize_language_tag  # type: ignore
+            code = canonicalize_language_tag(lang) if isinstance(lang, str) else None
+            if not code:
                 return {'success': False, 'error': 'invalid language code', 'lang': '', 'map': {}}
             return {'success': True, 'lang': code, 'map': load_name_translations(code)}
         except Exception as e:
