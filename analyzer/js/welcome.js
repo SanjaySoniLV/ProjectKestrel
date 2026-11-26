@@ -73,8 +73,8 @@
         icon: 'paw',
         title: 'Try wildlife mode',
         badge: 'New!',
-        body: 'Kestrel can detect squirrels, bears, and other wildlife in addition to birds. Enable it in <b>Settings &rarr; Analysis</b>.',
-        action: { label: 'Open Settings', onClick: function() { try { showSettings(); } catch (_) {} } },
+        body: 'Kestrel can detect squirrels, bears, and other wildlife as well as birds. Turn it on when you analyze a folder: the <b>Analyze</b> dialog asks what to look for.',
+        action: { label: 'Analyze folders…', onClick: function() { document.getElementById('analyzeQueueBtn')?.click(); } },
       },
       {
         icon: 'plus',
@@ -94,8 +94,8 @@
       {
         icon: 'keyboard',
         title: 'Space = open in editor',
-        body: 'Press <kbd>Space</kbd> on any photo to open the original in your chosen photo editor. Set your preference in Settings.',
-        action: { label: 'Open Settings', onClick: function() { try { showSettings(); } catch (_) {} } },
+        body: 'Press <kbd>Space</kbd> on any photo to open the original in your photo editor. Choose the editor in <b>Settings &rarr; General</b>.',
+        action: { label: 'Open Settings', onClick: function() { try { showSettings('general'); } catch (_) {} } },
       },
       {
         icon: 'trash',
@@ -110,8 +110,8 @@
       {
         icon: 'star',
         title: 'Not satisfied with the star ratings?',
-        body: 'Tune the rating thresholds and profile in Settings. Your manual overrides are always saved as gold stars.',
-        action: { label: 'Open Settings', onClick: function() { try { showSettings(); } catch (_) {} } },
+        body: 'Choose a stricter or more lenient rating style in <b>Settings &rarr; Star ratings</b>. Stars you set yourself are always kept, shown in gold.',
+        action: { label: 'Open Settings', onClick: function() { try { showSettings('ratings'); } catch (_) {} } },
       },
     ];
 
