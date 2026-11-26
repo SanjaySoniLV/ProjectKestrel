@@ -4,7 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <!-- Defense-in-depth CSP: matches the HTTP header set by visualizer.py's
-       Handler.end_headers(). See FINDING-01 for the full rationale.
+       Handler.end_headers(): even if hostile text reaches the DOM, it cannot
+       run script.
        'unsafe-eval' is required because pywebview 6.1's JS bridge generates
        window.pywebview.api stubs with `new Function(...)`; without it the
        API never materialises and every button that calls into Python
@@ -2196,7 +2197,7 @@
           return rb !== ra ? rb - ra : parseNumber(b.quality) - parseNumber(a.quality);
         });
 
-        // Phase 1: quality cutoff — unrated images follow explicit default setting.
+        // Step 1: quality cutoff — unrated images follow explicit default setting.
         const qualityAcceptSet = new Set(
           sorted.filter(r => {
             const rt = getRating(r);
@@ -2206,7 +2207,7 @@
                 .map(r => r.filename)
         );
 
-        // Phase 2: min-per-scene guarantee — promote top images if below minKeep
+        // Step 2: min-per-scene guarantee — promote top images if below minKeep
         let acceptCount = qualityAcceptSet.size;
         if (acceptCount < minKeep) {
           for (const r of sorted) {
@@ -2218,7 +2219,7 @@
           }
         }
 
-        // Phase 3: max-per-scene cap (min always wins: effective cap = max(maxKeep, minKeep))
+        // Step 3: max-per-scene cap (min always wins: effective cap = max(maxKeep, minKeep))
         const effectiveCap = maxKeep === Infinity ? Infinity : Math.max(maxKeep, minKeep);
         const finalAccepts = new Set();
         let keptSoFar = 0;
@@ -2671,9 +2672,7 @@
         const scenesToRemove = [];
         for (const [sceneId, sceneData] of Object.entries(_scenedata.scenes)) {
           // Scenedata stores membership in `image_filenames` (see
-          // kestrel_analyzer/database.py). This used to read `images`, which a
-          // scenedata entry never has, so moved rejects were never removed
-          // from their scenes.
+          // kestrel_analyzer/database.py), not `images`.
           if (Array.isArray(sceneData.image_filenames)) {
             // Filter out rejected images from this scene
             sceneData.image_filenames = sceneData.image_filenames.filter(f => !rejectSet.has(f));

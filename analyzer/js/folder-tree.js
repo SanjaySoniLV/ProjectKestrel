@@ -1,5 +1,5 @@
     // ── Folder Tree ──────────────────────────────────────────────────────────────
-    // Multi-root state (Phase 2): the sidebar tree can host N independent root
+    // Multi-root state: the sidebar tree can host N independent root
     // folders side by side. The user adds roots via "+ 📂 Load Folders…" and
     // each root scans its own subtree. Scene/data aggregation downstream is
     // already multi-root via __rootPath / __folderSlot row tagging.
@@ -221,10 +221,8 @@
       if (treeWrap) treeWrap.classList.add('folder-tree-empty');
     }
 
-    // Legacy alias. Existing callers that historically called scanFolderTree
-    // get the new additive behavior — if a caller truly wants "replace tree"
-    // it should call clearAllFolderRoots() first. The Phase 2 plan documents
-    // each migrated caller; this alias keeps any stragglers compiling.
+    // Alias for addFolderRoot: adds a root rather than replacing the tree. A
+    // caller that wants "replace tree" calls clearAllFolderRoots() first.
     async function scanFolderTree(rootPath) {
       const res = await addFolderRoot(rootPath);
       return !!res.added;
@@ -592,8 +590,8 @@ ${node.path}` : node.path;
       }
 
       // Label/icon click toggles expand/collapse (same as clicking the chevron).
-      // Loading/unloading a folder is reserved for the checkbox per Phase 2
-      // decision — clicking the label is non-destructive.
+      // Loading/unloading a folder is reserved for the checkbox, so clicking
+      // the label is non-destructive.
       const toggleExpand = (e) => {
         e.stopPropagation();
         treeActivePath = node.path;
@@ -618,19 +616,8 @@ ${node.path}` : node.path;
       label.addEventListener('click', toggleExpand);
       icon.addEventListener('click', toggleExpand);
 
-      // (Right-click "Clear Kestrel Analysis Data" context menu removed —
-      // the action now lives in the per-folder Folder Actions dropdown in
-      // the scene-grid header. Discoverable, single entry point.)
-
       return wrap;
     }
-
-    // Phase 3: populateAnalyzeFolderCounts removed. The Phase 3 Analyze
-    // Folders dialog has its own independent inspection cache + render
-    // pipeline (analyze-dialog.js:_inspectAndRenderAnalyzeDlg) using
-    // pure-CSS state pills. The legacy 6-class color coding it set
-    // (analyzed-full / analyzed-partial / analyzed-none / no-photos-deep /
-    // no-photos-shallow / has-errored-images) is no longer used.
 
     function _normRootPath(p) {
       return (p || '').replace(/\\/g, '/').replace(/\/+$/, '');

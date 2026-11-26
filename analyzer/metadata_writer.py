@@ -42,7 +42,7 @@ def _safe_sidecar_path(root: str, filename: str) -> str | None:
     live directly inside ``root`` and return it, or ``None`` if ``filename``
     is unsafe.
 
-    Policy (FINDING-02): ``filename`` MUST already be a bare basename. Any
+    Policy: ``filename`` MUST already be a bare basename. Any
     directory component (``../``, ``..\\``, absolute path, drive letter, UNC
     prefix, leading separator, NUL byte, Windows ``altsep``) causes the
     entry to be rejected outright — we deliberately do not silently reduce
@@ -803,7 +803,7 @@ def write_xmp_metadata(
                 # Jail sidecar writes to ``root_path``. A crafted filename
                 # with traversal segments (``../sensitive``) or an absolute
                 # path would otherwise let the caller write .xmp files
-                # anywhere on disk. See FINDING-02.
+                # anywhere on disk.
                 resolved_image = _safe_sidecar_path(root_real, filename)
                 if resolved_image is None:
                     errors.append(f'{filename}: rejected (unsafe filename)')

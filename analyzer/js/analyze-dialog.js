@@ -1,6 +1,6 @@
-    // ── Analyze Folders Dialog (Phase 3 — completely independent state) ──────────
+    // ── Analyze Folders Dialog (completely independent state) ──────────────────
     //
-    // The dialog tree no longer reads or writes the main sidebar tree's state
+    // The dialog tree never reads or writes the main sidebar tree's state
     // (folderTreeRootNodes / folderTreeRootOrder / checkedFolderPaths). It has
     // its own Map, its own checked set, its own expanded set, its own recents
     // settings key (analyze_recents). The two trees never share state. This
@@ -59,12 +59,8 @@
 
     // ── Cloud destination est. time ────────────────────────────────────────────
     //
-    // The old model was `max(upload_seconds, images × 0.5s)`. The 0.5 s/img
-    // analysis floor assumed 2 img/sec sustained, but a job that scales out to
-    // its full container allowance sustains ~3 img/sec — so the floor carried a
-    // permanent ~50% pessimism that dominated the estimate on fast connections.
-    //
-    // The model below simulates the actual worker pipeline instead:
+    // A fixed per-image floor is badly pessimistic once a job scales out, so the
+    // model below simulates the server pipeline instead:
     //   1. Nothing is analyzed until CLOUDCOMPUTE_DISPATCH_THRESHOLD images
     //      (or the whole job, if smaller) have landed in R2 staging.
     //   2. One Modal container starts, after a cold-start delay.
@@ -79,9 +75,7 @@
     // The pipeline parameters are SERVED BY THE WORKER, in the `pipeline` block
     // of the POST /api/upload-test response — the same speed test that gives us
     // the transfer rate. They are read from the module the scheduler itself
-    // reads, so they cannot drift the way a hardcoded copy does (the deployed
-    // thresholds moved 250→100 and 500→200 at one point, which a mirrored copy
-    // would have silently missed).
+    // reads, so they cannot drift the way a hardcoded copy would.
     //
     // The values below are FALLBACKS ONLY, for an older Worker that doesn't
     // serve the block, or a malformed response. They match the deployed values
@@ -462,7 +456,7 @@
       if (unlockBox) unlockBox.checked = false;
     }
 
-    // ── State pill computation (Phase 3F polish v2) ─────────────────────────────
+    // ── State pill computation ──────────────────────────────────────────────────
     //
     // Two orthogonal axes — homogenized color scheme so colors only signal
     // queue inclusion, never confuse the user with a "done = blue" that
@@ -503,9 +497,9 @@
       return false;
     }
 
-    // ── Tree rendering — uses state pills + Phase 1.5 rails + right-side cb ──
+    // ── Tree rendering — state pills, rails and a right-side checkbox ──
     //
-    // Row layout (Phase 3 polish to mirror the main tree):
+    // Row layout (mirrors the main tree):
     //   [rails…] [arrow] [pill] [icon] [label] [count] [outdated-badge] [cb-col]
     //
     // ancestorContinueFlags: array of booleans (one per ancestor depth ≥ 1).
@@ -537,7 +531,7 @@
         : (folderPipelineNote(node) ? `${folderPipelineNote(node)}
 ${node.path}` : node.path);
 
-      // ── Rails (Phase 1.5B mirror) ────────────────────────────────────────────
+      // ── Rails (mirror the main tree) ─────────────────────────────────────────
       const isRoot = ancestorContinueFlags === null;
       if (!isRoot) {
         for (let i = 0; i < ancestorContinueFlags.length; i++) {
@@ -555,7 +549,7 @@ ${node.path}` : node.path);
       arrow.className = 'tree-arrow' + (hasChildren ? (isExpanded ? ' open' : '') : ' leaf');
       arrow.textContent = '▶';
 
-      // State pill (orthogonal color × shape — Phase 3F)
+      // State pill (orthogonal color × shape)
       const pillSpec = _computeAnalyzeDlgPill(node, info, isChecked);
       const pill = document.createElement('span');
       pill.className = `state-pill state-pill--${pillSpec.color} state-pill--${pillSpec.shape}`;
@@ -581,7 +575,7 @@ ${node.path}` : node.path);
         countSpan.textContent = '';
       }
 
-      // Outdated badge (Phase 3F — orthogonal to the pill).
+      // Outdated badge (orthogonal to the pill).
       let outdatedBadge = null;
       if (outdated) {
         outdatedBadge = document.createElement('span');
@@ -594,7 +588,7 @@ ${node.path}` : node.path);
           : `Analyzed with analysis version ${folderPipelineLabel(node)}; current is ${CURRENT_PIPELINE_MAJOR}.0. Will re-analyze (destructive) if checked.`;
       }
 
-      // ── Right-side checkbox column (Phase 1.5A mirror) ──────────────────────
+      // ── Right-side checkbox column (mirrors the main tree) ──────────────────
       // Always present (placeholder if no checkbox available) so the right
       // edge stays aligned across all rows.
       const cbCol = document.createElement('span');
@@ -707,7 +701,7 @@ ${node.path}` : node.path);
       }
     }
 
-    // ── Folder inspection (Phase 3F — populates the pill cache) ─────────────────
+    // ── Folder inspection (populates the pill cache) ────────────────────────────
     //
     // Walks every visible row in the dialog tree, batch-calls inspect_folders,
     // populates analyzeDlgInspectionCache keyed by normalized path, then
@@ -775,7 +769,7 @@ ${node.path}` : node.path);
       }
     }
 
-    // ── Recents chips (Phase 3G — independent from main tree's folder_recents) ──
+    // ── Recents chips (independent from main tree's folder_recents) ──
 
     function _adlgBuildRecentsChip(path) {
       const wrap = buildFolderRecentsChip(
@@ -881,7 +875,7 @@ ${node.path}` : node.path);
       } catch (e) { /* best-effort */ }
     }
 
-    // ── Queue summary computation (Phase 3I) ────────────────────────────────────
+    // ── Queue summary computation ───────────────────────────────────────────────
     //
     // Reads analyzeDlgCheckedPaths + analyzeDlgInspectionCache. Computes:
     //   - total images to process (skips already-fully-analyzed unless unlock is on)

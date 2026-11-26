@@ -285,10 +285,9 @@
   flex-shrink: 0;
 }
 
-/* ── State encoding (simplified Phase 1.5) ────────────────────────────────────
-   Bold weight is no longer used for state — color alone carries the at-a-glance
-   signal. Italic is reserved for outdated + in-progress (subtle visual cue).
-   Bold is preserved for the future so when something IS bold, it actually pops. */
+/* ── State encoding ───────────────────────────────────────────────────────────
+   Color alone carries the at-a-glance state; bold is not used for state, so
+   anything bold stands out. Italic marks outdated and in-progress folders. */
 .tree-node-row.has-kestrel:not(.analyzed-full):not(.analyzed-partial):not(.analyzed-none) .tree-label {
   color: var(--text);
 }
@@ -306,9 +305,8 @@
   color: var(--brand);
 }
 
-/* Phase 3: legacy .adlg-node-row.has-kestrel / analyzed-* color rules removed.
-   The new analyze dialog uses pure-CSS state pills to carry per-folder state
-   instead of recoloring the label text. Labels stay default text color. */
+/* The analyze dialog shows per-folder state with pills (analyze.css), not
+   label colour, so its labels keep the default text colour. */
 
 /* Outdated version styling: italic only (color inherited from analyzed-* class) */
 .tree-node-row.version-outdated .tree-label {

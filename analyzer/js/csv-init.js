@@ -101,10 +101,9 @@
       const VALID = ['all', 'reviewed', 'unreviewed'];
       try {
         let mode = getSetting('sceneReviewFilter', null);
-        // Migrate the superseded boolean. This used to be a single
-        // "Only manually reviewed scenes" checkbox; an existing install that
-        // had it ticked should land on 'reviewed' rather than silently
-        // reverting to showing everything.
+        // Migrate the older "Only manually reviewed scenes" boolean: an
+        // install that had it ticked should land on 'reviewed' rather than
+        // silently showing everything.
         if (!VALID.includes(mode)) {
           mode = getSetting('onlyManualRatedScenes', false) ? 'reviewed' : 'all';
         }
@@ -336,16 +335,7 @@
       });
     }
 
-    // Wire "Load checked" button (removed from HTML; kept as no-op guard)
-    const treeLoadSelectedBtn = document.getElementById('treeLoadSelected');
-    if (treeLoadSelectedBtn) {
-      treeLoadSelectedBtn.addEventListener('click', async () => {
-        if (checkedFolderPaths.size === 0) return;
-        await loadMultipleFolders(Array.from(checkedFolderPaths));
-      });
-    }
-
-    // ── Recents chips (2H) + empty hint context (2I) ──────────────────────────
+    // ── Recents chips + empty hint context ──────────────────────────────────
     // Read folder_recents from settings on startup, probe existence via
     // inspect_folders, render chips into #folderRecentsRow. Each chip click
     // calls addFolderRoot for that specific path (same flow as + Load Folders).

@@ -36,7 +36,7 @@ _DARKTABLE_EXE = None
 def _validate_custom_editor_path(raw: str) -> str | None:
     """Return a canonicalised ``customEditorPath`` or ``None`` if unsafe.
 
-    Minimum hardening for FINDING-05. The feature is intentionally retained,
+    Minimum hardening for a user-configured editor binary. The feature is intentionally retained,
     with its inherent "execute whatever the user configured" risk documented,
     but we close the most obvious foot-guns:
 
@@ -178,7 +178,7 @@ def launch(path: str, editor: str):
     # Custom editor: load path from settings and validate before exec.
     # We can't prove the user-chosen binary is benign, but we can refuse the
     # obviously-dangerous cases (UNC, non-existent, control chars, relative
-    # paths). See FINDING-05.
+    # paths).
     if editor == 'custom':
         settings = load_persisted_settings()
         raw_custom = settings.get('customEditorPath')
@@ -418,14 +418,11 @@ def launch(path: str, editor: str):
         except Exception as e:
             debug(f"[LAUNCH] macOS: open() raised: {e}")
 
-        # NOTE: the previous ``osascript -e 'tell ... open (POSIX file "<path>")'``
-        # fallback has been removed. Interpolating ``path`` into an AppleScript
-        # string allowed a filename containing a literal double-quote to break
-        # out of the POSIX-file literal and inject arbitrary AppleScript —
-        # which in turn can ``do shell script``. See FINDING-04. ``open path``
-        # above is the canonical macOS launcher; the only remaining fallback
-        # is Finder reveal (which is argv-safe because ``path`` is passed as a
-        # distinct argv element, not interpolated into any DSL).
+        # Never fall back to ``osascript``: interpolating ``path`` into an
+        # AppleScript string lets a filename containing a double quote inject
+        # arbitrary AppleScript, which can ``do shell script``. ``open path``
+        # above is the macOS launcher; the only fallback is Finder reveal,
+        # which is argv-safe because ``path`` is a distinct argv element.
 
         # Last resort: reveal in Finder
         try:

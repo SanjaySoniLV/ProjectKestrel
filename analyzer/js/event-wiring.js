@@ -6,7 +6,7 @@
       analyzeQueueBtn.addEventListener('click', openAnalyzeDialog);
     }
 
-    // ── Phase 3 Analyze Folders dialog event wiring ─────────────────────────────
+    // ── Analyze Folders dialog event wiring ─────────────────────────────────────
     // The dialog has fully independent state (analyzeDlgRootNodes /
     // analyzeDlgCheckedPaths / analyzeDlgInspectionCache). All persistence and
     // .kestrel deletion happens in the queue worker (per-item flags).
@@ -49,7 +49,7 @@
       renderAnalyzeDlgRecentsChips();
     });
 
-    // ── Start Analysis (Phase 3H) ────────────────────────────────────────────
+    // ── Start Analysis ───────────────────────────────────────────────────────
     // Compute per-item flags from the dialog state. If any folder will lose
     // user data, open the confirmation modal. Otherwise start immediately.
     const analyzeDlgAdd = document.getElementById('analyzeDlgAdd');
@@ -257,7 +257,7 @@
       }
     }
 
-    // Pre-queue confirmation modal (Phase 3H). Lists destructive folders,
+    // Pre-queue confirmation modal. Lists destructive folders,
     // forces an explicit click before .kestrel deletion happens.
     function _openAnalyzeConfirmModal(destructive, onProceed) {
       const dlg = document.getElementById('analyzeConfirmDlg');

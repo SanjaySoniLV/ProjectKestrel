@@ -449,8 +449,6 @@
   gap: 8px;
 }
 
-/* Removed invalid comma between overflow properties (was causing lint error) */
-/* .meta > :first-child duplicate rule retained earlier above */
 .inline input[type="text"] {
   min-width: 0;
 }
