@@ -127,6 +127,7 @@ from kestrel_analyzer.config import (
     RAW_EXTENSIONS as _RAW_EXTENSIONS,
 )
 from kestrel_analyzer.database import copy_file_atomic
+import cull_session
 from kestrel_analyzer.pipeline_version import folder_pipeline_major, read_app_version, scan_summary
 
 # Telemetry — failsafe import (never blocks startup)
@@ -606,8 +607,6 @@ class Api(SettingsBridgeMixin, EnhancedGpuBridgeMixin, BirdCatalogBridgeMixin):
         self._culling_companion_extensions: tuple[str, ...] = _CULLING_COMPANION_EXTENSIONS
         # Set externally by visualizer.main() after window/server come up.
         self._main_window = None
-        self._culling_window = None
-        self._culling_window_root = None
         self._server_port: int | None = None
         # Async share-with-perch state (job_id -> {progress, cancel_event, thread})
         self._share_jobs: dict = {}
@@ -4161,12 +4160,7 @@ class Api(SettingsBridgeMixin, EnhancedGpuBridgeMixin, BirdCatalogBridgeMixin):
         except Exception as e:
             return {'success': False, 'error': str(e)}
 
-    # ------------------------------------------------------------------ #
-    #  Culling Assistant API                                               #
-    # ------------------------------------------------------------------ #
-
     _main_window = None
-    _culling_window = None
     _server_port = None
     # OAuth flow state (per-instance, defaults safe for fresh sessions).
     _oauth_lock = None              # lazy-init threading.Lock in _get_oauth_lock
@@ -4174,92 +4168,6 @@ class Api(SettingsBridgeMixin, EnhancedGpuBridgeMixin, BirdCatalogBridgeMixin):
     _oauth_status = "idle"
     _oauth_cancel_event = None      # threading.Event for the active flow
     _oauth_thread = None            # the active oauth-flow worker thread
-
-    def _culling_window_is_open(self) -> bool:
-        """True if the Culling Assistant webview is still in ``webview.windows``."""
-        win = getattr(self, '_culling_window', None)
-        if win is None:
-            return False
-        try:
-            import webview as _wv
-            windows = getattr(_wv, 'windows', None) or []
-            return win in windows
-        except Exception:
-            return False
-
-    def _on_culling_window_closed(self):
-        self._culling_window = None
-        self._culling_window_root = None
-
-    def _focus_culling_window(self, win) -> None:
-        restore = getattr(win, 'restore', None)
-        if callable(restore):
-            try:
-                restore()
-            except Exception as e:
-                warn(f'[culling] restore failed: {e}')
-        show = getattr(win, 'show', None)
-        if callable(show):
-            try:
-                show()
-            except Exception as e:
-                warn(f'[culling] show failed: {e}')
-
-    def open_culling_window(self, root_path: str):
-        """Open a pywebview window for the Culling Assistant.
-
-        One window only: a later click focuses the existing assistant and,
-        if the folder changed, reloads it. Stacking windows shares ``js_api``
-        and would race cull state and IPC.
-        """
-        try:
-            if not WEBVIEW_IMPORT_SUCCESS:
-                return {'success': False, 'error': 'pywebview not available'}
-
-            root_real, err = self._validate_root_dir(root_path, context='open_culling_window', require_exists=True)
-            if err:
-                return {'success': False, 'error': err}
-
-            import webview as _wv
-            folder_name = os.path.basename(root_real) if root_real else 'Unknown'
-            port = self._server_port or 8765
-            from urllib.parse import quote
-            culling_url = f'http://{HOST}:{port}/culling.html?root={quote(root_real, safe="")}'
-            title = f'Culling Assistant \u2014 {folder_name}'
-
-            if self._culling_window_is_open():
-                win = self._culling_window
-                if self._culling_window_root != root_real:
-                    win.load_url(culling_url)
-                    self._culling_window_root = root_real
-                    try:
-                        win.title = title
-                    except Exception as e:
-                        warn(f'[culling] set title failed: {e}')
-                self._focus_culling_window(win)
-                return {'success': True}
-
-            win = _wv.create_window(
-                title,
-                culling_url,
-                js_api=self,
-                width=1400,
-                height=900,
-            )
-            self._culling_window = win
-            self._culling_window_root = root_real
-            closed = getattr(getattr(win, 'events', None), 'closed', None)
-            if closed is not None:
-                try:
-                    closed += self._on_culling_window_closed
-                except TypeError:
-                    warn('[culling] closed-handler subscribe failed')
-            return {'success': True}
-        except Exception as e:
-            error(f'[API] open_culling_window error: {e}')
-            import traceback
-            error(f'[culling] Traceback: {traceback.format_exc()}')
-            return {'success': False, 'error': str(e)}
 
     def _get_oauth_lock(self):
         """Lazy-init the OAuth flow lock; mirrors the _share_jobs_lock pattern."""
@@ -8873,6 +8781,64 @@ class Api(SettingsBridgeMixin, EnhancedGpuBridgeMixin, BirdCatalogBridgeMixin):
         except Exception as e:
             error(f'[API] undo_last_cull_pass error: {e}')
             return {'success': False, 'error': str(e)}
+
+    # ── Cull mode sessions (domain logic in cull_session.py) ─────────────────
+
+    def _cull_history_ids(self, kestrel_dir: str, reject_dir: str):
+        ids = [p['id'] for p in self._read_cull_history(kestrel_dir)]
+        if not ids and self._reject_primary_names(reject_dir):
+            ids = ['legacy']
+        return ids
+
+    def _cull_session_call(self, root_path: str, context: str, fn):
+        try:
+            root_real, err = self._validate_root_dir(root_path, context=context, require_exists=True)
+            if err:
+                return {'success': False, 'error': err}
+            kestrel_dir, reject_dir = self._cull_paths(root_real)
+            if not os.path.isdir(kestrel_dir):
+                return {'success': False, 'error': '.kestrel folder not found'}
+            return fn(root_real, kestrel_dir, reject_dir)
+        except Exception as e:
+            error(f'[API] {context} error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def get_cull_session(self, root_path: str):
+        """Cull mode's pass records for a folder (``session`` is None before first use)."""
+        def run(root_real, kestrel_dir, _reject_dir):
+            session = cull_session.load(kestrel_dir)
+            return {'success': True,
+                    'session': cull_session.describe(root_real, session) if session else None}
+        return self._cull_session_call(root_path, 'get_cull_session', run)
+
+    def save_cull_session(self, root_path: str, data):
+        def run(_root_real, kestrel_dir, _reject_dir):
+            cull_session.save(kestrel_dir, data)
+            return {'success': True}
+        return self._cull_session_call(root_path, 'save_cull_session', run)
+
+    def undo_cull_move(self, root_path: str):
+        """Move the newest Cull mode pass's rejects back; current decisions stay."""
+        def run(root_real, kestrel_dir, reject_dir):
+            return cull_session.undo_move(
+                kestrel_dir,
+                lambda: self._cull_history_ids(kestrel_dir, reject_dir),
+                lambda: self.undo_last_cull_pass(root_real))
+        return self._cull_session_call(root_path, 'undo_cull_move', run)
+
+    def revert_cull_session(self, root_path: str, to_pass):
+        """Revert to the end of finished pass ``to_pass``; 0 resets the folder."""
+        try:
+            target = int(to_pass)
+        except (TypeError, ValueError):
+            return {'success': False, 'error': 'invalid pass number'}
+
+        def run(root_real, kestrel_dir, reject_dir):
+            return cull_session.revert(
+                kestrel_dir, target,
+                lambda: self._cull_history_ids(kestrel_dir, reject_dir),
+                lambda: self.undo_last_cull_pass(root_real))
+        return self._cull_session_call(root_path, 'revert_cull_session', run)
 
     # ── Folder drift detection & repair ──────────────────────────────────────
     #
