@@ -778,7 +778,7 @@
     </div>
 
     <div class="perch-upload-footer">
-      <button type="button" id="perchUploadCancelBtn">Cancel</button>
+      <button type="button" id="perchUploadCancelBtn" class="k-btn--quiet">Cancel</button>
       <button type="button" id="perchUploadSignInBtn" class="perch-cta hidden">Sign in to Perch</button>
       <button type="button" id="perchUploadSubmitBtn" class="perch-cta hidden" disabled>📤 Upload</button>
     </div>
@@ -1024,12 +1024,12 @@
         <div class="muted" id="egStatus" style="font-size:12px;margin-bottom:8px;white-space:pre-line"></div>
         <div class="row" style="gap:8px;justify-content:flex-start">
           <button id="egSetupBtn" type="button">Set up enhanced GPU performance</button>
-          <button id="egCancelBtn" type="button" class="hidden">Cancel</button>
+          <button id="egCancelBtn" type="button" class="k-btn--quiet hidden">Cancel</button>
           <button id="egReportNowBtn" type="button" class="hidden">Report a problem</button>
         </div>
         <div id="egReportRow" class="muted hidden" style="font-size:12px;margin:8px 0">
           Setup did not finish. Would you like to send a bug report? It includes your recent log, which lists the GPU options Windows offered, so we can improve support for your hardware.
-          <div style="margin-top:6px"><button id="egReportBtn" type="button">Send bug report</button> <button id="egReportDismiss" type="button">Not now</button></div>
+          <div style="margin-top:6px"><button id="egReportBtn" type="button">Send bug report</button> <button id="egReportDismiss" class="k-btn--quiet" type="button">Not now</button></div>
         </div>
       </div>
 
@@ -1076,7 +1076,7 @@
         <a href="#" class="qf-link" id="settingsQfForget">Forget my shared feedback</a></div>
     </div>
     <div class="settings-footer">
-      <button id="settingsCancel">Cancel</button>
+      <button id="settingsCancel" class="k-btn--quiet">Cancel</button>
       <button id="settingsSave" class="primary">Save</button>
     </div>
   </dialog>
@@ -1107,7 +1107,7 @@
       </div>
       <div class="detail" id="mergeSummary">Select at least two scenes to merge.</div>
       <div class="row" style="justify-content:flex-end; margin-top: 4px; gap:8px">
-        <button id="mergeCancel">Cancel</button>
+        <button id="mergeCancel" class="k-btn--quiet">Cancel</button>
         <button id="mergeApply" class="primary" disabled>Merge</button>
       </div>
     </div>
@@ -1668,7 +1668,7 @@
         This cannot be undone. Other queued folders (that don't need re-analysis) are unaffected.
       </p>
       <div class="analyze-confirm-actions">
-        <button id="analyzeConfirmCancel">Cancel</button>
+        <button id="analyzeConfirmCancel" class="k-btn--quiet">Cancel</button>
         <button id="analyzeConfirmProceed" class="analyze-confirm-danger">Erase data &amp; analyze</button>
       </div>
     </div>
@@ -1698,7 +1698,7 @@
         This cannot be undone. Photos in the folder are not touched.
       </p>
       <div class="analyze-confirm-actions">
-        <button id="clearKestrelCancel">Cancel</button>
+        <button id="clearKestrelCancel" class="k-btn--quiet">Cancel</button>
         <button id="clearKestrelProceed" class="analyze-confirm-danger">Delete analysis data</button>
       </div>
     </div>
@@ -1772,7 +1772,7 @@
       <img id="feedbackSsPreview" class="feedback-ss-preview" alt="screenshot preview" style="display:none" />
       <div id="feedbackStatus" style="font-size:13px; color:var(--muted); min-height:18px"></div>
       <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:4px">
-        <button id="feedbackCancel">Cancel</button>
+        <button id="feedbackCancel" class="k-btn--quiet">Cancel</button>
         <button id="feedbackSend" class="primary">Send anonymously</button>
       </div>
     </div>
@@ -1799,7 +1799,7 @@
       <p class="analytics-note">Your machine is identified only by a random ID — no device name, username, or IP address
         is stored or sent.</p>
       <div class="analytics-btns">
-        <button id="analyticsDecline">No thanks</button>
+        <button id="analyticsDecline" class="k-btn--quiet">No thanks</button>
         <button id="analyticsAccept" class="primary">Yes, I'd like to help</button>
       </div>
     </div>

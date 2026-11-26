@@ -34,48 +34,6 @@
   justify-content: flex-start;
 }
 
-/* Generic form-control styling (buttons, inputs, selects) */
-button,
-select,
-input[type="text"],
-input[type="search"],
-input[type="number"] {
-  background: #0e1117;
-  color: var(--text);
-  border: 1px solid #2a3040;
-  border-radius: 8px;
-  height: 36px;
-  padding: 0 12px;
-  outline: none;
-  transition: border-color .15s ease, background .15s ease;
-}
-
-button {
-  cursor: pointer;
-  background: #173253;
-  border-color: #214c7d;
-}
-
-button:hover {
-  background: #1c3a62;
-  border-color: #2b5f9e;
-}
-
-button.primary {
-  background: #1d5aa8;
-  border-color: #2b6ec8;
-}
-
-button.primary:hover {
-  background: #1f63b8;
-  border-color: #3a84e6;
-}
-
-button[disabled] {
-  opacity: .6;
-  cursor: not-allowed;
-}
-
 #saveCsv:not([disabled]) {
   background: #f5c542;
   border-color: #d1a735;

@@ -10,7 +10,7 @@
   --card: #161922;
   --card-border: #222634;
   --chip: #1d2230;
-  /* New: dialog column sizing */
+  /* Dialog column sizing */
   --right-w: 510px;
   --divider-w: 8px;
   /* Sticky scene-grid stack heights — keep these in sync so each sticky
@@ -24,10 +24,50 @@
        md  → cards, list rows, containers
        lg  → dialogs / large surfaces
        pill→ progress tracks / fully-rounded bars */
+  --radius-xs: 4px;
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 10px;
+  --radius-xl: 14px;
   --radius-pill: 999px;
+
+  /* Surfaces, lines and secondary text. */
+  --input-bg: #0e1117;
+  --border: #2a3040;
+  --divider: #1f2533;
+  --text-2: #cbd2dc;
+  --subtle: #6a768c;
+  --hover: #252d40;
+  --focus: #3a84e6;
+
+  /* Buttons. One primary per view; plain <button> is the secondary look. */
+  --primary-bg: #1d5aa8;
+  --primary-bg-hover: #1f63b8;
+  --primary-border: #2b6ec8;
+
+  /* Photo decisions and ratings. */
+  --accept: #2ecc71;
+  --reject: #e74c3c;
+  --undecided: #34495e;
+  --star: #f5c542;
+  --danger-text: #ff8a80;
+
+  /* Type scale. Display sizes above --fs-2xl stay literal. */
+  --fs-2xs: 10px;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-base: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 18px;
+  --fs-2xl: 22px;
+
+  /* Spacing scale. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
 }
 
 * {
@@ -111,5 +151,250 @@ kbd {
   font-size: 11px;
   font-family: monospace;
   color: #cbd2dc;
+  white-space: nowrap;
+}
+
+/* ── Shared controls ───────────────────────────────────────────────────────
+   One vocabulary for both windows. It is a guide, not a rule: a control with
+   a good reason to look different (Support, the Analyze call to action) keeps
+   its own style in its feature stylesheet.
+
+     <button>                 secondary: neutral fill, subtle border
+     <button class="primary"> primary: one per view
+     .k-btn--quiet            no fill or border until hover (Cancel, Close)
+     .k-btn--danger           destructive: red text, not a red box
+     .k-btn--icon             square, icon only (needs aria-label)
+     .k-btn--sm               compact height for toolbars and rows        */
+button,
+select,
+input[type="text"],
+input[type="search"],
+input[type="number"] {
+  background: var(--input-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  height: 36px;
+  padding: 0 12px;
+  outline: none;
+  transition: border-color .15s ease, background .15s ease, color .15s ease;
+}
+
+button {
+  cursor: pointer;
+  background: var(--chip);
+  color: var(--text-2);
+}
+
+button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+button:focus-visible,
+select:focus-visible,
+input:focus-visible {
+  border-color: var(--focus);
+}
+
+button.primary {
+  background: var(--primary-bg);
+  border-color: var(--primary-border);
+  color: #fff;
+}
+
+button.primary:hover {
+  background: var(--primary-bg-hover);
+  border-color: var(--focus);
+}
+
+button.k-btn--quiet {
+  background: transparent;
+  border-color: transparent;
+}
+
+button.k-btn--quiet:hover {
+  background: var(--hover);
+}
+
+button.k-btn--danger {
+  background: transparent;
+  border-color: transparent;
+  color: var(--danger-text);
+}
+
+button.k-btn--danger:hover {
+  background: rgba(231, 76, 60, .14);
+  color: var(--danger-text);
+}
+
+button.k-btn--sm {
+  height: 28px;
+  padding: 0 10px;
+  font-size: var(--fs-sm);
+}
+
+button.k-btn--icon {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+}
+
+button.k-btn--icon:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+button[disabled],
+button[disabled]:hover {
+  opacity: .6;
+  cursor: not-allowed;
+}
+
+/* Segmented toggle for every 2–3-way choice (the scene viewer's style).
+   Markup: <div class="k-seg" role="group"><button class="on">A</button>…</div>
+   Add .accept / .reject / .undecided to a button to colour it when on. */
+.k-seg {
+  display: inline-flex;
+  background: #1a1e26;
+  border-radius: var(--radius-sm);
+  padding: 2px;
+  gap: 2px;
+}
+
+.k-seg > button {
+  height: auto;
+  border: 0;
+  background: transparent;
+  color: var(--subtle);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: var(--radius-xs);
+}
+
+.k-seg > button:hover {
+  background: var(--hover);
+  color: var(--text-2);
+}
+
+.k-seg > button.on {
+  background: #2a3042;
+  color: var(--text);
+}
+
+.k-seg > button.on.accept { background: var(--accept); color: #fff; }
+.k-seg > button.on.reject { background: var(--reject); color: #fff; }
+.k-seg > button.on.undecided { background: var(--undecided); color: #fff; }
+
+/* Headings: one section heading and one dialog title everywhere.
+   Sentence case in the markup; the section heading is upper-cased here. */
+.k-section-title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.k-dialog-title {
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* Setting row: label and a one-line hint on the left, the control on the right. */
+.k-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: 10px 0;
+  border-bottom: 1px solid #1a1e28;
+}
+
+.k-row:last-child {
+  border-bottom: 0;
+}
+
+.k-row-label {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-base);
+  font-weight: 500;
+}
+
+.k-row-hint {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  color: var(--muted);
+}
+
+/* Switch: a styled checkbox, so forms and settings code keep reading .checked.
+   Markup: <input type="checkbox" class="k-switch" aria-label="…"> */
+input[type="checkbox"].k-switch {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  position: relative;
+  width: 34px;
+  height: 20px;
+  margin: 0;
+  border-radius: var(--radius-pill);
+  background: #2a3042;
+  cursor: pointer;
+  transition: background .15s ease;
+}
+
+input[type="checkbox"].k-switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: left .15s ease, background .15s ease;
+}
+
+input[type="checkbox"].k-switch:checked {
+  background: var(--primary-bg);
+}
+
+input[type="checkbox"].k-switch:checked::after {
+  left: 17px;
+  background: #fff;
+}
+
+input[type="checkbox"].k-switch:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+input[type="checkbox"].k-switch:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+/* Pill: small rounded label (counts, states). */
+.k-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--chip);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
   white-space: nowrap;
 }
