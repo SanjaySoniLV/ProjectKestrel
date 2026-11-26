@@ -1,17 +1,21 @@
-/* Folder "Change Settings" dialog (js/folder-settings.js).
-   Sizing and flex shell come from .kdlg (kdlg--md kdlg--flex); this file holds
-   the inner sections. */
+/* Folder settings dialog (js/folder-settings.js).
+   Sizing and flex shell come from .kdlg (kdlg--md kdlg--flex); rows are the
+   shared k-row / k-switch pieces. This file holds what is specific to it. */
 
 .fset-dlg { max-height: 90vh; }
 
 .fset-head {
   flex: 0 0 auto;
-  padding: 16px 18px 12px;
-  border-bottom: 1px solid var(--chip);
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-4) 18px var(--space-3);
 }
-.fset-head h3 { margin: 0 0 2px; font-size: var(--fs-lg); }
+.fset-head-text { flex: 1; min-width: 0; }
 .fset-sub {
-  font-size: var(--fs-sm);
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: var(--fs-md);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -21,77 +25,83 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 6px 18px 14px;
+  padding: 0 18px var(--space-4);
 }
 
-.fset-sec {
-  padding: 12px 0;
-  border-bottom: 1px solid var(--chip);
-}
-.fset-sec:last-child { border-bottom: 0; }
-.fset-sec h4 {
-  margin: 0 0 6px;
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: #7a90b8;
-}
-.fset-sec--row {
+/* Summary: counts as pills, then the accept / reject / undecided split. */
+.fset-summary {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 14px;
+  gap: 6px;
 }
-.fset-sec--row h4 { margin-bottom: 2px; }
-.fset-sec--row button { flex: 0 0 auto; }
+.fset-summary:empty { display: none; }
+.fset-cull {
+  flex-basis: 100%;
+  display: flex;
+  gap: var(--space-3);
+  margin-top: 4px;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.fset-cull-accept { color: var(--accept); }
+.fset-cull-reject { color: var(--danger-text); }
 
-.fset-hint { font-size: var(--fs-sm); line-height: 1.45; margin-top: 4px; }
-.fset-hint--warn { color: #d9a45a; }
+.fset-details { margin-top: var(--space-2); font-size: var(--fs-sm); }
+.fset-details > summary {
+  width: fit-content;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.fset-details > summary:hover { color: var(--text-2); }
+.fset-details[open] > summary { margin-bottom: 6px; }
 
-/* Folder info: two-column key/value list */
 .fset-grid {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
-  gap: 4px 14px;
-  font-size: var(--fs-md);
-}
-.fset-k { color: var(--muted); }
-.fset-v { min-width: 0; }
-.fset-path { word-break: break-all; user-select: text; }
-.fset-link {
-  margin-left: 6px;
-  padding: 1px 8px;
+  gap: 4px var(--space-3);
   font-size: var(--fs-sm);
 }
+.fset-k { color: var(--muted); }
+.fset-v { min-width: 0; color: var(--text-2); }
+.fset-path { word-break: break-all; user-select: text; }
+.fset-link { margin-left: 6px; }
 
-.fset-toggle {
+.fset-title { margin-top: 22px; margin-bottom: 0; }
+.fset-row--top { align-items: flex-start; }
+.k-row-hint + .k-row-hint { margin-top: 4px; }
+.fset-hint--warn { color: var(--warn); }
+
+/* Species region: dropdown, optional several-regions grid, re-score button. */
+.fset-region {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: var(--fs-md);
-  cursor: pointer;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2);
+  width: 250px;
+  flex: none;
 }
-.fset-toggle input:disabled + span { opacity: 0.55; }
-
-/* Species region */
-.fset-region { display: grid; gap: 8px; margin-top: 8px; }
 .fset-region select { width: 100%; }
 .fset-region.is-disabled { opacity: 0.5; }
 .fset-region-grid {
+  align-self: stretch;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 4px 12px;
-  padding: 8px 10px;
-  background: #0a0d12;
+  grid-template-columns: 1fr;
+  gap: 2px;
+  max-height: 180px;
+  overflow-y: auto;
+  padding: 6px var(--space-2);
+  background: var(--input-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   font-size: var(--fs-sm);
 }
 .fset-region-grid.hidden { display: none; }
 .fset-region-grid label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
-.fset-region-actions { display: flex; justify-content: flex-end; }
 .fset-progress {
+  align-self: stretch;
   height: 6px;
   border-radius: var(--radius-pill);
   background: var(--chip);
@@ -104,20 +114,3 @@
   background: var(--brand);
   transition: width 0.2s;
 }
-
-/* Destructive section: tinted and set apart from the rest */
-.fset-sec--danger {
-  margin-top: 6px;
-  padding: 12px 12px 14px;
-  border: 1px solid #3f2020;
-  border-radius: var(--radius-md);
-  background: #1c1416;
-}
-.fset-sec--danger h4 { color: #d08888; }
-.fset-danger-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-.fset-danger-btn {
-  border-color: #7f3f3f;
-  color: #ffc8c8;
-  background: #361818;
-}
-.fset-danger-btn:hover:not([disabled]) { background: #4a2020; }

@@ -117,12 +117,12 @@ class TestDialogWiring(unittest.TestCase):
                    "regroupChangedOnly"):
             self.assertIn(f'id="{el}"', self.html)
 
-    def test_change_settings_dialog_offers_it(self):
-        # Regroup moved from the Folder Actions menu into the Folder settings dialog.
+    def test_folder_settings_dialog_offers_it(self):
+        # Regroup lives in the Folder settings dialog, not the Folder actions menu.
         menu = self.grid.split("function _buildFolderActionsMenu", 1)[1].split("\n    async function", 1)[0]
-        self.assertNotIn("Regroup Scenes", menu)
+        self.assertNotIn("Regroup scenes", menu.replace("Regroup Scenes", "Regroup scenes"))
         settings = _read("js", "folder-settings.js")
-        self.assertIn("Regroup Scenes", settings)
+        self.assertIn("Regroup scenes", settings)
         self.assertIn("openRegroupDialog(folderPath)", settings)
 
     def test_apply_button_starts_disabled(self):
