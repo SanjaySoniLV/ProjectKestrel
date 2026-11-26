@@ -17,6 +17,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import api_bridge
+import settings_bridge
 from kestrel_analyzer import smart_search as ss
 from kestrel_analyzer import upgrade_v3
 from kestrel_analyzer.ml import siglip
@@ -469,6 +470,7 @@ def test_read_kestrel_csv_applies_the_quality_model_lazily(api, folder, monkeypa
     kdir = str(folder / ".kestrel")
     _upgrade(kdir)  # siglip effective
     monkeypatch.setattr(api_bridge, "load_persisted_settings", lambda: {"quality_model": "legacy"})
+    monkeypatch.setattr(settings_bridge, "load_persisted_settings", lambda: {"quality_model": "legacy"})
     r = api.read_kestrel_csv(str(folder))
     assert r["success"]
     df = pd.read_csv(os.path.join(kdir, "kestrel_database.csv"))
@@ -476,6 +478,7 @@ def test_read_kestrel_csv_applies_the_quality_model_lazily(api, folder, monkeypa
     assert len(rows) and (rows["quality"] - rows["quality_legacy"]).abs().max() < 1e-6
     # Not while the folder is being analysed.
     monkeypatch.setattr(api_bridge, "load_persisted_settings", lambda: {"quality_model": "siglip"})
+    monkeypatch.setattr(settings_bridge, "load_persisted_settings", lambda: {"quality_model": "siglip"})
     monkeypatch.setattr(api_bridge._queue_manager, "has_running_writer", lambda root: True)
     api.read_kestrel_csv(str(folder))
     df2 = pd.read_csv(os.path.join(kdir, "kestrel_database.csv"))
@@ -498,6 +501,7 @@ def test_first_read_under_the_default_scorer_switches_to_legacy_and_keeps_user_e
     sd_before = sd.read_bytes()
 
     monkeypatch.setattr(api_bridge, "load_persisted_settings", lambda: {})  # no stored choice -> default
+    monkeypatch.setattr(settings_bridge, "load_persisted_settings", lambda: {})  # no stored choice -> default
     assert api.read_kestrel_csv(str(folder))["success"]
 
     after = pd.read_csv(kdir / "kestrel_database.csv")
@@ -525,6 +529,7 @@ def test_failed_quality_rewrite_only_warns(api, folder, monkeypatch):
 
     monkeypatch.setattr(qm, "apply_quality_model", denied)
     monkeypatch.setattr(api_bridge, "load_persisted_settings", lambda: {})
+    monkeypatch.setattr(settings_bridge, "load_persisted_settings", lambda: {})
     r = api.read_kestrel_csv(str(folder))
     assert r["success"] and r["data"]
     assert (kdir / "kestrel_database.csv").read_bytes() == before

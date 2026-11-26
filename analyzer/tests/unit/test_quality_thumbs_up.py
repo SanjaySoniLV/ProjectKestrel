@@ -21,6 +21,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import api_bridge  # noqa: E402
+import settings_bridge  # noqa: E402
 import kestrel_telemetry  # noqa: E402
 
 pytestmark = pytest.mark.unit
@@ -82,6 +83,7 @@ class TestRecordQualityThumbsUpBridge:
 
     def _settings(self, monkeypatch, settings):
         monkeypatch.setattr(api_bridge, "load_persisted_settings", lambda: dict(settings))
+        monkeypatch.setattr(settings_bridge, "load_persisted_settings", lambda: dict(settings))
 
     def test_opted_in_sends_one_event(self, monkeypatch, sent):
         self._settings(monkeypatch, {"analytics_opted_in": True, "quality_model": "siglip"})

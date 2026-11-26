@@ -34,10 +34,10 @@ def _read(*parts: str) -> str:
 
 
 class TestRatingThresholdsBridge(unittest.TestCase):
-    """api_bridge.get_rating_thresholds is the single source for the frontend."""
+    """The bridge's get_rating_thresholds is the single source for the frontend."""
 
     def setUp(self):
-        self.src = _read("api_bridge.py")
+        self.src = _read("settings_bridge.py")
 
     def test_method_exists(self):
         self.assertIn("def get_rating_thresholds(self)", self.src)

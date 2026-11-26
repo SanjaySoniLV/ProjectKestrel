@@ -1,6 +1,6 @@
 {
   "big_file_lines": {
-    "analyzer/api_bridge.py": 10515,
+    "analyzer/api_bridge.py": 10085,
     "analyzer/cloud_compute_client.py": 1763,
     "analyzer/css/dialogs/analyze.css": 1512,
     "analyzer/css/perch.css": 1790,

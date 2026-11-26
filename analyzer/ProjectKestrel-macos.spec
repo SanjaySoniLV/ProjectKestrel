@@ -23,7 +23,7 @@ print(os.listdir("sample_sets"))
 # gate and wildlife labels (models/bioclip/, ~330 MB), SigLIP 2 for smart search and the default
 # quality score (models/siglip/, ~359 MB) and the legacy quality CNN. Pipeline 3.0 dropped the
 # SpeciesNet classifier (224 MB) and the CLIP smart-search prototype (209 MB).
-datas = [('models', 'models'), ('kestrel_telemetry.py', '.'), ('build_attestation.py', '.'), ('folder_inspector.py', '.'), ('cli.py', '.'), ('VERSION.txt', '.'), ('VERSION_NUMBER.txt', '.'), ('kestrel_analyzer', 'kestrel_analyzer'), ('visualizer.html', '.'), ('css', 'css'), ('js', 'js'), ('csv_parser.js', '.'), ('culling.html', '.'), ('logo.png', '.'), ('perch-logo.png', '.'), ('whatsnew-bird.jpg', '.'), ('logo.ico', '.'), ('settings_utils.py', '.'), ('editor_launch.py', '.'), ('queue_manager.py', '.'), ('api_bridge.py', '.'), ('mac_sandbox.py', '.'), ('mac_oauth.py', '.'), ('dist_channel.py', '.'), ('dist_channel.txt', '.')]
+datas = [('models', 'models'), ('kestrel_telemetry.py', '.'), ('build_attestation.py', '.'), ('folder_inspector.py', '.'), ('cli.py', '.'), ('VERSION.txt', '.'), ('VERSION_NUMBER.txt', '.'), ('kestrel_analyzer', 'kestrel_analyzer'), ('visualizer.html', '.'), ('css', 'css'), ('js', 'js'), ('csv_parser.js', '.'), ('culling.html', '.'), ('logo.png', '.'), ('perch-logo.png', '.'), ('whatsnew-bird.jpg', '.'), ('logo.ico', '.'), ('settings_utils.py', '.'), ('editor_launch.py', '.'), ('queue_manager.py', '.'), ('api_bridge.py', '.'), ('settings_bridge.py', '.'), ('bird_catalog_bridge.py', '.'), ('mac_sandbox.py', '.'), ('mac_oauth.py', '.'), ('dist_channel.py', '.'), ('dist_channel.txt', '.')]
 
 # CI generates build_attestation.json with the HMAC attestation for official builds.
 # Source builds and dev workflows skip generation, in which case the bundle just
@@ -38,7 +38,7 @@ else:
 sample_sets_tree = Tree('sample_sets', prefix='sample_sets')
 datas += [(item[0], item[1]) for item in sample_sets_tree]  # Only use first 2 elements of each tuple
 binaries = []
-hiddenimports = ['pywebview', 'certifi','PIL','exifread','settings_utils','editor_launch','queue_manager','api_bridge','build_attestation','mac_sandbox','mac_oauth','dist_channel']
+hiddenimports = ['pywebview', 'certifi','PIL','exifread','settings_utils','editor_launch','queue_manager','api_bridge', 'settings_bridge', 'bird_catalog_bridge','build_attestation','mac_sandbox','mac_oauth','dist_channel']
 binaries += collect_dynamic_libs('onnxruntime')
 tmp_ret = collect_all('msvc-runtime')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]

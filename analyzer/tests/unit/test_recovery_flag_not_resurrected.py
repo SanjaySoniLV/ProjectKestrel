@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 try:
     import api_bridge
+    import settings_bridge
     import visualizer
 except Exception as e:  # pragma: no cover - environment-dependent
     pytest.skip(f'bridge/visualizer not importable in this env: {e}', allow_module_level=True)
@@ -39,7 +40,7 @@ def store(monkeypatch):
         data.clear()
         data.update(d)
 
-    for mod in (api_bridge, visualizer):
+    for mod in (api_bridge, settings_bridge, visualizer):
         monkeypatch.setattr(mod, 'load_persisted_settings', _load)
         monkeypatch.setattr(mod, 'save_persisted_settings', _save)
     monkeypatch.setattr(visualizer, '_start_native_crash_probe', lambda *a, **k: None)
