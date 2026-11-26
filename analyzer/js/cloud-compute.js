@@ -168,8 +168,8 @@
         if (_ccQueuedImages >= minImages && typeof _getCloudEstSeconds === 'function') {
           const est = _getCloudEstSeconds(_ccQueuedImages);
           text = est.secs != null
-            ? `~${_formatDuration(est.secs)} at your measured upload speed.`
-            : `As fast as ~${_formatDuration(est.analysisSecs)}, depending on your upload speed.`;
+            ? `~${KestrelUtil.formatDuration(est.secs)} at your measured upload speed.`
+            : `As fast as ~${KestrelUtil.formatDuration(est.analysisSecs)}, depending on your upload speed.`;
         }
         fastEl.textContent = text;
         fastEl.classList.toggle('hidden', !text);
@@ -1596,16 +1596,6 @@
       return false;
     }
 
-    function _ccFmtBytes(n) {
-      n = Number(n) || 0;
-      if (n < 1024) return n + ' B';
-      const units = ['KB', 'MB', 'GB', 'TB'];
-      let v = n / 1024;
-      let i = 0;
-      while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
-      return v.toFixed(v >= 100 ? 0 : 1) + ' ' + units[i];
-    }
-
     function _ccTrackHistoryDownload(jobId, totalPacks) {
       const n = Number(totalPacks) || 0;
       if (n <= 0) return;
@@ -1959,7 +1949,7 @@
             }
             if (imagesEl) imagesEl.textContent = `${fmtN(usage.totalImages)} photo(s) uploaded`;
             if (assetsEl) assetsEl.textContent = `${fmtN(usage.totalAssets)} total asset(s)`;
-            if (bytesEl) bytesEl.textContent = `${_ccFmtBytes(usage.totalBytes)} storage used`;
+            if (bytesEl) bytesEl.textContent = `${KestrelUtil.formatBytes(usage.totalBytes)} storage used`;
           } else {
             if (perchesEl) perchesEl.textContent = 'Usage unavailable';
           }
@@ -1983,7 +1973,7 @@
           const title = escapeHtml(p.title || '(untitled)');
           const state = String(p.uploadState || p.status || '—');
           const stateCls = state === 'complete' ? ' complete' : '';
-          const bytes = _ccFmtBytes(p.actualBytes);
+          const bytes = KestrelUtil.formatBytes(p.actualBytes);
           const imgs = (Number(p.imageCount) || 0).toLocaleString();
           return `
             <div class="perch-account-row">

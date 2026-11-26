@@ -138,17 +138,6 @@
       } catch (_) { }
     }
 
-    /** Format a duration in seconds to a readable string like "2m 30s". */
-    function formatDuration(secs) {
-      if (!isFinite(secs) || secs < 0) return '–';
-      secs = Math.round(secs);
-      if (secs < 60) return secs + 's';
-      const m = Math.floor(secs / 60), s = secs % 60;
-      if (m < 60) return m + 'm ' + (s > 0 ? s + 's' : '');
-      const h = Math.floor(m / 60), rm = m % 60;
-      return h + 'h ' + (rm > 0 ? rm + 'm' : '');
-    }
-
     /** Render the queue panel from a status object. */
     function renderQueuePanel(status) {
       window._lastQueueStatus = status; // store for analyze dialog queue preview
@@ -302,7 +291,7 @@
             }
           }
           if (totalRemaining > 5) {
-            overallEtaEl.textContent = `about ${formatDuration(totalRemaining)} left`;
+            overallEtaEl.textContent = `about ${KestrelUtil.formatDuration(totalRemaining)} left`;
             overallEtaEl.classList.remove('hidden');
           } else {
             overallEtaEl.classList.add('hidden');
