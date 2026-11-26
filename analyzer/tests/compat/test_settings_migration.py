@@ -12,15 +12,12 @@ import pytest
 import json
 from pathlib import Path
 import sys
-from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from settings_utils import (
     _sanitize_settings_payload,
     _apply_monotonic_guard,
-    load_persisted_settings,
-    save_persisted_settings,
 )
 
 
@@ -104,7 +101,7 @@ class TestForwardCompatibility:
 
             # Find keys we expect to be "future"/unknown
             # Heuristic: any key not in result is a problem
-            for key, val in original.items():
+            for key, _val in original.items():
                 if key not in result:
                     pytest.fail(
                         f"{fixture_path.name}: forward-compat key '{key}' was dropped"

@@ -21,7 +21,6 @@ They also pin the invariant that all of this is observability only: it must
 never change what a run does, and must never fail a run.
 """
 
-import json
 import sys
 from pathlib import Path
 
@@ -31,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 try:
     from kestrel_analyzer.pipeline import AnalysisPipeline
-    from kestrel_analyzer.logging_utils import log_event, read_log_entries
+    from kestrel_analyzer.logging_utils import read_log_entries
     from kestrel_analyzer.ml import GPU_EP
 except Exception as exc:  # pragma: no cover - environment-dependent
     # The pipeline pulls in cv2 / onnxruntime / rawpy. Several CI containers

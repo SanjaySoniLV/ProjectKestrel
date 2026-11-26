@@ -13,7 +13,6 @@ with Clerk, and build the redirect URI from whichever one actually binds.
 """
 
 import sys
-import threading
 from pathlib import Path
 
 import pytest

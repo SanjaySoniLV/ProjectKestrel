@@ -54,3 +54,5 @@ EXPCOMP_tests/
 _kestrel*
 .tmp*
 .wrangler/
+# JS lint tooling (development only)
+node_modules/

@@ -20,6 +20,7 @@ import tempfile
 import time
 import threading
 import webbrowser
+from pathlib import Path
 
 from settings_utils import load_persisted_settings, save_persisted_settings, debug, info, warn, error
 # Several long-standing call sites use `log(...)` as a catch-all logger.
@@ -4185,7 +4186,7 @@ class Api:
                         start_dir = os.path.abspath(os.path.join(exe_dir, '..', '..'))
                         if not os.path.isdir(start_dir):
                             start_dir = exe_dir
-                        for root, dirs, files in os.walk(start_dir):
+                        for root, dirs, _files in os.walk(start_dir):
                             depth = root[len(exe_dir):].count(os.sep)
                             if depth > 5:
                                 del dirs[:]
@@ -7384,9 +7385,8 @@ class Api:
     # ─── Perch link persistence (Phase 1: per-folder perch_link.json) ──
 
     @staticmethod
-    def _perch_link_path(folder_path: str) -> "Path":
-        from pathlib import Path as _P
-        return _P(folder_path) / ".kestrel" / "perch_link.json"
+    def _perch_link_path(folder_path: str) -> Path:
+        return Path(folder_path) / ".kestrel" / "perch_link.json"
 
     @staticmethod
     def _hash_kestrel_state(folder_path: str) -> str | None:
@@ -7799,7 +7799,7 @@ class Api:
                 headers=headers,
                 timeout=15,
             )
-        except Exception as e:
+        except Exception:
             return None, "unreachable"
         if r.status_code == 404:
             return None, "not_found"
@@ -9951,7 +9951,6 @@ class Api:
                 }
 
             # What is actually at the destination, and how big.
-            fdiff = self._repair_import()
             try:
                 from folder_inspector import scan_folder_images  # type: ignore
             except ImportError:

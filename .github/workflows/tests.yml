@@ -32,6 +32,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint:
+    name: Lint (Ruff + ESLint)
+    # Linux runner: no model weights or Windows-only packages needed, and it is fast.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Ruff
+        run: |
+          pip install ruff==0.16.9
+          ruff check analyzer tools
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: ESLint
+        run: |
+          npm ci
+          npm run lint:js
+
   unit:
     name: Unit lane (no model weights)
     runs-on: windows-latest

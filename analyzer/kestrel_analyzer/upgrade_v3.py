@@ -37,7 +37,7 @@ import json
 import os
 import shutil
 import threading
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, Optional
 
 import numpy as np
 
@@ -236,7 +236,7 @@ def upgrade_folder(
                 shutil.copy2(db_path, backup)
                 stats["backup"] = os.path.basename(backup)
         except OSError as e:
-            raise RuntimeError(f"could not back up the database before upgrading: {e}")
+            raise RuntimeError(f"could not back up the database before upgrading: {e}") from e
 
     for n_done, i in enumerate(todo):
         if cancel_event is not None and cancel_event.is_set():

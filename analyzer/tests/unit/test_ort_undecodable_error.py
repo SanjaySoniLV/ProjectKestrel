@@ -11,7 +11,6 @@ every later image errored) and the logs never showed the real cause.
 import locale
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 

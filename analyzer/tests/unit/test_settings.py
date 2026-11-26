@@ -12,7 +12,6 @@ from settings_utils import (
     _coerce_float,
     _coerce_string,
     _coerce_enum,
-    _coerce_path,
     _sanitize_path_list,
     _sanitize_settings_payload,
     _apply_monotonic_guard,

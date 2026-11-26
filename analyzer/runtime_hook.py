@@ -1,7 +1,6 @@
 import os
 import sys
 import ctypes
-import glob
 
 
 # This file runs before the rest of the codebase is importable (it IS the
