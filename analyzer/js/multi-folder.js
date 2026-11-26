@@ -289,7 +289,7 @@
         const ready = await waitForPywebview();
         kdebug('[pickFolder] Pywebview API ready:', ready);
       }
-      // Additive multi-root: clicking "+ 📂 Load Folders…" ADDS to the tree
+      // Additive multi-root: clicking "Add Folders…" ADDS to the tree
       // and keeps existing checked folders. Each picked root
       // scans and auto-checks its analyzed descendants. Multi-select picker
       // (choose_directories) returns N paths; fall back to single-select if

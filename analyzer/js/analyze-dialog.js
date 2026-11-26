@@ -350,7 +350,7 @@
     // (the slow list_subfolders call) and _inspectAndRenderAnalyzeDlg (the
     // inspect_folders pass). Surfaces a single progress bar that walks from
     // "Scanning folder structure…" through "Inspecting N folders…" so the
-    // user never sees a dead UI gap after clicking + Add Folders.
+    // user never sees a dead UI gap after clicking Add Folders.
     function _adlgShowProgress(label, pct) {
       const wrap = document.getElementById('analyzeScanProgress');
       const lbl = document.getElementById('analyzeScanLabel');
@@ -394,7 +394,7 @@
 
       const depth = getSetting('treeScanDepth', 3);
       // Show the scanning progress IMMEDIATELY (before the slow bridge call)
-      // so the user never sees a dead-UI gap after clicking + Add Folders.
+      // so the user never sees a dead-UI gap after clicking Add Folders.
       const folderName = norm.split('/').filter(Boolean).pop() || norm;
       _adlgShowProgress(`Scanning ${folderName}…`, 15);
       try {

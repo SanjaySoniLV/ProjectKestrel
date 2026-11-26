@@ -16,7 +16,7 @@
       document.getElementById('analyzeQueueDlg').close();
     });
 
-    // + Add Folders: multi-select picker → addAnalyzeDlgRoot per pick →
+    // Add Folders: multi-select picker → addAnalyzeDlgRoot per pick →
     // persist each to analyze_recents → re-inspect + render.
     document.getElementById('analyzeDlgLoadFolders')?.addEventListener('click', async () => {
       if (!hasPywebviewApi) { alert('Folder picker is only available in the desktop app.'); return; }

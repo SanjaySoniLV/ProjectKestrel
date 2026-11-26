@@ -1122,7 +1122,7 @@
         card.innerHTML = `
         <img class="live-dlg-crop-img" alt="" />
         <div class="ldc-conf">–</div>
-        <div class="ldc-quality">Quality: —</div>
+        <div class="ldc-quality">Quality —</div>
         <div class="ldc-stars">☆☆☆☆☆</div>
         <div class="ldc-species">–</div>
         <div class="ldc-family">–</div>`;
@@ -1158,7 +1158,7 @@
           imgEl._swapSeq = (imgEl._swapSeq || 0) + 1; // drop any load still in flight
           _liveLastCropKeys[i] = '';
           confEl.textContent = '–';
-          qualityEl.textContent = 'Quality: —';
+          qualityEl.textContent = 'Quality —';
           starsEl.textContent = '☆☆☆☆☆';
           spEl.textContent = '–'; spEl.className = 'ldc-species';
           fmEl.textContent = '–'; fmEl.className = 'ldc-family';
@@ -1172,9 +1172,9 @@
 
         const qVal = i < quality.length ? Number(quality[i].quality) : NaN;
         if (Number.isFinite(qVal) && qVal >= 0) {
-          qualityEl.textContent = `Quality: ${qVal.toFixed(3)}`;
+          qualityEl.textContent = `Quality ${qVal.toFixed(3)}`;
         } else {
-          qualityEl.textContent = i < crops.length ? 'Quality: …' : 'Quality: —';
+          qualityEl.textContent = i < crops.length ? 'Quality …' : 'Quality —';
         }
 
         // Live dialog intentionally uses raw quality thresholds (not normalized ratings).

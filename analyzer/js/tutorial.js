@@ -25,7 +25,7 @@
 
     const _tutTryYourOwnStepBase = {
       title: 'Now try it with your own photos',
-      body: 'You’re ready!<br><br>• Click <b>Analyze Folders…</b> to process a new folder of photos.<br>• Click <b>Load Folders…</b> (or drop into the Folder Tree) to browse photos Kestrel has already analyzed.<br><br><b>Tip:</b> open a parent folder once to load your whole library — then search across every outing, every year.',
+      body: 'You’re ready!<br><br>• Click <b>Analyze Folders…</b> to process a new folder of photos.<br>• Click <b>Add Folders…</b> (or drop into the Folder Tree) to browse photos Kestrel has already analyzed.<br><br><b>Tip:</b> open a parent folder once to load your whole library — then search across every outing, every year.',
       target: '#analyzeQueueBtn',
       position: 'right',
       highlightAlso: ['#pickFolder'],
@@ -157,14 +157,14 @@
       },
       {
         title: 'Merging scenes',
-        body: 'The two highlighted scenes above were actually one continuous burst that Kestrel split in two. Hold <kbd>Ctrl</kbd> and click both cards to select them, then click <b>Merge selected scenes</b> to combine them back into one.<br><br>You can also <kbd>Shift</kbd>+click to range-select a group of scenes at once.',
+        body: 'The two highlighted scenes above were actually one continuous burst that Kestrel split in two. Hold <kbd>Ctrl</kbd> and click both cards to select them, then click <b>Merge into one scene</b> to combine them back into one.<br><br>You can also <kbd>Shift</kbd>+click to range-select a group of scenes at once.',
         target: '#sceneGrid .card:nth-child(2)',
         highlightAlso: ['#sceneGrid .card:nth-child(1)'],
         position: 'bottom',
       },
       {
         title: 'Search across your whole library',
-        body: 'Kestrel searches across <b>every loaded folder</b>. Type a species or family to filter the timeline, or describe a photo (<i>“perched on a tree”</i>, <i>“bird in flight”</i>) to smart-search it. Right-click a result and choose <b>Go to scene in timeline</b> to see it in context.<br><br><b>Tip:</b> open a <b>parent folder</b> once (via <b>Load Folders…</b> or the Folder Tree) and Kestrel loads your entire library at once — then you can search across every outing and every year without re-loading anything.',
+        body: 'Kestrel searches across <b>every loaded folder</b>. Type a species or family to filter the timeline, or describe a photo (<i>“perched on a tree”</i>, <i>“bird in flight”</i>) to smart-search it. Right-click a result and choose <b>Go to scene in timeline</b> to see it in context.<br><br><b>Tip:</b> open a <b>parent folder</b> once (via <b>Add Folders…</b> or the Folder Tree) and Kestrel loads your entire library at once — then you can search across every outing and every year without re-loading anything.',
         target: '#smartSearchBox',
         position: 'bottom',
       },
@@ -191,7 +191,7 @@
       },
       {
         title: 'You’re all set!',
-        body: 'That’s the full tour! Quick recap:<br><br>• <b>Analyze Folders</b> to process new photos<br>• <b>Load Folders</b> to browse analyzed photos<br>• <b>Click scenes</b> to view &amp; rate photos<br>• <b>Culling Assistant</b> for bulk Accept/Reject workflow<br>• <b>Write Photo Metadata</b> to export to Lightroom, darktable, etc.<br><br><b>Remember:</b> Write photo metadata <em>before</em> importing into Lightroom or Capture One for best results!<br><br>Click the <b>Tutorial</b> button anytime to replay this tour. Happy birding!',
+        body: 'That’s the full tour! Quick recap:<br><br>• <b>Analyze Folders</b> to process new photos<br>• <b>Add Folders</b> to browse analyzed photos<br>• <b>Click scenes</b> to view &amp; rate photos<br>• <b>Culling Assistant</b> for bulk Accept/Reject workflow<br>• <b>Write Photo Metadata</b> to export to Lightroom, darktable, etc.<br><br><b>Remember:</b> Write photo metadata <em>before</em> importing into Lightroom or Capture One for best results!<br><br>Click the <b>Tutorial</b> button anytime to replay this tour. Happy birding!',
         target: null,
       },
       {

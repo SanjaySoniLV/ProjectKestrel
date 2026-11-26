@@ -748,16 +748,20 @@
   bottom: 28px;
   left: 50%;
   transform: translateX(-50%);
-  background: #1d2230;
-  border: 1px solid #3a84e6;
-  border-radius: 12px;
-  padding: 10px 18px;
+  background: var(--chip);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 6px 6px 6px 14px;
   display: flex;
-  gap: 14px;
+  gap: var(--space-1);
   align-items: center;
   box-shadow: 0 6px 32px rgba(0, 0, 0, .6);
   z-index: 300;
   white-space: nowrap;
+}
+
+.select-action-bar #selectActionLabel {
+  margin-right: var(--space-2);
 }
 
 .select-action-bar.hidden {

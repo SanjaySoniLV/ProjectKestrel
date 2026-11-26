@@ -305,7 +305,7 @@
 
     // Legacy "Change root…" button — the element is now permanently hidden in
     // HTML (kept only so this handler can't NPE on a missing element). The
-    // user-facing replacement is "+ 📂 Load Folders…" which is additive.
+    // user-facing replacement is "Add Folders…", which is additive.
     // No handler wired; intentional no-op.
 
     // Wire "Select All / Select None" toggle (one button is always hidden via
@@ -338,7 +338,7 @@
     // ── Recents chips + empty hint context ──────────────────────────────────
     // Read folder_recents from settings on startup, probe existence via
     // inspect_folders, render chips into #folderRecentsRow. Each chip click
-    // calls addFolderRoot for that specific path (same flow as + Load Folders).
+    // calls addFolderRoot for that specific path (same flow as Add Folders).
     function _ellipsizePathMiddle(path, maxLen = 28) {
       if (!path) return '';
       const p = path.replace(/\\/g, '/');
@@ -444,8 +444,8 @@
       const row = document.getElementById('folderRecentsRow');
       const hasRecents = row && !row.classList.contains('hidden') && row.children.length > 0;
       hint.innerHTML = hasRecents
-        ? 'Click a recent above, or <b>Load Folders…</b> to pick a new one.'
-        : 'No folders loaded.<br />Click <b>Load Folders…</b> to get started.';
+        ? 'Click a recent above, or <b>Add Folders…</b> to pick a new one.'
+        : 'No folders loaded.<br />Click <b>Add Folders…</b> to get started.';
     }
 
     // Initial render of recents on startup.

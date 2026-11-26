@@ -1,5 +1,5 @@
-    // ── Folder "Change Settings" dialog ─────────────────────────────────────────
-    // Opened from Folder Actions → Change Settings…. Gathers the things a user
+    // ── Folder settings dialog ─────────────────────────────────────────
+    // Opened from Folder Actions → Folder settings…. Gathers the things a user
     // can change on an analysed folder without re-analysing it:
     //   • folder info (read-only)             • ignore non-bird wildlife (display filter)
     //   • species detection region (re-score) • capture time    • scene grouping
@@ -84,7 +84,7 @@
       dlg.setAttribute('aria-labelledby', 'fsetTitle');
       dlg.innerHTML = `
         <div class="fset-head">
-          <h3 id="fsetTitle">Change Settings</h3>
+          <h3 id="fsetTitle">Folder settings</h3>
           <div class="fset-sub muted" title="${escapeHtml(folderPath)}">${escapeHtml(folderName)}</div>
         </div>
         <div class="fset-body">

@@ -332,48 +332,35 @@
     function loadVersionBadge() {
       if (!versionBadge) return;
       
-      async function updateVersionBadge() {
+      async function readTextFile(name) {
         try {
-          // Fetch app version from VERSION.txt
-          let displayVersion = 'Version: unknown';
-          try {
-            const resp = await fetch('VERSION.txt', { cache: 'no-store' });
-            if (resp.ok) {
-              const text = await resp.text();
-              const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-              if (lines.length > 0) {
-                const firstLine = lines[0];
-                if (firstLine.toLowerCase().startsWith('version')) {
-                  displayVersion = firstLine;
-                } else {
-                  displayVersion = `Version: ${firstLine}`;
-                }
-              }
-            }
-          } catch (e) {
-            console.error('[loadVersionBadge] Failed to fetch VERSION.txt:', e);
-          }
-          
-          // Fetch pipeline version from config.py via API
-          if (hasPywebviewApi && window.pywebview?.api?.get_pipeline_version) {
-            try {
-              const result = await window.pywebview.api.get_pipeline_version();
-              const pipelineVersion = result?.version || result;
-              if (pipelineVersion && pipelineVersion !== 'unknown') {
-                displayVersion += ` | Pipeline Version: ${pipelineVersion}`;
-              }
-            } catch (e) {
-              console.error('[loadVersionBadge] Failed to fetch pipeline version:', e);
-            }
-          }
-          
-          versionBadge.textContent = displayVersion;
+          const resp = await fetch(name, { cache: 'no-store' });
+          if (resp.ok) return (await resp.text()).split(/\r?\n/).map(l => l.trim()).find(Boolean) || '';
         } catch (e) {
-          console.error('[loadVersionBadge] Unexpected error:', e);
-          versionBadge.textContent = 'Version: error';
+          console.error(`[loadVersionBadge] Failed to fetch ${name}:`, e);
         }
+        return '';
       }
-      
+
+      // "Project Kestrel v7.2.0"; the release name and analysis version go in the tooltip.
+      async function updateVersionBadge() {
+        const number = (await readTextFile('VERSION_NUMBER.txt')).replace(/(\.\d+\.\d+)\.0$/, '$1');
+        const codename = (await readTextFile('VERSION.txt')).replace(/^version:\s*/i, '');
+        versionBadge.textContent = number ? `Project Kestrel v${number}` : 'Project Kestrel';
+        const details = [];
+        if (codename) details.push(codename);
+        if (hasPywebviewApi && window.pywebview?.api?.get_pipeline_version) {
+          try {
+            const result = await window.pywebview.api.get_pipeline_version();
+            const pipelineVersion = result?.version || result;
+            if (pipelineVersion && pipelineVersion !== 'unknown') details.push(`Analysis version ${pipelineVersion}`);
+          } catch (e) {
+            console.error('[loadVersionBadge] Failed to fetch the analysis version:', e);
+          }
+        }
+        versionBadge.title = details.join(' · ');
+      }
+
       // If API is not ready yet, wait for it
       if (!hasPywebviewApi) {
         waitForPywebview().then(() => updateVersionBadge());

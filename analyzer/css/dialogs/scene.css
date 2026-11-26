@@ -173,16 +173,24 @@
 
 /* ── Shortcut legend bar ── */
 .scene-shortcut-legend {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 5px 14px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px 24px;
+  padding: 10px 14px;
   background: rgba(74,163,255,0.06);
   border-bottom: 1px solid #1f2533;
   font-size: 11px;
   color: var(--muted);
   flex-shrink: 0;
-  flex-wrap: wrap;
+}
+.scene-shortcut-legend .ssl-col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.scene-shortcut-legend .k-section-title {
+  margin: 0 0 2px;
 }
 .scene-shortcut-legend kbd {
   display: inline-block;
@@ -843,12 +851,14 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 4px;
+  white-space: nowrap;
   font-size: 10px;
   color: var(--muted);
 }
 .filmstrip-card .filmstrip-stars {
   font-size: 9px;
-  letter-spacing: 1px;
+  letter-spacing: 0.5px;
 }
 .filmstrip-card .filmstrip-stars .filled.auto { color: #6aa0ff; }
 .filmstrip-card .filmstrip-stars .filled.manual { color: #f5c542; }

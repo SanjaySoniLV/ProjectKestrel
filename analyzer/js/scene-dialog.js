@@ -483,7 +483,7 @@
           const cls = filled ? (origin === 'manual' ? 'filled manual' : 'filled auto') : '';
           starHtml += `<span class="${cls}">${filled ? '★' : '☆'}</span>`;
         }
-        meta.innerHTML = `<span class="filmstrip-stars">${starHtml}</span><span>Q ${fmt3(r.quality)}</span>`;
+        meta.innerHTML = `<span class="filmstrip-stars">${starHtml}</span><span title="Quality">${fmt3(r.quality)}</span>`;
         info.appendChild(meta);
         card.appendChild(info);
 
@@ -494,7 +494,7 @@
           `<b>${escapeHtml(r.filename || '')}</b>`,
           _sceneTooltipSpeciesLine(r),
           formatCaptureTime(r.capture_time) ? `Captured: ${formatCaptureTime(r.capture_time)}` : '',
-          `Quality: ${fmt3(r.quality)}`,
+          `Quality ${fmt3(r.quality)}`,
           `Rating: ${'★'.repeat(rating)}${'☆'.repeat(5 - rating)} ${origin ? `(${origin})` : ''}`,
           cull ? `Status: ${cull === 'accept' ? '✓ Accepted' : '✗ Rejected'}` : '',
         ].filter(Boolean).join('<br>');
@@ -692,7 +692,7 @@
       if (fnEl) { fnEl.textContent = r.filename || '—'; fnEl.title = r.filename || ''; }
 
       const qEl = el('#sceneInfoQuality');
-      if (qEl) qEl.textContent = `Quality: ${fmt3(activeQuality)}`;
+      if (qEl) qEl.textContent = `Quality ${fmt3(activeQuality)}`;
 
       const cullToggle = el('#sceneCullToggle');
       if (cullToggle) {
@@ -1855,14 +1855,10 @@
       _applyScenePreviewSplit(_getScenePreviewSplitSetting());
 
       // ── Top bar: title ──
-      const localNum = String(scene.id).split(':').pop();
-      const folderName = folderBaseName(scene.representative?.__rootPath || '');
-      let titleText = folderName || ('Scene ' + scene.id);
-      titleText += ' — #' + localNum;
-      if (scene.sceneName) titleText += ' — ' + scene.sceneName;
-      titleText += ` (${scene.images.length} images)`;
+      // The folder is in the grid header and the scene id is internal, so neither is shown.
+      const sceneTitle = (name) => `${name || 'Scene'} · ${scene.images.length} photo${scene.images.length === 1 ? '' : 's'}`;
       const titleEl = el('#sceneTopbarTitle');
-      if (titleEl) titleEl.textContent = titleText;
+      if (titleEl) titleEl.textContent = sceneTitle(scene.sceneName);
 
       // ── Rename setup ──
       el('#sceneName').value = scene.sceneName || '';
@@ -1878,12 +1874,7 @@
           renameRow.classList.add('hidden');
           // Update title
           const updScene = reloadScene(scene.id) || scene;
-          const nm = updScene.sceneName || '';
-          let t = folderName || ('Scene ' + scene.id);
-          t += ' — #' + localNum;
-          if (nm) t += ' — ' + nm;
-          t += ` (${scene.images.length} images)`;
-          titleEl.textContent = t;
+          titleEl.textContent = sceneTitle(updScene.sceneName);
           renderScenes();
         } else {
           renameRow.classList.remove('hidden');
@@ -2668,7 +2659,7 @@
         const meta = document.createElement('div');
         meta.className = 'filmstrip-meta';
         const rating = getRating(r);
-        meta.innerHTML = `<span class="filmstrip-stars">${'★'.repeat(rating)}${'☆'.repeat(5 - rating)}</span><span>Q ${fmt3(r.quality)}</span>`;
+        meta.innerHTML = `<span class="filmstrip-stars">${'★'.repeat(rating)}${'☆'.repeat(5 - rating)}</span><span title="Quality">${fmt3(r.quality)}</span>`;
         info.appendChild(meta);
         card.appendChild(info);
 
@@ -2693,7 +2684,7 @@
           `<b>${escapeHtml(r.filename || '')}</b>`,
           _sceneTooltipSpeciesLine(r),
           formatCaptureTime(r.capture_time) ? `Captured: ${formatCaptureTime(r.capture_time)}` : '',
-          `Quality: ${fmt3(r.quality)}`,
+          `Quality ${fmt3(r.quality)}`,
           `Rating: ${'★'.repeat(rating)}${'☆'.repeat(5 - rating)}`,
         ].filter(Boolean).join('<br>');
         card.appendChild(tip);

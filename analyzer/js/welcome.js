@@ -79,7 +79,7 @@
       {
         icon: 'plus',
         title: 'Merge scenes',
-        body: 'Hold <kbd>Ctrl</kbd> and click scene cards to select multiple, then click <b>Merge selected scenes</b> to combine them into one.',
+        body: 'Hold <kbd>Ctrl</kbd> and click scene cards to select multiple, then click <b>Merge into one scene</b> to combine them into one.',
       },
       {
         icon: 'image',

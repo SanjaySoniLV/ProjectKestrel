@@ -39,7 +39,7 @@
           run: () => window.pywebview.api.open_file_explorer(folderPath) },
         { icon: 'file-text', label: 'Write Photo Metadata',
           run: () => writeMetadataForFolder(folderPath) },
-        { icon: 'gear', label: 'Change Settings…',
+        { icon: 'gear', label: 'Folder settings…',
           run: () => openFolderSettingsDialog(folderPath) },
         ...(_isUpgradableTo3(pipelineStatus) ? [
           { icon: 'sparkle', label: 'Upgrade to Analysis Version 3.0…',

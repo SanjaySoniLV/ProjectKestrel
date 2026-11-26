@@ -118,7 +118,7 @@ class TestDialogWiring(unittest.TestCase):
             self.assertIn(f'id="{el}"', self.html)
 
     def test_change_settings_dialog_offers_it(self):
-        # Regroup moved from the Folder Actions menu into the Change Settings dialog.
+        # Regroup moved from the Folder Actions menu into the Folder settings dialog.
         menu = self.grid.split("function _buildFolderActionsMenu", 1)[1].split("\n    async function", 1)[0]
         self.assertNotIn("Regroup Scenes", menu)
         settings = _read("js", "folder-settings.js")

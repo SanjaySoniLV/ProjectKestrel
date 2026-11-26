@@ -952,7 +952,7 @@
   white-space: nowrap;
 }
 
-/* Blue to match the cloud panel's "+ 📂 Load" (.cloud-account-load-btn) and the
+/* Blue to match the cloud panel's "Load" (.cloud-account-load-btn) and the
    pill's pause/cancel controls — the green here was an inconsistent outlier. */
 .queue-item-load-btn {
   font-size: 11px;

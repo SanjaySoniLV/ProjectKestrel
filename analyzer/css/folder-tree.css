@@ -45,7 +45,7 @@
   display: none;
 }
 
-/* ── "+ 📂 Load Folders…" — top bar of the unified folder-tree container. ────
+/* ── "Add Folders…" — top bar of the unified folder-tree container. ────
    Background matches the Analyze CTA's primary blue so the two main entry
    points feel like a pair. Top corners rounded to match the container's outer
    radius; bottom divider matches the container border. */

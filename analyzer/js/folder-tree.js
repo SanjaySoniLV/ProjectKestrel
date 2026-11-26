@@ -1,6 +1,6 @@
     // ── Folder Tree ──────────────────────────────────────────────────────────────
     // Multi-root state: the sidebar tree can host N independent root
-    // folders side by side. The user adds roots via "+ 📂 Load Folders…" and
+    // folders side by side. The user adds roots via "Add Folders…" and
     // each root scans its own subtree. Scene/data aggregation downstream is
     // already multi-root via __rootPath / __folderSlot row tagging.
     let folderTreeRootNodes = new Map();   // Map<rootPath, syntheticRootNode>

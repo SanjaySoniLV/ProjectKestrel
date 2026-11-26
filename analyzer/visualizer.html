@@ -117,12 +117,12 @@
             <button id="saveCsv" disabled style="flex:1">Save Changes</button>
           </div>
         </div>
-        <!-- Folder tree: Load Folders (top bar), recents chips, the tree, and the
+        <!-- Folder tree: Add Folders (top bar), recents chips, the tree, and the
              Select / Clear strip. treeChangeRoot stays (hidden) for csv-init.js. -->
         <div id="folderTreeWrap" class="folder-tree-wrap folder-tree-empty">
           <button id="pickFolder" class="folder-load-btn" title="Load a folder that you've already analyzed with Kestrel">
             <span class="folder-load-btn-plus"><i class="k-icon k-icon--folder-plus" aria-hidden="true"></i></span>
-            <span class="folder-load-btn-label">Load Folders…</span>
+            <span class="folder-load-btn-label">Add Folders…</span>
           </button>
           <!-- Recents row: csv-init.js fills it with chips and shows it. -->
           <div id="folderRecentsRow" class="folder-recents-row hidden" aria-label="Recently loaded folders"></div>
@@ -134,7 +134,7 @@
           </div>
           <!-- Empty-state hint: shown only when no folders are loaded -->
           <div id="folderTreeEmptyHint" class="folder-tree-empty-hint">
-            No folders loaded.<br />Click <b>+ Load Folder</b> to get started.
+            No folders loaded.<br />Click <b>Add Folders…</b> to get started.
           </div>
           <div id="folderTree"></div>
           <!-- Bottom segmented strip: [Clear] [Select All ↔ Select None].
@@ -293,10 +293,10 @@
     <!-- Floating multi-select action bar -->
     <div id="selectActionBar" class="select-action-bar hidden">
       <span id="selectActionLabel" class="muted">0 scenes selected</span>
-      <button id="selectMergeBtn" class="primary">Merge selected scenes</button>
-      <button id="selectReviewBtn" title="Confirm the tags Kestrel shows on each selected scene and mark them as reviewed">✓ Mark as Reviewed</button>
-      <button id="selectRejectBtn" title="Reject every photo without a decision in the selected scenes (accepted and rejected photos are kept)">⊘ Reject Undecided</button>
-      <button id="selectClearBtn">× Clear selection</button>
+      <button id="selectReviewBtn" class="k-btn--quiet" title="Confirm the tags Kestrel shows on each selected scene and mark them as reviewed"><i class="k-icon k-icon--check" aria-hidden="true"></i> Mark as reviewed</button>
+      <button id="selectRejectBtn" class="k-btn--quiet" title="Reject every photo without a decision in the selected scenes (accepted and rejected photos are kept)"><i class="k-icon k-icon--ban" aria-hidden="true"></i> Reject undecided</button>
+      <button id="selectMergeBtn" class="primary">Merge into one scene</button>
+      <button id="selectClearBtn" class="k-btn--icon" title="Clear selection" aria-label="Clear selection"><i class="k-icon k-icon--x" aria-hidden="true"></i></button>
     </div>
 
     <!-- Analysis Queue floating notification panel -->
@@ -376,7 +376,7 @@
         </div>
       </div>
     </div>
-    <div id="versionBadge" class="version-badge">Version: —</div>
+    <div id="versionBadge" class="version-badge">Project Kestrel</div>
     <!-- Zoom widget: slider with – / + buttons. Lives in the status bar (right side).
          IDs zoomOut / zoomIn preserved so existing handlers keep working. -->
     <div class="status-zoom-widget" aria-label="Zoom controls">
@@ -412,30 +412,31 @@
 
       <!-- Keyboard shortcut legend (toggle visibility) -->
       <div class="scene-shortcut-legend hidden" id="sceneShortcutLegend">
-        <span><kbd>←</kbd><kbd>→</kbd> Navigate images (scrub boundaries)</span>
-        <span><kbd>↑</kbd><kbd>↓</kbd> Switch active crop</span>
-        <span><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>&larr;</kbd><kbd>&rarr;</kbd> or <kbd>Home</kbd>/<kbd>End</kbd> Jump to start/end</span>
-        <span><kbd>Enter</kbd> Promote active crop</span>
-        <span><kbd>F</kbd> or <kbd>Shift</kbd>+Click a bird: focus the scene on that bird (again to undo)</span>
-        <span><kbd>B</kbd> Show/hide bird numbers</span>
-        <span><kbd>Tab</kbd> Next scene</span>
-        <span><kbd>Shift</kbd>+<kbd>Tab</kbd> or <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Tab</kbd> Previous scene</span>
-        <span><kbd>Z</kbd> or <kbd>7</kbd> Accept</span>
-        <span><kbd>X</kbd> or <kbd>8</kbd> Reset</span>
-        <span><kbd>C</kbd> or <kbd>9</kbd> Reject</span>
-        <span><kbd>1</kbd>–<kbd>5</kbd> Rate</span>
-        <span><kbd>Space</kbd> Open in editor</span>
-        <span><kbd>M1</kbd> RAW Zoom (Scroll to zoom in/out)</span>
-        <span><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>R</kbd> Mark as Reviewed</span>
-        <span><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>T</kbd> Add species tag</span>
-        <span><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> Add family tag</span>
-        <span><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> Clear all tags</span>
-        <span><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd> Reset &amp; reassign tags</span>
-        <span><kbd>Esc</kbd> Close</span>
+        <div class="ssl-col"><h4 class="k-section-title">Browse</h4>
+          <span><kbd>←</kbd><kbd>→</kbd> Previous / next photo</span>
+          <span><kbd>Home</kbd><kbd>End</kbd> or <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>←</kbd><kbd>→</kbd> First / last photo</span>
+          <span><kbd>Tab</kbd> Next scene · <kbd>Shift</kbd>+<kbd>Tab</kbd> Previous scene</span>
+          <span><kbd>↑</kbd><kbd>↓</kbd> Switch bird crop</span>
+          <span>Scroll on the preview: zoom into the RAW</span>
+          <span><kbd>Esc</kbd> Close</span>
+        </div>
+        <div class="ssl-col"><h4 class="k-section-title">Decide</h4>
+          <span><kbd>Z</kbd> or <kbd>7</kbd> Accept</span>
+          <span><kbd>X</kbd> or <kbd>8</kbd> Undecided</span>
+          <span><kbd>C</kbd> or <kbd>9</kbd> Reject</span>
+          <span><kbd>1</kbd>–<kbd>5</kbd> Star rating</span>
+          <span><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>R</kbd> Mark as reviewed</span>
+          <span><kbd>Space</kbd> Open in editor</span>
+        </div>
+        <div class="ssl-col"><h4 class="k-section-title">Birds and tags</h4>
+          <span><kbd>Enter</kbd> Make the active crop the main bird</span>
+          <span><kbd>F</kbd> or <kbd>Shift</kbd>+click a bird: focus the scene on it (again to undo)</span>
+          <span><kbd>B</kbd> Show / hide bird numbers</span>
+          <span><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>T</kbd> Add species tag · +<kbd>Shift</kbd> family tag</span>
+          <span><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> Clear all tags</span>
+          <span><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd> Reset and reassign tags</span>
+        </div>
       </div>
-
-
-
       <!-- ═══ CENTER: Dual preview panels ═══ -->
       <div class="scene-main">
         <div class="scene-previews" id="scenePreviews">
@@ -452,7 +453,7 @@
               </label>
               <div class="scene-zoom-spacer"></div>
               <label class="scene-zoom-ctrl" title="Exposure-compensation strength applied to the preview (export thumbnail + RAW zoom). 0% turns preview correction off (original export); 100% applies the full auto correction so the bird roughly matches the bird-crop thumbnail. Does not change the baked bird-crop thumbnail.">
-                <span class="muted scene-zoom-ctrl-label">Exp Comp (<span id="sceneExpStrengthEv">+0.00</span>EV)</span>
+                <span class="muted scene-zoom-ctrl-label">Exposure Adjustment (<span id="sceneExpStrengthEv">+0.00</span> EV)</span>
                 <input type="range" id="sceneExpStrengthSlider" min="0" max="100" value="70" step="5">
                 <span class="scene-zoom-ctrl-val" id="sceneExpStrengthVal">70%</span>
               </label>
@@ -942,7 +943,6 @@
         </div>
       </div>
 
-
       <h4 style="margin:12px 0 8px;padding-top:8px;border-top:1px solid #1d2230;color:#a0a8b8;font-size:13px;text-transform:uppercase;letter-spacing:0.5px">Data &amp; Preview</h4>
 
       <div class="row">
@@ -1207,7 +1207,7 @@
   </dialog>
 
   <!-- Analyze Folders dialog (3-column layout).
-       Col 1: Queue Builder — + Add Folders, recents chips, dialog-local tree, Clear.
+       Col 1: Queue Builder — Add Folders, recents chips, dialog-local tree, Clear.
        Col 2: Settings — critical tier always visible + collapsed "More options".
        Col 3: Queue Summary + Start — live counts, warnings, per-folder list, Start.
        Dialog state is FULLY INDEPENDENT from the main sidebar tree. -->
@@ -1843,7 +1843,6 @@
       </div>
     </div>
   </dialog>
-
 
   <!-- Donation / Support dialog -->
   <dialog id="donateDlg" class="kdlg kdlg--sm kdlg--flex">

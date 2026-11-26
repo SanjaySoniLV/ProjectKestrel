@@ -145,8 +145,8 @@ Reviewers check these rules; automatic checks cover some of them.
   outside that file, no new `!important`.
 - Dialogs use the `.kdlg` system (`css/dialogs/kdlg.css`). Don't invent a new button or dialog
   style for one feature.
-- User-visible text is plain and sentence case, and lives in the HTML or in one constant block per
-  feature, not concatenated inside logic.
+- User-visible text is plain and sentence case, uses the words in `WORD_LIST.md`, and lives in the
+  HTML or in one constant block per feature, not concatenated inside logic.
 
 **Security boundaries (non-negotiable)**
 - `api_bridge.py` is the only path from JS into privileged code. Any bridge method that takes a
