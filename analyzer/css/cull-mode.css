@@ -10,7 +10,7 @@ body.cull-mode-on { overflow: hidden; }
   z-index: 900;
   display: grid;
   grid-template-rows: 52px 1fr 50px;
-  grid-template-columns: 280px 1fr;
+  grid-template-columns: 280px minmax(0, 1fr);
   background: var(--bg);
   color: var(--text);
   font-size: var(--fs-base);
@@ -147,14 +147,15 @@ body.cull-mode-on { overflow: hidden; }
 .cm-allbtns { display: flex; gap: var(--space-1); }
 .cm-allbtns button { height: 28px; padding: 0 10px; font-size: var(--fs-sm); }
 
-.cm-strip { flex: none; position: relative; display: grid; gap: 8px; align-content: start; padding: 6px 2px 12px; overflow-y: auto; }
+.cm-strip { flex: none; position: relative; display: grid; gap: 12px; align-content: start; padding: 11px 11px 14px; overflow-y: auto; }
 .cm-card { position: relative; border-radius: var(--radius-sm); background: var(--card); cursor: pointer; }
 .cm-card > img { display: block; width: 100%; object-fit: cover; border-radius: var(--radius-sm) var(--radius-sm) 0 0; background: var(--bg); }
 .cm-card::after { content: ""; position: absolute; inset: -2px; border: 2px dashed transparent; border-radius: var(--radius-md); pointer-events: none; transition: border-color .2s ease; }
 .cm-card.is-accept::after { border-color: var(--accept); }
 .cm-card.is-reject::after { border-color: var(--reject); }
 .cm-card.is-firm::after { border-style: solid; }
-.cm-card.is-sel { box-shadow: 0 0 0 4px rgba(58, 132, 230, .55); }
+/* The selected photo must be findable at a glance: a gap, then a thick ring. */
+.cm-card.is-sel { z-index: 1; box-shadow: 0 0 0 4px var(--bg), 0 0 0 9px var(--focus); }
 .cm-card.is-pop { animation: cm-pop .22s ease; }
 @keyframes cm-pop { 50% { transform: scale(1.05); } }
 .cm-meta { display: flex; justify-content: space-between; align-items: center; padding: 2px 5px; font-size: var(--fs-2xs); color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -173,11 +174,11 @@ body.cull-mode-on { overflow: hidden; }
 }
 
 /* ── Footer ── */
-.cm-foot { grid-column: 2; display: flex; align-items: center; gap: var(--space-3); padding: 0 var(--space-4); border-top: 1px solid var(--divider); background: var(--panel); font-size: var(--fs-sm); color: var(--muted); }
-.cm-keys { display: flex; gap: var(--space-3); white-space: nowrap; overflow: hidden; }
+.cm-foot { grid-column: 2; min-width: 0; display: flex; align-items: center; gap: var(--space-3); padding: 0 var(--space-4); border-top: 1px solid var(--divider); background: var(--panel); font-size: var(--fs-sm); color: var(--muted); }
+.cm-keys { flex: 1 1 auto; min-width: 0; display: flex; gap: var(--space-3); white-space: nowrap; overflow: hidden; }
 .cm-keys kbd { margin-left: 0; margin-right: 2px; }
 .cm-saved { margin-left: auto; font-size: var(--fs-xs); color: var(--subtle); white-space: nowrap; }
-.cm-footact { display: flex; gap: var(--space-2); }
+.cm-footact { flex: none; display: flex; gap: var(--space-2); white-space: nowrap; }
 .cm-footact button { height: 34px; padding: 0 14px; font-size: var(--fs-md); }
 
 /* ── Pass menu ── */

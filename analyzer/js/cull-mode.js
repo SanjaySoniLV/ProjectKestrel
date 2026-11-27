@@ -70,7 +70,7 @@
   };
   const fill = (s, p) => String(s).replace(/\{(\w+)\}/g, (_, k) => (p && k in p ? String(p[k]) : ''));
   const L = window.KestrelCullLogic;
-  const STRIP_GAP = 8;
+  const STRIP_GAP = 12;
 
   const S = {
     active: false, root: '', el: null,
@@ -155,10 +155,14 @@
     S.scenes = list;
   }
 
+  /** Species groups in first-seen order, with "No bird found" after all of them. */
+  function speciesOrder() {
+    return [...new Set(S.scenes.map(s => s.species))].sort((a, b) => (a === TEXT.noBird) - (b === TEXT.noBird));
+  }
+
   function orderedScenes() {
     if (S.group === 'time') return S.scenes;
-    const species = [...new Set(S.scenes.map(s => s.species))];
-    return species.flatMap(sp => S.scenes.filter(s => s.species === sp));
+    return speciesOrder().flatMap(sp => S.scenes.filter(s => s.species === sp));
   }
   function openScenes() {
     const done = confirmedSet();
@@ -420,8 +424,36 @@
       S.focus = { sceneId: S.cur.id, key: b.key, prev };
       showToast(fill(TEXT.focusOn, { bird: b.bird, n: prev.size }), 2000);
     }
+    refocusScene(S.cur.id);
+  }
+
+  /**
+   * The focused bird sets each photo's Quality and species, so the scene's
+   * starting picks are worked out again (its cut and confirmation are
+   * dropped) and it moves to the new bird's species group.
+   */
+  function refocusScene(sceneId) {
+    const scene = S.scenes.find(s => s.id === sceneId);
+    if (scene) {
+      unconfirm(scene);
+      if (S.session.cuts) delete S.session.cuts[sceneId];
+      applyPicks(scene);
+    }
+    const sel = S.sel;
+    rebuild();
+    S.cur = S.scenes.find(s => s.id === sceneId) || S.cur;
+    S.sel = S.cur && S.cur.rows.includes(sel) ? sel : (S.cur ? stripRows(S.cur)[0] : null);
     queueSave();
-    renderStrip();
+    render();
+  }
+
+  /** Click on a bird box on the full image: make that bird the active one. */
+  function pickBird(idx) {
+    const r = S.sel;
+    if (!r || r.__moved) return;
+    const st = getRowActiveCropState(r);
+    if (idx < 0 || idx >= st.crops.length || idx === st.activeIndex) return;
+    setRowActiveCropIndex(r, idx, st.crops);
     refreshSel();
   }
 
@@ -586,8 +618,7 @@
 
     const visible = (s) => S.filter !== 'open' || !done.has(s.id) || s === S.cur;
     if (S.group === 'species') {
-      const species = [...new Set(S.scenes.map(s => s.species))];
-      for (const sp of species) {
+      for (const sp of speciesOrder()) {
         const ss = S.scenes.filter(s => s.species === sp);
         if (!ss.some(visible)) continue;
         const d = ss.filter(s => done.has(s.id)).length;
@@ -733,12 +764,12 @@
       strip.appendChild(m);
       return;
     }
-    const width = Math.max(320, strip.clientWidth || (S.el.clientWidth - 320));
+    const width = Math.max(320, (strip.clientWidth || (S.el.clientWidth - 320)) - 22);
     const minW = S.thumb === 'frame' ? 96 : 76, maxW = S.thumb === 'frame' ? 176 : 128;
     const lay = L.stripLayout(list.length, width, minW, maxW, STRIP_GAP);
     strip.style.gridTemplateColumns = `repeat(auto-fill, ${lay.w}px)`;
     const cardH = (S.thumb === 'frame' ? Math.round((lay.w * 2) / 3) : lay.w) + 22;
-    strip.style.maxHeight = `${3 * cardH + 2 * STRIP_GAP + 16}px`;
+    strip.style.maxHeight = `${3 * cardH + 2 * STRIP_GAP + 25}px`;
     for (const r of list) strip.appendChild(buildCard(r, lay.w));
     if (!S.favView && !viewPass() && S.cur && snapshot(S.cur).divider != null) {
       const div = document.createElement('div');
@@ -1099,7 +1130,7 @@
   }
 
   window.KestrelCullMode = {
-    enter, exit, reload, render, rebuild, go, step, flushSaves, queueSave, queueSessionSave,
+    enter, exit, reload, render, rebuild, go, step, flushSaves, queueSave, queueSessionSave, pickBird,
     applyPicksAll, confirmAll, liveRows, shownRows, decisionOf, isNoBird, openScenes, orderedScenes, counts,
     get state() { return S; },
     TEXT,
