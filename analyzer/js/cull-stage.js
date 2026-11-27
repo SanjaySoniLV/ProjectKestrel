@@ -15,7 +15,10 @@
     clipped: '{pct}% clipped',
     rawLabel: 'RAW ({ev} EV)',
     rawEmbedded: 'RAW (embedded preview)',
+    birdLabel: '#{i}',
+    birdsHint: 'Click a bird to pick it · S focuses the scene on it',
   };
+  const CLICK_MS = 250;
   const fill = (s, p) => String(s).replace(/\{(\w+)\}/g, (_, k) => (p && k in p ? String(p[k]) : ''));
   let token = 0;
   let zoom = null; // { row, img, x, y, isRaw }
@@ -24,7 +27,66 @@
   const box = (S, which) => S.el?.querySelector(`.cm-pv--${which}`);
 
   function clearBox(b) {
-    b.querySelectorAll('img, canvas, .cm-nobird').forEach(n => n.remove());
+    b.querySelectorAll('img, canvas, .cm-nobird, .cm-birds').forEach(n => n.remove());
+  }
+
+  const bboxOf = (c) => {
+    const b = c?.bbox || {};
+    const n = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d);
+    const x0 = n(b.x_min_norm, 0), x1 = n(b.x_max_norm, 1), y0 = n(b.y_min_norm, 0), y1 = n(b.y_max_norm, 1);
+    return { x: Math.min(x0, x1), y: Math.min(y0, y1), w: Math.abs(x1 - x0), h: Math.abs(y1 - y0) };
+  };
+
+  /** Outline every bird on the full image when there is more than one. */
+  function drawBirds(b, img, r) {
+    b.querySelector('.cm-birds')?.remove();
+    const hint = b.querySelector('.cm-hint');
+    if (hint) {
+      hint.dataset.zoomText = hint.dataset.zoomText || hint.textContent;
+      hint.textContent = hint.dataset.zoomText;
+    }
+    if (!r || r.__moved) return;
+    const crops = getRowCropRecords(r);
+    if (crops.length < 2 || !img.naturalWidth) return;
+    if (hint) hint.textContent = TEXT.birdsHint;
+    const rect = _containRect(b, img.naturalWidth, img.naturalHeight);
+    if (!rect) return;
+    const active = getRowActiveCropState(r).activeIndex;
+    const layer = document.createElement('div');
+    layer.className = 'scene-crop-hover-layer cm-birds';
+    crops.forEach((c, i) => {
+      const bb = bboxOf(c);
+      const el = document.createElement('div');
+      el.className = `scene-crop-hover-box${i === active ? '' : ' pending'}`;
+      Object.assign(el.style, {
+        left: `${rect.left + rect.width * bb.x}px`, top: `${rect.top + rect.height * bb.y}px`,
+        width: `${Math.max(2, rect.width * bb.w)}px`, height: `${Math.max(2, rect.height * bb.h)}px`,
+      });
+      const lbl = document.createElement('div');
+      lbl.className = 'scene-crop-hover-label';
+      lbl.textContent = fill(TEXT.birdLabel, { i: i + 1 });
+      el.appendChild(lbl);
+      layer.appendChild(el);
+    });
+    b.appendChild(layer);
+  }
+
+  /** Index of the smallest bird box under a client point, or -1. */
+  function birdAt(b, r, x, y) {
+    const img = b.querySelector(':scope > img');
+    const crops = r && !r.__moved ? getRowCropRecords(r) : [];
+    if (!img || crops.length < 2) return -1;
+    const rect = _containRect(b, img.naturalWidth, img.naturalHeight);
+    if (!rect) return -1;
+    const br = b.getBoundingClientRect();
+    const px = (x - br.left - rect.left) / rect.width, py = (y - br.top - rect.top) / rect.height;
+    let best = -1, area = Infinity;
+    crops.forEach((c, i) => {
+      const bb = bboxOf(c);
+      if (px < bb.x || px > bb.x + bb.w || py < bb.y || py > bb.y + bb.h) return;
+      if (bb.w * bb.h < area) { area = bb.w * bb.h; best = i; }
+    });
+    return best;
   }
 
   function setClipReadout(S, pct) {
@@ -86,8 +148,9 @@
       img.draggable = false;
       applyThumbnailExposureToImg(img, r);
       full.prepend(img);
-      if (img.complete && img.naturalWidth) drawClip(S, full, img);
-      else img.addEventListener('load', () => { if (my === token) drawClip(S, full, img); }, { once: true });
+      const paint = () => { drawClip(S, full, img); drawBirds(full, img, r); };
+      if (img.complete && img.naturalWidth) paint();
+      else img.addEventListener('load', () => { if (my === token) paint(); }, { once: true });
     } else {
       setClipReadout(S, NaN);
     }
@@ -179,7 +242,7 @@
     const b = box(S, 'full');
     const shown = b?.querySelector('img');
     if (!shown || r.__moved) return;
-    zoom = { row: r, img: shown, x: ev.clientX, y: ev.clientY, isRaw: false };
+    zoom = { row: r, img: shown, x: ev.clientX, y: ev.clientY, x0: ev.clientX, y0: ev.clientY, t0: performance.now(), isRaw: false };
     b.classList.add('is-zoom');
     const disabled = getSetting('raw_exposure_correction_disabled', false);
     b.dataset.rawLabel = fill(TEXT.rawLabel, { ev: formatExposureEv(getRowRawPreviewEffectiveStops(r, disabled)) });
@@ -224,7 +287,16 @@
         zoom.x = e.clientX; zoom.y = e.clientY;
         drawZoom(S);
       });
-      window.addEventListener('mouseup', () => { if (zoom && S.el) endZoom(S); });
+      // A short click on a bird box picks that bird; anything longer was a zoom.
+      window.addEventListener('mouseup', (e) => {
+        if (!zoom || !S.el) return;
+        const { row, x0, y0, t0 } = zoom;
+        const click = performance.now() - t0 < CLICK_MS && Math.hypot(e.clientX - x0, e.clientY - y0) < 6;
+        endZoom(S);
+        const idx = click ? birdAt(box(S, 'full'), row, x0, y0) : -1;
+        if (idx >= 0) KestrelCullMode.pickBird(idx);
+      });
+      window.addEventListener('resize', () => { if (S.el && S.sel && !zoom) show(S, S.sel); });
     }
     box(S, 'full').addEventListener('wheel', (e) => {
       if (!zoom) return;
