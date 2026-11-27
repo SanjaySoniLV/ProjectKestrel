@@ -299,7 +299,7 @@
       } catch (_) { }
     }
 
-    const SETTINGS_SECTIONS = ['general', 'species', 'ratings', 'previews', 'privacy', 'advanced'];
+    const SETTINGS_SECTIONS = ['general', 'species', 'ratings', 'previews', 'performance', 'privacy'];
 
     /** Show one Settings section (the nav on the left picks it). */
     function showSettingsSection(section) {
@@ -318,7 +318,7 @@
       if (body) body.scrollTop = 0;
     }
 
-    /** Open Settings, optionally at one section ('general', 'species', 'ratings', 'previews', 'privacy', 'advanced'). */
+    /** Open Settings, optionally at one section ('general', 'species', 'ratings', 'previews', 'performance', 'privacy'). */
     async function showSettings(section = 'general') {
       showSettingsSection(typeof section === 'string' ? section : 'general');
       // Refresh local cache from persisted settings before rendering values.

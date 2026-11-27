@@ -39,8 +39,6 @@ dialog.kdlg.settings-dlg[open] {
 }
 .settings-nav > button:hover { background: var(--chip); color: var(--text); }
 .settings-nav > button.on { background: var(--hover); color: var(--text); font-weight: 500; }
-.settings-nav > button.settings-nav-adv { margin-top: auto; }
-.settings-nav > button.settings-nav-adv:not(.on) { color: var(--muted); }
 
 .settings-body {
   min-height: 0;

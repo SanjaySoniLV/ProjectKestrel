@@ -823,8 +823,8 @@
       <button type="button" data-settings-section="species">Species</button>
       <button type="button" data-settings-section="ratings">Star ratings</button>
       <button type="button" data-settings-section="previews">Previews</button>
+      <button type="button" data-settings-section="performance">Performance</button>
       <button type="button" data-settings-section="privacy">Privacy</button>
-      <button type="button" class="settings-nav-adv" data-settings-section="advanced">Advanced</button>
     </nav>
     <div class="settings-body">
 
@@ -865,6 +865,16 @@
           <label class="k-row-label" for="settingsAutoSave">Save changes automatically
             <span class="k-row-hint">Star ratings, tags and scene changes are saved as you go. When off, Save and Revert buttons appear instead.</span></label>
           <input type="checkbox" class="k-switch" id="settingsAutoSave" checked />
+        </div>
+        <div class="k-row">
+          <label class="k-row-label" for="treeScanDepth">Folder levels to show
+            <span class="k-row-hint">How many levels of subfolders Kestrel looks through when you add a folder (1–6). More levels take longer.</span></label>
+          <input id="treeScanDepth" type="number" class="settings-num" min="1" max="6" step="1" value="3" />
+        </div>
+        <div class="k-row">
+          <label class="k-row-label" for="settingsSmartSearch">Search whole photos, not only birds
+            <span class="k-row-hint">Bird crops are always searchable. This also indexes each whole photo, so searches like "bird on a wire" or "wide landscape" work. Applies to the next analysis and adds about 0.1–0.2 seconds per photo.</span></label>
+          <input type="checkbox" class="k-switch" id="settingsSmartSearch" checked />
         </div>
       </section>
 
@@ -941,50 +951,9 @@
         </div>
       </section>
 
-      <section class="settings-pane hidden" data-settings-pane="privacy">
-        <h4 class="settings-pane-title">Privacy</h4>
-        <p class="settings-pane-intro">What Kestrel shares to help improve the app. File names, paths and photos are never shared.</p>
-        <div class="k-row">
-          <div class="k-row-label">Photos analyzed
-            <span class="k-row-hint">Photos Kestrel has analyzed on this computer.</span></div>
-          <span class="settings-value" id="settingsTotalImpact">—</span>
-        </div>
-        <div class="k-row">
-          <label class="k-row-label" for="settingsAnalyticsOptIn">Share anonymous usage data
-            <span class="k-row-hint">Which features are used and how long analysis takes. <span id="settingsAnalyticsLabel"></span></span></label>
-          <input type="checkbox" class="k-switch" id="settingsAnalyticsOptIn" />
-        </div>
-        <div class="k-row">
-          <label class="k-row-label" for="settingsCrashReports">Send crash reports
-            <span class="k-row-hint">Sends a report if Kestrel crashes, so the problem can be found and fixed.</span></label>
-          <input type="checkbox" class="k-switch" id="settingsCrashReports" />
-        </div>
-        <div class="k-row">
-          <label class="k-row-label" for="settingsQualityFeedbackMode">Quality feedback
-            <span class="k-row-hint">Now and then the scene viewer asks you to sort a few bird crops by sharpness. Anonymous.
-              <a href="#" class="qf-link" id="settingsQfViewLog">View what I've shared</a> &middot;
-              <a href="#" class="qf-link" id="settingsQfForget">Forget my shared feedback</a></span></label>
-          <select id="settingsQualityFeedbackMode">
-            <option value="ask">Always ask</option>
-            <option value="always">Always share</option>
-            <option value="never">Never</option>
-          </select>
-        </div>
-      </section>
-
-      <section class="settings-pane hidden" data-settings-pane="advanced">
-        <h4 class="settings-pane-title">Advanced</h4>
-        <p class="settings-pane-intro">Speed and indexing options. Except folder levels, these apply to the next analysis you start on this computer.</p>
-        <div class="k-row">
-          <label class="k-row-label" for="treeScanDepth">Folder levels to show
-            <span class="k-row-hint">How many levels of subfolders Kestrel looks through when you add a folder (1–6). More levels take longer.</span></label>
-          <input id="treeScanDepth" type="number" class="settings-num" min="1" max="6" step="1" value="3" />
-        </div>
-        <div class="k-row">
-          <label class="k-row-label" for="settingsSmartSearch">Search whole photos, not only birds
-            <span class="k-row-hint">Bird crops are always searchable. This also indexes each whole photo, so searches like "bird on a wire" or "wide landscape" work. Adds about 0.1–0.2 seconds per photo on the CPU.</span></label>
-          <input type="checkbox" class="k-switch" id="settingsSmartSearch" checked />
-        </div>
+      <section class="settings-pane hidden" data-settings-pane="performance">
+        <h4 class="settings-pane-title">Performance</h4>
+        <p class="settings-pane-intro">How fast analysis runs on this computer. These apply to the next analysis you start.</p>
         <div class="k-row">
           <label class="k-row-label" for="settingsRawEmbeddedPreview">Fast RAW analysis
             <span class="k-row-hint">Analyzes the JPEG your camera stores inside each RAW file. Much faster, and quality scores are largely the same, but highlight recovery is skipped and some older cameras store only a small JPEG. Cloud Compute always uses the full RAW.</span></label>
@@ -1018,6 +987,37 @@
           </div>
         </div>
       </section>
+      <section class="settings-pane hidden" data-settings-pane="privacy">
+        <h4 class="settings-pane-title">Privacy</h4>
+        <p class="settings-pane-intro">What Kestrel shares to help improve the app. File names, paths and photos are never shared.</p>
+        <div class="k-row">
+          <div class="k-row-label">Photos analyzed
+            <span class="k-row-hint">Photos Kestrel has analyzed on this computer.</span></div>
+          <span class="settings-value" id="settingsTotalImpact">—</span>
+        </div>
+        <div class="k-row">
+          <label class="k-row-label" for="settingsAnalyticsOptIn">Share anonymous usage data
+            <span class="k-row-hint">Which features are used and how long analysis takes. <span id="settingsAnalyticsLabel"></span></span></label>
+          <input type="checkbox" class="k-switch" id="settingsAnalyticsOptIn" />
+        </div>
+        <div class="k-row">
+          <label class="k-row-label" for="settingsCrashReports">Send crash reports
+            <span class="k-row-hint">Sends a report if Kestrel crashes, so the problem can be found and fixed.</span></label>
+          <input type="checkbox" class="k-switch" id="settingsCrashReports" />
+        </div>
+        <div class="k-row">
+          <label class="k-row-label" for="settingsQualityFeedbackMode">Quality feedback
+            <span class="k-row-hint">Now and then the scene viewer asks you to sort a few bird crops by sharpness. Anonymous.
+              <a href="#" class="qf-link" id="settingsQfViewLog">View what I've shared</a> &middot;
+              <a href="#" class="qf-link" id="settingsQfForget">Forget my shared feedback</a></span></label>
+          <select id="settingsQualityFeedbackMode">
+            <option value="ask">Always ask</option>
+            <option value="always">Always share</option>
+            <option value="never">Never</option>
+          </select>
+        </div>
+      </section>
+
     </div>
     <div class="settings-footer">
       <span class="settings-footer-note">Most changes apply when you press Save.</span>
