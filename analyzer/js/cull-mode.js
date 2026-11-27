@@ -820,11 +820,12 @@
 
   /** The full image carries the same accept/reject border as its strip card. */
   function syncPreviewBorder(r) {
-    const pv = el('.cm-pv--full');
     const d = r ? decisionOf(r) : '';
-    pv.classList.toggle('is-accept', d === 'accept');
-    pv.classList.toggle('is-reject', d === 'reject');
-    pv.classList.toggle('is-firm', !!r && isFirm(r));
+    for (const pv of S.el.querySelectorAll('.cm-pv')) {
+      pv.classList.toggle('is-accept', d === 'accept');
+      pv.classList.toggle('is-reject', d === 'reject');
+      pv.classList.toggle('is-firm', !!r && isFirm(r));
+    }
   }
 
   function renderInfo() {
