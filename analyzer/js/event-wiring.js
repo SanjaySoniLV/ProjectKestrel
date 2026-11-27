@@ -466,32 +466,9 @@
       });
     }
 
-    // ---- Culling Assistant launcher ----
-    async function openCullingAssistant(rootPath) {
-      if (!window.pywebview?.api) {
-        showToast('Culling Assistant requires desktop mode', 4000);
-        return;
-      }
-      // Prompt to save unsaved changes before opening (using custom dialog)
-      if (dirty) {
-        const userChoice = await showCullingAssistantPrompt();
-        if (userChoice === 'cancel') {
-          return;
-        }
-        if (userChoice === 'save') {
-          await saveCsv();
-        }
-      }
-      try {
-        showToast('Opening Culling Assistant...', 2000);
-        const res = await window.pywebview.api.open_culling_window(rootPath);
-        if (res && !res.success) {
-          showToast('Failed to open Culling Assistant: ' + (res.error || 'Unknown error'), 5000);
-        }
-      } catch (e) {
-        console.error('openCullingAssistant error', e);
-        showToast('Error opening Culling Assistant', 4000);
-      }
+    // ---- Cull mode launcher (js/cull-mode.js) ----
+    function openCullMode(rootPath) {
+      window.KestrelCullMode.enter(rootPath);
     }
 
     // ── Timeline filter bar: "More" popover ───────────────────────────────────────

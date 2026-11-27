@@ -1160,7 +1160,7 @@
       if (cullBtn) cullBtn.addEventListener('click', () => {
         const root = _perchDlgState.rootPath;
         _perchClosePerchDialog();
-        if (root) openCullingAssistant(root);
+        if (root) openCullMode(root);
       });
       const adjBtn = document.getElementById('perchAdjustTimeBtn');
       if (adjBtn) adjBtn.addEventListener('click', () => {

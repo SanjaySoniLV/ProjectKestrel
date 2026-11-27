@@ -2248,7 +2248,7 @@
       return String(s || '').replace(/(["\\\]\[])/g, '\\$1');
     }
     
-    // Custom dialog prompt for Culling Assistant save decision
+    // Unsaved-changes prompt (Save / Don't save / Cancel), used before a Perch upload
     function showCullingAssistantPrompt() {
       return new Promise((resolve) => {
         const dlg = document.createElement('dialog');

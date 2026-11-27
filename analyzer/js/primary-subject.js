@@ -1,8 +1,8 @@
     // ── Primary subject (prototype) ──
     // Every bird in a scene carries a number that is the same bird in every frame
     // (stored in .kestrel/bird_links.json by analysis / the 3.0 upgrade / folder load;
-    // bridge: primary_subject_links). Focusing a bird (F, or Shift+Click its box on the
-    // full image) makes it the primary crop in every frame where it was found; F on the
+    // bridge: primary_subject_links). Focusing a bird (S, or Shift+Click its box on the
+    // full image) makes it the primary crop in every frame where it was found; S on the
     // same bird again undoes that. Unsure links show as "Bird 3?". Hooks live in
     // scene-dialog.js (open, overlay labels, filmstrip cards, preview, keys, Shift+Click).
 

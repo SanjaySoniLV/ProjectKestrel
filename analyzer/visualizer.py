@@ -856,7 +856,7 @@ class Handler(SimpleHTTPRequestHandler):
         """Inject conservative security headers on every response.
 
         * ``Content-Security-Policy`` — 'self' for all resources plus
-          inline styles (the existing visualizer.html/culling.html rely on
+          inline styles (visualizer.html relies on
           ``<style>`` blocks and ``style=""`` attributes). No inline scripts,
           no remote scripts, no iframes, no form targets outside the app.
           Even if an attacker lands arbitrary HTML into the DOM, they cannot
@@ -869,7 +869,7 @@ class Handler(SimpleHTTPRequestHandler):
         """
         self.send_header('Cache-Control', 'no-store')
         # Note on ``'unsafe-inline'`` for ``script-src``: the existing
-        # ``visualizer.html`` / ``culling.html`` bundle a large inline
+        # ``visualizer.html`` bundles a large inline
         # ``<script>`` block and at least one inline ``onclick=`` handler.
         # Moving all of that behind hashes or nonces is a much bigger change
         # than it is worth today. Script injection is closed at the DOM
