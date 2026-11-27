@@ -348,3 +348,68 @@ dialog.kdlg.settings-dlg[open] {
   gap: 10px;
   flex-wrap: wrap;
 }
+
+/* Keyboard: one row per action, key chips on the right. Fixed keys are
+   plain text; the user's keys are buttons with a remove ×. */
+.keys-group { margin-top: var(--space-4); }
+.keys-group > .k-section-title { margin: 0 0 2px; }
+.keys-group > .k-row-hint { margin: 0 0 var(--space-1); }
+.keys-row { padding: 6px 0; }
+.keys-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  max-width: 60%;
+}
+.keys-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--card);
+  color: var(--text-2);
+  font-family: monospace;
+  font-size: var(--fs-sm);
+}
+.keys-chip.is-fixed { padding: 0 8px; border-style: dashed; color: var(--muted); }
+.keys-chip button {
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+.keys-chip button:hover { background: var(--hover); color: var(--text); }
+.keys-chip .keys-chip-x { padding: 0 6px; border-left: 1px solid var(--border); color: var(--muted); }
+.keys-chip.is-capturing,
+.keys-add.is-capturing { border-color: var(--focus); color: var(--text); }
+.keys-add {
+  height: 26px;
+  padding: 0 8px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+.keys-add:hover { color: var(--text); border-color: var(--subtle); }
+.keys-reset { height: 26px; padding: 0 6px; font-size: var(--fs-sm); }
+.keys-conflict {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-md);
+}
+.keys-conflict > span { flex: 1 1 200px; }
+.keys-foot { margin-top: var(--space-4); }

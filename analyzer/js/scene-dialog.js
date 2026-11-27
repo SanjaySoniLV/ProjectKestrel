@@ -767,7 +767,7 @@
       if (editorBtn && editorLabelEl) {
         const editorKey = getSetting('editor', 'darktable');
         editorLabelEl.textContent = `Open in ${_editorDisplayName(editorKey)}`;
-        editorBtn.title = `Open original in ${_editorDisplayName(editorKey)} (Space)`;
+        editorBtn.title = `Open original in ${_editorDisplayName(editorKey)}${KestrelKeys.titleSuffix('openEditor')}`;
         editorBtn.onclick = (ev) => {
           ev.stopPropagation();
           openInEditor(r);
@@ -1893,6 +1893,7 @@
       // ── Shortcut legend toggle ──
       el('#sceneShortcutBtn').onclick = () => {
         el('#sceneShortcutLegend').classList.toggle('hidden');
+        KestrelKeys.renderLegend(el('#sceneShortcutLegend'));
       };
       el('#sceneShortcutLegend').classList.add('hidden');
 
@@ -2147,156 +2148,69 @@
         return;
       }
 
-      // Tab skips to next scene; Ctrl/Cmd+Tab (or Shift+Tab) skips to previous
-      if (e.key === 'Tab') {
-        e.preventDefault();
-        navigateToScene((hasSceneModifier || e.shiftKey) ? -1 : 1, 0);
-        return;
-      }
+      // Everything else goes through the user's key bindings (js/keybindings.js).
+      const hit = KestrelKeys.resolve('viewer', e);
+      if (!hit) return;
+      const row = images[currentImageIndex];
+      const go = (i) => selectFilmstripImage(i, _currentScene);
+      const toFirst = () => (currentImageIndex > 0 ? go(0) : navigateToScene(-1, 0));
+      const toLast = () => (currentImageIndex < len - 1 ? go(len - 1) : navigateToScene(1, 0));
+      const cull = (v) => { if (row) { setCullStatus(row, v); _refreshCurrentFilmstripCard(); } };
+      const rate = (n) => { if (row) { setRating(row, n, 'manual'); _refreshCurrentFilmstripCard(); } };
+      const run = {
+        // At either end of a scene the arrows run on into the next or previous
+        // scene (-1 = that scene's last photo, which can skip filtered scenes).
+        nextPhoto: () => (hit.ctrl ? toLast() : currentImageIndex < len - 1 ? go(currentImageIndex + 1) : navigateToScene(1, 0)),
+        prevPhoto: () => (hit.ctrl ? toFirst() : currentImageIndex > 0 ? go(currentImageIndex - 1) : navigateToScene(-1, -1)),
+        firstPhoto: toFirst, lastPhoto: toLast,
+        nextScene: () => navigateToScene(hit.shift || hit.ctrl ? -1 : 1, 0),
+        prevScene: () => navigateToScene(-1, 0),
+        nextBird: () => _stepActiveCrop(row, 1), prevBird: () => _stepActiveCrop(row, -1),
+        mainBird: () => _promoteActiveCropByKey(row),
+        // Z/X/C and the 7/8/9 alternates sit above the numpad's 1-5 ratings,
+        // so the whole review flow fits under one hand.
+        accept: () => cull('accept'), clear: () => cull(''), reject: () => cull('reject'),
+        rate1: () => rate(1), rate2: () => rate(2), rate3: () => rate(3), rate4: () => rate(4), rate5: () => rate(5),
+        openEditor: () => { if (row) openInEditor(row); },
+        favorite: () => KestrelFavorites.toggleSceneViewerCurrent(),
+        focusBird: () => { if (typeof psFocusActive === 'function') psFocusActive(); },
+        birdNumbers: () => { if (typeof psToggleIds === 'function') psToggleIds(); },
+        close: () => el('#closeDlg')?.click(),
+        confirmSpecies: () => _markCurrentSceneReviewed(),
+        speciesTag: () => _openInlineTagInputForCurrentScene('species'),
+        familyTag: () => _openInlineTagInputForCurrentScene('family'),
+        clearTags: () => _clearAllTagsForCurrentScene(),
+        resetTags: () => { _clearAllTagsForCurrentScene(); _openInlineTagInputForCurrentScene('species'); },
+      }[hit.id];
+      if (!run) return;
+      e.preventDefault();
+      e.stopPropagation();
+      run();
+    }
 
-      switch (e.key) {
-        case 'ArrowRight':
-        case 'End':
-          // End is Ctrl/Cmd+→: last photo, or the next scene from the last photo.
-          e.preventDefault();
-          if (currentImageIndex < len - 1) {
-            selectFilmstripImage((hasSceneModifier || e.key === 'End') ? len - 1 : currentImageIndex + 1, _currentScene);
-          } else {
-            navigateToScene(1, 0);
-          }
-          break;
-        case 'ArrowLeft':
-          e.preventDefault();
-          if (hasSceneModifier) {
-            // Jump to start of scene, or prev scene's start if already at start
-            if (currentImageIndex > 0) {
-              selectFilmstripImage(0, _currentScene);
-            } else {
-              navigateToScene(-1, 0);
-            }
-          } else {
-            if (currentImageIndex > 0) {
-              selectFilmstripImage(currentImageIndex - 1, _currentScene);
-            } else {
-              // At first image — jump to previous scene's LAST image
-              // (-1 = last image of whichever scene navigateToScene lands on,
-              // which can skip scenes hidden by the review-state filter).
-              navigateToScene(-1, -1);
-            }
-          }
-          break;
-        case 'Home':
-          e.preventDefault();
-          // Same behavior as Ctrl/Cmd+ArrowLeft.
-          if (currentImageIndex > 0) {
-            selectFilmstripImage(0, _currentScene);
-          } else {
-            navigateToScene(-1, 0);
-          }
-          break;
-        case 'ArrowUp':
-        case 'ArrowDown':
-          e.preventDefault();
-          if (images[currentImageIndex]) {
-            const row = images[currentImageIndex];
-            const cropState = getRowActiveCropState(row);
-            if (cropState.crops.length > 1) {
-              const step = e.key === 'ArrowDown' ? 1 : -1;
-              const next = (cropState.activeIndex + step + cropState.crops.length) % cropState.crops.length;
-              setRowActiveCropIndex(row, next, cropState.crops);
-              _commitCropHoverSelection(row);
-              selectFilmstripImage(currentImageIndex, _currentScene, true, true);
-            }
-          }
-          break;
-        case 'Enter':
-          e.preventDefault();
-          if (images[currentImageIndex]) {
-            const row = images[currentImageIndex];
-            const stateBefore = getRowActiveCropState(row);
-            if (stateBefore.crops.length > 0) {
-              const changed = promoteActiveCropToPrimary(row);
-              if (changed) {
-                void (async () => {
-                  await _resortAndFocusSceneImage(row, true);
-                  await renderScenes();
-                })();
-              } else {
-                selectFilmstripImage(currentImageIndex, _currentScene, true, true);
-              }
-              showToast(`Primary crop set to ${stateBefore.activeIndex + 1}/${stateBefore.crops.length}`, 1800);
-            }
-          }
-          break;
-        // Cull decisions. ZXC is the home-row set; 789 is the right-hand
-        // alternate (top row or numpad with NumLock on), which sits directly
-        // above the 1–5 rating keys on a numpad and keeps the whole review
-        // flow on one hand for left-handed mouse users.
-        case 'z':
-        case 'Z':
-        case '7':
-          if (hasSceneModifier) break;
-          e.preventDefault();
-          if (images[currentImageIndex]) {
-            setCullStatus(images[currentImageIndex], 'accept');
-            _refreshCurrentFilmstripCard();
-          }
-          break;
-        case 'x':
-        case 'X':
-        case '8':
-          if (hasSceneModifier) break;
-          e.preventDefault();
-          if (images[currentImageIndex]) {
-            setCullStatus(images[currentImageIndex], '');
-            _refreshCurrentFilmstripCard();
-          }
-          break;
-        case 'c':
-        case 'C':
-        case '9':
-          if (hasSceneModifier) break;
-          e.preventDefault();
-          if (images[currentImageIndex]) {
-            setCullStatus(images[currentImageIndex], 'reject');
-            _refreshCurrentFilmstripCard();
-          }
-          break;
-        case '1': case '2': case '3': case '4': case '5':
-          e.preventDefault();
-          if (images[currentImageIndex]) {
-            setRating(images[currentImageIndex], parseInt(e.key, 10), 'manual');
-            _refreshCurrentFilmstripCard();
-          }
-          break;
-        case ' ':
-          e.preventDefault();
-          if (images[currentImageIndex]) openInEditor(images[currentImageIndex]);
-          break;
-        case 'f':
-        case 'F':
-          if (hasSceneModifier) break;
-          e.preventDefault();
-          KestrelFavorites.toggleSceneViewerCurrent();
-          break;
-        // Primary subject (prototype): focus the scene on the active crop's bird / bird numbers.
-        case 's':
-        case 'S':
-          if (hasSceneModifier || typeof psFocusActive !== 'function') break;
-          e.preventDefault();
-          psFocusActive();
-          break;
-        case 'b':
-        case 'B':
-          if (hasSceneModifier || typeof psToggleIds !== 'function') break;
-          e.preventDefault();
-          psToggleIds();
-          break;
-        case 'Escape':
-          e.preventDefault();
-          el('#closeDlg')?.click();
-          break;
+    function _stepActiveCrop(row, step) {
+      if (!row) return;
+      const cropState = getRowActiveCropState(row);
+      if (cropState.crops.length < 2) return;
+      const next = (cropState.activeIndex + step + cropState.crops.length) % cropState.crops.length;
+      setRowActiveCropIndex(row, next, cropState.crops);
+      _commitCropHoverSelection(row);
+      selectFilmstripImage(currentImageIndex, _currentScene, true, true);
+    }
+
+    function _promoteActiveCropByKey(row) {
+      if (!row) return;
+      const stateBefore = getRowActiveCropState(row);
+      if (stateBefore.crops.length === 0) return;
+      if (promoteActiveCropToPrimary(row)) {
+        void (async () => {
+          await _resortAndFocusSceneImage(row, true);
+          await renderScenes();
+        })();
+      } else {
+        selectFilmstripImage(currentImageIndex, _currentScene, true, true);
       }
+      showToast(`Primary crop set to ${stateBefore.activeIndex + 1}/${stateBefore.crops.length}`, 1800);
     }
 
     // Refresh the current filmstrip card + info bar after a status/rating change
