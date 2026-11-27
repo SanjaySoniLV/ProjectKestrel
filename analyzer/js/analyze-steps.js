@@ -176,6 +176,7 @@
       const open = $('adlgLegend').classList.toggle('hidden') === false;
       legendBtn.setAttribute('aria-expanded', String(open));
     });
+    $('analyzeDlgTreeEmptyHint').addEventListener('click', () => $('analyzeDlgLoadFolders').click());
     d.addEventListener('keydown', onKeydown);
     for (const btn of d.querySelectorAll('.adlg-help')) {
       btn.addEventListener('mouseenter', () => showTip(btn));
