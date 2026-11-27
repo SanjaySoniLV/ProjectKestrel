@@ -64,6 +64,21 @@ def test_favorites_always_start_accepted():
     assert out["decisions"] == {"b": "accept", "a": "reject"}
 
 
+def test_keep_at_most_caps_accepts_but_keeps_favorites():
+    out = _run("""
+        const R = { threshold: 0.5, min_per_scene: 1, max_per_scene: 2, no_bird: 'reject' };
+        return [plan([P('a', 0.9), P('b', 0.8), P('c', 0.7), P('d', 0.6)], R, null, 'quality').decisions,
+                plan([P('a', 0.9, { manual: 'accept' }), P('b', 0.8), P('c', 0.7)], R, null, 'quality').decisions,
+                plan([P('a', 0.9), P('b', 0.8), P('c', 0.1, { fav: true }), P('d', 0.2, { fav: true }),
+                      P('e', 0.3, { fav: true })], R, null, 'quality').decisions,
+                plan([P('a', 0.9), P('b', 0.8), P('c', 0.7)], { ...R, max_per_scene: 0 }, null, 'quality').decisions];
+    """)
+    assert out[0] == {"a": "accept", "b": "accept", "c": "reject", "d": "reject"}
+    assert out[1] == {"b": "accept", "c": "reject"}
+    assert sorted(k for k, v in out[2].items() if v == "accept") == ["c", "d", "e"]
+    assert set(out[3].values()) == {"accept"}
+
+
 def test_cut_overrides_threshold_and_no_bird_rule_applies():
     out = _run("""
         return plan([P('a', 0.9), P('b', 0.8), P('c', 0.7), P('d', null)],

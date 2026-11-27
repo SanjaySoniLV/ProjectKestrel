@@ -74,6 +74,9 @@
     const userAccepts = photos.filter(p => p.manual === 'accept').length;
     const min = Math.max(0, rules.min_per_scene ?? 1);
     if (n + userAccepts < min) n = Math.min(pl.length, min - userAccepts);
+    // Keep at most: 0 means no limit. Favorites stay accepted past the limit.
+    const max = Math.max(0, rules.max_per_scene ?? 0);
+    if (max > 0) n = Math.max(favs, Math.min(n, Math.max(min, max) - userAccepts));
     return n;
   }
 

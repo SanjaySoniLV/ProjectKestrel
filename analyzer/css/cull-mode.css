@@ -144,6 +144,8 @@ body.cull-mode-on { overflow: hidden; }
 
 .cm-stripbar { flex: none; display: flex; align-items: center; gap: var(--space-3); padding: 6px 0; border-top: 1px solid var(--divider); font-size: var(--fs-md); color: var(--text-2); }
 .cm-stripctl { margin-left: auto; display: flex; gap: var(--space-2); }
+.cm-allbtns { display: flex; gap: var(--space-1); }
+.cm-allbtns button { height: 28px; padding: 0 10px; font-size: var(--fs-sm); }
 
 .cm-strip { flex: none; position: relative; display: grid; gap: 8px; align-content: start; padding: 6px 2px 12px; overflow-y: auto; }
 .cm-card { position: relative; border-radius: var(--radius-sm); background: var(--card); cursor: pointer; }

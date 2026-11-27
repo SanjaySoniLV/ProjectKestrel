@@ -18,6 +18,9 @@
     projection: '<b>{a}</b> of {total} photos accepted ({pct}%)',
     atLeast: 'Accept at least',
     atLeastSub: 'per scene, sharpest first',
+    atMost: 'Keep at most',
+    atMostSub: 'per scene; favorites are always kept',
+    noLimit: 'No limit',
     noBird: 'Photos with no bird found',
     noBirdSub: '{n} in this folder. They stay marked so you can check them.',
     accept: 'Accept',
@@ -106,7 +109,7 @@
   function newSession(edges) {
     return {
       version: 1, current: 1, ended: false, started: false,
-      rules: { threshold: Number(edges?.three ?? 0.4), min_per_scene: 1, no_bird: 'reject' },
+      rules: { threshold: Number(edges?.three ?? 0.4), min_per_scene: 1, max_per_scene: 0, no_bird: 'reject' },
       cuts: {}, confirmed: [], passes: [],
     };
   }
@@ -195,6 +198,9 @@
         <div class="k-row"><div class="k-row-label">${escapeHtml(TEXT.atLeast)}<span class="k-row-hint">${escapeHtml(TEXT.atLeastSub)}</span></div>
           <div class="cmd-stepper"><button type="button" class="k-btn--sm" data-do="min" data-v="-1" aria-label="Fewer">−</button>
           <span>${ses.rules.min_per_scene}</span><button type="button" class="k-btn--sm" data-do="min" data-v="1" aria-label="More">+</button></div></div>
+        <div class="k-row"><div class="k-row-label">${escapeHtml(TEXT.atMost)}<span class="k-row-hint">${escapeHtml(TEXT.atMostSub)}</span></div>
+          <div class="cmd-stepper"><button type="button" class="k-btn--sm" data-do="max" data-v="-1" aria-label="Fewer">−</button>
+          <span>${ses.rules.max_per_scene ? ses.rules.max_per_scene : escapeHtml(TEXT.noLimit)}</span><button type="button" class="k-btn--sm" data-do="max" data-v="1" aria-label="More">+</button></div></div>
         <div class="k-row"><div class="k-row-label">${KestrelIcon('warning')} ${escapeHtml(TEXT.noBird)}<span class="k-row-hint">${fill(TEXT.noBirdSub, { n: nb })}</span></div>
           <div class="k-seg" role="group">${seg('accept')}${seg('reject')}</div></div>
       </div>
@@ -245,10 +251,28 @@
     });
   }
 
+  /**
+   * Accept at least runs 0-5; Keep at most runs No limit (0), then 1-50. The
+   * two never cross: moving one past the other carries the other with it.
+   */
+  function stepLimit(rules, which, d) {
+    const max0 = rules.max_per_scene || 0;
+    if (which === 'min') {
+      rules.min_per_scene = Math.max(0, Math.min(5, rules.min_per_scene + d));
+      if (max0 && max0 < rules.min_per_scene) rules.max_per_scene = rules.min_per_scene;
+      return;
+    }
+    let max = max0 + d;
+    if (max <= 0) max = d < 0 ? 0 : 1;
+    max = Math.min(50, max);
+    if (max && max < rules.min_per_scene) rules.min_per_scene = max;
+    rules.max_per_scene = max;
+  }
+
   function openPicks(start) {
     openDialog('md', picksHtml(start), (act, a) => {
       const ses = S().session;
-      if (act === 'min') { ses.rules.min_per_scene = Math.max(0, Math.min(5, ses.rules.min_per_scene + Number(a.dataset.v))); refreshPicks(start); }
+      if (act === 'min' || act === 'max') { stepLimit(ses.rules, act, Number(a.dataset.v)); refreshPicks(start); }
       else if (act === 'nobird') { ses.rules.no_bird = a.dataset.v; refreshPicks(start); }
       else if (act === 'start') startPass();
       else if (act === 'close') closeDialog();

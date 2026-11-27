@@ -38,6 +38,8 @@
     capture: 'Capture order',
     accept: 'Accept',
     reject: 'Reject',
+    acceptAll: 'Accept all',
+    rejectAll: 'Reject all',
     favorite: 'Favorite',
     savedAsYouGo: 'Saved as you go',
     skip: 'Skip',
@@ -63,7 +65,7 @@
     unknownSpecies: 'Unknown species',
     keys: {
       photo: 'photo', firstLast: 'first / last', flip: 'accept / reject', fav: 'favorite',
-      prevScene: 'previous scene', switchBird: 'switch bird', focus: 'focus bird',
+      prevScene: 'previous scene', all: 'whole scene', switchBird: 'switch bird', focus: 'focus bird',
     },
   };
   const fill = (s, p) => String(s).replace(/\{(\w+)\}/g, (_, k) => (p && k in p ? String(p[k]) : ''));
@@ -174,7 +176,7 @@
 
   function snapshot(scene) {
     const cut = S.session.cuts?.[scene.id];
-    const key = [S.session.current, rules().threshold, rules().min_per_scene, rules().no_bird, cut ?? '', S.order].join('|');
+    const key = [S.session.current, rules().threshold, rules().min_per_scene, rules().max_per_scene, rules().no_bird, cut ?? '', S.order].join('|');
     const old = S.snaps.get(scene.id);
     if (old && old.key === key && old.n === scene.rows.length) return old;
     const plan = L.planScene(scene.rows.map(photoOf), rules(), cut ?? null, S.order);
@@ -269,6 +271,19 @@
     r.culled_origin = 'manual';
     queueSave();
     renderAfterDecision(r);
+  }
+  /** Shift+Z / Shift+C: one decision for every photo in the current scene. */
+  function setScene(state) {
+    if (S.favView || !S.cur) return;
+    if (viewPass()) { showToast(fill(TEXT.readOnlyToast, { n: S.view, cur: S.session.current }), 2600); return; }
+    ensureRatingColumns();
+    for (const r of stripRows(S.cur)) {
+      if (r.__moved) continue;
+      r.culled = state;
+      r.culled_origin = 'manual';
+    }
+    queueSave();
+    render();
   }
   function flip(r) { if (r) setDecision(r, decisionOf(r) === 'accept' ? 'reject' : 'accept'); }
 
@@ -445,6 +460,7 @@
       </div>
       <div class="cm-info"></div>
       <div class="cm-stripbar"><span class="cm-stripcount"></span>
+        <span class="cm-allbtns"><button type="button" class="k-btn--quiet" data-act="all" data-v="accept"></button><button type="button" class="k-btn--quiet" data-act="all" data-v="reject"></button></span>
         <span class="cm-stripctl">
           <div class="k-seg" role="group" data-seg="order"><button type="button" data-v="quality"></button><button type="button" data-v="time"></button></div>
           <div class="k-seg" role="group" data-seg="thumb"><button type="button" data-v="frame"></button><button type="button" data-v="bird"></button></div>
@@ -477,6 +493,8 @@
     el('.cm-zctl .cm-zlbl').textContent = TEXT.rawZoom;
     el('.cm-clip').title = TEXT.clippedTitle;
     el('.cm-saved').textContent = TEXT.savedAsYouGo;
+    el('[data-act="all"][data-v="accept"]').innerHTML = `${escapeHtml(TEXT.acceptAll)} <kbd>Shift</kbd>+<kbd>Z</kbd>`;
+    el('[data-act="all"][data-v="reject"]').innerHTML = `${escapeHtml(TEXT.rejectAll)} <kbd>Shift</kbd>+<kbd>C</kbd>`;
     document.body.appendChild(root);
     wireEvents();
   }
@@ -643,6 +661,7 @@
   function renderStripBar() {
     el('[data-seg="order"]').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === S.order));
     el('[data-seg="thumb"]').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === S.thumb));
+    S.el.querySelectorAll('[data-act="all"]').forEach((b) => { b.disabled = !!(viewPass() || S.favView || !S.cur); });
     const c = el('.cm-stripcount');
     if (S.favView) { c.textContent = `${currentList().length} ${TEXT.favorites.toLowerCase()}`; return; }
     if (!S.cur) { c.textContent = ''; return; }
@@ -817,7 +836,7 @@
     const k = TEXT.keys;
     const kb = (s) => `<kbd>${s}</kbd>`;
     let h = `<span>${kb('←')}${kb('→')} ${k.photo}</span><span>${kb('Ctrl')}+${kb('←')}${kb('→')} ${k.firstLast}</span>`
-      + `<span>${kb('Space')} ${k.flip}</span><span>${kb('F')} ${k.fav}</span><span>${kb('Shift')}+${kb('Tab')} ${k.prevScene}</span>`;
+      + `<span>${kb('Space')} ${k.flip}</span><span>${kb('Shift')}+${kb('Z')}${kb('C')} ${k.all}</span><span>${kb('F')} ${k.fav}</span><span>${kb('Shift')}+${kb('Tab')} ${k.prevScene}</span>`;
     const r = S.sel;
     if (r && !r.__moved && getRowCropRecords(r).length > 1) {
       h += `<span class="cm-birdkeys">${kb('↑')}${kb('↓')} ${k.switchBird}</span><span class="cm-birdkeys">${kb('S')} ${k.focus}</span>`;
@@ -877,6 +896,7 @@
     else if (act === 'skip') step(1);
     else if (act === 'exit') exit();
     else if (act === 'set') setDecision(S.sel, a.dataset.v);
+    else if (act === 'all') setScene(a.dataset.v);
     else if (act === 'favview') {
       S.favView = !S.favView;
       S.sel = currentList()[0] || (S.favView ? null : S.sel);
@@ -909,7 +929,9 @@
       ArrowRight: () => move(1, ctrl), ArrowLeft: () => move(-1, ctrl),
       Home: () => move(-1, true), End: () => move(1, true),
       ArrowDown: () => switchBird(1), ArrowUp: () => switchBird(-1),
-      ' ': () => flip(r), z: () => setDecision(r, 'accept'), c: () => setDecision(r, 'reject'),
+      ' ': () => flip(r),
+      z: () => (e.shiftKey ? setScene('accept') : setDecision(r, 'accept')),
+      c: () => (e.shiftKey ? setScene('reject') : setDecision(r, 'reject')),
       f: () => toggleFavorite(r), s: () => { focusBird(); },
       Enter: () => (e.shiftKey ? makeMainBird() : confirmNext()),
       Tab: () => step(e.shiftKey ? -1 : 1),
