@@ -52,7 +52,7 @@
       },
       {
         title: 'Make a culling decision, then close the scene',
-        body: 'Kestrel computes <b>star ratings</b> based on each image’s quality score. Click the stars to set your own. <span style="color:#6aa0ff">Blue stars</span> = AI rating · <span style="color:#f5c542">Gold stars</span> = your manual override.<br><br>Use the <b>Accept · Undecided · Reject</b> buttons to make a culling decision. These decisions power the Culling Assistant later!<br><br>When you’re done, close the scene to continue.',
+        body: 'Kestrel computes <b>star ratings</b> based on each image’s quality score. Click the stars to set your own. <span style="color:#6aa0ff">Blue stars</span> = AI rating · <span style="color:#f5c542">Gold stars</span> = your manual override.<br><br>Use the <b>Accept · Undecided · Reject</b> buttons to make a culling decision. Cull mode keeps these decisions later!<br><br>When you’re done, close the scene to continue.',
         nudge: 'Mark a photo Accept/Reject, then close the scene.',
         target: '#sceneInfoBar',
         position: 'top-left',
@@ -104,7 +104,7 @@
       },
       {
         title: 'Ratings and culling decisions',
-        body: 'Kestrel computes <b>star ratings</b> based on each image’s quality score. Click the stars to set your own. <span style="color:#6aa0ff">Blue stars</span> = AI rating · <span style="color:#f5c542">Gold stars</span> = your manual override.<br><br>Use the <b>Accept · Undecided · Reject</b> buttons to make a culling decision for each photo. These come in handy with the Culling Assistant later!',
+        body: 'Kestrel computes <b>star ratings</b> based on each image’s quality score. Click the stars to set your own. <span style="color:#6aa0ff">Blue stars</span> = AI rating · <span style="color:#f5c542">Gold stars</span> = your manual override.<br><br>Use the <b>Accept · Undecided · Reject</b> buttons to make a culling decision for each photo. Cull mode keeps these decisions later!',
         nudge: 'Mark a photo as Accepted or Rejected to continue!',
         target: '#sceneInfoBar',
         position: 'top-left',
@@ -176,8 +176,8 @@
         position: 'bottom',
       },
       {
-        title: 'Culling Assistant',
-        body: 'The <b>Culling Assistant</b> helps you automatically assign photos as Accepted or Rejected based on star ratings — and can even move rejected photos into a dedicated folder.<br><br>Click <b>Open Culling Assistant</b> to open a dedicated Accept/Reject workspace for the folder.',
+        title: 'Cull mode',
+        body: '<b>Cull mode</b> takes you through every scene to accept or reject each photo, starting from picks Kestrel makes by quality, and can move the rejects into a separate folder.<br><br>Click <b>Enter Cull mode</b> to start culling this folder.',
         target: '.culling-assistant-btn',
         position: 'bottom',
       },
@@ -191,7 +191,7 @@
       },
       {
         title: 'You’re all set!',
-        body: 'That’s the full tour! Quick recap:<br><br>• <b>Analyze Folders</b> to process new photos<br>• <b>Add Folders</b> to browse analyzed photos<br>• <b>Click scenes</b> to view &amp; rate photos<br>• <b>Culling Assistant</b> for bulk Accept/Reject workflow<br>• <b>Write Photo Metadata</b> to export to Lightroom, darktable, etc.<br><br><b>Remember:</b> Write photo metadata <em>before</em> importing into Lightroom or Capture One for best results!<br><br>Click the <b>Tutorial</b> button anytime to replay this tour. Happy birding!',
+        body: 'That’s the full tour! Quick recap:<br><br>• <b>Analyze Folders</b> to process new photos<br>• <b>Add Folders</b> to browse analyzed photos<br>• <b>Click scenes</b> to view &amp; rate photos<br>• <b>Cull mode</b> to accept or reject every photo fast<br>• <b>Write Photo Metadata</b> to export to Lightroom, darktable, etc.<br><br><b>Remember:</b> Write photo metadata <em>before</em> importing into Lightroom or Capture One for best results!<br><br>Click the <b>Tutorial</b> button anytime to replay this tour. Happy birding!',
         target: null,
       },
       {
@@ -344,11 +344,11 @@
               '<div class="tut-wf-arrow">→</div>' +
               '<div class="tut-wf-node accent">Kestrel Analyzes</div>' +
               '<div class="tut-wf-arrow">→</div>' +
-              '<div class="tut-wf-node highlight">Culling Assistant</div>' +
+              '<div class="tut-wf-node highlight">Cull mode</div>' +
               '<div class="tut-wf-arrow">→</div>' +
               '<div class="tut-wf-node">Accepts / Rejects</div>' +
             '</div>' +
-            '<div class="tut-wf-caption">Use the <b>Culling Assistant</b> to cut the blurry bulk — keep the sharp photos and archive the rest in one pass.</div>' +
+            '<div class="tut-wf-caption">Use <b>Cull mode</b> to cut the blurry bulk: keep the sharp photos and set the rest aside.</div>' +
           '</div>' +
           '<div class="tut-wf-panel" data-panel="favs">' +
             '<div class="tut-wf-flow">' +
@@ -363,7 +363,7 @@
             '<div class="tut-wf-caption">Browse your scenes in Kestrel and press <kbd>Space</kbd> on the ones you love — they open straight in your photo editor.</div>' +
           '</div>' +
         '</div>' +
-        '<div class="tut-workflow-hint">We’ve highlighted where you’ll find the two tools you’ll use most: <b>Write Photo Metadata</b> (in the <b>Folder Actions</b> menu) and <b>Open Culling Assistant</b>.</div>';
+        '<div class="tut-workflow-hint">We’ve highlighted where you’ll find the two tools you’ll use most: <b>Write Photo Metadata</b> (in the <b>Folder Actions</b> menu) and <b>Enter Cull mode</b>.</div>';
 
       var tabs = bodyEl.querySelectorAll('.tut-wf-tab');
       var panels = bodyEl.querySelectorAll('.tut-wf-panel');

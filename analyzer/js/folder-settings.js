@@ -131,7 +131,7 @@
           <h4 class="k-section-title fset-title">Reset accept and reject decisions</h4>
           <div class="k-row">
             <div class="k-row-label">Confirmed decisions
-              <span class="k-row-hint">Culling Assistant suggestions you confirmed go back to Undecided.</span></div>
+              <span class="k-row-hint">Cull mode suggestions you confirmed go back to Undecided.</span></div>
             <button type="button" class="k-btn--sm k-btn--quiet" id="fsetResetVerified">Reset confirmed</button>
           </div>
           <div class="k-row">

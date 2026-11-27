@@ -42,10 +42,10 @@ Kestrel shows a close-up of the bird alongside the full frame. Because the scene
 ![Scene view](readme_imgs/scene-view.png)
 
 ### Step 4: Cull the bulk
-The Culling Assistant splits your photos into Accept and Reject piles from simple rules — a minimum quality bar, and how many frames to keep per scene. Adjust, review the rejects, click Done.
+Cull mode walks the folder scene by scene and asks one question of every photo: keep it or not. Kestrel starts you with suggested picks from a quality bar and a minimum to keep per scene, shown dotted until you confirm them. Press Enter to confirm a scene and move on, then Finish to move the rejects. Run a second, stricter pass on what you kept, and step back to any earlier pass from Culling history.
 
 **Kestrel moves. It never deletes.** Rejected photos go to a `Kestrel Rejects` folder. Archive them or delete them yourself, whenever you're ready, on your own terms.
-![Culling Assistant](readme_imgs/culling-assistant.png)
+![Cull mode](readme_imgs/culling-assistant.png)
 
 ### Step 5: Search by species
 Search your whole library by *what* you photographed, not *when*. Across every folder, every outing, every year of shooting.
@@ -170,7 +170,7 @@ ProjectKestrel/
 │   ├── visualizer.html       # UI markup (all dialogs live here)
 │   ├── js/                   # UI logic — vanilla JS modules, no framework
 │   ├── css/                  # Split stylesheets (base, layout, grid, dialogs/…)
-│   ├── culling.html          # Culling Assistant window
+│   ├── cull_session.py       # Cull mode pass records, Revert / Reset
 │   ├── metadata_writer.py    # XMP sidecar writer
 │   ├── editor_launch.py      # Open photos in external editors
 │   ├── cloud_compute_client.py  # Cloud Compute (optional)

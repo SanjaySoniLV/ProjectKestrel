@@ -1,4 +1,4 @@
-"""Ctrl+C/Z/X must not cull; auto-categorize must keep explicit Undecided (WP-26).
+"""Ctrl+C/Z/X must not cull, and explicit Undecided keeps a manual origin (WP-26).
 
 The scene-dialog Z/X/C keys (and 7/8/9) write accept / empty / reject. Those
 letters are also the browser's copy / undo / cut chords. The handler already
@@ -7,12 +7,9 @@ leave Ctrl/Cmd+Z, Ctrl/Cmd+X, and Ctrl/Cmd+C alone so preventDefault does not
 eat the browser shortcut.
 
 Explicit Undecided is the X key (and the filmstrip "none" toggle): culled is
-empty and origin is manual. ``applyAutoCategorize(true)`` already skips
-``isProtectedCull``, which is origin-based, so that empty+manual row stays
-off both assistant piles. Untouched rows (empty cull, empty origin) are still
-backfilled on init.
+empty and origin is manual.
 
-No JS runner: source-level lints, same shape as ``test_culling_quality_cutoff.py``.
+No JS runner: source-level lints.
 """
 
 from __future__ import annotations
@@ -23,7 +20,6 @@ import pytest
 
 ANALYZER = Path(__file__).resolve().parents[2]
 SCENE_DIALOG = ANALYZER / "js" / "scene-dialog.js"
-CULLING_HTML = ANALYZER / "culling.html"
 
 
 pytestmark = pytest.mark.unit
@@ -96,43 +92,3 @@ def test_clearing_cull_is_a_manual_origin():
     assert "row.culled = status || '';" in body
     assert "row.culled_origin = 'manual';" in body
     assert "status ? 'manual' : ''" not in body
-
-
-def test_protected_cull_is_origin_only():
-    """Empty+manual must be protected; do not require accept/reject."""
-    html = _read(CULLING_HTML)
-    body = _fn_body(html, "function isProtectedCull(row)")
-    assert "origin === 'manual'" in body
-    assert "origin === 'verified'" in body
-    assert "hasAnyCull" not in body
-
-
-def test_normalize_keeps_manual_origin_without_accept_or_reject():
-    body = _fn_body(_read(CULLING_HTML), "function normalizeCullOrigin(row)")
-    raw_ok = body.find("raw === 'manual'")
-    status_fallback = body.find("if (status) return 'manual';")
-    empty = body.find("return '';")
-    assert raw_ok != -1
-    assert status_fallback != -1
-    assert empty != -1
-    assert raw_ok < status_fallback < empty
-
-
-def test_apply_auto_preserve_skips_protected_not_empty_without_origin():
-    """Init still backfills untouched rows; explicit Undecided is origin=manual."""
-    body = _fn_body(_read(CULLING_HTML), "function applyAutoCategorize(preserveManual = true)")
-    write = body[body.find("// Write results"):]
-    assert "if (preserveManual && isProtectedCull(r)) continue;" in write
-    assert "!hasAnyCull(r)" not in write
-    assert "setCullState(r, state, 'auto')" in write
-
-
-def test_init_backfill_uses_the_preserve_path():
-    body = _fn_body(_read(CULLING_HTML), "function initCullingState()")
-    assert "applyAutoCategorize(true)" in body
-
-
-def test_reset_still_overwrites_including_undecided():
-    html = _read(CULLING_HTML)
-    assert "applyAutoCategorize(false)" in html
-    assert "el('#resetConfirmOk')" in html

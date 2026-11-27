@@ -575,9 +575,9 @@
   function buildCullingButton(folderPath) {
     const cullingBtn = document.createElement('button');
     cullingBtn.className = 'action-btn culling-assistant-btn';
-    cullingBtn.innerHTML = `${KestrelIcon('scissors')} Open Culling Assistant`;
-    cullingBtn.title = 'Open the AI-assisted culling workflow for this folder';
-    cullingBtn.addEventListener('click', (ev) => { ev.stopPropagation(); openCullingAssistant(folderPath); });
+    cullingBtn.innerHTML = `${KestrelIcon('scissors')} Enter Cull mode`;
+    cullingBtn.title = 'Accept or reject every photo in this folder, scene by scene';
+    cullingBtn.addEventListener('click', (ev) => { ev.stopPropagation(); openCullMode(folderPath); });
     return cullingBtn;
   }
 

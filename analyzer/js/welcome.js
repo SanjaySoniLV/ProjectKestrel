@@ -99,8 +99,8 @@
       },
       {
         icon: 'trash',
-        title: 'Cull faster with the Culling Assistant',
-        body: 'Batch Accept / Reject photos by your own quality rules — and optionally move rejects into an archive folder.',
+        title: 'Cull faster in Cull mode',
+        body: 'Accept or reject every photo scene by scene, starting from picks Kestrel makes by quality, and move the rejects aside.',
       },
       {
         icon: 'warning',

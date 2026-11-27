@@ -47,6 +47,7 @@
   <link rel="stylesheet" href="css/tutorial.css" />
   <link rel="stylesheet" href="css/perch.css" />
   <link rel="stylesheet" href="css/notifications.css" />
+  <link rel="stylesheet" href="css/cull-mode.css" />
   <script src="csv_parser.js"></script>
 </head>
 
@@ -250,7 +251,6 @@
       </div>
 
       <section id="sceneGrid"></section>
-
       <!-- Welcome / Quick-Start panel — visible only when no folder is loaded -->
       <div id="welcomePanel">
         <div class="welcome-hero">
@@ -263,7 +263,6 @@
 
         <!-- "What's New" banner (populated + gated by JS via last_seen_whats_new_version setting) -->
         <div id="welcomeWhatsNew" class="welcome-whats-new hidden" role="region" aria-label="What's new in this update"></div>
-
         <!-- Rotating tip carousel (tip content authored in JS) -->
         <div id="welcomeTipCarousel" class="welcome-tip-carousel" role="region" aria-label="Tips and tricks">
           <button type="button" class="wtc-arrow wtc-prev" aria-label="Previous tip">&#x25C2;</button>
@@ -529,7 +528,6 @@
 
   <!-- Toast notification container -->
   <div id="toastContainer" style="position:fixed;right:18px;bottom:18px;z-index:20000;pointer-events:none"></div>
-
   <!-- Tutorial overlay -->
   <div id="tutorialOverlay">
     <div id="tutorialHighlight"></div>
@@ -564,7 +562,7 @@
           <span class="tut-chooser-icon"><i class="k-icon k-icon--rocket" aria-hidden="true"></i></span>
           <span class="tut-chooser-text">
             <span class="tut-chooser-label">Walk me through everything</span>
-            <span class="tut-chooser-hint">Full tour: crop navigation, RAW zoom, library-wide search, merging, Culling Assistant, metadata export, and more.</span>
+            <span class="tut-chooser-hint">Full tour: crop navigation, RAW zoom, library-wide search, merging, Cull mode, metadata export, and more.</span>
           </span>
         </button>
       </div>
@@ -619,7 +617,6 @@
         </div>
 
         <div class="perch-linked-warn hidden" id="perchLinkedWarn"></div>
-
         <!-- H7 tag-sync: appears only when local species/family tags differ from
              the live perch. Clicking Sync opens a per-scene preview dialog. -->
         <div class="perch-tag-sync hidden" id="perchTagSyncBanner">
@@ -708,7 +705,6 @@
           </div>
 
           <h4 class="perch-checklist-heading">Before you upload</h4>
-
           <div class="perch-check-panel" id="perchCheckFirstPhoto">
             <div class="perch-check-body">
               <div class="perch-check-title">Check photo capture time</div>
@@ -729,9 +725,9 @@
             <div class="perch-check-body">
               <div class="perch-check-titlebar">
                 <div class="perch-check-title">Review your usage</div>
-                <button type="button" class="perch-check-btn perch-check-btn--corner" id="perchOpenCullingBtn">Open Culling Assistant</button>
+                <button type="button" class="perch-check-btn perch-check-btn--corner" id="perchOpenCullingBtn">Enter Cull mode</button>
               </div>
-              <div class="perch-check-text">Use your perch storage more efficiently by running the culling assistant first.</div>
+              <div class="perch-check-text">Use your perch storage more efficiently by culling the folder in Cull mode first.</div>
               <label class="perch-reject-toggle" id="perchRejectToggleRow">
                 <input type="checkbox" id="perchRejectToggleCb" checked>
                 <span class="perch-reject-toggle-label" id="perchRejectToggleLabel">Don't upload rejected images</span>
@@ -766,7 +762,6 @@
             Already shared this folder to Perch?
             <button type="button" class="perch-link-btn" id="perchRelinkOpenBtn">Re-link this Perch</button>
           </div>
-
           <!-- Hidden compat shells: existing _perchUpdateDialogTotals targets these
                by ID. Kept invisible so the timeline summary stays the visible totals. -->
           <span id="perchStatScenes" hidden></span>
@@ -783,7 +778,6 @@
       <button type="button" id="perchUploadSubmitBtn" class="perch-cta hidden" disabled><i class="k-icon k-icon--upload" aria-hidden="true"></i> Upload</button>
     </div>
   </dialog>
-
   <!-- Re-link picker: pick an existing perch to associate with this folder
        (writes perch_link.json locally, no re-upload). Opened from the share
        dialog's "Re-link this Perch" prompt. -->
@@ -1749,6 +1743,10 @@
   <script src="js/scene-dialog.js"></script>
   <script src="js/primary-subject.js"></script>
   <script src="js/favorites.js"></script>
+  <script src="js/cull-logic.js"></script>
+  <script src="js/cull-stage.js"></script>
+  <script src="js/cull-flow.js"></script>
+  <script src="js/cull-mode.js"></script>
   <script src="js/feedback-donate.js"></script>
   <script src="js/quality-feedback.js"></script>
   <script src="js/folder-tree.js"></script>
@@ -1791,7 +1789,8 @@
         ['multi-folder.js',    'loadMultipleFolders'],
         ['perch.js',           '_perchOpenDialog'],
         ['cloud-compute.js',   '_ccSubmitSelectedFolders'],
-        ['culling.js',         'openCullingAssistant'],
+        ['event-wiring.js',    'openCullMode'],
+        ['cull-mode.js',       'KestrelCullMode'],
         ['repair.js',          'openRepairDialog'],
         ['scene-regroup.js',   'openRegroupDialog'],
         ['folder-settings.js', 'openFolderSettingsDialog'],

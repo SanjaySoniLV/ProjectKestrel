@@ -27,7 +27,7 @@ analyzer/
 ├── queue_manager.py     # sequential folder-analysis queue
 ├── settings_utils.py    # atomic settings.json I/O + sanitizer allowlists
 ├── cli.py               # headless entry point
-├── visualizer.html      # main window markup;  culling.html: Culling Assistant window
+├── visualizer.html      # main window markup (Cull mode is js/cull-*.js inside it)
 ├── js/*.js              # frontend modules: classic scripts sharing one global scope, load order in visualizer.html
 ├── css/*.css            # stylesheets; design tokens live in css/base.css, dialogs in css/dialogs/kdlg.css
 ├── *_client.py, perch_uploader.py, oauth_client.py   # optional hosted add-ons

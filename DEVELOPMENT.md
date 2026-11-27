@@ -18,7 +18,7 @@ ProjectKestrel/
 │   ├── visualizer.html              # Main window markup (all dialogs inline)
 │   ├── visualizer.js                # Main window logic (~10k lines, vanilla JS)
 │   ├── visualizer.css               # Main window styles
-│   ├── culling.html                 # Culling Assistant window (separate webview)
+│   ├── cull_session.py              # Cull mode pass records, Revert / Reset
 │   ├── metadata_writer.py           # XMP sidecar writer
 │   ├── editor_launch.py             # Open photos in external editors
 │   ├── folder_inspector.py          # Lightweight folder probing (no ML)

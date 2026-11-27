@@ -2867,7 +2867,7 @@
         for (const rp of rootsToSave) {
           const groupRows = groups.get(rp) || [];
           try {
-            // Persist cull/rating columns to CSV so culling assistant and reloads see authoritative state.
+            // Persist cull/rating columns to CSV so Cull mode and reloads see authoritative state.
             if (typeof window.pywebview.api.write_kestrel_csv === 'function') {
               const content = rowsToCsvString(exportCols, groupRows);
               const csvRes = await window.pywebview.api.write_kestrel_csv(rp, content);
