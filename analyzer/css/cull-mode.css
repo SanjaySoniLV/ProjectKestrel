@@ -222,3 +222,7 @@ dialog.cmd .cmd-left, dialog.cmd .cmd-footnote { margin-right: auto; }
 .cmd-hl { flex: 1; min-width: 0; }
 .cmd-ha { display: flex; flex-wrap: wrap; justify-content: flex-end; align-content: flex-start; gap: var(--space-1); max-width: 260px; }
 .cmd-pad { padding: 10px 0; }
+.cm-pv--full::before { content: ""; position: absolute; inset: 0; z-index: 4; border: 3px dashed transparent; border-radius: var(--radius-md); pointer-events: none; transition: border-color .2s ease; }
+.cm-pv--full.is-accept::before { border-color: var(--accept); }
+.cm-pv--full.is-reject::before { border-color: var(--reject); }
+.cm-pv--full.is-firm::before { border-style: solid; }
