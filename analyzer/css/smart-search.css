@@ -91,7 +91,7 @@
 .card:hover .card-goto-btn,
 .card.focused .card-goto-btn,
 .card-goto-btn:focus-visible { opacity: 1; }
-.card .card-goto-btn:hover { background: #2a2140; border-color: #6a4fb3; color: #fff; }
+.card .card-goto-btn:hover { background: #2a2140; border-color: #6a4fb3; color: var(--white); }
 
 .card-context-menu {
   position: fixed;
@@ -220,7 +220,7 @@
   border-radius: 50%;
   border: 1px solid #5a6178;
   background: #22273a;
-  color: #fff;
+  color: var(--white);
   font-size: var(--fs-xs);
   line-height: 1;
   cursor: pointer;
@@ -302,7 +302,7 @@
   font-size: var(--fs-sm);
   line-height: 1;
 }
-.smart-search-clear:hover { background: var(--border); border: 0; color: #fff; }
+.smart-search-clear:hover { background: var(--border); border: 0; color: var(--white); }
 .smart-search-clear.hidden { display: none; }
 
 /* "Try:" example links. One line: links that do not fit wrap onto a clipped
@@ -335,7 +335,7 @@
   text-underline-offset: 3px;
   cursor: pointer;
 }
-.smart-example-link:hover { background: transparent; color: #fff; text-decoration-color: #fff; }
+.smart-example-link:hover { background: transparent; color: var(--white); text-decoration-color: var(--white); }
 @media (max-width: 900px) {
   .smart-bar { flex-basis: 100%; }
 }

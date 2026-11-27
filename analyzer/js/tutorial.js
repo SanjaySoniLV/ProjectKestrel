@@ -263,7 +263,7 @@
       _tutCleanup();
       _tutEl('#tutorialOverlay').classList.remove('active', 'has-backdrop');
       _tutEl('#tutorialHighlight').style.display = 'none';
-      _tutEl('#tutorialNudge').style.display = 'none';
+      _tutEl('#tutorialNudge').classList.add('hidden');
       var branch = _tutBranch;
       _tutBranch = '';
       if (branch === 'cull') window.KestrelCullTour.closed();
@@ -599,8 +599,8 @@
         });
       }
 
-      if (step.nudge) { nudge.textContent = step.nudge; nudge.style.display = ''; }
-      else nudge.style.display = 'none';
+      nudge.textContent = step.nudge || '';
+      nudge.classList.toggle('hidden', !step.nudge);
 
       var dotsCont = _tutEl('#tutorialProgress');
       dotsCont.innerHTML = '';
@@ -626,7 +626,7 @@
         var dlg = document.getElementById('sceneDlg');
         if (!dlg || !dlg.open) {
           bodyEl.insertAdjacentHTML('beforeend', '<br><br><span style="color:var(--brand);font-weight:600">Open a scene first, then this step will highlight the right element.</span>');
-          nudge.style.display = 'none';
+          nudge.classList.add('hidden');
           nextBtn.style.display = '';  // show Next even if waitFor was set
           target = null;
           hasWaitFor = false;

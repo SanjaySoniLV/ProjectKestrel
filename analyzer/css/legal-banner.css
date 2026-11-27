@@ -5,7 +5,7 @@
   left: 0;
   right: 0;
   background: var(--primary-bg);
-  color: #fff;
+  color: var(--white);
   padding: 10px 20px;
   z-index: 100000;
   display: flex;
@@ -36,7 +36,7 @@
 
 .legal-notice-banner a,
 .legal-notice-link {
-  color: #fff;
+  color: var(--white);
   text-decoration: underline;
   font-weight: 700;
 }
@@ -52,11 +52,11 @@
 
 .legal-notice-link:hover {
   background: rgba(255, 255, 255, 0.12);
-  border-color: #fff;
+  border-color: var(--white);
 }
 
 .legal-notice-btn {
-  background: #fff;
+  background: var(--white);
   color: var(--primary-bg);
   border: none;
   padding: 4px 12px;

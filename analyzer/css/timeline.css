@@ -20,7 +20,7 @@
 .action-btn:hover {
   background: var(--hover);
   border-color: #3a4a6d;
-  color: #fff;
+  color: var(--white);
 }
 .action-btn i {
   font-style: normal;

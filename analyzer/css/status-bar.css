@@ -145,7 +145,7 @@
 }
 .status-zoom-btn:hover {
   background: #1a2030;
-  color: #fff;
+  color: var(--white);
 }
 
 .status-zoom-slider {

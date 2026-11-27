@@ -446,7 +446,7 @@
   top: 6px;
   right: 6px;
   background: var(--brand);
-  color: #fff;
+  color: var(--white);
   font-size: 9px;
   font-weight: 700;
   padding: 1px 5px;
@@ -581,15 +581,15 @@
 }
 .cull-btn.active.reject {
   background: var(--bad);
-  color: #fff;
+  color: var(--white);
 }
 .cull-btn.active.unrated {
   background: var(--undecided);
-  color: #fff;
+  color: var(--white);
 }
 .cull-btn.active.accept {
   background: var(--ok);
-  color: #fff;
+  color: var(--white);
 }
 .cull-btn:not(.active) {
   opacity: 0.6;
@@ -990,7 +990,7 @@
   padding: 5px 8px;
   border-radius: var(--radius-sm);
   background: rgba(13, 17, 23, 0.85);
-  border: 1px solid #3a4152;
+  border: 1px solid var(--star-off);
   color: var(--warn);
   pointer-events: none;
 }
@@ -1035,3 +1035,54 @@
 }
 .scene-info-fav-btn:hover { background: var(--hover); }
 .scene-info-fav-btn.is-favorite { color: var(--favorite); border-color: var(--favorite); }
+
+/* Merge scenes, database info and repair dialogs. */
+#mergeDlg .settings > h3,
+#infoDlg .settings > h3,
+#repairDlg #repairDlgTitle { margin: 0; }
+#mergeDlg .merge-pick-row { align-items: flex-start; }
+#mergeDlg .merge-pick-row > label { margin-top: 6px; }
+#mergeDlg .merge-list-box {
+  flex: 1;
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--divider);
+  border-radius: var(--radius-lg);
+  padding: 8px;
+  background: #10131a;
+}
+#mergeList {
+  display: grid;
+  grid-template-columns: 120px 1fr auto;
+  gap: 6px;
+  align-items: center;
+}
+#mergeDlg .merge-target-opts {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+#mergeTargetId { width: 120px; }
+#mergeDlg .merge-actions {
+  justify-content: flex-end;
+  margin-top: 4px;
+  gap: 8px;
+}
+#infoNotice { margin: 0 0 8px; }
+#infoContent {
+  max-height: 50vh;
+  overflow: auto;
+  font-family: monospace;
+  font-size: var(--fs-sm);
+  white-space: pre;
+}
+#repairDlgFolder {
+  font-size: var(--fs-sm);
+  word-break: break-all;
+}
+#repairDlgBody {
+  max-height: 52vh;
+  overflow: auto;
+}
+#repairDlg .footer { gap: 8px; }

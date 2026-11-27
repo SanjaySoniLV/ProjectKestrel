@@ -47,3 +47,13 @@ def test_new_big_file_fails():
 def test_long_functions_are_report_only():
     assert ratchet.compare(_base(), _base(py_long_functions=50)) == []
 
+
+
+def test_inline_style_pattern_counts_attributes_only():
+    html = '<div style="x"></div><p STYLE=\'y\'></p><style>.a{}</style><div data-style="z"></div>'
+    assert len(ratchet.INLINE_STYLE.findall(html)) == 2
+
+
+def test_new_inline_style_fails():
+    problems = ratchet.compare(_base(html_inline_styles=0), _base(html_inline_styles=1))
+    assert len(problems) == 1 and "html_inline_styles" in problems[0]

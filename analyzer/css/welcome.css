@@ -490,3 +490,17 @@
 }
 .wtc-dot:hover { background: #555; }
 .wtc-dot.active { background: var(--brand); }
+
+#welcomePanel .welcome-hero-logo {
+  height: 150px;
+  opacity: 0.9;
+}
+#welcomePanel .welcome-start-tutorial {
+  margin: 0;
+  font-size: var(--fs-base);
+  padding: 10px 16px;
+}
+.welcome-footer .welcome-legal {
+  font-size: var(--fs-xs);
+  opacity: 0.8;
+}

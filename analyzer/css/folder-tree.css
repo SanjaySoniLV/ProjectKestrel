@@ -87,7 +87,7 @@
 }
 .folder-load-btn:hover {
   background: var(--primary-bg-hover);
-  color: #fff;
+  color: var(--white);
 }
 .folder-load-btn-plus {
   font-size: var(--fs-base);
@@ -399,14 +399,14 @@
   border: none;
   border-radius: 50%;
   background: transparent;
-  color: var(--muted, #889);
+  color: var(--muted);
   font-size: var(--fs-base);
   line-height: 1;
   cursor: pointer;
 }
 .folder-recents-chip-dismiss:hover {
   background: rgba(255, 255, 255, 0.08);
-  color: #fff;
+  color: var(--white);
 }
 /* Sidebar: the × sits over the chip's right end instead of beside it, so
    hidden ×s don't leave gaps between chips. */
@@ -449,7 +449,7 @@
 }
 .kestrel-ctx-menu-item:hover {
   background: #3a3f4b;
-  color: #fff;
+  color: var(--white);
 }
 .kestrel-ctx-menu-item.danger {
   color: var(--bad);
@@ -472,7 +472,7 @@
 }
 
 .tree-node-row.active .tree-label {
-  color: #fff;
+  color: var(--white);
 }
 
 .tree-node-row.active {
@@ -519,3 +519,6 @@
   padding: 6px 10px;
   font-size: var(--fs-sm);
 }
+
+#folderScanProgress { margin: 6px 8px 0; }
+#folderScanFill { width: 0%; }
