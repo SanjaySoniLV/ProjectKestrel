@@ -96,7 +96,7 @@ def test_session_round_trip_is_sanitized(api, folder):
     assert s["passes"][0]["decisions"] == {"IMG_001.CR3": "accept"}
     assert s["passes"][0]["history_id"] == ""
     assert s["confirmed"] == ["1"]
-    assert s["rules"] == {"threshold": 1.0, "min_per_scene": 1, "no_bird": "reject"}
+    assert s["rules"] == {"threshold": 1.0, "min_per_scene": 1, "max_per_scene": 0, "no_bird": "reject"}
     assert s["current"] == 2 and s["passes"][0]["on_disk"] is True
 
 

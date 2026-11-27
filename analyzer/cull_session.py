@@ -78,6 +78,7 @@ def _rules(raw) -> dict:
     return {
         'threshold': round(_num(raw.get('threshold'), 0.0, 1.0, 0.5), 4),
         'min_per_scene': int(_num(raw.get('min_per_scene'), 0, 20, 1)),
+        'max_per_scene': int(_num(raw.get('max_per_scene'), 0, 100, 0)),
         'no_bird': no_bird if no_bird in _NO_BIRD else 'reject',
     }
 
