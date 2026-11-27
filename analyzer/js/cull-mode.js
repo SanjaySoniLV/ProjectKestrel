@@ -12,6 +12,7 @@
 (function () {
   const TEXT = {
     title: 'Cull mode',
+    tour: 'How it works',
     passBadge: 'Pass {n} ▾',
     passBadgeView: 'Pass {n} · read-only ▾',
     passDoneAt: 'Pass {n} finished {time}',
@@ -467,6 +468,7 @@
       <span class="cm-tally"></span>
       <button type="button" class="k-btn--quiet" data-act="picks"></button>
       <button type="button" class="k-btn--quiet" data-act="history"></button>
+      <button type="button" class="k-btn--quiet" data-act="tour"></button>
       <button type="button" data-act="finish"></button>
       <button type="button" class="k-btn--quiet" data-act="exit"></button>
     </div>
@@ -511,6 +513,7 @@
     el('.cm-title').textContent = TEXT.title;
     el('[data-act="picks"]').innerHTML = `${escapeHtml(TEXT.startingPicks)} ▾`;
     el('[data-act="history"]').textContent = TEXT.history;
+    el('[data-act="tour"]').textContent = TEXT.tour;
     el('[data-act="finish"]').textContent = TEXT.finish;
     el('[data-act="exit"]').innerHTML = `${KestrelIcon('x')} ${escapeHtml(TEXT.exit)}`;
     const segText = { group: [TEXT.bySpecies, TEXT.byTime], filter: [TEXT.allScenes, TEXT.unconfirmed],
@@ -959,7 +962,7 @@
 
   function onKey(e) {
     if (!S.active) return;
-    if (document.querySelector('dialog[open]')) return;
+    if (document.querySelector('dialog[open]') || KestrelCullTour.active()) return;
     if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) && e.target.type !== 'range') return;
     if (e.metaKey || e.altKey) return;
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
