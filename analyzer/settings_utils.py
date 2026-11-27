@@ -9,10 +9,11 @@ import os
 import re
 import shutil
 import sys
-import tempfile
 import threading
 import time
 from typing import Any
+
+from kestrel_analyzer.atomic_io import write_json_atomic
 
 # Serializes ``save_persisted_settings`` so the read-existing / monotonic-guard
 # / refresh-.bak / os.replace sequence is atomic with respect to other saves
@@ -24,24 +25,7 @@ from typing import Any
 _SAVE_LOCK = threading.RLock()
 
 
-def _retry_on_file_lock(op, attempts: int = 12, delay: float = 0.02):
-    """Run ``op()``, retrying briefly on Windows' transient file-sharing errors.
-
-    Canonical implementation: ``kestrel_analyzer.database.retry_on_file_lock``.
-    This copy exists so settings I/O does not import pandas via ``database``.
-    ``os.replace`` of ``settings.json`` fails with ``PermissionError`` while
-    Explorer, Defender, or a previous Kestrel instance holds the file.
-    """
-    for attempt in range(attempts):
-        try:
-            return op()
-        except PermissionError:
-            if attempt == attempts - 1:
-                raise
-            time.sleep(delay * (attempt + 1))
-
-
-# Prefix/suffix for ``tempfile.mkstemp`` tmp files we emit. The glob
+# Prefix/suffix for the temp files our atomic saves emit. The glob
 # ``settings.json.*.tmp`` uniquely identifies orphans left by a crashed save.
 _TMP_FILE_PREFIX = 'settings.json.'
 _TMP_FILE_SUFFIX = '.tmp'
@@ -968,11 +952,9 @@ def save_persisted_settings(data: dict) -> None:
     Behaviour:
       * Serialized in-process by ``_SAVE_LOCK`` so concurrent callers (JS
         bridge, queue worker, startup) cannot race on the temp file.
-      * Each save writes to a **unique** temp file via ``tempfile.mkstemp``
-        so two racing saves never overwrite each other's tmp (and the orphan
-        reaper skips recent tmp files, so another process's save keeps its own) —
-        this is the fix for the ``WinError 2`` we hit when the old code
-        hardcoded ``settings.json.tmp``.
+      * Each save writes to a **unique** temp file (``write_json_atomic``)
+        so two racing saves never overwrite each other's tmp, and the orphan
+        reaper skips recent tmp files, so another process's save keeps its own.
       * If the on-disk file is corrupt and a valid ``.bak`` exists, the corrupt
         file is quarantined to ``<path>.corrupt-<ts>`` and the save proceeds,
         using ``.bak`` for the monotonic-counter guard so impact totals etc.
@@ -982,9 +964,8 @@ def save_persisted_settings(data: dict) -> None:
         can examine or restore it manually. Running app state stays in memory.
       * On success, the previous good ``settings.json`` is promoted to
         ``settings.json.bak`` before the atomic ``os.replace`` of the new file.
-      * The previous non-atomic fallback (a direct write on ``os.replace``
-        failure) has been removed — it was the root cause of partial writes
-        that in turn caused the data-loss symptom being guarded against here.
+      * There is no non-atomic fallback on failure: a direct write is how
+        partial writes corrupt the file this guards.
     """
     if not isinstance(data, dict):
         raise ValueError('Settings payload must be an object')
@@ -1039,61 +1020,29 @@ def save_persisted_settings(data: dict) -> None:
 
         os.makedirs(directory, exist_ok=True)
 
-        # Unique temp file per save. ``mkstemp`` atomically creates and opens
-        # the file with O_EXCL so no two calls can ever produce the same path.
-        try:
-            tmp_fd, tmp = tempfile.mkstemp(
-                prefix=_TMP_FILE_PREFIX,
-                suffix=_TMP_FILE_SUFFIX,
-                dir=directory,
-            )
-        except OSError as exc:
-            error(
-                f'[settings] FAILED to create temp file for atomic save ({exc}); '
-                f'existing file left unchanged. Check disk space and permissions '
-                f'on {directory}.'
-            )
-            return
-
-        try:
-            try:
-                with os.fdopen(tmp_fd, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, indent=2, sort_keys=True)
-                    try:
-                        f.flush()
-                        os.fsync(f.fileno())
-                    except OSError:
-                        # fsync can legitimately fail on some network filesystems;
-                        # proceed with the atomic replace anyway.
-                        pass
-            except Exception:
-                # fdopen took ownership of the fd; if the with-block raised,
-                # the fd is already closed. Just make sure we clean up the
-                # orphan temp file in the outer except.
-                raise
-
-            # Promote the previous good file to .bak before replacement so that
-            # a future corrupt-main scenario can auto-recover.
+        def _promote_bak(_tmp):
+            # The new file is fully on disk; promote the previous good file to
+            # .bak before replacing it so a later corrupt main file can recover.
             if status == 'ok':
                 try:
                     shutil.copy2(path, path + '.bak')
                 except OSError as exc:
                     warn(f'[settings] could not refresh .bak: {exc}')
 
-            _retry_on_file_lock(lambda: os.replace(tmp, path))
+        try:
+            # A unique temp file per save (named so the orphan reaper finds it),
+            # so two racing saves never touch each other's temp file.
+            write_json_atomic(path, data, indent=2, sort_keys=True, newline=None,
+                              prefix=_TMP_FILE_PREFIX, suffix=_TMP_FILE_SUFFIX,
+                              before_replace=_promote_bak)
         except OSError as exc:
-            # Do NOT fall back to a non-atomic direct write — that path is how
-            # partial writes corrupt settings.json in the first place. Leave the
-            # existing (possibly older) file in place and log loudly.
+            # No fallback to a direct write: that is how partial writes corrupt
+            # settings.json. Leave the existing (possibly older) file in place.
             error(
                 f'[settings] FAILED to atomically save settings ({exc}); '
                 f'existing file left unchanged. Check disk space, permissions, '
                 f'and antivirus locks on {path}.'
             )
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
         else:
             # Successful save — reap any orphans left by prior crashed saves.
             _reap_orphan_tmp_files(directory)

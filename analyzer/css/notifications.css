@@ -14,7 +14,7 @@
 .notif-badge {
   position: absolute; top: -5px; right: -5px; min-width: 17px; height: 17px;
   padding: 0 4px; box-sizing: border-box; border-radius: var(--radius-pill);
-  background: #e0533b; color: #fff; font-size: var(--fs-2xs); font-weight: 700;
+  background: #e0533b; color: var(--white); font-size: var(--fs-2xs); font-weight: 700;
   line-height: 17px; text-align: center; border: 2px solid var(--bg);
 }
 .notif-badge.hidden { display: none; }

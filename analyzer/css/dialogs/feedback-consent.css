@@ -127,3 +127,6 @@
   justify-content: flex-end;
   margin-top: 4px;
 }
+
+#feedbackSsPreview { display: none; }
+#analyticsConsentDlg .analytics-dlg strong { color: var(--text); }

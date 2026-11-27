@@ -87,3 +87,17 @@ main {
 .divider:active {
   background: var(--focus);
 }
+
+/* App title row in the sidebar header. */
+.app-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 8px;
+}
+.app-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.app-title-logo { height: 32px; }

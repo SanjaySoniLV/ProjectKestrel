@@ -6764,7 +6764,6 @@ class Api(SettingsBridgeMixin, EnhancedGpuBridgeMixin, BirdCatalogBridgeMixin):
     ) -> None:
         """Persist `.kestrel/perch_link.json` after a successful upload."""
         from pathlib import Path as _P
-        import json as _json
         import time as _time
         link_path = self._perch_link_path(folder_path)
         link_path.parent.mkdir(parents=True, exist_ok=True)
@@ -6781,10 +6780,7 @@ class Api(SettingsBridgeMixin, EnhancedGpuBridgeMixin, BirdCatalogBridgeMixin):
             "skip_rejected_used": bool(skip_rejected),
             "state_hash_at_upload": self._hash_kestrel_state(folder_path),
         }
-        tmp = link_path.with_suffix(".json.tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            _json.dump(payload, f, indent=2)
-        os.replace(tmp, link_path)
+        write_json_atomic(link_path, payload, indent=2, newline=None)
 
     def read_perch_link(self, folder_path: str) -> dict:
         """Read .kestrel/perch_link.json. Returns {present, link} or {present: False}."""
@@ -6831,7 +6827,6 @@ class Api(SettingsBridgeMixin, EnhancedGpuBridgeMixin, BirdCatalogBridgeMixin):
         st = status.get("status") or {}
 
         from pathlib import Path as _P
-        import json as _json
         import time as _time
 
         created = st.get("createdAt")
@@ -6861,10 +6856,7 @@ class Api(SettingsBridgeMixin, EnhancedGpuBridgeMixin, BirdCatalogBridgeMixin):
         link_path = self._perch_link_path(str(root_real))
         try:
             link_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = link_path.with_suffix(".json.tmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                _json.dump(payload, f, indent=2)
-            os.replace(tmp, link_path)
+            write_json_atomic(link_path, payload, indent=2, newline=None)
         except Exception as e:
             return {"success": False, "error": str(e)}
         return {"success": True, "link": payload}
@@ -7220,10 +7212,7 @@ class Api(SettingsBridgeMixin, EnhancedGpuBridgeMixin, BirdCatalogBridgeMixin):
         if not isinstance(data, dict):
             return
         data["state_hash_at_upload"] = self._hash_kestrel_state(folder_path)
-        tmp = link_path.with_suffix(".json.tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            _json.dump(data, f, indent=2)
-        os.replace(tmp, link_path)
+        write_json_atomic(link_path, data, indent=2, newline=None)
 
     def compute_perch_tag_diff(self, folder_path: str) -> dict:
         """Compute the species/family changeset for a linked folder vs its perch.
@@ -8457,33 +8446,7 @@ class Api(SettingsBridgeMixin, EnhancedGpuBridgeMixin, BirdCatalogBridgeMixin):
             error(f"[API] restore_kestrel_db_backup error: {e}")
             return {"success": False, "error": str(e)}
 
-    # ── Culling pass history (multi-pass culling with nested undo) ───────────
-    #
-    # The Culling Assistant can move rejects into ``_KESTREL_Rejects`` more than
-    # once on the same folder. Each "Done Culling" move is a *pass*, recorded in
-    # ``.kestrel/cull_history.json`` with the main files it moved and its own
-    # copy of the database/scenedata taken just before the move. Undo works as a
-    # stack: ``undo_last_cull_pass`` restores the newest pass's files and its
-    # snapshot, which leaves the folder exactly as it was before that pass, and
-    # the pass below it becomes undoable next.
-    #
-    # The canonical ``kestrel_database_old.csv`` slot is kept in step with the
-    # newest pass, so builds that only know the single-slot undo still restore
-    # the right state.
-    #
-    # Folders culled by older builds have a ``_KESTREL_Rejects`` folder but no
-    # history. Those files become a "legacy" pass at the bottom of the stack,
-    # backed by the ``_old`` slot (or, once a new pass has rotated that slot
-    # aside, by the newest ``OLD_precull_*`` archive).
-
-    _CULL_HISTORY_NAME = 'cull_history.json'
-    _CULL_PASS_DB_STEM = 'cullpass_{pid}_kestrel_database.csv'
-    _CULL_PASS_SD_STEM = 'cullpass_{pid}_kestrel_scenedata.json'
-    #: Upper bound on undoable passes kept per folder. Each pass keeps a full
-    #: database copy, so an endlessly re-culled folder must not grow forever.
-    #: Dropping the oldest pass only loses its *undo*; its files stay in
-    #: ``_KESTREL_Rejects``.
-    _CULL_HISTORY_MAX_PASSES = 10
+    # ── Culling passes (domain logic in cull_session.py) ─────────────────────
 
     def _cull_paths(self, root_real: str):
         kestrel_dir = os.path.join(root_real, '.kestrel')
@@ -8495,61 +8458,6 @@ class Api(SettingsBridgeMixin, EnhancedGpuBridgeMixin, BirdCatalogBridgeMixin):
         if os.path.exists(reject_dir) and not self._is_within_root(reject_real, root_real):
             raise ValueError('Invalid reject folder path')
         return kestrel_dir, reject_dir
-
-    def _read_cull_history(self, kestrel_dir: str) -> list:
-        """Return the recorded passes, oldest first. Unreadable → empty."""
-        path = os.path.join(kestrel_dir, self._CULL_HISTORY_NAME)
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        except FileNotFoundError:
-            return []
-        except Exception as e:
-            warn(f'[cull-history] unreadable history, ignoring: {e}')
-            return []
-        passes = data.get('passes') if isinstance(data, dict) else None
-        if not isinstance(passes, list):
-            return []
-        clean = []
-        for p in passes:
-            if not isinstance(p, dict):
-                continue
-            pid = str(p.get('id') or '')
-            if not re.fullmatch(r'[A-Za-z0-9_]{1,40}', pid):
-                continue
-            files = [str(f) for f in (p.get('files') or []) if isinstance(f, str)]
-            clean.append({
-                'id': pid,
-                'created_at': str(p.get('created_at') or ''),
-                'files': files,
-                'legacy': bool(p.get('legacy')),
-            })
-        return clean
-
-    def _write_cull_history(self, kestrel_dir: str, passes: list) -> None:
-        path = os.path.join(kestrel_dir, self._CULL_HISTORY_NAME)
-        if not passes:
-            try:
-                os.remove(path)
-            except FileNotFoundError:
-                pass
-            return
-        write_json_atomic(path, {'version': 1, 'passes': passes}, indent=2)
-
-    def _cull_pass_snapshot_paths(self, kestrel_dir: str, pid: str):
-        return (
-            os.path.join(kestrel_dir, self._CULL_PASS_DB_STEM.format(pid=pid)),
-            os.path.join(kestrel_dir, self._CULL_PASS_SD_STEM.format(pid=pid)),
-        )
-
-    def _remove_cull_pass_snapshots(self, kestrel_dir: str, pid: str) -> None:
-        for p in self._cull_pass_snapshot_paths(kestrel_dir, pid):
-            try:
-                os.remove(p)
-            except FileNotFoundError:
-                pass
-            except Exception as e:
-                warn(f'[cull-history] could not remove {os.path.basename(p)}: {e}')
 
     def _reject_primary_names(self, reject_dir: str) -> list:
         """Primary image names in the rejects folder (companions folded in)."""
@@ -8568,240 +8476,56 @@ class Api(SettingsBridgeMixin, EnhancedGpuBridgeMixin, BirdCatalogBridgeMixin):
                 excluded.add(comp.lower())
         return out
 
-    def _cull_pass_view(self, kestrel_dir: str, reject_names_cf: set, p: dict, number: int) -> dict:
-        db_snap, _sd = self._cull_pass_snapshot_paths(kestrel_dir, p['id'])
-        restorable = [f for f in p['files'] if f.casefold() in reject_names_cf]
-        return {
-            'id': p['id'],
-            'number': number,
-            'created_at': p['created_at'],
-            'legacy': p['legacy'],
-            'file_count': len(p['files']),
-            'restorable_count': len(restorable),
-            'has_db_backup': os.path.isfile(db_snap),
-        }
-
-    def record_cull_pass(self, root_path: str, moved_filenames):
-        """Record a completed reject move as a culling pass.
-
-        Call right after ``move_rejects_to_folder`` with the requested main
-        files that actually moved. The pass's undo point is the
-        ``kestrel_database_old.csv`` / ``kestrel_scenedata_old.json`` pair
-        that ``backup_kestrel_db`` wrote just before the move; it is copied to
-        a per-pass snapshot so a later pass cannot overwrite it.
-        """
-        try:
-            root_real, err = self._validate_root_dir(root_path, context='record_cull_pass', require_exists=True)
-            if err:
-                return {'success': False, 'error': err}
-            kestrel_dir, reject_dir = self._cull_paths(root_real)
-            if not os.path.isdir(kestrel_dir):
-                return {'success': False, 'error': '.kestrel folder not found'}
-
-            raw = moved_filenames if isinstance(moved_filenames, (list, tuple, set)) else ([moved_filenames] if moved_filenames else [])
-            files = []
-            for r in raw:
-                clean = self._sanitize_plain_filename(r, context='record_cull_pass')
-                if clean:
-                    files.append(clean)
-            if not files:
-                return {'success': True, 'recorded': False, 'reason': 'nothing moved'}
-
-            passes = self._read_cull_history(kestrel_dir)
-            from datetime import datetime, timezone
-            now = datetime.now(timezone.utc)
-
-            # First pass recorded on a folder an older build already culled:
-            # keep those earlier rejects undoable as a legacy pass underneath.
-            if not passes:
-                this_pass_cf = {f.casefold() for f in files}
-                legacy_files = [n for n in self._reject_primary_names(reject_dir) if n.casefold() not in this_pass_cf]
-                if legacy_files:
-                    archives = sorted(
-                        n for n in os.listdir(kestrel_dir)
-                        if n.startswith('OLD_precull_kestrel_database_') and n.endswith('.csv')
-                    )
-                    lid = 'legacy'
-                    ldb, lsd = self._cull_pass_snapshot_paths(kestrel_dir, lid)
-                    if archives:
-                        newest = archives[-1]
-                        copy_file_atomic(os.path.join(kestrel_dir, newest), ldb)
-                        sd_name = newest.replace('OLD_precull_kestrel_database_', 'OLD_precull_kestrel_scenedata_')[:-4] + '.json'
-                        if os.path.isfile(os.path.join(kestrel_dir, sd_name)):
-                            copy_file_atomic(os.path.join(kestrel_dir, sd_name), lsd)
-                    passes.append({'id': lid, 'created_at': '', 'files': legacy_files, 'legacy': True})
-
-            pid = now.strftime('%Y%m%d_%H%M%S_%f')
-            db_snap, sd_snap = self._cull_pass_snapshot_paths(kestrel_dir, pid)
-            csv_slot = os.path.join(kestrel_dir, 'kestrel_database_old.csv')
-            sd_slot = os.path.join(kestrel_dir, 'kestrel_scenedata_old.json')
-            has_backup = os.path.isfile(csv_slot)
-            if has_backup:
-                copy_file_atomic(csv_slot, db_snap)
-                if os.path.isfile(sd_slot):
-                    copy_file_atomic(sd_slot, sd_snap)
-            passes.append({'id': pid, 'created_at': now.isoformat(), 'files': files, 'legacy': False})
-
-            dropped = 0
-            while len(passes) > self._CULL_HISTORY_MAX_PASSES:
-                old = passes.pop(0)
-                self._remove_cull_pass_snapshots(kestrel_dir, old['id'])
-                dropped += 1
-            self._write_cull_history(kestrel_dir, passes)
-            info(f'[cull-history] recorded pass {pid}: {len(files)} file(s), {len(passes)} pass(es) undoable')
-            return {'success': True, 'recorded': True, 'pass_id': pid, 'pass_count': len(passes),
-                    'has_db_backup': has_backup, 'dropped_oldest': dropped}
-        except Exception as e:
-            error(f'[API] record_cull_pass error: {e}')
-            return {'success': False, 'error': str(e)}
-
-    def get_cull_history(self, root_path: str):
-        """Describe the undoable culling passes for this folder, newest last.
-
-        Each pass reports how many of its files are still in
-        ``_KESTREL_Rejects`` (``restorable_count``): a user may have deleted or
-        moved some by hand. A folder culled by an older build, with no history
-        file, shows its rejects as one legacy pass.
-        """
-        try:
-            root_real, err = self._validate_root_dir(root_path, context='get_cull_history', require_exists=True)
-            if err:
-                return {'success': False, 'error': err}
-            kestrel_dir, reject_dir = self._cull_paths(root_real)
-            reject_names = self._reject_primary_names(reject_dir)
-            reject_cf = {n.casefold() for n in reject_names}
-            passes = self._read_cull_history(kestrel_dir)
-            views = [self._cull_pass_view(kestrel_dir, reject_cf, p, i + 1) for i, p in enumerate(passes)]
-            if not passes and reject_names:
-                views = [{
-                    'id': 'legacy', 'number': 1, 'created_at': '', 'legacy': True,
-                    'file_count': len(reject_names), 'restorable_count': len(reject_names),
-                    'has_db_backup': os.path.isfile(os.path.join(kestrel_dir, 'kestrel_database_old.csv')),
-                }]
-            # Passes whose files are all gone can't be undone; skip past them so
-            # the newest pass with something left is what Undo acts on.
-            undoable = [v for v in views if v['restorable_count'] > 0]
-            return {
-                'success': True,
-                'passes': views,
-                'undoable_count': len(undoable),
-                'next_undo': undoable[-1] if undoable else None,
-                'reject_count': len(reject_names),
-            }
-        except Exception as e:
-            error(f'[API] get_cull_history error: {e}')
-            return {'success': False, 'error': str(e)}
-
-    def undo_last_cull_pass(self, root_path: str):
-        """Undo the newest culling pass that still has files to restore.
-
-        Moves that pass's files (and sidecars) back from ``_KESTREL_Rejects``
-        and restores the database and scenedata snapshot taken just before it.
-        Passes above it whose files are all gone are dropped from the history
-        first. Returns the ``undo_reject_move`` result fields plus
-        ``pass_id``, ``db_restored`` and ``remaining_passes``.
-        """
-        try:
-            root_real, err = self._validate_root_dir(root_path, context='undo_last_cull_pass', require_exists=True)
-            if err:
-                return {'success': False, 'error': err}
-            kestrel_dir, reject_dir = self._cull_paths(root_real)
-            reject_names = self._reject_primary_names(reject_dir)
-            reject_cf = {n.casefold() for n in reject_names}
-            passes = self._read_cull_history(kestrel_dir)
-
-            if not passes:
-                # Older build's single move: same behaviour as before.
-                if not reject_names:
-                    return {'success': False, 'error': 'nothing to undo'}
-                res = self.undo_reject_move(root_real, reject_names)
-                if res.get('success'):
-                    rr = self.restore_kestrel_db_backup(root_real)
-                    res['db_restored'] = bool(rr.get('success'))
-                    if not rr.get('success'):
-                        res['db_restore_error'] = rr.get('error', '')
-                res['pass_id'] = 'legacy'
-                res['remaining_passes'] = 0
-                return res
-
-            while passes and not any(f.casefold() in reject_cf for f in passes[-1]['files']):
-                gone = passes.pop()
-                self._remove_cull_pass_snapshots(kestrel_dir, gone['id'])
-            if not passes:
-                self._write_cull_history(kestrel_dir, passes)
-                return {'success': False, 'error': 'nothing to undo (files already removed from _KESTREL_Rejects)'}
-
-            target = passes[-1]
-            restorable = [f for f in target['files'] if f.casefold() in reject_cf]
-            res = self.undo_reject_move(root_real, restorable)
-            if not res.get('success'):
-                # Keep the pass so the user can retry after fixing conflicts.
-                self._write_cull_history(kestrel_dir, passes)
-                res['pass_id'] = target['id']
-                res['remaining_passes'] = len(passes)
-                return res
-
-            db_snap, sd_snap = self._cull_pass_snapshot_paths(kestrel_dir, target['id'])
-            db_restored = False
-            if os.path.isfile(db_snap):
-                copy_file_atomic(db_snap, os.path.join(kestrel_dir, 'kestrel_database.csv'))
-                if os.path.isfile(sd_snap):
-                    copy_file_atomic(sd_snap, os.path.join(kestrel_dir, 'kestrel_scenedata.json'))
-                db_restored = True
-
-            passes.pop()
-            self._remove_cull_pass_snapshots(kestrel_dir, target['id'])
-            self._write_cull_history(kestrel_dir, passes)
-
-            # Keep the single ``_old`` slot pointing at the newest remaining
-            # pass, so an older build's Undo restores the right state.
-            csv_slot = os.path.join(kestrel_dir, 'kestrel_database_old.csv')
-            sd_slot = os.path.join(kestrel_dir, 'kestrel_scenedata_old.json')
-            prev_db, prev_sd = (self._cull_pass_snapshot_paths(kestrel_dir, passes[-1]['id']) if passes else (None, None))
-            if prev_db and os.path.isfile(prev_db):
-                copy_file_atomic(prev_db, csv_slot)
-                if os.path.isfile(prev_sd):
-                    copy_file_atomic(prev_sd, sd_slot)
-                elif os.path.isfile(sd_slot):
-                    os.remove(sd_slot)
-            else:
-                # No snapshot below (history exhausted, or a legacy pass whose
-                # backup was never captured): move the slot aside rather than
-                # leave the just-undone pass's backup where Undo would find it.
-                self._rotate_existing_backups(kestrel_dir, [
-                    (csv_slot, 'precull_kestrel_database', '.csv'),
-                    (sd_slot, 'precull_kestrel_scenedata', '.json'),
-                ])
-
-            res['pass_id'] = target['id']
-            res['db_restored'] = db_restored
-            res['remaining_passes'] = len(passes)
-            info(f"[cull-history] undid pass {target['id']}: {res.get('restored', 0)} file(s), {len(passes)} pass(es) left")
-            return res
-        except Exception as e:
-            error(f'[API] undo_last_cull_pass error: {e}')
-            return {'success': False, 'error': str(e)}
-
-    # ── Cull mode sessions (domain logic in cull_session.py) ─────────────────
-
-    def _cull_history_ids(self, kestrel_dir: str, reject_dir: str):
-        ids = [p['id'] for p in self._read_cull_history(kestrel_dir)]
-        if not ids and self._reject_primary_names(reject_dir):
-            ids = ['legacy']
-        return ids
-
-    def _cull_session_call(self, root_path: str, context: str, fn):
+    def _cull_call(self, root_path: str, context: str, fn, need_kestrel: bool = True):
         try:
             root_real, err = self._validate_root_dir(root_path, context=context, require_exists=True)
             if err:
                 return {'success': False, 'error': err}
             kestrel_dir, reject_dir = self._cull_paths(root_real)
-            if not os.path.isdir(kestrel_dir):
+            if need_kestrel and not os.path.isdir(kestrel_dir):
                 return {'success': False, 'error': '.kestrel folder not found'}
             return fn(root_real, kestrel_dir, reject_dir)
         except Exception as e:
             error(f'[API] {context} error: {e}')
             return {'success': False, 'error': str(e)}
+
+    def record_cull_pass(self, root_path: str, moved_filenames):
+        """Record a completed reject move as a culling pass.
+
+        Call right after ``move_rejects_to_folder`` with the requested main
+        files that actually moved, so they can be undone later.
+        """
+        raw = moved_filenames if isinstance(moved_filenames, (list, tuple, set)) else ([moved_filenames] if moved_filenames else [])
+
+        def run(_root_real, kestrel_dir, reject_dir):
+            files = [c for c in (self._sanitize_plain_filename(r, context='record_cull_pass') for r in raw) if c]
+            if not files:
+                return {'success': True, 'recorded': False, 'reason': 'nothing moved'}
+            return cull_session.record_pass(kestrel_dir, files, lambda: self._reject_primary_names(reject_dir))
+        return self._cull_call(root_path, 'record_cull_pass', run)
+
+    def get_cull_history(self, root_path: str):
+        """Describe the undoable culling passes for this folder, newest last."""
+        def run(_root_real, kestrel_dir, reject_dir):
+            return cull_session.describe_history(kestrel_dir, self._reject_primary_names(reject_dir))
+        return self._cull_call(root_path, 'get_cull_history', run, need_kestrel=False)
+
+    def undo_last_cull_pass(self, root_path: str):
+        """Undo the newest culling pass that still has files to restore.
+
+        Returns the ``undo_reject_move`` result fields plus ``pass_id``,
+        ``db_restored`` and ``remaining_passes``.
+        """
+        def run(root_real, kestrel_dir, reject_dir):
+            return cull_session.undo_last_pass(
+                kestrel_dir, self._reject_primary_names(reject_dir),
+                move_back=lambda names: self.undo_reject_move(root_real, names),
+                restore_old_slot=lambda: self.restore_kestrel_db_backup(root_real),
+                rotate_slots=lambda pairs: self._rotate_existing_backups(kestrel_dir, pairs))
+        return self._cull_call(root_path, 'undo_last_cull_pass', run, need_kestrel=False)
+
+    def _cull_history_ids(self, kestrel_dir: str, reject_dir: str):
+        return cull_session.history_ids(kestrel_dir, lambda: bool(self._reject_primary_names(reject_dir)))
 
     def get_cull_session(self, root_path: str):
         """Cull mode's pass records for a folder (``session`` is None before first use)."""
@@ -8809,13 +8533,13 @@ class Api(SettingsBridgeMixin, EnhancedGpuBridgeMixin, BirdCatalogBridgeMixin):
             session = cull_session.load(kestrel_dir)
             return {'success': True,
                     'session': cull_session.describe(root_real, session) if session else None}
-        return self._cull_session_call(root_path, 'get_cull_session', run)
+        return self._cull_call(root_path, 'get_cull_session', run)
 
     def save_cull_session(self, root_path: str, data):
         def run(_root_real, kestrel_dir, _reject_dir):
             cull_session.save(kestrel_dir, data)
             return {'success': True}
-        return self._cull_session_call(root_path, 'save_cull_session', run)
+        return self._cull_call(root_path, 'save_cull_session', run)
 
     def undo_cull_move(self, root_path: str):
         """Move the newest Cull mode pass's rejects back; current decisions stay."""
@@ -8824,7 +8548,7 @@ class Api(SettingsBridgeMixin, EnhancedGpuBridgeMixin, BirdCatalogBridgeMixin):
                 kestrel_dir,
                 lambda: self._cull_history_ids(kestrel_dir, reject_dir),
                 lambda: self.undo_last_cull_pass(root_real))
-        return self._cull_session_call(root_path, 'undo_cull_move', run)
+        return self._cull_call(root_path, 'undo_cull_move', run)
 
     def revert_cull_session(self, root_path: str, to_pass):
         """Revert to the end of finished pass ``to_pass``; 0 resets the folder."""
@@ -8838,7 +8562,7 @@ class Api(SettingsBridgeMixin, EnhancedGpuBridgeMixin, BirdCatalogBridgeMixin):
                 kestrel_dir, target,
                 lambda: self._cull_history_ids(kestrel_dir, reject_dir),
                 lambda: self.undo_last_cull_pass(root_real))
-        return self._cull_session_call(root_path, 'revert_cull_session', run)
+        return self._cull_call(root_path, 'revert_cull_session', run)
 
     # ── Folder drift detection & repair ──────────────────────────────────────
     #

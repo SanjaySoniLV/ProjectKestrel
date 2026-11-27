@@ -58,6 +58,8 @@
   --support-hover: #ffb3c9;
   /* Favorites: the pink heart in the scene viewer and Cull mode. */
   --favorite: #ff5c93;
+  /* Pure white, mostly text and icons on a coloured fill. */
+  --white: #fff;
 
   /* Type scale. Display sizes above --fs-2xl stay literal. */
   --fs-2xs: 10px;

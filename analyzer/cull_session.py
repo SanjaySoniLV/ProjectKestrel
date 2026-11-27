@@ -1,4 +1,4 @@
-"""Cull mode passes: the per-folder session file and Revert / Reset.
+"""Culling passes: the move history, Cull mode's session file, and Revert / Reset.
 
 Cull mode records its progress in ``.kestrel/cull_session.json``: the pass in
 progress (its starting picks, per-scene cuts and confirmed scenes) and, for
@@ -7,8 +7,8 @@ moved into ``_KESTREL_Rejects``. The photo decisions themselves stay where the
 rest of the app reads them, in the ``culled`` / ``culled_origin`` columns of
 ``kestrel_database.csv``; this file only adds what those columns cannot hold.
 
-File moves are undone through the culling-pass history the bridge already
-keeps (``.kestrel/cull_history.json``), which restores the database snapshot
+File moves are undone through the culling-pass history at the end of this
+module (``.kestrel/cull_history.json``), which restores the database snapshot
 taken just before each move. Those snapshots are older than the user's latest
 edits, so after any undo the user columns are written back on top:
 
@@ -18,8 +18,8 @@ edits, so after any undo the user columns are written back on top:
 
 Favorites are never cleared by any of the three.
 
-Nothing here imports UI or bridge code; the bridge passes in the two history
-callables it owns.
+Nothing here imports UI or bridge code. The bridge validates paths, lists the
+rejects folder and passes in the callables that move files back.
 """
 from __future__ import annotations
 
@@ -28,9 +28,10 @@ import io
 import json
 import os
 import re
+from datetime import datetime, timezone
 from typing import Callable, Iterable
 
-from kestrel_analyzer.database import write_json_atomic, write_text_atomic
+from kestrel_analyzer.database import copy_file_atomic, write_json_atomic, write_text_atomic
 from settings_utils import info, warn
 
 SESSION_NAME = 'cull_session.json'
@@ -411,3 +412,285 @@ def _clear_decisions(db_path: str, favorites: dict) -> None:
         r['culled_origin'] = ''
         r['favorite'] = favorites.get(r.get('filename', ''), '')
     _write_csv(db_path, fields, rows)
+
+
+# ── Culling-pass history (file moves and their database snapshots) ────────────
+#
+# Every reject move is recorded as a pass in ``.kestrel/cull_history.json``,
+# with a per-pass snapshot of the database and scenedata taken just before the
+# move, so passes can be undone newest first. The canonical
+# ``kestrel_database_old.csv`` slot is kept in step with the newest pass, so
+# builds that only know the single-slot undo still restore the right state.
+#
+# Folders culled by older builds have a ``_KESTREL_Rejects`` folder but no
+# history. Those files become a "legacy" pass at the bottom of the stack,
+# backed by the ``_old`` slot (or, once a new pass has rotated that slot aside,
+# by the newest ``OLD_precull_*`` archive).
+#
+# The bridge validates paths and lists the rejects folder; the file moves back
+# and the ``_old`` slot handling stay bridge methods passed in as callables.
+
+HISTORY_NAME = 'cull_history.json'
+_PASS_DB_STEM = 'cullpass_{pid}_kestrel_database.csv'
+_PASS_SD_STEM = 'cullpass_{pid}_kestrel_scenedata.json'
+_OLD_DB_SLOT = 'kestrel_database_old.csv'
+_OLD_SD_SLOT = 'kestrel_scenedata_old.json'
+#: Upper bound on undoable passes kept per folder. Each pass keeps a full
+#: database copy, so an endlessly re-culled folder must not grow forever.
+#: Dropping the oldest pass only loses its *undo*; its files stay in
+#: ``_KESTREL_Rejects``.
+HISTORY_MAX_PASSES = 10
+
+
+def read_history(kestrel_dir: str) -> list:
+    """Return the recorded passes, oldest first. Unreadable → empty."""
+    path = os.path.join(kestrel_dir, HISTORY_NAME)
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError) as e:
+        warn(f'[cull-history] unreadable history, ignoring: {e}')
+        return []
+    passes = data.get('passes') if isinstance(data, dict) else None
+    if not isinstance(passes, list):
+        return []
+    clean = []
+    for p in passes:
+        if not isinstance(p, dict):
+            continue
+        pid = str(p.get('id') or '')
+        if not _HISTORY_ID.fullmatch(pid):
+            continue
+        files = [str(f) for f in (p.get('files') or []) if isinstance(f, str)]
+        clean.append({
+            'id': pid,
+            'created_at': str(p.get('created_at') or ''),
+            'files': files,
+            'legacy': bool(p.get('legacy')),
+        })
+    return clean
+
+
+def write_history(kestrel_dir: str, passes: list) -> None:
+    path = os.path.join(kestrel_dir, HISTORY_NAME)
+    if not passes:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        return
+    write_json_atomic(path, {'version': 1, 'passes': passes}, indent=2)
+
+
+def history_ids(kestrel_dir: str, has_rejects: Callable[[], bool]) -> list:
+    """Pass ids oldest first; ``['legacy']`` for an older build's rejects."""
+    ids = [p['id'] for p in read_history(kestrel_dir)]
+    if not ids and has_rejects():
+        ids = ['legacy']
+    return ids
+
+
+def _snapshot_paths(kestrel_dir: str, pid: str):
+    return (
+        os.path.join(kestrel_dir, _PASS_DB_STEM.format(pid=pid)),
+        os.path.join(kestrel_dir, _PASS_SD_STEM.format(pid=pid)),
+    )
+
+
+def _remove_snapshots(kestrel_dir: str, pid: str) -> None:
+    for p in _snapshot_paths(kestrel_dir, pid):
+        try:
+            os.remove(p)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            warn(f'[cull-history] could not remove {os.path.basename(p)}: {e}')
+
+
+def _pass_view(kestrel_dir: str, reject_names_cf: set, p: dict, number: int) -> dict:
+    db_snap, _sd = _snapshot_paths(kestrel_dir, p['id'])
+    restorable = [f for f in p['files'] if f.casefold() in reject_names_cf]
+    return {
+        'id': p['id'],
+        'number': number,
+        'created_at': p['created_at'],
+        'legacy': p['legacy'],
+        'file_count': len(p['files']),
+        'restorable_count': len(restorable),
+        'has_db_backup': os.path.isfile(db_snap),
+    }
+
+
+def _legacy_pass(kestrel_dir: str, legacy_files: list) -> dict:
+    """The pass for rejects an older build moved, backed by its newest archive."""
+    archives = sorted(
+        n for n in os.listdir(kestrel_dir)
+        if n.startswith('OLD_precull_kestrel_database_') and n.endswith('.csv')
+    )
+    ldb, lsd = _snapshot_paths(kestrel_dir, 'legacy')
+    if archives:
+        newest = archives[-1]
+        copy_file_atomic(os.path.join(kestrel_dir, newest), ldb)
+        sd_name = newest.replace('OLD_precull_kestrel_database_', 'OLD_precull_kestrel_scenedata_')[:-4] + '.json'
+        if os.path.isfile(os.path.join(kestrel_dir, sd_name)):
+            copy_file_atomic(os.path.join(kestrel_dir, sd_name), lsd)
+    return {'id': 'legacy', 'created_at': '', 'files': legacy_files, 'legacy': True}
+
+
+def record_pass(kestrel_dir: str, files: list, reject_names: Callable[[], list]) -> dict:
+    """Record a reject move of ``files`` (already sanitized) as a new pass.
+
+    The pass's undo point is the ``_old`` database/scenedata pair the bridge's
+    ``backup_kestrel_db`` wrote just before the move; it is copied to a
+    per-pass snapshot so a later pass cannot overwrite it. ``reject_names()``
+    lists the primary images now in ``_KESTREL_Rejects``; it is only called
+    for a folder's first recorded pass.
+    """
+    if not files:
+        return {'success': True, 'recorded': False, 'reason': 'nothing moved'}
+    passes = read_history(kestrel_dir)
+    now = datetime.now(timezone.utc)
+
+    # First pass recorded on a folder an older build already culled: keep
+    # those earlier rejects undoable as a legacy pass underneath.
+    if not passes:
+        this_pass_cf = {f.casefold() for f in files}
+        legacy_files = [n for n in reject_names() if n.casefold() not in this_pass_cf]
+        if legacy_files:
+            passes.append(_legacy_pass(kestrel_dir, legacy_files))
+
+    pid = now.strftime('%Y%m%d_%H%M%S_%f')
+    db_snap, sd_snap = _snapshot_paths(kestrel_dir, pid)
+    csv_slot = os.path.join(kestrel_dir, _OLD_DB_SLOT)
+    sd_slot = os.path.join(kestrel_dir, _OLD_SD_SLOT)
+    has_backup = os.path.isfile(csv_slot)
+    if has_backup:
+        copy_file_atomic(csv_slot, db_snap)
+        if os.path.isfile(sd_slot):
+            copy_file_atomic(sd_slot, sd_snap)
+    passes.append({'id': pid, 'created_at': now.isoformat(), 'files': files, 'legacy': False})
+
+    dropped = 0
+    while len(passes) > HISTORY_MAX_PASSES:
+        old = passes.pop(0)
+        _remove_snapshots(kestrel_dir, old['id'])
+        dropped += 1
+    write_history(kestrel_dir, passes)
+    info(f'[cull-history] recorded pass {pid}: {len(files)} file(s), {len(passes)} pass(es) undoable')
+    return {'success': True, 'recorded': True, 'pass_id': pid, 'pass_count': len(passes),
+            'has_db_backup': has_backup, 'dropped_oldest': dropped}
+
+
+def describe_history(kestrel_dir: str, reject_names: list) -> dict:
+    """The undoable passes, newest last, with how many files each can restore."""
+    reject_cf = {n.casefold() for n in reject_names}
+    passes = read_history(kestrel_dir)
+    views = [_pass_view(kestrel_dir, reject_cf, p, i + 1) for i, p in enumerate(passes)]
+    if not passes and reject_names:
+        views = [{
+            'id': 'legacy', 'number': 1, 'created_at': '', 'legacy': True,
+            'file_count': len(reject_names), 'restorable_count': len(reject_names),
+            'has_db_backup': os.path.isfile(os.path.join(kestrel_dir, _OLD_DB_SLOT)),
+        }]
+    # Passes whose files are all gone can't be undone; skip past them so the
+    # newest pass with something left is what Undo acts on.
+    undoable = [v for v in views if v['restorable_count'] > 0]
+    return {
+        'success': True,
+        'passes': views,
+        'undoable_count': len(undoable),
+        'next_undo': undoable[-1] if undoable else None,
+        'reject_count': len(reject_names),
+    }
+
+
+MoveBackFn = Callable[[list], dict]
+RotateSlotsFn = Callable[[list], object]
+
+
+def undo_last_pass(kestrel_dir: str, reject_names: list, move_back: MoveBackFn,
+                   restore_old_slot: UndoFn, rotate_slots: RotateSlotsFn) -> dict:
+    """Undo the newest pass that still has files in ``_KESTREL_Rejects``.
+
+    ``move_back(names)`` moves files (and sidecars) back out of the rejects
+    folder; ``restore_old_slot()`` restores the single ``_old`` backup for a
+    folder an older build culled; ``rotate_slots(pairs)`` archives the
+    ``_old`` slot. Passes above the target whose files are all gone are
+    dropped from the history first.
+    """
+    reject_cf = {n.casefold() for n in reject_names}
+    passes = read_history(kestrel_dir)
+
+    if not passes:
+        # Older build's single move: same behaviour as that build.
+        if not reject_names:
+            return {'success': False, 'error': 'nothing to undo'}
+        res = move_back(reject_names)
+        if res.get('success'):
+            rr = restore_old_slot()
+            res['db_restored'] = bool(rr.get('success'))
+            if not rr.get('success'):
+                res['db_restore_error'] = rr.get('error', '')
+        res['pass_id'] = 'legacy'
+        res['remaining_passes'] = 0
+        return res
+
+    while passes and not any(f.casefold() in reject_cf for f in passes[-1]['files']):
+        gone = passes.pop()
+        _remove_snapshots(kestrel_dir, gone['id'])
+    if not passes:
+        write_history(kestrel_dir, passes)
+        return {'success': False, 'error': 'nothing to undo (files already removed from _KESTREL_Rejects)'}
+
+    target = passes[-1]
+    restorable = [f for f in target['files'] if f.casefold() in reject_cf]
+    res = move_back(restorable)
+    if not res.get('success'):
+        # Keep the pass so the user can retry after fixing conflicts.
+        write_history(kestrel_dir, passes)
+        res['pass_id'] = target['id']
+        res['remaining_passes'] = len(passes)
+        return res
+
+    db_snap, sd_snap = _snapshot_paths(kestrel_dir, target['id'])
+    db_restored = False
+    if os.path.isfile(db_snap):
+        copy_file_atomic(db_snap, os.path.join(kestrel_dir, DB_NAME))
+        if os.path.isfile(sd_snap):
+            copy_file_atomic(sd_snap, os.path.join(kestrel_dir, 'kestrel_scenedata.json'))
+        db_restored = True
+
+    passes.pop()
+    _remove_snapshots(kestrel_dir, target['id'])
+    write_history(kestrel_dir, passes)
+    _point_old_slot_at(kestrel_dir, passes[-1]['id'] if passes else None, rotate_slots)
+
+    res['pass_id'] = target['id']
+    res['db_restored'] = db_restored
+    res['remaining_passes'] = len(passes)
+    info(f"[cull-history] undid pass {target['id']}: {res.get('restored', 0)} file(s), {len(passes)} pass(es) left")
+    return res
+
+
+def _point_old_slot_at(kestrel_dir: str, pid: str | None, rotate_slots: RotateSlotsFn) -> None:
+    """Keep the single ``_old`` slot on the newest remaining pass's snapshot,
+    so an older build's Undo restores the right state."""
+    csv_slot = os.path.join(kestrel_dir, _OLD_DB_SLOT)
+    sd_slot = os.path.join(kestrel_dir, _OLD_SD_SLOT)
+    prev_db, prev_sd = _snapshot_paths(kestrel_dir, pid) if pid else (None, None)
+    if prev_db and os.path.isfile(prev_db):
+        copy_file_atomic(prev_db, csv_slot)
+        if os.path.isfile(prev_sd):
+            copy_file_atomic(prev_sd, sd_slot)
+        elif os.path.isfile(sd_slot):
+            os.remove(sd_slot)
+    else:
+        # No snapshot below (history exhausted, or a legacy pass whose backup
+        # was never captured): move the slot aside rather than leave the
+        # just-undone pass's backup where Undo would find it.
+        rotate_slots([
+            (csv_slot, 'precull_kestrel_database', '.csv'),
+            (sd_slot, 'precull_kestrel_scenedata', '.json'),
+        ])

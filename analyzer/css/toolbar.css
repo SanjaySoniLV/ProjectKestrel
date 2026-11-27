@@ -171,7 +171,7 @@
    base button:hover rule recolouring just the existing border-left. */
 .segmented-strip-item:hover:not([disabled]) {
   background: #1a2030;
-  color: #fff;
+  color: var(--white);
   border-left-color: var(--primary-border);
   box-shadow: inset -1px 0 0 var(--primary-border);
 }
@@ -251,3 +251,9 @@
   line-height: 1.2;
   letter-spacing: 0.1px;
 }
+
+#saveRevertWrap {
+  display: flex;
+  gap: 6px;
+}
+#saveRevertWrap > button { flex: 1; }

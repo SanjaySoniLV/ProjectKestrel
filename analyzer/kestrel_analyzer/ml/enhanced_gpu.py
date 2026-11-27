@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from ..atomic_io import write_json_atomic
+
 # Models that may run on the vendor EP when they pass validation.
 ROUTABLE_KINDS = ("detector", "sam_enc", "bird_species")
 # Validation thresholds (ML time only, steady state after warm-up).
@@ -153,10 +155,7 @@ def _read_json(path: Path) -> Optional[dict]:
 
 def _write_json(path: Path, data: dict) -> None:
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
+        write_json_atomic(path, data, indent=2, newline=None)
     except Exception as e:
         _log("warn", f"could not write {path.name}: {e}")
 

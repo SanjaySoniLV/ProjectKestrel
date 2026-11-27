@@ -279,7 +279,7 @@
 .chip-input {
   background: transparent;
   border: none;
-  color: #fff;
+  color: var(--white);
   font-size: var(--fs-sm);
   outline: none;
   width: 100px;
@@ -287,7 +287,7 @@
 .chip-commit-btn {
   background: var(--brand);
   border: none;
-  color: #fff;
+  color: var(--white);
   border-radius: 50%;
   width: 18px;
   height: 18px;
@@ -327,7 +327,7 @@
   gap: 12px;
   padding: 5px 10px;
   cursor: pointer;
-  color: #fff;
+  color: var(--white);
   white-space: nowrap;
 }
 .chip-combo-item--active,
@@ -437,7 +437,7 @@
 /* Yellow save button when dirty */
 #saveCsv:not(:disabled) {
   background: #b59b2e;
-  color: #fff;
+  color: var(--white);
   border-color: #d4b72e;
 }
 #saveCsv:not(:disabled):hover {
@@ -648,7 +648,7 @@
 .folder-group-left-actions .action-btn:hover,
 .folder-group-right-actions .action-btn:hover {
   background: var(--divider);
-  color: #fff;
+  color: var(--white);
   border-color: var(--border);
 }
 
@@ -677,7 +677,7 @@
 }
 .folder-group-right-actions .folder-upgrade-btn:hover:not(:disabled) {
   background: #352a52;
-  color: #fff;
+  color: var(--white);
 }
 .folder-group-right-actions .folder-upgrade-btn:disabled {
   opacity: 0.75;
@@ -1048,7 +1048,7 @@
 }
 .folder-group-actions-item:hover {
   background: rgba(255, 255, 255, 0.04);
-  color: #fff;
+  color: var(--white);
 }
 
 .folder-group-actions-divider {

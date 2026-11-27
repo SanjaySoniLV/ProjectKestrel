@@ -62,3 +62,13 @@
   transition: color .15s;
 }
 .donate-dlg-close-btn:hover { color: var(--text); background: transparent; border: none; }
+
+.donate-dlg p.donate-dlg-fineprint {
+  font-size: var(--fs-sm);
+  color: #607080;
+}
+.donate-dlg-btns #donateDlgFeedbackBtn {
+  font-size: var(--fs-md);
+  padding: 13px 20px;
+  height: auto;
+}

@@ -1,18 +1,19 @@
 {
   "big_file_lines": {
-    "analyzer/api_bridge.py": 10051,
-    "analyzer/cloud_compute_client.py": 1763,
-    "analyzer/css/perch.css": 1790,
+    "analyzer/api_bridge.py": 9775,
+    "analyzer/cloud_compute_client.py": 1729,
+    "analyzer/css/perch.css": 1789,
     "analyzer/js/cloud-compute.js": 2331,
     "analyzer/js/perch.js": 1702,
     "analyzer/js/queue.js": 1662,
-    "analyzer/js/scene-dialog.js": 3010,
+    "analyzer/js/scene-dialog.js": 2924,
     "analyzer/kestrel_analyzer/pipeline.py": 2459,
-    "analyzer/visualizer.html": 1822,
-    "analyzer/visualizer.py": 1650
+    "analyzer/visualizer.html": 1800,
+    "analyzer/visualizer.py": 1614
   },
-  "css_hex_outside_tokens": 760,
+  "css_hex_outside_tokens": 608,
   "css_important": 30,
+  "html_inline_styles": 0,
   "js_empty_catch": 184,
   "py_dual_import_fallbacks": 103,
   "py_except_exception_pass": 163,

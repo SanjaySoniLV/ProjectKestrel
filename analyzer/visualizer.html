@@ -78,12 +78,12 @@
   <div class="app-body">
   <header>
     <div class="wrap">
-      <h1 style="display:flex;align-items:center;justify-content:space-between;margin:0 0 8px;">
-        <span style="display:flex;align-items:center;gap:8px;">
-          <img src="logo.png" alt="Project Kestrel" style="height:32px;" />
+      <h1 class="app-title">
+        <span class="app-title-group">
+          <img class="app-title-logo" src="logo.png" alt="Project Kestrel" />
           <span>Project Kestrel</span>
         </span>
-        <span style="display:flex;align-items:center;gap:8px;">
+        <span class="app-title-group">
           <div id="notifWrap" class="notif-wrap hidden">
             <button id="notifBell" class="notif-bell" type="button" aria-haspopup="true" aria-expanded="false" title="Notifications" aria-label="Notifications">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -114,9 +114,9 @@
           <button id="analyzeQueueBtn" class="primary sidebar-cta" title="Choose folders to analyze">
             <i class="k-icon k-icon--analyze" aria-hidden="true"></i> Analyze folders…
           </button>
-          <div id="saveRevertWrap" class="hidden" style="display:flex;gap:6px">
-            <button id="revertCsv" disabled title="Discard all unsaved changes" style="flex:1">Revert Changes</button>
-            <button id="saveCsv" disabled style="flex:1">Save Changes</button>
+          <div id="saveRevertWrap" class="hidden">
+            <button id="revertCsv" disabled title="Discard all unsaved changes">Revert Changes</button>
+            <button id="saveCsv" disabled>Save Changes</button>
           </div>
         </div>
         <!-- Library panel: header with Add folders, recents chips, the tree, and the
@@ -128,10 +128,10 @@
           </div>
           <!-- Recents row: csv-init.js fills it with chips and shows it. -->
           <div id="folderRecentsRow" class="folder-recents-row hidden" aria-label="Recently loaded folders"></div>
-          <div id="folderScanProgress" class="load-progress hidden" style="margin:6px 8px 0">
+          <div id="folderScanProgress" class="load-progress hidden">
             <div class="load-progress-label" id="folderScanLabel">Scanning folders…</div>
             <div class="load-progress-track">
-              <div id="folderScanFill" class="load-progress-fill" style="width:0%"></div>
+              <div id="folderScanFill" class="load-progress-fill"></div>
             </div>
           </div>
           <!-- Empty-state hint: shown only when no folders are loaded -->
@@ -254,10 +254,10 @@
       <!-- Welcome / Quick-Start panel — visible only when no folder is loaded -->
       <div id="welcomePanel">
         <div class="welcome-hero">
-          <img src="logo.png" alt="Kestrel Logo" class="welcome-hero-logo" style="height:150px; opacity:0.9;">
+          <img src="logo.png" alt="Kestrel Logo" class="welcome-hero-logo">
           <div class="welcome-hero-text">
             <h2>Welcome to Project Kestrel</h2>
-            <button class="welcome-action-btn" style="margin:0; font-size:14px; padding:10px 16px;" onclick="openTutorialChooser()"><i class="k-icon k-icon--book" aria-hidden="true"></i> Start Tutorial</button>
+            <button class="welcome-start-tutorial welcome-action-btn" onclick="openTutorialChooser()"><i class="k-icon k-icon--book" aria-hidden="true"></i> Start Tutorial</button>
           </div>
         </div>
 
@@ -282,7 +282,7 @@
         </div>
 
         <div class="welcome-footer">
-          <div style="font-size:11px; opacity:0.8;">
+          <div class="welcome-legal">
             By using Project Kestrel, you agree to the <a href="https://projectkestrel.org/terms-of-use"
               target="_blank">Terms of Use</a> and <a href="https://projectkestrel.org/privacy-policy"
               target="_blank">Privacy Policy</a>.
@@ -501,7 +501,7 @@
   </dialog>
 
   <!-- Toast notification container -->
-  <div id="toastContainer" style="position:fixed;right:18px;bottom:18px;z-index:20000;pointer-events:none"></div>
+  <div id="toastContainer"></div>
   <!-- Tutorial overlay -->
   <div id="tutorialOverlay">
     <div id="tutorialHighlight"></div>
@@ -510,7 +510,7 @@
       <div class="tutorial-progress" id="tutorialProgress"></div>
       <h3 id="tutorialTitle"></h3>
       <div class="tutorial-body" id="tutorialBody"></div>
-      <div class="tutorial-nudge" id="tutorialNudge" style="display:none"></div>
+      <div class="hidden tutorial-nudge" id="tutorialNudge"></div>
       <div class="tutorial-actions">
         <button class="tutorial-skip" id="tutorialSkip">Skip Tour</button>
         <button class="tut-btn" id="tutorialBack">&larr; Back</button>
@@ -550,7 +550,7 @@
   <dialog id="perchUploadDlg" class="kdlg kdlg--lg kdlg--flex perch-upload-dlg" aria-labelledby="perchUploadDlgTitle">
     <div class="perch-upload-dlg-body">
       <div class="perch-upload-dlg-header">
-        <h3 id="perchUploadDlgTitle" style="margin:0;font-size:16px">Share with Perch</h3>
+        <h3 id="perchUploadDlgTitle">Share with Perch</h3>
         <button type="button" class="perch-upload-dlg-close" id="perchUploadDlgClose" title="Close">✕</button>
       </div>
 
@@ -774,7 +774,7 @@
        "Sync to Perch" banner. -->
   <dialog id="perchTagSyncDlg" class="perch-tag-sync-dlg">
     <div class="perch-tag-sync-dlg-head">
-      <h3 style="margin:0;font-size:16px">Sync tag changes to Perch</h3>
+      <h3 class="perch-tag-sync-heading">Sync tag changes to Perch</h3>
       <button type="button" class="perch-upload-dlg-close" id="perchTagSyncDlgClose" title="Close">✕</button>
     </div>
     <p class="perch-tag-sync-dlg-intro">
@@ -1006,29 +1006,28 @@
   <!-- Merge scenes dialog -->
   <dialog id="mergeDlg" class="kdlg kdlg--md kdlg--flex">
     <div class="settings">
-      <h3 style="margin:0">Merge Scenes</h3>
-      <div class="row" style="align-items:flex-start">
-        <label style="margin-top:6px">Select scenes</label>
-        <div
-          style="flex:1; max-height: 320px; overflow:auto; border:1px solid #1f2533; border-radius:10px; padding:8px; background:#10131a">
+      <h3>Merge Scenes</h3>
+      <div class="merge-pick-row row">
+        <label>Select scenes</label>
+        <div class="merge-list-box">
           <!-- Adjust grid to include a thumbnail column -->
-          <div id="mergeList" style="display:grid; grid-template-columns: 120px 1fr auto; gap:6px; align-items:center">
+          <div id="mergeList">
           </div>
         </div>
       </div>
       <div class="row">
         <label>Target</label>
-        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+        <div class="merge-target-opts">
           <label class="inline"><input type="radio" name="mergeTargetMode" value="min" checked> <span
               class="muted">Smallest selected ID</span></label>
           <label class="inline"><input type="radio" name="mergeTargetMode" value="manual"> <span
               class="muted">ID:</span>
-            <input id="mergeTargetId" type="number" style="width:120px" />
+            <input id="mergeTargetId" type="number" />
           </label>
         </div>
       </div>
       <div class="detail" id="mergeSummary">Select at least two scenes to merge.</div>
-      <div class="row" style="justify-content:flex-end; margin-top: 4px; gap:8px">
+      <div class="merge-actions row">
         <button id="mergeCancel" class="k-btn--quiet">Cancel</button>
         <button id="mergeApply" class="primary" disabled>Merge</button>
       </div>
@@ -1038,10 +1037,9 @@
   <!-- Info dialog -->
   <dialog id="infoDlg" class="kdlg kdlg--md kdlg--flex">
     <div class="settings">
-      <h3 style="margin:0">Kestrel Database Info</h3>
-      <div id="infoNotice" class="notice hidden" style="margin:0 0 8px"></div>
-      <div id="infoContent" class="detail"
-        style="max-height:50vh;overflow:auto;font-family:monospace;font-size:12px;white-space:pre;">—</div>
+      <h3>Kestrel Database Info</h3>
+      <div id="infoNotice" class="notice hidden"></div>
+      <div id="infoContent" class="detail">—</div>
       <div class="footer">
         <button id="infoClose">Close</button>
       </div>
@@ -1120,10 +1118,10 @@
        successfully (diff.scan_status === 'ok'). -->
   <dialog id="repairDlg" class="kdlg kdlg--md kdlg--flex" aria-labelledby="repairDlgTitle">
     <div class="settings">
-      <h3 style="margin:0" id="repairDlgTitle">Repair Kestrel Data</h3>
-      <div id="repairDlgFolder" class="muted" style="font-size:12px;word-break:break-all">—</div>
-      <div id="repairDlgBody" style="max-height:52vh;overflow:auto"></div>
-      <div class="footer" style="gap:8px">
+      <h3 id="repairDlgTitle">Repair Kestrel Data</h3>
+      <div id="repairDlgFolder" class="muted">—</div>
+      <div id="repairDlgBody"></div>
+      <div class="footer">
         <button id="repairDlgDismiss" title="Stop showing this folder's warning until the next time Kestrel starts">Dismiss for now</button>
         <button id="repairDlgClose">Close</button>
       </div>
@@ -1175,7 +1173,7 @@
         </div>
         <div id="analyzeScanProgress" class="load-progress hidden">
           <div class="load-progress-label" id="analyzeScanLabel">Scanning folders…</div>
-          <div class="load-progress-track"><div id="analyzeScanFill" class="load-progress-fill" style="width:0%"></div></div>
+          <div class="load-progress-track"><div id="analyzeScanFill" class="load-progress-fill"></div></div>
         </div>
       </section>
 
@@ -1476,15 +1474,15 @@
        requires explicit confirmation before .kestrel deletion happens. -->
   <dialog id="analyzeConfirmDlg" class="kdlg kdlg--sm kdlg--flex analyze-confirm-dlg">
     <div class="analyze-confirm-body">
-      <h3 style="margin:0 0 8px;color:var(--warn);"><i class="k-icon k-icon--warning" aria-hidden="true"></i> Confirm destructive re-analysis</h3>
-      <p style="margin:0 0 10px;font-size:13px;line-height:1.45;">
+      <h3><i class="k-icon k-icon--warning" aria-hidden="true"></i> Confirm destructive re-analysis</h3>
+      <p class="analyze-confirm-lead">
         The following folder<span id="analyzeConfirmFolderPlural">s</span> will have
         <b>.kestrel data permanently deleted</b> before re-analysis. This wipes all
         user-written data (ratings, accept/reject decisions, scene names) for
         the affected folders.
       </p>
       <ul id="analyzeConfirmFolderList" class="analyze-confirm-list"></ul>
-      <p style="margin:0 0 12px;font-size:12px;color:var(--muted);">
+      <p class="analyze-confirm-note">
         This cannot be undone. Other queued folders (that don't need re-analysis) are unaffected.
       </p>
       <div class="analyze-confirm-actions">
@@ -1498,20 +1496,20 @@
        Cancel is the default and Enter never confirms. -->
   <dialog id="clearKestrelConfirmDlg" class="kdlg kdlg--sm kdlg--flex analyze-confirm-dlg">
     <div class="analyze-confirm-body">
-      <h3 style="margin:0 0 8px;color:var(--warn);"><i class="k-icon k-icon--warning" aria-hidden="true"></i> Delete Kestrel analysis data?</h3>
-      <p style="margin:0 0 10px;font-size:13px;line-height:1.45;">
+      <h3><i class="k-icon k-icon--warning" aria-hidden="true"></i> Delete Kestrel analysis data?</h3>
+      <p class="analyze-confirm-lead">
         The following data will be permanently deleted from
         <b id="clearKestrelFolderName">this folder</b>'s
         <code>.kestrel/</code> directory:
       </p>
-      <ul class="analyze-confirm-list" style="margin:0 0 10px;">
+      <ul class="analyze-confirm-list--spaced analyze-confirm-list">
         <li>Star ratings</li>
         <li>Accept / Reject culling decisions</li>
         <li>Scene names</li>
         <li>Exported derivatives and thumbnails</li>
       </ul>
-      <p style="margin:0 0 10px;font-size:12px;color:var(--muted);" id="clearKestrelFolderPath"></p>
-      <p style="margin:0 0 12px;font-size:12px;color:var(--muted);">
+      <p class="analyze-confirm-note analyze-confirm-note--path" id="clearKestrelFolderPath"></p>
+      <p class="analyze-confirm-note">
         This cannot be undone. Photos in the folder are not touched.
       </p>
       <div class="analyze-confirm-actions">
@@ -1572,7 +1570,7 @@
           <input type="checkbox" class="k-switch" id="feedbackIncludeScreenshot" />
           <input type="file" id="feedbackScreenshotFile" accept="image/*" class="hidden" />
         </div>
-        <img id="feedbackSsPreview" class="feedback-ss-preview" alt="Screenshot preview" style="display:none" />
+        <img id="feedbackSsPreview" class="feedback-ss-preview" alt="Screenshot preview" />
         <div class="k-row">
           <label class="k-row-label" for="feedbackSendAsUser"><span id="feedbackSendAsUserLabel">Send as my account</span>
             <span class="k-row-hint feedback-signin-hint" id="feedbackSignInHint"></span></label>
@@ -1600,14 +1598,14 @@
       <h3>Help Improve Project Kestrel</h3>
       <p>Would you like to share anonymous usage data to help improve the app? This is completely optional and you can
         change your mind at any time.</p>
-      <p><strong style="color:var(--text)">What would be shared (anonymously):</strong></p>
+      <p><strong>What would be shared (anonymously):</strong></p>
       <ul>
         <li>Number and size of images analyzed</li>
         <li>File formats used (e.g. CR3, JPG)</li>
         <li>Analysis duration</li>
         <li>App version and OS type</li>
       </ul>
-      <p><strong style="color:var(--text)">What is never shared:</strong></p>
+      <p><strong>What is never shared:</strong></p>
       <ul>
         <li>Filenames, folder paths, or image content</li>
         <li>Any personally identifiable information</li>
@@ -1670,10 +1668,10 @@
       <h3 id="donateDlgHeading">You’ve organized over 1,000 photos with Kestrel!</h3>
       <p id="donateDlgSubline" class="donate-dlg-subline" hidden></p>
       <p>I’m a student and birder building Kestrel on my own. It stays free, local and open source because the people who find it useful chip in. If it saved you time, please consider supporting me, or tell me what to improve.</p>
-      <p style="font-size:12px;color:#607080;">Project Kestrel is free &amp; open-source. Every <a href="https://github.com/SanjaySoniLV/ProjectKestrel" target="_blank">contribution</a> helps keep it growing.</p>
+      <p class="donate-dlg-fineprint">Project Kestrel is free &amp; open-source. Every <a href="https://github.com/SanjaySoniLV/ProjectKestrel" target="_blank">contribution</a> helps keep it growing.</p>
       <div class="donate-dlg-btns">
         <button class="donate-main-btn" id="donateDlgGoBtn"><i class="k-icon k-icon--heart" aria-hidden="true"></i> Support Project Kestrel</button>
-        <button class="primary" id="donateDlgFeedbackBtn" style="font-size:13px;padding:13px 20px;height:auto;"><i class="k-icon k-icon--message" aria-hidden="true"></i> Send Feedback</button>
+        <button class="donate-feedback-btn primary" id="donateDlgFeedbackBtn"><i class="k-icon k-icon--message" aria-hidden="true"></i> Send Feedback</button>
       </div>
       <button id="donateDlgClose" class="donate-dlg-close-btn">Close</button>
     </div>

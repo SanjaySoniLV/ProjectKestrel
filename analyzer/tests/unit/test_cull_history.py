@@ -17,6 +17,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import api_bridge  # noqa: E402
+import cull_session  # noqa: E402
 
 pytestmark = pytest.mark.unit
 
@@ -142,7 +143,7 @@ def test_legacy_only_folder_undo_matches_old_behaviour(api, folder):
 
 
 def test_history_is_capped(api, folder, monkeypatch):
-    monkeypatch.setattr(api_bridge.Api, "_CULL_HISTORY_MAX_PASSES", 2)
+    monkeypatch.setattr(cull_session, "HISTORY_MAX_PASSES", 2)
     for n in ["IMG_001.CR3", "IMG_002.CR3", "IMG_003.CR3"]:
         _cull(api, folder, [n])
     hist = api.get_cull_history(str(folder))

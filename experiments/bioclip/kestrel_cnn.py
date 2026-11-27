@@ -23,7 +23,7 @@ from embed_images import centre
 # The CNN was removed from the app when BioCLIP replaced it; recover it with
 #   git show c48bc3d:analyzer/models/model.onnx > legacy_model.onnx
 MODEL = os.environ.get("KESTREL_CNN_ONNX", os.path.join(REPO, "analyzer", "models", "model.onnx"))
-LABELS = os.path.join(REPO, "analyzer", "models", "labels.txt")
+LABELS = os.path.join(REPO, "tools", "model_sources", "labels.txt")
 
 
 def cnn_labels_sci():

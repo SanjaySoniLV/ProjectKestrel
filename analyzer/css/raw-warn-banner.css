@@ -11,7 +11,7 @@
   left: 0;
   right: 0;
   background: #a82323;
-  color: #fff;
+  color: var(--white);
   padding: 10px 44px 10px 20px;
   z-index: 100000;
   display: flex;
@@ -50,7 +50,7 @@
 
 .raw-warn-banner a,
 .raw-warn-link {
-  color: #fff;
+  color: var(--white);
   text-decoration: underline;
   font-weight: 700;
 }
@@ -66,11 +66,11 @@
 
 .raw-warn-link:hover {
   background: rgba(255, 255, 255, 0.12);
-  border-color: #fff;
+  border-color: var(--white);
 }
 
 .raw-warn-btn {
-  background: #fff;
+  background: var(--white);
   color: #a82323;
   border: none;
   padding: 4px 12px;
@@ -92,7 +92,7 @@
   right: 12px;
   transform: translateY(-50%);
   background: transparent;
-  color: #fff;
+  color: var(--white);
   border: none;
   border-radius: var(--radius-sm);
   width: 24px;
@@ -114,7 +114,7 @@
 .raw-warn-close:focus-visible,
 .raw-warn-btn:focus-visible,
 .raw-warn-link:focus-visible {
-  outline: 2px solid #fff;
+  outline: 2px solid var(--white);
   outline-offset: 2px;
 }
 
