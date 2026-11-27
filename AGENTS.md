@@ -38,7 +38,7 @@ analyzer/
 ├── ProjectKestrel*.spec # PyInstaller specs (Windows, macOS direct, macOS App Store)
 └── tests/               # pytest: unit / integration / compat / ui markers + security tests
 packaging/               # installer build scripts (Inno Setup, MSIX, macOS)
-tools/                   # build-time asset tooling (not shipped)
+tools/                   # build-time asset tooling (not shipped); model_sources/ holds build inputs
 experiments/             # research scripts (not shipped, not imported by the app)
 ```
 

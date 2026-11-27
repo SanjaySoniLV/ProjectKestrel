@@ -26,7 +26,9 @@ from kestrel_analyzer.bird_catalog import (
     _token_prefix_match,
     _tokens,
 )
-from kestrel_analyzer.config import MODELS_DIR
+
+# Build-only inputs the catalog is generated from (not bundled).
+SOURCES_DIR = Path(__file__).resolve().parents[3] / "tools" / "model_sources"
 
 pytestmark = pytest.mark.unit
 
@@ -42,7 +44,7 @@ def catalog() -> BirdCatalog:
 
 @pytest.fixture(scope="module")
 def model_labels() -> list[str]:
-    with open(MODELS_DIR / "labels.txt", encoding="utf-8-sig") as f:
+    with open(SOURCES_DIR / "labels.txt", encoding="utf-8-sig") as f:
         return [line.strip() for line in f if line.strip()]
 
 
@@ -129,7 +131,7 @@ class TestFamilyDisplayCoverage:
     @pytest.fixture(scope="class")
     def family_display_names(self) -> list[str]:
         import csv
-        path = MODELS_DIR / "scispecies_dispname.csv"
+        path = SOURCES_DIR / "scispecies_dispname.csv"
         with open(path, encoding="utf-8-sig", newline="") as f:
             reader = csv.DictReader(f)
             names = sorted({row["Display Name"].strip()

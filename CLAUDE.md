@@ -12,11 +12,6 @@ The project overview, repository structure, setup commands, contribution rules a
 
 The rest of this file adds detail for working on the code.
 
-> `README.md` and `DEVELOPMENT.md` still describe an older layout (a separate PyQt `analyzer/` GUI, a
-> standalone `visualizer/` web server, and a single ~10k-line `analyzer/visualizer.js`). **That is out of
-> date**: there is no PyQt GUI and no standalone server, and the frontend is ~25 modules under
-> `analyzer/js/`. Don't rely on those two files for structure questions.
-
 ## Architecture: the bridge is the trust boundary
 
 ```

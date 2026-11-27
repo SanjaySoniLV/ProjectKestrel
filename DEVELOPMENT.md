@@ -12,13 +12,17 @@ ProjectKestrel/
 ├── analyzer/                        # Single unified app
 │   ├── visualizer.py                # App entry: pywebview window + local-only HTTP server
 │   ├── api_bridge.py                # `Api` class — every JS↔Python call lands here
+│   ├── settings_bridge.py           # Settings + enhanced-GPU bridge methods (mixins on `Api`)
+│   ├── bird_catalog_bridge.py       # Bird catalogue bridge methods (mixin on `Api`)
 │   ├── queue_manager.py             # Sequential folder-analysis queue worker
 │   ├── settings_utils.py            # Atomic settings.json I/O + schema validation
 │   ├── cli.py                       # Headless CLI entry
-│   ├── visualizer.html              # Main window markup (all dialogs inline)
-│   ├── visualizer.js                # Main window logic (~10k lines, vanilla JS)
-│   ├── visualizer.css               # Main window styles
-│   ├── cull_session.py              # Cull mode pass records, Revert / Reset
+│   ├── visualizer.html              # Main window markup (all dialogs inline, no style="")
+│   ├── js/                          # ~50 vanilla-JS modules (classic scripts; load order
+│   │                                #   is the <script> list at the end of visualizer.html)
+│   ├── css/                         # Stylesheets; design tokens in css/base.css,
+│   │                                #   dialogs on css/dialogs/kdlg.css
+│   ├── cull_session.py              # Culling-pass history + undo, Cull mode session, Revert / Reset
 │   ├── metadata_writer.py           # XMP sidecar writer
 │   ├── editor_launch.py             # Open photos in external editors
 │   ├── folder_inspector.py          # Lightweight folder probing (no ML)
@@ -26,14 +30,14 @@ ProjectKestrel/
 │   ├── kestrel_telemetry.py         # Cloudflare Worker API client (failsafe)
 │   ├── runtime_hook.py              # PyInstaller runtime hook (Windows DLL search)
 │   ├── ProjectKestrel.spec          # PyInstaller spec (Windows)
-│   ├── ProjectKestrel-macos.spec    # PyInstaller spec (macOS)
+│   ├── ProjectKestrel-macos.spec    # PyInstaller spec (macOS, direct download)
+│   ├── ProjectKestrel-macos-appstore.spec  # PyInstaller spec (sandboxed Mac App Store)
+│   ├── sample_sets/                 # Sample bird-photo sets shown in onboarding
 │   ├── models/                      # Bundled AI model files
 │   │   ├── bioclip/                 # BioCLIP 2 species head: int8 image tower ONNX,
 │   │   │                            #   species_text_emb.npy + species_index.json
 │   │   ├── birds/birds_global.csv   # IOC world bird catalog (species label space + regions)
-│   │   ├── labels.txt               # legacy CNN species list (catalog build input only)
-│   │   ├── labels_scispecies.csv    # catalog build inputs (family display names)
-│   │   ├── scispecies_dispname.csv
+│   │   ├── NOTICES.md               # Licence notice for the files directly in models/
 │   │   ├── quality.onnx             # Legacy quality CNN (optional scorer since 3.0)
 │   │   ├── quality_normalization_data.csv
 │   │   ├── siglip/                  # SigLIP 2 ViT-B/16: smart search + default quality score
@@ -42,6 +46,7 @@ ProjectKestrel/
 │   │   ├── pipeline.py              # Main orchestration (`AnalysisPipeline`)
 │   │   ├── config.py                # Paths and constants
 │   │   ├── database.py              # kestrel_database.csv I/O + scenedata migration
+│   │   ├── atomic_io.py             # The one atomic file writer (temp file + os.replace)
 │   │   ├── image_utils.py, raw_exif.py, similarity.py, ratings.py, ...
 │   │   └── ml/                      # detector+SAM-HQ wrapper, BioCLIP head, gate, SigLIP, quality CNN
 │   └── tests/                       # pytest + unittest
@@ -50,12 +55,16 @@ ProjectKestrel/
 │   ├── build_installer_headless.bat       # Windows: PyInstaller build
 │   ├── build_installer_headless_part2.bat # Windows: Inno Setup installer
 │   ├── build_app_headless.sh              # macOS PyInstaller build
+│   ├── vendor_macos_native_deps.sh        # macOS: bundle native libraries
 │   └── kestrel_installer.iss              # Inno Setup script
+├── tools/                           # Build-time tooling (not shipped): bird catalog, icons,
+│   │                                #   GPU towers, benchmarks, the quality ratchet
+│   └── model_sources/               # Inputs only read when assets are rebuilt (catalog label
+│                                    #   lists, the original Keras quality model)
+├── experiments/                     # Research scripts (not shipped, not imported by the app)
 ├── utils/
 │   └── resave_quality_model.py      # Dev-only: re-save Keras model (historical)
 ├── test_imgs/                       # Tiny CI smoke-test images
-├── EXPCOMP_tests/                   # Exposure-compensation reference data
-├── sample_sets/                     # Bundled sample bird-photo sets shown in onboarding
 ├── requirements.txt                 # Generic / Linux-from-source dependencies
 ├── requirements-windows.txt         # DirectML build (Windows)
 └── requirements-macos.txt           # CoreML / Apple Silicon
@@ -71,16 +80,14 @@ cd ProjectKestrel
 pip install -r requirements-windows.txt   # or requirements-macos.txt / requirements.txt
 ```
 
-If `pip` installs both `opencv-python` and `opencv-python-headless` (e.g. via
-`speciesnet`), `cv2.imwrite` may reject the JPEG-quality parameter. Fix:
+If `pip` ends up with both `opencv-python` and `opencv-python-headless` (an old
+environment that still has `speciesnet` installed pulls in the headless one),
+`cv2.imwrite` rejects the JPEG-quality parameter. Fix:
 
 ```bash
 pip uninstall -y opencv-python-headless
 pip install --force-reinstall opencv-python==4.11.0.86
 ```
-
-Re-pin `numpy==2.1.3` afterward if pip upgrades it — TensorFlow expects
-`numpy<2.2`.
 
 ### 2. Required model files
 
@@ -138,6 +145,19 @@ For each analyzed folder, Kestrel creates `.kestrel/` containing:
 
 Configured in `analyzer/tests/pytest.ini`. Markers: `unit`, `integration`, `e2e`,
 `compat`, `ui`.
+
+Before opening a PR, also run the checks CI runs on every PR (both block a merge):
+
+```bash
+ruff check analyzer tools
+npm ci && npm run lint:js
+python tools/quality_ratchet.py      # fails if a counted problem grew; --update locks in a drop
+```
+
+The ratchet counts things the codebase should have fewer of: broad
+`except Exception: pass`, empty JS `catch {}`, hex colours outside
+`css/base.css`, `!important`, `style=""` attributes in HTML, tombstone comments,
+and the length of every file over 1,500 lines. None of them may grow.
 
 There are two lanes, and the difference matters:
 
@@ -310,9 +330,11 @@ caller. All ML model loading is lazy and triggered by
   HTTP server that serves `visualizer.html`, session lifecycle (clean-exit /
   OS-shutdown / crash detection), and the crash-report handler.
 - `api_bridge.py` — `Api` class. Every JS call comes through here. Adding a
-  bridge call means: (1) new method on `Api`, (2) JS call site in
-  `visualizer.js`, (3) settings-schema update in `settings_utils.py` if it
-  persists.
+  bridge call means: (1) new method on `Api`, (2) a call site in the relevant
+  `analyzer/js/*.js` module, (3) settings-schema update in `settings_utils.py`
+  if it persists. Bridge methods stay thin (validate, call a domain module,
+  shape the result); for example the culling-pass history and Cull mode
+  session logic live in `cull_session.py`.
 - `queue_manager.py` — Sequential folder analysis queue. Lazy-imports
   `kestrel_analyzer.pipeline` so the app starts fast for browse-only sessions.
   Snapshots settings at enqueue time — changing settings mid-run does not
@@ -320,6 +342,22 @@ caller. All ML model loading is lazy and triggered by
 - `settings_utils.py` — Atomic `settings.json` I/O with schema validation,
   monotonic counter guards, and `.bak` recovery. Protected by `_SAVE_LOCK`
   because the JS bridge, queue worker, and startup path all write concurrently.
+- `kestrel_analyzer/atomic_io.py` — every file Kestrel rewrites in place
+  (settings, CSV, scenedata, XMP sidecars, cloud state, embeddings) goes
+  through `write_atomic` and its wrappers: a unique temp file beside the
+  destination, fsync, then `os.replace` with a retry for Windows sharing
+  locks. Standard library only, so it can be imported without pandas.
+
+### Frontend
+
+- `js/*.js` are classic scripts sharing one global scope; load order is the
+  `<script>` list at the end of `visualizer.html`. New files wrap their code in
+  an IIFE and expose at most one namespace object.
+- Colours, radii, spacing and type sizes come from the variables in
+  `css/base.css`. Styles live in `css/`, never in `style=""` attributes (the
+  quality ratchet fails on a new one). To show or hide something from JS,
+  toggle the `.hidden` class.
+- Dialogs use the `.kdlg` system in `css/dialogs/kdlg.css`.
 
 ### Settings flow
 
@@ -329,9 +367,9 @@ caller. All ML model loading is lazy and triggered by
 2. Frontend mirrors into `localStorage` under key `kestrel-webviz-settings-v1`.
 3. JS reads/writes via `window.pywebview.api.get_settings()` /
    `save_settings_data()`.
-4. Unknown keys are dropped with size limits on save; new persisted settings
-   require an entry in `_sanitize_settings_payload()` in
-   `analyzer/settings_utils.py`.
+4. Unknown keys pass through with size limits on save; settings that need
+   validation require an entry in `_sanitize_settings_payload()` (and its
+   allowlists) in `analyzer/settings_utils.py`.
 
 ## Security Posture
 
@@ -350,15 +388,12 @@ caller. All ML model loading is lazy and triggered by
 
 ## GPU Acceleration
 
-GPU support is opt-in and currently considered Beta. On Windows the analyzer
-uses DirectML via `onnxruntime-directml`; on macOS, CoreML via
-`onnxruntime-coreml`. CPU mode works everywhere. The
-`provider_coordinator.py` module handles automatic GPU→CPU fallback on
-session failure.
-
-Released installers ship CPU-only. Running from source on Windows with
-`requirements-windows.txt` enables DirectML; the `--gpu` flag on `cli.py`
-opts in.
+GPU is on by default. On Windows the analyzer uses DirectML via
+`onnxruntime-windowsml` (`requirements-windows.txt`); on macOS, CoreML via the
+stock `onnxruntime` (`requirements-macos.txt`). The generic `requirements.txt`
+is CPU-only, and CPU mode works everywhere. `ml/provider_coordinator.py`
+handles automatic GPU→CPU fallback on session failure. Untick **Use GPU** in
+the Analyze dialog, or pass `--no-gpu` to `cli.py`, to force CPU.
 
 ### Transformer towers (BioCLIP 2, SigLIP 2) and node placement
 
