@@ -212,11 +212,22 @@
       CM().applyPicksAll();
       CM().render();
       if (!dlg) return;
-      const focusRange = document.activeElement?.classList.contains('cmd-thr-range');
-      dlg.innerHTML = picksHtml(start);
-      wirePicks(start);
-      if (focusRange) dlg.querySelector('.cmd-thr-range')?.focus();
+      patchPicks(start);
     });
+  }
+
+  /**
+   * Swap in the re-rendered dialog piece by piece, leaving the range input in
+   * the DOM: detaching it, even briefly, ends a drag after its first step.
+   */
+  function patchPicks(start) {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = picksHtml(start);
+    const oldKids = [...(dlg.querySelector('.cmd-body')?.children || [])];
+    const newKids = [...tmp.querySelector('.cmd-body').children];
+    if (oldKids.length !== newKids.length) { dlg.innerHTML = tmp.innerHTML; wirePicks(start); return; }
+    oldKids.forEach((o, i) => { if (!o.classList.contains('cmd-thr-range')) o.replaceWith(newKids[i]); });
+    dlg.querySelector('.kdlg-footer')?.replaceWith(tmp.querySelector('.kdlg-footer'));
   }
 
   function wirePicks(start) {
@@ -224,9 +235,10 @@
     const range = dlg.querySelector('.cmd-thr-range');
     range.addEventListener('keydown', (e) => { shift = e.shiftKey; });
     range.addEventListener('pointerdown', (e) => { shift = e.shiftKey; });
+    range.addEventListener('pointermove', (e) => { shift = e.shiftKey; });
     range.addEventListener('input', () => {
       let v = Number(range.value);
-      if (shift) v = L.snapToEdge(v, S().edges);
+      if (shift) { v = L.snapToEdge(v, S().edges); range.value = String(v); }
       S().session.rules.threshold = Math.round(v * 100) / 100;
       S().session.cuts = {};
       refreshPicks(start);
