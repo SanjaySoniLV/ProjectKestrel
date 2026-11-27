@@ -19,19 +19,19 @@
     },
     {
       title: 'Decide fast',
-      body: 'Hover or use <kbd>←</kbd> <kbd>→</kbd> to move through the scene. The arrows stop at the last photo, so you know you’ve seen them all.<br><br>• <kbd>Space</kbd> flips accept / reject, or use <kbd>Z</kbd> accept and <kbd>C</kbd> reject<br>• <kbd>Shift</kbd>+<kbd>Z</kbd> / <kbd>Shift</kbd>+<kbd>C</kbd> accepts or rejects the whole scene<br>• <kbd>F</kbd> marks a favorite. Favorites always start accepted<br>• Drag the handle between photos to move Kestrel’s cut',
+      body: 'Hover or use <span data-keys="prevPhoto" data-keys-first></span> <span data-keys="nextPhoto" data-keys-first></span> to move through the scene. The arrows stop at the last photo, so you know you’ve seen them all.<br><br>• <span data-keys="flip" data-keys-first></span> flips accept / reject, or use <span data-keys="accept" data-keys-first></span> accept and <span data-keys="reject" data-keys-first></span> reject<br>• <span data-keys="accept" data-keys-prefix="Shift" data-keys-first></span> / <span data-keys="reject" data-keys-prefix="Shift" data-keys-first></span> accepts or rejects the whole scene<br>• <span data-keys="favorite" data-keys-first></span> marks a favorite. Favorites always start accepted<br>• Drag the handle between photos to move Kestrel’s cut',
       target: '.cm-strip',
       position: 'top',
     },
     {
       title: 'Look closer',
-      body: 'Click and hold the full image to zoom into the RAW. The bird crop sits beside it.<br><br>When a photo has more than one bird, click a box to pick that bird, and press <kbd>S</kbd> to focus the whole scene on it. Kestrel then scores the scene for that bird and works out its starting picks again.',
+      body: 'Click and hold the full image to zoom into the RAW. The bird crop sits beside it.<br><br>When a photo has more than one bird, click a box to pick that bird, and press <span data-keys="focusBird" data-keys-first></span> to focus the whole scene on it. Kestrel then scores the scene for that bird and works out its starting picks again.',
       target: '.cm-pv--full',
       position: 'right',
     },
     {
       title: 'Confirm and move on',
-      body: '<kbd>Enter</kbd> confirms the scene as it stands and opens the next one. <kbd>Tab</kbd> skips a scene and leaves its picks as suggestions; it stays in the <b>Unconfirmed</b> list until you come back to it.',
+      body: '<span data-keys="confirmNext" data-keys-first></span> confirms the scene as it stands and opens the next one. <span data-keys="nextScene" data-keys-first></span> skips a scene and leaves its picks as suggestions; it stays in the <b>Unconfirmed</b> list until you come back to it.',
       target: '.cm-footact [data-act="next"]',
       position: 'top',
     },
@@ -55,7 +55,7 @@
     },
     {
       title: 'Ready',
-      body: 'Next you’ll set the starting picks for this folder. Then press <kbd>Enter</kbd> on each scene you agree with.<br><br>Replay this tour from <b>How it works</b> at the top of Cull mode.',
+      body: 'Next you’ll set the starting picks for this folder. Then press <span data-keys="confirmNext" data-keys-first></span> on each scene you agree with.<br><br>Replay this tour from <b>How it works</b> at the top of Cull mode.',
       target: null,
     },
   ];

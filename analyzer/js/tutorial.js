@@ -581,6 +581,8 @@
         _renderTutRegionPicker(bodyEl, idx);
       } else {
         bodyEl.innerHTML = step.body || '';
+        // Steps can name keys by action (data-keys) so they show the user's own bindings.
+        if (window.KestrelKeys) KestrelKeys.paint(bodyEl);
       }
 
       // Optional inline footer link (e.g. Basics → Advanced)
