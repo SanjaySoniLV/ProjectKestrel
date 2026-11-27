@@ -709,12 +709,18 @@
   function onEnter() {
     const ses = S().session;
     if (ses.ended) openEnded();
-    else if (!ses.started) { CM().applyPicksAll(); CM().render(); openPicks(true); }
+    else if (!ses.started) {
+      CM().applyPicksAll();
+      CM().render();
+      if (KestrelCullTour.seen()) openPicks(true);
+      else KestrelCullTour.start(() => { if (CM().state.active && !S().session.started) openPicks(true); });
+    }
   }
 
   function action(act, a) {
     if (act === 'picks') openPicks(false);
     else if (act === 'history') { closeMenu(); openHistory(); }
+    else if (act === 'tour') KestrelCullTour.start();
     else if (act === 'finish') finish();
     else if (act === 'passmenu') togglePassMenu(a);
     else if (act === 'viewpass') viewPass(a.dataset.v);

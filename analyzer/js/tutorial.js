@@ -205,7 +205,7 @@
 
     let _tutStep = 0;
     let _tutSteps = [];
-    let _tutBranch = '';             // '' = not started, 'basics', 'advanced'
+    let _tutBranch = '';             // '' = not started, 'basics', 'advanced', 'cull'
     let _tutSampleLoaded = false;    // track if we auto-loaded sample sets
     let _tutCleanupFn = null;        // cleanup function for current waitFor listeners
     let _tutInDialog  = false;       // true while tutorial card is inside the scene dialog
@@ -250,8 +250,9 @@
       // Backward-compat: legacy callers passed 1 or 2
       if (branch === 1) branch = 'basics';
       else if (branch === 2) branch = 'advanced';
-      _tutBranch = (branch === 'advanced') ? 'advanced' : 'basics';
-      _tutSteps = (_tutBranch === 'advanced') ? TUTORIAL_ADVANCED : TUTORIAL_BASICS;
+      // 'cull' is Cull mode's own tour; its steps live in js/cull-tour.js.
+      _tutBranch = (branch === 'advanced' || branch === 'cull') ? branch : 'basics';
+      _tutSteps = { advanced: TUTORIAL_ADVANCED, cull: window.KestrelCullTour?.STEPS }[_tutBranch] || TUTORIAL_BASICS;
       _tutStep = fromStep || 0;
       _tutChainIdx = 0;
       _tutEl('#tutorialOverlay').classList.add('active');
@@ -263,8 +264,10 @@
       _tutEl('#tutorialOverlay').classList.remove('active', 'has-backdrop');
       _tutEl('#tutorialHighlight').style.display = 'none';
       _tutEl('#tutorialNudge').style.display = 'none';
-      if (_tutBranch) markMainTutorialSeen();
+      var branch = _tutBranch;
       _tutBranch = '';
+      if (branch === 'cull') window.KestrelCullTour.closed();
+      else if (branch) markMainTutorialSeen();
     }
 
     // Install a single waitFor listener. Returns a cleanup fn that removes it.

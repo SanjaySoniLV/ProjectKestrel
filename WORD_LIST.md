@@ -20,7 +20,7 @@ title case and change when their screen is redesigned.
 | Saying the species tags on a scene are right | **Confirm species**, species confirmed | Mark as reviewed, approve, finalize |
 | A burst of photos of one subject | **Scene** | Group, cluster, burst |
 | The screen that shows one scene | **Scene viewer** | Scene dialog, scene view |
-| The bulk-cull window | **Culling Assistant** | Culling mode |
+| The full-screen mode for accepting or rejecting every photo | **Cull mode** | Culling Assistant, culling mode |
 | The format of a folder's analysis | **Analysis version** (e.g. "analysis version 3.0") | Pipeline version, Kestrel version |
 | The app release | **Project Kestrel v7.2.0** | Version: …, build |
 | Per-folder options | **Folder settings** | Folder options, change settings |
