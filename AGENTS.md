@@ -108,7 +108,8 @@ Reviewers check these rules; automatic checks cover some of them.
 - `kestrel_analyzer/` must not import UI or bridge code.
 
 **Reuse these, don't rewrite them**
-- Atomic file writes: `kestrel_analyzer/database.py` (`write_text_atomic`, `write_json_atomic`).
+- Atomic file writes: `kestrel_analyzer/atomic_io.py` (`write_atomic`, `write_text_atomic`,
+  `write_json_atomic`, `write_bytes_atomic`, `copy_file_atomic`; also re-exported by `database.py`).
 - Settings: `settings_utils.py` only. Persisted keys need a sanitizer entry.
 - Path checks in bridge methods: `_validate_root_dir`, `_is_within_root`, `_resolve_path_in_root`.
 - Logging: `settings_utils` `info/warn/error`, and `kestrel_analyzer/logging_utils.py` for the

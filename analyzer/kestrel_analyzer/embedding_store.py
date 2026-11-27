@@ -38,6 +38,7 @@ from typing import Dict, Iterable, Optional, Tuple
 
 import numpy as np
 
+from .atomic_io import write_atomic, write_bytes_atomic
 from .logging_utils import log_warning
 
 EMBEDDINGS_DIRNAME = "embeddings"
@@ -231,14 +232,12 @@ class EmbeddingStore:
         self._live, self._rows = {}, 0
 
     def _write_index_atomic(self, header: dict, live: Dict[str, Dict[int, int]]) -> None:
-        tmp = self._index_path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
+        def _write(f):
             f.write(json.dumps(header) + "\n")
             for fn in sorted(live):
                 f.write(json.dumps({"f": fn, "rows": {str(k): v for k, v in sorted(live[fn].items())}}) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, self._index_path)
+
+        write_atomic(self._index_path, _write, newline=None)
 
     def _append_line(self, filename: str, rows: Dict[int, int]) -> None:
         with open(self._index_path, "a", encoding="utf-8") as f:
@@ -320,13 +319,8 @@ class EmbeddingStore:
                         nxt += 1
                 if rows:
                     new_live[fn] = rows
-            tmp = self._data_path(new_name) + ".tmp"
-            with open(tmp, "wb") as f:
-                if chunks:
-                    f.write(np.stack(chunks).astype("<f2").tobytes())
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, self._data_path(new_name))
+            payload = np.stack(chunks).astype("<f2").tobytes() if chunks else b""
+            write_bytes_atomic(self._data_path(new_name), payload)
             self._write_index_atomic(self._header(new_name), new_live)
             old_name = self._data_name
             self._data_name, self._live, self._rows = new_name, new_live, nxt

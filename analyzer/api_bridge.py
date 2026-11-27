@@ -6764,7 +6764,6 @@ class Api(SettingsBridgeMixin, EnhancedGpuBridgeMixin, BirdCatalogBridgeMixin):
     ) -> None:
         """Persist `.kestrel/perch_link.json` after a successful upload."""
         from pathlib import Path as _P
-        import json as _json
         import time as _time
         link_path = self._perch_link_path(folder_path)
         link_path.parent.mkdir(parents=True, exist_ok=True)
@@ -6781,10 +6780,7 @@ class Api(SettingsBridgeMixin, EnhancedGpuBridgeMixin, BirdCatalogBridgeMixin):
             "skip_rejected_used": bool(skip_rejected),
             "state_hash_at_upload": self._hash_kestrel_state(folder_path),
         }
-        tmp = link_path.with_suffix(".json.tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            _json.dump(payload, f, indent=2)
-        os.replace(tmp, link_path)
+        write_json_atomic(link_path, payload, indent=2, newline=None)
 
     def read_perch_link(self, folder_path: str) -> dict:
         """Read .kestrel/perch_link.json. Returns {present, link} or {present: False}."""
@@ -6831,7 +6827,6 @@ class Api(SettingsBridgeMixin, EnhancedGpuBridgeMixin, BirdCatalogBridgeMixin):
         st = status.get("status") or {}
 
         from pathlib import Path as _P
-        import json as _json
         import time as _time
 
         created = st.get("createdAt")
@@ -6861,10 +6856,7 @@ class Api(SettingsBridgeMixin, EnhancedGpuBridgeMixin, BirdCatalogBridgeMixin):
         link_path = self._perch_link_path(str(root_real))
         try:
             link_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = link_path.with_suffix(".json.tmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                _json.dump(payload, f, indent=2)
-            os.replace(tmp, link_path)
+            write_json_atomic(link_path, payload, indent=2, newline=None)
         except Exception as e:
             return {"success": False, "error": str(e)}
         return {"success": True, "link": payload}
@@ -7220,10 +7212,7 @@ class Api(SettingsBridgeMixin, EnhancedGpuBridgeMixin, BirdCatalogBridgeMixin):
         if not isinstance(data, dict):
             return
         data["state_hash_at_upload"] = self._hash_kestrel_state(folder_path)
-        tmp = link_path.with_suffix(".json.tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            _json.dump(data, f, indent=2)
-        os.replace(tmp, link_path)
+        write_json_atomic(link_path, data, indent=2, newline=None)
 
     def compute_perch_tag_diff(self, folder_path: str) -> dict:
         """Compute the species/family changeset for a linked folder vs its perch.
