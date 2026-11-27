@@ -9,11 +9,14 @@ eat the browser shortcut.
 Explicit Undecided is the X key (and the filmstrip "none" toggle): culled is
 empty and origin is manual.
 
-No JS runner: source-level lints.
+Key resolution runs through js/keybindings.js under node.
 """
 
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -40,50 +43,53 @@ def _fn_body(src: str, header: str) -> str:
     return src[start:nxt]
 
 
-def _cull_key_cases(src: str) -> str:
-    start = src.find("// Cull decisions.")
-    assert start != -1, "cull-decision comment missing"
-    end = src.find("case '1':", start)
-    assert end != -1, "rating-key cases missing after cull keys"
-    return src[start:end]
+KEYBINDINGS = ANALYZER / "js" / "keybindings.js"
+_NODE = shutil.which("node")
+
+_RESOLVE = r"""
+const fs = require('fs');
+global.window = global;
+global.document = { addEventListener() {}, dispatchEvent() {}, querySelectorAll: () => [] };
+global.getSetting = (_k, d) => d;
+eval(fs.readFileSync(process.argv[1], 'utf8'));
+const out = {};
+for (const [key, code] of [['z', 'KeyZ'], ['x', 'KeyX'], ['c', 'KeyC'], ['7', 'Digit7'], ['8', 'Digit8'], ['9', 'Digit9']]) {
+  const hit = (mods) => (KestrelKeys.resolve('viewer', { key, code, ...mods }) || {}).id || null;
+  out[key] = { plain: hit({}), ctrl: hit({ ctrlKey: true }), meta: hit({ metaKey: true }) };
+}
+console.log(JSON.stringify(out));
+"""
 
 
-def test_ctrl_shift_c_is_handled_before_the_cull_reject_case():
-    src = _read(SCENE_DIALOG)
-    handler = _fn_body(src, "function _sceneKeyHandler(e)")
+def _viewer_keys() -> dict:
+    res = subprocess.run([_NODE, "-e", _RESOLVE, str(KEYBINDINGS)], capture_output=True, text=True, timeout=30)
+    assert res.returncode == 0, res.stderr
+    return json.loads(res.stdout)
+
+
+def test_ctrl_shift_c_is_handled_before_the_key_bindings():
+    handler = _fn_body(_read(SCENE_DIALOG), "function _sceneKeyHandler(e)")
     ctrl_shift_c = handler.find("ctrlShift && lowerKey === 'c'")
-    switch_at = handler.find("switch (e.key)")
-    cull_c = handler.find("case 'c':")
+    resolve_at = handler.find("KestrelKeys.resolve('viewer', e)")
     assert ctrl_shift_c != -1
-    assert switch_at != -1
-    assert cull_c != -1
-    assert ctrl_shift_c < switch_at < cull_c
+    assert resolve_at != -1
+    assert ctrl_shift_c < resolve_at
 
 
+@pytest.mark.skipif(_NODE is None, reason="no node runtime available")
 def test_cull_letter_keys_yield_when_ctrl_or_meta_is_held():
-    """Ctrl/Cmd+Z/X/C must not preventDefault or call setCullStatus."""
-    block = _cull_key_cases(_read(SCENE_DIALOG))
-    groups = [
-        block[block.find("case 'z':"):block.find("case 'x':")],
-        block[block.find("case 'x':"):block.find("case 'c':")],
-        block[block.find("case 'c':"):],
-    ]
-    assert all(g.strip() for g in groups)
-    for group in groups:
-        guard = group.find("if (hasSceneModifier) break;")
-        prevent = group.find("e.preventDefault();")
-        set_cull = group.find("setCullStatus(")
-        assert guard != -1, group
-        assert prevent != -1, group
-        assert set_cull != -1, group
-        assert guard < prevent < set_cull
+    """Ctrl/Cmd+Z/X/C resolve to nothing, so the handler leaves the browser chord alone."""
+    for key, hits in _viewer_keys().items():
+        assert hits["ctrl"] is None, key
+        assert hits["meta"] is None, key
 
 
+@pytest.mark.skipif(_NODE is None, reason="no node runtime available")
 def test_plain_zxc_still_map_to_accept_undecided_reject():
-    block = _cull_key_cases(_read(SCENE_DIALOG))
-    assert "setCullStatus(images[currentImageIndex], 'accept')" in block
-    assert "setCullStatus(images[currentImageIndex], '')" in block
-    assert "setCullStatus(images[currentImageIndex], 'reject')" in block
+    keys = _viewer_keys()
+    assert {k: keys[k]["plain"] for k in keys} == {
+        "z": "accept", "x": "clear", "c": "reject", "7": "accept", "8": "clear", "9": "reject",
+    }
 
 
 def test_clearing_cull_is_a_manual_origin():

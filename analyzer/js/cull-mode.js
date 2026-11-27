@@ -527,8 +527,9 @@
     el('.cm-zctl .cm-zlbl').textContent = TEXT.rawZoom;
     el('.cm-clip').title = TEXT.clippedTitle;
     el('.cm-saved').textContent = TEXT.savedAsYouGo;
-    el('[data-act="all"][data-v="accept"]').innerHTML = `${escapeHtml(TEXT.acceptAll)} <kbd>Shift</kbd>+<kbd>Z</kbd>`;
-    el('[data-act="all"][data-v="reject"]').innerHTML = `${escapeHtml(TEXT.rejectAll)} <kbd>Shift</kbd>+<kbd>C</kbd>`;
+    el('[data-act="all"][data-v="accept"]').innerHTML = `${escapeHtml(TEXT.acceptAll)} <span data-keys="accept" data-keys-prefix="Shift" data-keys-first></span>`;
+    el('[data-act="all"][data-v="reject"]').innerHTML = `${escapeHtml(TEXT.rejectAll)} <span data-keys="reject" data-keys-prefix="Shift" data-keys-first></span>`;
+    KestrelKeys.paint(root);
     document.body.appendChild(root);
     wireEvents();
   }
@@ -862,8 +863,8 @@
     const d = decisionOf(r);
     const seg = document.createElement('div');
     seg.className = 'k-seg cm-dec';
-    seg.innerHTML = `<button type="button" data-act="set" data-v="accept" class="${d === 'accept' ? 'on accept' : ''}">${KestrelIcon('check')} ${escapeHtml(TEXT.accept)}<kbd>Z</kbd></button>`
-      + `<button type="button" data-act="set" data-v="reject" class="${d === 'reject' ? 'on reject' : ''}">${KestrelIcon('x')} ${escapeHtml(TEXT.reject)}<kbd>C</kbd></button>`;
+    seg.innerHTML = `<button type="button" data-act="set" data-v="accept" class="${d === 'accept' ? 'on accept' : ''}">${KestrelIcon('check')} ${escapeHtml(TEXT.accept)}${KestrelKeys.hint('accept', { first: true })}</button>`
+      + `<button type="button" data-act="set" data-v="reject" class="${d === 'reject' ? 'on reject' : ''}">${KestrelIcon('x')} ${escapeHtml(TEXT.reject)}${KestrelKeys.hint('reject', { first: true })}</button>`;
     box.appendChild(seg);
   }
 
@@ -871,18 +872,26 @@
     const v = viewPass();
     const act = el('.cm-footact');
     if (v) { act.innerHTML = `<span class="cm-muted">${escapeHtml(TEXT.readOnlyFoot)}</span>`; return; }
-    act.innerHTML = `<button type="button" class="k-btn--quiet" data-act="skip">${escapeHtml(TEXT.skip)} <kbd>Tab</kbd></button>`
-      + `<button type="button" class="primary" data-act="next">${escapeHtml(isLastScene() ? TEXT.finishShort : TEXT.confirmNext)} <kbd>Enter</kbd></button>`;
+    act.innerHTML = `<button type="button" class="k-btn--quiet" data-act="skip">${escapeHtml(TEXT.skip)} ${KestrelKeys.hint('nextScene', { first: true })}</button>`
+      + `<button type="button" class="primary" data-act="next">${escapeHtml(isLastScene() ? TEXT.finishShort : TEXT.confirmNext)} ${KestrelKeys.hint('confirmNext', { first: true })}</button>`;
   }
 
   function renderKeys() {
     const k = TEXT.keys;
     const kb = (s) => `<kbd>${s}</kbd>`;
-    let h = `<span>${kb('←')}${kb('→')} ${k.photo}</span><span>${kb('Ctrl')}+${kb('←')}${kb('→')} ${k.firstLast}</span>`
-      + `<span>${kb('Space')} ${k.flip}</span><span>${kb('Shift')}+${kb('Z')}${kb('C')} ${k.all}</span><span>${kb('F')} ${k.fav}</span><span>${kb('Shift')}+${kb('Tab')} ${k.prevScene}</span>`;
+    const H = (id, first) => KestrelKeys.hint(id, { first });
+    const item = (keys, text, cls = '') => (keys ? `<span${cls ? ` class="${cls}"` : ''}>${keys} ${text}</span>` : '');
+    // One key per hint so the footer fits: the user's own key where they set one.
+    const prevKey = KestrelKeys.userKeys('prevScene').length ? H('prevScene', true) : `${kb('Shift')}+${H('nextScene', true)}`;
+    let h = item(`${H('prevPhoto', true)}${H('nextPhoto', true)}`, k.photo)
+      + item(`${kb('Ctrl')}+${H('prevPhoto', true)}${H('nextPhoto', true)}`, k.firstLast)
+      + item(H('flip', true), k.flip)
+      + item(`${kb('Shift')}+${H('accept', true)}${H('reject', true)}`, k.all)
+      + item(H('favorite', true), k.fav)
+      + item(prevKey, k.prevScene);
     const r = S.sel;
     if (r && !r.__moved && getRowCropRecords(r).length > 1) {
-      h += `<span class="cm-birdkeys">${kb('↑')}${kb('↓')} ${k.switchBird}</span><span class="cm-birdkeys">${kb('S')} ${k.focus}</span>`;
+      h += item(`${H('prevBird', true)}${H('nextBird', true)}`, k.switchBird, 'cm-birdkeys') + item(H('focusBird', true), k.focus, 'cm-birdkeys');
     }
     el('.cm-keys').innerHTML = h;
   }
@@ -964,24 +973,25 @@
     if (!S.active) return;
     if (document.querySelector('dialog[open]') || KestrelCullTour.active()) return;
     if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) && e.target.type !== 'range') return;
-    if (e.metaKey || e.altKey) return;
-    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-    const ctrl = e.ctrlKey;
+    const hit = KestrelKeys.resolve('cull', e);
+    if (!hit) return;
     const r = S.sel;
+    const sh = hit.shift;
     const map = {
-      ArrowRight: () => move(1, ctrl), ArrowLeft: () => move(-1, ctrl),
-      Home: () => move(-1, true), End: () => move(1, true),
-      ArrowDown: () => switchBird(1), ArrowUp: () => switchBird(-1),
-      ' ': () => flip(r),
-      z: () => (e.shiftKey ? setScene('accept') : setDecision(r, 'accept')),
-      c: () => (e.shiftKey ? setScene('reject') : setDecision(r, 'reject')),
-      f: () => toggleFavorite(r), s: () => { focusBird(); },
-      Enter: () => (e.shiftKey ? makeMainBird() : confirmNext()),
-      Tab: () => step(e.shiftKey ? -1 : 1),
-      Escape: () => KestrelCullStage.endZoom(S),
+      nextPhoto: () => move(1, hit.ctrl), prevPhoto: () => move(-1, hit.ctrl),
+      firstPhoto: () => move(-1, true), lastPhoto: () => move(1, true),
+      nextBird: () => switchBird(1), prevBird: () => switchBird(-1),
+      flip: () => flip(r),
+      accept: () => (sh ? setScene('accept') : setDecision(r, 'accept')),
+      reject: () => (sh ? setScene('reject') : setDecision(r, 'reject')),
+      acceptAll: () => setScene('accept'), rejectAll: () => setScene('reject'),
+      favorite: () => toggleFavorite(r), focusBird: () => { focusBird(); },
+      confirmNext: () => (sh ? makeMainBird() : confirmNext()), cullMainBird: () => makeMainBird(),
+      nextScene: () => step(sh || hit.ctrl ? -1 : 1), prevScene: () => step(-1),
+      close: () => KestrelCullStage.endZoom(S),
     };
-    const fn = map[k];
-    if (!fn || (ctrl && !k.startsWith('Arrow'))) return;
+    const fn = map[hit.id];
+    if (!fn) return;
     e.preventDefault();
     e.stopPropagation();
     fn();

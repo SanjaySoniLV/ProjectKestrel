@@ -410,32 +410,7 @@
       </div>
 
       <!-- Keyboard shortcut legend (toggle visibility) -->
-      <div class="scene-shortcut-legend hidden" id="sceneShortcutLegend">
-        <div class="ssl-col"><h4 class="k-section-title">Browse</h4>
-          <span><kbd>←</kbd><kbd>→</kbd> Previous / next photo</span>
-          <span><kbd>Home</kbd><kbd>End</kbd> or <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>←</kbd><kbd>→</kbd> First / last photo</span>
-          <span><kbd>Tab</kbd> Next scene · <kbd>Shift</kbd>+<kbd>Tab</kbd> Previous scene</span>
-          <span><kbd>↑</kbd><kbd>↓</kbd> Switch bird crop</span>
-          <span>Scroll on the preview: zoom into the RAW</span>
-          <span><kbd>Esc</kbd> Close</span>
-        </div>
-        <div class="ssl-col"><h4 class="k-section-title">Decide</h4>
-          <span><kbd>Z</kbd> or <kbd>7</kbd> Accept</span>
-          <span><kbd>X</kbd> or <kbd>8</kbd> Undecided</span>
-          <span><kbd>C</kbd> or <kbd>9</kbd> Reject</span>
-          <span><kbd>1</kbd>–<kbd>5</kbd> Star rating</span>
-          <span><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>R</kbd> Confirm species</span>
-          <span><kbd>F</kbd> Favorite</span> <span><kbd>Space</kbd> Open in editor</span>
-        </div>
-        <div class="ssl-col"><h4 class="k-section-title">Birds and tags</h4>
-          <span><kbd>Enter</kbd> Make the active crop the main bird</span>
-          <span><kbd>S</kbd> or <kbd>Shift</kbd>+click a bird: focus the scene on it (again to undo)</span>
-          <span><kbd>B</kbd> Show / hide bird numbers</span>
-          <span><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>T</kbd> Add species tag · +<kbd>Shift</kbd> family tag</span>
-          <span><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> Clear all tags</span>
-          <span><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd> Reset and reassign tags</span>
-        </div>
-      </div>
+      <div class="scene-shortcut-legend hidden" id="sceneShortcutLegend"></div>
       <!-- ═══ CENTER: Dual preview panels ═══ -->
       <div class="scene-main">
         <div class="scene-previews" id="scenePreviews">
@@ -819,6 +794,7 @@
     <nav class="settings-nav" aria-label="Settings sections">
       <h3 id="settingsTitle" class="k-dialog-title">Settings</h3>
       <button type="button" class="on" data-settings-section="general">General</button>
+      <button type="button" data-settings-section="keyboard">Keyboard</button>
       <button type="button" data-settings-section="species">Species</button>
       <button type="button" data-settings-section="ratings">Star ratings</button>
       <button type="button" data-settings-section="previews">Previews</button>
@@ -876,6 +852,8 @@
           <input type="checkbox" class="k-switch" id="settingsSmartSearch" checked />
         </div>
       </section>
+
+      <section class="settings-pane hidden" data-settings-pane="keyboard" id="keysPane"></section>
 
       <section class="settings-pane hidden" data-settings-pane="species">
         <h4 class="settings-pane-title">Species</h4>
@@ -1737,7 +1715,9 @@
   <script src="js/folder-settings.js"></script>
   <!-- settings.js MUST load before scene-dialog.js: scene-dialog's IIFE
        (setupScenePreviewDivider) calls getSetting() at parse time. -->
+  <script src="js/keybindings.js"></script>
   <script src="js/settings.js"></script>
+  <script src="js/settings-keyboard.js"></script>
   <script src="js/enhanced-gpu.js"></script>
   <script src="js/scene-dialog.js"></script>
   <script src="js/primary-subject.js"></script>

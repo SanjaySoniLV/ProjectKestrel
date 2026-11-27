@@ -7,8 +7,8 @@
 (function () {
   const COL = 'favorite';
   const TEXT = {
-    add: 'Favorite (F)',
-    remove: 'Remove from favorites (F)',
+    add: 'Favorite',
+    remove: 'Remove from favorites',
     label: 'Favorite',
   };
 
@@ -47,7 +47,7 @@
     if (!btn) return;
     const on = isFavorite(row);
     btn.classList.toggle('is-favorite', on);
-    btn.title = on ? TEXT.remove : TEXT.add;
+    btn.title = (on ? TEXT.remove : TEXT.add) + (window.KestrelKeys ? KestrelKeys.titleSuffix('favorite') : '');
     btn.setAttribute('aria-pressed', on ? 'true' : 'false');
     btn.replaceChildren(KestrelIcon.el(on ? 'heart-fill' : 'heart'));
     if (withLabel) {

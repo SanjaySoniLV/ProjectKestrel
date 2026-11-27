@@ -94,6 +94,15 @@ _ALLOWED_TOWER_DEVICES = {'auto', 'cpu', 'gpu'}
 # nothing is ever sent without the user's say-so.
 _ALLOWED_QUALITY_FEEDBACK_MODES = {'ask', 'always', 'never'}
 _ALLOWED_SCENE_FILMSTRIP_ORDERS = {'quality', 'time'}
+# Action ids the user can bind keys to; must match ACTIONS in js/keybindings.js.
+_ALLOWED_KEYBINDING_ACTIONS = {
+    'prevPhoto', 'nextPhoto', 'firstPhoto', 'lastPhoto', 'nextScene', 'prevScene', 'prevBird', 'nextBird',
+    'close', 'accept', 'reject', 'favorite', 'focusBird', 'flip', 'confirmNext', 'acceptAll', 'rejectAll',
+    'cullMainBird', 'clear', 'rate1', 'rate2', 'rate3', 'rate4', 'rate5', 'openEditor', 'mainBird',
+    'birdNumbers', 'confirmSpecies', 'speciesTag', 'familyTag', 'clearTags', 'resetTags',
+}
+_MAX_KEYS_PER_ACTION = 2
+_KEY_ID_RE = re.compile(r'^[^\x00-\x1f]{1,16}$')
 _ALLOWED_ANALYZE_SETTINGS_VIEWS = {'essentials', 'all'}
 _QUALITY_FEEDBACK_INSTALL_ID_RE = re.compile(r'^qfi_[0-9a-f]{32}$')
 _ALLOWED_QUEUE_DETECTOR_NAMES = {'mdv5a', 'mdv1000-cedar'}
@@ -297,6 +306,22 @@ def _sanitize_perf_samples(value: Any, max_items: int = 50) -> list[dict]:
         ts = _coerce_string(item.get('ts'), default='', max_len=32)
         out.append({'imgs': imgs, 'secs': round(secs, 1), 'ts': ts})
     return out[-max_items:]
+
+
+def _sanitize_keybindings(value: Any) -> dict[str, list[str]]:
+    """Keep known action ids, each with at most two short key ids."""
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for action, keys in value.items():
+        if action not in _ALLOWED_KEYBINDING_ACTIONS or not isinstance(keys, list):
+            continue
+        cleaned: list[str] = []
+        for key in keys:
+            if isinstance(key, str) and _KEY_ID_RE.match(key) and key not in cleaned:
+                cleaned.append(key)
+        out[action] = cleaned[:_MAX_KEYS_PER_ACTION]
+    return out
 
 
 def _sanitize_int_list(value: Any, max_items: int = 128, min_value: int = 0, max_value: int = 1_000_000_000) -> list[int]:
@@ -639,6 +664,8 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
         out['scene_filmstrip_order'] = _coerce_enum(
             data.get('scene_filmstrip_order'), _ALLOWED_SCENE_FILMSTRIP_ORDERS, default='quality',
         )
+    if 'keybindings' in data:
+        out['keybindings'] = _sanitize_keybindings(data.get('keybindings'))
     if 'analyze_settings_view' in data:
         out['analyze_settings_view'] = _coerce_enum(
             data.get('analyze_settings_view'), _ALLOWED_ANALYZE_SETTINGS_VIEWS, default='essentials',

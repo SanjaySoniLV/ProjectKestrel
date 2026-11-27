@@ -39,7 +39,7 @@ NAV_SRC = _body(SCENE_DIALOG_JS, "/** The grid's review-state filter", "// â”€â”
 def test_arrow_left_wrap_lets_navigate_pick_the_last_image():
     # The old call computed the adjacent scene's last index, which is wrong
     # once navigation can skip hidden scenes.
-    assert "navigateToScene(-1, -1);" in SCENE_DIALOG_JS
+    assert "navigateToScene(-1, -1)" in SCENE_DIALOG_JS
     assert "navigateToScene(-1, prevScene.images.length - 1)" not in SCENE_DIALOG_JS
 
 

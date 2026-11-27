@@ -289,6 +289,7 @@
         const incoming = (data && data.settings && typeof data.settings === 'object') ? data.settings : null;
         if (!incoming) return;
         saveSettings(incoming);
+        window.KestrelKeys?.reload();
         _applyScenePreviewSplit(_clampScenePreviewSplitRatio(incoming[SCENE_PREVIEW_SPLIT_KEY]));
         _autoSaveEnabled = incoming.auto_save_enabled !== false;
         if (!_autoSaveEnabled) {
@@ -299,7 +300,7 @@
       } catch (_) { }
     }
 
-    const SETTINGS_SECTIONS = ['general', 'species', 'ratings', 'previews', 'performance', 'privacy'];
+    const SETTINGS_SECTIONS = ['general', 'keyboard', 'species', 'ratings', 'previews', 'performance', 'privacy'];
 
     /** Show one Settings section (the nav on the left picks it). */
     function showSettingsSection(section) {
@@ -318,7 +319,7 @@
       if (body) body.scrollTop = 0;
     }
 
-    /** Open Settings, optionally at one section ('general', 'species', 'ratings', 'previews', 'performance', 'privacy'). */
+    /** Open Settings, optionally at one section ('general', 'keyboard', 'species', 'ratings', 'previews', 'performance', 'privacy'). */
     async function showSettings(section = 'general') {
       showSettingsSection(typeof section === 'string' ? section : 'general');
       // Refresh local cache from persisted settings before rendering values.
@@ -362,6 +363,7 @@
       );
       wireCustomThresholdEditor();
       refreshRatingProfileEditor();
+      window.KestrelKeyboardSettings?.open();
       // RAW preview cache
       const rawCacheCb = document.getElementById('rawPreviewCacheEnabled');
       if (rawCacheCb) rawCacheCb.checked = getSetting('raw_preview_cache_enabled', true);
@@ -517,6 +519,7 @@
         quality_feedback_mode: qualityFeedbackMode,
         bird_regions: finalRegions,
         show_scientific_names: showScientificNames,
+        keybindings: window.KestrelKeyboardSettings ? KestrelKeyboardSettings.apply() : existing.keybindings,
       };
       _autoSaveEnabled = autoSaveEnabled;
       if (!_autoSaveEnabled) {
