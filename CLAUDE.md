@@ -65,7 +65,7 @@ schema:
 - `cloud_compute_client.py` (+ `cloud_jobs_store.py`, `cloud_folder_state.py`) — GPU offload: create job →
   upload images directly to object storage via presigned URLs → poll → download result packs → merge into
   `.kestrel/`. Frontend: `js/cloud-compute.js`.
-- `perch_uploader.py` (+ `perch_manifest.py`) — publish an outing: build a local manifest → presign →
+- `perch_uploader.py` — publish an outing: build a local manifest → presign →
   direct upload → commit. Frontend: `js/perch.js`.
 - `oauth_client.py` (+ `auth_client.py`) — sign-in with Clerk. The resulting Clerk JWT authorizes both
   Cloud Compute and Perch calls and is stored in the OS keyring. Frontend: `js/auth.js`.
