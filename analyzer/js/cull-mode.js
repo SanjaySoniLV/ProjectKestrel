@@ -342,11 +342,10 @@
     const list = currentList();
     if (!list.length) return;
     const i = list.indexOf(S.sel);
-    if (jump) { S.sel = dx < 0 ? list[0] : list[list.length - 1]; refreshSel(); return; }
-    const j = i + dx;
-    if (!S.favView && j < 0) { step(-1, 'last'); return; }
-    if (!S.favView && j >= list.length) { step(1, 'first'); return; }
-    S.sel = list[Math.max(0, Math.min(list.length - 1, j))];
+    // Arrows stop at the ends of the scene; only Enter or Tab leaves it.
+    const j = jump ? (dx < 0 ? 0 : list.length - 1) : Math.max(0, Math.min(list.length - 1, i + dx));
+    if (list[j] === S.sel) return;
+    S.sel = list[j];
     refreshSel();
   }
 
@@ -784,10 +783,20 @@
     if (sc && S.cur) sc.replaceWith(railMini(S.cur));
   }
 
+  /** The full image carries the same accept/reject border as its strip card. */
+  function syncPreviewBorder(r) {
+    const pv = el('.cm-pv--full');
+    const d = r ? decisionOf(r) : '';
+    pv.classList.toggle('is-accept', d === 'accept');
+    pv.classList.toggle('is-reject', d === 'reject');
+    pv.classList.toggle('is-firm', !!r && isFirm(r));
+  }
+
   function renderInfo() {
     const box = el('.cm-info');
     box.replaceChildren();
     const r = S.sel;
+    syncPreviewBorder(r);
     if (!r) return;
     const list = currentList();
     const fn = document.createElement('span');
