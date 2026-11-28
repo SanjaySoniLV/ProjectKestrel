@@ -34,6 +34,19 @@
       });
     })();
 
+    // "Only scenes with favorites" (View menu); a heart on the View button shows it is on.
+    (function initOnlyFavoriteScenes() {
+      const t = document.getElementById('onlyFavoriteScenes');
+      if (!t) return;
+      const mark = document.getElementById('tfbFavOnlyMark');
+      const sync = () => mark?.classList.toggle('hidden', !t.checked);
+      t.checked = !!getSetting('onlyFavoriteScenes', false);
+      sync();
+      t.addEventListener('change', () => {
+        const s = loadSettings(); s.onlyFavoriteScenes = !!t.checked; saveSettings(s); sync(); renderScenes();
+      });
+    })();
+
     // Show bird thumbnails toggle
     (function initShowBirdThumbs() {
       const t = document.getElementById('showBirdThumbs');

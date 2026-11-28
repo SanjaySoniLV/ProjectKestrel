@@ -28,7 +28,8 @@ From the `timm/ViT-B-16-SigLIP2` Hugging Face repository (as used by open_clip,
 release (https://github.com/google-research/big_vision), whose text tokenizer is the Gemma
 SentencePiece vocabulary. Licence: Apache-2.0 per the model card
 (https://www.apache.org/licenses/LICENSE-2.0).
-TODO before release: confirm whether the Gemma vocabulary carries additional terms.
+The vocabulary file is distributed with these weights under the same Apache-2.0
+licence, as stated on the model card.
 
 ### Citation
 

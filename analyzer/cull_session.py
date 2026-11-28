@@ -47,7 +47,7 @@ _NO_BIRD = {'accept', 'reject'}
 _SCENE_KEY = re.compile(r'^[A-Za-z0-9_.:-]{1,64}$')
 _HISTORY_ID = re.compile(r'^[A-Za-z0-9_]{1,40}$')
 _MOVED_ROW_FIELDS = ('filename', 'scene_count', 'quality', 'export_path', 'crop_path',
-                     'capture_time', 'species', 'rating')
+                     'capture_time', 'species', 'rating', 'favorite')
 USER_COLUMNS = ('culled', 'culled_origin', 'favorite')
 
 
@@ -338,7 +338,9 @@ def undo_move(kestrel_dir: str, history_ids: HistoryIdsFn, undo_last: UndoFn) ->
     if not target:
         return {'success': False, 'error': 'nothing to undo'}
     ids = list(history_ids())
-    if not ids or ids[-1] != target['history_id']:
+    if target['history_id'] not in ids:
+        return {'success': False, 'error': 'the photos this pass moved are no longer in _KESTREL_Rejects'}
+    if ids[-1] != target['history_id']:
         return {'success': False, 'error': 'a later move must be undone first'}
     db_path = os.path.join(kestrel_dir, DB_NAME)
     keep = read_user_columns(db_path)
@@ -484,12 +486,21 @@ def write_history(kestrel_dir: str, passes: list) -> None:
     write_json_atomic(path, {'version': 1, 'passes': passes}, indent=2)
 
 
-def history_ids(kestrel_dir: str, has_rejects: Callable[[], bool]) -> list:
-    """Pass ids oldest first; ``['legacy']`` for an older build's rejects."""
-    ids = [p['id'] for p in read_history(kestrel_dir)]
-    if not ids and has_rejects():
-        ids = ['legacy']
-    return ids
+def history_ids(kestrel_dir: str, reject_names: Callable[[], list]) -> list:
+    """Undoable pass ids oldest first; ``['legacy']`` for an older build's rejects.
+
+    Newest passes whose files are all gone from the rejects folder are left
+    out, the same ones ``undo_last_pass`` drops, so callers that check the
+    newest id see the pass an undo would actually move back.
+    """
+    passes = read_history(kestrel_dir)
+    names = reject_names()
+    if not passes:
+        return ['legacy'] if names else []
+    names_cf = {n.casefold() for n in names}
+    while passes and not any(f.casefold() in names_cf for f in passes[-1]['files']):
+        passes.pop()
+    return [p['id'] for p in passes]
 
 
 def _snapshot_paths(kestrel_dir: str, pid: str):
