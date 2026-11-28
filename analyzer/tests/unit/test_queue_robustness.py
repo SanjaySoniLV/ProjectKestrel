@@ -150,3 +150,51 @@ def test_use_gpu_change_between_runs_reaches_cached_pipeline(tmp_path):
     mgr.enqueue([str(f2)], use_gpu=False)
     assert mgr.join_worker(timeout=15) is True
     assert stub.use_gpu is False, "use_gpu toggle was not propagated to the cached pipeline"
+
+
+def test_analysis_run_waits_while_another_job_holds_the_pipeline(tmp_path):
+    # A folder upgrade borrows the queue's pipeline. An analysis run must not
+    # start (and reload models under it) until the upgrade is done with it.
+    mgr = queue_manager.QueueManager()
+    ran = threading.Event()
+
+    class _Pipeline:
+        detector_name = None
+        use_gpu = False
+
+        def process_folder(self, path, **kwargs):
+            ran.set()
+
+    mgr._pipeline = _Pipeline()
+    folder = tmp_path / "f"
+    folder.mkdir()
+    with mgr.pipeline_turn() as ours:
+        assert ours
+        mgr.enqueue([str(folder)])
+        assert not ran.wait(0.8)
+        item = mgr.get_status()["items"][0]
+        assert item["status"] == "pending"
+    assert ran.wait(5)
+    assert mgr.join_worker(5)
+
+
+def test_pipeline_turn_gives_up_when_cancelled_while_waiting():
+    mgr = queue_manager.QueueManager()
+    cancel = threading.Event()
+    waited = []
+    result = {}
+
+    def other():
+        with mgr.pipeline_turn(cancel, on_wait=lambda: waited.append(1)) as ours:
+            result["ours"] = ours
+
+    with mgr.pipeline_turn() as ours:
+        assert ours
+        t = threading.Thread(target=other)
+        t.start()
+        time.sleep(0.2)
+        cancel.set()
+        t.join(5)
+    assert result == {"ours": False} and waited == [1]
+    with mgr.pipeline_turn() as ours:  # the turn was not left held
+        assert ours
