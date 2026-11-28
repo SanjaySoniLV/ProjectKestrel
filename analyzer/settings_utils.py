@@ -642,6 +642,7 @@ def _sanitize_settings_payload(data: dict, emit_log: bool = False) -> dict:
     _set_bool('groupByFolder', default=True)
     _set_bool('groupByTime', default=True)
     _set_bool('showBirdThumbs', default=False)
+    _set_bool('onlyFavoriteScenes', default=False)
     _set_bool('onlyManualRatedScenes', default=False)
     _set_float('scene_preview_split_ratio', default=0.68, min_value=0.25, max_value=0.85, digits=4)
     if 'scene_filmstrip_order' in data:

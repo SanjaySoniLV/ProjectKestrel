@@ -204,8 +204,10 @@
         </div>
         <select id="filterSceneReviewState" class="hidden" aria-hidden="true" tabindex="-1"><option value="all">All scenes</option><option value="reviewed">Reviewed</option><option value="unreviewed">To review</option></select>
         <div class="tfb-more-wrap">
-          <button id="tfbMoreBtn" type="button" class="tfb-more-btn" aria-haspopup="true" aria-expanded="false" title="Sorting, grouping and display options"><i class="k-icon k-icon--sliders" aria-hidden="true"></i> View <span class="tfb-caret" aria-hidden="true">▾</span></button>
+          <button id="tfbMoreBtn" type="button" class="tfb-more-btn" aria-haspopup="true" aria-expanded="false" title="Sorting, grouping and display options"><i class="k-icon k-icon--sliders" aria-hidden="true"></i> View <i id="tfbFavOnlyMark" class="k-icon k-icon--heart-fill tfb-fav-mark hidden" title="Showing only scenes with favorites" aria-hidden="true"></i> <span class="tfb-caret" aria-hidden="true">▾</span></button>
           <div id="tfbMorePopover" class="tfb-more-popover hidden" role="menu" aria-label="View options">
+            <div class="k-section-title tfb-popover-heading">Filter</div>
+            <label class="tfb-popover-row" title="Show only scenes that have at least one favorite photo."><input id="onlyFavoriteScenes" type="checkbox" /><span>Only scenes with favorites</span></label>
             <div class="k-section-title tfb-popover-heading">Sort</div>
             <label class="tfb-popover-row">
               <span>Sort by</span>
@@ -226,10 +228,7 @@
               <span>By capture time</span>
             </label>
             <div class="k-section-title tfb-popover-heading">Cards</div>
-            <label class="tfb-popover-row">
-              <input id="showBirdThumbs" type="checkbox" />
-              <span>Show bird thumbnails</span>
-            </label>
+            <label class="tfb-popover-row"><input id="showBirdThumbs" type="checkbox" /><span>Show bird thumbnails</span></label>
             <div class="k-section-title tfb-popover-heading">Species</div>
             <label class="tfb-popover-row">
               <input id="includeSecondarySpecies" type="checkbox" />

@@ -11,6 +11,20 @@
      * species", scene.isApproved) is a separate step and does not count, and
      * neither does a scene name.
      */
+    /** True when any photo in the scene is a favorite. */
+    function sceneHasFavorite(scene) {
+      return Array.isArray(scene?.images) && scene.images.some(r => KestrelFavorites.isFavorite(r));
+    }
+
+    /** Whether the filter bar (review toggle, "Only scenes with favorites") shows this scene. */
+    function sceneMatchesViewFilters(scene) {
+      const review = document.getElementById('filterSceneReviewState')?.value || getSetting('sceneReviewFilter', 'all');
+      if (review === 'reviewed' && !isManuallyReviewedScene(scene)) return false;
+      if (review === 'unreviewed' && isManuallyReviewedScene(scene)) return false;
+      const favOnly = document.getElementById('onlyFavoriteScenes')?.checked ?? !!getSetting('onlyFavoriteScenes', false);
+      return !favOnly || sceneHasFavorite(scene);
+    }
+
     function isManuallyReviewedScene(scene) {
       if (!scene) return false;
       return Array.isArray(scene.images)

@@ -1,4 +1,5 @@
-"""Scene-to-scene navigation in the scene viewer honours the grid's review filter.
+"""Scene-to-scene navigation in the scene viewer honours the grid's filters
+(review state, and View > Only scenes with favorites).
 
 With "Unreviewed only" selected the grid hides reviewed scenes, but Tab (and
 arrowing past a scene's last image) used to step through the full scene list,
@@ -6,7 +7,8 @@ landing on scenes the grid had hidden. ``navigateToScene`` now skips scenes
 outside the filter.
 
 Behaviour is checked by running the real ``_sceneReviewFilterValue`` +
-``navigateToScene`` source from ``scene-dialog.js`` in a Node ``vm`` with a few
+``navigateToScene`` source from ``scene-dialog.js``, plus the shared
+``sceneMatchesViewFilters`` predicate from ``scenes.js``, in a Node ``vm`` with a few
 stubbed globals (skipped when Node is not installed).
 """
 
@@ -21,6 +23,7 @@ import pytest
 
 ANALYZER = Path(__file__).resolve().parents[2]
 SCENE_DIALOG_JS = (ANALYZER / "js" / "scene-dialog.js").read_text(encoding="utf-8")
+SCENES_JS = (ANALYZER / "js" / "scenes.js").read_text(encoding="utf-8")
 
 pytestmark = pytest.mark.unit
 
@@ -33,7 +36,8 @@ def _body(src, start, end):
     return src[s:src.index(end, s)]
 
 
-NAV_SRC = _body(SCENE_DIALOG_JS, "/** The grid's review-state filter", "// ── Review-flow shortcut helpers")
+NAV_SRC = (_body(SCENES_JS, "/** True when any photo in the scene is a favorite", "function isManuallyReviewedScene")
+           + _body(SCENE_DIALOG_JS, "/** The grid's review-state filter", "// ── Review-flow shortcut helpers"))
 
 
 def test_arrow_left_wrap_lets_navigate_pick_the_last_image():
@@ -46,7 +50,7 @@ def test_arrow_left_wrap_lets_navigate_pick_the_last_image():
 _HARNESS = r"""
 const vm = require('vm');
 const [src, payload] = process.argv.slice(1);
-const { filter, scenes, current, direction, startIndex, splitMode } = JSON.parse(payload);
+const { filter, favOnly, scenes, current, direction, startIndex, splitMode } = JSON.parse(payload);
 const opened = [], toasts = [];
 const ctx = vm.createContext({
   console, JSON, Array, String, Math,
@@ -55,11 +59,13 @@ const ctx = vm.createContext({
   _splitMode: !!splitMode,
   _sceneEditDraft: null, _sceneEditMode: false,
   document: {
-    getElementById: (id) => (id === 'filterSceneReviewState' ? { value: filter } : null),
+    getElementById: (id) => (id === 'filterSceneReviewState' ? { value: filter }
+      : id === 'onlyFavoriteScenes' ? { checked: !!favOnly } : null),
     removeEventListener: () => {},
   },
   getSetting: (_k, d) => d,
   isManuallyReviewedScene: (s) => !!s.reviewed,
+  KestrelFavorites: { isFavorite: (r) => !!(r && r.favorite === '1') },
   showToast: (m) => toasts.push(m),
   _flashSplitSceneButton: () => {},
   _sceneKeyHandler: () => {},
@@ -75,17 +81,19 @@ process.stdout.write(JSON.stringify({ opened, toasts }));
 
 def _scenes():
     # a and c reviewed; b, d unreviewed; images counts differ so last-index is checkable.
+    # c and d have a favorite photo.
+    fav = {"favorite": "1"}
     return [
-        {"id": "a", "reviewed": True, "images": [1, 2]},
-        {"id": "b", "reviewed": False, "images": [1, 2, 3]},
-        {"id": "c", "reviewed": True, "images": [1]},
-        {"id": "d", "reviewed": False, "images": [1, 2, 3, 4]},
+        {"id": "a", "reviewed": True, "images": [{}, {}]},
+        {"id": "b", "reviewed": False, "images": [{}, {}, {}]},
+        {"id": "c", "reviewed": True, "images": [fav]},
+        {"id": "d", "reviewed": False, "images": [{}, {}, fav, {}]},
     ]
 
 
-def _nav(filter, current, direction, start=0, split=False):
+def _nav(filter, current, direction, start=0, split=False, fav_only=False):
     payload = json.dumps({
-        "filter": filter, "scenes": _scenes(), "current": current,
+        "filter": filter, "favOnly": fav_only, "scenes": _scenes(), "current": current,
         "direction": direction, "startIndex": start, "splitMode": split,
     })
     out = subprocess.run(
@@ -133,3 +141,16 @@ def test_all_filter_is_unchanged_adjacent_step():
 @needs_node
 def test_split_mode_still_blocks_navigation():
     assert _nav("unreviewed", "b", 1, split=True)["opened"] == []
+
+
+@needs_node
+def test_favorites_only_skips_scenes_without_a_favorite():
+    assert _nav("all", "a", 1, fav_only=True)["opened"] == [["c", 0]]
+    assert _nav("all", "d", -1, -1, fav_only=True)["opened"] == [["c", 0]]
+
+
+@needs_node
+def test_favorites_only_combines_with_the_review_filter():
+    # Unreviewed + favorites: only d qualifies.
+    assert _nav("unreviewed", "a", 1, fav_only=True)["opened"] == [["d", 0]]
+    assert _nav("reviewed", "c", 1, fav_only=True)["opened"] == []

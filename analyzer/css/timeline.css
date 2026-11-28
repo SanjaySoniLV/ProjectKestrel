@@ -258,3 +258,6 @@
 .tfb-popover-row input[type="checkbox"] {
   margin: 0;
 }
+
+/* Heart on the View button while "Only scenes with favorites" is on. */
+.tfb-more-btn .tfb-fav-mark { color: var(--favorite); }

@@ -181,8 +181,6 @@
       const minC = parseFloat(el('#speciesConf').value) || 0;
       const search = el('#search').value;
       const sortBy = el('#sortBy').value;
-      const reviewStateFilter = document.getElementById('filterSceneReviewState')?.value
-        || getSetting('sceneReviewFilter', 'all');
       // Smart-search results are shown flat, in score order (no folder/time grouping).
       const _searchOn = !!String(search || '').trim();
       const _smartActive = typeof smartSearchIsActive === 'function' && smartSearchIsActive();
@@ -207,17 +205,15 @@
         if (refreshed) _currentScene = refreshed;
       }
 
-      // Apply the scene-level review-state filter without mutating global scenes.
+      // Apply the filter bar's scene filters (review state, favorites only)
+      // without mutating global scenes.
       // Reviewed means any of:
       //  - scene tags finalized by user, or scene renamed by user
       //  - manual/verified accept-reject culling decision on any image
       //  - manual star rating on any image
       // 'unreviewed' is the exact complement: scenes carrying no user-assigned
       // trait at all, i.e. the ones that still need work.
-      const visibleScenes =
-        reviewStateFilter === 'reviewed' ? scenes.filter(isManuallyReviewedScene)
-        : reviewStateFilter === 'unreviewed' ? scenes.filter(s => !isManuallyReviewedScene(s))
-        : scenes;
+      const visibleScenes = scenes.filter(sceneMatchesViewFilters);
 
       const _showSciOnCards = _getShowSciNames();
       if (_showSciOnCards) SceneGridParts.hydrateSpeciesRecords(visibleScenes);

@@ -2019,19 +2019,14 @@
       const curId = String(_currentScene.id);
       const idx = scenes.findIndex(s => String(s.id) === curId);
       if (idx < 0) return;
-      // Step within the grid's review-state filter ("Unreviewed only" /
-      // "Reviewed only"), so Tab and arrow-past-the-end go to the next scene
+      // Step within the grid's filters (To review / Reviewed, Only scenes
+      // with favorites), so Tab and arrow-past-the-end go to the next scene
       // the grid shows rather than one it hides. The current scene may itself
       // have just left the filter (e.g. it was marked reviewed), so search from
       // its position in the full list.
       const reviewFilter = _sceneReviewFilterValue();
-      const inFilter = (s) => {
-        if (reviewFilter === 'all' || typeof isManuallyReviewedScene !== 'function') return true;
-        const reviewed = !!isManuallyReviewedScene(s);
-        return reviewFilter === 'reviewed' ? reviewed : !reviewed;
-      };
       let newIdx = idx + direction;
-      while (newIdx >= 0 && newIdx < scenes.length && !inFilter(scenes[newIdx])) newIdx += direction;
+      while (newIdx >= 0 && newIdx < scenes.length && !sceneMatchesViewFilters(scenes[newIdx])) newIdx += direction;
       if (newIdx < 0 || newIdx >= scenes.length) {
         if (reviewFilter === 'unreviewed' && typeof showToast === 'function') {
           showToast(direction > 0 ? 'No more unreviewed scenes after this one' : 'No unreviewed scenes before this one', 1800);
