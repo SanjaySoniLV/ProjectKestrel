@@ -602,3 +602,49 @@ def test_status_includes_setup_time_and_failures():
     _good_state(finished=123, runtime_failures=2, last_failure={"kind": "detector"})
     st = eg.status()
     assert st["finished"] == 123 and st["runtime_failures"] == 2 and st["last_failure"]["kind"] == "detector"
+
+
+class _Proc:
+    def __init__(self, stdout="", returncode=0):
+        self.stdout, self.returncode = stdout, returncode
+
+
+def test_gpu_adapters_parses_wmi_list():
+    out = json.dumps([
+        {"Name": "NVIDIA GeForce RTX 3060", "AdapterCompatibility": "NVIDIA", "DriverVersion": "32.0.15.6094"},
+        {"Name": "Intel(R) UHD Graphics 770", "AdapterCompatibility": "Intel Corporation", "DriverVersion": "31.0.101.4502"},
+    ])
+    calls = []
+    got = eg.gpu_adapters(runner=lambda cmd, **kw: calls.append(cmd) or _Proc(out), platform="win32")
+    assert calls and calls[0][0] == "powershell"
+    assert got == [
+        {"name": "NVIDIA GeForce RTX 3060", "vendor": "NVIDIA", "driver": "32.0.15.6094"},
+        {"name": "Intel(R) UHD Graphics 770", "vendor": "Intel Corporation", "driver": "31.0.101.4502"},
+    ]
+
+
+def test_gpu_adapters_single_adapter_object():
+    out = json.dumps({"Name": "AMD Radeon RX 6600", "AdapterCompatibility": "Advanced Micro Devices, Inc.",
+                      "DriverVersion": "31.0.24027.1012"})
+    got = eg.gpu_adapters(runner=lambda cmd, **kw: _Proc(out), platform="win32")
+    assert got == [{"name": "AMD Radeon RX 6600", "vendor": "Advanced Micro Devices, Inc.", "driver": "31.0.24027.1012"}]
+
+
+def test_gpu_adapters_never_raises():
+    def boom(cmd, **kw):
+        raise OSError("powershell missing")
+    assert "powershell missing" in eg.gpu_adapters(runner=boom, platform="win32")[0]["error"]
+    assert "error" in eg.gpu_adapters(runner=lambda cmd, **kw: _Proc("", 1), platform="win32")[0]
+    assert "error" in eg.gpu_adapters(runner=lambda cmd, **kw: _Proc("not json"), platform="win32")[0]
+
+
+def test_gpu_adapters_off_windows_is_empty():
+    assert eg.gpu_adapters(runner=lambda cmd, **kw: pytest.fail("must not run"), platform="darwin") == []
+
+
+def test_report_text_lists_adapters_without_enhanced_setup(clean_runtime, monkeypatch):
+    monkeypatch.setattr(eg, "gpu_adapters", lambda: [{"name": "NVIDIA Quadro P2000", "vendor": "NVIDIA",
+                                                      "driver": "31.0.15.3699"}])
+    t = eg.report_text([{"kind": "detector", "reason": "DML FAIL"}])
+    assert "NVIDIA Quadro P2000" in t and "31.0.15.3699" in t
+    assert "GPU adapters: []" in eg.report_text(adapters=[])

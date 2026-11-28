@@ -868,9 +868,40 @@ def gpu_mode(use_gpu: bool, coord=None, gpu_lost: bool = False) -> Optional[dict
     return dict(base, mode="standard", label="Standard GPU Acceleration", detail="")
 
 
-def report_text(cpu_fallbacks: Optional[list] = None) -> str:
+_ADAPTER_QUERY = ("Get-CimInstance Win32_VideoController | "
+                  "Select-Object Name,AdapterCompatibility,DriverVersion | ConvertTo-Json -Compress")
+_ADAPTER_QUERY_TIMEOUT_S = 8
+
+
+def gpu_adapters(runner: Optional[Callable[..., Any]] = None, platform: Optional[str] = None) -> List[Dict[str, str]]:
+    """The display adapters Windows reports, with their driver versions (never raises).
+
+    A GPU-mode report needs the GPU model and driver even when enhanced setup has never run, which is
+    the only other place hardware is recorded. ORT's device list has no driver version, so this asks
+    WMI. Returns ``[{"error": ...}]`` when the query fails and ``[]`` off Windows."""
+    if (platform or sys.platform) != "win32":
+        return []
+    run = runner or subprocess.run
+    try:
+        proc = run(["powershell", "-NoProfile", "-NonInteractive", "-Command", _ADAPTER_QUERY],
+                   capture_output=True, text=True, timeout=_ADAPTER_QUERY_TIMEOUT_S,
+                   creationflags=0x08000000)  # CREATE_NO_WINDOW
+        rows = json.loads(proc.stdout or "null")
+    except Exception as e:
+        return [{"error": f"{type(e).__name__}: {e}"[:200]}]
+    if isinstance(rows, dict):  # ConvertTo-Json gives a bare object for a single adapter
+        rows = [rows]
+    if not isinstance(rows, list):
+        return [{"error": f"adapter query returned nothing (exit {getattr(proc, 'returncode', '?')})"}]
+    return [{"name": str(r.get("Name") or ""), "vendor": str(r.get("AdapterCompatibility") or ""),
+             "driver": str(r.get("DriverVersion") or "")}
+            for r in rows if isinstance(r, dict)]
+
+
+def report_text(cpu_fallbacks: Optional[list] = None, adapters: Optional[list] = None) -> str:
     """Plain-text description for a bug report about the GPU mode (the log tail is attached separately).
-    ``cpu_fallbacks`` is the coordinator's list of components that fell back to the CPU."""
+    ``cpu_fallbacks`` is the coordinator's list of components that fell back to the CPU; ``adapters``
+    overrides the :func:`gpu_adapters` lookup (tests)."""
     cpu_fallbacks = cpu_fallbacks or []
     st = load_state() or {}
     rt = runtime_summary()
@@ -881,5 +912,6 @@ def report_text(cpu_fallbacks: Optional[list] = None) -> str:
              f"Setup result: {st.get('reason') or 'ok'}; failures: {st.get('runtime_failures', 0)}; "
              f"unclean exits: {st.get('unclean_exits', 0)}; disabled: {st.get('disabled_reason', '') or 'no'}.",
              f"Per-model validation: {json.dumps(st.get('models', {}))}",
+             f"GPU adapters: {json.dumps(gpu_adapters() if adapters is None else adapters)}",
              f"Hardware: {json.dumps(st.get('hardware', {}))}"]
     return "\n".join(lines)[:6000]
