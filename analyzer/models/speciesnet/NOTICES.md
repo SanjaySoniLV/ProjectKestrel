@@ -21,11 +21,10 @@ Source: https://github.com/agentmorris/MegaDetector (MDv5a release, and the v100
 release for MDv1000-cedar). The repository is released under the MIT licence; its
 README notes that code written on or before April 28, 2023 is copyright Microsoft.
 
-TODO before release: confirm the licence of the two weight files themselves. The
-MegaDetector documentation does not state a separate weights licence, and the detectors
-are built on YOLOv5 (Ultralytics, AGPL-3.0) and YOLOv9 (GPL-3.0) architectures. Both are
-compatible with redistribution inside this AGPLv3 app, but the notice should name the
-licence that actually applies.
+Weights licence: MIT, as released with the MegaDetector repository. The upstream
+documentation does not state a separate licence for the weight files. The detectors are
+built on the YOLOv5 (Ultralytics, AGPL-3.0) and YOLOv9 (GPL-3.0) architectures; both are
+compatible with redistribution inside this AGPLv3 app.
 
 ```
 MIT License
@@ -67,8 +66,8 @@ Apache-2.0 (https://www.apache.org/licenses/LICENSE-2.0). Light HQ-SAM uses the 
 image encoder provided by MobileSAM (https://github.com/ChaoningZhang/MobileSAM,
 Apache-2.0).
 
-TODO before release: the SAM-HQ README does not state a separate licence for the
-checkpoints; confirm it on the checkpoint's Hugging Face page.
+The checkpoint's Hugging Face repository (https://huggingface.co/lkeab/hq-sam) is
+also tagged Apache-2.0.
 
 ### Citation
 

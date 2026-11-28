@@ -13,5 +13,5 @@ asset is rebuilt live in `tools/model_sources/`.
 Both were trained and built for Project Kestrel; they are not third-party models. The
 original Keras model they were converted from is `tools/model_sources/quality_old.keras`.
 
-TODO before release: confirm the licence these two files are distributed under (for
-example the repository's AGPLv3, as for the source code).
+Licence: GNU Affero General Public License v3 (AGPLv3), the same as the source code
+(see `LICENSE` at the repository root).
