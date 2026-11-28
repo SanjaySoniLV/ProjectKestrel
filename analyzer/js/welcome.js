@@ -7,8 +7,8 @@
     // dismissed per-version via the `last_seen_whats_new_version` setting. It
     // is never fetched from the network.
     const WHATS_NEW = {
-      version: 'arctic-tern-fp-2',
-      eyebrow: 'v(Arctic Tern (FP 2))',
+      version: 'arctic-tern-fp-3',
+      eyebrow: 'v(Arctic Tern (FP 3))',
       // The release's namesake bird. `whatsnew-bird.jpg` is a STABLE filename
       // whose contents are replaced each release, so the three PyInstaller
       // specs list it once and never need touching again. Update `heroAlt`
@@ -22,21 +22,13 @@
           // Desktop app logo — bundled at the static-server root (see .spec datas).
           iconImg: 'logo.png',
           name: 'Project Kestrel',
-          tag: 'New in v(Arctic Tern (FP 2))',
+          tag: 'New in v(Arctic Tern (FP 3))',
           bullets: [
-            // v(Arctic Tern (FP 2)) hotfix.
-            '<b>Mac GPU fix</b>: on Apple Silicon Macs, analysis with GPU acceleration no longer fails on the first photo or stops the folder. Apple Silicon Macs now need macOS 14 (Sonoma) or later.',
-            // v(Arctic Tern (FP 1)) additions; the Arctic Tern bullets below stay.
-            '<b>Enhanced GPU Performance</b> (Windows 11 24H2 or later, experimental): set it up in Settings to use extra GPU software made for your graphics hardware. If it fails, Kestrel falls back to standard GPU acceleration or the CPU, and a lost GPU no longer saves empty results.',
-            'Folders from analysis version 2.x now default to a fast <b>upgrade to 3.0</b> that keeps your culls, and upgrades can be queued from each folder’s header. New <b>Reject Undecided</b> speeds up bulk culling.',
-            'Polish and fixes: a cleaner scene viewer and analysis queue, capture time in the scene viewer, an updated tutorial and demo set, plainer wording in settings, and a fix for network (NAS) folders showing 0 images.',
-            'One of the most significant updates to date, v(Arctic Tern) introduces analysis v3.0, with several major improvements.',
-            'Kestrel can now accurately identify bird species worldwide, not just in North America. Accuracy for bird species recognition is significantly improved.',
-            'New <b>Smart Search</b>: find your photos by simply describing what you remember, ex. “herons in a marsh” or “flock of doves in flight”. Works on all folders analyzed with analysis version 3.0. Results show a % match and can jump to the scene in your timeline.',
-            'We are temporarily changing the default quality scoring model to the previous version, while we evaluate possible options to improve quality scoring. You can change the default in Settings.',
-            '<b>Help improve sharpness scoring</b> (optional): sort a burst from sharpest to blurriest and choose whether to share the crops. The sort dialog now has larger thumbnails and a zoom button.',
-            '<b>Regroup Scenes</b> and many stability and data-safety fixes.',
-            'Important: Folders analyzed on previous versions of Kestrel can be upgraded to v3.0 without requiring full re-analysis.',
+            '<b>Cull mode</b> takes you through every scene full screen. Kestrel’s starting picks show dotted until you confirm them: press Enter to confirm and move on, or Tab to skip.',
+            'Cull a folder as many times as you like. <b>Finish</b> moves the rejects aside and offers a stricter next pass, and <b>Culling history</b> can undo a move or revert to any earlier pass.',
+            'Press <b>F</b> to favorite a photo. When a photo has several birds, click one to see its close-up, and press <b>S</b> to focus the whole scene on it.',
+            '<b>Custom keyboard shortcuts</b>: change your keys in Settings, or pick a right-hand or left-hand layout so you can cull with one hand on the keyboard.',
+            'A <b>fresh new look</b>: a cleaner main window and new icons, plus simpler Settings, a three-step Analyze dialog and clearer Folder settings and Feedback dialogs.',
           ],
         },
         {
@@ -65,7 +57,7 @@
       ],
       note: 'Thank you for supporting the solo dev of Project Kestrel.',
       sign: '— Sanjay',
-      blogLink: { label: 'Read the full v(Arctic Tern (FP 2)) release notes →', href: 'https://projectkestrel.org/notes/arctic-tern-fp-2/' },
+      blogLink: { label: 'Read the full v(Arctic Tern (FP 3)) release notes →', href: 'https://projectkestrel.org/notes/arctic-tern-fp-3/' },
     };
 
     const WELCOME_TIPS = [
