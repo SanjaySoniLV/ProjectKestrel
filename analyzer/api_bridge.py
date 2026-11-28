@@ -8525,7 +8525,7 @@ class Api(SettingsBridgeMixin, EnhancedGpuBridgeMixin, BirdCatalogBridgeMixin):
         return self._cull_call(root_path, 'undo_last_cull_pass', run, need_kestrel=False)
 
     def _cull_history_ids(self, kestrel_dir: str, reject_dir: str):
-        return cull_session.history_ids(kestrel_dir, lambda: bool(self._reject_primary_names(reject_dir)))
+        return cull_session.history_ids(kestrel_dir, lambda: self._reject_primary_names(reject_dir))
 
     def get_cull_session(self, root_path: str):
         """Cull mode's pass records for a folder (``session`` is None before first use)."""

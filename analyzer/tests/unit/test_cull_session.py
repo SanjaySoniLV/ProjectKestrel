@@ -174,3 +174,35 @@ def test_bad_pass_number_is_refused(api, folder):
 def test_decision_codes_map_to_columns():
     assert cull_session.decision_columns("accept") == {"culled": "accept", "culled_origin": "verified"}
     assert cull_session.decision_columns("reject:manual") == {"culled": "reject", "culled_origin": "manual"}
+
+
+def _second_pass(api, folder, accepts):
+    raw = json.loads((folder / ".kestrel" / "cull_session.json").read_text())
+    raw["ended"] = False
+    return _finish_pass(api, folder, accepts=accepts, session=raw)
+
+
+def test_reset_keeps_favorite_on_a_moved_photo(api, folder):
+    rows = _db(folder)
+    rows["IMG_006.CR3"]["favorite"] = "1"
+    _write_db(folder, rows.values())
+    _finish_pass(api, folder, accepts=NAMES[:4])
+    assert not (folder / "IMG_006.CR3").exists()
+
+    res = api.revert_cull_session(str(folder), 0)
+    assert res["success"], res
+    assert _db(folder)["IMG_006.CR3"]["favorite"] == "1"
+
+
+def test_undo_move_never_undoes_an_older_pass(api, folder):
+    _finish_pass(api, folder, accepts=NAMES[:4])   # moves IMG_005, IMG_006
+    _second_pass(api, folder, accepts=NAMES[:2])   # moves IMG_003, IMG_004
+    for n in ("IMG_003.CR3", "IMG_004.CR3"):
+        (folder / "_KESTREL_Rejects" / n).unlink()
+
+    res = api.undo_cull_move(str(folder))
+    assert res["success"] is False
+    assert not (folder / "IMG_005.CR3").exists() and not (folder / "IMG_006.CR3").exists()
+    s = api.get_cull_session(str(folder))["session"]
+    assert s["passes"][0]["move_undone"] is False
+
