@@ -170,7 +170,8 @@ class TestResolutionSitesUseTheCustomProfile(unittest.TestCase):
     """
 
     def test_api_bridge_resolves_custom(self):
-        src = _read("api_bridge.py")
+        # The Api class is split across api_bridge.py and its settings mixin.
+        src = _read("api_bridge.py") + _read("settings_bridge.py")
         self.assertNotIn("get_profile_thresholds", src)
         self.assertIn("resolve_thresholds", src)
         # apply_normalization and get_rating_thresholds are the two sites.

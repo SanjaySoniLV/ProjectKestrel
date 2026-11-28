@@ -35,6 +35,13 @@ _CSV_INIT_JS = os.path.join(_ANALYZER_DIR, 'js', 'csv-init.js')
 _VISUALIZER_HTML = os.path.join(_ANALYZER_DIR, 'visualizer.html')
 
 
+def _view_filter_src() -> str:
+    """Body of sceneMatchesViewFilters in scenes.js."""
+    src = _read(_SCENES_JS)
+    start = src.index('function sceneMatchesViewFilters')
+    return src[start:src.index('function isManuallyReviewedScene', start)]
+
+
 def _read(path: str) -> str:
     with open(path, 'r', encoding='utf-8') as fh:
         return fh.read()
@@ -102,9 +109,11 @@ class TestReviewStateFilter(unittest.TestCase):
         self.assertNotIn('filterScenesManualRated', _read(_CSV_INIT_JS))
 
     def test_grid_filters_both_directions(self):
-        src = _read(_SCENE_GRID_JS)
-        self.assertIn("=== 'reviewed' ? scenes.filter(isManuallyReviewedScene)", src)
-        self.assertIn("=== 'unreviewed' ? scenes.filter(s => !isManuallyReviewedScene(s))", src)
+        # The grid and scene-to-scene navigation share one predicate in scenes.js.
+        self.assertIn("scenes.filter(sceneMatchesViewFilters)", _read(_SCENE_GRID_JS))
+        src = _view_filter_src()
+        self.assertIn("review === 'reviewed' && !isManuallyReviewedScene(scene)", src)
+        self.assertIn("review === 'unreviewed' && isManuallyReviewedScene(scene)", src)
 
     def test_unreviewed_is_the_exact_complement(self):
         """Both branches must go through the same predicate.
@@ -113,8 +122,7 @@ class TestReviewStateFilter(unittest.TestCase):
         across its photos and its scene tags. Reimplementing that test instead
         of negating isManuallyReviewedScene would let the two drift apart.
         """
-        src = _read(_SCENE_GRID_JS)
-        self.assertEqual(2, src.count('isManuallyReviewedScene'))
+        self.assertEqual(2, _view_filter_src().count('isManuallyReviewedScene'))
 
     def test_legacy_setting_is_migrated(self):
         src = _read(_CSV_INIT_JS)
