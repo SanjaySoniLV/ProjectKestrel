@@ -27,4 +27,4 @@ publicly documented license.
 * Region codes add ``NA`` for every legacy model species and a short
   curated list of well-established introductions on top of IOC's
   native breeding ranges (``INTRODUCED_RANGES``).
-* Family display names (``family_common``) preserve the existing ``analyzer/models/scispecies_dispname.csv`` mapping where present and fall back to IOC's *Family (English)* otherwise.
+* Family display names (``family_common``) preserve the existing ``tools/model_sources/scispecies_dispname.csv`` mapping where present and fall back to IOC's *Family (English)* otherwise.

@@ -42,9 +42,9 @@ except ImportError:  # pragma: no cover - package-style import path
     from analyzer.net_tls import ssl_context as _ssl_context
 
 try:
-    from kestrel_analyzer.database import retry_on_file_lock
+    from kestrel_analyzer.atomic_io import write_atomic
 except ImportError:  # pragma: no cover - package-style import path
-    from analyzer.kestrel_analyzer.database import retry_on_file_lock
+    from analyzer.kestrel_analyzer.atomic_io import write_atomic
 
 
 _DEFAULT_API_BASE = "https://cloudcompute.projectkestrel.org"
@@ -1385,47 +1385,13 @@ def _merge_pack_embeddings(src_kestrel: Path, target_kestrel: Path, protected: s
             print(f"[cloud-compute] embedding merge failed for slot {slot!r}: {e}", file=sys.stderr)
 
 
-def _write_file_atomic(
-    path: Path,
-    write: Callable[[Any], None],
-    *,
-    newline: Optional[str] = None,
-) -> None:
-    """Write ``path`` via tempfile + fsync + ``os.replace``.
+def _write_file_atomic(path: Path, write: Callable[[Any], None], *, newline: Optional[str] = None) -> None:
+    """Atomically replace a ``.kestrel`` file during a pack merge.
 
-    Mirrors ``kestrel_analyzer.database._to_csv_atomic`` and
-    ``settings_utils.save_settings``: the destination is never opened with
-    ``"w"``, so a crash or ENOSPC cannot truncate a live ``.kestrel`` file.
-    ``write`` receives the open temp file. Failures propagate; the previous
-    destination is left intact. ``os.replace`` goes through
-    ``retry_on_file_lock`` so a Windows UI reader holding the CSV does not
-    abort the pack merge.
+    Temp files are named ``.kestrel_merge_*`` so a crashed merge's leftovers
+    are recognisable.
     """
-    directory = str(path.parent)
-    os.makedirs(directory, exist_ok=True)
-    tmp_fd, tmp = tempfile.mkstemp(
-        prefix=".kestrel_merge_",
-        suffix=".tmp",
-        dir=directory,
-    )
-    try:
-        open_kw: dict[str, Any] = {"encoding": "utf-8"}
-        if newline is not None:
-            open_kw["newline"] = newline
-        with os.fdopen(tmp_fd, "w", **open_kw) as f:
-            write(f)
-            try:
-                f.flush()
-                os.fsync(f.fileno())
-            except OSError:
-                pass
-        retry_on_file_lock(lambda: os.replace(tmp, path))
-    except BaseException:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-        raise
+    write_atomic(path, write, newline=newline, prefix=".kestrel_merge_")
 
 
 def _merge_database_csv(

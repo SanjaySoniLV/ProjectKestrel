@@ -8,6 +8,7 @@ overwrites without confirmation when the file is unchanged since (hash match).
 """
 
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -153,7 +154,7 @@ def test_save_fingerprints_closes_fd_when_fdopen_fails(tmp_path, monkeypatch):
     import os as _os
 
     created = {}
-    real_mkstemp = mw.tempfile.mkstemp
+    real_mkstemp = tempfile.mkstemp
 
     def spy_mkstemp(*a, **k):
         fd, path = real_mkstemp(*a, **k)
@@ -168,7 +169,7 @@ def test_save_fingerprints_closes_fd_when_fdopen_fails(tmp_path, monkeypatch):
         closed.append(fd)
         return real_close(fd)
 
-    monkeypatch.setattr(mw.tempfile, 'mkstemp', spy_mkstemp)
+    monkeypatch.setattr(tempfile, "mkstemp", spy_mkstemp)
     monkeypatch.setattr(mw.os, 'close', spy_close)
     monkeypatch.setattr(mw.os, 'fdopen',
                         lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))

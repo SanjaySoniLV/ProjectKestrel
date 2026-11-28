@@ -76,14 +76,11 @@
       const btn = document.getElementById('analyzeDlgAdd');
       if (!btn) return;
       // Signed-out users can pick Cloud, but Start is blocked behind sign-in.
-      const needsSignIn = _analyzeDestination === 'cloud' && _ccAuthKnown && !_ccSignedIn;
-      const label = needsSignIn
-        ? 'Sign in to use Cloud Compute'
-        : (_analyzeDestination === 'cloud'
-          ? '☁ Add to Cloud Analysis Queue'
-          : '➕ Add to Local Analysis Queue');
-      // Preserve disabled state; just rename.
-      btn.textContent = label;
+      btn.textContent = window.KestrelAnalyzeSteps.startLabel({
+        cloud: _analyzeDestination === 'cloud',
+        needsSignIn: _analyzeDestination === 'cloud' && _ccAuthKnown && !_ccSignedIn,
+        folders: (typeof analyzeDlgCheckedPaths === 'object' && analyzeDlgCheckedPaths) ? analyzeDlgCheckedPaths.size : 0,
+      });
     }
 
     function _ccSetDestination(dest) {
@@ -163,16 +160,15 @@
     function _ccRenderCard() {
       const fastEl = document.getElementById('cloudDestFast');
       if (fastEl) {
-        let text = '';
-        const minImages = (typeof _EST_MIN_IMAGES_TO_ESTIMATE !== 'undefined') ? _EST_MIN_IMAGES_TO_ESTIMATE : 50;
-        if (_ccQueuedImages >= minImages && typeof _getCloudEstSeconds === 'function') {
+        fastEl.textContent = '';
+        const show = _ccQueuedImages >= window.KestrelAnalyzeEstimate.MIN_IMAGES_TO_ESTIMATE;
+        if (show) {
           const est = _getCloudEstSeconds(_ccQueuedImages);
-          text = est.secs != null
-            ? `~${_formatDuration(est.secs)} at your measured upload speed.`
-            : `As fast as ~${_formatDuration(est.analysisSecs)}, depending on your upload speed.`;
+          const big = document.createElement('b');
+          big.textContent = `${est.secs != null ? 'about' : 'as fast as'} ${KestrelUtil.formatDuration(est.secs ?? est.analysisSecs)}`;
+          fastEl.append(big, est.secs != null ? ' at your measured upload speed' : ' depending on your upload speed');
         }
-        fastEl.textContent = text;
-        fastEl.classList.toggle('hidden', !text);
+        fastEl.classList.toggle('hidden', !show);
       }
       const usageEl = document.getElementById('cloudDestUsage');
       if (usageEl) {
@@ -411,7 +407,7 @@
       if (!folder) {
         status.classList.remove('hidden', 'success');
         status.classList.add('error');
-        status.textContent = 'Pick at least one folder before running the speed test.';
+        status.textContent = 'Check at least one folder before testing your upload speed.';
         return;
       }
       if (!window.pywebview?.api?.cloud_compute_upload_test) {
@@ -426,7 +422,7 @@
       if (!signedIn) {
         status.classList.remove('hidden', 'success');
         status.classList.add('error');
-        _ccFillSignInPrompt(status, ' to test upload speed.');
+        _ccFillSignInPrompt(status, ' to test your upload speed.');
         if (typeof openPerchSignInWindow === 'function') {
           try { openPerchSignInWindow(); } catch {}
         }
@@ -434,11 +430,11 @@
       }
       btn.disabled = true;
       status.classList.remove('hidden', 'success', 'error');
-      status.textContent = 'Running speed test…';
+      status.textContent = 'Uploading 10 sample photos';
       let dots = 0;
       const tick = setInterval(() => {
         dots = (dots + 1) % 4;
-        status.textContent = `Running speed test${'.'.repeat(dots).padEnd(3, ' ')}`;
+        status.textContent = `Uploading 10 sample photos${'.'.repeat(dots).padEnd(3, ' ')}`;
       }, 500);
       let r;
       try {
@@ -595,7 +591,7 @@
                 if (orphan) {
                   _ccOrphanWarningShown = true;
                   showToast(
-                    '⚠ You have an active Cloud Compute job running ' +
+                    'You have an active Cloud Compute job running ' +
                     '(maybe from another device or a previous session). ' +
                     'Manage it at myaccount.projectkestrel.org/cloud-compute — ' +
                     'your queue will start once that job completes.',
@@ -1127,16 +1123,16 @@
             </div>
             <div class="cloud-queue-item-controls">
               ${showLoad ? `<button class="cc-load-btn" data-cc-action="load" data-job-id="${escapeHtml(state.jobId)}" data-folder-path="${escapeHtml(state.rootPath)}" title="Open this folder to browse results">
-                + 📂 Load
+                ${KestrelIcon('folder-open')} Load
               </button>` : ''}
               <button data-cc-action="cancel" data-job-id="${escapeHtml(state.jobId)}" ${cancelDisabled ? 'disabled' : ''}>
-                ⏹ Cancel
+                ${KestrelIcon('stop')} Cancel
               </button>
             </div>
           </div>
           <div class="cloud-phase-row">
             <span class="cloud-phase-pill upload ${uploadPhase}">↑ ${_ccUploadPhaseLabel(uploadPhase)}</span>
-            <span class="cloud-phase-pill analysis ${analysisPhase}">⚙ ${_ccAnalysisPhaseLabel(analysisPhase)}</span>
+            <span class="cloud-phase-pill analysis ${analysisPhase}">${KestrelIcon('gear')} ${_ccAnalysisPhaseLabel(analysisPhase)}</span>
             ${bottleneck ? `<span class="cloud-bottleneck-pill ${bottleneck.key}" title="${escapeHtml(bottleneck.tip)}">${escapeHtml(bottleneck.label)}</span>` : ''}
           </div>
           <div class="cloud-bar-block">
@@ -1195,7 +1191,7 @@
              title="${escapeHtml(entry.path || '')}">
           <div class="queue-item-header">
             <span class="queue-item-name">${escapeHtml(name)}</span>
-            <span class="cc-pending-badge">⏳ Queued — waiting for slot</span>
+            <span class="cc-pending-badge">${KestrelIcon('hourglass')} Queued — waiting for slot</span>
           </div>
         </div>
       `;
@@ -1461,7 +1457,7 @@
       if (!fnName || !window.pywebview.api[fnName]) return;
       t.disabled = true;
       if (action === 'cancel') {
-        if (!window.confirm('Cancel this cloud analysis job?\n\nUploaded images will be deleted from the server. Any results already downloaded stay on disk.')) {
+        if (!(await KestrelDialog.confirm('cloudCancelJob'))) {
           t.disabled = false;
           return;
         }
@@ -1545,7 +1541,7 @@
           if (!window.pywebview?.api?.cloud_compute_cancel_job) return;
           const ids = await _activeJobIds();
           if (ids.length === 0) { showToast('No active jobs to cancel', 2500); return; }
-          if (!window.confirm(`Cancel ${ids.length} active cloud job(s)?\n\nUploaded images will be deleted from the server. Any results already downloaded stay on disk.`)) return;
+          if (!(await KestrelDialog.confirm(ids.length === 1 ? 'cloudCancelJob' : 'cloudCancelJobs', { count: ids.length }))) return;
           cancelBtn.disabled = true;
           try {
             await Promise.all(ids.map(id => window.pywebview.api.cloud_compute_cancel_job(id).catch(() => null)));
@@ -1594,16 +1590,6 @@
         return true;
       }
       return false;
-    }
-
-    function _ccFmtBytes(n) {
-      n = Number(n) || 0;
-      if (n < 1024) return n + ' B';
-      const units = ['KB', 'MB', 'GB', 'TB'];
-      let v = n / 1024;
-      let i = 0;
-      while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
-      return v.toFixed(v >= 100 ? 0 : 1) + ' ' + units[i];
     }
 
     function _ccTrackHistoryDownload(jobId, totalPacks) {
@@ -1708,11 +1694,11 @@
         + `data-pending-packs="${unmerged.length}" `
         + `${downloadDisabled ? 'disabled' : ''} `
         + `title="${folderMissing ? 'Locate the folder first' : 'Download &amp; install the pending result(s)'}">`
-        + `⬇ Download</button>`;
+        + `${KestrelIcon('download')} Download</button>`;
       const locateBtn = folderMissing
         ? `<button type="button" class="cloud-account-locate-btn" `
           + `data-cc-action="history-locate" data-job-id="${escapeHtml(j.jobId)}" `
-          + `title="Re-point this job to the folder's new location">📁 Locate folder…</button>`
+          + `title="Re-point this job to the folder's new location">${KestrelIcon('folder')} Locate folder…</button>`
         : '';
       // For a still-running job, the continuous "Retrieve Results" loop is the
       // right affordance (downloads packs as they finish); the one-shot
@@ -1729,7 +1715,7 @@
         ? `<button type="button" class="cloud-account-load-btn" `
           + `data-cc-action="history-load" data-job-id="${escapeHtml(j.jobId)}" `
           + `data-folder-path="${escapeHtml(j.folderPath)}" `
-          + `title="Open this folder to browse results">+ 📂 Load</button>`
+          + `title="Open this folder to browse results">${KestrelIcon('folder-open')} Load</button>`
         : '';
 
       const additionalInfo = _ccRenderAdditionalInfo({
@@ -1959,7 +1945,7 @@
             }
             if (imagesEl) imagesEl.textContent = `${fmtN(usage.totalImages)} photo(s) uploaded`;
             if (assetsEl) assetsEl.textContent = `${fmtN(usage.totalAssets)} total asset(s)`;
-            if (bytesEl) bytesEl.textContent = `${_ccFmtBytes(usage.totalBytes)} storage used`;
+            if (bytesEl) bytesEl.textContent = `${KestrelUtil.formatBytes(usage.totalBytes)} storage used`;
           } else {
             if (perchesEl) perchesEl.textContent = 'Usage unavailable';
           }
@@ -1983,7 +1969,7 @@
           const title = escapeHtml(p.title || '(untitled)');
           const state = String(p.uploadState || p.status || '—');
           const stateCls = state === 'complete' ? ' complete' : '';
-          const bytes = _ccFmtBytes(p.actualBytes);
+          const bytes = KestrelUtil.formatBytes(p.actualBytes);
           const imgs = (Number(p.imageCount) || 0).toLocaleString();
           return `
             <div class="perch-account-row">
@@ -2262,7 +2248,7 @@
       return String(s || '').replace(/(["\\\]\[])/g, '\\$1');
     }
     
-    // Custom dialog prompt for Culling Assistant save decision
+    // Unsaved-changes prompt (Save / Don't save / Cancel), used before a Perch upload
     function showCullingAssistantPrompt() {
       return new Promise((resolve) => {
         const dlg = document.createElement('dialog');

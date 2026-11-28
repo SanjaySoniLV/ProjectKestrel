@@ -98,13 +98,14 @@ def eligibility(kestrel_dir: str) -> dict:
     missing = max(missing, cov["frame_indexable_images"] - cov["frame_indexed_images"])
     out["missing"] = int(missing)
     if major >= PIPELINE_MAJOR and missing == 0:
-        out.update(status="current", reason="Analysed with pipeline 3")
+        out.update(status="current", reason="Analyzed with analysis version 3.0")
         return out
     ver = _parse_version(created)
     if major < PIPELINE_MAJOR and (ver is None or ver < MIN_UPGRADABLE_VERSION):
         out.update(status="reanalyze",
-                   reason=f"Analysed by pipeline {created or 'unknown'}; re-analyse to use smart search "
-                          f"(upgrade needs {'.'.join(map(str, MIN_UPGRADABLE_VERSION))}+ crops)")
+                   reason=f"Analyzed with analysis version {created or 'unknown'}, which is too old to upgrade. "
+                          f"Analyze it again to use smart search (upgrading needs version "
+                          f"{'.'.join(map(str, MIN_UPGRADABLE_VERSION))} or newer).")
         return out
     # Crops / exports must still be on disk for (most of) the folder.
     checked = present = 0
@@ -114,10 +115,10 @@ def eligibility(kestrel_dir: str) -> dict:
             if smart_search.resolve_crop_file(kestrel_dir, fn, crop):
                 present += 1
     if checked and present < checked * 0.5:
-        out.update(status="reanalyze", reason="Most stored crop images are missing; re-analyse the folder")
+        out.update(status="reanalyze", reason="Most of the saved bird crops are missing. Analyze the folder again.")
         return out
     out.update(status="upgradable",
-               reason="Can be upgraded to pipeline 3 from its stored crops (no re-analysis)")
+               reason="Can be upgraded to analysis version 3.0 from its saved bird crops, without analyzing again.")
     return out
 
 

@@ -23,13 +23,13 @@
 }
 
 .regroup-folder {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   word-break: break-all;
 }
 
 .regroup-summary {
   margin-left: auto;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
 }
 
@@ -40,7 +40,7 @@
   gap: 6px 18px;
   padding: 6px 12px 8px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--panel);
 }
 
@@ -52,7 +52,7 @@
 }
 
 .regroup-control > label {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
 }
 
@@ -77,19 +77,19 @@
   min-width: 48px;
   text-align: right;
   font-variant-numeric: tabular-nums;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
 }
 
 .regroup-hint {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 1.35;
 }
 
 .regroup-footnote {
   margin-right: auto;
   max-width: 62ch;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 1.4;
 }
 
@@ -103,7 +103,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   cursor: pointer;
 }
 
@@ -137,13 +137,13 @@
   min-width: 0;
   min-height: 0;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
 
 .regroup-col-head {
   padding: 6px 10px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
@@ -163,7 +163,7 @@
   contain-intrinsic-size: auto 96px;
   padding: 6px 8px 8px;
   border-left: 3px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   background: color-mix(in srgb, var(--panel) 60%, transparent);
 }
 
@@ -180,7 +180,7 @@
   align-items: baseline;
   gap: 4px 10px;
   margin-bottom: 6px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .regroup-scene-idx {
@@ -195,7 +195,7 @@
 
 .regroup-badge {
   padding: 1px 7px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   border-radius: var(--radius-pill);
   border: 1px solid var(--border);
@@ -242,7 +242,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--muted);
   border: 1px dashed var(--border);
@@ -255,7 +255,7 @@
   align-items: center;
   gap: 10px;
   margin: 6px 0;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
   color: var(--warn);
 }
@@ -274,7 +274,7 @@
 
 .regroup-empty {
   padding: 10px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 @media (max-width: 900px) {

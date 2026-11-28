@@ -8,11 +8,13 @@ dialog {
   z-index: 11000;
 }
 
-/* Toasts should always be on top */
+/* Toasts sit bottom-right above the page. */
 #toastContainer {
-  z-index: 9999999;
-  pointer-events: none;
   position: fixed !important;
+  right: 18px;
+  bottom: 18px;
+  z-index: 20000;
+  pointer-events: none;
 }
 
 /* Modal.

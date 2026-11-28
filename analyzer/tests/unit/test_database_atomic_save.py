@@ -354,3 +354,32 @@ def test_api_bridge_atomic_writers_are_callable():
     assert callable(api_bridge.write_json_atomic)
     assert callable(api_bridge.write_text_atomic)
 
+
+
+class TestSharedAtomicHelper:
+    """atomic_io.write_atomic is the one implementation every writer uses."""
+
+    def test_bytes_and_before_replace_hook(self, tmp_path):
+        from kestrel_analyzer import atomic_io
+
+        dest = tmp_path / "frame.jpg"
+        seen = []
+        atomic_io.write_bytes_atomic(dest, b"\xff\xd8data", fsync=False,
+                                     before_replace=lambda tmp: seen.append(os.path.exists(tmp)))
+        assert dest.read_bytes() == b"\xff\xd8data"
+        assert seen == [True]
+        assert [p.name for p in tmp_path.iterdir()] == ["frame.jpg"]
+
+    def test_failing_hook_leaves_previous_file_and_no_temp(self, tmp_path):
+        from kestrel_analyzer import atomic_io
+
+        dest = tmp_path / "settings.json"
+        dest.write_text("old", encoding="utf-8")
+
+        def boom(_tmp):
+            raise OSError("hook failed")
+
+        with pytest.raises(OSError):
+            atomic_io.write_json_atomic(dest, {"a": 1}, prefix="settings.json.", before_replace=boom)
+        assert dest.read_text(encoding="utf-8") == "old"
+        assert [p.name for p in tmp_path.iterdir()] == ["settings.json"]

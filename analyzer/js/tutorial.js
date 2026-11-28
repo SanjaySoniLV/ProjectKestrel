@@ -25,7 +25,7 @@
 
     const _tutTryYourOwnStepBase = {
       title: 'Now try it with your own photos',
-      body: 'You’re ready!<br><br>• Click <b>Analyze Folders…</b> to process a new folder of photos.<br>• Click <b>Load Folders…</b> (or drop into the Folder Tree) to browse photos Kestrel has already analyzed.<br><br><b>Tip:</b> open a parent folder once to load your whole library — then search across every outing, every year.',
+      body: 'You’re ready!<br><br>• Click <b>Analyze Folders…</b> to process a new folder of photos.<br>• Click <b>Add Folders…</b> (or drop into the Folder Tree) to browse photos Kestrel has already analyzed.<br><br><b>Tip:</b> open a parent folder once to load your whole library — then search across every outing, every year.',
       target: '#analyzeQueueBtn',
       position: 'right',
       highlightAlso: ['#pickFolder'],
@@ -52,7 +52,7 @@
       },
       {
         title: 'Make a culling decision, then close the scene',
-        body: 'Kestrel computes <b>star ratings</b> based on each image’s quality score. Click the stars to set your own. <span style="color:#6aa0ff">Blue stars</span> = AI rating · <span style="color:#f5c542">Gold stars</span> = your manual override.<br><br>Use the <b>Accept · Undecided · Reject</b> buttons to make a culling decision. These decisions power the Culling Assistant later!<br><br>When you’re done, close the scene to continue.',
+        body: 'Kestrel computes <b>star ratings</b> based on each image’s quality score. Click the stars to set your own. <span style="color:#6aa0ff">Blue stars</span> = AI rating · <span style="color:#f5c542">Gold stars</span> = your manual override.<br><br>Use the <b>Accept · Undecided · Reject</b> buttons to make a culling decision. Cull mode keeps these decisions later!<br><br>When you’re done, close the scene to continue.',
         nudge: 'Mark a photo Accept/Reject, then close the scene.',
         target: '#sceneInfoBar',
         position: 'top-left',
@@ -61,7 +61,7 @@
       },
       {
         title: 'Search and filter',
-        body: 'Use the <b>filter bar</b> above the timeline to narrow your scenes down:<br><br>• <b>Search</b> by bird species or family — the grid filters instantly.<br>• <b>Sort</b> by Capture Time, Quality, or Image Count.<br>• Open <b>⚙ More</b> to toggle <b>Group by folder</b> / <b>capture time</b> and more.<br><br>You can always tweak further from there.',
+        body: 'Use the <b>filter bar</b> above the timeline to narrow your scenes down:<br><br>• <b>Search</b> by bird species or family — the grid filters instantly.<br>• <b>Sort</b> by Capture Time, Quality, or Image Count.<br>• Open <b>More</b> to toggle <b>Group by folder</b> / <b>capture time</b> and more.<br><br>You can always tweak further from there.',
         target: '#timelineFilterBar',
         position: 'bottom',
       },
@@ -104,7 +104,7 @@
       },
       {
         title: 'Ratings and culling decisions',
-        body: 'Kestrel computes <b>star ratings</b> based on each image’s quality score. Click the stars to set your own. <span style="color:#6aa0ff">Blue stars</span> = AI rating · <span style="color:#f5c542">Gold stars</span> = your manual override.<br><br>Use the <b>Accept · Undecided · Reject</b> buttons to make a culling decision for each photo. These come in handy with the Culling Assistant later!',
+        body: 'Kestrel computes <b>star ratings</b> based on each image’s quality score. Click the stars to set your own. <span style="color:#6aa0ff">Blue stars</span> = AI rating · <span style="color:#f5c542">Gold stars</span> = your manual override.<br><br>Use the <b>Accept · Undecided · Reject</b> buttons to make a culling decision for each photo. Cull mode keeps these decisions later!',
         nudge: 'Mark a photo as Accepted or Rejected to continue!',
         target: '#sceneInfoBar',
         position: 'top-left',
@@ -142,7 +142,7 @@
       },
       {
         title: 'A few more scene features',
-        body: 'A few more things you can do once you’re browsing your <b>own photos</b> (some won’t work on the sample images):<br><br>• Edit the <b>scene name</b> and <b>tags</b> at the top<br>• Use <b>✂ Split Scene</b> if Kestrel accidentally merged two different scenes<br>• <b>Copy</b> (clipboard) the full image or bird crop straight from the preview<br><br>Close the scene dialog to continue.',
+        body: 'A few more things you can do once you’re browsing your <b>own photos</b> (some won’t work on the sample images):<br><br>• Edit the <b>scene name</b> and <b>tags</b> at the top<br>• Use <b>Split Scene</b> if Kestrel accidentally merged two different scenes<br>• <b>Copy</b> (clipboard) the full image or bird crop straight from the preview<br><br>Close the scene dialog to continue.',
         nudge: 'Close the scene dialog to continue.',
         target: '#closeDlg',
         position: 'bottom',
@@ -151,33 +151,33 @@
       },
       {
         title: 'Filtering options',
-        body: '• <b>Search</b> for any bird species or family — the grid filters instantly as you type.<br>• Don’t see scenes after searching? Lower the <b>Confidence</b> threshold to see more results.<br>• Open <b>⚙ More</b> and enable <b>Multi-subject mode</b> if your scenes contain multiple species.<br>• <b>Sort</b> by Capture Time, Quality, Scene ID, or Image Count.<br>• Also in <b>⚙ More</b>: toggle <b>Group by folder</b> / <b>capture time</b> to reorganize the grid.',
+        body: '• <b>Search</b> for any bird species or family — the grid filters instantly as you type.<br>• Don’t see scenes after searching? Lower the <b>Confidence</b> threshold to see more results.<br>• Open <b>More</b> and enable <b>Multi-subject mode</b> if your scenes contain multiple species.<br>• <b>Sort</b> by Capture Time, Quality, Scene ID, or Image Count.<br>• Also in <b>More</b>: toggle <b>Group by folder</b> / <b>capture time</b> to reorganize the grid.',
         target: '#timelineFilterBar',
         position: 'bottom',
       },
       {
         title: 'Merging scenes',
-        body: 'The two highlighted scenes above were actually one continuous burst that Kestrel split in two. Hold <kbd>Ctrl</kbd> and click both cards to select them, then click <b>Merge selected scenes</b> to combine them back into one.<br><br>You can also <kbd>Shift</kbd>+click to range-select a group of scenes at once.',
+        body: 'The two highlighted scenes above were actually one continuous burst that Kestrel split in two. Hold <kbd>Ctrl</kbd> and click both cards to select them, then click <b>Merge into one scene</b> to combine them back into one.<br><br>You can also <kbd>Shift</kbd>+click to range-select a group of scenes at once.',
         target: '#sceneGrid .card:nth-child(2)',
         highlightAlso: ['#sceneGrid .card:nth-child(1)'],
         position: 'bottom',
       },
       {
         title: 'Search across your whole library',
-        body: 'Kestrel searches across <b>every loaded folder</b>. Type a species or family to filter the timeline, or describe a photo (<i>“perched on a tree”</i>, <i>“bird in flight”</i>) to smart-search it. Right-click a result and choose <b>Go to scene in timeline</b> to see it in context.<br><br><b>Tip:</b> open a <b>parent folder</b> once (via <b>Load Folders…</b> or the Folder Tree) and Kestrel loads your entire library at once — then you can search across every outing and every year without re-loading anything.',
+        body: 'Kestrel searches across <b>every loaded folder</b>. Type a species or family to filter the timeline, or describe a photo (<i>“perched on a tree”</i>, <i>“bird in flight”</i>) to smart-search it. Right-click a result and choose <b>Go to scene in timeline</b> to see it in context.<br><br><b>Tip:</b> open a <b>parent folder</b> once (via <b>Add Folders…</b> or the Folder Tree) and Kestrel loads your entire library at once — then you can search across every outing and every year without re-loading anything.',
         target: '#smartSearchBox',
         position: 'bottom',
       },
       _tutWorkflowStep,
       {
         title: 'Write Photo Metadata',
-        body: 'Open the <b>Folder Actions</b> menu on a folder and click <b>Write Photo Metadata</b> to export Kestrel’s star ratings and Accept/Reject decisions into XMP sidecar files alongside your photos. These <code>.xmp</code> files are understood natively by <b>Adobe Lightroom</b>, <b>darktable</b>, <b>Capture One</b>, and other editors.<br><br>⚠️ <b>Write photo metadata <em>before</em> importing into your photo editor</b> — most catalogues ignore new sidecar files once a photo is already imported. If a sidecar was already created by another application, Kestrel will ask before overwriting it.',
+        body: 'Open the <b>Folder Actions</b> menu on a folder and click <b>Write Photo Metadata</b> to export Kestrel’s star ratings and Accept/Reject decisions into XMP sidecar files alongside your photos. These <code>.xmp</code> files are understood natively by <b>Adobe Lightroom</b>, <b>darktable</b>, <b>Capture One</b>, and other editors.<br><br><b>Write photo metadata <em>before</em> importing into your photo editor</b> — most catalogues ignore new sidecar files once a photo is already imported. If a sidecar was already created by another application, Kestrel will ask before overwriting it.',
         target: '.folder-group-actions-trigger',
         position: 'bottom',
       },
       {
-        title: 'Culling Assistant',
-        body: 'The <b>Culling Assistant</b> helps you automatically assign photos as Accepted or Rejected based on star ratings — and can even move rejected photos into a dedicated folder.<br><br>Click <b>Open Culling Assistant</b> to open a dedicated Accept/Reject workspace for the folder.',
+        title: 'Cull mode',
+        body: '<b>Cull mode</b> takes you through every scene to accept or reject each photo, starting from picks Kestrel makes by quality, and can move the rejects into a separate folder.<br><br>Click <b>Enter Cull mode</b> to start culling this folder.',
         target: '.culling-assistant-btn',
         position: 'bottom',
       },
@@ -191,7 +191,7 @@
       },
       {
         title: 'You’re all set!',
-        body: 'That’s the full tour! Quick recap:<br><br>• <b>Analyze Folders</b> to process new photos<br>• <b>Load Folders</b> to browse analyzed photos<br>• <b>Click scenes</b> to view &amp; rate photos<br>• <b>Culling Assistant</b> for bulk Accept/Reject workflow<br>• <b>Write Photo Metadata</b> to export to Lightroom, darktable, etc.<br><br>⚠️ <b>Remember:</b> Write photo metadata <em>before</em> importing into Lightroom or Capture One for best results!<br><br>Click the <b>Tutorial</b> button anytime to replay this tour. Happy birding!',
+        body: 'That’s the full tour! Quick recap:<br><br>• <b>Analyze Folders</b> to process new photos<br>• <b>Add Folders</b> to browse analyzed photos<br>• <b>Click scenes</b> to view &amp; rate photos<br>• <b>Cull mode</b> to accept or reject every photo fast<br>• <b>Write Photo Metadata</b> to export to Lightroom, darktable, etc.<br><br><b>Remember:</b> Write photo metadata <em>before</em> importing into Lightroom or Capture One for best results!<br><br>Click the <b>Tutorial</b> button anytime to replay this tour. Happy birding!',
         target: null,
       },
       {
@@ -205,7 +205,7 @@
 
     let _tutStep = 0;
     let _tutSteps = [];
-    let _tutBranch = '';             // '' = not started, 'basics', 'advanced'
+    let _tutBranch = '';             // '' = not started, 'basics', 'advanced', 'cull'
     let _tutSampleLoaded = false;    // track if we auto-loaded sample sets
     let _tutCleanupFn = null;        // cleanup function for current waitFor listeners
     let _tutInDialog  = false;       // true while tutorial card is inside the scene dialog
@@ -250,8 +250,9 @@
       // Backward-compat: legacy callers passed 1 or 2
       if (branch === 1) branch = 'basics';
       else if (branch === 2) branch = 'advanced';
-      _tutBranch = (branch === 'advanced') ? 'advanced' : 'basics';
-      _tutSteps = (_tutBranch === 'advanced') ? TUTORIAL_ADVANCED : TUTORIAL_BASICS;
+      // 'cull' is Cull mode's own tour; its steps live in js/cull-tour.js.
+      _tutBranch = (branch === 'advanced' || branch === 'cull') ? branch : 'basics';
+      _tutSteps = { advanced: TUTORIAL_ADVANCED, cull: window.KestrelCullTour?.STEPS }[_tutBranch] || TUTORIAL_BASICS;
       _tutStep = fromStep || 0;
       _tutChainIdx = 0;
       _tutEl('#tutorialOverlay').classList.add('active');
@@ -262,9 +263,11 @@
       _tutCleanup();
       _tutEl('#tutorialOverlay').classList.remove('active', 'has-backdrop');
       _tutEl('#tutorialHighlight').style.display = 'none';
-      _tutEl('#tutorialNudge').style.display = 'none';
-      if (_tutBranch) markMainTutorialSeen();
+      _tutEl('#tutorialNudge').classList.add('hidden');
+      var branch = _tutBranch;
       _tutBranch = '';
+      if (branch === 'cull') window.KestrelCullTour.closed();
+      else if (branch) markMainTutorialSeen();
     }
 
     // Install a single waitFor listener. Returns a cleanup fn that removes it.
@@ -344,11 +347,11 @@
               '<div class="tut-wf-arrow">→</div>' +
               '<div class="tut-wf-node accent">Kestrel Analyzes</div>' +
               '<div class="tut-wf-arrow">→</div>' +
-              '<div class="tut-wf-node highlight">Culling Assistant</div>' +
+              '<div class="tut-wf-node highlight">Cull mode</div>' +
               '<div class="tut-wf-arrow">→</div>' +
               '<div class="tut-wf-node">Accepts / Rejects</div>' +
             '</div>' +
-            '<div class="tut-wf-caption">Use the <b>Culling Assistant</b> to cut the blurry bulk — keep the sharp photos and archive the rest in one pass.</div>' +
+            '<div class="tut-wf-caption">Use <b>Cull mode</b> to cut the blurry bulk: keep the sharp photos and set the rest aside.</div>' +
           '</div>' +
           '<div class="tut-wf-panel" data-panel="favs">' +
             '<div class="tut-wf-flow">' +
@@ -363,7 +366,7 @@
             '<div class="tut-wf-caption">Browse your scenes in Kestrel and press <kbd>Space</kbd> on the ones you love — they open straight in your photo editor.</div>' +
           '</div>' +
         '</div>' +
-        '<div class="tut-workflow-hint">We’ve highlighted where you’ll find the two tools you’ll use most: <b>Write Photo Metadata</b> (in the <b>Folder Actions</b> menu) and <b>Open Culling Assistant</b>.</div>';
+        '<div class="tut-workflow-hint">We’ve highlighted where you’ll find the two tools you’ll use most: <b>Write Photo Metadata</b> (in the <b>Folder Actions</b> menu) and <b>Enter Cull mode</b>.</div>';
 
       var tabs = bodyEl.querySelectorAll('.tut-wf-tab');
       var panels = bodyEl.querySelectorAll('.tut-wf-panel');
@@ -421,8 +424,8 @@
       } catch (e) { console.warn('[tutorial] apply editor failed', e); }
     }
 
-    // Region picker: the same ``bird_regions`` setting as Settings → Species &
-    // Region. Species identification only chooses from birds in these regions,
+    // Region picker: the same ``bird_regions`` setting as Settings → Species.
+    // Species identification only chooses from birds in these regions,
     // so photographers outside the default (North America) should set it.
     function _renderTutRegionPicker(bodyEl, idx) {
       bodyEl.innerHTML = '';
@@ -440,7 +443,7 @@
 
       var foot = document.createElement('div');
       foot.className = 'tut-editor-foot';
-      foot.innerHTML = 'You can change this later in <b>Settings → Species &amp; Region</b>.';
+      foot.innerHTML = 'You can change this later in <b>Settings → Species</b>.';
       bodyEl.appendChild(foot);
 
       Promise.resolve()
@@ -578,6 +581,8 @@
         _renderTutRegionPicker(bodyEl, idx);
       } else {
         bodyEl.innerHTML = step.body || '';
+        // Steps can name keys by action (data-keys) so they show the user's own bindings.
+        if (window.KestrelKeys) KestrelKeys.paint(bodyEl);
       }
 
       // Optional inline footer link (e.g. Basics → Advanced)
@@ -594,8 +599,8 @@
         });
       }
 
-      if (step.nudge) { nudge.textContent = step.nudge; nudge.style.display = ''; }
-      else nudge.style.display = 'none';
+      nudge.textContent = step.nudge || '';
+      nudge.classList.toggle('hidden', !step.nudge);
 
       var dotsCont = _tutEl('#tutorialProgress');
       dotsCont.innerHTML = '';
@@ -621,7 +626,7 @@
         var dlg = document.getElementById('sceneDlg');
         if (!dlg || !dlg.open) {
           bodyEl.insertAdjacentHTML('beforeend', '<br><br><span style="color:var(--brand);font-weight:600">Open a scene first, then this step will highlight the right element.</span>');
-          nudge.style.display = 'none';
+          nudge.classList.add('hidden');
           nextBtn.style.display = '';  // show Next even if waitFor was set
           target = null;
           hasWaitFor = false;

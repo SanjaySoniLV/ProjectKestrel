@@ -13,15 +13,6 @@
     let _perchActiveJobId = null;
     let _perchActivePollTimer = null;
 
-    function formatPerchBytes(n) {
-      const x = Number(n) || 0;
-      if (x <= 0) return '0 KB';
-      if (x < 1024) return x + ' B';
-      if (x < 1024 * 1024) return (x / 1024).toFixed(1) + ' KB';
-      if (x < 1024 * 1024 * 1024) return (x / (1024 * 1024)).toFixed(1) + ' MB';
-      return (x / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
-    }
-
     function _perchFormatTimestamp(ms) {
       if (!Number.isFinite(ms)) return '';
       try {
@@ -51,8 +42,8 @@
       const t = _perchSelectedTotals();
       const elSubmit = document.getElementById('perchUploadSubmitBtn');
       if (elSubmit) {
-        const label = t.photos > 0 ? `📤 Upload ${t.photos.toLocaleString()} photo${t.photos === 1 ? '' : 's'}` : '📤 Upload';
-        elSubmit.textContent = label;
+        const label = t.photos > 0 ? `Upload ${t.photos.toLocaleString()} photo${t.photos === 1 ? '' : 's'}` : 'Upload';
+        elSubmit.replaceChildren(KestrelIcon.el('upload'), ' ' + label);
         elSubmit.disabled = (t.photos === 0);
       }
       // Sidebar panel updates (totals card replaces the old timeline-summary).
@@ -167,7 +158,7 @@
       thumbWrap.appendChild(img);
       const overlay = document.createElement('div');
       overlay.className = 'card-perch-overlay';
-      overlay.textContent = '\u{1F6AB} Excluded';
+      overlay.append(KestrelIcon.el('ban'), ' Excluded');
       thumbWrap.appendChild(overlay);
       card.appendChild(thumbWrap);
       if (scene.thumbnailPath && rootPath && typeof getBlobUrlForPath === 'function') {
@@ -225,7 +216,7 @@
       const skipped = Number(scene.rejectedSkipped || 0);
       const parts = [
         `${photos.toLocaleString()} photo${photos === 1 ? '' : 's'}`,
-        formatPerchBytes(scene.totalBytes),
+        KestrelUtil.formatBytes(scene.totalBytes),
       ];
       if (skipped > 0 && _perchDlgState.skipRejected) {
         parts.push(`${skipped.toLocaleString()} hidden`);
@@ -349,7 +340,7 @@
           : `${t.scenes.toLocaleString()} / ${totalScenes.toLocaleString()}`;
       }
       if (elPhotos) elPhotos.textContent = `${t.photos.toLocaleString()} / ${totalPhotos.toLocaleString()}`;
-      if (elBytes) elBytes.textContent = formatPerchBytes(t.bytes);
+      if (elBytes) elBytes.textContent = KestrelUtil.formatBytes(t.bytes);
       // Compute % of plan storage if we have entitlements.
       const limitMB = Number(_perchEntitlements?.limits?.maxTotalStorageMB || 0);
       if (elPct) {
@@ -383,8 +374,8 @@
         if (barPending) barPending.style.width = '0%';
         if (txtEl) {
           txtEl.textContent = pendingBytes > 0
-            ? `${formatPerchBytes(usedBytes)} used · +${formatPerchBytes(pendingBytes)} this perch`
-            : `${formatPerchBytes(usedBytes)} used`;
+            ? `${KestrelUtil.formatBytes(usedBytes)} used · +${KestrelUtil.formatBytes(pendingBytes)} this perch`
+            : `${KestrelUtil.formatBytes(usedBytes)} used`;
         }
         return;
       }
@@ -397,15 +388,15 @@
         barPending.style.left = usedPct + '%';
       }
       if (txtEl) {
-        const usedTxt = formatPerchBytes(usedBytes);
-        const limitTxt = formatPerchBytes(limitBytes);
+        const usedTxt = KestrelUtil.formatBytes(usedBytes);
+        const limitTxt = KestrelUtil.formatBytes(limitBytes);
         txtEl.textContent = pendingBytes > 0
-          ? `${usedTxt} used · +${formatPerchBytes(pendingBytes)} this perch · ${limitTxt} total`
+          ? `${usedTxt} used · +${KestrelUtil.formatBytes(pendingBytes)} this perch · ${limitTxt} total`
           : `${usedTxt} of ${limitTxt} used`;
       }
       if (barEl) {
-        barEl.title = `${formatPerchBytes(usedBytes)} used of ${formatPerchBytes(limitBytes)} plan limit`
-          + (pendingBytes > 0 ? ` · +${formatPerchBytes(pendingBytes)} pending this upload` : '');
+        barEl.title = `${KestrelUtil.formatBytes(usedBytes)} used of ${KestrelUtil.formatBytes(limitBytes)} plan limit`
+          + (pendingBytes > 0 ? ` · +${KestrelUtil.formatBytes(pendingBytes)} pending this upload` : '');
       }
     }
 
@@ -440,15 +431,15 @@
       }
     }
 
-    /** Refresh the Review Species Tags panel's inline count. */
+    /** Refresh the Confirm species tags panel's inline count. */
     function _perchUpdateReviewPanel() {
       const countEl = document.getElementById('perchReviewCount');
       if (!countEl) return;
       const pre = _perchDlgState.preflight;
-      if (!pre || !pre.scenes) { countEl.textContent = '— of — scenes reviewed.'; return; }
+      if (!pre || !pre.scenes) { countEl.textContent = 'Species confirmed on — of — scenes.'; return; }
       const included = pre.scenes.filter(s => !_perchDlgState.deselected.has(String(s.sceneId)));
       const reviewed = included.filter(s => !!s.reviewed).length;
-      countEl.textContent = `${reviewed.toLocaleString()} of ${included.length.toLocaleString()} scene${included.length === 1 ? '' : 's'} reviewed.`;
+      countEl.textContent = `Species confirmed on ${reviewed.toLocaleString()} of ${included.length.toLocaleString()} scene${included.length === 1 ? '' : 's'}.`;
     }
 
     async function _perchLoadAccountAndUsage() {
@@ -734,15 +725,14 @@
       // 3.1.3(f) IAP exemption, which requires no purchase calls-to-action.
       const manageUrl = (prog && (prog.manageUrl || prog.upgradeUrl))
         || 'https://myaccount.projectkestrel.org/perch';
-      const esc = (s) => String(s).replace(/[<>&"']/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]));
       card.className = 'perch-upload-card is-error';
       card.innerHTML = `
         <div class="perch-upload-card-header">
-          <span class="perch-upload-card-title">${esc(copy.title)}</span>
+          <span class="perch-upload-card-title">${escapeHtml(copy.title)}</span>
           <button type="button" class="perch-upload-card-dismiss" data-role="dismiss" title="Dismiss">✕</button>
         </div>
         <div class="perch-upload-card-body">
-          <div class="perch-upload-card-err">${esc(copy.body)}</div>
+          <div class="perch-upload-card-err">${escapeHtml(copy.body)}</div>
           <button type="button" class="perch-upload-card-cta" data-role="manage">Manage my account →</button>
         </div>
       `;
@@ -1041,7 +1031,7 @@
           const photos = Number(preflight.imageCount || 0);
           const scenes = Number(preflight.sceneCount || 0);
           if (photos > 0) {
-            ready.textContent = `Ready to share: ${scenes.toLocaleString()} scene${scenes === 1 ? '' : 's'}, ${photos.toLocaleString()} photo${photos === 1 ? '' : 's'}, ${formatPerchBytes(preflight.totalBytes)}.`;
+            ready.textContent = `Ready to share: ${scenes.toLocaleString()} scene${scenes === 1 ? '' : 's'}, ${photos.toLocaleString()} photo${photos === 1 ? '' : 's'}, ${KestrelUtil.formatBytes(preflight.totalBytes)}.`;
           }
         }
       }
@@ -1094,11 +1084,7 @@
       if (linkedUnlink) linkedUnlink.addEventListener('click', async () => {
         const root = linkedUnlink.dataset.folderPath || _perchDlgState.rootPath;
         if (!root) return;
-        const ok = window.confirm(
-          'Unlink this folder from Perch?\n\n' +
-          'The perch on projectkestrel.org will NOT be deleted. To remove it from the web, delete it there. ' +
-          'This only removes the local connection so you can upload a fresh perch from this folder.'
-        );
+        const ok = await KestrelDialog.confirm('perchUnlink');
         if (!ok) return;
         let res = null;
         try { res = await window.pywebview.api.delete_perch_link(root); } catch (e) {
@@ -1153,9 +1139,7 @@
       if (startOverBtn) startOverBtn.addEventListener('click', async () => {
         const root = _perchDlgState.rootPath;
         if (!root) return;
-        const ok = window.confirm(
-          'Discard the partial upload?\n\nThis deletes the unfinished perch on Perch and removes the local progress file. The folder stays unchanged.'
-        );
+        const ok = await KestrelDialog.confirm('perchDiscardPartial');
         if (!ok) return;
         try { await window.pywebview.api.discard_resumable_upload(root); } catch {}
         _perchDlgState.resumable = null;
@@ -1176,7 +1160,7 @@
       if (cullBtn) cullBtn.addEventListener('click', () => {
         const root = _perchDlgState.rootPath;
         _perchClosePerchDialog();
-        if (root) openCullingAssistant(root);
+        if (root) openCullMode(root);
       });
       const adjBtn = document.getElementById('perchAdjustTimeBtn');
       if (adjBtn) adjBtn.addEventListener('click', () => {
@@ -1233,8 +1217,8 @@
       draft: 'Draft (not published)',
     };
     const _PERCH_VISIBILITY_ICONS = {
-      private: '\u{1F512}', unlisted: '\u{1F517}', restricted: '\u{1F465}',
-      public: '\u{1F310}', draft: '\u{1F4DD}',
+      private: 'lock', unlisted: 'link', restricted: 'users',
+      public: 'globe', draft: 'file-text',
     };
     const _PERCH_COMMENTS_LABELS = {
       everyone: 'Everyone',
@@ -1296,20 +1280,6 @@
     }
 
     // ── Re-link: associate this folder with an EXISTING perch (no re-upload) ──
-    function _perchEsc(s) {
-      return String(s == null ? '' : s)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-    }
-    function _perchFmtBytes(n) {
-      n = Number(n) || 0;
-      if (n < 1024) return n + ' B';
-      const u = ['KB', 'MB', 'GB', 'TB'];
-      let v = n / 1024, i = 0;
-      while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
-      return v.toFixed(v >= 100 ? 0 : 1) + ' ' + u[i];
-    }
-
     /** Open the picker listing the user's existing perches to re-link to. */
     async function _perchOpenRelinkPicker() {
       const dlg = document.getElementById('perchRelinkDlg');
@@ -1324,7 +1294,7 @@
           perches = r.perches;
         } else {
           list.innerHTML = '<div class="perch-relink-empty">Could not load your perches'
-            + (r && r.error ? ' (' + _perchEsc(r.error) + ')' : '') + '.</div>';
+            + (r && r.error ? ' (' + escapeHtml(r.error) + ')' : '') + '.</div>';
           return;
         }
       } catch {
@@ -1336,11 +1306,11 @@
         return;
       }
       list.innerHTML = perches.map((p) => {
-        const id = _perchEsc(p.id || '');
-        const title = _perchEsc(p.title || '(untitled)');
+        const id = escapeHtml(p.id || '');
+        const title = escapeHtml(p.title || '(untitled)');
         const imgs = (Number(p.imageCount) || 0).toLocaleString();
-        const bytes = _perchFmtBytes(p.actualBytes);
-        const state = _perchEsc(String(p.uploadState || p.status || ''));
+        const bytes = KestrelUtil.formatBytes(p.actualBytes);
+        const state = escapeHtml(String(p.uploadState || p.status || ''));
         return '<button type="button" class="perch-relink-row" data-perch-id="' + id + '">'
           + '<span class="perch-relink-row-title">' + title + '</span>'
           + '<span class="perch-relink-row-meta">' + imgs + ' photos · ' + bytes
@@ -1471,12 +1441,12 @@
         const v = String(status.visibility || status.status || '');
         const label = _PERCH_VISIBILITY_LABELS[v] || (v ? v[0].toUpperCase() + v.slice(1) : '—');
         const icon = _PERCH_VISIBILITY_ICONS[v] || '';
-        visEl.textContent = icon ? `${icon} ${label}` : label;
+        visEl.replaceChildren(...(icon ? [KestrelIcon.el(icon), ' '] : []), label);
       }
       const bytesEl = document.getElementById('perchStatusBytes');
       if (bytesEl) {
         bytesEl.textContent = (status.actualBytes != null)
-          ? formatPerchBytes(Number(status.actualBytes))
+          ? KestrelUtil.formatBytes(Number(status.actualBytes))
           : '—';
       }
       const photosEl = document.getElementById('perchStatusPhotos');

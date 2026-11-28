@@ -5,15 +5,28 @@
       return status === 'accept' || status === 'reject';
     }
 
-    function hasReviewedSceneMetadata(scene) {
-      if (!scene) return false;
-      if (scene.isApproved) return true;
-      return String(scene.sceneName || '').trim().length > 0;
+    /**
+     * A scene is reviewed once the user has accepted or rejected a photo in it,
+     * or set a star rating themselves. Confirming the species ("Confirm
+     * species", scene.isApproved) is a separate step and does not count, and
+     * neither does a scene name.
+     */
+    /** True when any photo in the scene is a favorite. */
+    function sceneHasFavorite(scene) {
+      return Array.isArray(scene?.images) && scene.images.some(r => KestrelFavorites.isFavorite(r));
+    }
+
+    /** Whether the filter bar (review toggle, "Only scenes with favorites") shows this scene. */
+    function sceneMatchesViewFilters(scene) {
+      const review = document.getElementById('filterSceneReviewState')?.value || getSetting('sceneReviewFilter', 'all');
+      if (review === 'reviewed' && !isManuallyReviewedScene(scene)) return false;
+      if (review === 'unreviewed' && isManuallyReviewedScene(scene)) return false;
+      const favOnly = document.getElementById('onlyFavoriteScenes')?.checked ?? !!getSetting('onlyFavoriteScenes', false);
+      return !favOnly || sceneHasFavorite(scene);
     }
 
     function isManuallyReviewedScene(scene) {
       if (!scene) return false;
-      if (hasReviewedSceneMetadata(scene)) return true;
       return Array.isArray(scene.images)
         && scene.images.some(r => isManualRated(r) || isManualCullDecision(r));
     }
@@ -98,6 +111,8 @@
         let families = includeFamilies ? computedTags.families.slice().sort() : [];
 
         const maxQ = Math.max(...arr.map(a => parseNumber(a.quality)));
+        // The card shows the best photo's star rating (manual or automatic).
+        const maxRating = Math.max(0, ...arr.map(a => getRating(a)));
         const captureMsList = arr.map(a => parseCaptureTimeMs(a.capture_time)).filter(Number.isFinite);
         const captureTimeMs = captureMsList.length ? Math.min(...captureMsList) : Number.POSITIVE_INFINITY;
         const rowRp = arr[0]?.__rootPath || rootPath || '';
@@ -120,6 +135,7 @@
           species,
           families,
           maxQuality: maxQ,
+          maxRating,
           captureTimeMs,
           sceneName,
           isApproved

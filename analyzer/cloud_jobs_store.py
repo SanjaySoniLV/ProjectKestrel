@@ -20,8 +20,7 @@ Schema (JSON):
       ]
     }
 
-Atomic-write pattern mirrors ``settings_utils.py`` / ``_to_csv_atomic``:
-write to tempfile, flush+fsync, then ``os.replace`` over the canonical file.
+Saves go through ``kestrel_analyzer.atomic_io.write_json_atomic``.
 A single in-process re-entrant lock serializes saves because the JS bridge,
 the per-job background download thread, and startup all write concurrently.
 """
@@ -31,28 +30,16 @@ from __future__ import annotations
 import json
 import os
 import sys
-import tempfile
 import threading
 import time
 from typing import Any
+
+from kestrel_analyzer.atomic_io import write_json_atomic
 
 CLOUD_JOBS_FILENAME = "cloud_jobs.json"
 _SAVE_LOCK = threading.RLock()
 
 
-def _retry_on_file_lock(op, attempts: int = 12, delay: float = 0.02):
-    """Run ``op()``, retrying briefly on Windows' transient file-sharing errors.
-
-    Canonical implementation: ``kestrel_analyzer.database.retry_on_file_lock``.
-    This copy exists so the job ledger does not import pandas via ``database``.
-    """
-    for attempt in range(attempts):
-        try:
-            return op()
-        except PermissionError:
-            if attempt == attempts - 1:
-                raise
-            time.sleep(delay * (attempt + 1))
 
 # 'incomplete' = the client disconnected >10min with uploads UNFINISHED. Uploads
 # are halted, but analysis CONTINUES server-side and result packs remain
@@ -173,31 +160,8 @@ def _load_raw() -> dict:
 
 
 def _write_atomic(data: dict) -> None:
-    user_dir = _user_data_dir()
-    os.makedirs(user_dir, exist_ok=True)
-    final_path = _store_path()
-    fd, tmp_path = tempfile.mkstemp(
-        prefix="cloud_jobs.json.", suffix=".tmp", dir=user_dir
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, sort_keys=False)
-            # flush() errors (ENOSPC, EIO) must propagate: a partial temp
-            # file must not be os.replace'd over a good destination.
-            f.flush()
-            try:
-                os.fsync(f.fileno())
-            except OSError:
-                # fsync can legitimately fail on some network filesystems;
-                # the replace below still gives readers an all-or-nothing view.
-                pass
-        _retry_on_file_lock(lambda: os.replace(tmp_path, final_path))
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    write_json_atomic(_store_path(), data, indent=2, newline=None,
+                      prefix=CLOUD_JOBS_FILENAME + ".", suffix=".tmp")
 
 
 def load_jobs() -> list[dict]:

@@ -112,7 +112,7 @@
       if (!relOrAbsPath) return null;
       const effectiveRoot = rootOverride || rootPath;
 
-      // Normalize separators immediately (cheap, matches culling.html behaviour)
+      // Normalize separators immediately (cheap)
       const rel = String(relOrAbsPath).replace(/\\/g, '/');
 
       // Cache check first — avoids ALL further work on already-loaded images

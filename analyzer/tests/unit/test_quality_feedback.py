@@ -18,6 +18,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import api_bridge  # noqa: E402
+import settings_bridge  # noqa: E402
 import quality_feedback_client as qfc  # noqa: E402
 from kestrel_analyzer import quality_feedback as qf  # noqa: E402
 
@@ -447,7 +448,9 @@ def _make_folder(tmp_path) -> Path:
 def bridge(tmp_path, monkeypatch):
     store = {"quality_model": "siglip"}
     monkeypatch.setattr(api_bridge, "load_persisted_settings", lambda: dict(store))
+    monkeypatch.setattr(settings_bridge, "load_persisted_settings", lambda: dict(store))
     monkeypatch.setattr(api_bridge, "save_persisted_settings", lambda d: (store.clear(), store.update(d)))
+    monkeypatch.setattr(settings_bridge, "save_persisted_settings", lambda d: (store.clear(), store.update(d)))
     log = str(tmp_path / "qf_log.jsonl")
     monkeypatch.setattr(qfc, "default_log_path", lambda: log)
     api = api_bridge.Api()

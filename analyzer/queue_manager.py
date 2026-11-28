@@ -15,6 +15,7 @@ import time as _time_mod
 from datetime import datetime, timezone
 
 from settings_utils import load_persisted_settings, save_persisted_settings, debug, info, warn, error
+from kestrel_analyzer.atomic_io import write_bytes_atomic
 
 # Telemetry — failsafe import (never blocks startup)
 try:
@@ -183,7 +184,7 @@ def _write_live_jpeg(path: str, rgb, max_dim: int, quality: int) -> bool:
     """Best-effort write of a small live-preview JPEG from an RGB array.
 
     Downscales so the long edge is at most ``max_dim`` and writes to a temp file
-    then ``os.replace``s it, so the UI never reads a half-written frame. Returns
+    then replaces it, so the UI never reads a half-written frame. Returns
     True when the file was replaced; False (never raises) on any failure, in
     which case the previous frame stays in place.
     """
@@ -199,11 +200,8 @@ def _write_live_jpeg(path: str, rgb, max_dim: int, quality: int) -> bool:
                                 [_cv2.IMWRITE_JPEG_QUALITY, int(quality)])
         if not ok:
             return False
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = path + '.tmp'
-        with open(tmp, 'wb') as f:
-            f.write(buf.tobytes())
-        os.replace(tmp, path)
+        # No fsync: a frame is disposable and replaced every few images.
+        write_bytes_atomic(path, buf.tobytes(), fsync=False)
         return True
     except Exception:
         return False

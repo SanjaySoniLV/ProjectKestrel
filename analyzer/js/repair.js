@@ -156,9 +156,8 @@
                 existing.title = summary;
                 return;
             }
-            const warn = document.createElement('span');
-            warn.className = 'tree-repair-warn';
-            warn.textContent = '⚠';
+            const warn = KestrelIcon.el('warning');
+            warn.classList.add('tree-repair-warn');
             warn.title = summary;
             // Sits on the right edge beside the other status glyphs
             // (tree-perch-feather, tree-in-progress-hourglass).

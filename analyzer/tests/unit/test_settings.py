@@ -546,3 +546,15 @@ class TestMonotonicGuard:
         incoming = {"kestrel_impact_total_files": 50}
         result = _apply_monotonic_guard(incoming, None)
         assert result.get("kestrel_impact_total_files") == 50
+
+
+class TestAnalyzeSettingsView:
+    """The Analyze dialog remembers Essentials or All settings."""
+
+    @pytest.mark.parametrize("value", ["essentials", "all"])
+    def test_known_views_kept(self, value):
+        assert _sanitize_settings_payload({"analyze_settings_view": value})["analyze_settings_view"] == value
+
+    @pytest.mark.parametrize("value", ["<script>", 3, None, "ALL settings"])
+    def test_anything_else_falls_back_to_essentials(self, value):
+        assert _sanitize_settings_payload({"analyze_settings_view": value})["analyze_settings_view"] == "essentials"

@@ -36,6 +36,8 @@ TOMBSTONE = re.compile(
 )
 EMPTY_JS_CATCH = re.compile(r"catch\s*(\([^)]*\))?\s*\{\s*\}")
 HEX = re.compile(r"#[0-9a-fA-F]{3,8}\b")
+# A style="" attribute in markup. Styles belong in css/ so they can use the tokens.
+INLINE_STYLE = re.compile(r"\sstyle\s*=\s*[\"']", re.IGNORECASE)
 
 
 def _src_files(suffixes: tuple[str, ...]) -> list[Path]:
@@ -53,6 +55,7 @@ def measure() -> dict:
         "py_dual_import_fallbacks": 0,
         "js_empty_catch": 0,
         "css_hex_outside_tokens": 0,
+        "html_inline_styles": 0,
         "css_important": 0,
         "tombstone_comments": 0,
         "big_file_lines": {},
@@ -71,6 +74,8 @@ def measure() -> dict:
         m["py_dual_import_fallbacks"] += len(re.findall(r"from analyzer[. ]", text))
     for p in _src_files((".js", ".html")):
         m["js_empty_catch"] += len(EMPTY_JS_CATCH.findall(p.read_text(encoding="utf-8", errors="ignore")))
+    for p in _src_files((".html",)):
+        m["html_inline_styles"] += len(INLINE_STYLE.findall(p.read_text(encoding="utf-8", errors="ignore")))
     for p in _src_files((".css",)):
         text = p.read_text(encoding="utf-8", errors="ignore")
         m["css_important"] += text.count("!important")

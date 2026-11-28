@@ -400,7 +400,7 @@
       if (_smart.reanalyze.length) {
         const r = _smart.reanalyze[0];
         const who = `${_smartFolderName(r.root)}${_smart.reanalyze.length > 1 ? ` (+${_smart.reanalyze.length - 1})` : ''}`;
-        add(' · re-analyse needed', 'smart-search-muted', `${who}: re-analyse to use smart search.${r.reason ? ` ${r.reason}` : ''}`);
+        add(' · needs analyzing again', 'smart-search-muted', `${who}: ${r.reason || 'analyze this folder again to use smart search.'}`);
       }
       done();
     }
@@ -553,7 +553,7 @@
     /** Why an upgrade request was refused, as toast text. */
     function _smartUpgradeRefusal(res) {
       if (res?.error === 'analysis_running') return 'this folder is being analyzed; upgrade it once analysis finishes.';
-      if (res?.error === 'reanalyze_required') return res.reason || 're-analyse this folder to use smart search.';
+      if (res?.error === 'reanalyze_required') return res.reason || 'analyze this folder again to use smart search.';
       return String(res?.error || 'unknown error');
     }
 

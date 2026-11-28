@@ -20,7 +20,6 @@ import ntpath
 import os
 import re
 import stat
-import tempfile
 
 # XMP namespace URIs
 _KESTREL_NS = 'http://ns.projectkestrel.app/xmp/1.0/'
@@ -138,28 +137,9 @@ _DEFAULT_FIELDS = {
 
 from settings_utils import info, warn, error
 
-# ``os.replace`` is not collision-free on Windows: while any handle is open on
-# the destination, MoveFileEx fails with ERROR_ACCESS_DENIED / SHARING_VIOLATION,
-# surfacing as PermissionError. ``kestrel_analyzer.database`` already solves this
-# for the CSV, so reuse it rather than reimplementing the backoff. It is imported
-# defensively -- it pulls in pandas, and metadata writing must not start failing
-# just because the analyzer package cannot be imported in some frozen or
-# partially-installed context. The fallback mirrors the canonical implementation;
-# keep them in step.
-try:
-    from kestrel_analyzer.database import retry_on_file_lock  # type: ignore
-except Exception:  # pragma: no cover - import environment specific
-    import time as _time
-
-    def retry_on_file_lock(op, attempts: int = 12, delay: float = 0.02):
-        """Fallback copy of ``kestrel_analyzer.database.retry_on_file_lock``."""
-        for attempt in range(attempts):
-            try:
-                return op()
-            except PermissionError:
-                if attempt == attempts - 1:
-                    raise
-                _time.sleep(delay * (attempt + 1))
+# Settings and the atomic-write helper are stdlib-only, so this module never
+# pulls in pandas.
+from kestrel_analyzer.atomic_io import write_json_atomic, write_text_atomic
 
 
 def _default_file_mode():
@@ -444,31 +424,10 @@ def _save_xmp_fingerprints(root: str, fingerprints: dict) -> None:
     KeyboardInterrupt/SystemExit are intentionally allowed to propagate.
     """
     try:
-        kdir = os.path.join(root, '.kestrel')
-        os.makedirs(kdir, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(prefix='.xmp_fp_', suffix='.tmp', dir=kdir)
-        try:
-            # os.fdopen takes ownership of fd on success; if it raises, fd
-            # hasn't been wrapped yet and would leak, so close it explicitly.
-            try:
-                f = os.fdopen(fd, 'w', encoding='utf-8')
-            except BaseException:
-                os.close(fd)
-                raise
-            with f:
-                json.dump(fingerprints, f, indent=2)
-            # Same Windows sharing-violation exposure as the sidecar write. No
-            # mode fixup here: this file lives inside .kestrel and is read only
-            # by Kestrel, so mkstemp's 0600 is the right permission for it.
-            retry_on_file_lock(
-                lambda: os.replace(tmp, _xmp_fingerprint_path(root))
-            )
-        except BaseException:
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
-            raise
+        # No mode fixup here: this file lives inside .kestrel and is read only
+        # by Kestrel, so the temp file's 0600 is the right permission for it.
+        write_json_atomic(_xmp_fingerprint_path(root), fingerprints, indent=2,
+                          newline=None, prefix='.xmp_fp_')
     except Exception as e:
         warn(f'[metadata] could not save XMP fingerprints: {e}')
 
@@ -635,12 +594,11 @@ def _write_text_atomic(dest_path: str, content: str) -> None:
 
     ``open(dest, 'w')`` truncates the destination before the new bytes land.
     A crash after that truncate leaves an existing sidecar empty or half-written
-    (S0-06). Write to a unique temp file in the same directory and ``os.replace``
-    it into place instead. ``os.replace`` is atomic on POSIX and on Windows, so a
+    (S0-06). ``write_text_atomic`` writes a temp file and replaces instead, so a
     concurrent reader observes either the complete previous file or the complete
-    new one. This mirrors ``settings_utils.save_settings`` / ``_to_csv_atomic``.
+    new one.
 
-    Two details the CSV writer already handles and this one needs more, not less:
+    Two details matter more here than for the CSV:
 
     * The replace is retried. On Windows it fails while any other process holds
       the destination open, and sidecars are the files most exposed to that --
@@ -650,33 +608,9 @@ def _write_text_atomic(dest_path: str, content: str) -> None:
       creates at 0600 and the replace carries that through, which would make
       every sidecar owner-only. See ``_apply_sidecar_mode``.
     """
-    directory = os.path.dirname(dest_path) or '.'
-    os.makedirs(directory, exist_ok=True)
-    tmp_fd, tmp = tempfile.mkstemp(
-        prefix=_XMP_TMP_PREFIX,
-        suffix=_XMP_TMP_SUFFIX,
-        dir=directory,
-    )
-    try:
-        with os.fdopen(tmp_fd, 'w', encoding='utf-8') as f:
-            f.write(content)
-            try:
-                f.flush()
-                os.fsync(f.fileno())
-            except OSError:
-                # fsync can legitimately fail on some network filesystems;
-                # the replace below still gives readers an all-or-nothing view.
-                pass
-        _apply_sidecar_mode(tmp, dest_path)
-        retry_on_file_lock(lambda: os.replace(tmp, dest_path))
-    except BaseException:
-        # Do NOT fall back to a direct write — that is the truncate path this
-        # helper exists to close. Leave the previous sidecar intact.
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-        raise
+    write_text_atomic(dest_path, content, newline=None,
+                      prefix=_XMP_TMP_PREFIX, suffix=_XMP_TMP_SUFFIX,
+                      before_replace=lambda tmp: _apply_sidecar_mode(tmp, dest_path))
 
 
 def write_xmp_metadata(

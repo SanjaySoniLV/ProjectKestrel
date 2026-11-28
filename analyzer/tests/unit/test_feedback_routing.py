@@ -23,6 +23,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import api_bridge
+import settings_bridge
 import log_redactor
 import support_client
 
@@ -87,6 +88,7 @@ def fake_telemetry(monkeypatch):
     monkeypatch.setattr(api_bridge, "_telemetry", tel)
     # Keep settings deterministic and filesystem-free.
     monkeypatch.setattr(api_bridge, "load_persisted_settings", lambda: {})
+    monkeypatch.setattr(settings_bridge, "load_persisted_settings", lambda: {})
     return tel
 
 

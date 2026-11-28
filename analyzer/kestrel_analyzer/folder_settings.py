@@ -4,7 +4,7 @@
   next to the analysis output (today: ``ignore_wildlife``). Separate from
   ``kestrel_scenedata.json`` and the CSV so the schema shared with the hosted
   add-ons is untouched.
-* ``folder_info`` -- read-only facts the Change Settings dialog shows.
+* ``folder_info`` -- read-only facts the Folder settings dialog shows.
 * ``rescore_species_regions`` -- re-run the species/family head of BioCLIP over
   the *stored* crop embeddings with a different region geofence. No detection,
   no image decode, no ONNX image tower.
@@ -94,15 +94,15 @@ def rescore_support(kestrel_dir: str) -> dict:
         return out
     keys, _mat, _hdr = embedding_store.load_embeddings(kestrel_dir, model=SPECIES_MODEL_ID)
     if not keys:
-        out["reason"] = ("This folder has no stored species embeddings (it was analyzed before "
-                         "pipeline 3.0). Upgrade it to 3.0 first.")
+        out["reason"] = ("This folder was analyzed before analysis version 3.0, so it has no saved "
+                         "species data to re-score. Upgrade it to analysis version 3.0 first.")
         return out
     out.update(supported=True, crops=len(keys))
     return out
 
 
 def folder_info(kestrel_dir: str) -> dict:
-    """Facts for the Change Settings dialog (counts that need culling state are added client-side)."""
+    """Facts for the Folder settings dialog (counts that need culling state are added client-side)."""
     from . import smart_search
     meta = _read_meta(kestrel_dir)
     settings = meta.get("analysis_settings") if isinstance(meta.get("analysis_settings"), dict) else {}

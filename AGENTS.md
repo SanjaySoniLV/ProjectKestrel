@@ -27,7 +27,7 @@ analyzer/
 ├── queue_manager.py     # sequential folder-analysis queue
 ├── settings_utils.py    # atomic settings.json I/O + sanitizer allowlists
 ├── cli.py               # headless entry point
-├── visualizer.html      # main window markup;  culling.html: Culling Assistant window
+├── visualizer.html      # main window markup (Cull mode is js/cull-*.js inside it)
 ├── js/*.js              # frontend modules: classic scripts sharing one global scope, load order in visualizer.html
 ├── css/*.css            # stylesheets; design tokens live in css/base.css, dialogs in css/dialogs/kdlg.css
 ├── *_client.py, perch_uploader.py, oauth_client.py   # optional hosted add-ons
@@ -38,7 +38,7 @@ analyzer/
 ├── ProjectKestrel*.spec # PyInstaller specs (Windows, macOS direct, macOS App Store)
 └── tests/               # pytest: unit / integration / compat / ui markers + security tests
 packaging/               # installer build scripts (Inno Setup, MSIX, macOS)
-tools/                   # build-time asset tooling (not shipped)
+tools/                   # build-time asset tooling (not shipped); model_sources/ holds build inputs
 experiments/             # research scripts (not shipped, not imported by the app)
 ```
 
@@ -108,7 +108,8 @@ Reviewers check these rules; automatic checks cover some of them.
 - `kestrel_analyzer/` must not import UI or bridge code.
 
 **Reuse these, don't rewrite them**
-- Atomic file writes: `kestrel_analyzer/database.py` (`write_text_atomic`, `write_json_atomic`).
+- Atomic file writes: `kestrel_analyzer/atomic_io.py` (`write_atomic`, `write_text_atomic`,
+  `write_json_atomic`, `write_bytes_atomic`, `copy_file_atomic`; also re-exported by `database.py`).
 - Settings: `settings_utils.py` only. Persisted keys need a sanitizer entry.
 - Path checks in bridge methods: `_validate_root_dir`, `_is_within_root`, `_resolve_path_in_root`.
 - Logging: `settings_utils` `info/warn/error`, and `kestrel_analyzer/logging_utils.py` for the
@@ -145,8 +146,8 @@ Reviewers check these rules; automatic checks cover some of them.
   outside that file, no new `!important`.
 - Dialogs use the `.kdlg` system (`css/dialogs/kdlg.css`). Don't invent a new button or dialog
   style for one feature.
-- User-visible text is plain and sentence case, and lives in the HTML or in one constant block per
-  feature, not concatenated inside logic.
+- User-visible text is plain and sentence case, uses the words in `WORD_LIST.md`, and lives in the
+  HTML or in one constant block per feature, not concatenated inside logic.
 
 **Security boundaries (non-negotiable)**
 - `api_bridge.py` is the only path from JS into privileged code. Any bridge method that takes a

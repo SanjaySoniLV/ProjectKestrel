@@ -1,8 +1,5 @@
 import json
 import os
-import shutil
-import tempfile
-import time
 
 import pandas as pd
 
@@ -12,6 +9,14 @@ from .config import (
     PIPELINE_MAJOR,
     PIPELINE_VERSION,
     SCENEDATA_FILENAME,
+)
+from .atomic_io import (  # noqa: F401  (re-exported: the shared atomic-write helpers)
+    copy_file_atomic,
+    retry_on_file_lock,
+    write_atomic,
+    write_bytes_atomic,
+    write_json_atomic,
+    write_text_atomic,
 )
 from .logging_utils import log_warning, utc_now_naive
 
@@ -546,7 +551,7 @@ def ensure_columns(database: pd.DataFrame) -> pd.DataFrame:
 
 # Columns the UI writes to the CSV that the pipeline should preserve.
 # These are NOT in BASE_COLUMNS but may be added by the UI's saveCsv().
-_UI_PRESERVE_COLUMNS = ["culled", "culled_origin"]
+_UI_PRESERVE_COLUMNS = ["culled", "culled_origin", "favorite"]
 
 # Retry ceiling for the preserve-read inside ``save_database``.
 #
@@ -565,42 +570,6 @@ _SAVE_PRESERVE_READ_ATTEMPTS = 20
 # collides with the ``OLD_kestrel_database_*.csv`` upgrade backups.
 _TMP_FILE_PREFIX = ".kestrel_database_"
 _TMP_FILE_SUFFIX = ".csv.tmp"
-
-
-def retry_on_file_lock(op, attempts: int = 12, delay: float = 0.02):
-    """Run ``op()``, retrying briefly on Windows' transient file-sharing errors.
-
-    ``os.replace`` is atomic on both POSIX and Windows, but Windows adds a
-    constraint POSIX does not have: CPython opens files without
-    ``FILE_SHARE_DELETE``, so while *any* handle is open on the destination the
-    underlying ``MoveFileEx`` fails with ``ERROR_ACCESS_DENIED`` (5) or
-    ``ERROR_SHARING_VIOLATION`` (32). Symmetrically, a reader that calls
-    ``open()`` during the rename can catch the destination in a delete-pending
-    state and get ``ERROR_ACCESS_DENIED``. Both surface as ``PermissionError``.
-
-    So on Windows the atomic write guarantees all-or-nothing *content* but not a
-    collision-free ``open()``: the pipeline saving after every image and the UI's
-    auto-refresh reader will occasionally step on each other in both directions.
-    Both sides retry through here rather than failing — the writer to avoid
-    silently dropping a save, the reader to avoid a spurious load error.
-
-    Escalating backoff caps the total wait at roughly 1.3s; if the file is still
-    locked after that the error propagates to the caller. POSIX never raises
-    here and always succeeds on the first attempt.
-
-    This is a mitigation, not a guarantee. A reader that reopens the file in a
-    zero-gap loop can starve the writer past the retry window — genuinely fixing
-    that would mean opening the destination with ``FILE_SHARE_DELETE``, which
-    CPython's ``open()`` cannot do. The app's readers poll on a UI timer, so the
-    window is wide open in practice.
-    """
-    for attempt in range(attempts):
-        try:
-            return op()
-        except PermissionError:
-            if attempt == attempts - 1:
-                raise
-            time.sleep(delay * (attempt + 1))
 
 
 def read_database_csv(
@@ -654,168 +623,15 @@ def _to_csv_atomic(database: pd.DataFrame, db_path: str) -> None:
     concurrent reader observes either the complete previous file or the complete
     new one. This mirrors the atomic-save pattern in ``settings_utils.save_settings``.
     """
-    directory = os.path.dirname(db_path) or "."
-    os.makedirs(directory, exist_ok=True)
-
-    # mkstemp creates with O_EXCL, so concurrent saves can never share a path.
-    tmp_fd, tmp = tempfile.mkstemp(
-        prefix=_TMP_FILE_PREFIX,
-        suffix=_TMP_FILE_SUFFIX,
-        dir=directory,
-    )
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="") as f:
-            database.to_csv(f, index=False)
-            # flush() errors (ENOSPC, EIO) must propagate: a partial temp
-            # file must not be os.replace'd over a good destination.
-            f.flush()
-            try:
-                os.fsync(f.fileno())
-            except OSError:
-                # fsync can legitimately fail on some network filesystems
-                # (SMB/NFS shares are a common target); the replace below
-                # still gives readers an all-or-nothing view.
-                pass
-        retry_on_file_lock(lambda: os.replace(tmp, db_path))
-    except BaseException:
-        # Do NOT fall back to a direct write — that is the partial-read path
-        # this function exists to close. Leave the previous file intact.
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-        raise
-
-
-def copy_file_atomic(src_path: str, dst_path: str) -> None:
-    """Copy ``src_path`` onto ``dst_path`` atomically (temp file + os.replace).
-
-    Used by the backup-restore path: ``shutil.copy2`` writes the destination in
-    place, so an interrupted restore (this runs right after a risky operation
-    like reject-and-move, exactly when a crash is plausible) could leave the
-    live database/scenedata half-overwritten and corrupt. Copying raw bytes to a
-    temp file in the same directory and ``os.replace``-ing it in gives readers /
-    a crash an all-or-nothing view, and preserves the file's exact encoding/BOM.
-    Content is flushed+fsync'd before the replace (matching ``_to_csv_atomic``'s
-    durability), and file metadata (mode/mtime) is preserved like the previous
-    ``shutil.copy2``.
-    """
-    directory = os.path.dirname(dst_path) or "."
-    os.makedirs(directory, exist_ok=True)
-
-    tmp_fd, tmp = tempfile.mkstemp(prefix=".kestrel_atomic_", suffix=".tmp", dir=directory)
-    try:
-        # If fdopen raises it hasn't taken ownership of the descriptor; close it
-        # explicitly so it can't leak.
-        try:
-            dst_f = os.fdopen(tmp_fd, "wb")
-        except BaseException:
-            os.close(tmp_fd)
-            raise
-        # Close dst_f in a finally rather than relying on the with-statement's
-        # ordering: if opening the source (or the copy) raises, the destination
-        # handle must still be released. A leaked handle on Windows can block
-        # the os.replace below and strand the .tmp file. close() on an
-        # already-closed handle is a harmless no-op.
-        try:
-            with open(src_path, "rb") as src_f:
-                shutil.copyfileobj(src_f, dst_f)
-                dst_f.flush()
-                try:
-                    os.fsync(dst_f.fileno())
-                except OSError:
-                    # fsync can legitimately fail on some network filesystems;
-                    # the replace below still gives readers an all-or-nothing
-                    # view.
-                    pass
-        finally:
-            dst_f.close()
-        # Preserve mode/mtime as the previous shutil.copy2 did (best-effort).
-        try:
-            shutil.copystat(src_path, tmp)
-        except OSError:
-            pass
-        retry_on_file_lock(lambda: os.replace(tmp, dst_path))
-    except BaseException:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-        raise
-
-
-def _write_file_atomic(path: str, write_fn, encoding: str = "utf-8") -> None:
-    """Atomically write by calling ``write_fn(file)`` on a temp file, then replace.
-
-    ``write_fn`` receives an open text file (encoding/newline already set) and
-    must write the full payload into it. Shared by ``write_text_atomic`` and
-    ``write_json_atomic``. Mirrors ``_to_csv_atomic`` / ``settings_utils.save_settings``.
-    """
-    directory = os.path.dirname(path) or "."
-    os.makedirs(directory, exist_ok=True)
-
-    tmp_fd, tmp = tempfile.mkstemp(prefix=".kestrel_atomic_", suffix=".tmp", dir=directory)
-    try:
-        # If os.fdopen raises, it has NOT taken ownership of tmp_fd, so the
-        # descriptor would leak (and on Windows keep the temp file locked). Close
-        # it explicitly in that case; on success the with-block owns and closes it.
-        try:
-            f = os.fdopen(tmp_fd, "w", encoding=encoding, newline="")
-        except BaseException:
-            os.close(tmp_fd)
-            raise
-        with f:
-            write_fn(f)
-            # flush() errors (ENOSPC, EIO) must propagate: a partial temp
-            # file must not be os.replace'd over a good destination.
-            f.flush()
-            try:
-                os.fsync(f.fileno())
-            except OSError:
-                # fsync can legitimately fail on some network filesystems; the
-                # replace below still gives readers an all-or-nothing view.
-                pass
-        retry_on_file_lock(lambda: os.replace(tmp, path))
-    except BaseException:
-        # Do NOT fall back to a direct write -- that is the partial-write path
-        # this helper exists to close. Leave the previous file intact.
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-        raise
-
-
-def write_text_atomic(path: str, text: str, encoding: str = "utf-8") -> None:
-    """Write ``text`` to ``path`` atomically (temp file + ``os.replace``).
-
-    Plain ``open(path, "w")`` truncates the destination and streams into it, so
-    a crash/power loss mid-write leaves a partial file behind. For the UI's
-    raw-text CSV save that means a truncated database. Writing to a unique temp
-    file in the same directory and ``os.replace``-ing it into place gives
-    readers/crashes an all-or-nothing view.
-    """
-    _write_file_atomic(path, lambda f: f.write(text), encoding=encoding)
-
-
-def write_json_atomic(path: str, obj, indent: int = 2) -> None:
-    """Serialize ``obj`` to JSON at ``path`` atomically via streaming ``json.dump``.
-
-    Unlike ``write_text_atomic(json.dumps(obj))``, this never materializes the
-    full serialized string in memory -- important for large scenedata payloads
-    (ratings, tags, cull decisions).
-    """
-    def _dump(f):
-        json.dump(obj, f, indent=indent)
-
-    _write_file_atomic(path, _dump)
+    write_atomic(db_path, lambda f: database.to_csv(f, index=False),
+                 prefix=_TMP_FILE_PREFIX, suffix=_TMP_FILE_SUFFIX)
 
 
 def save_database(database: pd.DataFrame, db_path: str) -> None:
     """Save database to CSV, preserving UI-written columns from disk.
 
     The analysis pipeline only writes BASE_COLUMNS. The UI may have saved
-    user-editable columns (culled, culled_origin) to the same CSV between
+    user-editable columns (culled, culled_origin, favorite) to the same CSV between
     pipeline saves. This function reads those columns from the existing CSV
     and merges them back into the pipeline's DataFrame before writing, so
     user decisions made during analysis are not lost.

@@ -4,8 +4,8 @@
   top: 0;
   left: 0;
   right: 0;
-  background: #1d5aa8;
-  color: #fff;
+  background: var(--primary-bg);
+  color: var(--white);
   padding: 10px 20px;
   z-index: 100000;
   display: flex;
@@ -13,7 +13,7 @@
   justify-content: center;
   gap: 20px;
   flex-wrap: wrap;
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 500;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
 }
@@ -36,7 +36,7 @@
 
 .legal-notice-banner a,
 .legal-notice-link {
-  color: #fff;
+  color: var(--white);
   text-decoration: underline;
   font-weight: 700;
 }
@@ -44,26 +44,26 @@
 .legal-notice-link {
   padding: 4px 10px;
   border: 1px solid rgba(255, 255, 255, 0.6);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   text-decoration: none;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   transition: background 0.15s, border-color 0.15s;
 }
 
 .legal-notice-link:hover {
   background: rgba(255, 255, 255, 0.12);
-  border-color: #fff;
+  border-color: var(--white);
 }
 
 .legal-notice-btn {
-  background: #fff;
-  color: #1d5aa8;
+  background: var(--white);
+  color: var(--primary-bg);
   border: none;
   padding: 4px 12px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   font-weight: 700;
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   transition: opacity 0.2s;
 }
 

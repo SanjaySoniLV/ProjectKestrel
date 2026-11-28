@@ -46,11 +46,11 @@
       return root + '|' + String(scene?.id ?? '');
     }
 
-    function _qfButton(label, title, onClick, extraClass) {
+    function _qfButton(icon, title, onClick, extraClass) {
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'scene-qf-btn' + (extraClass ? ' ' + extraClass : '');
-      b.textContent = label;
+      b.appendChild(KestrelIcon.el(icon));
       b.title = title;
       b.setAttribute('aria-label', title);
       b.addEventListener('click', (e) => { e.stopPropagation(); b.blur(); onClick(); });
@@ -94,7 +94,7 @@
       label.className = 'scene-qf-label';
       label.textContent = 'Did Kestrel sort by sharpness well?';
       box.appendChild(label);
-      box.appendChild(_qfButton('👍', 'Yes', () => {
+      box.appendChild(_qfButton('thumbs-up', 'Yes', () => {
         _qfAnswered.add(_qfSceneKey(scene));
         qfRecordThumbsUp(scene);
         box.replaceChildren();
@@ -103,7 +103,7 @@
         t.textContent = 'Thanks!';
         box.appendChild(t);
       }));
-      box.appendChild(_qfButton('👎', 'No', () => {
+      box.appendChild(_qfButton('thumbs-down', 'No', () => {
         qfOpenSortDialog(scene, 'down');
       }));
     }
@@ -455,7 +455,7 @@
     }
 
     async function qfForget() {
-      if (!window.confirm('Delete all the quality feedback this computer has shared? This also resets your anonymous feedback id.')) return;
+      if (!(await KestrelDialog.confirm('qualityFeedbackForget'))) return;
       try {
         const r = await window.pywebview?.api?.forget_quality_feedback?.();
         if (r && r.success) showToast(`Shared feedback deleted (${r.deleted || 0} submission${r.deleted === 1 ? '' : 's'}).`, 4000);

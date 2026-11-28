@@ -21,6 +21,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import api_bridge  # noqa: E402
+import settings_bridge  # noqa: E402
 import kestrel_telemetry  # noqa: E402
 
 pytestmark = pytest.mark.unit
@@ -82,6 +83,7 @@ class TestRecordQualityThumbsUpBridge:
 
     def _settings(self, monkeypatch, settings):
         monkeypatch.setattr(api_bridge, "load_persisted_settings", lambda: dict(settings))
+        monkeypatch.setattr(settings_bridge, "load_persisted_settings", lambda: dict(settings))
 
     def test_opted_in_sends_one_event(self, monkeypatch, sent):
         self._settings(monkeypatch, {"analytics_opted_in": True, "quality_model": "siglip"})
@@ -162,13 +164,14 @@ const ctx = vm.createContext({
   document: { getElementById: () => box, createElement: (t) => new El(t) },
   window: { pywebview: { api } },
   getSetting: () => mode,
+  KestrelIcon: { el: (name) => new El('i:' + name) },
   Promise, Set, Number, String, console,
 });
 const row = (n, extra) => Object.assign({ filename: n, crop_path: '.kestrel/crop/' + n + '.jpg', quality: 0.5, quality_siglip: 0.4 }, extra);
 const scene = { id: 's1', images: [row('a.jpg'), row('b.jpg'), row('c.jpg', { crop_path: '' })] };
 vm.runInContext(src + '\nthis.__render = qfRenderSceneControl;', ctx);
 ctx.__render(scene);
-const thumbsUp = box.children.find(c => c.textContent === '\u{1F44D}');
+const thumbsUp = box.children.find(c => c.title === 'Yes');
 let clickError = null;
 if (thumbsUp) { try { thumbsUp.handlers.click({ stopPropagation() {} }); } catch (e) { clickError = String(e); } }
 setTimeout(() => process.stdout.write(JSON.stringify({

@@ -16,9 +16,9 @@ Inputs (downloaded out-of-band, paths supplied via CLI flags):
 
 Inputs read from the repository (committed):
 
-  * analyzer/models/labels.txt                -- 500 model species (immutable)
-  * analyzer/models/labels_scispecies.csv     -- model species -> scientific family
-  * analyzer/models/scispecies_dispname.csv   -- scientific family -> display name
+  * tools/model_sources/labels.txt                -- 500 model species (immutable)
+  * tools/model_sources/labels_scispecies.csv     -- model species -> scientific family
+  * tools/model_sources/scispecies_dispname.csv   -- scientific family -> display name
 
 Outputs (committed):
 
@@ -44,6 +44,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MODELS_DIR = REPO_ROOT / 'analyzer' / 'models'
+# Inputs that are only read when the catalog is rebuilt; they don't ship.
+SOURCES_DIR = REPO_ROOT / 'tools' / 'model_sources'
 OUT_DIR = MODELS_DIR / 'birds'
 
 
@@ -342,9 +344,9 @@ def build(ioc_xlsx: Path, alpha_codes_txt: Path) -> None:
     alpha_by_eng = {r['english']: r['code4'] for r in alpha}
 
     print("Reading existing model data")
-    model_labels = _read_model_labels(MODELS_DIR)
-    model_to_family_sci = _read_scispecies(MODELS_DIR)
-    family_display = _read_family_display(MODELS_DIR)
+    model_labels = _read_model_labels(SOURCES_DIR)
+    model_to_family_sci = _read_scispecies(SOURCES_DIR)
+    family_display = _read_family_display(SOURCES_DIR)
     print(f"  -> {len(model_labels)} model labels, {len(family_display)} family display names")
 
     ioc_by_common = {s['common_name']: s for s in ioc}
@@ -556,7 +558,7 @@ def _render_notices() -> str:
         "  curated list of well-established introductions on top of IOC's\n"
         "  native breeding ranges (``INTRODUCED_RANGES``).\n"
         "* Family display names (``family_common``) preserve the existing "
-        "``analyzer/models/scispecies_dispname.csv`` mapping where present and "
+        "``tools/model_sources/scispecies_dispname.csv`` mapping where present and "
         "fall back to IOC's *Family (English)* otherwise.\n"
     )
 
