@@ -6,7 +6,7 @@
       analyzeQueueBtn.addEventListener('click', openAnalyzeDialog);
     }
 
-    // ── Phase 3 Analyze Folders dialog event wiring ─────────────────────────────
+    // ── Analyze Folders dialog event wiring ─────────────────────────────────────
     // The dialog has fully independent state (analyzeDlgRootNodes /
     // analyzeDlgCheckedPaths / analyzeDlgInspectionCache). All persistence and
     // .kestrel deletion happens in the queue worker (per-item flags).
@@ -16,10 +16,10 @@
       document.getElementById('analyzeQueueDlg').close();
     });
 
-    // + Add Folders: multi-select picker → addAnalyzeDlgRoot per pick →
+    // Add Folders: multi-select picker → addAnalyzeDlgRoot per pick →
     // persist each to analyze_recents → re-inspect + render.
     document.getElementById('analyzeDlgLoadFolders')?.addEventListener('click', async () => {
-      if (!hasPywebviewApi) { alert('Folder picker is only available in the desktop app.'); return; }
+      if (!hasPywebviewApi) { await KestrelDialog.notice('desktopOnlyPicker'); return; }
       let pickedPaths = [];
       try {
         if (window.pywebview?.api?.choose_directories) {
@@ -49,7 +49,7 @@
       renderAnalyzeDlgRecentsChips();
     });
 
-    // ── Start Analysis (Phase 3H) ────────────────────────────────────────────
+    // ── Start Analysis ───────────────────────────────────────────────────────
     // Compute per-item flags from the dialog state. If any folder will lose
     // user data, open the confirmation modal. Otherwise start immediately.
     const analyzeDlgAdd = document.getElementById('analyzeDlgAdd');
@@ -83,37 +83,31 @@
           const node = _adlgFindNode(norm);
           const info = analyzeDlgInspectionCache.get(norm);
           const name = node ? node.name : (norm.split('/').filter(Boolean).pop() || norm);
-          const total = (info && info.total) || 0;
-          const processed = (info && info.processed) || 0;
-          const errored = (info && info.errored) || 0;
           const outdated = node ? (typeof isVersionOutdated === 'function' && isVersionOutdated(node)) : false;
-          const isFullyAnalyzed = total > 0 && processed >= total && errored === 0;
-
           const upgradeMode = (typeof analyzeDlgUpgradeModeFor === 'function')
             ? analyzeDlgUpgradeModeFor(norm) : null;
-          if (upgradeMode === 'upgrade') {
+          const plan = window.KestrelAnalyzeEstimate.planFolder(
+            { total: info?.total, processed: info?.processed, errored: info?.errored, outdated, upgradeMode },
+            { reanalyzeUnlocked: analyzeDlgReanalyzeUnlocked, retryErrored });
+          if (plan.kind === 'upgrade') {
             upgradeNorms.push(norm);
             continue;
           }
           analysisNorms.push(norm);
           const opts = {};
-          if (upgradeMode === 'reanalyze') {
+          // An outdated folder can't be resumed from its old .kestrel data, so
+          // re-analysis always starts by erasing it.
+          if (plan.kind === 'reanalyze') {
             opts.delete_kestrel_on_start = true;
-            destructive.push({ path: norm, name, reason: 're-analyze from scratch instead of upgrading to analysis version 3.0' });
-          } else if (outdated) {
-            // Outdated always wipes + re-analyzes (the user picked a folder
-            // analyzed on an older Kestrel; the new pipeline can't safely
-            // resume from old artifacts).
-            opts.delete_kestrel_on_start = true;
-            destructive.push({ path: norm, name, reason: `outdated (pipeline ${folderPipelineLabel(node)} → ${CURRENT_PIPELINE_MAJOR}.0)` });
-          } else if (isFullyAnalyzed) {
-            if (analyzeDlgReanalyzeUnlocked) {
-              opts.delete_kestrel_on_start = true;
-              destructive.push({ path: norm, name, reason: 'fully analyzed — will erase data' });
-            } else {
-              // Worker re-inspects + silently marks done with no .kestrel touch.
-              opts.skip_if_already_done = true;
-            }
+            const reason = plan.reason === 'chosen'
+              ? 're-analyze from scratch instead of upgrading to analysis version 3.0'
+              : plan.reason === 'outdated'
+                ? `outdated (pipeline ${folderPipelineLabel(node)} → ${CURRENT_PIPELINE_MAJOR}.0)`
+                : 'fully analyzed — will erase data';
+            destructive.push({ path: norm, name, reason });
+          } else if (plan.kind === 'skip') {
+            // Worker re-inspects + silently marks done with no .kestrel touch.
+            opts.skip_if_already_done = true;
           }
           // Errored-only folders (partial + errored > 0) don't need wipe;
           // the pipeline's retry_errored logic handles them in-place.
@@ -247,17 +241,17 @@
           setTimeout(() => { try { hideLoadingAnalyzer(); } catch (e) { } }, 30000);
         } else {
           hideLoadingAnalyzer();
-          alert('Failed to start analysis queue:\n\n' + (result?.error || 'Unknown error'));
+          await KestrelDialog.notice('queueStartFailed', { error: result?.error || 'Unknown error' });
         }
       } catch (e) {
         hideLoadingAnalyzer();
-        alert('Failed to start analysis queue:\n\n' + (e.message || e));
+        await KestrelDialog.notice('queueStartFailed', { error: e.message || e });
       } finally {
         if (startBtn) startBtn.disabled = false;
       }
     }
 
-    // Pre-queue confirmation modal (Phase 3H). Lists destructive folders,
+    // Pre-queue confirmation modal. Lists destructive folders,
     // forces an explicit click before .kestrel deletion happens.
     function _openAnalyzeConfirmModal(destructive, onProceed) {
       const dlg = document.getElementById('analyzeConfirmDlg');
@@ -266,11 +260,9 @@
       const cancelBtn = document.getElementById('analyzeConfirmCancel');
       const proceedBtn = document.getElementById('analyzeConfirmProceed');
       if (!dlg || !list || !proceedBtn || !cancelBtn) {
-        // Modal missing — fall back to a native confirm so the user isn't
-        // silently bypassed past the destructive gate.
-        const names = destructive.map(d => `  • ${d.name} (${d.reason})`).join('\n');
-        if (!confirm(`The following folder(s) will lose all user data:\n\n${names}\n\nContinue?`)) return;
-        onProceed();
+        // Modal missing: still ask, so nobody is silently past the destructive gate.
+        const names = destructive.map(d => `• ${d.name} (${d.reason})`).join('\n');
+        KestrelDialog.confirm('reanalyzeErasesData', { names }).then(ok => { if (ok) onProceed(); });
         return;
       }
       if (plural) plural.textContent = destructive.length === 1 ? '' : 's';
@@ -447,7 +439,7 @@
     const queueCancelBtn = document.getElementById('queueCancelBtn');
     if (queueCancelBtn) {
       queueCancelBtn.addEventListener('click', async () => {
-        if (!confirm('Cancel the analysis queue? Pending folders will not be analyzed.')) return;
+        if (!(await KestrelDialog.confirm('queueCancel'))) return;
         try { await apiQueueControl('cancel'); } catch (_) { }
       });
     }
@@ -474,32 +466,9 @@
       });
     }
 
-    // ---- Culling Assistant launcher ----
-    async function openCullingAssistant(rootPath) {
-      if (!window.pywebview?.api) {
-        showToast('Culling Assistant requires desktop mode', 4000);
-        return;
-      }
-      // Prompt to save unsaved changes before opening (using custom dialog)
-      if (dirty) {
-        const userChoice = await showCullingAssistantPrompt();
-        if (userChoice === 'cancel') {
-          return;
-        }
-        if (userChoice === 'save') {
-          await saveCsv();
-        }
-      }
-      try {
-        showToast('Opening Culling Assistant...', 2000);
-        const res = await window.pywebview.api.open_culling_window(rootPath);
-        if (res && !res.success) {
-          showToast('Failed to open Culling Assistant: ' + (res.error || 'Unknown error'), 5000);
-        }
-      } catch (e) {
-        console.error('openCullingAssistant error', e);
-        showToast('Error opening Culling Assistant', 4000);
-      }
+    // ---- Cull mode launcher (js/cull-mode.js) ----
+    function openCullMode(rootPath) {
+      window.KestrelCullMode.enter(rootPath);
     }
 
     // ── Timeline filter bar: "More" popover ───────────────────────────────────────

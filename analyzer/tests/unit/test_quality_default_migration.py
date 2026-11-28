@@ -4,7 +4,6 @@ Settings I/O is redirected to a temp directory; nothing here touches the real se
 """
 
 import json
-import os
 import sys
 from pathlib import Path
 

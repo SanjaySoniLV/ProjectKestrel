@@ -73,9 +73,6 @@
       return window.pywebview.api.get_recovery_status();
     }
 
-    // Phase 3: apiRestoreRecoveryQueue removed — queue-restore feature
-    // replaced by the analyze dialog's analyze_recents chip row.
-
     async function apiClearRecoveryState(clearQueueState = true) {
       if (!window.pywebview?.api?.clear_recovery_state) {
         throw new Error('Desktop API unavailable: clear_recovery_state');
@@ -92,10 +89,9 @@
 
     let _startupRecoveryHandled = false;
 
-    // Phase 3: queue-restore branch removed. This function now only handles
-    // the unclean-shutdown crash-report prompt. Interrupted queues now
+    // Handles the unclean-shutdown crash-report prompt. Interrupted queues
     // surface as recents in the Analyze Folders dialog (analyze_recents
-    // settings key) instead of a startup modal.
+    // settings key), not as a startup modal.
     async function maybeHandleStartupRecovery() {
       if (_startupRecoveryHandled) return;
       _startupRecoveryHandled = true;
@@ -118,52 +114,40 @@
         && (exitReason === 'crash' || exitReason === 'unknown' || exitReason === '');
       if (!hadUncleanShutdown) return;
 
-      const promptText = exitReason === 'crash'
-        ? 'Kestrel detected that the previous session crashed.\n\nSend a crash report now?'
-        : 'Kestrel did not exit cleanly. This is sometimes caused by a system shutdown or power loss — would you still like to send a report?';
-      const sendReport = confirm(promptText);
+      const sendReport = await KestrelDialog.confirm(
+        exitReason === 'crash' ? 'crashReportAfterCrash' : 'crashReportAfterUncleanExit');
       if (sendReport) {
         try {
           const reportResult = await apiSendRecoveryCrashReport();
           if (reportResult && reportResult.success === false) {
-            alert('Could not send crash report:\n\n' + (reportResult.error || 'Unknown error'));
+            await KestrelDialog.notice('crashReportFailed', { error: reportResult.error || 'Unknown error' });
           } else {
             showToast('Crash report sent. Thank you.', 3500);
           }
         } catch (e) {
-          alert('Could not send crash report:\n\n' + (e.message || e));
+          await KestrelDialog.notice('crashReportFailed', { error: e.message || e });
         }
       }
 
       try {
-        // Clear only the unclean-shutdown timestamp; we no longer persist
-        // queue recovery state so the `false` arg is a no-op there.
+        // Clear only the unclean-shutdown timestamp (queue state isn't
+        // persisted, so the `false` arg has nothing else to keep).
         await apiClearRecoveryState(false);
       } catch (_) { }
-    }
-
-    /** Format a duration in seconds to a readable string like "2m 30s". */
-    function formatDuration(secs) {
-      if (!isFinite(secs) || secs < 0) return '–';
-      secs = Math.round(secs);
-      if (secs < 60) return secs + 's';
-      const m = Math.floor(secs / 60), s = secs % 60;
-      if (m < 60) return m + 'm ' + (s > 0 ? s + 's' : '');
-      const h = Math.floor(m / 60), rm = m % 60;
-      return h + 'h ' + (rm > 0 ? rm + 'm' : '');
     }
 
     /** Render the queue panel from a status object. */
     function renderQueuePanel(status) {
       window._lastQueueStatus = status; // store for analyze dialog queue preview
-      // The GPU device was lost (Windows GPU reset). It cannot recover inside
-      // this process, so the banner stays until Kestrel is restarted.
+      // The GPU device was lost (a Windows GPU reset, or a CoreML failure on
+      // macOS). It cannot recover inside this process, so the banner stays
+      // until Kestrel is restarted. The text stays platform-neutral.
       try {
         const gpuBanner = document.getElementById('gpuLostNotice');
         const gpuMsg = document.getElementById('gpuLostMsg');
         if (gpuBanner && gpuMsg) {
           if (status && status.gpu_lost) {
-            gpuMsg.textContent = 'The GPU stopped responding (a Windows GPU reset), so analysis was stopped. '
+            gpuMsg.textContent = 'The GPU stopped responding, so analysis was stopped. '
               + 'Your progress is saved. Restart Kestrel, then analyze the folder again to continue on the GPU.';
             gpuBanner.classList.remove('hidden');
           } else {
@@ -279,7 +263,7 @@
         const overallEl = overallEtaEl;
         const loadingMsg = (cur.current_status_msg || '').toLowerCase().includes('load');
         if (loadingMsg || (cur.processed === 0 && cur.current_status_msg)) {
-          if (overallEl) { overallEl.textContent = `⏳ ${cur.current_status_msg || 'Loading analyzer... please wait'}`; overallEl.classList.remove('hidden'); }
+          if (overallEl) { overallEl.textContent = `${cur.current_status_msg || 'Loading analyzer... please wait'}`; overallEl.classList.remove('hidden'); }
           try { showLoadingAnalyzer(); } catch (e) { }
         } else {
           try { hideLoadingAnalyzer(); } catch (e) { }
@@ -305,7 +289,7 @@
             }
           }
           if (totalRemaining > 5) {
-            overallEtaEl.textContent = `about ${formatDuration(totalRemaining)} left`;
+            overallEtaEl.textContent = `about ${KestrelUtil.formatDuration(totalRemaining)} left`;
             overallEtaEl.classList.remove('hidden');
           } else {
             overallEtaEl.classList.add('hidden');
@@ -452,7 +436,7 @@
     function _setPauseBtnState(btn, paused) {
       const ico = btn.querySelector('.qctl-ico');
       const lbl = btn.querySelector('.qctl-lbl');
-      if (ico) ico.textContent = paused ? '▶' : '⏸';
+      KestrelIcon.set(ico, paused ? 'play' : 'pause');
       if (lbl) lbl.textContent = paused ? 'Resume' : 'Pause';
       btn.title = paused ? 'Resume analysis' : 'Pause analysis';
       btn.setAttribute('aria-pressed', paused ? 'true' : 'false');
@@ -460,8 +444,8 @@
     }
 
     const _ANALYSIS_STATUS_LABELS = {
-      pending: '⏳ In Queue',
-      running: '⚙ Analyzing',
+      pending: 'In Queue',
+      running: 'Analyzing',
       done: '✓ Done',
       error: '✗ Error',
       cancelled: '— Cancelled',
@@ -494,7 +478,7 @@
       div.dataset.path = path;
       div.innerHTML = '<div class="queue-item-header"><span class="queue-item-name"></span>'
         + '<span class="queue-item-status"></span>'
-        + '<button type="button" class="queue-item-load-btn" hidden>📂 Load</button></div>'
+        + '<button type="button" class="queue-item-load-btn" hidden>' + KestrelIcon('folder-open') + ' Load</button></div>'
         + '<div class="queue-item-warning" role="alert" hidden></div>'
         + '<div class="queue-item-error" hidden></div>'
         + '<div class="queue-item-progress" hidden><div class="queue-item-progress-fill"></div></div>'
@@ -541,7 +525,7 @@
       // state so it outlives the run; the pipeline clears it on recovery.
       const warnEl = div.querySelector('.queue-item-warning');
       warnEl.hidden = !item.warning;
-      warnEl.textContent = item.warning ? `⚠ ${item.warning}` : '';
+      warnEl.textContent = item.warning || '';
 
       // An item that errored shows why on the row (full text in the tooltip).
       const errEl = div.querySelector('.queue-item-error');
@@ -581,11 +565,11 @@
     }
 
     const _UPGRADE_LABELS = {
-      pending: '⏳ Queued for analysis version 3',
-      running: '✨ Upgrading to analysis version 3',
+      pending: 'Queued for analysis version 3',
+      running: 'Upgrading to analysis version 3',
       done: '✓ Upgraded to analysis version 3',
       cancelled: '— Upgrade stopped',
-      stopped: '⏸ Upgrade paused',
+      stopped: 'Upgrade paused',
       error: '✗ Upgrade failed',
     };
 
@@ -681,7 +665,7 @@
         info.textContent = 'Waiting for the upgrade ahead of it to finish';
       } else if (isRunning) {
         if (total > 0) info.textContent = `${current} / ${total} photos`;
-        else info.textContent = u.phase === 'loading_model' ? '⏳ Loading models…' : '⏳ Starting…';
+        else info.textContent = u.phase === 'loading_model' ? 'Loading models…' : 'Starting…';
       } else if (u.status === 'done') {
         info.textContent = total > 0 ? `${total} photo${total === 1 ? '' : 's'} upgraded` : 'Up to date';
       } else if (u.status === 'error') {
@@ -1013,7 +997,7 @@
       if (statusEl) {
         const msg = item ? (item.current_status_msg || '') : '';
         const paused = item && item.is_paused;
-        statusEl.textContent = paused ? '⏸ Paused — ' + msg : msg;
+        statusEl.textContent = paused ? 'Paused — ' + msg : msg;
       }
       // Subtle "working" indicator: pulses while the item is analyzing, still when paused.
       const working = !!item && item.status === 'running';
@@ -1125,7 +1109,7 @@
         card.innerHTML = `
         <img class="live-dlg-crop-img" alt="" />
         <div class="ldc-conf">–</div>
-        <div class="ldc-quality">Quality: —</div>
+        <div class="ldc-quality">Quality —</div>
         <div class="ldc-stars">☆☆☆☆☆</div>
         <div class="ldc-species">–</div>
         <div class="ldc-family">–</div>`;
@@ -1161,7 +1145,7 @@
           imgEl._swapSeq = (imgEl._swapSeq || 0) + 1; // drop any load still in flight
           _liveLastCropKeys[i] = '';
           confEl.textContent = '–';
-          qualityEl.textContent = 'Quality: —';
+          qualityEl.textContent = 'Quality —';
           starsEl.textContent = '☆☆☆☆☆';
           spEl.textContent = '–'; spEl.className = 'ldc-species';
           fmEl.textContent = '–'; fmEl.className = 'ldc-family';
@@ -1175,9 +1159,9 @@
 
         const qVal = i < quality.length ? Number(quality[i].quality) : NaN;
         if (Number.isFinite(qVal) && qVal >= 0) {
-          qualityEl.textContent = `Quality: ${qVal.toFixed(3)}`;
+          qualityEl.textContent = `Quality ${qVal.toFixed(3)}`;
         } else {
-          qualityEl.textContent = i < crops.length ? 'Quality: …' : 'Quality: —';
+          qualityEl.textContent = i < crops.length ? 'Quality …' : 'Quality —';
         }
 
         // Live dialog intentionally uses raw quality thresholds (not normalized ratings).
@@ -1231,7 +1215,7 @@
     // Pipeline-written columns are updated from disk; these are kept from memory.
     const _USER_EDITABLE_FIELDS = [
       'rating', 'rating_origin', 'normalized_rating',
-      'culled', 'culled_origin',
+      'culled', 'culled_origin', 'favorite',
       'scene_name',
     ];
 
@@ -1484,9 +1468,8 @@
             _tempKestrelPaths.add(rp);
 
             if (!row.querySelector('.tree-in-progress-hourglass')) {
-              const hg = document.createElement('span');
-              hg.className = 'tree-in-progress-hourglass';
-              hg.textContent = '⏳';
+              const hg = KestrelIcon.el('hourglass');
+              hg.classList.add('tree-in-progress-hourglass');
               const featherEl = row.querySelector('.tree-perch-feather');
               const anchorEl = featherEl || row.querySelector('.tree-icon');
               if (anchorEl && anchorEl.nextSibling) anchorEl.parentNode.insertBefore(hg, anchorEl.nextSibling);

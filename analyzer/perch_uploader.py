@@ -23,7 +23,6 @@ import json
 import os
 import re
 import threading
-import time
 import uuid
 from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -112,16 +111,6 @@ def _opt_float_csv(row, col: str) -> Optional[float]:
         return float(v)
     except (TypeError, ValueError):
         return None
-
-
-def _opt_str_csv(row, col: str) -> Optional[str]:
-    if col not in row.index:
-        return None
-    v = row.get(col)
-    if v is None or (pd is not None and pd.isna(v)):
-        return None
-    s = str(v).strip()
-    return s or None
 
 
 def _parse_capture(row, df) -> Optional[int]:

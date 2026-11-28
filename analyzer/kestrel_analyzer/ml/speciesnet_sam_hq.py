@@ -1057,8 +1057,8 @@ class DetectorSAMHQWrapper:
                     raise
                 try:
                     self.recreate_sessions(target_use_gpu=False)
-                except Exception:
-                    raise last_exc
+                except Exception as recreate_err:
+                    raise last_exc from recreate_err
         if last_exc is not None:
             raise last_exc
         return [], [], [], []
@@ -1078,8 +1078,8 @@ class DetectorSAMHQWrapper:
                     raise
                 try:
                     self.recreate_sessions(target_use_gpu=False)
-                except Exception:
-                    raise last_exc
+                except Exception as recreate_err:
+                    raise last_exc from recreate_err
         if last_exc is not None:
             raise last_exc
         return None

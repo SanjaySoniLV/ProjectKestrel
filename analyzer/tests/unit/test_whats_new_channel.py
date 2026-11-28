@@ -14,6 +14,7 @@ import pytest
 
 ANALYZER = Path(__file__).resolve().parents[2]
 WELCOME_JS = str(ANALYZER / "js" / "welcome.js")
+UTIL_JS = str(ANALYZER / "js" / "util.js")
 
 pytestmark = pytest.mark.unit
 
@@ -21,7 +22,7 @@ NODE = shutil.which("node")
 
 _HARNESS = r"""
 const vm = require('vm'), fs = require('fs');
-const [path, channel] = process.argv.slice(1);
+const [utilPath, path, channel] = process.argv.slice(1);
 const banner = { innerHTML: '', classList: { remove() {}, add() {} }, querySelector: () => null };
 const ctx = vm.createContext({
   console,
@@ -33,6 +34,12 @@ const ctx = vm.createContext({
   document: { getElementById: (id) => (id === 'welcomeWhatsNew' ? banner : null) },
 });
 ctx.window.document = ctx.document;
+// js/util.js loads first in the page and provides the global escapeHtml.
+vm.runInContext(fs.readFileSync(utilPath, 'utf8'), ctx);
+ctx.escapeHtml = ctx.window.escapeHtml;
+// js/icons.js loads first in the page and provides KestrelIcon.
+vm.runInContext(fs.readFileSync(path.replace(/welcome\.js$/, 'icons.js'), 'utf8'), ctx);
+ctx.KestrelIcon = ctx.window.KestrelIcon;
 // The sanitizer needs a real DOM; this test only checks which bullets are included.
 const src = fs.readFileSync(path, 'utf8').replace('var sr = sanitizeRichText;', 'var sr = function (h) { return String(h); };');
 if (!src.includes('var sr = function')) throw new Error('sanitizer hook not found');
@@ -44,7 +51,7 @@ PRICING = "timing and pricing</b> options are now available in the app"
 
 
 def _render(channel):
-    out = subprocess.run([NODE, "-e", _HARNESS, WELCOME_JS, channel],
+    out = subprocess.run([NODE, "-e", _HARNESS, UTIL_JS, WELCOME_JS, channel],
                          capture_output=True, text=True, check=True, encoding="utf-8")
     html = json.loads(out.stdout)["html"]
     assert "analysis version 3.0" in html  # the note rendered

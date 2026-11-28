@@ -21,8 +21,7 @@ Bootstrap reconciliation reads BOTH this file (folder truth) and the legacy
 set used to compute "packs to download". New merges write here; the legacy
 field is left untouched but no longer the dedup driver.
 
-Atomic-write pattern mirrors `settings_utils.py` / `_to_csv_atomic`:
-write to tempfile, flush+fsync, then `os.replace` over the canonical file.
+Saves go through `kestrel_analyzer.atomic_io.write_json_atomic`.
 A per-folder in-process lock serializes saves because the live job's
 `_on_pack_merged` callback and the resume worker can both write concurrently.
 """
@@ -31,11 +30,11 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Any
+
+from kestrel_analyzer.atomic_io import write_json_atomic
 
 CLOUD_FOLDER_STATE_FILENAME = "kestrel_cloudcompute.json"
 SCHEMA_VERSION = 1
@@ -46,20 +45,7 @@ _LOCKS: dict[str, threading.RLock] = {}
 _LOCKS_GLOBAL = threading.Lock()
 
 
-def _retry_on_file_lock(op, attempts: int = 12, delay: float = 0.02):
-    """Run ``op()``, retrying briefly on Windows' transient file-sharing errors.
 
-    Canonical implementation: ``kestrel_analyzer.database.retry_on_file_lock``.
-    This copy exists so folder-local cloud state does not import pandas via
-    ``database``.
-    """
-    for attempt in range(attempts):
-        try:
-            return op()
-        except PermissionError:
-            if attempt == attempts - 1:
-                raise
-            time.sleep(delay * (attempt + 1))
 
 
 def _lock_for(folder_abs: str) -> threading.RLock:
@@ -101,33 +87,8 @@ def _read_raw(folder: Path) -> dict:
 
 
 def _write_atomic(folder: Path, data: dict) -> None:
-    target_dir = folder / ".kestrel"
-    target_dir.mkdir(parents=True, exist_ok=True)
-    final_path = _state_path(folder)
-    fd, tmp_path = tempfile.mkstemp(
-        prefix=CLOUD_FOLDER_STATE_FILENAME + ".",
-        suffix=".tmp",
-        dir=str(target_dir),
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, sort_keys=False)
-            # flush() errors (ENOSPC, EIO) must propagate: a partial temp
-            # file must not be os.replace'd over a good destination.
-            f.flush()
-            try:
-                os.fsync(f.fileno())
-            except OSError:
-                # fsync can legitimately fail on some network filesystems;
-                # the replace below still gives readers an all-or-nothing view.
-                pass
-        _retry_on_file_lock(lambda: os.replace(tmp_path, final_path))
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    write_json_atomic(_state_path(folder), data, indent=2, newline=None,
+                      prefix=CLOUD_FOLDER_STATE_FILENAME + ".", suffix=".tmp")
 
 
 def _utc_now_iso() -> str:
@@ -155,10 +116,6 @@ def list_merged_packs(folder: Path | str, job_id: str) -> list[str]:
     block = (state.get("jobs") or {}).get(job_id) or {}
     packs = block.get("mergedPacks") or []
     return [str(p) for p in packs if isinstance(p, str)]
-
-
-def is_pack_merged(folder: Path | str, job_id: str, pack_name: str) -> bool:
-    return pack_name in list_merged_packs(folder, job_id)
 
 
 def mark_pack_merged(folder: Path | str, job_id: str, pack_name: str) -> None:

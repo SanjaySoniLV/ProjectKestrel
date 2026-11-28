@@ -16,7 +16,7 @@
 }
 #tutorialHighlight {
   position: fixed;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   box-shadow: 0 0 0 9999px rgba(0,0,0,0.50);
   border: 2px solid var(--brand);
   transition: top .25s ease, left .25s ease, width .25s ease, height .25s ease;
@@ -28,7 +28,7 @@
   position: fixed;
   background: #141820;
   border: 1px solid var(--brand);
-  border-radius: 14px;
+  border-radius: var(--radius-xl);
   padding: 20px 22px 16px;
   width: 380px;
   max-width: calc(100vw - 32px);
@@ -44,7 +44,7 @@
   color: var(--brand);
 }
 .tutorial-counter {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--muted);
   margin-bottom: 4px;
 }
@@ -64,7 +64,7 @@
 }
 .tutorial-dot.active { background: var(--brand); }
 .tutorial-body {
-  font-size: 13px;
+  font-size: var(--fs-md);
   line-height: 1.6;
   color: var(--text);
   margin-bottom: 16px;
@@ -74,7 +74,7 @@
   padding: 1px 5px;
   border-radius: 3px;
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .tutorial-actions {
   display: flex;
@@ -84,26 +84,26 @@
 .tutorial-skip {
   margin-right: auto;
   color: var(--muted) !important;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 4px 10px;
   background: none;
   border: 1px solid #333;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 .tutorial-skip:hover { border-color: #555; }
 .tut-btn {
   padding: 5px 14px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   border: 1px solid #333;
   background: #1a1e28;
   color: var(--text);
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 600;
   transition: background .15s, border-color .15s;
 }
-.tut-btn:hover { background: #1d2230; border-color: var(--brand); }
+.tut-btn:hover { background: var(--chip); border-color: var(--brand); }
 .tut-btn.primary {
   background: #1a3a5a;
   border-color: var(--brand);
@@ -131,9 +131,9 @@
   gap: 6px;
   background: rgba(74,163,255,0.12);
   border: 1px solid rgba(74,163,255,0.25);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 8px 12px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--brand);
   margin-bottom: 14px;
@@ -143,17 +143,18 @@
   0%, 100% { opacity: 0.8; }
   50%      { opacity: 1; }
 }
-.tutorial-nudge::before { content: '\203A\00A0'; font-size: 14px; }
+.tutorial-nudge::before { content: '\203A\00A0'; font-size: var(--fs-base); }
 /* ═══ Tutorial: custom-body cards (workflow + editor picker) ═══ */
 #tutorialCard.tut-card-workflow {
   width: 560px;
 }
-#tutorialCard.tut-card-editor {
+#tutorialCard.tut-card-editor,
+#tutorialCard.tut-card-region {
   width: 480px;
 }
 
 .tut-workflow-intro {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
   margin-bottom: 10px;
 }
@@ -161,13 +162,13 @@
   display: flex;
   gap: 4px;
   margin-bottom: 10px;
-  border-bottom: 1px solid #1d2230;
+  border-bottom: 1px solid var(--chip);
 }
 .tut-wf-tab {
   background: transparent;
   border: none;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   padding: 8px 10px;
   cursor: pointer;
@@ -197,10 +198,10 @@
   min-width: 90px;
   max-width: 150px;
   background: #10141c;
-  border: 1px solid #2a3040;
-  border-radius: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   padding: 10px 8px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   text-align: center;
   color: var(--text);
@@ -212,28 +213,28 @@
 }
 .tut-wf-node span {
   font-weight: 600;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .tut-wf-node small {
   display: block;
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-weight: 400;
   margin-top: 2px;
 }
 .tut-wf-caption {
   margin-top: 12px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text);
   line-height: 1.5;
   text-align: center;
 }
 .tut-wf-caption kbd {
   background: #1a1f2b;
-  border: 1px solid #2a3040;
-  border-radius: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
   padding: 1px 5px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-family: inherit;
 }
 .tut-wf-node.accent {
@@ -255,7 +256,7 @@
 .tut-wf-arrow {
   align-self: center;
   color: var(--muted);
-  font-size: 18px;
+  font-size: var(--fs-xl);
   font-weight: 700;
   padding: 0 2px;
 }
@@ -268,16 +269,16 @@
 }
 .tut-workflow-hint {
   margin-top: 10px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--muted);
   line-height: 1.5;
-  border-top: 1px solid #1d2230;
+  border-top: 1px solid var(--chip);
   padding-top: 8px;
 }
 
 /* Editor picker inside tutorial card */
 .tut-editor-intro {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--muted);
   margin-bottom: 12px;
   line-height: 1.5;
@@ -293,11 +294,11 @@
   justify-content: center;
   padding: 10px 12px;
   background: #10141c;
-  border: 1px solid #2a3040;
-  border-radius: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   color: var(--text);
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 600;
   text-align: center;
   transition: border-color .15s, background .15s;
@@ -321,9 +322,37 @@
 .tut-editor-label { flex: 1 1 auto; }
 .tut-editor-foot {
   margin-top: 12px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--muted);
   text-align: center;
+}
+
+/* Region picker inside tutorial card (same setting as Settings → Species & Region) */
+.tut-region-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 10px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  background: #10141c;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.tut-region-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-md);
+  color: var(--text);
+  cursor: pointer;
+  min-width: 0;
+}
+.tut-region-opt span { overflow-wrap: anywhere; }
+.tut-region-empty {
+  grid-column: 1 / -1;
+  font-size: var(--fs-sm);
+  color: var(--muted);
 }
 
 /* Loading indicator inside a tutorial card (shown while samples load) */
@@ -335,8 +364,8 @@
   padding: 8px 10px;
   background: rgba(74, 163, 255, 0.08);
   border: 1px solid rgba(74, 163, 255, 0.25);
-  border-radius: 8px;
-  font-size: 12px;
+  border-radius: var(--radius-md);
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--brand);
 }
@@ -355,8 +384,8 @@
 .tut-inline-foot {
   margin-top: 12px;
   padding-top: 10px;
-  border-top: 1px solid #1d2230;
-  font-size: 12px;
+  border-top: 1px solid var(--chip);
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 .tut-inline-foot a {

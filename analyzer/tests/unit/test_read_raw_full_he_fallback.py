@@ -11,7 +11,6 @@ manually during development.
 from __future__ import annotations
 
 import io
-import os
 from pathlib import Path
 import sys
 from unittest.mock import MagicMock, patch

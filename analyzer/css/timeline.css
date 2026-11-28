@@ -10,26 +10,26 @@
   gap: 6px;
   background: #1a202e;
   border: 1px solid #2a344d;
-  color: #cbd2dc;
+  color: var(--text-2);
   padding: 6px 12px;
-  border-radius: 6px;
-  font-size: 12px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
   cursor: pointer;
   transition: all 0.15s ease;
 }
 .action-btn:hover {
-  background: #252d40;
+  background: var(--hover);
   border-color: #3a4a6d;
-  color: #fff;
+  color: var(--white);
 }
 .action-btn i {
   font-style: normal;
-  font-size: 14px;
+  font-size: var(--fs-base);
 }
 
 .action-btn i {
   font-style: normal;
-  font-size: 14px;
+  font-size: var(--fs-base);
 }
 
 /* ---- Timeline view (group-by-capture-time) ---- */
@@ -41,7 +41,7 @@
   position: sticky;
   top: calc(var(--filter-bar-h) + var(--folder-header-h)); /* below the filter bar + folder-group-header */
   z-index: 8;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -114,13 +114,13 @@
 }
 
 .timeline-node-time {
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 600;
   color: #9ab4cc;
 }
 
 .timeline-node-count {
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .timeline-node-untimed .timeline-dot {
@@ -150,7 +150,7 @@
   padding: 8px 16px;
   background: rgba(14, 17, 23, 0.95);
   backdrop-filter: blur(8px);
-  border-bottom: 1px solid #1d2230;
+  border-bottom: 1px solid var(--chip);
 }
 
 .timeline-filter-bar.hidden {
@@ -161,32 +161,35 @@
   flex: 1 1 240px;
   min-width: 200px;
   height: 32px;
-  font-size: 13px;
+  font-size: var(--fs-md);
 }
 
-.tfb-field {
+/* Review state: the shared segmented toggle, framed to match the View
+   button's height and border. */
+.tfb-review-seg {
+  height: 32px;
+  align-items: stretch;
+  border: 1px solid var(--border);
+}
+.tfb-review-seg > button {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  margin: 0;
-}
-
-.tfb-label {
-  font-size: 12px;
-  color: var(--muted);
   white-space: nowrap;
 }
 
-.tfb-conf {
+/* Controls inside the View menu sit at the right end of their row. */
+.tfb-more-popover .tfb-conf {
   width: 70px;
-  height: 30px;
-  font-size: 12px;
+  height: 28px;
+  margin-left: auto;
+  font-size: var(--fs-sm);
   padding: 0 8px;
 }
 
 .tfb-sort {
-  height: 30px;
-  font-size: 12px;
+  height: 28px;
+  margin-left: auto;
+  font-size: var(--fs-sm);
   padding: 0 8px;
 }
 
@@ -195,16 +198,24 @@
 }
 
 .tfb-more-btn {
-  height: 30px;
-  font-size: 12px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-sm);
   padding: 0 12px;
-  background: #0e1117;
-  border: 1px solid #2a3040;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+}
+
+.tfb-more-btn .tfb-caret {
+  color: var(--muted);
+  font-size: var(--fs-2xs);
 }
 
 .tfb-more-btn[aria-expanded="true"] {
-  background: #173253;
-  border-color: #214c7d;
+  background: var(--hover);
+  border-color: var(--focus);
 }
 
 .tfb-more-popover {
@@ -212,11 +223,11 @@
   top: calc(100% + 6px);
   right: 0;
   z-index: 30;
-  min-width: 260px;
-  padding: 10px 12px;
-  background: #0e1117;
-  border: 1px solid #2a3040;
-  border-radius: 8px;
+  min-width: 280px;
+  padding: 10px 14px 12px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
   display: flex;
   flex-direction: column;
@@ -227,11 +238,19 @@
   display: none;
 }
 
+.tfb-more-popover .tfb-popover-heading {
+  margin: 6px 0 -2px;
+}
+
+.tfb-more-popover .tfb-popover-heading:first-child {
+  margin-top: 0;
+}
+
 .tfb-popover-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text);
   cursor: pointer;
 }
@@ -239,3 +258,6 @@
 .tfb-popover-row input[type="checkbox"] {
   margin: 0;
 }
+
+/* Heart on the View button while "Only scenes with favorites" is on. */
+.tfb-more-btn .tfb-fav-mark { color: var(--favorite); }

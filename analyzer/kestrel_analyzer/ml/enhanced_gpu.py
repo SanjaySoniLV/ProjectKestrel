@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from ..atomic_io import write_json_atomic
+
 # Models that may run on the vendor EP when they pass validation.
 ROUTABLE_KINDS = ("detector", "sam_enc", "bird_species")
 # Validation thresholds (ML time only, steady state after warm-up).
@@ -153,10 +155,7 @@ def _read_json(path: Path) -> Optional[dict]:
 
 def _write_json(path: Path, data: dict) -> None:
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
+        write_json_atomic(path, data, indent=2, newline=None)
     except Exception as e:
         _log("warn", f"could not write {path.name}: {e}")
 
@@ -692,8 +691,7 @@ def run_setup(progress: Optional[ProgressFn] = None, cancel: Optional[Callable[[
             _log("info", f"setup: hardware {json.dumps(state['hardware'])}")
             return _finish(state)
         if cancel():
-            state["reason"] = "Cancelled."
-            return _finish(state)
+            return _cancelled(state)
         import onnxruntime as ort
         hw = enumerate_hardware()
         state["hardware"] = hw
@@ -714,8 +712,7 @@ def run_setup(progress: Optional[ProgressFn] = None, cancel: Optional[Callable[[
             if res is None:
                 res = _run_validator_inprocess(ep, progress)
             if res.get("cancelled"):
-                state["reason"] = "Cancelled."
-                return _finish(state)
+                return _cancelled(state)
             models = {r["kind"]: r for r in res["models"] if isinstance(r, dict) and "kind" in r}
             n_ok = sum(1 for r in models.values() if r.get("enabled"))
             _log("info", f"setup: {ep}: {n_ok}/{len(ROUTABLE_KINDS)} models passed; child exit "
@@ -737,6 +734,13 @@ def run_setup(progress: Optional[ProgressFn] = None, cancel: Optional[Callable[[
         state["reason"] = f"{type(e).__name__}: {e}"
         _log("warn", f"setup crashed: {state['reason']}")
         return _finish(state)
+
+
+def _cancelled(state: dict) -> dict:
+    """Cancel means nothing changed: the saved state (a working setup, if any) is left as it was."""
+    state.update(reason="Cancelled.", cancelled=True, finished=int(time.time()))
+    _log("info", "setup cancelled; saved state left unchanged")
+    return state
 
 
 def _finish(state: dict) -> dict:

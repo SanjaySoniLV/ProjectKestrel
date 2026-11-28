@@ -200,8 +200,9 @@ def folder_regions(kestrel_dir: str) -> List[str]:
 _cache_lock = threading.Lock()
 _index_cache: "OrderedDict[str, tuple]" = OrderedDict()
 # Bounded by memory, not folder count: a library of many day-folders searched
-# together (one smart_search call per folder) used to cycle through a 4-entry
-# LRU and re-read every folder's embeddings, CSV and scenedata on each query.
+# together (one smart_search call per folder) would cycle through a small
+# entry-count LRU and re-read every folder's embeddings, CSV and scenedata on
+# each query.
 # Matrices are cached as float16 (the on-disk precision), ~1.5 KB per vector,
 # so 80k photos with a crop + a frame vector each is roughly 0.3 GB.
 _INDEX_CACHE_BYTES = 768 * 1024 * 1024

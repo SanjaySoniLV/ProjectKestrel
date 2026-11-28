@@ -3,8 +3,7 @@
     // Kestrel keys a database row to a photo by name and location, and the
     // filesystem lets the user change both without telling the app. Moving
     // images out of a folder leaves their analysis behind; renaming one orphans
-    // its row. None of that used to be visible — the folder simply showed the
-    // wrong thing, silently.
+    // its row. Without a check, the folder would silently show the wrong thing.
     //
     // This module runs a diff after every folder load (off the critical path:
     // the CSV renders first, the diff arrives later), badges the affected
@@ -157,9 +156,8 @@
                 existing.title = summary;
                 return;
             }
-            const warn = document.createElement('span');
-            warn.className = 'tree-repair-warn';
-            warn.textContent = '⚠';
+            const warn = KestrelIcon.el('warning');
+            warn.classList.add('tree-repair-warn');
             warn.title = summary;
             // Sits on the right edge beside the other status glyphs
             // (tree-perch-feather, tree-in-progress-hourglass).

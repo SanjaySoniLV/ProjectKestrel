@@ -12,7 +12,7 @@ header {
   height: 100%;
   background: linear-gradient(180deg, rgba(17, 19, 24, .95), rgba(17, 19, 24, .85));
   backdrop-filter: blur(8px);
-  border-right: 1px solid #1d2230;
+  border-right: 1px solid var(--chip);
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -23,14 +23,14 @@ header {
   width: 5px;
   flex: 0 0 5px;
   height: 100%;
-  background: #1d2230;
+  background: var(--chip);
   cursor: col-resize;
   z-index: 6;
   transition: background .15s;
 }
 .sidebar-resizer:hover,
 .sidebar-resizer.dragging {
-  background: #3a84e6;
+  background: var(--focus);
 }
 
 .wrap {
@@ -76,14 +76,28 @@ main {
 /* Column divider between grid and preview panel */
 .divider {
   width: var(--divider-w);
-  background: #1f2533;
+  background: var(--divider);
   cursor: col-resize;
 }
 
 .divider:hover {
-  background: #2a3040;
+  background: var(--border);
 }
 
 .divider:active {
-  background: #3a84e6;
+  background: var(--focus);
 }
+
+/* App title row in the sidebar header. */
+.app-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 8px;
+}
+.app-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.app-title-logo { height: 32px; }

@@ -29,6 +29,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import api_bridge
+import settings_bridge
 import kestrel_telemetry
 import queue_manager
 
@@ -398,6 +399,7 @@ class TestRecordDonateEventBridge:
 
     def _settings(self, monkeypatch, settings):
         monkeypatch.setattr(api_bridge, "load_persisted_settings", lambda: dict(settings))
+        monkeypatch.setattr(settings_bridge, "load_persisted_settings", lambda: dict(settings))
 
     def test_opted_out_sends_nothing(self, monkeypatch, sent):
         self._settings(monkeypatch, {"analytics_opted_in": False})

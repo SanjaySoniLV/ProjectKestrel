@@ -610,7 +610,7 @@
         : null;
     }
 
-    // Update the scene-viewer "Exp Comp (+#.##EV)" label with the exposure
+    // Update the scene-viewer "Exposure Adjustment (+#.## EV)" label with the exposure
     // compensation actually applied to the current image's preview = the
     // strength-scaled exposure_correction for the selected row.
     function updateExpCompEvLabel() {

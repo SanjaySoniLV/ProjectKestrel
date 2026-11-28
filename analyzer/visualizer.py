@@ -32,7 +32,7 @@ import sys
 import threading
 import time
 
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from http.server import SimpleHTTPRequestHandler
 from datetime import datetime, timezone
 from typing import Optional, TextIO
 
@@ -40,10 +40,11 @@ from typing import Optional, TextIO
 from settings_utils import (
     load_persisted_settings,
     save_persisted_settings,
-    debug, info, warn, error, log,
+    info, warn, error, log,
 )
 from queue_manager import _queue_manager
 from api_bridge import Api
+from local_server import HOST, bind_server_with_fallback
 
 # Telemetry — failsafe import (never blocks startup)
 try:
@@ -54,43 +55,6 @@ except ImportError:
     except ImportError:
         _telemetry = None  # type: ignore[assignment]
 
-HOST = '127.0.0.1'
-
-# How many sequential ports past the requested one to try before giving up and
-# letting the OS pick a free port (bind to 0). Keeps the URL predictable in the
-# common case while surviving a busy port (e.g. a stale instance still exiting).
-PORT_FALLBACK_TRIES = 8
-
-
-def _bind_server_with_fallback(preferred_port, handler):
-    """Bind a ThreadingHTTPServer on 127.0.0.1, trying a few ports.
-
-    Tries ``preferred_port`` first, then the next ``PORT_FALLBACK_TRIES`` ports,
-    and finally falls back to an OS-assigned free port (bind to 0). Returns
-    ``(server, port)`` where ``port`` is the port actually bound. Raises
-    ``OSError`` only if every candidate — including the OS-assigned one — fails.
-    """
-    candidates = [preferred_port + offset for offset in range(PORT_FALLBACK_TRIES + 1)]
-    candidates.append(0)  # last resort: let the OS hand us any free port
-    last_exc = None
-    for candidate in candidates:
-        try:
-            server = ThreadingHTTPServer((HOST, candidate), handler)
-        except OSError as exc:
-            last_exc = exc
-            continue
-        bound_port = server.server_address[1]
-        if candidate not in (preferred_port, 0):
-            log(f'Port {preferred_port} unavailable; using {bound_port} instead.')
-        elif candidate == 0:
-            log(f'Ports {preferred_port}-{preferred_port + PORT_FALLBACK_TRIES} '
-                f'unavailable; OS assigned port {bound_port}.')
-        return server, bound_port
-    raise OSError(
-        f'Could not bind an HTTP server on {HOST}: no free port found near '
-        f'{preferred_port}'
-    ) from last_exc
-
 # One-time settings-migration key that flags whether the 2026-03 legal-consent
 # self-heal has already run for this install. See ``_apply_legal_upgrade_self_heal``.
 LEGAL_SELF_HEAL_MIGRATION_KEY = 'legal_upgrade_self_heal_2026_03'
@@ -100,9 +64,8 @@ ALLOWED_ROOT = os.environ.get('KESTREL_ALLOWED_ROOT')
 if ALLOWED_ROOT:
     ALLOWED_ROOT = os.path.abspath(os.path.expanduser(ALLOWED_ROOT))
 
-# Editor-launch allowlists now live in ``api_bridge`` (the only surface that
-# can invoke ``launch()``). This module only serves static files and does not
-# need a copy. See FINDING-07.
+# Editor-launch allowlists live in ``api_bridge`` (the only surface that can
+# invoke ``launch()``). This module only serves static files.
 
 _RUNTIME_LOG_HANDLE: Optional[TextIO] = None
 
@@ -688,7 +651,7 @@ def _mark_session_exit_reason(reason: str, source: str = 'unspecified') -> None:
         _verify_exit_reason_persisted('exit_reason', reason)
     except Exception as exc:
         # Runs during OS shutdown or from the crash handler, so it must not
-        # raise — but it should no longer vanish without a trace either.
+        # raise, but it must not vanish without a trace either.
         warn(
             f'{_SHUTDOWN_TAG} exit_reason: FAILED to record reason={reason!r} '
             f'source={source}: {exc}'
@@ -749,7 +712,7 @@ def _safe_under(base: str, candidate: str) -> bool:
     """Return True iff ``candidate`` resolves to a path under ``base``.
 
     Used to jail the ``translate_path`` fallbacks against URL-encoded or raw
-    ``..`` traversal segments in frozen builds (FINDING-03).
+    ``..`` traversal segments in frozen builds.
     """
     if not base or not candidate:
         return False
@@ -816,7 +779,7 @@ class Handler(SimpleHTTPRequestHandler):
 
         Checks multiple locations, each jailed under its respective base with
         ``_safe_under`` so a crafted request like ``/../../etc/passwd`` cannot
-        escape the bundle. See FINDING-03.
+        escape the bundle.
         """
         # Try the normal translation first — SimpleHTTPRequestHandler already
         # strips '..' via posixpath.normpath, so this is the trusted resolver.
@@ -857,11 +820,11 @@ class Handler(SimpleHTTPRequestHandler):
         """Inject conservative security headers on every response.
 
         * ``Content-Security-Policy`` — 'self' for all resources plus
-          inline styles (the existing visualizer.html/culling.html rely on
+          inline styles (visualizer.html relies on
           ``<style>`` blocks and ``style=""`` attributes). No inline scripts,
           no remote scripts, no iframes, no form targets outside the app.
-          This is the fix for the RCE half of FINDING-01: even if an attacker
-          lands arbitrary HTML into the DOM, they cannot execute script.
+          Even if an attacker lands arbitrary HTML into the DOM, they cannot
+          execute script.
         * ``X-Content-Type-Options`` — prevent MIME-sniffing.
         * ``X-Frame-Options`` — the pywebview shell already disallows this,
           but the server-side header closes the loophole if the user ever
@@ -870,13 +833,13 @@ class Handler(SimpleHTTPRequestHandler):
         """
         self.send_header('Cache-Control', 'no-store')
         # Note on ``'unsafe-inline'`` for ``script-src``: the existing
-        # ``visualizer.html`` / ``culling.html`` bundle a large inline
+        # ``visualizer.html`` bundles a large inline
         # ``<script>`` block and at least one inline ``onclick=`` handler.
         # Moving all of that behind hashes or nonces is a much bigger change
-        # than this security pass. The primary XSS-to-RCE chain (FINDING-01)
-        # is already closed at the DOM level: the ``sceneName`` innerHTML
-        # sink was replaced with ``textContent`` construction, and
-        # ``Api.open_url`` now rejects ``file:``/``javascript:``/UNC URLs.
+        # than it is worth today. Script injection is closed at the DOM
+        # level instead: user text such as ``sceneName`` is built with
+        # ``textContent``, and ``Api.open_url`` rejects
+        # ``file:``/``javascript:``/UNC URLs.
         # The CSP below is defense-in-depth — it still blocks remote
         # script loads, ``eval``-style CSS injection, plugin embeds, and
         # form submission to third parties.
@@ -1108,7 +1071,7 @@ def _run_api_probe(args) -> int:
     if target == 'visualizer':
         try:
             _chdir_to_static_root()
-            server = ThreadingHTTPServer((HOST, args.port), Handler)
+            server, args.port = bind_server_with_fallback(args.port, Handler)
         except Exception as exc:
             _write_result(args.probe_output, {
                 'ok': False,
@@ -1327,7 +1290,7 @@ def main():
     # files (assets/, visualizer files) are served correctly. The frozen
     # PyInstaller branch prefers the bundled _internal/ folder.
     _chdir_to_static_root()
-    server, args.port = _bind_server_with_fallback(args.port, Handler)
+    server, args.port = bind_server_with_fallback(args.port, Handler)
     log(f'Serving visualizer at http://{HOST}:{args.port}/  (Press Ctrl+C to stop)')
     log('HTTP surface: static-file GET only. Control routes permanently removed.')
 
@@ -1550,35 +1513,19 @@ def main():
         webview.start(debug=_kestrel_debug)
         _webview_returned = True
     finally:
-        # Record the clean exit FIRST, before any teardown work — but only if
+        # Record the clean exit FIRST, before any teardown work, and only if
         # webview.start() actually returned.
         #
-        # The gate matters: this try opens ~175 lines above webview.start(), so
-        # the finally also runs when Api(), create_window() or webview.start()
-        # raises. Marking those 'clean' would suppress the recovery prompt for
-        # a genuine startup crash — and writing it early makes that worse than
-        # it was, because the window between this line and the top-level
-        # handler's 'crash' now spans the whole teardown below. A hang there
-        # (or the user force-quitting through it) would leave 'clean' standing
-        # for a session that crashed, which is the exact inverse of the bug
-        # this change fixes.
+        # First, because the teardown below can block indefinitely
+        # (server.shutdown() waits on serve_forever) or be cut short by the OS
+        # reaping the process during quit; written last, the 'clean' marker
+        # would be lost and the next launch would report a false unclean
+        # shutdown. Past the gate the user has quit, so the exit really is
+        # clean; nothing below can make it unclean.
         #
-        # Past the gate, the user has quit and the exit really is clean;
-        # everything below is best-effort housekeeping that cannot
-        # retroactively make it unclean.
-        #
-        # This used to run at the very end of the block, after the cloud-upload
-        # signal, two cache cleanups and server.shutdown(). Any of those can
-        # block indefinitely (server.shutdown() waits for the serve_forever
-        # loop, which a wedged request handler can hold open) or be cut short
-        # by the OS reaping the process during quit. When that happened the
-        # 'clean' marker was never written, app_session_exit_reason stayed
-        # 'unknown', and the *next* launch reported a false unclean shutdown.
-        #
-        # Crash reports show exactly this: prior-session logs that stop partway
-        # through the teardown — e.g. on the cleanup_culling_cache line — with
-        # no 'Server stopped.' and no clean_exit lines, followed by a recovery
-        # prompt on the following launch.
+        # Only if webview.start() returned, because this finally also runs when
+        # Api(), create_window() or webview.start() raises, and marking those
+        # 'clean' would hide a genuine startup crash.
         #
         # Ordering is still correct for the non-clean cases:
         #   - shutdown_watch's 'os_shutdown' and the crash handler's 'crash'
@@ -1624,8 +1571,8 @@ def main():
         # The exit reason is already persisted (top of this block). This line
         # only records that the teardown itself ran to completion: a log tail
         # that reaches clean_exit but never reaches here identifies a hang or
-        # kill during shutdown, which is still worth diagnosing even though it
-        # no longer misreports as a crash.
+        # kill during shutdown, which is worth diagnosing even though it is
+        # not reported as a crash.
         _log_shutdown_state('main: exit path complete', pid=os.getpid())
 
 

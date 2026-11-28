@@ -42,10 +42,10 @@ Kestrel shows a close-up of the bird alongside the full frame. Because the scene
 ![Scene view](readme_imgs/scene-view.png)
 
 ### Step 4: Cull the bulk
-The Culling Assistant splits your photos into Accept and Reject piles from simple rules — a minimum quality bar, and how many frames to keep per scene. Adjust, review the rejects, click Done.
+Cull mode walks the folder scene by scene and asks one question of every photo: keep it or not. Kestrel starts you with suggested picks from a quality bar and a minimum to keep per scene, shown dotted until you confirm them. Press Enter to confirm a scene and move on, then Finish to move the rejects. Run a second, stricter pass on what you kept, and step back to any earlier pass from Culling history.
 
 **Kestrel moves. It never deletes.** Rejected photos go to a `Kestrel Rejects` folder. Archive them or delete them yourself, whenever you're ready, on your own terms.
-![Culling Assistant](readme_imgs/culling-assistant.png)
+![Cull mode](readme_imgs/culling-assistant.png)
 
 ### Step 5: Search by species
 Search your whole library by *what* you photographed, not *when*. Across every folder, every outing, every year of shooting.
@@ -168,22 +168,26 @@ ProjectKestrel/
 │   ├── settings_utils.py     # settings.json I/O with schema validation
 │   ├── cli.py                # Headless CLI entry
 │   ├── visualizer.html       # UI markup (all dialogs live here)
-│   ├── js/                   # UI logic — vanilla JS modules, no framework
-│   ├── css/                  # Split stylesheets (base, layout, grid, dialogs/…)
-│   ├── culling.html          # Culling Assistant window
+│   ├── js/                   # UI logic: ~50 vanilla JS modules, no framework
+│   ├── css/                  # Stylesheets (design tokens in base.css, dialogs/…)
+│   ├── cull_session.py       # Culling passes, undo, Cull mode Revert / Reset
 │   ├── metadata_writer.py    # XMP sidecar writer
 │   ├── editor_launch.py      # Open photos in external editors
 │   ├── cloud_compute_client.py  # Cloud Compute (optional)
 │   ├── perch_uploader.py     # Perch publishing (optional)
 │   ├── auth_client.py        # Sign-in (optional)
-│   ├── models/               # AI model files (ONNX: MegaDetector, SAM-HQ, BioCLIP 2, SigLIP 2, quality)
+│   ├── models/               # Bundled models and data (ONNX: MegaDetector, SAM-HQ, BioCLIP 2,
+│   │                         #   SigLIP 2, quality), each folder with a NOTICES.md
 │   ├── kestrel_analyzer/     # Core analysis pipeline (no UI dependencies)
-│   └── tests/                # pytest suites (~350 tests)
-├── packaging/                # PyInstaller specs + installer build scripts
-├── tools/                    # Build + asset tooling (bird catalog, screenshots)
+│   └── tests/                # pytest suites (unit, integration, compat, security)
+├── packaging/                # Installer build scripts (Inno Setup, MSIX, macOS)
+├── tools/                    # Build-time tooling, not shipped (bird catalog, icons, quality ratchet)
+├── experiments/              # Research scripts, not shipped
 ├── utils/                    # Developer utility scripts
 ├── release-notes/            # Per-release notes, named by bird
 ├── test_imgs/                # Tiny smoke-test images for CI
+├── AGENTS.md                 # How to work on the code (for people and AI agents)
+├── DEVELOPMENT.md            # Architecture, testing and packaging
 └── README.md
 ```
 
@@ -243,7 +247,7 @@ The `.kestrel` folder will require an additional 1MB of disk space for every ~10
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please feel free to submit pull requests, report bugs, or suggest features.
+Contributions are welcome! Please feel free to submit pull requests, report bugs, or suggest features. Read [AGENTS.md](AGENTS.md) for how the code is organised and the rules PRs are checked against, and [DEVELOPMENT.md](DEVELOPMENT.md) for setup, tests and packaging. Pull requests target the `dev` branch.
 
 Project Kestrel is a one-person project — built over years of weekends because I wanted these tools for my own bird photography. The app is free and open source, and always will be; my only sources of income are your donations and your subscriptions to Cloud Compute. There are [many ways to support it](https://projectkestrel.org/support-me), and money is only one of them — but if you'd like to, you can [donate via card](https://donate.stripe.com/aFa28kbrLeb45mFgFE1ZS00).
 
@@ -284,8 +288,9 @@ The canonical Terms of Service and Privacy Policy live on the marketing site and
   Multilingual Vision-Language Encoders with Improved Semantic Understanding, Localization, and Dense
   Features." arXiv:2502.14786. Kestrel bundles an int8 image tower, an fp16-weight text tower, a pruned
   int8 token table and the tokenizer; see [`analyzer/models/siglip/NOTICES.md`](analyzer/models/siglip/NOTICES.md).
-- **[MegaDetector](https://github.com/agentmorris/MegaDetector)** (MIT licence) — animal detection,
-  and **[SAM-HQ](https://github.com/SysCV/sam-hq)** (Apache-2.0) — segmentation masks.
+- **[MegaDetector](https://github.com/agentmorris/MegaDetector)** — animal detection, and
+  **[SAM-HQ](https://github.com/SysCV/sam-hq)** (Apache-2.0) — segmentation masks; see
+  [`analyzer/models/speciesnet/NOTICES.md`](analyzer/models/speciesnet/NOTICES.md).
 
 ### Bundled bird-catalog data
 

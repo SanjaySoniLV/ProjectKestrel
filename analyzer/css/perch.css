@@ -28,16 +28,14 @@
 /* When the label is visible, give the button real horizontal padding so
    the text isn't crammed against the icon. The .hidden span has display:none
    so the icon-only padding still applies in the signed-out state. */
-#accountBtn:has(.account-btn-label:not(.hidden)) {
-  padding: 0 10px 0 8px;
-}
+#accountBtn:has(.account-btn-label:not(.hidden)) { padding: 0 10px 0 8px; }
 
 .account-btn-icon {
   flex-shrink: 0;
 }
 
 .account-btn-label {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   /* >1 so descenders (the "g" in "Sign in"/"Signed in") aren't clipped by the
      label's overflow:hidden — line-height:1 left no room below the baseline. */
@@ -68,9 +66,9 @@
 /* Token in keyring but past exp — distinct from "never signed in" so the user
    knows clicking will re-auth, not start fresh. */
 #accountBtn.session-expired {
-  border-color: #f5c542;
+  border-color: var(--star);
   background: rgba(245, 197, 66, 0.10);
-  color: #f5c542;
+  color: var(--star);
 }
 
 /* Cloud result packs ready to download (startup enumerate — no auto-download). */
@@ -94,10 +92,10 @@
   gap: 6px;
   background: rgba(74, 163, 255, .10);
   border: 1px solid rgba(74, 163, 255, .35);
-  color: #4aa3ff;
+  color: var(--brand);
   padding: 6px 12px;
-  border-radius: 6px;
-  font-size: 12px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
   font-weight: 500;
   cursor: pointer;
   transition: background .15s ease, border-color .15s ease, color .15s ease;
@@ -112,7 +110,7 @@
   color: #6db4ff;
 }
 .folder-perch-pill-icon {
-  font-size: 14px;
+  font-size: var(--fs-base);
   line-height: 1;
 }
 .folder-perch-pill-label {
@@ -128,9 +126,9 @@
   gap: 5px;
   background: rgba(74, 163, 255, .08);
   border: 1px solid rgba(74, 163, 255, .25);
-  color: #4aa3ff;
+  color: var(--brand);
   padding: 4px 10px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   font-size: 11.5px;
   font-weight: 500;
   cursor: pointer;
@@ -147,15 +145,15 @@
 }
 .folder-perch-sync.is-clean {
   opacity: .55;
-  color: var(--muted, #8a9099);
-  border-color: #2a3040;
+  color: var(--muted);
+  border-color: var(--border);
   background: rgba(255, 255, 255, .02);
 }
 .folder-perch-sync.is-clean:hover {
   opacity: .85;
 }
 .folder-perch-sync-icon {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1;
 }
 
@@ -171,30 +169,30 @@
   text-align: center;
   padding: 12px 6px;
   background: rgba(74, 163, 255, .06);
-  border: 1px solid #1d2230;
-  border-radius: 10px;
+  border: 1px solid var(--chip);
+  border-radius: var(--radius-lg);
 }
 .perch-sync-stat-num {
-  font-size: 22px;
+  font-size: var(--fs-2xl);
   font-weight: 700;
   color: #e8f0f8;
   font-variant-numeric: tabular-nums;
 }
 .perch-sync-stat-label {
-  font-size: 11px;
-  color: var(--muted, #8a9099);
+  font-size: var(--fs-xs);
+  color: var(--muted);
   margin-top: 2px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 .perch-sync-sub {
   font-size: 12.5px;
-  color: var(--muted, #8a9099);
+  color: var(--muted);
   padding: 8px 2px 4px;
 }
 .perch-sync-note {
   padding: 10px 12px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   font-size: 11.5px;
   line-height: 1.5;
   margin-top: 6px;
@@ -206,21 +204,21 @@
 }
 .perch-sync-section {
   margin-top: 8px;
-  border: 1px solid #1d2230;
-  border-radius: 8px;
+  border: 1px solid var(--chip);
+  border-radius: var(--radius-md);
   background: rgba(255, 255, 255, .015);
 }
 .perch-sync-section summary {
   cursor: pointer;
   padding: 8px 12px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: #e8f0f8;
   list-style: none;
 }
 .perch-sync-section summary::-webkit-details-marker { display: none; }
 .perch-sync-section[open] summary {
-  border-bottom: 1px solid #1d2230;
+  border-bottom: 1px solid var(--chip);
 }
 .perch-sync-list {
   max-height: 220px;
@@ -231,7 +229,7 @@
   font-size: 11.5px;
   color: #c8d0dc;
   padding: 4px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   font-family: ui-monospace, "Cascadia Mono", Menlo, monospace;
 }
 .perch-sync-list-row:hover {
@@ -239,7 +237,7 @@
 }
 .perch-upload-card.is-sync .perch-upload-card-progress-fill {
   /* Slightly different tint for sync vs. upload to reinforce the distinction. */
-  background: linear-gradient(90deg, #4aa3ff 0%, #6db4ff 100%);
+  background: linear-gradient(90deg, var(--brand) 0%, #6db4ff 100%);
 }
 
 /* ─── Share-with-Perch dialog ───────────────────────────────────── */
@@ -257,22 +255,23 @@
   box-sizing: border-box;
 }
 
+#perchUploadDlgTitle, .perch-tag-sync-dlg .perch-tag-sync-heading { margin: 0; font-size: var(--fs-lg); }
 .perch-upload-dlg-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid #1d2230;
+  border-bottom: 1px solid var(--chip);
   padding-bottom: 10px;
 }
 
 .perch-upload-dlg-close {
   background: none;
   border: none;
-  color: var(--muted, #8a9099);
-  font-size: 16px;
+  color: var(--muted);
+  font-size: var(--fs-lg);
   cursor: pointer;
   padding: 4px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   transition: background .15s, color .15s;
 }
 .perch-upload-dlg-close:hover {
@@ -290,12 +289,12 @@
   padding: 12px 14px;
   background: rgba(74, 163, 255, .10);
   border: 1px solid rgba(74, 163, 255, .30);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   margin-bottom: 12px;
 }
 .perch-already-published.hidden { display: none !important; }
 .perch-already-published-icon {
-  font-size: 22px;
+  font-size: var(--fs-2xl);
   flex-shrink: 0;
 }
 .perch-already-published-body {
@@ -303,14 +302,14 @@
   min-width: 0;
 }
 .perch-already-published-title {
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 600;
   color: #e8f0f8;
   margin-bottom: 2px;
 }
 .perch-already-published-text {
-  font-size: 12px;
-  color: var(--muted, #8a9099);
+  font-size: var(--fs-sm);
+  color: var(--muted);
 }
 .perch-already-published-actions {
   display: flex;
@@ -323,8 +322,8 @@
   padding: 5px 10px;
   border: 1px solid rgba(74, 163, 255, .35);
   background: rgba(74, 163, 255, .14);
-  color: #4aa3ff;
-  border-radius: 6px;
+  color: var(--brand);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   transition: background .15s;
   white-space: nowrap;
@@ -335,7 +334,7 @@
 .perch-cta-secondary.perch-cta-warn {
   border-color: rgba(243, 156, 18, .35);
   background: rgba(243, 156, 18, .12);
-  color: #f39c12;
+  color: var(--warn);
 }
 .perch-cta-secondary.perch-cta-warn:hover {
   background: rgba(243, 156, 18, .22);
@@ -350,12 +349,12 @@
   padding: 12px 14px;
   background: rgba(243, 156, 18, .08);
   border: 1px solid rgba(243, 156, 18, .30);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   margin-bottom: 12px;
 }
 .perch-resumable.hidden { display: none !important; }
 .perch-resumable-icon {
-  font-size: 22px;
+  font-size: var(--fs-2xl);
   flex-shrink: 0;
 }
 .perch-resumable-body {
@@ -363,14 +362,14 @@
   min-width: 0;
 }
 .perch-resumable-title {
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 600;
   color: #e8f0f8;
   margin-bottom: 2px;
 }
 .perch-resumable-text {
-  font-size: 12px;
-  color: var(--muted, #8a9099);
+  font-size: var(--fs-sm);
+  color: var(--muted);
 }
 .perch-resumable-actions {
   display: flex;
@@ -395,8 +394,8 @@
 .perch-dlg-loading-spinner {
   width: 32px;
   height: 32px;
-  border: 3px solid #1d2230;
-  border-top-color: var(--brand, #4aa3ff);
+  border: 3px solid var(--chip);
+  border-top-color: var(--brand);
   border-radius: 50%;
   animation: perch-dlg-spin 0.8s linear infinite;
 }
@@ -404,8 +403,8 @@
   to { transform: rotate(360deg); }
 }
 .perch-dlg-loading-text {
-  font-size: 12px;
-  color: var(--muted, #8a9099);
+  font-size: var(--fs-sm);
+  color: var(--muted);
 }
 
 /* Stat block — three big numbers in a row */
@@ -413,9 +412,9 @@
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
   gap: 8px;
-  background: #0e1117;
-  border: 1px solid #1d2230;
-  border-radius: 10px;
+  background: var(--input-bg);
+  border: 1px solid var(--chip);
+  border-radius: var(--radius-lg);
   padding: 14px;
 }
 .perch-stat {
@@ -425,21 +424,21 @@
   gap: 4px;
 }
 .perch-stat-num {
-  font-size: 22px;
+  font-size: var(--fs-2xl);
   font-weight: 700;
   color: #e8f0f8;
   line-height: 1.1;
   font-variant-numeric: tabular-nums;
 }
 .perch-stat-label {
-  font-size: 11px;
-  color: var(--muted, #8a9099);
+  font-size: var(--fs-xs);
+  color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
 .perch-stat-sub {
   font-size: 11.5px;
-  color: var(--muted, #8a9099);
+  color: var(--muted);
   text-align: center;
   margin-top: -6px;
 }
@@ -450,21 +449,21 @@
   align-items: center;
   gap: 12px;
   padding: 10px 12px;
-  border: 1px solid #1d2230;
-  border-radius: 10px;
-  background: #0e1117;
+  border: 1px solid var(--chip);
+  border-radius: var(--radius-lg);
+  background: var(--input-bg);
 }
 .perch-account-avatar {
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  background: linear-gradient(135deg, #4aa3ff, #1d4f8c);
+  background: linear-gradient(135deg, var(--brand), #1d4f8c);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 700;
-  color: #fff;
+  color: var(--white);
   flex-shrink: 0;
 }
 .perch-account-info {
@@ -475,7 +474,7 @@
   gap: 2px;
 }
 .perch-account-name {
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 600;
   color: #e8f0f8;
   overflow: hidden;
@@ -484,14 +483,14 @@
 }
 .perch-account-meta {
   font-size: 11.5px;
-  color: var(--muted, #8a9099);
+  color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .perch-usage-row {
   font-size: 11.5px;
-  color: var(--muted, #8a9099);
+  color: var(--muted);
   padding: 0 4px;
 }
 
@@ -503,10 +502,10 @@
   padding: 10px 12px;
   background: rgba(245, 197, 66, .08);
   border: 1px solid rgba(245, 197, 66, .25);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
 }
 .perch-tip-icon {
-  font-size: 16px;
+  font-size: var(--fs-lg);
   flex-shrink: 0;
   line-height: 1.4;
 }
@@ -515,25 +514,25 @@
   min-width: 0;
 }
 .perch-tip-title {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: #e8f0f8;
   margin-bottom: 2px;
 }
 .perch-tip-text {
   font-size: 11.5px;
-  color: var(--muted, #8a9099);
+  color: var(--muted);
   line-height: 1.5;
 }
 .perch-tip-btn {
   flex-shrink: 0;
   align-self: center;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   padding: 5px 10px;
   border: 1px solid rgba(245, 197, 66, .35);
   background: rgba(245, 197, 66, .12);
-  color: #f5c542;
-  border-radius: 6px;
+  color: var(--star);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   transition: background .15s;
 }
@@ -549,8 +548,8 @@
   gap: 10px;
   padding: 8px 12px;
   background: rgba(255, 255, 255, .02);
-  border: 1px solid #1d2230;
-  border-radius: 8px;
+  border: 1px solid var(--chip);
+  border-radius: var(--radius-md);
   margin-top: 8px;
   cursor: pointer;
   user-select: none;
@@ -568,7 +567,7 @@
 }
 .perch-reject-toggle-hint {
   font-size: 11.5px;
-  color: var(--muted, #8a9099);
+  color: var(--muted);
   margin-left: auto;
   font-variant-numeric: tabular-nums;
 }
@@ -581,11 +580,11 @@
   padding: 10px 12px;
   background: rgba(74, 163, 255, .07);
   border: 1px solid rgba(74, 163, 255, .25);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   margin-top: 8px;
 }
 .perch-time-warn-icon {
-  font-size: 16px;
+  font-size: var(--fs-lg);
   flex-shrink: 0;
   line-height: 1.4;
 }
@@ -594,25 +593,25 @@
   min-width: 0;
 }
 .perch-time-warn-title {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: #e8f0f8;
   margin-bottom: 2px;
 }
 .perch-time-warn-text {
   font-size: 11.5px;
-  color: var(--muted, #8a9099);
+  color: var(--muted);
   line-height: 1.5;
 }
 .perch-time-warn-btn {
   flex-shrink: 0;
   align-self: center;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   padding: 5px 10px;
   border: 1px solid rgba(74, 163, 255, .35);
   background: rgba(74, 163, 255, .12);
-  color: #4aa3ff;
-  border-radius: 6px;
+  color: var(--brand);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   transition: background .15s;
 }
@@ -628,11 +627,11 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
-  color: var(--muted, #8a9099);
+  color: var(--muted);
   padding: 6px 4px;
-  border-bottom: 1px solid #1d2230;
+  border-bottom: 1px solid var(--chip);
 }
 .perch-scenes-details summary::-webkit-details-marker { display: none; }
 .perch-scenes-details[open] summary {
@@ -642,16 +641,16 @@
   display: flex;
   gap: 6px;
   align-items: center;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 400;
 }
 .perch-scenes-actions a {
-  color: var(--brand, #4aa3ff);
+  color: var(--brand);
   text-decoration: none;
 }
 .perch-scenes-actions a:hover { text-decoration: underline; }
 .perch-scenes-sep {
-  color: var(--muted, #8a9099);
+  color: var(--muted);
 }
 .perch-scene-list {
   display: flex;
@@ -666,7 +665,7 @@
   align-items: center;
   gap: 10px;
   padding: 6px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   transition: background .12s;
 }
@@ -681,8 +680,8 @@
   flex-shrink: 0;
   width: 44px;
   height: 44px;
-  border-radius: 4px;
-  border: 1px solid #2a3040;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border);
   background: #0b0d12;
   padding: 0;
   cursor: pointer;
@@ -693,7 +692,7 @@
   transition: border-color .12s, transform .12s;
 }
 .perch-scene-thumb:hover {
-  border-color: #4aa3ff;
+  border-color: var(--brand);
   transform: scale(1.04);
 }
 .perch-scene-thumb img {
@@ -702,23 +701,18 @@
   object-fit: cover;
   display: block;
 }
-.perch-scene-thumb.no-image::before {
-  content: '🖼';
-  font-size: 18px;
-  color: var(--muted, #8a9099);
-}
 .perch-scene-expand {
   flex-shrink: 0;
   width: 22px;
   height: 22px;
   border: none;
   background: transparent;
-  color: var(--muted, #8a9099);
+  color: var(--muted);
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--fs-md);
   line-height: 1;
   padding: 0;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   transition: background .12s, color .12s;
 }
 .perch-scene-expand:hover {
@@ -733,8 +727,8 @@
 .perch-scene-preview-img {
   max-width: 100%;
   max-height: 280px;
-  border-radius: 6px;
-  border: 1px solid #2a3040;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
   background: #0b0d12;
   display: block;
 }
@@ -761,7 +755,7 @@
 }
 .perch-scene-meta {
   font-size: 10.5px;
-  color: var(--muted, #8a9099);
+  color: var(--muted);
 }
 .perch-scene-right {
   flex-shrink: 0;
@@ -777,39 +771,39 @@
 }
 .perch-scene-size {
   font-size: 10.5px;
-  color: var(--muted, #8a9099);
+  color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
 .perch-scene-empty {
   padding: 16px;
   text-align: center;
-  font-size: 12px;
-  color: var(--muted, #8a9099);
+  font-size: var(--fs-sm);
+  color: var(--muted);
 }
 
 /* Signed-out explainer */
 .perch-explainer-lead {
-  font-size: 14px;
+  font-size: var(--fs-base);
   color: #e8f0f8;
   margin: 0;
 }
 .perch-explainer-sub {
-  font-size: 12px;
-  color: var(--muted, #8a9099);
+  font-size: var(--fs-sm);
+  color: var(--muted);
   margin: 0;
   line-height: 1.5;
 }
 .perch-explainer-list {
   margin: 0;
   padding-left: 20px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: #c8d0dc;
   line-height: 1.7;
 }
 .perch-explainer-list b { color: #e8f0f8; }
 .perch-explainer-ready {
   font-size: 11.5px;
-  color: var(--brand, #4aa3ff);
+  color: var(--brand);
   margin: 6px 0 0;
 }
 
@@ -818,15 +812,15 @@
   gap: 8px;
 }
 .perch-upload-footer button {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 7px 14px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 .perch-upload-footer button.perch-cta {
-  background: var(--brand, #4aa3ff);
-  color: #fff;
-  border: 1px solid var(--brand, #4aa3ff);
+  background: var(--brand);
+  color: var(--white);
+  border: 1px solid var(--brand);
   font-weight: 600;
 }
 .perch-upload-footer button.perch-cta:hover:not(:disabled) {
@@ -845,8 +839,8 @@
   right: 20px;    /* Stacked above the analysis queue when both are visible */
   width: 380px;
   max-width: calc(100vw - 40px);
-  background: #111318;
-  border: 1px solid #2a3040;
+  background: var(--panel);
+  border: 1px solid var(--border);
   border-radius: 12px;
   box-shadow: 0 8px 36px rgba(0, 0, 0, .7);
   overflow: hidden;
@@ -862,43 +856,43 @@
   align-items: center;
   gap: 8px;
   padding: 10px 14px;
-  background: #161922;
-  border-bottom: 1px solid #1d2230;
+  background: var(--card);
+  border-bottom: 1px solid var(--chip);
   cursor: pointer;
   user-select: none;
 }
 .perch-uploads-title {
   flex: 1;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: #e8f0f8;
 }
 .perch-uploads-badge {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   padding: 1px 7px;
-  border-radius: 999px;
-  background: #1d5aa8;
-  border: 1px solid #2b6ec8;
+  border-radius: var(--radius-pill);
+  background: var(--primary-bg);
+  border: 1px solid var(--primary-border);
   color: #c8dcf5;
 }
 .perch-uploads-badge.done {
   background: #0a2218;
   border-color: #1a5e36;
-  color: #2ecc71;
+  color: var(--ok);
 }
 .perch-uploads-badge.canceled {
   background: #3a2408;
   border-color: #7a5010;
-  color: #f5c542;
+  color: var(--star);
 }
 .perch-uploads-badge.error {
   background: #2a0a0a;
   border-color: #5e1a1a;
-  color: #e74c3c;
+  color: var(--bad);
 }
 .perch-uploads-toggle {
-  font-size: 10px;
-  color: var(--muted, #8a9099);
+  font-size: var(--fs-2xs);
+  color: var(--muted);
   transition: transform .15s;
 }
 .perch-uploads-toggle.open {
@@ -919,9 +913,9 @@
   flex-direction: column;
   gap: 4px;
   padding: 8px 10px;
-  background: #0e1117;
-  border: 1px solid #1d2230;
-  border-radius: 8px;
+  background: var(--input-bg);
+  border: 1px solid var(--chip);
+  border-radius: var(--radius-md);
 }
 .perch-upload-card.is-done {
   border-color: #1a5e36;
@@ -939,7 +933,7 @@
 }
 .perch-upload-card-title {
   flex: 1;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: #e8f0f8;
   overflow: hidden;
@@ -947,11 +941,11 @@
   white-space: nowrap;
 }
 .perch-upload-card-status {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   padding: 1px 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: #0f2b4d;
-  color: #4aa3ff;
+  color: var(--brand);
   border: 1px solid #1d4f8c;
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
@@ -960,53 +954,53 @@
 .perch-upload-card-dismiss {
   flex-shrink: 0;
   background: none;
-  border: 1px solid #2a3040;
-  color: var(--muted, #8a9099);
-  font-size: 11px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: var(--fs-xs);
   width: 22px;
   height: 22px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   transition: background .15s, color .15s;
 }
 .perch-upload-card-cancel:hover,
 .perch-upload-card-dismiss:hover {
   background: rgba(231, 76, 60, .12);
-  color: #e74c3c;
+  color: var(--bad);
   border-color: #5e1a1a;
 }
 .perch-upload-card-progress {
   height: 4px;
-  background: #1d2230;
-  border-radius: 999px;
+  background: var(--chip);
+  border-radius: var(--radius-pill);
   overflow: hidden;
   margin-top: 3px;
 }
 .perch-upload-card-progress-fill {
   height: 100%;
-  background: #3a84e6;
-  border-radius: 999px;
+  background: var(--focus);
+  border-radius: var(--radius-pill);
   transition: width .4s ease;
 }
 .perch-upload-card-current {
-  font-size: 11px;
-  color: var(--muted, #8a9099);
+  font-size: var(--fs-xs);
+  color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .perch-upload-card-success {
-  font-size: 12px;
-  color: #2ecc71;
+  font-size: var(--fs-sm);
+  color: var(--ok);
 }
 .perch-upload-card-warn {
   font-size: 11.5px;
-  color: #f5c542;
+  color: var(--star);
   line-height: 1.45;
 }
 .perch-upload-card-err {
   font-size: 11.5px;
-  color: #e74c3c;
+  color: var(--bad);
   line-height: 1.45;
   word-break: break-word;
 }
@@ -1014,10 +1008,10 @@
   align-self: flex-start;
   font-size: 11.5px;
   padding: 5px 10px;
-  border-radius: 6px;
-  background: var(--brand, #4aa3ff);
-  color: #fff;
-  border: 1px solid var(--brand, #4aa3ff);
+  border-radius: var(--radius-sm);
+  background: var(--brand);
+  color: var(--white);
+  border: 1px solid var(--brand);
   cursor: pointer;
   font-weight: 600;
   margin-top: 4px;
@@ -1025,7 +1019,7 @@
 .perch-upload-card-cta:hover { filter: brightness(1.1); }
 .perch-upload-card-cta.warn {
   background: rgba(245, 197, 66, .15);
-  color: #f5c542;
+  color: var(--star);
   border-color: #7a5010;
 }
 .perch-upload-card-cta.warn:hover {
@@ -1048,7 +1042,7 @@
   justify-content: flex-end;
   gap: 8px;
   padding: 10px 16px;
-  border-top: 1px solid #2a3040;
+  border-top: 1px solid var(--border);
   background: #0f1219;
   box-sizing: border-box;
   flex: 0 0 auto;
@@ -1074,7 +1068,7 @@
 /* Folder-tree feather indicator */
 .tree-icon.has-perch { position: relative; }
 .tree-perch-feather {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   margin-left: 1px;
   margin-right: 3px;
   display: inline-block;
@@ -1098,7 +1092,7 @@
   padding: 14px 16px;
   background: linear-gradient(180deg, #1a2030 0%, #131822 100%);
   border: 1px solid #2a3550;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 .perch-linked-hero-icon {
   font-size: 32px;
@@ -1110,8 +1104,8 @@
   font-weight: 600;
 }
 .perch-linked-sub {
-  font-size: 13px;
-  color: var(--muted, #8b96a7);
+  font-size: var(--fs-md);
+  color: var(--muted);
   margin-top: 2px;
 }
 
@@ -1126,19 +1120,19 @@
 .perch-status-cell {
   background: #0f1320;
   border: 1px solid #232a3d;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 10px 12px;
   min-height: 56px;
 }
 .perch-status-label {
-  font-size: 11px;
-  color: var(--muted, #8b96a7);
+  font-size: var(--fs-xs);
+  color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.6px;
   margin-bottom: 4px;
 }
 .perch-status-value {
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 500;
 }
 
@@ -1149,32 +1143,32 @@
   padding: 10px 12px;
   background: #0f1320;
   border: 1px solid #232a3d;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 .perch-linked-share.hidden { display: none !important; }
 .perch-linked-share-label {
-  font-size: 12px;
-  color: var(--muted, #8b96a7);
+  font-size: var(--fs-sm);
+  color: var(--muted);
   white-space: nowrap;
 }
 .perch-linked-share-url {
   flex: 1 1 auto;
   background: #060810;
   color: #cbd6e4;
-  border: 1px solid #2a3040;
-  border-radius: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
   padding: 6px 8px;
   font-family: ui-monospace, Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .perch-linked-share-copy {
   background: #2c5282;
   border: 1px solid #3a6ea5;
   color: #e8f0f8;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   padding: 6px 12px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .perch-linked-share-copy:hover { background: #3565a0; }
 
@@ -1182,9 +1176,9 @@
   padding: 10px 12px;
   background: rgba(245, 197, 66, .1);
   border: 1px solid rgba(245, 197, 66, .35);
-  border-radius: 6px;
-  color: #f5c542;
-  font-size: 13px;
+  border-radius: var(--radius-sm);
+  color: var(--star);
+  font-size: var(--fs-md);
 }
 .perch-linked-warn.hidden { display: none !important; }
 
@@ -1194,8 +1188,8 @@
   margin-top: 4px;
 }
 .perch-linked-note {
-  font-size: 12px;
-  color: var(--muted, #8b96a7);
+  font-size: var(--fs-sm);
+  color: var(--muted);
   line-height: 1.5;
 }
 
@@ -1207,30 +1201,30 @@
   padding: 12px 14px;
   background: rgba(74, 163, 255, .10);
   border: 1px solid rgba(74, 163, 255, .35);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
 }
 .perch-tag-sync.hidden { display: none !important; }
-.perch-tag-sync-icon { font-size: 22px; flex-shrink: 0; }
+.perch-tag-sync-icon { font-size: var(--fs-2xl); flex-shrink: 0; }
 .perch-tag-sync-body { flex: 1; min-width: 0; }
-.perch-tag-sync-title { font-size: 13px; font-weight: 600; color: #e8f0f8; margin-bottom: 2px; }
-.perch-tag-sync-sub { font-size: 12px; color: var(--muted, #8b96a7); }
+.perch-tag-sync-title { font-size: var(--fs-md); font-weight: 600; color: #e8f0f8; margin-bottom: 2px; }
+.perch-tag-sync-sub { font-size: var(--fs-sm); color: var(--muted); }
 .perch-tag-sync .perch-cta {
   flex-shrink: 0;
-  background: var(--brand, #4aa3ff);
-  color: #fff;
-  border: 1px solid var(--brand, #4aa3ff);
+  background: var(--brand);
+  color: var(--white);
+  border: 1px solid var(--brand);
   font-weight: 600;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 7px 14px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 .perch-tag-sync .perch-cta:hover { filter: brightness(1.1); }
 
 .perch-tag-sync-dlg {
-  border: 1px solid #2a3040;
+  border: 1px solid var(--border);
   border-radius: 12px;
-  background: #111318;
+  background: var(--panel);
   color: #e8f0f8;
   width: min(560px, 92vw);
   max-width: 92vw;
@@ -1248,7 +1242,7 @@
   margin: 0;
   padding: 14px 16px 4px;
   font-size: 12.5px;
-  color: var(--muted, #8b96a7);
+  color: var(--muted);
   line-height: 1.55;
 }
 .perch-tag-sync-list {
@@ -1262,28 +1256,28 @@
 .perch-tag-sync-row {
   background: #0f1320;
   border: 1px solid #232a3d;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 9px 12px;
 }
 .perch-tag-sync-row-title {
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 600;
   color: #e8f0f8;
   margin-bottom: 4px;
 }
 .perch-tag-sync-diff {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: #c8d0dc;
   line-height: 1.5;
   word-break: break-word;
 }
-.perch-tag-sync-diff-label { color: var(--muted, #8b96a7); }
+.perch-tag-sync-diff-label { color: var(--muted); }
 .perch-tag-sync-old {
   color: #d98a8a;
   text-decoration: line-through;
   text-decoration-color: rgba(217, 138, 138, .6);
 }
-.perch-tag-sync-arrow { color: var(--muted, #8b96a7); }
+.perch-tag-sync-arrow { color: var(--muted); }
 .perch-tag-sync-new { color: #7fd6a0; font-weight: 500; }
 .perch-tag-sync-dlg-actions {
   display: flex;
@@ -1294,13 +1288,13 @@
   margin-top: 6px;
 }
 .perch-tag-sync-dlg-actions .perch-cta {
-  background: var(--brand, #4aa3ff);
-  color: #fff;
-  border: 1px solid var(--brand, #4aa3ff);
+  background: var(--brand);
+  color: var(--white);
+  border: 1px solid var(--brand);
   font-weight: 600;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 7px 16px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 .perch-tag-sync-dlg-actions .perch-cta:hover:not(:disabled) { filter: brightness(1.1); }
@@ -1335,17 +1329,17 @@
   flex: 0 0 auto;
 }
 .perch-dlg-timeline-title {
-  font-size: 14px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: #cbd6e4;
 }
 .perch-dlg-timeline-summary {
-  font-size: 12px;
-  color: var(--muted, #8b96a7);
+  font-size: var(--fs-sm);
+  color: var(--muted);
 }
 .perch-dlg-timeline-actions {
   margin-left: auto;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .perch-link-btn {
   background: none;
@@ -1356,7 +1350,7 @@
   font: inherit;
 }
 .perch-link-btn:hover { text-decoration: underline; }
-.perch-sep { color: var(--muted, #8b96a7); margin: 0 2px; }
+.perch-sep { color: var(--muted); margin: 0 2px; }
 
 /* ── Re-link: prompt in the share dialog + existing-perch picker ──────────── */
 .perch-relink-prompt {
@@ -1364,14 +1358,14 @@
   padding-top: 10px;
   border-top: 1px solid #232a3d;
   font-size: 11.5px;
-  color: var(--muted, #8b96a7);
+  color: var(--muted);
 }
 .perch-relink-prompt .perch-link-btn { font-size: 11.5px; font-weight: 600; }
 
 .perch-relink-dlg {
-  border: 1px solid #2a3040;
+  border: 1px solid var(--border);
   border-radius: 12px;
-  background: #111318;
+  background: var(--panel);
   color: #e8f0f8;
   width: min(520px, 94vw);
   max-width: 94vw;
@@ -1387,35 +1381,35 @@
 }
 .perch-relink-title { margin: 0; font-size: 15px; font-weight: 600; }
 .perch-relink-close {
-  background: none; border: none; color: var(--muted, #8b96a7);
-  font-size: 16px; cursor: pointer; padding: 4px 8px; border-radius: 6px; line-height: 1;
+  background: none; border: none; color: var(--muted);
+  font-size: var(--fs-lg); cursor: pointer; padding: 4px 8px; border-radius: var(--radius-sm); line-height: 1;
 }
-.perch-relink-close:hover { color: #fff; background: #1c2230; }
+.perch-relink-close:hover { color: var(--white); background: #1c2230; }
 .perch-relink-subtitle {
   margin: 0; padding: 12px 16px 6px; font-size: 12.5px;
-  line-height: 1.45; color: var(--muted, #8b96a7);
+  line-height: 1.45; color: var(--muted);
 }
 .perch-relink-list {
   display: flex; flex-direction: column; gap: 6px;
   padding: 6px 12px 14px; max-height: 52vh; overflow-y: auto;
 }
 .perch-relink-empty {
-  padding: 18px 8px; text-align: center; font-size: 12.5px; color: var(--muted, #8b96a7);
+  padding: 18px 8px; text-align: center; font-size: 12.5px; color: var(--muted);
 }
 .perch-relink-row {
   display: flex; flex-direction: column; gap: 2px; align-items: stretch;
   width: 100%; min-width: 0; box-sizing: border-box; text-align: left; cursor: pointer;
-  padding: 9px 11px; border: 1px solid #25394e; border-radius: 8px;
+  padding: 9px 11px; border: 1px solid #25394e; border-radius: var(--radius-md);
   background: #14202f; color: #cbd6e2; font: inherit;
   transition: background .12s ease, border-color .12s ease;
 }
 .perch-relink-row:hover { background: #1c2c42; border-color: #3a5573; }
 .perch-relink-row-title {
-  font-size: 13px; font-weight: 600; color: #e8f0f8;
+  font-size: var(--fs-md); font-weight: 600; color: #e8f0f8;
   max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .perch-relink-row-meta {
-  font-size: 11px; color: var(--muted, #8b96a7);
+  font-size: var(--fs-xs); color: var(--muted);
   max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
@@ -1453,7 +1447,7 @@
   flex-direction: column;
   background: #0f1320;
   border: 1px solid #232a3d;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 8px;
   transition: transform 0.08s ease, border-color 0.15s ease;
 }
@@ -1463,7 +1457,7 @@
   aspect-ratio: 3 / 2;
   width: 100%;
   background: #060810;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   overflow: hidden;
   margin-bottom: 6px;
 }
@@ -1490,10 +1484,10 @@
   transform: translate(-50%, -50%);
   background: rgba(0, 0, 0, .75);
   color: #f0a542;
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 600;
   padding: 6px 10px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   letter-spacing: 0.3px;
   display: none;
   pointer-events: none;
@@ -1518,7 +1512,7 @@
   padding: 1px 6px;
   background: #1c2233;
   border: 1px solid #2c3550;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   color: #cbd6e4;
 }
 .perch-card-chips .chip.manual-approved {
@@ -1529,11 +1523,11 @@
 .perch-card-chips .chip.more {
   background: transparent;
   border-color: #2c3550;
-  color: var(--muted, #8b96a7);
+  color: var(--muted);
 }
 .card-perch-metrics {
-  font-size: 11px;
-  color: var(--muted, #8b96a7);
+  font-size: var(--fs-xs);
+  color: var(--muted);
   margin-top: 6px;
   padding-top: 5px;
   border-top: 1px solid #1f2638;
@@ -1550,7 +1544,7 @@
 }
 .perch-checklist-heading {
   margin: 6px 0 2px 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: #cbd6e4;
   text-transform: uppercase;
@@ -1563,14 +1557,14 @@
   padding: 10px;
   background: #0f1320;
   border: 1px solid #232a3d;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 .perch-check-thumb {
   width: 56px;
   height: 56px;
   object-fit: cover;
   background: #060810;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   flex: 0 0 auto;
 }
 .perch-check-thumb.no-image {
@@ -1584,13 +1578,13 @@
   gap: 4px;
 }
 .perch-check-title {
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 500;
   color: #e8f0f8;
 }
 .perch-check-text {
   font-size: 11.5px;
-  color: var(--muted, #8b96a7);
+  color: var(--muted);
   margin-top: 2px;
   line-height: 1.4;
 }
@@ -1598,7 +1592,7 @@
   background: #1c2233;
   border: 1px solid #2c3550;
   color: #cbd6e4;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   padding: 6px 10px;
   cursor: pointer;
   font-size: 11.5px;
@@ -1614,19 +1608,19 @@
   padding: 10px 12px;
   background: rgba(245, 197, 66, .08);
   border: 1px solid rgba(245, 197, 66, .35);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   margin-top: 4px;
 }
 .perch-beta-icon {
-  font-size: 16px;
-  color: #f5c542;
+  font-size: var(--fs-lg);
+  color: var(--star);
   flex: 0 0 auto;
 }
 .perch-beta-body { flex: 1 1 auto; }
 .perch-beta-title {
   font-size: 12.5px;
   font-weight: 600;
-  color: #f5c542;
+  color: var(--star);
   margin-bottom: 3px;
 }
 .perch-beta-text {
@@ -1644,7 +1638,7 @@
   padding: 10px 12px;
   background: #0f1320;
   border: 1px solid #232a3d;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 .perch-usage-left {
   display: flex;
@@ -1653,8 +1647,8 @@
   min-width: 0;
 }
 .perch-usage-label {
-  font-size: 11px;
-  color: var(--muted, #8b96a7);
+  font-size: var(--fs-xs);
+  color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.6px;
 }
@@ -1662,8 +1656,8 @@
   position: relative;
   height: 8px;
   background: #060810;
-  border: 1px solid #1d2230;
-  border-radius: 4px;
+  border: 1px solid var(--chip);
+  border-radius: var(--radius-xs);
   overflow: hidden;
 }
 .perch-usage-bar-used {
@@ -1685,8 +1679,8 @@
   transition: width 0.2s ease, left 0.2s ease;
 }
 .perch-usage-text {
-  font-size: 11px;
-  color: var(--muted, #8b96a7);
+  font-size: var(--fs-xs);
+  color: var(--muted);
   line-height: 1.4;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1726,8 +1720,8 @@
   white-space: nowrap;
 }
 .perch-usage-right .perch-account-meta {
-  font-size: 11px;
-  color: var(--muted, #8b96a7);
+  font-size: var(--fs-xs);
+  color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1762,7 +1756,7 @@
 }
 .perch-check-btn--corner {
   flex: 0 0 auto;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   padding: 4px 8px;
 }
 
@@ -1788,7 +1782,7 @@
 }
 .perch-totals-label {
   font-size: 10.5px;
-  color: var(--muted, #8b96a7);
+  color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.4px;
   margin-top: 3px;

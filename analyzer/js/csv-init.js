@@ -34,6 +34,19 @@
       });
     })();
 
+    // "Only scenes with favorites" (View menu); a heart on the View button shows it is on.
+    (function initOnlyFavoriteScenes() {
+      const t = document.getElementById('onlyFavoriteScenes');
+      if (!t) return;
+      const mark = document.getElementById('tfbFavOnlyMark');
+      const sync = () => mark?.classList.toggle('hidden', !t.checked);
+      t.checked = !!getSetting('onlyFavoriteScenes', false);
+      sync();
+      t.addEventListener('change', () => {
+        const s = loadSettings(); s.onlyFavoriteScenes = !!t.checked; saveSettings(s); sync(); renderScenes();
+      });
+    })();
+
     // Show bird thumbnails toggle
     (function initShowBirdThumbs() {
       const t = document.getElementById('showBirdThumbs');
@@ -83,9 +96,9 @@
     document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && !document.querySelector('dialog[open]')) { if (selectedSceneIds.size > 0) { selectedSceneIds.clear(); _lastSelectedIdx = -1; updateSelectionUI(); } _clearGridFocus(); } });
     // Revert button
     const revertBtn = el('#revertCsv');
-    if (revertBtn) revertBtn.addEventListener('click', () => {
+    if (revertBtn) revertBtn.addEventListener('click', async () => {
       if (!_cleanSnapshot) return;
-      if (!confirm('Discard all unsaved changes and revert to the last saved state?')) return;
+      if (!(await KestrelDialog.confirm('revertChanges'))) return;
       applySnapshot();
     });
 
@@ -101,16 +114,34 @@
       const VALID = ['all', 'reviewed', 'unreviewed'];
       try {
         let mode = getSetting('sceneReviewFilter', null);
-        // Migrate the superseded boolean. This used to be a single
-        // "Only manually reviewed scenes" checkbox; an existing install that
-        // had it ticked should land on 'reviewed' rather than silently
-        // reverting to showing everything.
+        // Migrate the older "Only manually reviewed scenes" boolean: an
+        // install that had it ticked should land on 'reviewed' rather than
+        // silently showing everything.
         if (!VALID.includes(mode)) {
           mode = getSetting('onlyManualRatedScenes', false) ? 'reviewed' : 'all';
         }
         t.value = mode;
       } catch { t.value = 'all'; }
+      // The filter bar's All / To review / Reviewed toggle drives the hidden
+      // select, which stays the one value everything else reads.
+      const seg = document.getElementById('reviewStateSeg');
+      const syncSeg = () => {
+        if (!seg) return;
+        seg.querySelectorAll('button[data-value]').forEach(b => {
+          const on = b.dataset.value === t.value;
+          b.classList.toggle('on', on);
+          b.setAttribute('aria-pressed', on ? 'true' : 'false');
+        });
+      };
+      syncSeg();
+      seg?.addEventListener('click', (e) => {
+        const b = e.target.closest('button[data-value]');
+        if (!b || b.dataset.value === t.value) return;
+        t.value = b.dataset.value;
+        t.dispatchEvent(new Event('change'));
+      });
       t.addEventListener('change', () => {
+        syncSeg();
         const mode = VALID.includes(t.value) ? t.value : 'all';
         const s = loadSettings();
         s.sceneReviewFilter = mode;
@@ -306,7 +337,7 @@
 
     // Legacy "Change root…" button — the element is now permanently hidden in
     // HTML (kept only so this handler can't NPE on a missing element). The
-    // user-facing replacement is "+ 📂 Load Folders…" which is additive.
+    // user-facing replacement is "Add Folders…", which is additive.
     // No handler wired; intentional no-op.
 
     // Wire "Select All / Select None" toggle (one button is always hidden via
@@ -336,19 +367,10 @@
       });
     }
 
-    // Wire "Load checked" button (removed from HTML; kept as no-op guard)
-    const treeLoadSelectedBtn = document.getElementById('treeLoadSelected');
-    if (treeLoadSelectedBtn) {
-      treeLoadSelectedBtn.addEventListener('click', async () => {
-        if (checkedFolderPaths.size === 0) return;
-        await loadMultipleFolders(Array.from(checkedFolderPaths));
-      });
-    }
-
-    // ── Recents chips (2H) + empty hint context (2I) ──────────────────────────
+    // ── Recents chips + empty hint context ──────────────────────────────────
     // Read folder_recents from settings on startup, probe existence via
     // inspect_folders, render chips into #folderRecentsRow. Each chip click
-    // calls addFolderRoot for that specific path (same flow as + Load Folders).
+    // calls addFolderRoot for that specific path (same flow as Add Folders).
     function _ellipsizePathMiddle(path, maxLen = 28) {
       if (!path) return '';
       const p = path.replace(/\\/g, '/');
@@ -413,14 +435,15 @@
         return;
       }
       row.innerHTML = '';
-      // "Recents" header + a divider (CSS) separating the chips from the tree.
+      // "Recent" heading + a divider (CSS) separating the chips from the tree.
       const header = document.createElement('div');
-      header.className = 'folder-recents-header';
-      header.textContent = 'Recents';
+      header.className = 'k-section-title folder-recents-header';
+      header.textContent = 'Recent';
       row.appendChild(header);
       const chips = document.createElement('div');
       chips.className = 'folder-recents-chips';
-      for (const path of available) {
+      const labels = recentsChipLabels(available);
+      available.forEach((path, i) => {
         const wrap = buildFolderRecentsChip(
           path,
           async () => {
@@ -440,9 +463,10 @@
             }
           },
           (p) => { if (typeof persistFolderRecentsRemove === 'function') persistFolderRecentsRemove(p); },
+          labels[i],
         );
         chips.appendChild(wrap);
-      }
+      });
       row.appendChild(chips);
       row.classList.remove('hidden');
       updateEmptyHintCopy();
@@ -454,8 +478,8 @@
       const row = document.getElementById('folderRecentsRow');
       const hasRecents = row && !row.classList.contains('hidden') && row.children.length > 0;
       hint.innerHTML = hasRecents
-        ? 'Click a recent above, or <b>+ 📂 Load Folders…</b> to pick a new one.'
-        : 'No folders loaded.<br />Click <b>+ 📂 Load Folders…</b> to get started.';
+        ? 'Click a recent folder above, or <b>Add folders…</b> to pick a new one.'
+        : 'No folders loaded.<br />Click <b>Add folders…</b> to get started.';
     }
 
     // Initial render of recents on startup.

@@ -20,7 +20,7 @@ def _rows(sample_set):
 
 def test_expected_sets_are_bundled():
     assert [p.name for p in SETS] == [
-        "1_sonoran_desert", "2_houston_migration", "3_india", "4_high_island_galveston",
+        "1_mojave_desert", "2_houston_migration", "3_india", "4_high_island_galveston",
     ]
 
 

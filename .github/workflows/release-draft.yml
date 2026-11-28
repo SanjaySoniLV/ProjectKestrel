@@ -1,0 +1,250 @@
+name: Draft GitHub Release
+
+# Creates the GitHub *draft* release for a version as soon as both release
+# builds of the same `main` commit have finished green:
+#   - Build Windows Installer  (main.yml)        -> artifact `windows-installer`
+#   - Build macOS Artifacts    (build-macos.yml) -> artifact `macos-dmg`
+# and adds the Intel dmg if `Build macOS Artifacts (Intel)` succeeded on the
+# same commit (it is dispatch-only, so it may arrive later; this workflow then
+# adds it to the existing draft).
+#
+# It never publishes. A maintainer reviews the draft on GitHub and clicks
+# Publish. The Microsoft Store bundle (`windows-msixbundle`) is not attached:
+# it goes to the Store, not to the GitHub release.
+#
+# Names follow the convention of every earlier release, derived from VERSION.txt:
+#   "Arctic Tern (FP 2)" -> tag Arctic-Tern-FP-2, notes release-notes/arctic-tern-fp-2.md,
+#   assets Project.Kestrel.v.Arctic.Tern.FP.2.{Windows.Setup.exe,MacOS.dmg,MacOS.Intel.dmg}
+# The notes are the part of the release-notes file above its first `---` line.
+#
+# Re-runs are safe:
+#   - tag already published  -> nothing to do (a main push that did not bump the version)
+#   - draft on this commit   -> only missing assets are uploaded
+#   - draft on an older commit (a fix merged to main before publishing)
+#                            -> the draft is retargeted and every asset and the notes are replaced
+
+on:
+  workflow_run:
+    workflows:
+      - Build Windows Installer
+      - Build macOS Artifacts
+      - Build macOS Artifacts (Intel)
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit on main to draft the release for (default: current main)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  draft:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-draft-${{ github.event.workflow_run.head_sha || inputs.sha || github.sha }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Resolve commit
+        id: sha
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="${{ github.event.workflow_run.head_sha }}"
+          if [ -z "$sha" ]; then sha="${{ inputs.sha }}"; fi
+          if [ -z "$sha" ]; then sha=$(gh api "repos/$GH_REPO/commits/main" --jq .sha); fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Commit: $sha"
+
+      - name: Checkout (no LFS, only text files are read)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.sha.outputs.sha }}
+          lfs: false
+
+      - name: Derive release names
+        id: names
+        shell: bash
+        run: |
+          set -euo pipefail
+          codename=$(tr -d '\r\n' < VERSION.txt)
+          base=$(printf '%s' "$codename" | sed "s/['’]//g" | sed -E 's/[^A-Za-z0-9]+/-/g; s/^-+//; s/-+$//')
+          if [ -z "$base" ]; then echo "::error::VERSION.txt is empty"; exit 1; fi
+          {
+            echo "codename=$codename"
+            echo "tag=$base"
+            echo "dot=${base//-/.}"
+            echo "slug=${base,,}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Codename: $codename -> tag $base"
+
+      - name: Find successful builds of this commit
+        id: runs
+        shell: bash
+        env:
+          SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          set -euo pipefail
+          find_run() {
+            gh run list --workflow "$1" --branch main --commit "$SHA" --status success \
+              --limit 1 --json databaseId --jq '.[0].databaseId // empty'
+          }
+          win=$(find_run main.yml)
+          mac=$(find_run build-macos.yml)
+          intel=$(find_run build-macos-intel.yml)
+          echo "win=$win" >> "$GITHUB_OUTPUT"
+          echo "mac=$mac" >> "$GITHUB_OUTPUT"
+          echo "intel=$intel" >> "$GITHUB_OUTPUT"
+          echo "Windows run: ${win:-none}  macOS run: ${mac:-none}  Intel run: ${intel:-none}"
+
+      - name: Check existing release
+        id: existing
+        shell: bash
+        env:
+          TAG: ${{ steps.names.outputs.tag }}
+          SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # Drafts have no git tag yet, so look the release up by tag_name in the list.
+          rel=$(gh api "repos/$GH_REPO/releases?per_page=100" \
+            --jq "[.[] | select(.tag_name == \"$TAG\")][0] // empty")
+          if [ -z "$rel" ]; then
+            echo "state=none" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          draft=$(jq -r .draft <<<"$rel")
+          target=$(jq -r .target_commitish <<<"$rel")
+          echo "id=$(jq -r .id <<<"$rel")" >> "$GITHUB_OUTPUT"
+          echo "assets=$(jq -c '[.assets[].name]' <<<"$rel")" >> "$GITHUB_OUTPUT"
+          if [ "$draft" != "true" ]; then
+            echo "state=published" >> "$GITHUB_OUTPUT"
+          elif [ "$target" = "$SHA" ]; then
+            echo "state=draft-same" >> "$GITHUB_OUTPUT"
+          else
+            echo "state=draft-stale" >> "$GITHUB_OUTPUT"
+            echo "::warning::Draft $TAG targets $target; retargeting it to $SHA and replacing its assets and notes."
+          fi
+
+      - name: Decide
+        id: go
+        shell: bash
+        env:
+          STATE: ${{ steps.existing.outputs.state }}
+          WIN: ${{ steps.runs.outputs.win }}
+          MAC: ${{ steps.runs.outputs.mac }}
+          TAG: ${{ steps.names.outputs.tag }}
+        run: |
+          set -euo pipefail
+          go=true
+          if [ "$STATE" = "published" ]; then
+            echo "Release $TAG is already published; nothing to do." | tee -a "$GITHUB_STEP_SUMMARY"
+            go=false
+          elif [ -z "$WIN" ] || [ -z "$MAC" ]; then
+            echo "Waiting for the other build of this commit (Windows: ${WIN:-pending}, macOS: ${MAC:-pending}). The draft is created when both have succeeded." | tee -a "$GITHUB_STEP_SUMMARY"
+            go=false
+          fi
+          echo "go=$go" >> "$GITHUB_OUTPUT"
+
+      - name: Extract release notes
+        if: steps.go.outputs.go == 'true'
+        shell: bash
+        env:
+          SLUG: ${{ steps.names.outputs.slug }}
+        run: |
+          set -euo pipefail
+          f="release-notes/$SLUG.md"
+          if [ ! -f "$f" ]; then
+            echo "::error::$f is missing on this commit. The release-prep PR should have added it."
+            exit 1
+          fi
+          awk 'BEGIN{p=1} /^---[[:space:]]*$/{p=0} p' "$f" > "$RUNNER_TEMP/release-notes.md"
+          n=$(grep -c . "$RUNNER_TEMP/release-notes.md" || true)
+          if [ "$n" -lt 3 ]; then
+            echo "::error::Only $n non-empty lines above the first '---' in $f. Is there a stray divider?"
+            exit 1
+          fi
+          echo "Release notes: $n non-empty lines"
+
+      - name: Download and rename assets
+        if: steps.go.outputs.go == 'true'
+        shell: bash
+        env:
+          WIN: ${{ steps.runs.outputs.win }}
+          MAC: ${{ steps.runs.outputs.mac }}
+          INTEL: ${{ steps.runs.outputs.intel }}
+          DOT: ${{ steps.names.outputs.dot }}
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/assets"; mkdir -p "$d"
+          gh run download "$MAC" -n macos-dmg -D "$d/mac"
+          mv "$d/mac/ProjectKestrel.dmg" "$d/Project.Kestrel.v.$DOT.MacOS.dmg"
+          gh run download "$WIN" -n windows-installer -D "$d/win"
+          shopt -s nullglob; exe=("$d"/win/*Setup.exe)
+          if [ "${#exe[@]}" -ne 1 ]; then echo "::error::Expected one *Setup.exe, found ${#exe[@]}"; exit 1; fi
+          mv "${exe[0]}" "$d/Project.Kestrel.v.$DOT.Windows.Setup.exe"
+          if [ -n "$INTEL" ]; then
+            gh run download "$INTEL" -n macos-intel-dmg -D "$d/intel"
+            mv "$d/intel/ProjectKestrel.dmg" "$d/Project.Kestrel.v.$DOT.MacOS.Intel.dmg"
+          fi
+          rm -rf "$d/mac" "$d/win" "$d/intel"
+          ls -l "$d"
+
+      - name: Create or update the draft release
+        if: steps.go.outputs.go == 'true'
+        shell: bash
+        env:
+          STATE: ${{ steps.existing.outputs.state }}
+          ASSETS: ${{ steps.existing.outputs.assets }}
+          TAG: ${{ steps.names.outputs.tag }}
+          CODENAME: ${{ steps.names.outputs.codename }}
+          SHA: ${{ steps.sha.outputs.sha }}
+          WIN: ${{ steps.runs.outputs.win }}
+          MAC: ${{ steps.runs.outputs.mac }}
+          INTEL: ${{ steps.runs.outputs.intel }}
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/assets"
+          notes="$RUNNER_TEMP/release-notes.md"
+          title="Project Kestrel v($CODENAME) Release!"
+          case "$STATE" in
+            none)
+              # Create first, upload separately: the assets are ~1 GB each and a
+              # combined create can half-fail.
+              gh release create "$TAG" --draft --target "$SHA" --title "$title" --notes-file "$notes"
+              gh release upload "$TAG" "$d"/* --clobber
+              ;;
+            draft-stale)
+              gh release edit "$TAG" --target "$SHA" --title "$title" --notes-file "$notes"
+              gh release upload "$TAG" "$d"/* --clobber
+              ;;
+            draft-same)
+              for f in "$d"/*; do
+                name=$(basename "$f")
+                if jq -e --arg n "$name" 'index($n) == null' <<<"${ASSETS:-[]}" >/dev/null; then
+                  gh release upload "$TAG" "$f"
+                else
+                  echo "Already attached: $name"
+                fi
+              done
+              ;;
+          esac
+          url=$(gh release view "$TAG" --json url --jq .url)
+          {
+            echo "### Draft release $TAG"
+            echo ""
+            echo "- Draft: $url"
+            echo "- Commit: \`$SHA\`"
+            echo "- Builds: Windows run $WIN, macOS run $MAC${INTEL:+, Intel run $INTEL}"
+            echo "- Assets:"
+            for f in "$d"/*; do echo "  - $(basename "$f")"; done
+            echo ""
+            echo "Review the notes and assets on GitHub, then click Publish."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -119,7 +119,7 @@ class TestSupportAndInfo:
         import shutil
         shutil.rmtree(Path(kdir) / "embeddings")
         sup = fs.rescore_support(kdir)
-        assert not sup["supported"] and "pipeline 3.0" in sup["reason"]
+        assert not sup["supported"] and "analysis version 3.0" in sup["reason"]
 
     def test_unsupported_when_species_detection_was_off(self, tmp_path, clf):
         kdir = _make_folder(tmp_path, clf, {"a.jpg": (1, [_crop(0)])},

@@ -20,6 +20,7 @@ import tempfile
 import time
 import threading
 import webbrowser
+from pathlib import Path
 
 from settings_utils import load_persisted_settings, save_persisted_settings, debug, info, warn, error
 # Several long-standing call sites use `log(...)` as a catch-all logger.
@@ -27,6 +28,12 @@ from settings_utils import load_persisted_settings, save_persisted_settings, deb
 # (which masks the real exception that triggered them).
 log = error
 from queue_manager import _queue_manager
+from settings_bridge import (
+    _QF_INSTALL_ID_KEY,
+    EnhancedGpuBridgeMixin,
+    SettingsBridgeMixin,
+)
+from bird_catalog_bridge import BirdCatalogBridgeMixin
 
 try:
     from kestrel_analyzer.exposure_compensation import preserve_highlights_for_stops as _preserve_highlights_for_stops
@@ -120,6 +127,7 @@ from kestrel_analyzer.config import (
     RAW_EXTENSIONS as _RAW_EXTENSIONS,
 )
 from kestrel_analyzer.database import copy_file_atomic
+import cull_session
 from kestrel_analyzer.pipeline_version import folder_pipeline_major, read_app_version, scan_summary
 
 # Telemetry — failsafe import (never blocks startup)
@@ -332,30 +340,6 @@ HOST = '127.0.0.1'
 
 # Quality feedback (see the "Quality feedback" section of Api).
 _QF_MODE_KEY = 'quality_feedback_mode'
-_QF_INSTALL_ID_KEY = 'quality_feedback_install_id'
-
-# Session / shutdown bookkeeping owned by visualizer._mark_session_start,
-# the clean-exit path and clear_recovery_state. The frontend caches a full
-# get_settings() snapshot in localStorage at startup and sends it back whole
-# on many later saves (folder recents, mergeSetting, the settings dialog), so
-# without this filter a stale copy re-adds last_unclean_shutdown_utc after the
-# user has dealt with the recovery prompt, and the same unclean shutdown is
-# offered for reporting again on a later launch.
-_SESSION_OWNED_SETTINGS_KEYS = frozenset({
-    'last_unclean_shutdown_utc',
-    'last_exit_reason',
-    'app_session_exit_reason',
-    'exit_reason_migrated_v1',
-    'app_session_started_utc',
-    'app_session_closed_cleanly',
-    'app_session_pid',
-    'last_session_closed_utc',
-})
-# Written only by Python: enhanced GPU setup turns it on, and the Settings
-# checkbox calls enhanced_gpu_set_enabled the moment it changes. Whole-object
-# frontend saves (mergeSetting, the settings dialog) carry a cached copy that
-# can predate setup, so they must not write it back.
-_ENHANCED_GPU_ENABLED_KEY = 'enhanced_gpu_enabled'
 _QF_MODES = ('ask', 'always', 'never')
 _QF_MAX_SESSIONS = 8
 _QF_PREVIEW_MAX_SIDE = 1024
@@ -385,12 +369,11 @@ def _is_safe_external_url(url) -> bool:
     or forward-slash ``//host``), and any URL containing control characters —
     is rejected.
 
-    Rationale (FINDING-01): ``webbrowser.open`` ultimately calls
-    ``ShellExecute`` on Windows, which happily launches local executables when
-    given a ``file://`` URL or a custom URI scheme bound to an installed
-    handler. Combined with the stored DOM-XSS formerly present in the scene
-    renderer, that was a clean stored-XSS-to-RCE chain. The allowlist closes
-    the browser side of that chain.
+    Rationale: ``webbrowser.open`` ultimately calls ``ShellExecute`` on
+    Windows, which happily launches local executables when given a ``file://``
+    URL or a custom URI scheme bound to an installed handler. Any script
+    injected into the page (for example through a crafted scene name) could
+    turn that into code execution. The allowlist closes that path.
     """
     if not isinstance(url, str):
         return False
@@ -603,7 +586,7 @@ def _move_no_overwrite(src: str, dst: str) -> None:
     _unlink_src_or_rollback(src, dst)
 
 
-class Api:
+class Api(SettingsBridgeMixin, EnhancedGpuBridgeMixin, BirdCatalogBridgeMixin):
     """JavaScript API exposed to webview for native file/folder operations."""
 
     # Extension → MIME type map used by read_image_file (avoids mimetypes.guess_type overhead)
@@ -624,8 +607,6 @@ class Api:
         self._culling_companion_extensions: tuple[str, ...] = _CULLING_COMPANION_EXTENSIONS
         # Set externally by visualizer.main() after window/server come up.
         self._main_window = None
-        self._culling_window = None
-        self._culling_window_root = None
         self._server_port: int | None = None
         # Async share-with-perch state (job_id -> {progress, cancel_event, thread})
         self._share_jobs: dict = {}
@@ -664,10 +645,6 @@ class Api:
         # folder rescan so the gallery refreshes as packs land — same UX as
         # local-analysis live updates. Drained-and-cleared each poll.
         self._cc_pack_events: list = []
-        # 5-minute TTL cache for /api/usage so the Cloud destination card in
-        # the analyze dialog doesn't hit the Worker on every keystroke.
-        self._cc_usage_cache: dict | None = None
-        self._cc_usage_cache_at: float = 0.0
 
         # macOS App Sandbox: re-acquire access to every previously-chosen photo
         # folder via its stored security-scoped bookmark, held for the whole
@@ -680,26 +657,19 @@ class Api:
             except Exception as e:
                 warn(f'[sandbox] bookmark activation failed: {e}')
 
-        # (StoreKit priming used to run here: the storefront decided the
-        # Support-link destination, and SKPaymentQueue.storefront stays nil
-        # until an observer is attached, so we warmed it at launch to avoid a
-        # fail-closed on the first click. get_support_url no longer consults the
-        # storefront — see its docstring — so the App Store build now opens no
-        # StoreKit connection at all. Restore this alongside the gate if that
-        # ever changes; mac_storefront.prime() is still there.)
+        # The App Store build opens no StoreKit connection at launch. If the
+        # Support link ever goes back to depending on the storefront, call
+        # mac_storefront.prime() here: SKPaymentQueue.storefront stays nil
+        # until an observer is attached, so the first click would fail closed.
 
     def _invalidate_account_caches(self) -> None:
-        """Drop every identity-scoped cache (Perch account, Perch usage, and
-        Cloud Compute usage) so a sign-out / account-switch / token rotation
-        can't surface the previous user's numbers. The CC usage cache in
-        particular was previously left untouched on sign-out, so the account
-        panel kept showing the prior account's "images analyzed this period"."""
+        """Drop every identity-scoped cache (Perch account and Perch usage) so a
+        sign-out / account-switch / token rotation can't surface the previous
+        user's numbers."""
         self._perch_account_cache = None
         self._perch_account_cache_at = 0.0
         self._perch_usage_cache = None
         self._perch_usage_cache_at = 0.0
-        self._cc_usage_cache = None
-        self._cc_usage_cache_at = 0.0
 
     def notify_dirty(self, is_dirty: bool) -> dict:
         """Called from JS whenever the dirty flag changes."""
@@ -1550,218 +1520,6 @@ class Api:
             except Exception:
                 pass
         return payload
-
-    def get_species_family_map(self):
-        """Return a {species_display_name: family_display_name} mapping for
-        every species in the bundled IOC world catalog (~11,250 rows).
-
-        The species classifier (BioCLIP) can name any of these, so the
-        frontend's species→family auto-link must cover all of them, not just
-        the legacy CNN's 498 North-American labels. Family names are the
-        catalog's ``family_common`` display names ("Thrush sp."), the same
-        strings the classifier writes to the ``family`` column. Cached on the
-        bridge instance.
-        """
-        cached = getattr(self, '_species_family_map_cache', None)
-        if cached is not None:
-            return cached
-        try:
-            cat = self._get_bird_catalog()
-            if cat is None:
-                raise RuntimeError('catalog unavailable')
-            mapping: dict[str, str] = {}
-            for rec in cat.records:
-                if rec.canonical_common_name and rec.family_common:
-                    mapping[rec.canonical_common_name] = rec.family_common
-            result = {'success': True, 'map': mapping}
-        except Exception as e:
-            error(f'[API] get_species_family_map error: {e}')
-            result = {'success': False, 'error': str(e), 'map': {}}
-        self._species_family_map_cache = result
-        return result
-
-    # ------------------------------------------------------------------ #
-    #  Global bird catalog (regional + fuzzy combobox)                    #
-    # ------------------------------------------------------------------ #
-
-    def _get_bird_catalog(self):
-        """Process-wide catalog singleton, cached on the bridge instance.
-
-        Returns ``None`` on load failure so callers can degrade gracefully
-        rather than 500-ing the entire combobox.
-        """
-        cached = getattr(self, '_bird_catalog_cache', None)
-        if cached is not None:
-            return cached
-        try:
-            try:
-                from kestrel_analyzer.bird_catalog import get_catalog
-            except ImportError:
-                from analyzer.kestrel_analyzer.bird_catalog import get_catalog
-            cached = get_catalog()
-        except Exception as e:
-            error(f'[API] bird catalog load error: {e}')
-            cached = None
-        self._bird_catalog_cache = cached
-        return cached
-
-    def _sanitize_species_regions(self, value):
-        """Per-folder species geofence from the frontend → list or ``None``.
-
-        ``None`` (or nothing valid) means "use the ``bird_regions`` setting";
-        the worker resolves that just before the folder runs.
-        """
-        if isinstance(value, str):
-            value = [value]
-        if not isinstance(value, (list, tuple)):
-            return None
-        vals = [v.strip() for v in value if isinstance(v, str) and v.strip()]
-        if not vals:
-            return None
-        try:
-            try:
-                from kestrel_analyzer.bird_catalog import ALLOWED_REGION_CODES, GLOBAL_REGION
-            except ImportError:
-                from analyzer.kestrel_analyzer.bird_catalog import ALLOWED_REGION_CODES, GLOBAL_REGION
-        except Exception:
-            return None
-        if any(v.lower() == GLOBAL_REGION for v in vals):
-            return [GLOBAL_REGION]
-        picked = [c for c in ALLOWED_REGION_CODES if c in set(vals)]
-        return picked or None
-
-    def get_bird_catalog_meta(self):
-        """Return UI metadata: region labels + default selection + catalog size.
-
-        Used by the frontend to populate the region picker in settings without
-        downloading the full catalog. Cached separately from the records.
-        """
-        try:
-            try:
-                from kestrel_analyzer.bird_catalog import (
-                    ALLOWED_REGION_CODES, REGION_LABELS, DEFAULT_REGION_SELECTION,
-                )
-            except ImportError:
-                from analyzer.kestrel_analyzer.bird_catalog import (
-                    ALLOWED_REGION_CODES, REGION_LABELS, DEFAULT_REGION_SELECTION,
-                )
-            cat = self._get_bird_catalog()
-            return {
-                'success': True,
-                'regions': [
-                    {'code': code, 'label': REGION_LABELS.get(code, code)}
-                    for code in ALLOWED_REGION_CODES
-                ],
-                'default_regions': list(DEFAULT_REGION_SELECTION),
-                'total_species': len(cat) if cat is not None else 0,
-                # Species per region (geofence size shown in the analyze
-                # dialog's region picker). Worldwide species count everywhere.
-                'region_counts': {
-                    code: len(cat.filter([code])) for code in ALLOWED_REGION_CODES
-                } if cat is not None else {},
-            }
-        except Exception as e:
-            error(f'[API] get_bird_catalog_meta error: {e}')
-            return {'success': False, 'error': str(e),
-                    'regions': [], 'default_regions': ['NA'], 'total_species': 0}
-
-    def search_birds(self, query='', regions=None, limit=20):
-        """Region-filtered fuzzy search across the global bird catalog.
-
-        Parameters mirror the JS combobox: ``query`` is the text the user has
-        typed (may be empty to seed the dropdown), ``regions`` is the list of
-        biogeographic codes currently selected in Settings, and ``limit`` caps
-        the number of returned records.
-        """
-        try:
-            try:
-                from kestrel_analyzer.bird_catalog import record_to_dict
-            except ImportError:
-                from analyzer.kestrel_analyzer.bird_catalog import record_to_dict
-            cat = self._get_bird_catalog()
-            if cat is None:
-                return {'success': False, 'error': 'catalog unavailable', 'results': []}
-            q = '' if query is None else str(query)
-            sel = regions if isinstance(regions, (list, tuple)) else ['NA']
-            try:
-                n = int(limit)
-            except (TypeError, ValueError):
-                n = 20
-            n = max(1, min(100, n))
-            results = cat.search(q, sel, limit=n)
-            return {'success': True, 'results': [record_to_dict(r) for r in results]}
-        except Exception as e:
-            error(f'[API] search_birds error: {e}')
-            return {'success': False, 'error': str(e), 'results': []}
-
-    def search_families(self, query='', regions=None, limit=20):
-        """Region-filtered fuzzy search across unique bird families."""
-        try:
-            try:
-                from kestrel_analyzer.bird_catalog import family_entry_to_dict
-            except ImportError:
-                from analyzer.kestrel_analyzer.bird_catalog import family_entry_to_dict
-            cat = self._get_bird_catalog()
-            if cat is None:
-                return {'success': False, 'error': 'catalog unavailable', 'results': []}
-            q = '' if query is None else str(query)
-            sel = regions if isinstance(regions, (list, tuple)) else ['NA']
-            try:
-                n = int(limit)
-            except (TypeError, ValueError):
-                n = 20
-            n = max(1, min(100, n))
-            results = cat.search_families(q, sel, limit=n)
-            return {'success': True, 'results': [family_entry_to_dict(f) for f in results]}
-        except Exception as e:
-            error(f'[API] search_families error: {e}')
-            return {'success': False, 'error': str(e), 'results': []}
-
-    def lookup_birds(self, names=None):
-        """Resolve a list of canonical names (already-applied pills) to records.
-
-        Returns a ``{ canonical_name: record_dict }`` map so the frontend can
-        render the scientific-name subtext for pills it inherited from a
-        previous session (where the catalog wasn't yet loaded into memory).
-        Unknown names are simply omitted from the response.
-        """
-        try:
-            try:
-                from kestrel_analyzer.bird_catalog import record_to_dict
-            except ImportError:
-                from analyzer.kestrel_analyzer.bird_catalog import record_to_dict
-            cat = self._get_bird_catalog()
-            if cat is None:
-                return {'success': False, 'error': 'catalog unavailable', 'map': {}}
-            out: dict = {}
-            if isinstance(names, (list, tuple)):
-                for raw in names:
-                    if not isinstance(raw, str):
-                        continue
-                    rec = cat.lookup(raw)
-                    if rec is not None:
-                        out[rec.canonical_common_name] = record_to_dict(rec)
-            return {'success': True, 'map': out}
-        except Exception as e:
-            error(f'[API] lookup_birds error: {e}')
-            return {'success': False, 'error': str(e), 'map': {}}
-
-    def get_family_sci_map(self):
-        """Return the catalog's full ``family_common -> family_sci`` map.
-
-        Hydrated once on the JS side at startup so family-tier pills can
-        resolve their italicised scientific-family subtext directly,
-        without depending on a sibling species record being present in
-        the same scene.
-        """
-        try:
-            cat = self._get_bird_catalog()
-            if cat is None:
-                return {'success': False, 'error': 'catalog unavailable', 'map': {}}
-            return {'success': True, 'map': cat.family_sci_map}
-        except Exception as e:
-            error(f'[API] get_family_sci_map error: {e}')
-            return {'success': False, 'error': str(e), 'map': {}}
 
     def fetch_remote_version(self):
         """Fetch the release manifest from projectkestrel.org to bypass CORS in JS.
@@ -2788,7 +2546,7 @@ class Api:
             error(f'[API] smart_search_status({folder_path!r}) error: {e}')
             return {'success': False, 'error': str(e)}
 
-    # ── Change Settings dialog (per-folder, no re-analysis) ──────────────────
+    # ── Folder settings dialog (per-folder, no re-analysis) ──────────────────
     # Read-only folder facts, the per-folder "ignore wildlife" display setting,
     # and species-region re-scoring from the stored BioCLIP embeddings. Every
     # method validates the folder through ``_resolve_folder_root_and_kestrel``.
@@ -2802,7 +2560,7 @@ class Api:
         return _fs
 
     def get_folder_info(self, folder_path: str) -> dict:
-        """Folder facts for the Change Settings dialog.
+        """Folder facts for the Folder settings dialog.
 
         Returns ``{success, info: {pipeline_version, pipeline_major, analyzed_utc,
         image_count, scene_count, species_regions, wildlife_enabled, wildlife_crops,
@@ -3362,7 +3120,7 @@ class Api:
         Gated by ``_is_safe_external_url``: only plain ``http``, ``https``,
         and ``mailto`` schemes are passed through. Everything else (``file``,
         ``javascript``, ``data``, custom URI handlers, UNC paths, control
-        characters) is rejected. See FINDING-01.
+        characters) is rejected.
         """
         try:
             if not _is_safe_external_url(url):
@@ -3515,206 +3273,6 @@ class Api:
             error(f'[API] send_feedback error: {e}')
             return {'success': False, 'error': str(e)}
 
-    # ── Enhanced GPU performance (opt-in vendor GPU execution providers; Windows only) ──
-    # Setup runs on a worker thread; the UI polls enhanced_gpu_status() for progress. Nothing here
-    # touches Windows ML unless the user starts setup, so macOS and unsupported Windows are unaffected.
-    _eg_lock = threading.Lock()
-    _eg_job: dict = {'running': False, 'stage': '', 'message': '', 'cancel': False, 'result': None}
-
-    def _eg_module(self):
-        from kestrel_analyzer.ml import enhanced_gpu
-        return enhanced_gpu
-
-    def enhanced_gpu_status(self):
-        """Settings-dialog state: availability, whether set up / enabled, per-model results, setup progress."""
-        try:
-            eg = self._eg_module()
-            st = eg.status()
-            st['runtime'] = dict(eg.runtime_summary(), cpu_components=[f.get('kind') for f in _queue_manager.cpu_fallbacks()])
-            with self._eg_lock:
-                job = {k: v for k, v in self._eg_job.items() if k != 'cancel'}
-            st['job'] = job
-            return {'success': True, 'status': st}
-        except Exception as e:
-            return {'success': False, 'error': str(e), 'status': {'available': False}}
-
-    def enhanced_gpu_start_setup(self):
-        """Start the set-up worker (platform check, EP download, validation). Returns at once."""
-        try:
-            eg = self._eg_module()
-            if not eg.platform_status().get('available'):
-                return {'success': False, 'error': eg.platform_status().get('reason', 'Not available')}
-            with self._eg_lock:
-                if self._eg_job.get('running'):
-                    return {'success': False, 'error': 'Setup is already running.'}
-                self._eg_job.update(running=True, stage='platform', message='Starting...', cancel=False, result=None)
-
-            def _progress(stage, message):
-                with self._eg_lock:
-                    self._eg_job.update(stage=stage, message=message)
-
-            def _work():
-                result = None
-                try:
-                    result = eg.run_setup(_progress, lambda: bool(self._eg_job.get('cancel')))
-                    if result.get('ok'):
-                        # Turn the mode on once it has been validated; the user can switch it off.
-                        s = load_persisted_settings()
-                        s['enhanced_gpu_enabled'] = True
-                        save_persisted_settings(s)
-                        eg.reset_cache()
-                except Exception as e:  # run_setup should not raise, but never leave 'running' stuck
-                    result = {'ok': False, 'reason': f'{type(e).__name__}: {e}'}
-                finally:
-                    with self._eg_lock:
-                        self._eg_job.update(running=False, stage='done', message='',
-                                            result={'ok': bool(result and result.get('ok')),
-                                                    'reason': (result or {}).get('reason', '')})
-
-            threading.Thread(target=_work, name='enhanced-gpu-setup', daemon=True).start()
-            return {'success': True}
-        except Exception as e:
-            error(f'[API] enhanced_gpu_start_setup error: {e}')
-            return {'success': False, 'error': str(e)}
-
-    def enhanced_gpu_cancel_setup(self):
-        with self._eg_lock:
-            self._eg_job['cancel'] = True
-        return {'success': True}
-
-    def enhanced_gpu_set_enabled(self, enabled):
-        """Turn the mode on or off (off returns every model to DirectML on the next analysis)."""
-        try:
-            s = load_persisted_settings()
-            s['enhanced_gpu_enabled'] = bool(enabled)
-            save_persisted_settings(s)
-            self._eg_module().reset_cache()
-            return {'success': True}
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
-
-    def enhanced_gpu_report_text(self):
-        """Plain-text summary for a bug report about the setup (the log tail is attached separately)."""
-        try:
-            eg = self._eg_module()
-            st = eg.load_state() or {}
-            lines = ['Enhanced GPU performance setup did not work.', '',
-                     f"Result: {st.get('reason') or 'see log'}",
-                     f"Vendor EP tried: {st.get('ep_name') or 'none'}",
-                     f"Models: {json.dumps(st.get('models', {}))}",
-                     f"Hardware: {json.dumps(st.get('hardware', {}))}"]
-            return {'success': True, 'text': '\n'.join(lines)[:6000]}
-        except Exception as e:
-            return {'success': False, 'error': str(e), 'text': ''}
-
-    def gpu_mode_report_text(self):
-        """Plain-text summary for a bug report about the GPU mode (enhanced / standard / CPU fallback)."""
-        try:
-            return {'success': True, 'text': self._eg_module().report_text(_queue_manager.cpu_fallbacks())}
-        except Exception as e:
-            return {'success': False, 'error': str(e), 'text': ''}
-
-    def get_settings(self):
-        """Return persisted settings, ensuring machine_id and version exist."""
-        try:
-            settings = load_persisted_settings()
-            if _telemetry is not None:
-                _telemetry.get_machine_id(settings)
-            if _telemetry is not None:
-                settings['version'] = _telemetry._read_version()
-            save_persisted_settings(settings)
-            # The quality-feedback install id is managed by Python only (see
-            # the Quality feedback section); keep it out of the frontend's
-            # localStorage so a stale settings snapshot can't resurrect a
-            # forgotten id.
-            settings = {k: v for k, v in settings.items() if k != _QF_INSTALL_ID_KEY}
-            return {'success': True, 'settings': settings}
-        except Exception as e:
-            error(f'[API] get_settings error: {e}')
-            return {'success': False, 'error': str(e), 'settings': {}}
-
-    def get_rating_thresholds(self):
-        """Return the active rating profile's quality-score cutoffs for each star.
-
-        The frontend needs these to draw star positions on a quality-score
-        number line (Culling Assistant) and to convert a manual star rating
-        back into the quality band it represents. Served from
-        ``kestrel_analyzer.ratings`` so the table has exactly one definition.
-
-        Returns:
-            {
-              'success': bool,
-              'profile': str,                # active rating_profile setting
-              'thresholds': {'five': float, 'four': float, 'three': float, 'two': float},
-              'profiles': {name: thresholds, ...},   # every built-in profile
-              'error': str,
-            }
-        """
-        try:
-            try:
-                from kestrel_analyzer.ratings import RATING_PROFILES, resolve_thresholds
-            except ImportError:
-                from analyzer.kestrel_analyzer.ratings import (  # type: ignore
-                    RATING_PROFILES,
-                    resolve_thresholds,
-                )
-
-            settings = load_persisted_settings()
-            profile = str(settings.get('rating_profile', 'balanced') or 'balanced').lower()
-            thresholds = resolve_thresholds(profile, settings.get('rating_thresholds_custom'))
-            return {
-                'success': True,
-                'profile': profile,
-                'thresholds': dict(thresholds),
-                'profiles': {k: dict(v) for k, v in RATING_PROFILES.items()},
-                'error': '',
-            }
-        except Exception as e:
-            error(f'[API] get_rating_thresholds error: {e}')
-            return {'success': False, 'error': str(e), 'profile': '', 'thresholds': {}, 'profiles': {}}
-
-    def save_settings_data(self, settings_dict):
-        """Persist settings from JavaScript (wraps save_persisted_settings)."""
-        try:
-            if not isinstance(settings_dict, dict):
-                return {'success': False, 'error': 'Invalid settings'}
-            # Merge into existing persisted settings so stale/minimal frontend
-            # payloads cannot drop unrelated keys (for example legal consent flags).
-            existing = load_persisted_settings()
-            if not isinstance(existing, dict):
-                existing = {}
-            # Python-owned keys the frontend must never overwrite.
-            settings_dict = {
-                k: v for k, v in settings_dict.items()
-                if k != _QF_INSTALL_ID_KEY and k != _ENHANCED_GPU_ENABLED_KEY
-                and k not in _SESSION_OWNED_SETTINGS_KEYS
-            }
-            merged = {**existing, **settings_dict}
-
-            # Keep cumulative impact counters monotonic so stale UI payloads cannot
-            # accidentally reset totals to a lower value.
-            def _coerce_number(v):
-                try:
-                    return float(v)
-                except (TypeError, ValueError):
-                    return None
-
-            prev_files = _coerce_number(existing.get('kestrel_impact_total_files'))
-            new_files = _coerce_number(merged.get('kestrel_impact_total_files'))
-            if prev_files is not None and (new_files is None or new_files < prev_files):
-                merged['kestrel_impact_total_files'] = int(prev_files)
-
-            prev_secs = _coerce_number(existing.get('kestrel_impact_total_seconds'))
-            new_secs = _coerce_number(merged.get('kestrel_impact_total_seconds'))
-            if prev_secs is not None and (new_secs is None or new_secs < prev_secs):
-                merged['kestrel_impact_total_seconds'] = prev_secs
-
-            save_persisted_settings(merged)
-            return {'success': True}
-        except Exception as e:
-            error(f'[API] save_settings_data error: {e}')
-            return {'success': False, 'error': str(e)}
-
     # ------------------------------------------------------------------ #
     #  Quality feedback                                                    #
     # ------------------------------------------------------------------ #
@@ -3771,13 +3329,6 @@ class Api:
         if sys.platform == 'darwin':
             return 'macos'
         return 'linux'
-
-    def get_quality_feedback_mode(self):
-        """``{'success', 'mode'}`` -- ``ask`` (default) | ``always`` | ``never``."""
-        try:
-            return {'success': True, 'mode': self._qf_mode()}
-        except Exception as e:
-            return {'success': False, 'mode': 'ask', 'error': str(e)}
 
     def set_quality_feedback_mode(self, mode):
         """Persist the quality-feedback sharing mode (Settings / "Remember my choice")."""
@@ -4185,7 +3736,7 @@ class Api:
                         start_dir = os.path.abspath(os.path.join(exe_dir, '..', '..'))
                         if not os.path.isdir(start_dir):
                             start_dir = exe_dir
-                        for root, dirs, files in os.walk(start_dir):
+                        for root, dirs, _files in os.walk(start_dir):
                             depth = root[len(exe_dir):].count(os.sep)
                             if depth > 5:
                                 del dirs[:]
@@ -4520,24 +4071,6 @@ class Api:
             error(f'[API] clear_queue_done upgrades error: {e}')
         return _queue_manager.clear_done()
 
-    def remove_queue_item(self, path: str):
-        """Remove a single pending item from the queue by path."""
-        try:
-            return _queue_manager.remove_pending_item(str(path))
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
-
-    def reorder_queue(self, ordered_paths):
-        """Reorder pending queue items. ordered_paths is a JSON string or list of paths."""
-        try:
-            if isinstance(ordered_paths, str):
-                ordered_paths = json.loads(ordered_paths)
-            if not isinstance(ordered_paths, list):
-                return {'success': False, 'error': 'ordered_paths must be a list'}
-            return _queue_manager.reorder_pending(ordered_paths)
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
-
     def is_analysis_running(self):
         """Return True if the analysis queue is actively running."""
         return {'running': _queue_manager.is_running}
@@ -4553,7 +4086,6 @@ class Api:
         """
         try:
             settings = load_persisted_settings()
-            queue_state = _queue_manager.get_persisted_recovery_state()
             unclean_utc = str(settings.get('last_unclean_shutdown_utc', '') or '').strip()
             raw_reason = str(settings.get('last_exit_reason', '') or '').strip().lower()
             exit_reason = raw_reason
@@ -4578,14 +4110,10 @@ class Api:
                 'unclean_shutdown': bool(unclean_utc),
                 'unclean_shutdown_utc': unclean_utc,
                 'exit_reason': exit_reason,
-                'queue_recovery': queue_state,
             }
         except Exception as e:
             error(f'[shutdown] recovery_status: failed to read recovery state: {e}')
             return {'success': False, 'error': str(e)}
-
-    # Phase 3: restore_analysis_queue removed — feature replaced by the
-    # analyze dialog's analyze_recents chip row.
 
     def clear_recovery_state(self, clear_queue_state: bool = True):
         """Clear persisted unclean-shutdown flag and optionally queue recovery snapshot."""
@@ -4632,12 +4160,7 @@ class Api:
         except Exception as e:
             return {'success': False, 'error': str(e)}
 
-    # ------------------------------------------------------------------ #
-    #  Culling Assistant API                                               #
-    # ------------------------------------------------------------------ #
-
     _main_window = None
-    _culling_window = None
     _server_port = None
     # OAuth flow state (per-instance, defaults safe for fresh sessions).
     _oauth_lock = None              # lazy-init threading.Lock in _get_oauth_lock
@@ -4645,92 +4168,6 @@ class Api:
     _oauth_status = "idle"
     _oauth_cancel_event = None      # threading.Event for the active flow
     _oauth_thread = None            # the active oauth-flow worker thread
-
-    def _culling_window_is_open(self) -> bool:
-        """True if the Culling Assistant webview is still in ``webview.windows``."""
-        win = getattr(self, '_culling_window', None)
-        if win is None:
-            return False
-        try:
-            import webview as _wv
-            windows = getattr(_wv, 'windows', None) or []
-            return win in windows
-        except Exception:
-            return False
-
-    def _on_culling_window_closed(self):
-        self._culling_window = None
-        self._culling_window_root = None
-
-    def _focus_culling_window(self, win) -> None:
-        restore = getattr(win, 'restore', None)
-        if callable(restore):
-            try:
-                restore()
-            except Exception as e:
-                warn(f'[culling] restore failed: {e}')
-        show = getattr(win, 'show', None)
-        if callable(show):
-            try:
-                show()
-            except Exception as e:
-                warn(f'[culling] show failed: {e}')
-
-    def open_culling_window(self, root_path: str):
-        """Open a pywebview window for the Culling Assistant.
-
-        One window only: a later click focuses the existing assistant and,
-        if the folder changed, reloads it. Stacking windows shares ``js_api``
-        and would race cull state and IPC.
-        """
-        try:
-            if not WEBVIEW_IMPORT_SUCCESS:
-                return {'success': False, 'error': 'pywebview not available'}
-
-            root_real, err = self._validate_root_dir(root_path, context='open_culling_window', require_exists=True)
-            if err:
-                return {'success': False, 'error': err}
-
-            import webview as _wv
-            folder_name = os.path.basename(root_real) if root_real else 'Unknown'
-            port = self._server_port or 8765
-            from urllib.parse import quote
-            culling_url = f'http://{HOST}:{port}/culling.html?root={quote(root_real, safe="")}'
-            title = f'Culling Assistant \u2014 {folder_name}'
-
-            if self._culling_window_is_open():
-                win = self._culling_window
-                if self._culling_window_root != root_real:
-                    win.load_url(culling_url)
-                    self._culling_window_root = root_real
-                    try:
-                        win.title = title
-                    except Exception as e:
-                        warn(f'[culling] set title failed: {e}')
-                self._focus_culling_window(win)
-                return {'success': True}
-
-            win = _wv.create_window(
-                title,
-                culling_url,
-                js_api=self,
-                width=1400,
-                height=900,
-            )
-            self._culling_window = win
-            self._culling_window_root = root_real
-            closed = getattr(getattr(win, 'events', None), 'closed', None)
-            if closed is not None:
-                try:
-                    closed += self._on_culling_window_closed
-                except TypeError:
-                    warn('[culling] closed-handler subscribe failed')
-            return {'success': True}
-        except Exception as e:
-            error(f'[API] open_culling_window error: {e}')
-            import traceback
-            error(f'[culling] Traceback: {traceback.format_exc()}')
-            return {'success': False, 'error': str(e)}
 
     def _get_oauth_lock(self):
         """Lazy-init the OAuth flow lock; mirrors the _share_jobs_lock pattern."""
@@ -5840,9 +5277,8 @@ class Api:
                     else:
                         remote = client.get_status(job_id)
                         self._cc_apply_remote_snapshot(job_id, remote)
-                        # Client-side pause was removed — the only client-driven
-                        # job control left is cancel. The poller just refreshes
-                        # the remote snapshot.
+                        # Cancel is the only client-driven job control; the
+                        # poller just refreshes the remote snapshot.
                 except Exception as e:
                     self._cc_record_remote_failure(job_id, str(e))
                     # Log every 5th consecutive failure so the journal doesn't
@@ -5954,7 +5390,7 @@ class Api:
         try:
             submit = client.submit_job(files, analysis_settings=analysis_settings)
         except ccc.JobInProgressError as e:
-            # Stage 6 concurrency gate: a Cloud Compute job is already in
+            # Concurrency gate: a Cloud Compute job is already in
             # flight for this user. Not a fault — surface to JS with a
             # MyAccount deep-link instead of an error toast. ``activeJobIds`` /
             # ``current`` / ``limit`` are passed through from the Worker's
@@ -6290,70 +5726,6 @@ class Api:
             ]
         return {"ok": True, "jobs": jobs}
 
-    # ─── Stage 5E — dashboard-feeding bridge methods ────────────────────
-    # Thin proxies over the Worker's user-facing endpoints. The primary
-    # consumer is the external online dashboard; the desktop UI keeps a
-    # single "View cloud usage online →" link in Settings rather than
-    # mirroring the full history table.
-
-    def cloud_compute_list_history(self, filters: dict | None = None) -> dict:
-        """Proxy GET /api/jobs (Stage 5C). ``filters`` is a dict matching the
-        query params: ``status`` (str/csv, supports `'running'`), ``from`` /
-        ``to`` (ISO datetimes), ``limit`` (int), ``cursor`` (opaque)."""
-        client, client_err = self._cc_make_client()
-        if client is None:
-            return client_err or {"ok": False, "error": "no client"}
-        f = filters or {}
-        try:
-            body = client.list_jobs(
-                status=f.get("status"),
-                from_iso=f.get("from"),
-                to_iso=f.get("to"),
-                limit=f.get("limit"),
-                cursor=f.get("cursor"),
-            )
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-        body["ok"] = True
-        return body
-
-    def cloud_compute_get_job_events(self, job_id: str, order: str = "desc") -> dict:
-        """Proxy GET /api/jobs/:jobId/events (Stage 5C)."""
-        client, client_err = self._cc_make_client()
-        if client is None:
-            return client_err or {"ok": False, "error": "no client"}
-        try:
-            body = client.get_job_events(job_id, order=order)
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-        body["ok"] = True
-        return body
-
-    def cloud_compute_get_job_timing_stats(self, job_id: str) -> dict:
-        """Proxy GET /api/jobs/:jobId/timing-stats (Stage 5C)."""
-        client, client_err = self._cc_make_client()
-        if client is None:
-            return client_err or {"ok": False, "error": "no client"}
-        try:
-            body = client.get_job_timing_stats(job_id)
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-        body["ok"] = True
-        return body
-
-    def cloud_compute_get_usage_summary(self, period: str = "monthly") -> dict:
-        """Proxy GET /api/usage (Stage 5D). Returns aggregate totals for the
-        current month or all-time. Used by the panel badge / Settings link."""
-        client, client_err = self._cc_make_client()
-        if client is None:
-            return client_err or {"ok": False, "error": "no client"}
-        try:
-            body = client.get_usage(period=period)
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-        body["ok"] = True
-        return body
-
     def cloud_compute_get_entitlements(self) -> dict:
         """Proxy GET /v1/me/entitlements on the Auth Worker. Returns the
         user's tier, plan limits, current-period usage, and active-job slots
@@ -6398,16 +5770,6 @@ class Api:
         except Exception as e:
             warn(f'[API] cloud_compute_get_pricing failed: {e}')
             return {"ok": False, "reason": "unavailable"}
-
-    def cloud_compute_clear_done(self) -> dict:
-        """Legacy bridge hook — does **not** touch the persistent job ledger.
-
-        The desktop's "Clear done" control only hides finished rows in the
-        cloud-analysis pill (``cloud-compute.js`` client-side filter). Job
-        history for the Account panel and startup resume still read the full
-        on-disk manifest via ``cloud_jobs_store``.
-        """
-        return {"ok": True, "removed": []}
 
     def cloud_compute_cancel_job(self, job_id: str) -> dict:
         """Terminal cancel. Tells the Worker to stop the job, then — ONLY if the
@@ -7162,25 +6524,6 @@ class Api:
             self._cc_pack_events = []
         return {"ok": True, "events": events}
 
-    def cloud_compute_get_usage(self) -> dict:
-        """Cached fetch of ``/api/usage``. 5-minute TTL. Used by the Cloud
-        destination card to display ``Remaining cloud analysis images: N``.
-        Stub-shaped today (Stage 3 fleshes it out)."""
-        import time as _t
-        now = _t.time()
-        if self._cc_usage_cache is not None and (now - self._cc_usage_cache_at) < 300:
-            return {"ok": True, "usage": self._cc_usage_cache, "cached": True}
-        client, client_err = self._cc_make_client()
-        if client is None:
-            return client_err or {"ok": False, "error": "no client"}
-        try:
-            usage = client.get_usage()
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-        self._cc_usage_cache = usage
-        self._cc_usage_cache_at = now
-        return {"ok": True, "usage": usage, "cached": False}
-
     def share_with_perch(
         self,
         root_path: str,
@@ -7301,7 +6644,7 @@ class Api:
                     "currentEffectiveDate": e.current_effective_date,
                 })
             except PerchPlanLimitExceeded as e:
-                # Stage 7: plan-tier cap denial. Surface a typed error so JS
+                # Plan-tier cap denial. Surface a typed error so JS
                 # renders an upgrade card with a clickable "Upgrade" button
                 # to myaccount.projectkestrel.org/perch. The presigning
                 # spinner unwinds because we end the job here.
@@ -7365,9 +6708,9 @@ class Api:
     def open_perch_url(self, url: str) -> dict:
         """Open a Perch gallery URL in the user's default browser.
 
-        Gated by ``_is_safe_external_url`` (same allowlist as ``open_url`` /
-        FINDING-01). A prefix check of ``http://`` / ``https://`` still lets
-        ``http://\\\\attacker\\share`` and CRLF-injected URLs through (S1-05).
+        Gated by ``_is_safe_external_url`` (same allowlist as ``open_url``).
+        A prefix check of ``http://`` / ``https://`` would still let
+        ``http://\\\\attacker\\share`` and CRLF-injected URLs through.
         """
         try:
             if not _is_safe_external_url(url):
@@ -7381,12 +6724,11 @@ class Api:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    # ─── Perch link persistence (Phase 1: per-folder perch_link.json) ──
+    # ─── Perch link persistence (per-folder perch_link.json) ──
 
     @staticmethod
-    def _perch_link_path(folder_path: str) -> "Path":
-        from pathlib import Path as _P
-        return _P(folder_path) / ".kestrel" / "perch_link.json"
+    def _perch_link_path(folder_path: str) -> Path:
+        return Path(folder_path) / ".kestrel" / "perch_link.json"
 
     @staticmethod
     def _hash_kestrel_state(folder_path: str) -> str | None:
@@ -7422,7 +6764,6 @@ class Api:
     ) -> None:
         """Persist `.kestrel/perch_link.json` after a successful upload."""
         from pathlib import Path as _P
-        import json as _json
         import time as _time
         link_path = self._perch_link_path(folder_path)
         link_path.parent.mkdir(parents=True, exist_ok=True)
@@ -7439,10 +6780,7 @@ class Api:
             "skip_rejected_used": bool(skip_rejected),
             "state_hash_at_upload": self._hash_kestrel_state(folder_path),
         }
-        tmp = link_path.with_suffix(".json.tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            _json.dump(payload, f, indent=2)
-        os.replace(tmp, link_path)
+        write_json_atomic(link_path, payload, indent=2, newline=None)
 
     def read_perch_link(self, folder_path: str) -> dict:
         """Read .kestrel/perch_link.json. Returns {present, link} or {present: False}."""
@@ -7489,7 +6827,6 @@ class Api:
         st = status.get("status") or {}
 
         from pathlib import Path as _P
-        import json as _json
         import time as _time
 
         created = st.get("createdAt")
@@ -7519,10 +6856,7 @@ class Api:
         link_path = self._perch_link_path(str(root_real))
         try:
             link_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = link_path.with_suffix(".json.tmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                _json.dump(payload, f, indent=2)
-            os.replace(tmp, link_path)
+            write_json_atomic(link_path, payload, indent=2, newline=None)
         except Exception as e:
             return {"success": False, "error": str(e)}
         return {"success": True, "link": payload}
@@ -7799,7 +7133,7 @@ class Api:
                 headers=headers,
                 timeout=15,
             )
-        except Exception as e:
+        except Exception:
             return None, "unreachable"
         if r.status_code == 404:
             return None, "not_found"
@@ -7878,10 +7212,7 @@ class Api:
         if not isinstance(data, dict):
             return
         data["state_hash_at_upload"] = self._hash_kestrel_state(folder_path)
-        tmp = link_path.with_suffix(".json.tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            _json.dump(data, f, indent=2)
-        os.replace(tmp, link_path)
+        write_json_atomic(link_path, data, indent=2, newline=None)
 
     def compute_perch_tag_diff(self, folder_path: str) -> dict:
         """Compute the species/family changeset for a linked folder vs its perch.
@@ -8240,14 +7571,6 @@ class Api:
             )
         except Exception as e:
             print(f"[API] _notify_js_sign_out() -> Error: {e}", flush=True)
-
-    def get_oauth_flow_status(self) -> dict:
-        """Diagnostic — JS-callable. Mostly useful for surfacing 'stuck' flows."""
-        return {
-            "success": True,
-            "in_flight": bool(self._oauth_in_flight),
-            "status": str(self._oauth_status or "idle"),
-        }
 
     def sign_out(self) -> dict:
         """Clear keychain credentials, best-effort revoke at Clerk, notify JS."""
@@ -9123,6 +8446,124 @@ class Api:
             error(f"[API] restore_kestrel_db_backup error: {e}")
             return {"success": False, "error": str(e)}
 
+    # ── Culling passes (domain logic in cull_session.py) ─────────────────────
+
+    def _cull_paths(self, root_real: str):
+        kestrel_dir = os.path.join(root_real, '.kestrel')
+        kestrel_real = os.path.realpath(kestrel_dir)
+        if not self._is_within_root(kestrel_real, root_real):
+            raise ValueError('Invalid .kestrel path')
+        reject_dir = os.path.join(root_real, '_KESTREL_Rejects')
+        reject_real = os.path.realpath(reject_dir)
+        if os.path.exists(reject_dir) and not self._is_within_root(reject_real, root_real):
+            raise ValueError('Invalid reject folder path')
+        return kestrel_dir, reject_dir
+
+    def _reject_primary_names(self, reject_dir: str) -> list:
+        """Primary image names in the rejects folder (companions folded in)."""
+        if not os.path.isdir(reject_dir):
+            return []
+        names = [n for n in os.listdir(reject_dir) if os.path.isfile(os.path.join(reject_dir, n))]
+        candidates = [n for n in names if os.path.splitext(n)[1].lower() in _CULLING_PRIMARY_IMAGE_EXTENSIONS]
+        candidates.sort(key=lambda n: (0 if os.path.splitext(n)[1].lower() in _RAW_EXTENSION_SET else 1, n.lower()))
+        index = self._build_dir_index(reject_dir)
+        out, excluded = [], set()
+        for name in candidates:
+            if name.lower() in excluded:
+                continue
+            out.append(name)
+            for comp in self._find_companion_files(reject_dir, name, dir_index=index):
+                excluded.add(comp.lower())
+        return out
+
+    def _cull_call(self, root_path: str, context: str, fn, need_kestrel: bool = True):
+        try:
+            root_real, err = self._validate_root_dir(root_path, context=context, require_exists=True)
+            if err:
+                return {'success': False, 'error': err}
+            kestrel_dir, reject_dir = self._cull_paths(root_real)
+            if need_kestrel and not os.path.isdir(kestrel_dir):
+                return {'success': False, 'error': '.kestrel folder not found'}
+            return fn(root_real, kestrel_dir, reject_dir)
+        except Exception as e:
+            error(f'[API] {context} error: {e}')
+            return {'success': False, 'error': str(e)}
+
+    def record_cull_pass(self, root_path: str, moved_filenames):
+        """Record a completed reject move as a culling pass.
+
+        Call right after ``move_rejects_to_folder`` with the requested main
+        files that actually moved, so they can be undone later.
+        """
+        raw = moved_filenames if isinstance(moved_filenames, (list, tuple, set)) else ([moved_filenames] if moved_filenames else [])
+
+        def run(_root_real, kestrel_dir, reject_dir):
+            files = [c for c in (self._sanitize_plain_filename(r, context='record_cull_pass') for r in raw) if c]
+            if not files:
+                return {'success': True, 'recorded': False, 'reason': 'nothing moved'}
+            return cull_session.record_pass(kestrel_dir, files, lambda: self._reject_primary_names(reject_dir))
+        return self._cull_call(root_path, 'record_cull_pass', run)
+
+    def get_cull_history(self, root_path: str):
+        """Describe the undoable culling passes for this folder, newest last."""
+        def run(_root_real, kestrel_dir, reject_dir):
+            return cull_session.describe_history(kestrel_dir, self._reject_primary_names(reject_dir))
+        return self._cull_call(root_path, 'get_cull_history', run, need_kestrel=False)
+
+    def undo_last_cull_pass(self, root_path: str):
+        """Undo the newest culling pass that still has files to restore.
+
+        Returns the ``undo_reject_move`` result fields plus ``pass_id``,
+        ``db_restored`` and ``remaining_passes``.
+        """
+        def run(root_real, kestrel_dir, reject_dir):
+            return cull_session.undo_last_pass(
+                kestrel_dir, self._reject_primary_names(reject_dir),
+                move_back=lambda names: self.undo_reject_move(root_real, names),
+                restore_old_slot=lambda: self.restore_kestrel_db_backup(root_real),
+                rotate_slots=lambda pairs: self._rotate_existing_backups(kestrel_dir, pairs))
+        return self._cull_call(root_path, 'undo_last_cull_pass', run, need_kestrel=False)
+
+    def _cull_history_ids(self, kestrel_dir: str, reject_dir: str):
+        return cull_session.history_ids(kestrel_dir, lambda: self._reject_primary_names(reject_dir))
+
+    def get_cull_session(self, root_path: str):
+        """Cull mode's pass records for a folder (``session`` is None before first use)."""
+        def run(root_real, kestrel_dir, _reject_dir):
+            session = cull_session.load(kestrel_dir)
+            return {'success': True,
+                    'session': cull_session.describe(root_real, session) if session else None}
+        return self._cull_call(root_path, 'get_cull_session', run)
+
+    def save_cull_session(self, root_path: str, data):
+        def run(_root_real, kestrel_dir, _reject_dir):
+            cull_session.save(kestrel_dir, data)
+            return {'success': True}
+        return self._cull_call(root_path, 'save_cull_session', run)
+
+    def undo_cull_move(self, root_path: str):
+        """Move the newest Cull mode pass's rejects back; current decisions stay."""
+        def run(root_real, kestrel_dir, reject_dir):
+            return cull_session.undo_move(
+                kestrel_dir,
+                lambda: self._cull_history_ids(kestrel_dir, reject_dir),
+                lambda: self.undo_last_cull_pass(root_real))
+        return self._cull_call(root_path, 'undo_cull_move', run)
+
+    def revert_cull_session(self, root_path: str, to_pass):
+        """Revert to the end of finished pass ``to_pass``; 0 resets the folder."""
+        try:
+            target = int(to_pass)
+        except (TypeError, ValueError):
+            return {'success': False, 'error': 'invalid pass number'}
+
+        def run(root_real, kestrel_dir, reject_dir):
+            return cull_session.revert(
+                kestrel_dir, target,
+                lambda: self._cull_history_ids(kestrel_dir, reject_dir),
+                lambda: self.undo_last_cull_pass(root_real))
+        return self._cull_call(root_path, 'revert_cull_session', run)
+
     # ── Folder drift detection & repair ──────────────────────────────────────
     #
     # Kestrel keys a database row to a photo by name and location, both of which
@@ -9626,7 +9067,6 @@ class Api:
                 }
 
             # What is actually at the destination, and how big.
-            fdiff = self._repair_import()
             try:
                 from folder_inspector import scan_folder_images  # type: ignore
             except ImportError:
@@ -9779,7 +9219,7 @@ class Api:
 
             # 5. COMMIT. The destination is complete; drop the rows from the
             #    source. Past this line the relocate has happened and failures
-            #    must no longer unwind the destination.
+            #    must not unwind the destination.
             if src_scenedata:
                 self._scenedata_drop_filenames(src_scenedata, move_set)
                 self._write_scenedata_for_repair(src_kestrel, src_scenedata)

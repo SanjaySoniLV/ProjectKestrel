@@ -2,8 +2,7 @@ r"""Static regression tests for FINDING-01: stored DOM-XSS via sceneName.
 
 These tests are deliberately written as source-level lints against
 ``analyzer/js/*.js`` (the split-out frontend modules, previously a single
-``visualizer.js``) and ``analyzer/culling.html`` (inline assistant script)
-so the vulnerable pattern cannot silently re-appear. They don't require a
+``visualizer.js``) so the vulnerable pattern cannot silently re-appear. They don't require a
 JS runtime.
 
 What is forbidden
@@ -15,7 +14,7 @@ What is forbidden
    names interpolated into ``.innerHTML`` template literals without an
    explicit escape.  After the fix, the sceneName site must use ``textContent``
    or explicit DOM construction. Concatenated template literals on the same
-   assignment are scanned too (``culling.html`` builds scene labels that way).
+   assignment are scanned too.
 
 What remains permitted
 ----------------------
@@ -57,8 +56,6 @@ def _collect_sources() -> list[tuple[str, str]]:
     js_dir = os.path.join(_ANALYZER_DIR, "js")
     for path in sorted(glob.glob(os.path.join(js_dir, "*.js"))):
         sources.append((os.path.join("js", os.path.basename(path)), _read(path)))
-    culling = os.path.join(_ANALYZER_DIR, "culling.html")
-    sources.append(("culling.html", _read(culling)))
     return sources
 
 
@@ -131,9 +128,8 @@ class TestVisualizerJsXssRegression(unittest.TestCase):
         self.assertTrue(self.sources, "No frontend sources found to lint")
         self.source = "\n".join(content for _name, content in self.sources)
 
-    def test_culling_html_is_in_the_scan(self) -> None:
+    def test_js_modules_are_in_the_scan(self) -> None:
         names = [name for name, _content in self.sources]
-        self.assertIn("culling.html", names)
         self.assertTrue(
             any(name.replace("\\", "/").startswith("js/") for name in names),
             "js/*.js dropped out of the XSS scan",

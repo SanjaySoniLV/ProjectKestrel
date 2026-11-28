@@ -483,7 +483,7 @@
           const cls = filled ? (origin === 'manual' ? 'filled manual' : 'filled auto') : '';
           starHtml += `<span class="${cls}">${filled ? '★' : '☆'}</span>`;
         }
-        meta.innerHTML = `<span class="filmstrip-stars">${starHtml}</span><span>Q ${fmt3(r.quality)}</span>`;
+        meta.innerHTML = `<span class="filmstrip-stars">${starHtml}</span><span title="Quality">${fmt3(r.quality)}</span>`;
         info.appendChild(meta);
         card.appendChild(info);
 
@@ -494,7 +494,7 @@
           `<b>${escapeHtml(r.filename || '')}</b>`,
           _sceneTooltipSpeciesLine(r),
           formatCaptureTime(r.capture_time) ? `Captured: ${formatCaptureTime(r.capture_time)}` : '',
-          `Quality: ${fmt3(r.quality)}`,
+          `Quality ${fmt3(r.quality)}`,
           `Rating: ${'★'.repeat(rating)}${'☆'.repeat(5 - rating)} ${origin ? `(${origin})` : ''}`,
           cull ? `Status: ${cull === 'accept' ? '✓ Accepted' : '✗ Rejected'}` : '',
         ].filter(Boolean).join('<br>');
@@ -520,6 +520,7 @@
         card.addEventListener('dblclick', (ev) => { ev.stopPropagation(); openInEditor(r); });
 
         if (typeof psDecorateCard === 'function') psDecorateCard(card, r);
+        KestrelFavorites.decorateCard(card, r, KestrelFavorites.syncSceneViewerButton);
         frag.appendChild(card);
       }
       grid.appendChild(frag);
@@ -691,8 +692,9 @@
       const fnEl = el('#sceneInfoFilename');
       if (fnEl) { fnEl.textContent = r.filename || '—'; fnEl.title = r.filename || ''; }
 
+      KestrelFavorites.syncSceneViewerButton();
       const qEl = el('#sceneInfoQuality');
-      if (qEl) qEl.textContent = `Quality: ${fmt3(activeQuality)}`;
+      if (qEl) qEl.textContent = `Quality ${fmt3(activeQuality)}`;
 
       const cullToggle = el('#sceneCullToggle');
       if (cullToggle) {
@@ -765,7 +767,7 @@
       if (editorBtn && editorLabelEl) {
         const editorKey = getSetting('editor', 'darktable');
         editorLabelEl.textContent = `Open in ${_editorDisplayName(editorKey)}`;
-        editorBtn.title = `Open original in ${_editorDisplayName(editorKey)} (Space)`;
+        editorBtn.title = `Open original in ${_editorDisplayName(editorKey)}${KestrelKeys.titleSuffix('openEditor')}`;
         editorBtn.onclick = (ev) => {
           ev.stopPropagation();
           openInEditor(r);
@@ -1502,8 +1504,8 @@
       const reviewSlot = el('#sceneReviewSlot');
       if (reviewSlot) {
         reviewSlot.innerHTML = approved
-          ? '<span class="approval-note">✓ Reviewed</span>'
-          : '<button class="mark-reviewed-btn" id="markReviewedBtn" title="Confirm that Kestrel\'s tags are correct and mark this scene as reviewed (Ctrl/Cmd+R)">✓ Mark as Reviewed</button>';
+          ? '<span class="approval-note">✓ Species confirmed</span>'
+          : '<button class="mark-reviewed-btn" id="markReviewedBtn" title="Confirm that the species and family tags on this scene are correct (Ctrl/Cmd+R)">✓ Confirm species</button>';
       }
 
       // Wire remove buttons
@@ -1605,7 +1607,7 @@
         };
       });
 
-      // Wire "Mark as Reviewed" button
+      // Wire the "Confirm species" button
       const markReviewedBtn = el('#markReviewedBtn');
       if (markReviewedBtn) {
         markReviewedBtn.onclick = () => {
@@ -1617,7 +1619,7 @@
           const updatedScene = reloadScene(scene.id) || scene;
           renderTopbarTags(updatedScene);
           renderScenes();
-          showToast('Scene tags marked as reviewed', 2000);
+          showToast('Species confirmed', 2000);
         };
       }
 
@@ -1855,14 +1857,10 @@
       _applyScenePreviewSplit(_getScenePreviewSplitSetting());
 
       // ── Top bar: title ──
-      const localNum = String(scene.id).split(':').pop();
-      const folderName = folderBaseName(scene.representative?.__rootPath || '');
-      let titleText = folderName || ('Scene ' + scene.id);
-      titleText += ' — #' + localNum;
-      if (scene.sceneName) titleText += ' — ' + scene.sceneName;
-      titleText += ` (${scene.images.length} images)`;
+      // The folder is in the grid header and the scene id is internal, so neither is shown.
+      const sceneTitle = (name) => `${name || 'Scene'} · ${scene.images.length} photo${scene.images.length === 1 ? '' : 's'}`;
       const titleEl = el('#sceneTopbarTitle');
-      if (titleEl) titleEl.textContent = titleText;
+      if (titleEl) titleEl.textContent = sceneTitle(scene.sceneName);
 
       // ── Rename setup ──
       el('#sceneName').value = scene.sceneName || '';
@@ -1878,12 +1876,7 @@
           renameRow.classList.add('hidden');
           // Update title
           const updScene = reloadScene(scene.id) || scene;
-          const nm = updScene.sceneName || '';
-          let t = folderName || ('Scene ' + scene.id);
-          t += ' — #' + localNum;
-          if (nm) t += ' — ' + nm;
-          t += ` (${scene.images.length} images)`;
-          titleEl.textContent = t;
+          titleEl.textContent = sceneTitle(updScene.sceneName);
           renderScenes();
         } else {
           renameRow.classList.remove('hidden');
@@ -1900,6 +1893,7 @@
       // ── Shortcut legend toggle ──
       el('#sceneShortcutBtn').onclick = () => {
         el('#sceneShortcutLegend').classList.toggle('hidden');
+        KestrelKeys.renderLegend(el('#sceneShortcutLegend'));
       };
       el('#sceneShortcutLegend').classList.add('hidden');
 
@@ -2025,19 +2019,14 @@
       const curId = String(_currentScene.id);
       const idx = scenes.findIndex(s => String(s.id) === curId);
       if (idx < 0) return;
-      // Step within the grid's review-state filter ("Unreviewed only" /
-      // "Reviewed only"), so Tab and arrow-past-the-end go to the next scene
+      // Step within the grid's filters (To review / Reviewed, Only scenes
+      // with favorites), so Tab and arrow-past-the-end go to the next scene
       // the grid shows rather than one it hides. The current scene may itself
       // have just left the filter (e.g. it was marked reviewed), so search from
       // its position in the full list.
       const reviewFilter = _sceneReviewFilterValue();
-      const inFilter = (s) => {
-        if (reviewFilter === 'all' || typeof isManuallyReviewedScene !== 'function') return true;
-        const reviewed = !!isManuallyReviewedScene(s);
-        return reviewFilter === 'reviewed' ? reviewed : !reviewed;
-      };
       let newIdx = idx + direction;
-      while (newIdx >= 0 && newIdx < scenes.length && !inFilter(scenes[newIdx])) newIdx += direction;
+      while (newIdx >= 0 && newIdx < scenes.length && !sceneMatchesViewFilters(scenes[newIdx])) newIdx += direction;
       if (newIdx < 0 || newIdx >= scenes.length) {
         if (reviewFilter === 'unreviewed' && typeof showToast === 'function') {
           showToast(direction > 0 ? 'No more unreviewed scenes after this one' : 'No unreviewed scenes before this one', 1800);
@@ -2069,7 +2058,7 @@
       const updated = reloadScene(_currentScene.id) || _currentScene;
       renderTopbarTags(updated);
       renderScenes();
-      showToast('Scene tags marked as reviewed', 1800);
+      showToast('Species confirmed', 1800);
     }
 
     /** Open the inline species/family tag input on the current scene and focus it. */
@@ -2154,166 +2143,69 @@
         return;
       }
 
-      // Tab skips to next scene; Ctrl/Cmd+Tab (or Shift+Tab) skips to previous
-      if (e.key === 'Tab') {
-        e.preventDefault();
-        navigateToScene((hasSceneModifier || e.shiftKey) ? -1 : 1, 0);
-        return;
-      }
+      // Everything else goes through the user's key bindings (js/keybindings.js).
+      const hit = KestrelKeys.resolve('viewer', e);
+      if (!hit) return;
+      const row = images[currentImageIndex];
+      const go = (i) => selectFilmstripImage(i, _currentScene);
+      const toFirst = () => (currentImageIndex > 0 ? go(0) : navigateToScene(-1, 0));
+      const toLast = () => (currentImageIndex < len - 1 ? go(len - 1) : navigateToScene(1, 0));
+      const cull = (v) => { if (row) { setCullStatus(row, v); _refreshCurrentFilmstripCard(); } };
+      const rate = (n) => { if (row) { setRating(row, n, 'manual'); _refreshCurrentFilmstripCard(); } };
+      const run = {
+        // At either end of a scene the arrows run on into the next or previous
+        // scene (-1 = that scene's last photo, which can skip filtered scenes).
+        nextPhoto: () => (hit.ctrl ? toLast() : currentImageIndex < len - 1 ? go(currentImageIndex + 1) : navigateToScene(1, 0)),
+        prevPhoto: () => (hit.ctrl ? toFirst() : currentImageIndex > 0 ? go(currentImageIndex - 1) : navigateToScene(-1, -1)),
+        firstPhoto: toFirst, lastPhoto: toLast,
+        nextScene: () => navigateToScene(hit.shift || hit.ctrl ? -1 : 1, 0),
+        prevScene: () => navigateToScene(-1, 0),
+        nextBird: () => _stepActiveCrop(row, 1), prevBird: () => _stepActiveCrop(row, -1),
+        mainBird: () => _promoteActiveCropByKey(row),
+        // Z/X/C and the 7/8/9 alternates sit above the numpad's 1-5 ratings,
+        // so the whole review flow fits under one hand.
+        accept: () => cull('accept'), clear: () => cull(''), reject: () => cull('reject'),
+        rate1: () => rate(1), rate2: () => rate(2), rate3: () => rate(3), rate4: () => rate(4), rate5: () => rate(5),
+        openEditor: () => { if (row) openInEditor(row); },
+        favorite: () => KestrelFavorites.toggleSceneViewerCurrent(),
+        focusBird: () => { if (typeof psFocusActive === 'function') psFocusActive(); },
+        birdNumbers: () => { if (typeof psToggleIds === 'function') psToggleIds(); },
+        close: () => el('#closeDlg')?.click(),
+        confirmSpecies: () => _markCurrentSceneReviewed(),
+        speciesTag: () => _openInlineTagInputForCurrentScene('species'),
+        familyTag: () => _openInlineTagInputForCurrentScene('family'),
+        clearTags: () => _clearAllTagsForCurrentScene(),
+        resetTags: () => { _clearAllTagsForCurrentScene(); _openInlineTagInputForCurrentScene('species'); },
+      }[hit.id];
+      if (!run) return;
+      e.preventDefault();
+      e.stopPropagation();
+      run();
+    }
 
-      switch (e.key) {
-        case 'ArrowRight':
-          e.preventDefault();
-          if (hasSceneModifier) {
-            // Jump to end of scene, or next scene's start if already at end
-            if (currentImageIndex < len - 1) {
-              selectFilmstripImage(len - 1, _currentScene);
-            } else {
-              navigateToScene(1, 0);
-            }
-          } else {
-            if (currentImageIndex < len - 1) {
-              selectFilmstripImage(currentImageIndex + 1, _currentScene);
-            } else {
-              navigateToScene(1, 0);
-            }
-          }
-          break;
-        case 'End':
-          e.preventDefault();
-          // Same behavior as Ctrl/Cmd+ArrowRight.
-          if (currentImageIndex < len - 1) {
-            selectFilmstripImage(len - 1, _currentScene);
-          } else {
-            navigateToScene(1, 0);
-          }
-          break;
-        case 'ArrowLeft':
-          e.preventDefault();
-          if (hasSceneModifier) {
-            // Jump to start of scene, or prev scene's start if already at start
-            if (currentImageIndex > 0) {
-              selectFilmstripImage(0, _currentScene);
-            } else {
-              navigateToScene(-1, 0);
-            }
-          } else {
-            if (currentImageIndex > 0) {
-              selectFilmstripImage(currentImageIndex - 1, _currentScene);
-            } else {
-              // At first image — jump to previous scene's LAST image
-              // (-1 = last image of whichever scene navigateToScene lands on,
-              // which can skip scenes hidden by the review-state filter).
-              navigateToScene(-1, -1);
-            }
-          }
-          break;
-        case 'Home':
-          e.preventDefault();
-          // Same behavior as Ctrl/Cmd+ArrowLeft.
-          if (currentImageIndex > 0) {
-            selectFilmstripImage(0, _currentScene);
-          } else {
-            navigateToScene(-1, 0);
-          }
-          break;
-        case 'ArrowUp':
-        case 'ArrowDown':
-          e.preventDefault();
-          if (images[currentImageIndex]) {
-            const row = images[currentImageIndex];
-            const cropState = getRowActiveCropState(row);
-            if (cropState.crops.length > 1) {
-              const step = e.key === 'ArrowDown' ? 1 : -1;
-              const next = (cropState.activeIndex + step + cropState.crops.length) % cropState.crops.length;
-              setRowActiveCropIndex(row, next, cropState.crops);
-              _commitCropHoverSelection(row);
-              selectFilmstripImage(currentImageIndex, _currentScene, true, true);
-            }
-          }
-          break;
-        case 'Enter':
-          e.preventDefault();
-          if (images[currentImageIndex]) {
-            const row = images[currentImageIndex];
-            const stateBefore = getRowActiveCropState(row);
-            if (stateBefore.crops.length > 0) {
-              const changed = promoteActiveCropToPrimary(row);
-              if (changed) {
-                void (async () => {
-                  await _resortAndFocusSceneImage(row, true);
-                  await renderScenes();
-                })();
-              } else {
-                selectFilmstripImage(currentImageIndex, _currentScene, true, true);
-              }
-              showToast(`Primary crop set to ${stateBefore.activeIndex + 1}/${stateBefore.crops.length}`, 1800);
-            }
-          }
-          break;
-        // Cull decisions. ZXC is the home-row set; 789 is the right-hand
-        // alternate (top row or numpad with NumLock on), which sits directly
-        // above the 1–5 rating keys on a numpad and keeps the whole review
-        // flow on one hand for left-handed mouse users.
-        case 'z':
-        case 'Z':
-        case '7':
-          if (hasSceneModifier) break;
-          e.preventDefault();
-          if (images[currentImageIndex]) {
-            setCullStatus(images[currentImageIndex], 'accept');
-            _refreshCurrentFilmstripCard();
-          }
-          break;
-        case 'x':
-        case 'X':
-        case '8':
-          if (hasSceneModifier) break;
-          e.preventDefault();
-          if (images[currentImageIndex]) {
-            setCullStatus(images[currentImageIndex], '');
-            _refreshCurrentFilmstripCard();
-          }
-          break;
-        case 'c':
-        case 'C':
-        case '9':
-          if (hasSceneModifier) break;
-          e.preventDefault();
-          if (images[currentImageIndex]) {
-            setCullStatus(images[currentImageIndex], 'reject');
-            _refreshCurrentFilmstripCard();
-          }
-          break;
-        case '1': case '2': case '3': case '4': case '5':
-          e.preventDefault();
-          if (images[currentImageIndex]) {
-            setRating(images[currentImageIndex], parseInt(e.key, 10), 'manual');
-            _refreshCurrentFilmstripCard();
-          }
-          break;
-        case ' ':
-          e.preventDefault();
-          if (images[currentImageIndex]) openInEditor(images[currentImageIndex]);
-          break;
-        // Primary subject (prototype): focus the scene on the active crop's bird / bird numbers.
-        case 'f':
-        case 'F':
-          if (hasSceneModifier || typeof psFocusActive !== 'function') break;
-          e.preventDefault();
-          psFocusActive();
-          break;
-        case 'b':
-        case 'B':
-          if (hasSceneModifier || typeof psToggleIds !== 'function') break;
-          e.preventDefault();
-          psToggleIds();
-          break;
-        case 'Escape':
-          e.preventDefault();
-          el('#closeDlg')?.click();
-          break;
+    function _stepActiveCrop(row, step) {
+      if (!row) return;
+      const cropState = getRowActiveCropState(row);
+      if (cropState.crops.length < 2) return;
+      const next = (cropState.activeIndex + step + cropState.crops.length) % cropState.crops.length;
+      setRowActiveCropIndex(row, next, cropState.crops);
+      _commitCropHoverSelection(row);
+      selectFilmstripImage(currentImageIndex, _currentScene, true, true);
+    }
+
+    function _promoteActiveCropByKey(row) {
+      if (!row) return;
+      const stateBefore = getRowActiveCropState(row);
+      if (stateBefore.crops.length === 0) return;
+      if (promoteActiveCropToPrimary(row)) {
+        void (async () => {
+          await _resortAndFocusSceneImage(row, true);
+          await renderScenes();
+        })();
+      } else {
+        selectFilmstripImage(currentImageIndex, _currentScene, true, true);
       }
+      showToast(`Primary crop set to ${stateBefore.activeIndex + 1}/${stateBefore.crops.length}`, 1800);
     }
 
     // Refresh the current filmstrip card + info bar after a status/rating change
@@ -2536,7 +2428,7 @@
       const btn = el('#splitSceneBtn');
       if (!btn) return;
       if (!_splitMode) {
-        btn.textContent = 'Split Scene…';
+        btn.replaceChildren(KestrelIcon.el('scissors'), ' Split Scene…');
         return;
       }
       btn.textContent = _splitSelected.size > 0
@@ -2668,7 +2560,7 @@
         const meta = document.createElement('div');
         meta.className = 'filmstrip-meta';
         const rating = getRating(r);
-        meta.innerHTML = `<span class="filmstrip-stars">${'★'.repeat(rating)}${'☆'.repeat(5 - rating)}</span><span>Q ${fmt3(r.quality)}</span>`;
+        meta.innerHTML = `<span class="filmstrip-stars">${'★'.repeat(rating)}${'☆'.repeat(5 - rating)}</span><span title="Quality">${fmt3(r.quality)}</span>`;
         info.appendChild(meta);
         card.appendChild(info);
 
@@ -2693,7 +2585,7 @@
           `<b>${escapeHtml(r.filename || '')}</b>`,
           _sceneTooltipSpeciesLine(r),
           formatCaptureTime(r.capture_time) ? `Captured: ${formatCaptureTime(r.capture_time)}` : '',
-          `Quality: ${fmt3(r.quality)}`,
+          `Quality ${fmt3(r.quality)}`,
           `Rating: ${'★'.repeat(rating)}${'☆'.repeat(5 - rating)}`,
         ].filter(Boolean).join('<br>');
         card.appendChild(tip);
@@ -2804,7 +2696,6 @@
       txt.innerHTML = s;
       return txt.value;
     }
-    function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': '&#39;' }[c])); }
     function folderBaseName(path) { if (!path) return ''; return path.replace(/\\/g, '/').split('/').filter(Boolean).pop() || path; }
 
     // Snapshot helpers for revert
@@ -2885,7 +2776,7 @@
         for (const rp of rootsToSave) {
           const groupRows = groups.get(rp) || [];
           try {
-            // Persist cull/rating columns to CSV so culling assistant and reloads see authoritative state.
+            // Persist cull/rating columns to CSV so Cull mode and reloads see authoritative state.
             if (typeof window.pywebview.api.write_kestrel_csv === 'function') {
               const content = rowsToCsvString(exportCols, groupRows);
               const csvRes = await window.pywebview.api.write_kestrel_csv(rp, content);

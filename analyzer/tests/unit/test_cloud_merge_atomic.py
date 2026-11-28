@@ -154,7 +154,7 @@ class TestMergeCsvAtomic:
             return real_replace(src_path, dst_path)
 
         monkeypatch.setattr("cloud_compute_client.os.replace", _flaky)
-        monkeypatch.setattr("kestrel_analyzer.database.time.sleep", lambda *_a, **_k: None)
+        monkeypatch.setattr("kestrel_analyzer.atomic_io.time.sleep", lambda *_a, **_k: None)
 
         _merge_database_csv(src, dst)
 
@@ -193,7 +193,7 @@ class TestMergeCsvAtomic:
             raise PermissionError("sharing violation")
 
         monkeypatch.setattr("cloud_compute_client.os.replace", _locked)
-        monkeypatch.setattr("kestrel_analyzer.database.time.sleep", lambda *_a, **_k: None)
+        monkeypatch.setattr("kestrel_analyzer.atomic_io.time.sleep", lambda *_a, **_k: None)
 
         with pytest.raises(PermissionError, match="sharing violation"):
             _merge_database_csv(src, dst)

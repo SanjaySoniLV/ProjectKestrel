@@ -1,9 +1,9 @@
-    // ── Folder "Change Settings" dialog ─────────────────────────────────────────
-    // Opened from Folder Actions → Change Settings…. Gathers the things a user
+    // ── Folder settings dialog ─────────────────────────────────────────
+    // Opened from Folder actions → Folder settings…. Gathers the things a user
     // can change on an analysed folder without re-analysing it:
-    //   • folder info (read-only)             • ignore non-bird wildlife (display filter)
-    //   • species detection region (re-score) • capture time    • scene grouping
-    //   • reset culling decisions (destructive, separated at the bottom)
+    //   • summary + folder details (read-only) • species region (re-score)
+    //   • hide non-bird wildlife (display filter) • capture time • scene grouping
+    //   • reset accept / reject decisions (destructive, last)
     // Built on demand (no static markup) and removed again on close.
 
     /** Fetch one folder's display settings into _folderSettings (called when folders load). */
@@ -84,65 +84,70 @@
       dlg.setAttribute('aria-labelledby', 'fsetTitle');
       dlg.innerHTML = `
         <div class="fset-head">
-          <h3 id="fsetTitle">Change Settings</h3>
-          <div class="fset-sub muted" title="${escapeHtml(folderPath)}">${escapeHtml(folderName)}</div>
+          <div class="fset-head-text">
+            <h3 id="fsetTitle" class="k-dialog-title">Folder settings</h3>
+            <div class="fset-sub" title="${escapeHtml(folderPath)}">${escapeHtml(folderName)}</div>
+          </div>
+          <button type="button" class="k-btn--icon k-btn--quiet" id="fsetX" aria-label="Close">${KestrelIcon('x')}</button>
         </div>
         <div class="fset-body">
-          <section class="fset-sec">
-            <h4>Folder info</h4>
+          <div class="fset-summary" id="fsetSummary"></div>
+          <details class="fset-details">
+            <summary>Folder details</summary>
             <div class="fset-grid" id="fsetInfo"><div class="fset-k">Loading…</div><div class="fset-v"></div></div>
-          </section>
-          <section class="fset-sec">
-            <h4>Ignore wildlife</h4>
-            <label class="fset-toggle">
-              <input type="checkbox" id="fsetIgnoreWildlife" disabled />
-              <span>Hide non-bird wildlife in this folder</span>
-            </label>
-            <div class="fset-hint muted" id="fsetWildlifeHint">Only changes what Kestrel shows. The detections stay saved, so you can turn this off again.</div>
-          </section>
-          <section class="fset-sec">
-            <h4>Species detection region</h4>
-            <div class="fset-hint muted" id="fsetRegionNow"></div>
+          </details>
+
+          <h4 class="k-section-title fset-title">Species</h4>
+          <div class="k-row fset-row--top">
+            <div class="k-row-label">Species region
+              <span class="k-row-hint" id="fsetRegionNow"></span>
+              <span class="k-row-hint" id="fsetRegionHint">Re-scores species names from data saved during analysis. Photos are not analyzed again, and species you confirmed are kept.</span>
+            </div>
             <div class="fset-region" id="fsetRegionBlock">
               <select id="fsetRegionMode" aria-label="Species region"></select>
               <div class="fset-region-grid hidden" id="fsetRegionCustom" role="group" aria-label="Species regions"></div>
-              <div class="fset-region-actions">
-                <button type="button" id="fsetRegionApply">Re-score species</button>
-              </div>
+              <button type="button" class="k-btn--sm" id="fsetRegionApply">Re-score species</button>
               <div class="fset-progress hidden" id="fsetRegionProgress"><div class="fset-progress-fill" id="fsetRegionFill"></div></div>
             </div>
-            <div class="fset-hint muted" id="fsetRegionHint">Re-scores the species names from data saved during analysis. Photos are not re-analyzed, and your reviewed scene tags are kept.</div>
-          </section>
-          <section class="fset-sec fset-sec--row">
-            <div>
-              <h4>Capture time</h4>
-              <div class="fset-hint muted">Shift every photo's time if the camera clock was wrong.</div>
-            </div>
-            <button type="button" id="fsetCaptureTime">Adjust Capture Time…</button>
-          </section>
-          <section class="fset-sec fset-sec--row">
-            <div>
-              <h4>Scene grouping</h4>
-              <div class="fset-hint muted">Change how photos are split into scenes.</div>
-            </div>
-            <button type="button" id="fsetRegroup">Regroup Scenes…</button>
-          </section>
-          <section class="fset-sec fset-sec--danger">
-            <h4>Reset culling decisions</h4>
-            <div class="fset-hint muted">Returns photos to Undecided. Star ratings and tags are not changed.</div>
-            <div class="fset-danger-actions">
-              <button type="button" id="fsetResetVerified">Reset Confirmed Decisions</button>
-              <button type="button" id="fsetResetAll" class="fset-danger-btn">Reset All Decisions…</button>
-            </div>
-          </section>
+          </div>
+          <div class="k-row">
+            <label class="k-row-label" for="fsetIgnoreWildlife">Hide non-bird wildlife
+              <span class="k-row-hint" id="fsetWildlifeHint">Only changes what Kestrel shows. The detections stay saved, so you can turn this off again.</span></label>
+            <input type="checkbox" class="k-switch" id="fsetIgnoreWildlife" disabled />
+          </div>
+
+          <h4 class="k-section-title fset-title">Photos and scenes</h4>
+          <div class="k-row">
+            <div class="k-row-label">Capture time
+              <span class="k-row-hint">Shift every photo's time if the camera clock was wrong.</span></div>
+            <button type="button" class="k-btn--sm" id="fsetCaptureTime">Adjust capture time…</button>
+          </div>
+          <div class="k-row">
+            <div class="k-row-label">Scene grouping
+              <span class="k-row-hint">Change how photos are split into scenes.</span></div>
+            <button type="button" class="k-btn--sm" id="fsetRegroup">Regroup scenes…</button>
+          </div>
+
+          <h4 class="k-section-title fset-title">Reset accept and reject decisions</h4>
+          <div class="k-row">
+            <div class="k-row-label">Confirmed decisions
+              <span class="k-row-hint">Cull mode suggestions you confirmed go back to Undecided.</span></div>
+            <button type="button" class="k-btn--sm k-btn--quiet" id="fsetResetVerified">Reset confirmed</button>
+          </div>
+          <div class="k-row">
+            <div class="k-row-label">All decisions
+              <span class="k-row-hint">Every accepted and rejected photo goes back to Undecided. Star ratings and tags are not changed.</span></div>
+            <button type="button" class="k-btn--sm k-btn--danger" id="fsetResetAll">Reset all…</button>
+          </div>
         </div>
-        <div class="kdlg-footer"><button type="button" id="fsetClose">Close</button></div>
+        <div class="kdlg-footer"><button type="button" id="fsetClose">Done</button></div>
       `;
       document.body.appendChild(dlg);
       const $ = (sel) => dlg.querySelector(sel);
       const closeDlg = () => { try { dlg.close(); } catch (_) { } dlg.remove(); };
       dlg.addEventListener('close', () => dlg.remove());
       $('#fsetClose').addEventListener('click', closeDlg);
+      $('#fsetX').addEventListener('click', closeDlg);
       dlg.showModal();
 
       // ── Capture time / regroup: hand over to their own dialogs ──────────────
@@ -157,8 +162,8 @@
       $('#fsetResetVerified').addEventListener('click', () => {
         afterReset(resetFolderCullState(folderPath, 'verified'), 'confirmed');
       });
-      $('#fsetResetAll').addEventListener('click', () => {
-        if (!confirm(`Reset ALL manual and confirmed culling decisions for "${folderName}"?\n\nThis cannot be undone.`)) return;
+      $('#fsetResetAll').addEventListener('click', async () => {
+        if (!(await KestrelDialog.confirm('resetAllDecisions', { name: folderName }))) return;
         afterReset(resetFolderCullState(folderPath, 'all'), 'manual/confirmed');
       });
 
@@ -167,25 +172,33 @@
       let perchLink = null;
       const renderInfo = () => {
         const counts = _fsetLoadedCounts(folderPath);
-        const parts = [_fsetRow('Folder', `<span class="fset-path">${escapeHtml(folderPath)}</span>`)];
         const imgs = counts ? counts.images : info?.image_count;
         const scs = counts ? counts.scenes : info?.scene_count;
-        if (imgs != null) parts.push(_fsetRow('Images', Number(imgs).toLocaleString()));
-        if (scs != null) parts.push(_fsetRow('Scenes', Number(scs).toLocaleString()));
+        const n = (v) => Number(v).toLocaleString();
+        const pills = [];
+        if (imgs != null) pills.push(`${n(imgs)} photo${Number(imgs) === 1 ? '' : 's'}`);
+        if (scs != null) pills.push(`${n(scs)} scene${Number(scs) === 1 ? '' : 's'}`);
+        if (counts) pills.push(`${n(counts.reviewed)} of ${n(counts.scenes)} reviewed`);
+        let summary = pills.map(t => `<span class="k-pill">${escapeHtml(t)}</span>`).join('');
         if (counts) {
-          parts.push(_fsetRow('Scenes reviewed', `${counts.reviewed.toLocaleString()} of ${counts.scenes.toLocaleString()}`));
-          parts.push(_fsetRow('Culling', `${counts.accepted.toLocaleString()} accepted · ${counts.rejected.toLocaleString()} rejected · ${counts.undecided.toLocaleString()} undecided`));
+          summary += `<div class="fset-cull">` +
+            `<span class="fset-cull-accept">${n(counts.accepted)} accepted</span>` +
+            `<span class="fset-cull-reject">${n(counts.rejected)} rejected</span>` +
+            `<span>${n(counts.undecided)} undecided</span></div>`;
         }
+        $('#fsetSummary').innerHTML = summary;
+
+        const parts = [_fsetRow('Folder', `<span class="fset-path">${escapeHtml(folderPath)}</span>`)];
         if (info) {
-          parts.push(_fsetRow('Analysis pipeline', escapeHtml(_fsetPipelineText(info))));
+          parts.push(_fsetRow('Analysis version', escapeHtml(_fsetPipelineText(info))));
           const when = info.analyzed_utc ? _fsetFmtDate(info.analyzed_utc) : '';
           if (when) parts.push(_fsetRow('Analyzed', escapeHtml(when)));
         }
         if (perchLink) {
           const url = String(perchLink.perch_url || '');
-          const published = Number(perchLink.uploaded_at_ms) > 0 ? ` · published ${escapeHtml(_fsetFmtDate(Number(perchLink.uploaded_at_ms)))}` : '';
+          const published = Number(perchLink.uploaded_at_ms) > 0 ? ` · shared ${escapeHtml(_fsetFmtDate(Number(perchLink.uploaded_at_ms)))}` : '';
           parts.push(_fsetRow('Perch', `${escapeHtml(String(perchLink.title || 'Shared'))}${published}` +
-            (url ? ` <button type="button" class="fset-link" id="fsetPerchOpen">Open on Perch</button>` : '')));
+            (url ? ` <button type="button" class="k-btn--sm k-btn--quiet fset-link" id="fsetPerchOpen">Open on Perch</button>` : '')));
         }
         $('#fsetInfo').innerHTML = parts.join('');
         const openBtn = $('#fsetPerchOpen');
@@ -216,7 +229,7 @@
       if (info.wildlife_crops > 0 || wl.checked) {
         wl.disabled = false;
         $('#fsetWildlifeHint').textContent = `${info.wildlife_crops.toLocaleString()} wildlife detection${info.wildlife_crops === 1 ? '' : 's'} in this folder. ` +
-          'Turning this on only changes what Kestrel shows; the detections stay saved.';
+          'This only changes what Kestrel shows; the detections stay saved.';
       } else {
         $('#fsetWildlifeHint').textContent = info.wildlife_enabled
           ? 'No non-bird wildlife was detected in this folder.'
@@ -248,6 +261,7 @@
         for (const c of dlg.querySelectorAll('#fsetRegionBlock select, #fsetRegionBlock input, #fsetRegionBlock button')) c.disabled = true;
         $('#fsetRegionHint').textContent = info.rescore_reason || 'Not available for this folder.';
         $('#fsetRegionHint').classList.add('fset-hint--warn');
+        $('#fsetRegionNow').classList.add('hidden');
       }
       applyBtn.addEventListener('click', () => _fsetApplyRegions(dlg, folderPath, folderName, info));
     }
@@ -297,9 +311,7 @@
       const regions = _fsetSelectedRegions(dlg);
       if (!regions.length) { showToast('Pick at least one region', 3000); return; }
       const label = _fsetRegionText(regions);
-      if (!confirm(`Re-score species in "${folderName}" for: ${label}?\n\n` +
-        'Kestrel reuses the data saved during analysis, so photos are not re-analyzed. ' +
-        'Species you edited by hand and non-bird wildlife are not changed.')) return;
+      if (!(await KestrelDialog.confirm('rescoreSpecies', { name: folderName, regions: label }))) return;
 
       const btn = dlg.querySelector('#fsetRegionApply');
       const bar = dlg.querySelector('#fsetRegionProgress');
@@ -332,7 +344,7 @@
       if (st?.state === 'done') {
         const s = st.stats || {};
         const msg = `Species re-scored for ${label}: ${Number(s.changed || 0).toLocaleString()} name${s.changed === 1 ? '' : 's'} changed across ${Number(s.images || 0).toLocaleString()} image${s.images === 1 ? '' : 's'}` +
-          (s.locked ? `; your tags on reviewed scenes were kept (${Number(s.locked).toLocaleString()} image${s.locked === 1 ? '' : 's'})` : '') + '.';
+          (s.locked ? `; species you confirmed were kept (${Number(s.locked).toLocaleString()} image${s.locked === 1 ? '' : 's'})` : '') + '.';
         showToast(msg, 7000);
         info.species_regions = s.regions || regions;
         if (dlg.isConnected) {

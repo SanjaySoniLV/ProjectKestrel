@@ -4,13 +4,11 @@
 
     // The in-app "What's New" note shown on the welcome screen. It ships baked
     // into the build: bump `version` to re-surface it to everyone, and it is
-    // dismissed per-version via the `last_seen_whats_new_version` setting.
-    // (A previous version also fetched an editable copy from
-    // projectkestrel.org/whats-new.json; that remote-override path was removed —
-    // the note now lives entirely in the app.)
+    // dismissed per-version via the `last_seen_whats_new_version` setting. It
+    // is never fetched from the network.
     const WHATS_NEW = {
-      version: 'arctic-tern-fp-2',
-      eyebrow: 'v(Arctic Tern (FP 2))',
+      version: 'arctic-tern-fp-3',
+      eyebrow: 'v(Arctic Tern (FP 3))',
       // The release's namesake bird. `whatsnew-bird.jpg` is a STABLE filename
       // whose contents are replaced each release, so the three PyInstaller
       // specs list it once and never need touching again. Update `heroAlt`
@@ -24,21 +22,13 @@
           // Desktop app logo — bundled at the static-server root (see .spec datas).
           iconImg: 'logo.png',
           name: 'Project Kestrel',
-          tag: 'New in v(Arctic Tern (FP 2))',
+          tag: 'New in v(Arctic Tern (FP 3))',
           bullets: [
-            // v(Arctic Tern (FP 2)) hotfix.
-            '<b>Mac GPU fix</b>: on Apple Silicon Macs, analysis with GPU acceleration no longer fails on the first photo or stops the folder. Apple Silicon Macs now need macOS 14 (Sonoma) or later.',
-            // v(Arctic Tern (FP 1)) additions; the Arctic Tern bullets below stay.
-            '<b>Enhanced GPU Performance</b> (Windows 11 24H2 or later, experimental): set it up in Settings to use extra GPU software made for your graphics hardware. If it fails, Kestrel falls back to standard GPU acceleration or the CPU, and a lost GPU no longer saves empty results.',
-            'Folders from analysis version 2.x now default to a fast <b>upgrade to 3.0</b> that keeps your culls, and upgrades can be queued from each folder’s header. New <b>Reject Undecided</b> speeds up bulk culling.',
-            'Polish and fixes: a cleaner scene viewer and analysis queue, capture time in the scene viewer, an updated tutorial and demo set, plainer wording in settings, and a fix for network (NAS) folders showing 0 images.',
-            'One of the most significant updates to date, v(Arctic Tern) introduces analysis v3.0, with several major improvements.',
-            'Kestrel can now accurately identify bird species worldwide, not just in North America. Accuracy for bird species recognition is significantly improved.',
-            'New <b>Smart Search</b>: find your photos by simply describing what you remember, ex. “herons in a marsh” or “flock of doves in flight”. Works on all folders analyzed with analysis version 3.0. Results show a % match and can jump to the scene in your timeline.',
-            'We are temporarily changing the default quality scoring model to the previous version, while we evaluate possible options to improve quality scoring. You can change the default in Settings.',
-            '<b>Help improve sharpness scoring</b> (optional): sort a burst from sharpest to blurriest and choose whether to share the crops. The sort dialog now has larger thumbnails and a zoom button.',
-            '<b>Regroup Scenes</b> and many stability and data-safety fixes.',
-            'Important: Folders analyzed on previous versions of Kestrel can be upgraded to v3.0 without requiring full re-analysis.',
+            '<b>Cull mode</b> takes you through every scene full screen. Kestrel’s starting picks show dotted until you confirm them: press Enter to confirm and move on, or Tab to skip.',
+            'Cull a folder as many times as you like. <b>Finish</b> moves the rejects aside and offers a stricter next pass, and <b>Culling history</b> can undo a move or revert to any earlier pass.',
+            'Press <b>F</b> to favorite a photo. When a photo has several birds, click one to see its close-up, and press <b>S</b> to focus the whole scene on it.',
+            '<b>Custom keyboard shortcuts</b>: change your keys in Settings, or pick a right-hand or left-hand layout so you can cull with one hand on the keyboard.',
+            'A <b>fresh new look</b>: a cleaner main window and new icons, plus simpler Settings, a three-step Analyze dialog and clearer Folder settings and Feedback dialogs.',
           ],
         },
         {
@@ -54,7 +44,7 @@
           ],
         },
         {
-          icon: '⚡',
+          icon: 'bolt',
           name: 'Cloud Compute',
           tag: 'What’s new',
           bullets: [
@@ -67,53 +57,53 @@
       ],
       note: 'Thank you for supporting the solo dev of Project Kestrel.',
       sign: '— Sanjay',
-      blogLink: { label: 'Read the full v(Arctic Tern (FP 2)) release notes →', href: 'https://projectkestrel.org/notes/arctic-tern-fp-2/' },
+      blogLink: { label: 'Read the full v(Arctic Tern (FP 3)) release notes →', href: 'https://projectkestrel.org/notes/arctic-tern-fp-3/' },
     };
 
     const WELCOME_TIPS = [
       {
-        icon: '🦋',
+        icon: 'paw',
         title: 'Try wildlife mode',
         badge: 'New!',
-        body: 'Kestrel can detect squirrels, bears, and other wildlife in addition to birds. Enable it in <b>Settings &rarr; Analysis</b>.',
-        action: { label: 'Open Settings', onClick: function() { try { showSettings(); } catch (_) {} } },
+        body: 'Kestrel can detect squirrels, bears, and other wildlife as well as birds. Turn it on when you analyze a folder: the <b>Analyze</b> dialog asks what to look for.',
+        action: { label: 'Analyze folders…', onClick: function() { document.getElementById('analyzeQueueBtn')?.click(); } },
       },
       {
-        icon: '➕',
+        icon: 'plus',
         title: 'Merge scenes',
-        body: 'Hold <kbd>Ctrl</kbd> and click scene cards to select multiple, then click <b>Merge selected scenes</b> to combine them into one.',
+        body: 'Hold <kbd>Ctrl</kbd> and click scene cards to select multiple, then click <b>Merge into one scene</b> to combine them into one.',
       },
       {
-        icon: '🖼️',
+        icon: 'image',
         title: 'Multiple birds in one scene?',
         body: 'Use the <b>◂ / ▸ crop buttons</b> in the scene info bar (or <kbd>↑</kbd> / <kbd>↓</kbd>) to flip through each bird, and press <kbd>Enter</kbd> to promote one as the scene’s primary.',
       },
       {
-        icon: '📂',
+        icon: 'folder-open',
         title: 'Open a parent folder once',
         body: 'Kestrel searches across <b>every loaded folder</b>. Open a parent folder and browse your entire library by species or family without re-loading anything.',
       },
       {
-        icon: '⌨️',
+        icon: 'keyboard',
         title: 'Space = open in editor',
-        body: 'Press <kbd>Space</kbd> on any photo to open the original in your chosen photo editor. Set your preference in Settings.',
-        action: { label: 'Open Settings', onClick: function() { try { showSettings(); } catch (_) {} } },
+        body: 'Press <kbd>Space</kbd> on any photo to open the original in your photo editor. Choose the editor in <b>Settings &rarr; General</b>.',
+        action: { label: 'Open Settings', onClick: function() { try { showSettings('general'); } catch (_) {} } },
       },
       {
-        icon: '🗑️',
-        title: 'Cull faster with the Culling Assistant',
-        body: 'Batch Accept / Reject photos by your own quality rules — and optionally move rejects into an archive folder.',
+        icon: 'trash',
+        title: 'Cull faster in Cull mode',
+        body: 'Accept or reject every photo scene by scene, starting from picks Kestrel makes by quality, and move the rejects aside.',
       },
       {
-        icon: '⚠️',
+        icon: 'warning',
         title: 'Write metadata before importing',
         body: '<b>Write Photo Metadata</b> before importing into Lightroom or Capture One — most catalogues ignore sidecar files added <i>after</i> import.',
       },
       {
-        icon: '⭐',
+        icon: 'star',
         title: 'Not satisfied with the star ratings?',
-        body: 'Tune the rating thresholds and profile in Settings. Your manual overrides are always saved as gold stars.',
-        action: { label: 'Open Settings', onClick: function() { try { showSettings(); } catch (_) {} } },
+        body: 'Choose a stricter or more lenient rating style in <b>Settings &rarr; Star ratings</b>. Stars you set yourself are always kept, shown in gold.',
+        action: { label: 'Open Settings', onClick: function() { try { showSettings('ratings'); } catch (_) {} } },
       },
     ];
 
@@ -157,14 +147,9 @@
     var sr = sanitizeRichText;
 
     // Escape a string for use inside a DOUBLE-QUOTED HTML attribute. sr()/
-    // sanitizeRichText is a *content* sanitizer (it does NOT escape quotes), so
-    // it must never be used for attribute values — that would allow a remote
-    // href like `https://x" onmouseover="..."` to inject an event handler.
-    function escapeAttr(s) {
-      return String(s == null ? '' : s)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-    }
+    // Attribute values go through escapeHtml (it escapes quotes), never through
+    // sanitizeRichText, which is a content sanitizer and leaves quotes alone: a
+    // remote href like `https://x" onmouseover="..."` would inject a handler.
 
     // Return a normalized https:// URL, or null if it is not valid https.
     // Parsing with URL() (not a prefix regex) rejects embedded quotes,
@@ -196,7 +181,7 @@
         var linkHtml = linkList.map(function(lk) {
           var href = lk && lk.href ? safeHttpsUrl(lk.href) : null;
           if (!href) return '';
-          return '<a class="wln-card-link" href="' + escapeAttr(href) +
+          return '<a class="wln-card-link" href="' + escapeHtml(href) +
             '" target="_blank" rel="noopener noreferrer">' + sr(lk.label || 'Learn more →') + '</a>';
         }).filter(Boolean).join('');
         cta = (c.hint ? '<div class="wln-card-hint">' + sr(c.hint) + '</div>' : '') +
@@ -213,8 +198,8 @@
         }
         var iconFile = safeAssetFile(c.iconImg);
         var iconHtml = iconFile
-          ? '<span class="wln-card-icon wln-card-icon-img"><img src="' + escapeAttr(iconFile) + '" alt="" /></span>'
-          : '<span class="wln-card-icon">' + sr(c.icon || '•') + '</span>';
+          ? '<span class="wln-card-icon wln-card-icon-img"><img src="' + escapeHtml(iconFile) + '" alt="" /></span>'
+          : '<span class="wln-card-icon">' + (/^[a-z-]+$/.test(c.icon || '') ? KestrelIcon(c.icon) : sr(c.icon || '•')) + '</span>';
         return '' +
           '<div class="wln-card">' +
             '<div class="wln-card-top">' +
@@ -231,14 +216,14 @@
 
       var heroFile = safeAssetFile(note.heroImg);
       var heroHtml = heroFile
-        ? '<div class="wln-banner"><img src="' + escapeAttr(heroFile) +
-            '" alt="' + escapeAttr(note.heroAlt || '') + '" /></div>'
+        ? '<div class="wln-banner"><img src="' + escapeHtml(heroFile) +
+            '" alt="' + escapeHtml(note.heroAlt || '') + '" /></div>'
         : '';
 
       var blogBtn = '';
       var blogHref = note.blogLink && note.blogLink.href ? safeHttpsUrl(note.blogLink.href) : null;
       if (blogHref) {
-        blogBtn = '<a class="wln-blog-link" href="' + escapeAttr(blogHref) +
+        blogBtn = '<a class="wln-blog-link" href="' + escapeHtml(blogHref) +
           '" target="_blank" rel="noopener noreferrer">' + sr(note.blogLink.label || 'Read more →') + '</a>';
       }
 
@@ -246,7 +231,7 @@
         '<div class="wln">' +
           '<button type="button" class="wln-dismiss" id="wwnDismiss" aria-label="Dismiss">✕</button>' +
           heroHtml +
-          '<span class="wln-eyebrow">🎉&nbsp; ' + sr(note.eyebrow || '') + '</span>' +
+          '<span class="wln-eyebrow">' + KestrelIcon('sparkle') + '&nbsp; ' + sr(note.eyebrow || '') + '</span>' +
           '<h2 class="wln-title">' + sr(note.title || '') + '</h2>' +
           (note.subtitle ? '<div class="wln-subtitle">' + sr(note.subtitle) + '</div>' : '') +
           '<div class="wln-cards">' + cards + '</div>' +
@@ -332,7 +317,7 @@
       function render(i) {
         var t = WELCOME_TIPS[i];
         if (!t) return;
-        iconEl.textContent = t.icon || '💡';
+        KestrelIcon.set(iconEl, t.icon || 'lightbulb');
         titleEl.innerHTML = t.title || '';
         if (t.badge) { badgeEl.textContent = t.badge; badgeEl.classList.remove('hidden'); }
         else badgeEl.classList.add('hidden');

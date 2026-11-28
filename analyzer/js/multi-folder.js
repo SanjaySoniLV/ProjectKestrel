@@ -240,9 +240,9 @@
         // If the folder tree is already visible the user may have clicked a parent folder
         // intentionally (no .kestrel there). Show a soft status message instead of an alert.
         if (_hasAnyRoots()) {
-          setStatus(`No Kestrel database in this folder — select one that shows 📂 in the tree`);
+          setStatus(`No Kestrel database in this folder — select an analyzed folder (open folder icon) in the tree`);
         } else {
-          alert(`Could not load Kestrel database from this folder.\n\nMake sure:\n1. The folder has been analyzed with Kestrel Analyzer\n2. The .kestrel folder exists (it may be hidden on macOS)\n3. You selected the correct folder\n\nTip: On macOS, .kestrel folders are hidden by default. You can:\n• Press Cmd+Shift+. (period) to show hidden files in Finder\n• Or select the parent folder that contains the .kestrel folder\n\nError: ${errorMsg}`);
+          await KestrelDialog.notice('loadDatabaseFailed', { error: errorMsg });
           setStatus('Failed to load database');
         }
       }
@@ -289,8 +289,8 @@
         const ready = await waitForPywebview();
         kdebug('[pickFolder] Pywebview API ready:', ready);
       }
-      // Phase 2 (additive multi-root): clicking "+ 📂 Load Folders…" no longer
-      // wipes existing checked folders — it ADDS to the tree. Each picked root
+      // Additive multi-root: clicking "Add Folders…" ADDS to the tree
+      // and keeps existing checked folders. Each picked root
       // scans and auto-checks its analyzed descendants. Multi-select picker
       // (choose_directories) returns N paths; fall back to single-select if
       // the multi method isn't exposed by the bridge.
@@ -312,7 +312,7 @@
           }
         } catch (e) {
           console.error('Folder picker failed:', e);
-          alert(`Desktop folder picker failed: ${e.message || e}`);
+          await KestrelDialog.notice('folderPickerFailed', { error: e.message || e });
           setStatus('Folder picker failed');
           return;
         }

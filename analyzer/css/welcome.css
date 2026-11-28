@@ -18,7 +18,7 @@
 }
 
 .welcome-subtitle {
-  font-size: 14px;
+  font-size: var(--fs-base);
   color: var(--muted);
   margin: -12px 0 0;
 }
@@ -50,12 +50,12 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  background: #1d5aa8;
-  border: 1px solid #2b6ec8;
-  color: #e7e9ee;
-  border-radius: 8px;
+  background: var(--primary-bg);
+  border: 1px solid var(--primary-border);
+  color: var(--text);
+  border-radius: var(--radius-md);
   padding: 8px 16px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 600;
   cursor: pointer;
   transition: background .15s, border-color .15s;
@@ -64,8 +64,8 @@
 }
 
 .welcome-action-btn:hover {
-  background: #1f63b8;
-  border-color: #3a84e6;
+  background: var(--primary-bg-hover);
+  border-color: var(--focus);
 }
 
 .welcome-tips {
@@ -77,12 +77,12 @@
 }
 
 .welcome-tip {
-  background: #0e1117;
-  border: 1px solid #1d2230;
-  border-radius: 10px;
+  background: var(--input-bg);
+  border: 1px solid var(--chip);
+  border-radius: var(--radius-lg);
   padding: 10px 16px;
-  font-size: 13px;
-  color: #cbd2dc;
+  font-size: var(--fs-md);
+  color: var(--text-2);
   text-align: left;
   display: flex;
   gap: 10px;
@@ -107,7 +107,7 @@
 }
 
 .welcome-footer {
-  font-size: 13px;
+  font-size: var(--fs-md);
   color: var(--muted);
 }
 
@@ -154,7 +154,7 @@
   line-height: 1;
   cursor: pointer;
   padding: 4px 7px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   /* Sits over the banner photo, which can be pale (sky, water), so it
      carries its own backdrop rather than relying on the panel behind it. */
   z-index: 2;
@@ -198,7 +198,7 @@
 .wln-eyebrow {
   display: inline-flex;
   align-items: center;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.6px;
@@ -206,7 +206,7 @@
   background: rgba(193, 78, 22, 0.16);
   border: 1px solid rgba(193, 78, 22, 0.40);
   padding: 3px 11px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 .wln-title {
@@ -234,7 +234,7 @@
 
 .wln-intro {
   margin: 9px 0 0;
-  font-size: 13px;
+  font-size: var(--fs-md);
   line-height: 1.62;
   color: #c4ccd8;
 }
@@ -324,7 +324,7 @@
 .wln-card-link {
   margin-top: 11px;
   align-self: flex-start;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 700;
   color: var(--brand);
   text-decoration: none;
@@ -396,12 +396,12 @@
 }
 .wtc-arrow {
   background: rgba(255, 255, 255, 0.04);
-  border: 1px solid #2a3040;
+  border: 1px solid var(--border);
   color: var(--muted);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   width: 32px;
   height: 32px;
-  font-size: 14px;
+  font-size: var(--fs-base);
   line-height: 1;
   cursor: pointer;
   transition: color .15s, border-color .15s, background .15s;
@@ -417,9 +417,9 @@
   overflow: hidden;
 }
 .wtc-card {
-  background: #0e1117;
-  border: 1px solid #1d2230;
-  border-radius: 10px;
+  background: var(--input-bg);
+  border: 1px solid var(--chip);
+  border-radius: var(--radius-lg);
   padding: 12px 16px;
   text-align: left;
   transition: opacity .18s ease, transform .18s ease;
@@ -432,9 +432,9 @@
   gap: 8px;
   margin-bottom: 4px;
 }
-.wtc-icon { font-size: 16px; line-height: 1; }
+.wtc-icon { font-size: var(--fs-lg); line-height: 1; }
 .wtc-title {
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 700;
   color: var(--text);
   flex: 1 1 auto;
@@ -442,17 +442,17 @@
 .wtc-badge {
   background: var(--brand);
   color: #0b0e14;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   padding: 2px 7px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 .wtc-badge.hidden { display: none; }
 .wtc-body {
   font-size: 12.5px;
-  color: #cbd2dc;
+  color: var(--text-2);
   line-height: 1.55;
 }
 .wtc-action {
@@ -464,7 +464,7 @@
   border: none;
   color: var(--brand);
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   padding: 0;
   text-decoration: underline;
@@ -490,3 +490,17 @@
 }
 .wtc-dot:hover { background: #555; }
 .wtc-dot.active { background: var(--brand); }
+
+#welcomePanel .welcome-hero-logo {
+  height: 150px;
+  opacity: 0.9;
+}
+#welcomePanel .welcome-start-tutorial {
+  margin: 0;
+  font-size: var(--fs-base);
+  padding: 10px 16px;
+}
+.welcome-footer .welcome-legal {
+  font-size: var(--fs-xs);
+  opacity: 0.8;
+}

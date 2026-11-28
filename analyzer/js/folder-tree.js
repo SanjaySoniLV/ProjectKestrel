@@ -1,6 +1,6 @@
     // ── Folder Tree ──────────────────────────────────────────────────────────────
-    // Multi-root state (Phase 2): the sidebar tree can host N independent root
-    // folders side by side. The user adds roots via "+ 📂 Load Folders…" and
+    // Multi-root state: the sidebar tree can host N independent root
+    // folders side by side. The user adds roots via "Add Folders…" and
     // each root scans its own subtree. Scene/data aggregation downstream is
     // already multi-root via __rootPath / __folderSlot row tagging.
     let folderTreeRootNodes = new Map();   // Map<rootPath, syntheticRootNode>
@@ -221,10 +221,8 @@
       if (treeWrap) treeWrap.classList.add('folder-tree-empty');
     }
 
-    // Legacy alias. Existing callers that historically called scanFolderTree
-    // get the new additive behavior — if a caller truly wants "replace tree"
-    // it should call clearAllFolderRoots() first. The Phase 2 plan documents
-    // each migrated caller; this alias keeps any stragglers compiling.
+    // Alias for addFolderRoot: adds a root rather than replacing the tree. A
+    // caller that wants "replace tree" calls clearAllFolderRoots() first.
     async function scanFolderTree(rootPath) {
       const res = await addFolderRoot(rootPath);
       return !!res.added;
@@ -306,10 +304,8 @@
       if (old) old.remove();
     }
 
-    /** Clear kestrel analysis data for a folder. Surfaces a styled WebView
-     *  confirmation dialog (#clearKestrelConfirmDlg) so the destructive flow
-     *  is visually consistent with the rest of the app and harder to misclick
-     *  than the previous native confirm()/alert() prompts. */
+    /** Clear kestrel analysis data for a folder, behind the styled
+     *  #clearKestrelConfirmDlg (it lists exactly what gets deleted). */
     async function clearKestrelDataForFolder(folderPath, folderName, refreshCallback) {
       const dlg = document.getElementById('clearKestrelConfirmDlg');
       const cancelBtn = document.getElementById('clearKestrelCancel');
@@ -399,7 +395,7 @@
           try { _tempKestrelPaths.add(norm(path)); } catch (e) { }
           // Update icon
           const icon = row.querySelector('.tree-icon');
-          if (icon) icon.textContent = '📂';
+          KestrelIcon.set(icon, 'folder-open');
           // Ensure checkbox exists (do not auto-check it)
           if (!row.querySelector('.tree-cb')) {
             const cb = document.createElement('input');
@@ -490,23 +486,21 @@ ${node.path}` : node.path;
       }
 
       // Folder icon
-      const icon = document.createElement('span');
-      icon.className = 'tree-icon' + (node.has_perch_link ? ' has-perch' : '');
-      icon.textContent = node.has_kestrel ? '📂' : '📁';
+      const icon = KestrelIcon.el(node.has_kestrel ? 'folder-open' : 'folder');
+      icon.classList.add('tree-icon');
+      if (node.has_perch_link) icon.classList.add('has-perch');
 
       // Feather overlay — surfaces "this folder is on Perch" at a glance.
-      const perchFeather = node.has_perch_link ? document.createElement('span') : null;
+      const perchFeather = node.has_perch_link ? KestrelIcon.el('feather') : null;
       if (perchFeather) {
-        perchFeather.className = 'tree-perch-feather';
-        perchFeather.textContent = '\u{1FAB6}';
+        perchFeather.classList.add('tree-perch-feather');
         perchFeather.title = 'Published to Perch';
       }
 
       // Hourglass overlay — surfaces "this folder is being analyzed" at a glance.
-      const inProgressHourglass = isInProgress ? document.createElement('span') : null;
+      const inProgressHourglass = isInProgress ? KestrelIcon.el('hourglass') : null;
       if (inProgressHourglass) {
-        inProgressHourglass.className = 'tree-in-progress-hourglass';
-        inProgressHourglass.textContent = '⏳';
+        inProgressHourglass.classList.add('tree-in-progress-hourglass');
         inProgressHourglass.title = isUpgrading && !_inProgressFolderPaths.has(normPath)
           ? 'Upgrading to analysis version 3' : 'Analysis in progress';
       }
@@ -592,8 +586,8 @@ ${node.path}` : node.path;
       }
 
       // Label/icon click toggles expand/collapse (same as clicking the chevron).
-      // Loading/unloading a folder is reserved for the checkbox per Phase 2
-      // decision — clicking the label is non-destructive.
+      // Loading/unloading a folder is reserved for the checkbox, so clicking
+      // the label is non-destructive.
       const toggleExpand = (e) => {
         e.stopPropagation();
         treeActivePath = node.path;
@@ -618,19 +612,8 @@ ${node.path}` : node.path;
       label.addEventListener('click', toggleExpand);
       icon.addEventListener('click', toggleExpand);
 
-      // (Right-click "Clear Kestrel Analysis Data" context menu removed —
-      // the action now lives in the per-folder Folder Actions dropdown in
-      // the scene-grid header. Discoverable, single entry point.)
-
       return wrap;
     }
-
-    // Phase 3: populateAnalyzeFolderCounts removed. The Phase 3 Analyze
-    // Folders dialog has its own independent inspection cache + render
-    // pipeline (analyze-dialog.js:_inspectAndRenderAnalyzeDlg) using
-    // pure-CSS state pills. The legacy 6-class color coding it set
-    // (analyzed-full / analyzed-partial / analyzed-none / no-photos-deep /
-    // no-photos-shallow / has-errored-images) is no longer used.
 
     function _normRootPath(p) {
       return (p || '').replace(/\\/g, '/').replace(/\/+$/, '');
@@ -646,8 +629,25 @@ ${node.path}` : node.path;
       return t.length <= maxLen ? t : (t.slice(0, maxLen - 1) + '…');
     }
 
-    /** Build recents chip (+ optional × dismiss). Returns a .folder-recents-chip-wrap. */
-    function buildFolderRecentsChip(path, onClick, onDismiss) {
+    /**
+     * Short chip labels for a list of recent folders: the folder's own name,
+     * or "parent/name" when two recents share a name. The full path is the
+     * chip's tooltip.
+     */
+    function recentsChipLabels(paths) {
+      const parts = paths.map(p => String(p || '').replace(/\\/g, '/').split('/').filter(Boolean));
+      const base = parts.map(ps => ps[ps.length - 1] || '');
+      return parts.map((ps, i) => {
+        const dup = base.some((b, j) => j !== i && b.toLowerCase() === base[i].toLowerCase());
+        return (dup && ps.length > 1) ? `${ps[ps.length - 2]}/${base[i]}` : (base[i] || paths[i]);
+      });
+    }
+
+    /**
+     * Build recents chip (+ optional × dismiss). Returns a .folder-recents-chip-wrap.
+     * ``label`` overrides the default middle-ellipsized path.
+     */
+    function buildFolderRecentsChip(path, onClick, onDismiss, label) {
       const wrap = document.createElement('span');
       wrap.className = 'folder-recents-chip-wrap';
       const chip = document.createElement('button');
@@ -655,20 +655,22 @@ ${node.path}` : node.path;
       chip.className = 'folder-recents-chip';
       chip.title = path;
       chip.dataset.path = path;
-      const plus = document.createElement('span');
-      plus.className = 'folder-recents-chip-plus';
-      plus.textContent = '+ \u{1F4C2}';
-      const label = document.createElement('span');
-      label.textContent = ' ' + ellipsizeRecentsPath(path);
-      chip.appendChild(plus);
-      chip.appendChild(label);
+      const icon = document.createElement('span');
+      icon.className = 'folder-recents-chip-icon';
+      icon.appendChild(KestrelIcon.el('folder'));
+      const text = document.createElement('span');
+      text.className = 'folder-recents-chip-label';
+      text.textContent = label || ellipsizeRecentsPath(path);
+      chip.appendChild(icon);
+      chip.appendChild(text);
       chip.addEventListener('click', onClick);
       wrap.appendChild(chip);
       if (onDismiss) {
         const x = document.createElement('button');
         x.type = 'button';
         x.className = 'folder-recents-chip-dismiss';
-        x.setAttribute('aria-label', 'Remove from recents');
+        x.setAttribute('aria-label', 'Remove from recent folders');
+        x.title = 'Remove from recent folders';
         x.textContent = '\u00d7';
         x.addEventListener('click', (e) => {
           e.stopPropagation();

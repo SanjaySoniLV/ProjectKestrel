@@ -14,11 +14,15 @@ the reviewed/unreviewed predicate — was verified by evaluating the real
 
 from __future__ import annotations
 
+import json
 import os
-import re
+import shutil
+import subprocess
 import sys
 import unittest
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -29,6 +33,13 @@ _SCENES_JS = os.path.join(_ANALYZER_DIR, 'js', 'scenes.js')
 _SCENE_GRID_JS = os.path.join(_ANALYZER_DIR, 'js', 'scene-grid.js')
 _CSV_INIT_JS = os.path.join(_ANALYZER_DIR, 'js', 'csv-init.js')
 _VISUALIZER_HTML = os.path.join(_ANALYZER_DIR, 'visualizer.html')
+
+
+def _view_filter_src() -> str:
+    """Body of sceneMatchesViewFilters in scenes.js."""
+    src = _read(_SCENES_JS)
+    start = src.index('function sceneMatchesViewFilters')
+    return src[start:src.index('function isManuallyReviewedScene', start)]
 
 
 def _read(path: str) -> str:
@@ -98,9 +109,11 @@ class TestReviewStateFilter(unittest.TestCase):
         self.assertNotIn('filterScenesManualRated', _read(_CSV_INIT_JS))
 
     def test_grid_filters_both_directions(self):
-        src = _read(_SCENE_GRID_JS)
-        self.assertIn("=== 'reviewed' ? scenes.filter(isManuallyReviewedScene)", src)
-        self.assertIn("=== 'unreviewed' ? scenes.filter(s => !isManuallyReviewedScene(s))", src)
+        # The grid and scene-to-scene navigation share one predicate in scenes.js.
+        self.assertIn("scenes.filter(sceneMatchesViewFilters)", _read(_SCENE_GRID_JS))
+        src = _view_filter_src()
+        self.assertIn("review === 'reviewed' && !isManuallyReviewedScene(scene)", src)
+        self.assertIn("review === 'unreviewed' && isManuallyReviewedScene(scene)", src)
 
     def test_unreviewed_is_the_exact_complement(self):
         """Both branches must go through the same predicate.
@@ -109,8 +122,7 @@ class TestReviewStateFilter(unittest.TestCase):
         across its photos and its scene tags. Reimplementing that test instead
         of negating isManuallyReviewedScene would let the two drift apart.
         """
-        src = _read(_SCENE_GRID_JS)
-        self.assertEqual(2, src.count('isManuallyReviewedScene'))
+        self.assertEqual(2, _view_filter_src().count('isManuallyReviewedScene'))
 
     def test_legacy_setting_is_migrated(self):
         src = _read(_CSV_INIT_JS)
@@ -150,3 +162,68 @@ class TestGridRefreshAfterCullChange(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# ── Behaviour, run through Node ──────────────────────────────────────────────
+# What counts as a reviewed scene, and the recent-folder chip labels, checked by
+# evaluating the real functions in a Node vm (skipped without Node).
+
+_NODE = shutil.which('node')
+_needs_node = pytest.mark.skipif(_NODE is None, reason='node not installed')
+
+_VM_HARNESS = r"""
+const vm = require('vm');
+const [src, expr] = process.argv.slice(1);
+const ctx = vm.createContext({});
+vm.runInContext(src, ctx);
+process.stdout.write(JSON.stringify(vm.runInContext(expr, ctx)));
+"""
+
+
+def _run_js(src: str, expr: str):
+    out = subprocess.run([_NODE, '-e', _VM_HARNESS, src, expr],
+                         capture_output=True, text=True, check=True, timeout=30)
+    return json.loads(out.stdout)
+
+
+def _reviewed_src() -> str:
+    src = _read(_SCENES_JS)
+    head = src[:src.index('/** Highest-quality row')]
+    # Rows carry their own rating / origin / cull status in this harness.
+    stubs = ('function getRating(r) { return r.rating || 0; }\n'
+             'function getOrigin(r) { return r.origin || ""; }\n'
+             'function getCullStatus(r) { return r.cull || ""; }\n')
+    return stubs + head
+
+
+@pytest.mark.unit
+@_needs_node
+def test_reviewed_means_a_decision_or_a_star_the_user_set():
+    src = _reviewed_src()
+    cases = {
+        'accepted': {'images': [{'cull': 'accept'}]},
+        'rejected': {'images': [{'cull': 'reject'}]},
+        'manual_star': {'images': [{'rating': 3, 'origin': 'manual'}]},
+        'auto_star_only': {'images': [{'rating': 4, 'origin': 'auto'}]},
+        'species_confirmed_only': {'isApproved': True, 'images': [{}]},
+        'named_only': {'sceneName': 'Egret fishing', 'images': [{}]},
+        'untouched': {'images': [{}, {}]},
+    }
+    got = _run_js(src, 'Object.fromEntries(Object.entries(%s).map(([k, s]) => [k, isManuallyReviewedScene(s)]))'
+                  % json.dumps(cases))
+    assert got == {
+        'accepted': True, 'rejected': True, 'manual_star': True,
+        'auto_star_only': False, 'species_confirmed_only': False,
+        'named_only': False, 'untouched': False,
+    }
+
+
+@pytest.mark.unit
+@_needs_node
+def test_recent_chip_labels_are_folder_names_unless_two_share_one():
+    src = _read(os.path.join(_ANALYZER_DIR, 'js', 'folder-tree.js'))
+    start = src.index('    function recentsChipLabels(')
+    fn = src[start:src.index('\n    }\n', start) + 6]
+    paths = ['/Users/a/Pictures/Costa Rica', 'E:\\DCIM\\105NZ_8', '/Volumes/SD2/DCIM2/105NZ_8', '/Users/a/Birds/']
+    got = _run_js(fn, 'recentsChipLabels(%s)' % json.dumps(paths))
+    assert got == ['Costa Rica', 'DCIM/105NZ_8', 'DCIM2/105NZ_8', 'Birds']

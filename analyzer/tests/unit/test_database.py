@@ -1,7 +1,6 @@
 """Unit tests for database.py - CSV and JSON database layer."""
 
 import pytest
-import json
 import pandas as pd
 from pathlib import Path
 import sys
@@ -11,13 +10,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from kestrel_analyzer.database import (
     load_database,
     save_database,
-    ensure_columns,
     load_scenedata,
     save_scenedata,
     build_scenedata_from_database,
     update_scenedata_with_database,
     BASE_COLUMNS,
-    REQUIRED_COLUMNS,
 )
 
 
@@ -80,6 +77,20 @@ class TestDatabaseSave:
         assert reloaded.loc[0, 'culled_origin'] == 'manual'
         assert reloaded.loc[0, 'filename'] == 'IMG_001.CR3'
         assert reloaded.loc[0, 'species'] == 'aves'
+
+    def test_save_database_preserves_favorite_from_disk(self, temp_kestrel_dir, sample_database):
+        """A favorite set in the UI survives the pipeline's next save."""
+        sample_database.loc[0] = [None] * len(BASE_COLUMNS)
+        sample_database.loc[0, 'filename'] = 'IMG_001.CR3'
+        sample_database['favorite'] = 1
+
+        csv_path = temp_kestrel_dir / "kestrel_database.csv"
+        sample_database.to_csv(csv_path, index=False)
+
+        save_database(sample_database.drop(columns=['favorite']), str(csv_path))
+
+        reloaded = pd.read_csv(csv_path)
+        assert int(reloaded.loc[0, 'favorite']) == 1
 
 
 class TestScenedata:

@@ -1,4 +1,4 @@
-    // ── Per-folder "Ignore wildlife" (Change Settings) ──────────────────────
+    // ── Per-folder "Ignore wildlife" (Folder settings) ──────────────────────
     // A display filter only: wildlife crops stay in crops_json and the CSV
     // untouched. Wildlife is recognised by the crop's ``subject: "wildlife"``
     // (pipeline 3.0), and its species label is hidden from scene tags.

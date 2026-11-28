@@ -12,11 +12,6 @@ The project overview, repository structure, setup commands, contribution rules a
 
 The rest of this file adds detail for working on the code.
 
-> `README.md` and `DEVELOPMENT.md` still describe an older layout (a separate PyQt `analyzer/` GUI, a
-> standalone `visualizer/` web server, and a single ~10k-line `analyzer/visualizer.js`). **That is out of
-> date**: there is no PyQt GUI and no standalone server, and the frontend is ~25 modules under
-> `analyzer/js/`. Don't rely on those two files for structure questions.
-
 ## Architecture: the bridge is the trust boundary
 
 ```
@@ -65,7 +60,7 @@ schema:
 - `cloud_compute_client.py` (+ `cloud_jobs_store.py`, `cloud_folder_state.py`) — GPU offload: create job →
   upload images directly to object storage via presigned URLs → poll → download result packs → merge into
   `.kestrel/`. Frontend: `js/cloud-compute.js`.
-- `perch_uploader.py` (+ `perch_manifest.py`) — publish an outing: build a local manifest → presign →
+- `perch_uploader.py` — publish an outing: build a local manifest → presign →
   direct upload → commit. Frontend: `js/perch.js`.
 - `oauth_client.py` (+ `auth_client.py`) — sign-in with Clerk. The resulting Clerk JWT authorizes both
   Cloud Compute and Perch calls and is stored in the OS keyring. Frontend: `js/auth.js`.
@@ -105,6 +100,11 @@ python analyzer/cli.py --validate --validate-images test_imgs --validate-output 
 
 # Build the Windows installer (PyInstaller → Inno Setup)
 packaging\build_installer_headless.bat
+
+# Lint (CI runs both on every PR; both block a merge)
+ruff check analyzer tools            # Python: pyflakes + bugbear rules, config in pyproject.toml
+npm ci && npm run lint:js            # JS: ESLint, warnings capped in package.json; lower the cap as counts drop
+python tools/quality_ratchet.py      # fails if a counted problem grew; --update locks in a drop
 ```
 
 - The full lane (`pytest analyzer/tests -m "not ui"`) needs the Git LFS model files downloaded, not LFS

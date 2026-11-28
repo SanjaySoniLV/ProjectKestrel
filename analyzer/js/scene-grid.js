@@ -35,18 +35,18 @@
       menu.className = 'folder-group-actions-menu';
 
       const items = [
-        { icon: '📂', label: 'Open in File Explorer',
+        { icon: 'folder-open', label: 'Open in File Explorer',
           run: () => window.pywebview.api.open_file_explorer(folderPath) },
-        { icon: '📝', label: 'Write Photo Metadata',
+        { icon: 'file-text', label: 'Write Photo Metadata',
           run: () => writeMetadataForFolder(folderPath) },
-        { icon: '⚙', label: 'Change Settings…',
+        { icon: 'gear', label: 'Folder settings…',
           run: () => openFolderSettingsDialog(folderPath) },
         ...(_isUpgradableTo3(pipelineStatus) ? [
-          { icon: '✨', label: 'Upgrade to Analysis Version 3.0…',
+          { icon: 'sparkle', label: 'Upgrade to Analysis Version 3.0…',
             run: () => upgradeFolderToV3(folderPath) },
         ] : []),
         { divider: true },
-        { icon: '🗑', label: 'Clear Kestrel Analysis Data', danger: true,
+        { icon: 'trash', label: 'Clear Kestrel Analysis Data', danger: true,
           run: () => {
             const folderName = (folderPath || '').split(/[\\/]/).filter(Boolean).pop() || folderPath;
             clearKestrelDataForFolder(folderPath, folderName, refreshCallback);
@@ -62,7 +62,7 @@
         }
         const row = document.createElement('div');
         row.className = 'folder-group-actions-item' + (it.danger ? ' folder-group-actions-item--danger' : '');
-        row.innerHTML = `<i>${it.icon}</i> ${it.label}`;
+        row.innerHTML = `${KestrelIcon(it.icon)} ${it.label}`;
         row.addEventListener('click', (ev) => {
           ev.stopPropagation();
           _closeFolderActionsMenu();
@@ -87,16 +87,10 @@
         return;
       }
       if (up.status === 'reanalyze' || up.status === 'not_analyzed') {
-        showToast(`${name}: ${up.reason || 're-analyse this folder to use analysis version 3.0.'}`, 7000);
+        showToast(`${name}: ${up.reason || 'analyze this folder again to use analysis version 3.0.'}`, 7000);
         return;
       }
-      const ok = window.confirm(
-        `Upgrade “${name}” to analysis version 3.0?\n\n` +
-        'Kestrel re-reads the bird crops and preview images it already saved (no RAW decoding) to ' +
-        'update species IDs, add the new sharpness score and build the smart-search index. ' +
-        'Your culling decisions, star ratings and edited tags are not changed, and the database is ' +
-        'backed up first. Runs on this computer only (uses the GPU when enabled).'
-      );
+      const ok = await KestrelDialog.confirm('upgradeFolder', { name, skipped: '' });
       if (!ok) return;
       if (typeof smartSearchUpgradeFolder === 'function') await smartSearchUpgradeFolder(folderPath);
     }
@@ -139,7 +133,7 @@
         const fp = btn.dataset.folderPath;
         const queued = busy.has(String(fp).replace(/\\/g, '/'));
         btn.disabled = queued;
-        btn.innerHTML = queued ? '<i>⏳</i> In upgrade queue' : '<i>✨</i> Upgrade to 3.0';
+        btn.innerHTML = queued ? `${KestrelIcon('hourglass')} In upgrade queue` : `${KestrelIcon('sparkle')} Upgrade to 3.0`;
         btn.classList.toggle('hidden', !(queued || btn.dataset.upgradable === '1'));
       }
       syncUpgradeAllButton();
@@ -167,17 +161,14 @@
       const needReanalysis = statuses.filter(u => u?.status === 'reanalyze').length;
       if (!targets.length) {
         showToast(needReanalysis
-          ? `No loaded folder can be upgraded in place; ${needReanalysis} need${needReanalysis === 1 ? 's' : ''} a re-analysis.`
+          ? `No loaded folder can be upgraded in place; ${needReanalysis} need${needReanalysis === 1 ? 's' : ''} to be analyzed again.`
           : 'All loaded folders are already on analysis version 3.0.', 6000);
         return;
       }
-      const ok = window.confirm(
-        `Upgrade ${targets.length} loaded folder${targets.length === 1 ? '' : 's'} to analysis version 3.0?\n\n` +
-        'They are queued and upgraded one after another; follow progress in the analysis queue panel. ' +
-        'Kestrel re-reads the bird crops and preview images it already saved (no RAW decoding). ' +
-        'Culling decisions, star ratings and edited tags are not changed, and each database is backed up first.' +
-        (needReanalysis ? `\n\n${needReanalysis} other folder${needReanalysis === 1 ? '' : 's'} need${needReanalysis === 1 ? 's' : ''} a full re-analysis instead and ${needReanalysis === 1 ? 'is' : 'are'} skipped.` : '')
-      );
+      const skipped = needReanalysis ? KestrelDialog.text('upgradeFoldersSkipped', { count: needReanalysis }) : '';
+      const ok = targets.length === 1
+        ? await KestrelDialog.confirm('upgradeFolder', { name: folderBaseName(targets[0]), skipped })
+        : await KestrelDialog.confirm('upgradeFolders', { count: targets.length, skipped });
       if (!ok) return;
       if (typeof smartSearchQueueUpgrades === 'function') {
         await smartSearchQueueUpgrades(targets, { quietSkips: true });
@@ -190,8 +181,6 @@
       const minC = parseFloat(el('#speciesConf').value) || 0;
       const search = el('#search').value;
       const sortBy = el('#sortBy').value;
-      const reviewStateFilter = document.getElementById('filterSceneReviewState')?.value
-        || getSetting('sceneReviewFilter', 'all');
       // Smart-search results are shown flat, in score order (no folder/time grouping).
       const _searchOn = !!String(search || '').trim();
       const _smartActive = typeof smartSearchIsActive === 'function' && smartSearchIsActive();
@@ -216,50 +205,18 @@
         if (refreshed) _currentScene = refreshed;
       }
 
-      // Apply the scene-level review-state filter without mutating global scenes.
+      // Apply the filter bar's scene filters (review state, favorites only)
+      // without mutating global scenes.
       // Reviewed means any of:
       //  - scene tags finalized by user, or scene renamed by user
       //  - manual/verified accept-reject culling decision on any image
       //  - manual star rating on any image
       // 'unreviewed' is the exact complement: scenes carrying no user-assigned
       // trait at all, i.e. the ones that still need work.
-      const visibleScenes =
-        reviewStateFilter === 'reviewed' ? scenes.filter(isManuallyReviewedScene)
-        : reviewStateFilter === 'unreviewed' ? scenes.filter(s => !isManuallyReviewedScene(s))
-        : scenes;
+      const visibleScenes = scenes.filter(sceneMatchesViewFilters);
 
-      // Batched hydration of bird-catalog records for every species pill we're
-      // about to paint when the show-scientific-names toggle is on. Collect
-      // the missing names up-front, fire one IPC call, and re-render once if
-      // any new records arrived. Without this batching the per-card loop
-      // below would fan out N requests on first paint of a large folder.
       const _showSciOnCards = _getShowSciNames();
-      if (_showSciOnCards && !_sceneCardHydrationPending) {
-        const need = new Set();
-        for (const s of visibleScenes) {
-          // Hydrate every species and family term on the scene. The
-          // card's family-fallback scan needs a cached species record
-          // per family pill so it can borrow family_sci.
-          for (const sp of (s.species || [])) {
-            if (sp && !_isBirdRecordKnown(sp)) need.add(sp);
-          }
-          for (const fm of (s.families || [])) {
-            if (fm && !_isBirdRecordKnown(fm)) need.add(fm);
-          }
-        }
-        if (need.size > 0) {
-          _sceneCardHydrationPending = true;
-          _hydrateBirdRecords(Array.from(need)).then(() => {
-            _sceneCardHydrationPending = false;
-            // Always queue a repaint -- the cache (and miss-set) just gained
-            // entries that change what the cards show. We can't bail on a
-            // newer renderScenes call here, because that newer call was
-            // gated out of starting its own hydration by the pending flag
-            // and built its DOM against the still-empty cache.
-            requestAnimationFrame(() => { try { renderScenes(); } catch (_) {} });
-          }).catch(() => { _sceneCardHydrationPending = false; });
-        }
-      }
+      if (_showSciOnCards) SceneGridParts.hydrateSpeciesRecords(visibleScenes);
 
       updateStatusBar(visibleScenes);
 
@@ -284,100 +241,6 @@
       // Flat index for shift-click range selection
       _visibleSceneOrder = visibleScenes.map(s => String(s.id));
 
-      // ---- Two-level grouping: folder → adaptive time clusters ----
-      //
-      // The timeline previously used a fixed 1-hour grid (YYYY-MM-DDTHH) which
-      // both over-segmented long sessions (e.g. 55 minutes → 2 nodes straddling
-      // the hour boundary) and under-segmented bursty ones (50 shots in 3
-      // minutes became a single node identical to 1 shot in 30 minutes).
-      // We now cluster by actual gaps between successive scenes so a "session"
-      // of continuous shooting is one node, and a quiet pause cuts a new node
-      // regardless of clock alignment.
-      //
-      // The gap threshold is derived from the folder itself: we take the
-      // median inter-scene gap and multiply by a constant so anything notably
-      // quieter than the folder's typical rhythm starts a new cluster. This
-      // keeps dense burst folders (gap of ~1s → ~10s threshold) and casual
-      // days (gap of ~30s → ~5min threshold) from needing different settings.
-      // Hard floor/ceiling keep pathological data (single-scene folders,
-      // multi-week bundles) from producing absurd thresholds.
-      const CLUSTER_GAP_MIN_MS = 45 * 1000;       // 45 s — never split bursts
-      const CLUSTER_GAP_MAX_MS = 10 * 60 * 1000;  // 10 min — never merge sessions
-      const CLUSTER_GAP_FALLBACK_MS = 3 * 60 * 1000; // fallback if we can't infer
-      const CLUSTER_GAP_MULTIPLIER = 10;
-
-      function computeDynamicClusterGapMs(scenes) {
-        const times = [];
-        for (const s of scenes) {
-          if (Number.isFinite(s.captureTimeMs)) times.push(s.captureTimeMs);
-        }
-        if (times.length < 3) return CLUSTER_GAP_FALLBACK_MS;
-        times.sort((a, b) => a - b);
-        const gaps = [];
-        for (let i = 1; i < times.length; i++) {
-          const g = times[i] - times[i - 1];
-          if (g > 0) gaps.push(g);
-        }
-        if (!gaps.length) return CLUSTER_GAP_FALLBACK_MS;
-        gaps.sort((a, b) => a - b);
-        const median = gaps[Math.floor(gaps.length / 2)];
-        const threshold = median * CLUSTER_GAP_MULTIPLIER;
-        return Math.max(CLUSTER_GAP_MIN_MS, Math.min(CLUSTER_GAP_MAX_MS, threshold));
-      }
-
-      function _pad2(n) { return String(n).padStart(2, '0'); }
-      function _dayKeyFromMs(ms) {
-        if (!Number.isFinite(ms)) return '';
-        const d = new Date(ms);
-        if (isNaN(d)) return '';
-        return `${d.getFullYear()}-${_pad2(d.getMonth()+1)}-${_pad2(d.getDate())}`;
-      }
-      function formatClusterTime(ms) {
-        if (!Number.isFinite(ms)) return '';
-        try {
-          return new Date(ms).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-        } catch (_) { return ''; }
-      }
-      function formatClusterDay(ms) {
-        if (!Number.isFinite(ms)) return '';
-        try {
-          return new Date(ms).toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-        } catch (_) { return ''; }
-      }
-
-      // Walk scenes in ascending time order, cutting a new cluster each time
-      // the gap between the last scene's time and the next exceeds the
-      // threshold. Scenes lacking capture time are dropped into a final
-      // "untimed" cluster so they remain visible but don't distort ranges.
-      function buildTimeClusters(scenes, gapMs) {
-        const timed = [];
-        const untimed = [];
-        for (const s of scenes) {
-          if (Number.isFinite(s.captureTimeMs)) timed.push(s);
-          else untimed.push(s);
-        }
-        timed.sort((a, b) => a.captureTimeMs - b.captureTimeMs);
-        const clusters = [];
-        for (const s of timed) {
-          const last = clusters[clusters.length - 1];
-          if (!last || s.captureTimeMs - last.endMs > gapMs) {
-            clusters.push({
-              scenes: [s],
-              startMs: s.captureTimeMs,
-              endMs: s.captureTimeMs,
-              untimed: false,
-            });
-          } else {
-            last.scenes.push(s);
-            if (s.captureTimeMs > last.endMs) last.endMs = s.captureTimeMs;
-          }
-        }
-        if (untimed.length) {
-          clusters.push({ scenes: untimed, startMs: null, endMs: null, untimed: true });
-        }
-        return clusters;
-      }
-
       // Build folderMap: folderKey → { folderPath, scenes: [ordered scene list] }
       const folderOrder = [];
       const folderMap = new Map();
@@ -387,565 +250,37 @@
         if (!folderMap.has(fk)) { folderMap.set(fk, { folderPath: rp, scenes: [] }); folderOrder.push(fk); }
         folderMap.get(fk).scenes.push(s);
       }
-      const showFolderHeaders = groupByFolder;
 
-      function buildCard(s) {
-        const card = document.createElement('article');
-        card.className = 'card';
-        card.dataset.sceneId = String(s.id);
-        if (selectedSceneIds.has(String(s.id))) card.classList.add('selected');
-
-        const th = document.createElement('div');
-        th.className = 'thumb';
-        const img = document.createElement('img');
-        img.alt = s.representative?.filename || '';
-        applyThumbnailExposureToImg(img, s.representative);
-        lazyLoadImg(img, () => getBlobUrlForPath(
-          s.representative?.export_path || s.representative?.crop_path,
-          s.representative?.__rootPath
-        ));
-        th.appendChild(img);
-        if (_smartActive && s.smartRank) {
-          th.classList.add('has-smart-rank');
-          const rank = document.createElement('span');
-          rank.className = 'smart-search-rank';
-          rank.textContent = `#${s.smartRank}`;
-          rank.title = `Smart search rank ${s.smartRank} (score ${Number(s.smartScore).toFixed(3)})`;
-          th.appendChild(rank);
-          if (s.smartPercent != null) {
-            const pct = document.createElement('span');
-            pct.className = 'smart-search-pct';
-            pct.textContent = `${s.smartPercent}% match`;
-            pct.title = 'How far this photo sits above the typical photo in its folder for this search, '
-              + 'scaled to 0-100%. A relative match strength, not a probability.';
-            th.appendChild(pct);
-          }
-          const nImgs = (s.images || []).length;
-          if (nImgs > 1 && s.smartMatchCount) {
-            const m = document.createElement('span');
-            m.className = 'smart-search-matches';
-            m.textContent = `${s.smartMatchCount}/${nImgs}`;
-            m.title = `${s.smartMatchCount} of ${nImgs} photos in this scene match; the card shows the best match`;
-            th.appendChild(m);
-          }
-        }
-        if (_searchOn) {
-          // Hover button; the right-click menu (below) does the same.
-          const goBtn = document.createElement('button');
-          goBtn.type = 'button';
-          goBtn.className = 'card-goto-btn';
-          goBtn.textContent = '🕒';
-          goBtn.title = 'Show in timeline';
-          goBtn.setAttribute('aria-label', 'Show in timeline');
-          goBtn.addEventListener('click', (ev) => { ev.stopPropagation(); goToSceneInTimeline(s.id); });
-          th.appendChild(goBtn);
-        }
-        if (showBirdThumbs && s.representative?.crop_path && s.representative?.export_path) {
-          const row = document.createElement('div');
-          row.className = 'thumb-row';
-          const cropWrap = document.createElement('div');
-          cropWrap.className = 'thumb-bird-crop';
-          const cropImg = document.createElement('img');
-          cropImg.alt = 'Bird crop';
-          lazyLoadImg(cropImg, () => getBlobUrlForPath(
-            s.representative.crop_path,
-            s.representative.__rootPath
-          ));
-          cropWrap.appendChild(cropImg);
-          row.appendChild(th);
-          row.appendChild(cropWrap);
-          card.appendChild(row);
-        } else {
-          card.appendChild(th);
-        }
-
-        const body = document.createElement('div');
-        body.className = 'body';
-        const _folderName = folderBaseName(s.representative?.__rootPath || '');
-
-        // Secondary title row -- only shown when the scene has a folder
-        // prefix (sub-folder name visible because group-by-folder header is
-        // off) or a user-set scene name. Otherwise the body collapses to
-        // just the chip/meta strip. ``#N`` is no longer rendered: the
-        // image and grid position carry the identity.
-        // Build any user-controlled substring with textContent only, never
-        // innerHTML, per FINDING-01.
-        const needTitleRow = !!(s.sceneName || (_folderName && !showFolderHeaders));
-        const title = needTitleRow ? document.createElement('div') : null;
-        if (title) {
-          title.className = 'title';
-          if (_folderName && !showFolderHeaders) {
-            const folderEl = document.createElement('i');
-            folderEl.className = 'folder-name';
-            folderEl.textContent = _folderName;
-            title.appendChild(folderEl);
-            if (s.sceneName) {
-              const sep = document.createElement('span');
-              sep.className = 'title-sep';
-              sep.textContent = ' / ';
-              title.appendChild(sep);
-            }
-          }
-          if (s.sceneName) {
-            const nameSpan = document.createElement('span');
-            nameSpan.className = 'name';
-            nameSpan.textContent = String(s.sceneName);
-            title.appendChild(nameSpan);
-          }
-          title.title = (s.representative?.__rootPath || String(s.id)) + (s.sceneName ? ` — ${s.sceneName}` : '');
-          body.appendChild(title);
-        }
-        if (s.isApproved) card.classList.add('scene-approved');
-
-        // Pill list -- prefer species over families. Family pills only
-        // appear on the card when the scene has no species tags at all;
-        // the dialog still surfaces both tiers. aggregateScenes is the
-        // single source of truth for the search predicate (which checks
-        // both arrays), so dropping families from the card doesn't hide
-        // matches.
-        const cardPills = (s.species && s.species.length) ? s.species : (s.families || []);
-        const firstPill = cardPills[0] || null;
-        const overflowCount = Math.max(0, cardPills.length - 1);
-
-        const metaRow = document.createElement('div');
-        metaRow.className = 'card-meta-row';
-        if (s.isApproved) metaRow.classList.add('reviewed-tags');
-
-        const pillsWrap = document.createElement('div');
-        pillsWrap.className = 'card-pills';
-        if (firstPill) {
-          const c = document.createElement('span');
-          c.className = s.isApproved ? 'chip manual-approved' : 'chip';
-          if (_showSciOnCards) c.classList.add('chip--with-sci');
-          const primary = document.createElement('span');
-          primary.className = 'chip-primary';
-          primary.textContent = firstPill;
-          c.appendChild(primary);
-          let titleStr = firstPill;
-          if (_showSciOnCards) {
-            const sciText = _resolvePillSci(firstPill, cardPills);
-            if (sciText) {
-              const sci = document.createElement('span');
-              sci.className = 'chip-sci';
-              const em = document.createElement('em');
-              em.textContent = sciText;
-              sci.appendChild(em);
-              c.appendChild(sci);
-              titleStr = `${firstPill} — ${sciText}`;
-            }
-          }
-          c.title = titleStr;
-          pillsWrap.appendChild(c);
-        }
-        if (overflowCount > 0) {
-          const plus = document.createElement('button');
-          plus.type = 'button';
-          plus.className = 'chip chip-more';
-          // Down chevron (▾, U+25BE) signals "reveal more" without
-          // overloading the '+' affordance that other parts of the UI
-          // (scene-chip-add, chip-add-btn) use for "create new tag".
-          plus.textContent = '▾';
-          plus.title = `Show ${overflowCount} more`;
-          plus.setAttribute('aria-label', `Show ${overflowCount} more tags`);
-          plus.addEventListener('click', (ev) => {
-            ev.stopPropagation();
-            _openMorePillsPopover(plus, cardPills.slice(1), _showSciOnCards, cardPills);
-          });
-          pillsWrap.appendChild(plus);
-        }
-        metaRow.appendChild(pillsWrap);
-
-        const meta = document.createElement('div');
-        meta.className = 'card-meta';
-        // Score + image count on one line, no background pill. Two-decimal
-        // quality matches the user-visible precision elsewhere in the UI.
-        const scoreEl = document.createElement('span');
-        scoreEl.className = 'meta-score';
-        // Negative quality is the pipeline's sentinel for "no animal
-        // detected" (defaults to -1.00 in that case). Render as an em-dash
-        // pair instead of a misleading numeric score.
-        scoreEl.textContent = (s.maxQuality >= 0)
-          ? `★ ${s.maxQuality.toFixed(2)}`
-          : `★ --`;
-        meta.appendChild(scoreEl);
-        const metaSep = document.createElement('span');
-        metaSep.className = 'meta-sep';
-        metaSep.textContent = ' | ';
-        meta.appendChild(metaSep);
-        const countEl = document.createElement('span');
-        countEl.className = 'meta-count';
-        countEl.textContent = `📸 ${s.imageCount}`;
-        // Break the count down on hover rather than on the tile: the split is
-        // useful when triaging but not worth the visual weight on every card.
-        if (s.cullCounts) {
-          const { accepted, rejected, undecided } = s.cullCounts;
-          countEl.title = accepted || rejected
-            ? `${accepted} accepted · ${undecided} undecided · ${rejected} rejected`
-            : `${s.imageCount} image${s.imageCount === 1 ? '' : 's'}, none decided yet`;
-        }
-        meta.appendChild(countEl);
-        metaRow.appendChild(meta);
-
-        body.appendChild(metaRow);
-        card.appendChild(body);
-
-        card.addEventListener('click', (ev) => {
-          const sid = String(s.id);
-          _focusGridCard(sid);
-          if (ev.shiftKey && _lastSelectedIdx >= 0) {
-            const idx = _visibleSceneOrder.indexOf(sid);
-            if (idx >= 0) {
-              const lo = Math.min(_lastSelectedIdx, idx);
-              const hi = Math.max(_lastSelectedIdx, idx);
-              for (let i = lo; i <= hi; i++) selectedSceneIds.add(_visibleSceneOrder[i]);
-            }
-            updateSelectionUI();
-            ev.preventDefault(); return;
-          }
-          if (ev.ctrlKey || ev.metaKey) {
-            if (selectedSceneIds.has(sid)) selectedSceneIds.delete(sid); else selectedSceneIds.add(sid);
-            _lastSelectedIdx = _visibleSceneOrder.indexOf(sid);
-            updateSelectionUI();
-            ev.preventDefault(); return;
-          }
-          if (selectedSceneIds.size > 0) {
-            if (selectedSceneIds.has(sid)) selectedSceneIds.delete(sid); else selectedSceneIds.add(sid);
-            _lastSelectedIdx = _visibleSceneOrder.indexOf(sid);
-            updateSelectionUI();
-            return;
-          }
-          // Normal: open scene dialog
-          _lastSelectedIdx = _visibleSceneOrder.indexOf(sid);
-          openSceneDialog(sid);
-        });
-        if (_searchOn) {
-          card.addEventListener('contextmenu', (ev) => {
-            ev.preventDefault();
-            _openCardContextMenu(ev.clientX, ev.clientY, [
-              { icon: '🕒', label: 'Go to scene in timeline', run: () => goToSceneInTimeline(s.id) },
-            ]);
-          });
-        }
-        return card;
-      }
-
-      const batch = 24;
-
-      // ---- Timeline builder (used when groupByTime is on) ----
-      //
-      // Each cluster renders as a timeline node with:
-      //   • rail dot (sized by image count) + connecting line
-      //   • a header showing the time range, scene count, and image count
-      //   • a grid of scene cards
-      //
-      // The rail dot scales with the cluster's image count so a quick scroll
-      // down the left edge makes shooting bursts immediately visible — bigger
-      // dot = denser cluster. Sizing uses sqrt so a 200-shot burst isn't 10×
-      // the size of a 20-shot one.
-      const _DOT_MIN_PX = 8;
-      const _DOT_MAX_PX = 26;
-
-      function _clusterImageCount(cluster) {
-        let n = 0;
-        for (const s of cluster.scenes) n += s.imageCount || 0;
-        return n;
-      }
-
-      function _dotSizePx(imageCount, maxInFolder) {
-        if (!Number.isFinite(imageCount) || imageCount <= 0) return _DOT_MIN_PX;
-        if (!Number.isFinite(maxInFolder) || maxInFolder <= 1) return _DOT_MIN_PX + 3;
-        const frac = Math.sqrt(imageCount) / Math.sqrt(maxInFolder);
-        return Math.round(_DOT_MIN_PX + frac * (_DOT_MAX_PX - _DOT_MIN_PX));
-      }
-
-      function buildTimeline(fd, containerEl) {
-        const timelineEl = document.createElement('div');
-        timelineEl.className = 'timeline-body';
-        const gapMs = computeDynamicClusterGapMs(fd.scenes);
-        const clusters = buildTimeClusters(fd.scenes, gapMs);
-        let prevDay = null;
-
-        // Pre-compute the max image count across all clusters so dot sizes
-        // are proportional within this folder (different folders can have
-        // wildly different scales and shouldn't compete on the same axis).
-        let maxImgCountInFolder = 1;
-        for (const c of clusters) {
-          const n = _clusterImageCount(c);
-          if (n > maxImgCountInFolder) maxImgCountInFolder = n;
-        }
-
-        for (let ni = 0; ni < clusters.length; ni++) {
-          const cluster = clusters[ni];
-          const isLast = ni === clusters.length - 1;
-          const thisDay = cluster.untimed ? '' : _dayKeyFromMs(cluster.startMs);
-
-          // Day banner when the calendar date changes between clusters
-          if (thisDay && thisDay !== prevDay) {
-            const banner = document.createElement('div');
-            banner.className = 'timeline-day-banner';
-            banner.textContent = formatClusterDay(cluster.startMs);
-            timelineEl.appendChild(banner);
-            prevDay = thisDay;
-          }
-
-          const nodeEl = document.createElement('div');
-          nodeEl.className = 'timeline-node' + (cluster.untimed ? ' timeline-node-untimed' : '');
-
-          // Rail column: dot (sized by image count) + connecting line
-          const railCol = document.createElement('div');
-          railCol.className = 'timeline-rail-col';
-          const dot = document.createElement('div');
-          dot.className = 'timeline-dot';
-          const imgCount = _clusterImageCount(cluster);
-          const dotSize = _dotSizePx(imgCount, maxImgCountInFolder);
-          dot.style.width = dotSize + 'px';
-          dot.style.height = dotSize + 'px';
-          // Title gives a fallback tooltip for folks who want the raw number.
-          dot.title = `${cluster.scenes.length} scene${cluster.scenes.length === 1 ? '' : 's'} · ${imgCount} image${imgCount === 1 ? '' : 's'}`;
-          const line = document.createElement('div');
-          line.className = 'timeline-line' + (isLast ? ' last' : '');
-          railCol.appendChild(dot);
-          railCol.appendChild(line);
-
-          // Content column: header + grid
-          const contentCol = document.createElement('div');
-          contentCol.className = 'timeline-content-col';
-
-          const hdr = document.createElement('div');
-          hdr.className = 'timeline-node-header';
-
-          const timeSpan = document.createElement('span');
-          timeSpan.className = 'timeline-node-time';
-          if (cluster.untimed) {
-            timeSpan.textContent = 'Unknown time';
-          } else {
-            const spanMs = cluster.endMs - cluster.startMs;
-            // Collapse clusters that span less than two minutes to a single
-            // time (otherwise the header reads "10:42 AM – 10:42 AM").
-            timeSpan.textContent = spanMs < 2 * 60 * 1000
-              ? formatClusterTime(cluster.startMs)
-              : `${formatClusterTime(cluster.startMs)} – ${formatClusterTime(cluster.endMs)}`;
-          }
-          hdr.appendChild(timeSpan);
-
-          const countSpan = document.createElement('span');
-          countSpan.className = 'timeline-node-count muted';
-          countSpan.textContent =
-            `${cluster.scenes.length} scene${cluster.scenes.length === 1 ? '' : 's'} · ${imgCount} image${imgCount === 1 ? '' : 's'}`;
-          hdr.appendChild(countSpan);
-
-          contentCol.appendChild(hdr);
-
-          const gridEl = document.createElement('div');
-          gridEl.className = 'grid timeline-grid';
-          contentCol.appendChild(gridEl);
-
-          nodeEl.appendChild(railCol);
-          nodeEl.appendChild(contentCol);
-          timelineEl.appendChild(nodeEl);
-
-          for (let i = 0; i < cluster.scenes.length; i += batch) {
-            if (myVer !== _renderScenesVersion) { sceneGrid.style.minHeight = ''; return; }
-            const slice = cluster.scenes.slice(i, i + batch);
-            const frag = document.createDocumentFragment();
-            for (const s of slice) frag.appendChild(buildCard(s));
-            gridEl.appendChild(frag);
-          }
-        }
-        containerEl.appendChild(timelineEl);
-      }
-
-      // ---- Main folder rendering loop ----
+      const ctx = {
+        smartActive: _smartActive,
+        searchOn: _searchOn,
+        showBirdThumbs,
+        showFolderHeaders: groupByFolder,
+        showSciOnCards: _showSciOnCards,
+        isStale: () => myVer !== _renderScenesVersion,
+      };
       for (const fk of folderOrder) {
         const fd = folderMap.get(fk);
-        const allScenesInFolder = fd.scenes;
         let bodyEl; // receives the timeline or flat grid
-
-        if (showFolderHeaders && fd.folderPath) {
-          const folderName = folderBaseName(fd.folderPath) || fd.folderPath || '(unknown folder)';
-          const collapsed = collapsedFolders.has(fk);
-
-          const groupEl = document.createElement('div');
-          groupEl.className = 'folder-group';
-
-          const hdr = document.createElement('div');
-          hdr.className = 'folder-group-header' + (collapsed ? ' collapsed' : '');
-          hdr.innerHTML = `<span class="folder-group-toggle">▼</span><span class="folder-group-name">${escapeHtml(folderName)}</span><span class="folder-group-count muted">${allScenesInFolder.length} scene${allScenesInFolder.length === 1 ? '' : 's'}</span>`;
-
-          // Spacer pushes the action group to the right
-          const spacer = document.createElement('div');
-          spacer.style.flex = '1';
-          hdr.appendChild(spacer);
-
-          // Action group: Folder Actions dropdown + Culling Assistant (primary).
-          const rightActions = document.createElement('div');
-          rightActions.className = 'folder-group-right-actions';
-
-          // Folder Actions dropdown trigger — collapses the legacy 4 inline
-          // buttons (Open, Adjust Capture Time, Reset Culling Decisions,
-          // Write Photo Metadata) plus the new Clear Kestrel Analysis Data
-          // item behind a single segmented entry. Position the menu relative
-          // to this wrapper.
-          const actionsWrap = document.createElement('div');
-          actionsWrap.className = 'folder-group-actions-wrap';
-          actionsWrap.style.position = 'relative';
-
-          const actionsTrigger = document.createElement('button');
-          actionsTrigger.className = 'action-btn folder-group-actions-trigger';
-          actionsTrigger.innerHTML = '<i>⋯</i> Folder Actions <span class="caret">▾</span>';
-          actionsTrigger.title = 'More actions for this folder';
-          const _folderPathForMenu = fd.folderPath;
-          actionsTrigger.addEventListener('click', (ev) => {
-            ev.stopPropagation();
-            // Toggle: re-clicking the same trigger closes.
-            if (_openFolderActionsTrigger === actionsTrigger) {
-              _closeFolderActionsMenu();
-              return;
-            }
-            _closeFolderActionsMenu();
-            const refreshCb = () => {
-              // Conservative refresh: tell the scene grid to re-render and
-              // also recompute the tree. clearKestrelDataForFolder already
-              // toggles node.has_kestrel; renderFolderTree picks that up.
-              try { if (typeof renderFolderTree === 'function') renderFolderTree(); } catch (_) {}
-              try { if (typeof renderScenes === 'function') renderScenes(); } catch (_) {}
-            };
-            // Status is cached for 30 s, so this rarely waits; build the menu once it is known.
-            _openFolderActionsTrigger = actionsTrigger;
-            folderPipelineStatus(_folderPathForMenu).then((up) => {
-              if (_openFolderActionsTrigger !== actionsTrigger) return; // closed or replaced meanwhile
-              const menu = _buildFolderActionsMenu(_folderPathForMenu, refreshCb, up);
-              actionsWrap.appendChild(menu);
-              _openFolderActionsMenu = menu;
-            });
-          });
-          actionsWrap.appendChild(actionsTrigger);
-
-          // Pipeline version + Upgrade to 3.0, left of Folder Actions. Filled
-          // in once the folder's status arrives; the button stays hidden for
-          // folders already on 3.0 (or needing a full re-analysis).
-          const pipelineLabel = document.createElement('span');
-          pipelineLabel.className = 'folder-pipeline-label hidden';
-          rightActions.appendChild(pipelineLabel);
-          const upgradeBtn = document.createElement('button');
-          upgradeBtn.type = 'button';
-          upgradeBtn.className = 'action-btn folder-upgrade-btn hidden';
-          upgradeBtn.dataset.folderPath = fd.folderPath;
-          upgradeBtn.innerHTML = '<i>✨</i> Upgrade to 3.0';
-          upgradeBtn.title = 'Upgrade to analysis version 3.0 from the crops Kestrel already saved: new species IDs, the sharpness score and smart search. No re-analysis; ratings, culls and tags are kept.';
-          upgradeBtn.addEventListener('click', (ev) => { ev.stopPropagation(); upgradeFolderToV3(fd.folderPath); });
-          rightActions.appendChild(upgradeBtn);
-          folderPipelineStatus(fd.folderPath).then((up) => {
-            const label = _pipelineVersionLabel(up);
-            pipelineLabel.textContent = label;
-            pipelineLabel.title = up?.reason || '';
-            pipelineLabel.classList.toggle('hidden', !label);
-            pipelineLabel.classList.toggle('is-current', (Number(up?.pipeline_major) || 0) >= 3);
-            upgradeBtn.dataset.upgradable = up?.status === 'upgradable' ? '1' : '0';
-            syncFolderUpgradeButtons();
-          });
-
-          rightActions.appendChild(actionsWrap);
-
-          // Repair — only rendered visible once a background diff has found
-          // drift for this folder AND the folder listing was read successfully.
-          // Created hidden and toggled by repair.js::syncRepairIndicators,
-          // because the diff arrives after this render completes.
-          const repairBtn = document.createElement('button');
-          repairBtn.type = 'button';
-          repairBtn.className = 'action-btn folder-repair-btn hidden';
-          repairBtn.dataset.repairRoot = fd.folderPath;
-          repairBtn.innerHTML = '<i>⚠</i> Repair Kestrel Data';
-          repairBtn.title = 'Kestrel data and photos no longer match';
-          repairBtn.addEventListener('click', (ev) => {
-            ev.stopPropagation();
-            if (typeof openRepairDialog === 'function') openRepairDialog(fd.folderPath);
-          });
-          rightActions.appendChild(repairBtn);
-
-          const cullingBtn = document.createElement('button');
-          cullingBtn.className = 'action-btn culling-assistant-btn';
-          cullingBtn.innerHTML = '<i>✂</i> Open Culling Assistant';
-          cullingBtn.title = 'Open the AI-assisted culling workflow for this folder';
-          cullingBtn.addEventListener('click', (ev) => { ev.stopPropagation(); openCullingAssistant(fd.folderPath); });
-          rightActions.appendChild(cullingBtn);
-
-          const perchBtn = document.createElement('button');
-          perchBtn.type = 'button';
-          perchBtn.className = 'action-btn folder-perch-btn';
-          perchBtn.dataset.folderPath = fd.folderPath;
-          perchBtn.innerHTML = '<i>\u{1FAB6}</i> <span class="folder-perch-btn-label">Share with Perch</span>';
-          perchBtn.title = 'Share this folder to Perch (or manage existing perch)';
-          perchBtn.addEventListener('click', (ev) => {
-            ev.stopPropagation();
-            openPerchDialog(fd.folderPath);
-          });
-          rightActions.appendChild(perchBtn);
-
-          // Async-populate linked-state from disk; flip class + label if linked.
-          // Cloud Compute lives in the Analyze Folders dialog now, not here.
-          (async () => {
-            try {
-              const res = await window.pywebview?.api?.read_perch_link?.(fd.folderPath);
-              if (res && res.present && res.link) {
-                perchBtn.classList.add('is-linked');
-                const lbl = perchBtn.querySelector('.folder-perch-btn-label');
-                if (lbl) lbl.textContent = 'On Perch';
-                perchBtn.dataset.perchUrl = String(res.link.perch_url || '');
-                perchBtn.title = 'This folder is published to Perch (click to manage)';
-              }
-            } catch {}
-          })();
-
-          // Block sharing while this folder is still being analyzed — uploading
-          // partial results to Perch would publish an incomplete timeline. The
-          // disabled state is kept in sync as analysis starts/finishes by
-          // updateInProgressFoldersInTree() (queue.js).
-          try {
-            const _np = String(fd.folderPath || '').replace(/\\/g, '/');
-            const _analyzing =
-              (typeof _inProgressFolderPaths !== 'undefined' && _inProgressFolderPaths.has(_np))
-              || (window._ccInProgressFolderPaths && window._ccInProgressFolderPaths.has(_np));
-            if (_analyzing) {
-              perchBtn.disabled = true;
-              perchBtn.title = 'Wait for analysis to finish before uploading to Perch.';
-            }
-          } catch {}
-
-
-          hdr.appendChild(rightActions);
-
-          bodyEl = document.createElement('div');
-          bodyEl.className = 'folder-group-body' + (collapsed ? ' hidden' : '');
-
-          const _fk = fk, _bodyEl = bodyEl, _hdr = hdr;
-          hdr.addEventListener('click', () => {
-            if (collapsedFolders.has(_fk)) collapsedFolders.delete(_fk); else collapsedFolders.add(_fk);
-            _hdr.classList.toggle('collapsed');
-            _bodyEl.classList.toggle('hidden');
-          });
-          groupEl.appendChild(hdr);
-          groupEl.appendChild(bodyEl);
-          sceneGrid.appendChild(groupEl);
+        if (ctx.showFolderHeaders && fd.folderPath) {
+          const group = SceneGridParts.buildFolderGroup(fd, fk);
+          bodyEl = group.bodyEl;
+          sceneGrid.appendChild(group.groupEl);
         } else {
           bodyEl = document.createElement('div');
           sceneGrid.appendChild(bodyEl);
         }
 
+        let finished;
         if (groupByTime) {
-          buildTimeline(fd, bodyEl);
+          finished = SceneGridParts.buildTimeline(fd, bodyEl, ctx);
         } else {
           const gridEl = document.createElement('div');
           gridEl.className = 'folder-group-grid grid';
           bodyEl.appendChild(gridEl);
-          for (let i = 0; i < allScenesInFolder.length; i += batch) {
-            if (myVer !== _renderScenesVersion) { sceneGrid.style.minHeight = ''; return; }
-            const slice = allScenesInFolder.slice(i, i + batch);
-            const frag = document.createDocumentFragment();
-            for (const s of slice) frag.appendChild(buildCard(s));
-            gridEl.appendChild(frag);
-          }
+          finished = SceneGridParts.appendCards(gridEl, fd.scenes, ctx);
         }
+        if (!finished) { sceneGrid.style.minHeight = ''; return; }
       }
 
       // Restore scroll position and release the minimum-height lock now that
@@ -1009,9 +344,7 @@
       for (const it of items) {
         const row = document.createElement('div');
         row.className = 'folder-group-actions-item';
-        const icon = document.createElement('i');
-        icon.textContent = it.icon;
-        row.appendChild(icon);
+        row.appendChild(KestrelIcon.el(it.icon));
         row.appendChild(document.createTextNode(' ' + it.label));
         row.addEventListener('click', (ev) => {
           ev.stopPropagation();
@@ -1137,7 +470,7 @@
         if (_finalizeSceneReview(id)) n += 1;
       }
       if (!n) return;
-      setStatus(`Marked ${n} scene${n === 1 ? '' : 's'} as reviewed.`);
+      setStatus(`Confirmed species on ${n} scene${n === 1 ? '' : 's'}.`);
       renderScenes();
     }
 
@@ -1162,7 +495,7 @@
       });
       const slots = new Set(parsed.map(p => p.slot));
       if (slots.size > 1) {
-        alert('Cannot merge scenes from different folders.\nSelect scenes from the same folder only.');
+        await KestrelDialog.notice('mergeDifferentFolders');
         return;
       }
       const target = parsed.slice().sort((a, b) => parseNumber(a.count) - parseNumber(b.count))[0];

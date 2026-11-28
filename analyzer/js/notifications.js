@@ -15,12 +15,6 @@
 
   function api() { return window.pywebview && window.pywebview.api; }
   function $(id) { return document.getElementById(id); }
-  function escAttr(s) {
-    return String(s)
-      .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
-      .replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/'/g, '&#39;');
-  }
-
   function relTime(sec) {
     if (!sec) return '';
     const d = Math.floor(Date.now() / 1000) - sec;
@@ -69,7 +63,7 @@
       // the existing a[href] click handler opens it in the system browser.
       const action = (n.actionUrl && md && md.isAllowedHref(n.actionUrl)) ? String(n.actionUrl) : '';
       const cta = action
-        ? '<a class="notif-action" href="' + escAttr(action) + '">View &rarr;</a>'
+        ? '<a class="notif-action" href="' + escapeHtml(action) + '">View &rarr;</a>'
         : '';
       return '<div class="notif-item' + unreadCls + '" data-id="' + safeId + '">'
         + '<div class="notif-bodywrap"><div class="notif-body">' + body + '</div>'
