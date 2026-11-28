@@ -2831,27 +2831,28 @@ class Api(SettingsBridgeMixin, EnhancedGpuBridgeMixin, BirdCatalogBridgeMixin):
                     _set(phase='stopped', done=True, finished_at=time.time())
                     return
                 try:
-                    _set(phase='loading_model')
-                    # GPU follows the queue's current choice (the Analyze dialog's
-                    # "Use GPU", default on); CPU-only builds fall back to CPU.
-                    use_gpu = bool(getattr(_queue_manager, '_use_gpu', True))
-                    # Borrow the queue's pipeline: one ORT session per model per
-                    # process, on the shared ProviderCoordinator (GPU when on).
-                    pipeline = _queue_manager.shared_pipeline(use_gpu)
-                    pipeline.load_models(max_bird_crops=getattr(_queue_manager, '_max_bird_crops', 10))
-                    _set(phase='upgrading')
-                    try:
-                        from kestrel_analyzer.logging_utils import get_log_path
-                    except ImportError:
-                        from analyzer.kestrel_analyzer.logging_utils import get_log_path  # type: ignore
-                    stats = _up.upgrade_folder(
-                        kestrel_dir,
-                        pipeline,
-                        progress_cb=lambda done, total, fn: _set(current=int(done), total=int(total)),
-                        cancel_event=cancel,
-                        should_stop=lambda: _queue_manager.has_running_writer(root_real),
-                        log_path=get_log_path(root_real),
-                    )
+                    # Borrow the queue's pipeline once no analysis run holds it (phase stays 'queued').
+                    with _queue_manager.pipeline_turn(cancel) as ours:
+                        if not ours:
+                            _set(phase='canceled')
+                            return
+                        _set(phase='loading_model')
+                        # GPU follows the Analyze dialog's "Use GPU"; CPU-only builds fall back to CPU.
+                        use_gpu = bool(getattr(_queue_manager, '_use_gpu', True))
+                        pipeline = _queue_manager.shared_pipeline(use_gpu)
+                        pipeline.load_models(max_bird_crops=getattr(_queue_manager, '_max_bird_crops', 10))
+                        _set(phase='upgrading')
+                        try:
+                            from kestrel_analyzer.logging_utils import get_log_path
+                        except ImportError:
+                            from analyzer.kestrel_analyzer.logging_utils import get_log_path  # type: ignore
+                        stats = _up.upgrade_folder(
+                            kestrel_dir,
+                            pipeline,
+                            progress_cb=lambda done, total, fn: _set(current=int(done), total=int(total)),
+                            cancel_event=cancel,
+                            log_path=get_log_path(root_real),
+                        )
                     _set(phase='stopped' if stats.get('stopped') else 'canceled' if stats.get('canceled') else 'complete',
                          stats=stats)
                 except Exception as e:
@@ -2869,8 +2870,7 @@ class Api(SettingsBridgeMixin, EnhancedGpuBridgeMixin, BirdCatalogBridgeMixin):
     def _enqueue_upgrade(self, job_id: str, runner) -> None:
         """Run ``runner`` on the single upgrade worker, after earlier jobs.
 
-        Upgrades share the analysis queue's pipeline (one ORT session per
-        model per process), so they must not run concurrently.
+        Upgrades share the analysis queue's pipeline, so they must not run concurrently.
         """
         import collections as _c
         import threading as _t

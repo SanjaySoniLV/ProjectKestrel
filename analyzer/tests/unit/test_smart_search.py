@@ -578,6 +578,29 @@ def test_upgrades_run_one_at_a_time_in_request_order(api, folder, tmp_path, monk
     assert order == ["shoot", "shoot2"] and running["max"] == 1
 
 
+def test_upgrade_waits_while_an_analysis_run_holds_the_pipeline(api, folder, monkeypatch):
+    # The upgrade and the analysis queue share one pipeline. Loading models for
+    # an analysis while an upgrade ran left the upgrade with species_clf None.
+    calls = []
+    monkeypatch.setattr(upgrade_v3, "upgrade_folder", lambda *a, **k: calls.append(1) or {})
+    with api_bridge._queue_manager.pipeline_turn() as ours:
+        assert ours
+        job = api.upgrade_folder_v3(str(folder))
+        time.sleep(0.8)
+        p = api.get_smart_search_index_progress(job["job_id"])["progress"]
+        assert p["phase"] == "queued" and not p["done"] and not calls
+    assert _wait(api, job["job_id"])["phase"] == "complete" and calls == [1]
+
+
+def test_cancelling_an_upgrade_waiting_for_the_pipeline(api, folder, monkeypatch):
+    monkeypatch.setattr(upgrade_v3, "upgrade_folder", lambda *a, **k: pytest.fail("must not run"))
+    with api_bridge._queue_manager.pipeline_turn():
+        job = api.upgrade_folder_v3(str(folder))
+        time.sleep(0.3)
+        assert api.cancel_smart_search_index(job["job_id"]) == {"success": True}
+        assert _wait(api, job["job_id"])["phase"] == "canceled"
+
+
 def test_cancelling_a_queued_upgrade_skips_it(api, folder, tmp_path, monkeypatch):
     started = _blocking_upgrade(monkeypatch, {"canceled": True})
     second = _second_folder(tmp_path)

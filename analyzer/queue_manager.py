@@ -6,6 +6,7 @@ for folder analysis, and the _QueueItem dataclass used internally.
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import os
 import shutil
@@ -166,6 +167,9 @@ try:
 except Exception:  # pragma: no cover - config import must never block the queue
     _DEFAULT_MAX_CONSECUTIVE_ERRORS = 10
 
+_PIPELINE_WAIT_POLL_S = 0.5
+_WAITING_FOR_UPGRADE_MSG = 'Waiting for a folder upgrade to finish'
+
 _GPU_LOST_MESSAGE = (
     'The GPU stopped responding. Progress is saved. '
     'Restart Kestrel, then analyze this folder again to continue on the GPU.'
@@ -311,6 +315,10 @@ class QueueManager:
         # True while a worker that has already seen an empty queue is exiting.
         self._worker_claimed = False
         self._pipeline = None
+        # Held by whoever is using the shared pipeline's models: an analysis run (for the whole run)
+        # or one pipeline-3 folder upgrade. load_models() can rebuild the wrapper and classifiers, so
+        # two users at once can leave one with a None classifier or a session torn down under it.
+        self._pipeline_use = threading.Lock()
         self._use_gpu = True
         self._wildlife_enabled = True
         self._species_detection_enabled = True
@@ -366,6 +374,32 @@ class QueueManager:
                     raise RuntimeError(f"Analysis could not start: {_pipeline_import_error}")
                 self._pipeline = cls(use_gpu=bool(use_gpu), detector_name=self._detector_name)
             return self._pipeline
+
+    @contextlib.contextmanager
+    def pipeline_turn(self, cancel_event=None, on_wait=None):
+        """Exclusive use of the shared pipeline's models, waiting for the current user to finish.
+
+        Yields True once held, or False if ``cancel_event`` is set while waiting. ``on_wait`` is
+        called once if the models are busy when this starts.
+        """
+        got = self._pipeline_use.acquire(blocking=False)
+        if not got and on_wait is not None:
+            on_wait()
+        while not got:
+            if cancel_event is not None and cancel_event.is_set():
+                yield False
+                return
+            got = self._pipeline_use.acquire(timeout=_PIPELINE_WAIT_POLL_S)
+        try:
+            yield True
+        finally:
+            self._pipeline_use.release()
+
+    def _set_pending_msg(self, msg: str) -> None:
+        with self._lock:
+            for it in self._items:
+                if it.status == 'pending':
+                    it.current_status_msg = msg
 
     def get_status(self) -> dict:
         with self._lock:
@@ -586,7 +620,11 @@ class QueueManager:
 
     def _run(self):
         try:
-            self._run_loop()
+            with self.pipeline_turn(self._cancel_event,
+                                    lambda: self._set_pending_msg(_WAITING_FOR_UPGRADE_MSG)) as ok:
+                if ok:
+                    self._set_pending_msg('')
+                    self._run_loop()
         finally:
             with self._lock:
                 if self._thread is threading.current_thread():
